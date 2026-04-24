@@ -1,7 +1,7 @@
 # Spec 41 — Virtual Display Simulator
 
 > A daemon-owned software display device that can be added to layouts,
-> receive the real post-viewport and post-overlay display output path, and be
+> receive the real post-viewport display output path, and be
 > inspected visually in browser and TUI without requiring physical LCD
 > hardware.
 
@@ -10,7 +10,7 @@
 **Date:** 2026-04-11
 **Crates:** `hypercolor-types`, `hypercolor-daemon`, `hypercolor-tui`
 **Depends on:** Spatial Layout (06), Display Output (10 §display), Render Surface Queue (36),
-Display Overlay System (40)
+Display Faces (42)
 **Related:** `docs/specs/31-effect-developer-experience.md`,
 `docs/design/06-personas-workflows.md`
 
@@ -37,12 +37,12 @@ Hypercolor already has two useful visual surfaces:
 
 - the **scene canvas preview**, which shows the canonical shared LED scene
 - the **physical display output path**, which crops the canvas through a
-  display viewport, applies overlays, brightness, and transport-specific
+  display viewport, applies brightness, and transport-specific
   encoding
 
 What is missing is a way to inspect the **final per-display result** without
-owning the target hardware. That gap matters for overlay development, layout
-editing, CI coverage, contributor onboarding, and day-to-day iteration when a
+owning the target hardware. That gap matters for display-face development,
+layout editing, CI coverage, contributor onboarding, and day-to-day iteration when a
 Corsair pump LCD or Push 2 is not plugged in.
 
 This spec introduces a **virtual display simulator**: a software-only display
@@ -55,7 +55,7 @@ that browser and TUI surfaces can inspect.
 The key invariant is simple:
 
 > If a simulator frame looks right, it has passed through the same viewport,
-> overlay compositor, and brightness path that a real display would use.
+> brightness path, and display-face routing that a real display would use.
 
 That makes the simulator materially more valuable than a generic canvas
 preview.
@@ -70,13 +70,14 @@ preview.
 effect canvas. They do **not** show:
 
 - display-specific viewport crops
-- per-display overlay stacks
+- direct display-face routing
 - circular display masks
 - per-device display brightness
 - display-worker caching and refresh behavior
 
-That means Spec 40's overlay work can be tested deeply in unit and integration
-tests, but visual validation still depends on a physical LCD.
+That means display-face routing and display-output behavior can be tested
+deeply in unit and integration tests, but visual validation still depends on a
+physical LCD.
 
 ### 2.2 Layout Editing Needs a Display-Attached Inspection Target
 
@@ -85,7 +86,7 @@ workflow is:
 
 1. create a display-like thing
 2. add it to the spatial layout
-3. bind overlays or display zones to it
+3. bind a display face or display zone to it
 4. inspect that specific rendered output visually
 
 That implies the simulator must behave like a real display device in the
@@ -95,7 +96,7 @@ layout model, not like a UI-only crop widget.
 
 Our own design notes already call out device simulation as a core developer
 experience gap. Contributors should be able to validate display routing,
-overlay composition, and preview behavior without owning a Corsair or Push 2.
+display-face composition, and preview behavior without owning a Corsair or Push 2.
 
 ---
 
@@ -107,7 +108,7 @@ overlay composition, and preview behavior without owning a Corsair or Push 2.
   circular metadata
 - Allow those simulated displays to participate in the normal layout system
 - Route simulated displays through the real display-output path, including:
-  viewport sampling, overlays, brightness, and stable-frame skipping
+  viewport sampling, display faces, brightness, and stable-frame skipping
 - Expose the simulator's latest frame for visual inspection in browser and
   eventually TUI
 - Make simulator-backed verification scriptable for CI and local development

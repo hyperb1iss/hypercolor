@@ -505,19 +505,20 @@ Verify:
 - A display face can be direct, blended over scene, or absent without changing the output worker mental model.
 - Display preview, physical display output, and group canvas publication agree.
 
-### Task 6.4: Decide Native Overlay Future
+### Task 6.4: Retire Native Overlay Path
 
-**Files:** display overlay docs and code, depending on decision.
+**Files:** display-face docs, virtual display docs, removed dead overlay spec.
 
 Implementation:
 
-- Keep native overlays as fallback, or mark them as compatibility once Servo faces are stable.
+- Delete the dead display-overlay spec instead of preserving a competing fallback path.
+- Align display-face and simulator docs around faces as the only rich display composition model.
 - Avoid two competing display composition systems.
 
 Verify:
 
 - Docs and UI make the chosen path obvious.
-- No runtime path silently composes display content through a deprecated model unless configured.
+- No runtime path silently composes display content through a deprecated model.
 
 ## 13. Wave 7: Color And Quality Consistency
 
@@ -667,7 +668,7 @@ Verify:
 - Keep compatibility aliases until UI, CLI, docs, and saved config migrations are complete.
 - Treat display retry and USB lane priority as correctness work, not optimization.
 - Treat zero-copy as a budget with measured exceptions, not a slogan.
-- Do not remove native overlays until Servo faces have soak-test evidence.
+- Delete dead overlay specs instead of carrying stale fallback architecture.
 
 ## 17. Recommendation
 

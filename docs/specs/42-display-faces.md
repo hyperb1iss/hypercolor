@@ -12,8 +12,7 @@
 **Author:** Nova
 **Date:** 2026-04-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
-**Depends on:** Render Groups (27), Display Overlay System (40), Display
-Output (10 §display), SparkleFlinger (design/30)
+**Depends on:** Render Groups (27), Display Output (10 §display), SparkleFlinger (design/30)
 **Related:** `docs/design/28-render-pipeline-modernization-plan.md`,
 Virtual Display Simulator (41)
 
@@ -33,7 +32,7 @@ Virtual Display Simulator (41)
 10. [LightScript Meter API for Faces](#10-lightscript-meter-api-for-faces)
 11. [API Surface](#11-api-surface)
 12. [UI Integration](#12-ui-integration)
-13. [Native Overlay Deprecation Path](#13-native-overlay-deprecation-path)
+13. [Retired Widget Path](#13-retired-widget-path)
 14. [Delivery Waves](#14-delivery-waves)
 15. [Verification Strategy](#15-verification-strategy)
 16. [Recommendation](#16-recommendation)
@@ -42,15 +41,14 @@ Virtual Display Simulator (41)
 
 ## 1. Overview
 
-Hypercolor's display overlay system (Spec 40) shipped native Rust overlay
-renderers — clocks, sensor gauges, text, and images — composited onto the
-viewport-sampled effect canvas in each display worker. In the newer scene
-pipeline defined by Spec 48, display faces are better understood as
-**direct display canvases that sit beside the canonical scene canvas**, not as
-layers inside the scene canvas itself. These native renderers produce
-functional but visually basic output: no CSS animations, no rich typography,
-no canvas-based procedural visuals, no gradients or glow effects. They are a
-fraction of what HTML/CSS/JS can deliver.
+An earlier display-overlay design proposed native Rust widget renderers —
+clocks, sensor gauges, text, and images — composited onto the viewport-sampled
+effect canvas in each display worker. That path is retired. In the newer scene
+pipeline defined by Spec 48, display faces are **direct display canvases that
+sit beside the canonical scene canvas**, not layers inside the scene canvas
+itself. HTML/CSS/JS faces provide the rich typography, animation, canvas/SVG
+drawing, gradients, and glow effects that native widgets would have recreated
+poorly.
 
 SignalRGB's LCD face system demonstrates the right model: each face is a
 standalone HTML file that uses the same property/meter API as effects,
@@ -146,8 +144,8 @@ canvas isolation, and device routing.
   the `type="sensor"` meta property, already wired
 - **Per-group canvas routing** — display workers receive their
   RenderGroup's canvas directly, bypassing viewport remapping
-- **Backwards compatible** — native overlay renderers remain as fallback
-  for non-Servo builds or lightweight widget use cases
+- **One display content path** — display faces replace the retired native
+  overlay design instead of coexisting with it
 
 ### 3.1.1 Display color and transport contract
 
@@ -171,9 +169,8 @@ publish metrics when display traffic waits behind LED traffic.
   select from bundled faces). A visual editor is future work.
 - **Face marketplace / sharing** — discovery of community faces is out
   of scope.
-- **Per-pixel overlay compositing on top of faces** — the native overlay
-  compositor (Spec 40 Waves 0–2) still works, but this spec doesn't
-  extend it. Faces handle their own visual composition via HTML/CSS.
+- **Per-pixel native overlay compositing on top of faces** — faces handle their
+  own visual composition via HTML/CSS.
 - **Replacing native effects** — native Rust effects (solid color, pulse,
   perlin noise, etc.) are unaffected. Only display rendering changes.
 
@@ -674,8 +671,8 @@ pub enum DisplayCanvasSource {
 When a display has a face RenderGroup, its worker subscribes to that
 group's canvas channel. It receives the face's output directly at native
 resolution — **no viewport remapping, no spatial sampling**. The overlay
-compositor still runs if overlays are configured (rare for face displays),
-but the expensive viewport crop/scale pass is eliminated entirely.
+widget path is not part of the runtime model, so the expensive viewport
+crop/scale pass is eliminated entirely.
 
 When no face is assigned, the worker falls back to the global composed
 canvas with viewport crop/scale (current behavior).
@@ -742,13 +739,12 @@ scene for RenderGroups with `display_target` matching each display device:
 
 Routing is re-evaluated on scene change and device connect/disconnect.
 
-### 9.4 Overlay Coexistence
+### 9.4 No Native Overlay Coexistence
 
-The native overlay compositor (Spec 40) still operates on top of the base
-canvas in the display worker. If a user has a face AND native overlays
-configured, overlays composite on top of the face output. This is the
-backwards-compatible path — faces don't remove overlay capability, they
-just make it unnecessary for most use cases.
+The native widget compositor design is retired. A display face owns the
+display content path for that target, optionally blending with the scene
+surface via `DisplayFaceBlendMode`. The display worker should not run a second
+native overlay stack on top of face output.
 
 ---
 
@@ -853,7 +849,7 @@ Returns the current face assignment (effect, RenderGroup, controls) or
 
 ### 11.3 MCP Tool Updates
 
-Extend `set_display_overlay` or add a new `set_display_face` tool:
+Add a `set_display_face` tool:
 
 ```json
 {
@@ -873,8 +869,8 @@ Extend `set_display_overlay` or add a new `set_display_face` tool:
 
 ### 12.1 Displays Page Updates
 
-The displays page (`crates/hypercolor-ui/src/pages/displays.rs`)
-currently shows an overlay stack editor. Add a face assignment section:
+The displays page (`crates/hypercolor-ui/src/pages/displays.rs`) should expose
+face assignment directly:
 
 - **Face picker** — browse Display-category effects, preview, assign
 - **Face controls** — when a face is assigned, show its `<meta property>`
@@ -896,28 +892,19 @@ canvas dimensions shown as read-only.
 
 ---
 
-## 13. Native Overlay Deprecation Path
+## 13. Retired Widget Path
 
 ### 13.1 Short Term (This Spec)
 
-Native overlay renderers remain fully functional. They serve as:
-- Fallback when Servo is not compiled (`#[cfg(not(feature = "servo"))]`)
-- Lightweight widgets for users who don't need full HTML faces
-- Overlay-on-top-of-face for edge cases
+Display faces are the only supported rich-display composition path. New UI,
+API, and MCP surfaces should expose face assignment and face composition, not
+native overlay creation.
 
-### 13.2 Medium Term
+### 13.2 Future Compatibility
 
-Once faces are established and the UI integrates face assignment:
-- Default new display configs to face mode (no native overlays)
-- Mark native overlay creation as "legacy" in the API catalog
-- Prioritize face templates over native renderer improvements
-
-### 13.3 Long Term
-
-If face adoption is high and no users depend on native overlays:
-- Feature-gate native overlay renderers behind a build flag
-- Remove from default builds
-- Retain code for non-Servo platforms (embedded, minimal builds)
+If a future non-Servo or minimal build needs widget-style display content, it
+should be designed as a separate RFC with explicit constraints and no silent
+runtime overlap with display faces.
 
 ---
 
@@ -981,7 +968,7 @@ convenience API endpoints, MCP tool.
 - `crates/hypercolor-types/src/scene.rs`
 - `crates/hypercolor-daemon/src/render_thread/render_groups.rs`
 - `crates/hypercolor-daemon/src/api/displays.rs`
-- `crates/hypercolor-daemon/src/mcp/tools/overlays.rs`
+- `crates/hypercolor-daemon/src/mcp/tools/displays.rs`
 
 **Deliverable:** `PUT /api/v1/displays/{id}/face` assigns a face. LCD
 hardware shows the face at native resolution. LED strips continue their
@@ -1033,7 +1020,7 @@ preview updates as face renders.
 - **With simulator:** `just simulator-demo` + face assignment via API.
   Preview JPEG in browser shows face at native resolution.
 - **MCP tools:** Use `set_display_face` tool from Claude to assign and
-  configure faces. Verify `list_display_overlays` shows face status.
+  configure faces. Verify display-face status reflects the assignment.
 
 ---
 
@@ -1048,16 +1035,14 @@ frame rates at **15 fps**. The target_fps for each display is clamped by
 **Resolution:** Lift the cap for face-driven displays. When a display
 receives its canvas from a per-group channel (face mode), the display
 worker should use the face effect's declared FPS target (or the
-RenderGroup's desired frame rate) instead of the global 15 fps cap. The
-cap exists because overlay compositing + JPEG encode was expensive at
-higher rates; with a pre-rendered face canvas arriving at native
-resolution, the display worker's only job is JPEG encode + send, which
+RenderGroup's desired frame rate) instead of the global 15 fps cap. With a
+pre-rendered face canvas arriving at native resolution, the display worker's
+main job is JPEG encode + send, which
 TurboJPEG handles at <5ms for 480×480.
 
 Add a `face_fps_cap` config field (default 30, max 60) and apply it when
 `DisplayCanvasSource::GroupDirect` is active. Keep the 15 fps cap for the
-scene-canvas path (viewport remapping + overlay compositing is still
-heavy).
+scene-canvas path because viewport remapping plus JPEG encode is heavier.
 
 ### 16.2 Render Budget Realism
 
@@ -1126,20 +1111,7 @@ with a simpler model first: **session errors destroy the session and log
 a warning, but only channel-level failures poison the worker.** Refined
 per-session circuit breakers can follow in a hardening pass.
 
-### 16.6 Overlay Coexistence Inconsistency
-
-The spec claims "no overlay compositing overhead" when a face is active,
-but also says native overlays can composite on top of faces. These are
-internally inconsistent.
-
-**Resolution:** Clarify: when `DisplayCanvasSource::GroupDirect` is active,
-the display worker **skips viewport remapping** (that's the overhead
-saved). The overlay compositor still runs if overlays are configured, but
-this is expected to be rare — faces handle their own visual composition.
-The "no overhead" claim applies to viewport remapping, not to the overlay
-path.
-
-### 16.7 Multi-Group-Same-Display Conflict
+### 16.6 Multi-Group-Same-Display Conflict
 
 If multiple RenderGroups target the same `device_id`, the spec doesn't
 define precedence.
@@ -1150,7 +1122,7 @@ this validation to `display_target`: a `device_id` may appear as
 `display_target` in at most one group per scene. Reject scenes that
 violate this at activation time.
 
-### 16.8 DisplayOutputState Scene Visibility
+### 16.7 DisplayOutputState Scene Visibility
 
 `DisplayOutputState` currently has **no scene or RenderGroup inputs**. It
 knows about devices, spatial layout, and the scene canvas — but not
@@ -1184,10 +1156,8 @@ early — create two contexts on the same thread, alternate `make_current()`,
 render different pages, confirm independent pixel readback. If this fails,
 the fallback is a second Servo worker thread (heavier but proven).
 
-The native overlay system (Spec 40 Waves 0–2) has served its purpose as
-a stepping stone. Faces obsolete it for display devices by giving users
-the full power of HTML/CSS/JS with the same LightScript SDK they already
-know. The native renderers remain as fallback but should not receive
-further investment beyond maintenance.
+The retired native overlay design should stay retired. Faces give users the
+full power of HTML/CSS/JS with the same LightScript SDK they already know,
+without a second display-composition framework competing for ownership.
 
 Start with Wave 0. Ship it. Everything else follows.
