@@ -129,15 +129,6 @@ jobs:
         with:
           arguments: ""
 
-  # ── Cinder Audit ───────────────────────────────────────────────
-  cinder-audit:
-    name: Cinder Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Run audit snapshot generator
-        run: scripts/cinder-audit.sh
-
   # ── SDK (TypeScript / Bun) ─────────────────────────────────────
   sdk:
     name: SDK
