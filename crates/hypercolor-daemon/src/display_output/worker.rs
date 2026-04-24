@@ -107,9 +107,8 @@ struct CapturedDisplaySource {
 #[derive(Clone)]
 enum CapturedDisplayFrameSource {
     Scene(CapturedDisplaySource),
-    DirectFace(CapturedDisplaySource),
-    FaceComposite {
-        scene_source: CapturedDisplaySource,
+    Face {
+        scene_source: Option<CapturedDisplaySource>,
         face_source: CapturedDisplaySource,
         blend_mode: hypercolor_types::scene::DisplayFaceBlendMode,
         opacity_bits: u32,
@@ -127,25 +126,24 @@ struct DisplayFrameInputState {
 impl CapturedDisplayFrameSource {
     fn matches(&self, source: &DisplayWorkerFrameSource) -> bool {
         match (self, source) {
-            (Self::Scene(captured), DisplayWorkerFrameSource::Scene(frame))
-            | (Self::DirectFace(captured), DisplayWorkerFrameSource::DirectFace(frame)) => {
+            (Self::Scene(captured), DisplayWorkerFrameSource::Scene(frame)) => {
                 display_source_matches(Some(captured), Some(frame))
             }
             (
-                Self::FaceComposite {
+                Self::Face {
                     scene_source,
                     face_source,
                     blend_mode,
                     opacity_bits,
                 },
-                DisplayWorkerFrameSource::FaceComposite {
+                DisplayWorkerFrameSource::Face {
                     scene_frame,
                     face_frame,
                     blend_mode: current_blend_mode,
                     opacity,
                 },
             ) => {
-                display_source_matches(Some(scene_source), Some(scene_frame))
+                display_source_matches(scene_source.as_ref(), scene_frame.as_ref())
                     && display_source_matches(Some(face_source), Some(face_frame))
                     && blend_mode == current_blend_mode
                     && *opacity_bits == opacity.to_bits()
@@ -160,20 +158,15 @@ impl CapturedDisplayFrameSource {
                 capture_display_source(Some(frame))
                     .expect("display worker should only capture a valid scene frame"),
             ),
-            DisplayWorkerFrameSource::DirectFace(frame) => Self::DirectFace(
-                capture_display_source(Some(frame))
-                    .expect("display worker should only capture a valid direct face frame"),
-            ),
-            DisplayWorkerFrameSource::FaceComposite {
+            DisplayWorkerFrameSource::Face {
                 scene_frame,
                 face_frame,
                 blend_mode,
                 opacity,
-            } => Self::FaceComposite {
-                scene_source: capture_display_source(Some(scene_frame))
-                    .expect("display worker should only capture a valid scene composition frame"),
+            } => Self::Face {
+                scene_source: capture_display_source(scene_frame.as_ref()),
                 face_source: capture_display_source(Some(face_frame))
-                    .expect("display worker should only capture a valid face composition frame"),
+                    .expect("display worker should only capture a valid face frame"),
                 blend_mode: *blend_mode,
                 opacity_bits: opacity.to_bits(),
             },
@@ -487,23 +480,13 @@ async fn run_display_worker(
                     brightness,
                     &mut encode_state,
                 ),
-                DisplayWorkerFrameSource::DirectFace(face_source) => encode_face_scene_blend(
-                    None,
-                    face_source.as_ref(),
-                    &viewport,
-                    &geometry,
-                    brightness,
-                    hypercolor_types::scene::DisplayFaceBlendMode::Replace,
-                    1.0,
-                    &mut encode_state,
-                ),
-                DisplayWorkerFrameSource::FaceComposite {
+                DisplayWorkerFrameSource::Face {
                     scene_frame,
                     face_frame,
                     blend_mode,
                     opacity,
                 } => encode_face_scene_blend(
-                    Some(scene_frame.as_ref()),
+                    scene_frame.as_deref(),
                     face_frame.as_ref(),
                     &viewport,
                     &geometry,

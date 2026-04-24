@@ -198,9 +198,8 @@ struct DisplayTargetsSnapshot {
 #[derive(Clone, Debug)]
 pub(super) enum DisplayWorkerFrameSource {
     Scene(Arc<CanvasFrame>),
-    DirectFace(Arc<CanvasFrame>),
-    FaceComposite {
-        scene_frame: Arc<CanvasFrame>,
+    Face {
+        scene_frame: Option<Arc<CanvasFrame>>,
         face_frame: Arc<CanvasFrame>,
         blend_mode: DisplayFaceBlendMode,
         opacity: f32,
@@ -228,9 +227,8 @@ struct StableDisplayFrameSetIdentity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StableDisplayFrameSourceIdentity {
     Scene(DisplaySourceIdentity),
-    DirectFace(DisplaySourceIdentity),
-    FaceComposite {
-        scene_frame: DisplaySourceIdentity,
+    Face {
+        scene_frame: Option<DisplaySourceIdentity>,
         face_frame: DisplaySourceIdentity,
         blend_mode: DisplayFaceBlendMode,
         opacity_bits: u32,
@@ -261,6 +259,9 @@ impl DisplayTarget {
     }
 
     fn face_opacity(&self) -> f32 {
+        if !self.blends_with_effect() {
+            return 1.0;
+        }
         self.display_target
             .as_ref()
             .map_or(1.0, |target| target.opacity.clamp(0.0, 1.0))
@@ -486,7 +487,7 @@ fn build_display_worker_frame_set(
         DisplayCanvasSource::GroupDirect { .. } => {
             let face_frame = face_frame?;
             let face_identity = stable_display_source_identity(face_frame.as_ref())?;
-            if target.blends_with_effect() {
+            let scene = if target.blends_with_effect() {
                 let Some((scene_identity, scene_frame)) = scene_frame else {
                     trace!(
                         backend_id = %target.backend_id,
@@ -496,34 +497,31 @@ fn build_display_worker_frame_set(
                     );
                     return None;
                 };
-                Some((
-                    DisplayWorkerFrameSet {
-                        source: DisplayWorkerFrameSource::FaceComposite {
-                            scene_frame: Arc::clone(scene_frame),
-                            face_frame: Arc::clone(face_frame),
-                            blend_mode: target.face_blend_mode(),
-                            opacity: target.face_opacity(),
-                        },
-                    },
-                    StableDisplayFrameSetIdentity {
-                        source: StableDisplayFrameSourceIdentity::FaceComposite {
-                            scene_frame: *scene_identity,
-                            face_frame: face_identity,
-                            blend_mode: target.face_blend_mode(),
-                            opacity_bits: target.face_opacity().to_bits(),
-                        },
-                    },
-                ))
+                Some((*scene_identity, Arc::clone(scene_frame)))
             } else {
-                Some((
-                    DisplayWorkerFrameSet {
-                        source: DisplayWorkerFrameSource::DirectFace(Arc::clone(face_frame)),
+                None
+            };
+            let (scene_identity, scene_frame) = scene
+                .map(|(identity, frame)| (Some(identity), Some(frame)))
+                .unwrap_or((None, None));
+            Some((
+                DisplayWorkerFrameSet {
+                    source: DisplayWorkerFrameSource::Face {
+                        scene_frame,
+                        face_frame: Arc::clone(face_frame),
+                        blend_mode: target.face_blend_mode(),
+                        opacity: target.face_opacity(),
                     },
-                    StableDisplayFrameSetIdentity {
-                        source: StableDisplayFrameSourceIdentity::DirectFace(face_identity),
+                },
+                StableDisplayFrameSetIdentity {
+                    source: StableDisplayFrameSourceIdentity::Face {
+                        scene_frame: scene_identity,
+                        face_frame: face_identity,
+                        blend_mode: target.face_blend_mode(),
+                        opacity_bits: target.face_opacity().to_bits(),
                     },
-                ))
-            }
+                },
+            ))
         }
     }
 }
@@ -920,5 +918,136 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
         message.clone()
     } else {
         "unknown panic payload".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_types::canvas::Canvas;
+    use hypercolor_types::device::DeviceId;
+
+    use super::*;
+
+    fn canvas_frame(frame_number: u32) -> Arc<CanvasFrame> {
+        Arc::new(CanvasFrame::from_owned_canvas(
+            Canvas::new(2, 2),
+            frame_number,
+            frame_number,
+        ))
+    }
+
+    fn display_target(blend_mode: DisplayFaceBlendMode) -> DisplayTarget {
+        let device_id = DeviceId::new();
+        DisplayTarget {
+            worker_key: ("test".into(), device_id),
+            backend_id: "test".into(),
+            device_id,
+            name: "Display".into(),
+            target_fps: DISPLAY_FACE_DEFAULT_FPS,
+            brightness: 1.0,
+            geometry: DisplayGeometry {
+                width: 2,
+                height: 2,
+                circular: false,
+            },
+            canvas_source: DisplayCanvasSource::GroupDirect {
+                group_id: RenderGroupId::new(),
+            },
+            group_canvas_sender: None,
+            display_target: Some(DisplayFaceTarget {
+                device_id,
+                blend_mode,
+                opacity: 0.5,
+            }),
+            viewport: default_display_viewport(),
+        }
+    }
+
+    #[test]
+    fn direct_display_face_uses_unified_face_frame_source_without_scene() {
+        let target = display_target(DisplayFaceBlendMode::Replace);
+        let face_frame = canvas_frame(1);
+
+        let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
+            .expect("direct face should not require a scene frame");
+
+        let DisplayWorkerFrameSource::Face {
+            scene_frame,
+            face_frame: published_face,
+            blend_mode,
+            opacity,
+        } = frames.source
+        else {
+            panic!("display face should use the unified face frame source");
+        };
+        let StableDisplayFrameSourceIdentity::Face {
+            scene_frame: scene_identity,
+            blend_mode: identity_blend_mode,
+            opacity_bits,
+            ..
+        } = identity.source
+        else {
+            panic!("display face identity should use the unified face identity");
+        };
+
+        assert!(scene_frame.is_none());
+        assert!(scene_identity.is_none());
+        assert!(Arc::ptr_eq(&published_face, &face_frame));
+        assert_eq!(blend_mode, DisplayFaceBlendMode::Replace);
+        assert_eq!(identity_blend_mode, DisplayFaceBlendMode::Replace);
+        assert_eq!(opacity, 1.0);
+        assert_eq!(opacity_bits, 1.0_f32.to_bits());
+    }
+
+    #[test]
+    fn blended_display_face_uses_same_face_frame_source_with_scene() {
+        let target = display_target(DisplayFaceBlendMode::Alpha);
+        let scene_frame = canvas_frame(1);
+        let scene_identity =
+            stable_display_source_identity(scene_frame.as_ref()).expect("scene should be stable");
+        let face_frame = canvas_frame(2);
+
+        let (frames, identity) = build_display_worker_frame_set(
+            &target,
+            Some(&(scene_identity, scene_frame)),
+            Some(&face_frame),
+        )
+        .expect("blended face should build when scene and face are available");
+
+        let DisplayWorkerFrameSource::Face {
+            scene_frame,
+            face_frame: published_face,
+            blend_mode,
+            opacity,
+        } = frames.source
+        else {
+            panic!("blended display face should use the unified face frame source");
+        };
+        let StableDisplayFrameSourceIdentity::Face {
+            scene_frame: identity_scene,
+            blend_mode: identity_blend_mode,
+            opacity_bits,
+            ..
+        } = identity.source
+        else {
+            panic!("blended display face identity should use the unified face identity");
+        };
+
+        assert!(scene_frame.is_some());
+        assert!(Arc::ptr_eq(&published_face, &face_frame));
+        assert_eq!(identity_scene, Some(scene_identity));
+        assert_eq!(blend_mode, DisplayFaceBlendMode::Alpha);
+        assert_eq!(identity_blend_mode, DisplayFaceBlendMode::Alpha);
+        assert_eq!(opacity, 0.5);
+        assert_eq!(opacity_bits, 0.5_f32.to_bits());
+    }
+
+    #[test]
+    fn blended_display_face_waits_for_scene_frame() {
+        let target = display_target(DisplayFaceBlendMode::Alpha);
+        let face_frame = canvas_frame(1);
+
+        assert!(build_display_worker_frame_set(&target, None, Some(&face_frame)).is_none());
     }
 }
