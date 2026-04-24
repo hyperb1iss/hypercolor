@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
 
-use hypercolor_leptos_ext::events::{document, scroll_into_view_start};
+use hypercolor_leptos_ext::events::{document as browser_document, scroll_into_view_start};
 use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_sections::*;
@@ -27,7 +27,7 @@ const SECTION_IDS: &[&str] = &[
 ];
 
 fn settings_section_targets() -> Vec<web_sys::Element> {
-    let Some(doc) = document() else {
+    let Some(doc) = browser_document() else {
         return Vec::new();
     };
 
@@ -136,7 +136,7 @@ pub fn SettingsPage() -> impl IntoView {
     // Scroll to section on tab click
     let scroll_to = move |id: &str| {
         set_active_section.set(id.to_string());
-        if let Some(doc) = document()
+        if let Some(doc) = browser_document()
             && let Some(el) = doc.get_element_by_id(&format!("section-{id}"))
         {
             scroll_into_view_start(&el);

@@ -3,9 +3,11 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use hypercolor_leptos_ext::events::{EventHandle, document, document_event_target, on};
+use hypercolor_leptos_ext::events::{
+    EventHandle, document as browser_document, document_event_target, on,
+};
 use hypercolor_leptos_ext::prelude::{
-    TimeoutHandle, current_page_location, now_ms, random_unit, set_timeout,
+    TimeoutHandle, current_page_location, now_ms, random_unit, set_timeout as browser_set_timeout,
 };
 use hypercolor_leptos_ext::ws::transport::{
     WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer, send_websocket_json,
@@ -487,7 +489,7 @@ impl WsManager {
         });
 
         // Visibility change listener
-        if let Some(document) = document() {
+        if let Some(document) = browser_document() {
             visibility_change_callback.update_value(|handle| {
                 if let Some(mut handle) = handle.take() {
                     handle.cancel();
@@ -552,7 +554,7 @@ fn schedule_reconnect(
         .unwrap_or(ExponentialBackoff::HYPERCOLOR_DEFAULT.base);
     let final_delay = delay.max(Duration::from_millis(100));
 
-    let timeout = set_timeout(final_delay, move || {
+    let timeout = browser_set_timeout(final_delay, move || {
         if let Some(connect_fn) = connect.get_value() {
             connect_fn();
         }
@@ -606,6 +608,6 @@ fn build_ws_url() -> String {
 }
 
 fn document_is_visible() -> bool {
-    document()
+    browser_document()
         .is_none_or(|document| !document.hidden())
 }

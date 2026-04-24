@@ -9,7 +9,7 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
-use hypercolor_leptos_ext::events::{Input, document};
+use hypercolor_leptos_ext::events::{Input, document as browser_document};
 use crate::api;
 use crate::app::{DisplaysContext, EffectsContext, WsContext};
 use crate::components::control_panel::ControlPanel;
@@ -655,7 +655,7 @@ fn snapshot_scene_lock_message(ctx: Option<EffectsContext>, action: &str) -> Opt
 }
 
 fn toggle_body_resizing(active: bool) {
-    if let Some(body) = document().and_then(|d| d.body()) {
+    if let Some(body) = browser_document().and_then(|d| d.body()) {
         if active {
             let _ = body.class_list().add_1("resizing");
         } else {

@@ -9,7 +9,7 @@ use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use hypercolor_leptos_ext::events::{document, target_closest, window};
+use hypercolor_leptos_ext::events::{document as browser_document, target_closest, window};
 use hypercolor_leptos_ext::prelude::{
     viewport_height as browser_viewport_height, viewport_width as browser_viewport_width,
 };
@@ -471,7 +471,7 @@ pub(super) fn install_control_dropdown_outside_handler(
     is_open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
 ) {
-    let Some(doc) = document() else {
+    let Some(doc) = browser_document() else {
         return;
     };
     let selector = format!(".{class_name}");

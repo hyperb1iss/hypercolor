@@ -3,9 +3,9 @@
 
 use std::time::Duration;
 
-use hypercolor_leptos_ext::events::{Input, document, target_closest};
+use hypercolor_leptos_ext::events::{Input, document as browser_document, target_closest};
 use hypercolor_leptos_ext::prelude::{
-    TimeoutHandle, set_timeout, viewport_height as browser_viewport_height,
+    TimeoutHandle, set_timeout as browser_set_timeout, viewport_height as browser_viewport_height,
     viewport_width as browser_viewport_width,
 };
 use leptos::{ev, portal::Portal, prelude::*};
@@ -60,7 +60,7 @@ fn category_shape_svg(category: &str, size: u32) -> String {
 // ── Outside click handler ───────────────────────────────────────────────────
 
 fn install_outside_click_handler(set_open: WriteSignal<bool>) {
-    let Some(doc) = document() else {
+    let Some(doc) = browser_document() else {
         return;
     };
 
@@ -223,7 +223,7 @@ pub fn ComponentPicker(
                 timeout.cancel();
             }
         });
-        let timeout = set_timeout(Duration::ZERO, move || {
+        let timeout = browser_set_timeout(Duration::ZERO, move || {
             if let Some(input) = search_ref.get() {
                 let _ = input.focus();
             }
