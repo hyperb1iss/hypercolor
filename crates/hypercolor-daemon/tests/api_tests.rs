@@ -971,6 +971,49 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
 }
 
 #[tokio::test]
+async fn config_set_render_target_fps_updates_render_loop_live() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"key":"daemon.target_fps","value":"45"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "daemon.target_fps");
+    assert_eq!(json["data"]["value"], 45);
+    assert_eq!(json["data"]["live"], true);
+
+    {
+        let render_loop = state.render_loop.read().await;
+        let stats = render_loop.stats();
+        assert_eq!(stats.tier.fps(), 45);
+        assert_eq!(stats.max_tier.fps(), 45);
+    }
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let config: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    assert_eq!(config.daemon.target_fps, 45);
+}
+
+#[tokio::test]
 async fn preview_page_returns_html() {
     let app = test_app();
 

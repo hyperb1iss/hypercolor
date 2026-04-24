@@ -25,6 +25,7 @@ import { createDebugLogger } from '../utils/debug'
  */
 const INITIAL_PLACEHOLDER_WIDTH = 1
 const INITIAL_PLACEHOLDER_HEIGHT = 1
+const FPS_CAP_EPSILON_MS = 0.5
 
 export interface EffectConfig {
     id: string
@@ -126,9 +127,9 @@ export abstract class BaseEffect<T> {
         // FPS cap support
         const fpsCap = (window as { __hypercolorFpsCap?: number }).__hypercolorFpsCap ?? 0
         if (fpsCap > 0) {
-            const frameInterval = 1000 / fpsCap
-            if (timestamp - this.fpsCapLastFrameTime < frameInterval) return
-            this.fpsCapLastFrameTime = timestamp
+            const nextFrameTime = nextFpsCapFrameTime(timestamp, this.fpsCapLastFrameTime, fpsCap)
+            if (nextFrameTime === null) return
+            this.fpsCapLastFrameTime = nextFrameTime
         }
 
         this.syncCanvasSizeFromEngine()
@@ -258,4 +259,18 @@ export abstract class BaseEffect<T> {
     protected abstract initializeControls(): void
     protected abstract getControlValues(): T
     protected abstract updateParameters(controls: T): void
+}
+
+function nextFpsCapFrameTime(timestamp: number, lastFrameTime: number, fpsCap: number): number | null {
+    const frameInterval = 1000 / fpsCap
+    const nextDue = lastFrameTime + frameInterval
+    if (timestamp + FPS_CAP_EPSILON_MS < nextDue) return null
+    if (timestamp < nextDue) return nextDue
+
+    const elapsedFrames = Math.max(1, Math.floor((timestamp - lastFrameTime) / frameInterval))
+    return lastFrameTime + elapsedFrames * frameInterval
+}
+
+export const __testing = {
+    nextFpsCapFrameTime,
 }

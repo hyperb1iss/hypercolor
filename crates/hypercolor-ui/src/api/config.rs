@@ -31,11 +31,10 @@ pub async fn fetch_config() -> Result<hypercolor_types::config::HypercolorConfig
 
 /// Set a single config key. Value is JSON-stringified per daemon contract.
 pub async fn set_config_value(key: &str, value: &serde_json::Value) -> Result<(), String> {
-    let live = key == "audio" || key.starts_with("audio.");
     let body = serde_json::json!({
         "key": key,
         "value": serde_json::to_string(value).unwrap_or_default(),
-        "live": live,
+        "live": applies_live(key),
     });
     client::post_json_discard("/api/v1/config/set", &body)
         .await
@@ -46,7 +45,7 @@ pub async fn set_config_value(key: &str, value: &serde_json::Value) -> Result<()
 pub async fn reset_config_key(key: &str) -> Result<(), String> {
     let body = serde_json::json!({
         "key": key,
-        "live": key == "audio" || key.starts_with("audio."),
+        "live": applies_live(key),
     });
     client::post_json_discard("/api/v1/config/reset", &body)
         .await
@@ -58,4 +57,30 @@ pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
     client::fetch_json("/api/v1/audio/devices")
         .await
         .map_err(Into::into)
+}
+
+fn applies_live(key: &str) -> bool {
+    key == "audio"
+        || key.starts_with("audio.")
+        || matches!(
+            key,
+            "daemon.target_fps" | "daemon.canvas_width" | "daemon.canvas_height"
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::applies_live;
+
+    #[test]
+    fn render_timing_keys_apply_live() {
+        assert!(applies_live("daemon.target_fps"));
+        assert!(applies_live("daemon.canvas_width"));
+        assert!(applies_live("daemon.canvas_height"));
+    }
+
+    #[test]
+    fn restart_only_render_keys_do_not_apply_live() {
+        assert!(!applies_live("effect_engine.render_acceleration_mode"));
+    }
 }
