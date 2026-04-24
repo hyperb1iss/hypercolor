@@ -5,9 +5,8 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use std::collections::HashMap;
-use wasm_bindgen::JsCast;
 
-use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::events::{Input, target_closest};
 use hypercolor_types::effect::{ControlValue, PresetTemplate};
 
 use super::preset_matching::{
@@ -861,9 +860,7 @@ fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
         move |ev: leptos::ev::MouseEvent| {
             let inside = ev
                 .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| el.closest(".preset-dropdown").ok().flatten().is_some())
-                .unwrap_or(false);
+                .is_some_and(|target| target_closest(Some(target), ".preset-dropdown"));
 
             if !inside {
                 set_open.set(false);

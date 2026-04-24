@@ -30,6 +30,7 @@ events = [
     "dep:gloo-events",
     "dep:wasm-bindgen",
     "dep:web-sys",
+    "web-sys/Element",
     "web-sys/Event",
     "web-sys/EventTarget",
     "web-sys/FileList",

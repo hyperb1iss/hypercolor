@@ -4,11 +4,11 @@
 use std::time::Duration;
 
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::events::target_closest;
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
-use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::icons::*;
@@ -68,14 +68,9 @@ fn install_outside_click_handler(set_open: WriteSignal<bool>) {
         move |ev: leptos::ev::MouseEvent| {
             let inside = ev
                 .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| {
-                    el.closest(".component-picker, .component-picker-panel")
-                        .ok()
-                        .flatten()
-                        .is_some()
-                })
-                .unwrap_or(false);
+                .is_some_and(|target| {
+                    target_closest(Some(target), ".component-picker, .component-picker-panel")
+                });
 
             if !inside {
                 set_open.set(false);

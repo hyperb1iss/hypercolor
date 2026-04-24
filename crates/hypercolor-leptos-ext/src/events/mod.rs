@@ -111,6 +111,29 @@ macro_rules! impl_input_target_helpers {
 impl_input_target_helpers!(Input);
 impl_input_target_helpers!(Change);
 
+pub fn target_element(target: Option<web_sys::EventTarget>) -> Option<web_sys::Element> {
+    target.and_then(|target| target.dyn_into().ok())
+}
+
+pub fn target_closest(target: Option<web_sys::EventTarget>, selector: &str) -> bool {
+    target_element(target).is_some_and(|element| element.closest(selector).ok().flatten().is_some())
+}
+
+pub fn target_is_text_entry(target: Option<web_sys::EventTarget>) -> bool {
+    target_element(target).is_some_and(|element| {
+        let tag = element.tag_name();
+        tag.eq_ignore_ascii_case("input")
+            || tag.eq_ignore_ascii_case("textarea")
+            || tag.eq_ignore_ascii_case("select")
+            || element.has_attribute("contenteditable")
+            || element
+                .closest("[contenteditable='true']")
+                .ok()
+                .flatten()
+                .is_some()
+    })
+}
+
 /// RAII browser event listener handle.
 pub struct EventHandle {
     listener: Option<EventListener>,

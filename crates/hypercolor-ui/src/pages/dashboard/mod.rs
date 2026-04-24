@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use hypercolor_leptos_ext::events::{EventHandle, on};
+use hypercolor_leptos_ext::events::{EventHandle, on, target_closest};
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
@@ -800,9 +800,7 @@ fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
         move |ev: leptos::ev::MouseEvent| {
             let inside = ev
                 .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| el.closest(".layout-menu-anchor").ok().flatten().is_some())
-                .unwrap_or(false);
+                .is_some_and(|target| target_closest(Some(target), ".layout-menu-anchor"));
             if !inside {
                 set_open.set(false);
             }

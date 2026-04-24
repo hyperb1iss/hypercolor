@@ -8,8 +8,8 @@ use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use wasm_bindgen::prelude::*;
 
+use hypercolor_leptos_ext::events::target_closest;
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, PreviewSource,
@@ -448,12 +448,10 @@ fn install_click_outside_handler(
             }
             let inside = ev
                 .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| {
-                    el.closest(".color-picker-popover").ok().flatten().is_some()
-                        || el.closest(".swatch-glow").ok().flatten().is_some()
-                })
-                .unwrap_or(false);
+                .is_some_and(|target| {
+                    target_closest(Some(target.clone()), ".color-picker-popover")
+                        || target_closest(Some(target), ".swatch-glow")
+                });
 
             if !inside {
                 set_expanded.set(None);
@@ -483,9 +481,7 @@ pub(super) fn install_control_dropdown_outside_handler(
             }
             let inside = ev
                 .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| el.closest(&selector).ok().flatten().is_some())
-                .unwrap_or(false);
+                .is_some_and(|target| target_closest(Some(target), &selector));
 
             if !inside {
                 set_open.set(false);
@@ -521,9 +517,7 @@ pub(super) fn install_scroll_close_handler(
             }
             let inside = ev
                 .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| el.closest(&selector).ok().flatten().is_some())
-                .unwrap_or(false);
+                .is_some_and(|target| target_closest(Some(target), &selector));
             if inside {
                 return;
             }

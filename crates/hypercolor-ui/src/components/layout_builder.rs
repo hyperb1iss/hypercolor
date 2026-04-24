@@ -7,9 +7,8 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::use_debounce_fn_with_arg;
-use wasm_bindgen::JsCast;
 
-use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::control_panel::ControlDropdownDismissHandlers;
@@ -94,20 +93,7 @@ fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
 }
 
 fn keyboard_target_is_text_input(target: Option<web_sys::EventTarget>) -> bool {
-    target
-        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-        .is_some_and(|element| {
-            let tag = element.tag_name();
-            tag.eq_ignore_ascii_case("input")
-                || tag.eq_ignore_ascii_case("textarea")
-                || tag.eq_ignore_ascii_case("select")
-                || element.has_attribute("contenteditable")
-                || element
-                    .closest("[contenteditable='true']")
-                    .ok()
-                    .flatten()
-                    .is_some()
-        })
+    target_is_text_entry(target)
 }
 
 #[derive(Clone, Copy)]
