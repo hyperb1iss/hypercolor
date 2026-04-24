@@ -294,6 +294,10 @@ pub(crate) struct DeferredSamplingState {
 }
 
 impl DeferredSamplingState {
+    pub(crate) fn scratch(&self) -> &[ZoneColors] {
+        &self.scratch
+    }
+
     pub(crate) fn scratch_mut(&mut self) -> &mut Vec<ZoneColors> {
         &mut self.scratch
     }

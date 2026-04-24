@@ -435,7 +435,7 @@ mod tests {
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
     use crate::render_thread::frame_sampling::{
         blend_scene_zone_frames, build_transition_layout,
-        can_hold_published_frame_for_deferred_sampling,
+        can_hold_published_frame_for_deferred_sampling, can_hold_zone_colors_for_deferred_sampling,
         can_reuse_published_frame_for_deferred_sampling,
     };
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
@@ -555,6 +555,12 @@ mod tests {
         )
     }
 
+    fn layout_with_display_zone() -> SpatialLayout {
+        let mut layout = sample_layout(&["left", "display", "right"]);
+        layout.zones[1].zone_name = Some("Display".to_owned());
+        layout
+    }
+
     fn zone(zone_id: &str, colors: &[[u8; 3]]) -> ZoneColors {
         ZoneColors {
             zone_id: zone_id.to_owned(),
@@ -599,6 +605,32 @@ mod tests {
         assert!(!can_hold_published_frame_for_deferred_sampling(
             &layout,
             &published_frame(&["left", "other"])
+        ));
+    }
+
+    #[test]
+    fn completed_deferred_zone_colors_can_drive_matching_layout() {
+        let layout = sample_layout(&["left", "right"]);
+        let zones = vec![zone("left", &[[255, 0, 0]]), zone("right", &[[0, 0, 255]])];
+
+        assert!(can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+        assert!(!can_hold_zone_colors_for_deferred_sampling(
+            &layout,
+            &[zone("left", &[[255, 0, 0]])]
+        ));
+    }
+
+    #[test]
+    fn gpu_zone_sampling_ignores_display_only_zones_when_reusing_published_frame() {
+        let layout = layout_with_display_zone();
+
+        assert!(can_hold_published_frame_for_deferred_sampling(
+            &layout,
+            &published_frame(&["left", "right"])
+        ));
+        assert!(!can_hold_published_frame_for_deferred_sampling(
+            &layout,
+            &published_frame(&["left", "display", "right"])
         ));
     }
 

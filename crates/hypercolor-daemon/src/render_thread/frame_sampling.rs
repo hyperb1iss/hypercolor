@@ -10,7 +10,7 @@ use hypercolor_core::types::canvas::{Canvas, RgbaF32};
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 use super::frame_composer::RenderStageStats;
 use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
@@ -117,12 +117,27 @@ pub(crate) fn can_hold_published_frame_for_deferred_sampling(
     layout: &SpatialLayout,
     published_frame: &FrameData,
 ) -> bool {
-    published_frame.zones.len() == layout.zones.len()
-        && published_frame
-            .zones
-            .iter()
-            .zip(&layout.zones)
-            .all(|(zone_colors, layout_zone)| zone_colors.zone_id == layout_zone.id)
+    can_hold_zone_colors_for_deferred_sampling(layout, &published_frame.zones)
+}
+
+pub(crate) fn can_hold_zone_colors_for_deferred_sampling(
+    layout: &SpatialLayout,
+    zones: &[ZoneColors],
+) -> bool {
+    let mut published_zones = zones.iter();
+    for layout_zone in layout.zones.iter().filter(|zone| is_led_sampled_zone(zone)) {
+        let Some(zone_colors) = published_zones.next() else {
+            return false;
+        };
+        if zone_colors.zone_id != layout_zone.id {
+            return false;
+        }
+    }
+    published_zones.next().is_none()
+}
+
+fn is_led_sampled_zone(zone: &DeviceZone) -> bool {
+    zone.zone_name.as_deref() != Some("Display")
 }
 
 fn try_retire_stale_zone_sampling(
@@ -356,12 +371,11 @@ pub(crate) fn resolve_led_sampling(
                 can_hold_published_frame_for_deferred_sampling(layout.as_ref(), &published_frame),
             )
         };
-        let completed_sampling_matches_current =
-            completed_deferred_sampling.as_ref().is_some_and(|pending| {
-                sampling
-                    .sparkleflinger
-                    .pending_zone_sampling_matches_current_work(pending, prepared_zones.as_ref())
-            });
+        let completed_sampling_matches_current = completed_deferred_sampling.is_some()
+            && can_hold_zone_colors_for_deferred_sampling(
+                layout.as_ref(),
+                sampling.deferred_sampling.scratch(),
+            );
         if completed_sampling_matches_current {
             sampling
                 .deferred_sampling
@@ -501,6 +515,10 @@ pub(crate) fn resolve_led_sampling(
                 sampling.deferred_sampling.scratch_mut(),
             ) {
                 Ok(true) => {
+                    sampling
+                        .deferred_sampling
+                        .clone_scratch_into(sampling.output_artifacts.zones_mut());
+                    gpu_sample_retry_hit = true;
                     gpu_sample_wait_blocked = sampling
                         .sparkleflinger
                         .take_last_sample_readback_wait_blocked();
