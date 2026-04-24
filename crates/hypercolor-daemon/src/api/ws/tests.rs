@@ -857,6 +857,26 @@ fn event_message_parts_serializes_render_group_changed() {
 }
 
 #[test]
+fn event_message_parts_serializes_effect_degraded() {
+    let group_id = RenderGroupId::new();
+    let event = HypercolorEvent::EffectDegraded {
+        effect_id: "effect-1".to_owned(),
+        group_id: Some(group_id),
+        group_name: Some("Display Face".to_owned()),
+        state: hypercolor_types::event::EffectDegradationState::Failed,
+        reason: Some("boom".to_owned()),
+    };
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "effect_degraded");
+    assert_eq!(event_data["effect_id"], "effect-1");
+    assert_eq!(event_data["group_id"], group_id.to_string());
+    assert_eq!(event_data["group_name"], "Display Face");
+    assert_eq!(event_data["state"], "failed");
+    assert_eq!(event_data["reason"], "boom");
+}
+
+#[test]
 fn event_message_parts_serializes_active_scene_changed() {
     let current = SceneId::new();
     let event = HypercolorEvent::ActiveSceneChanged {

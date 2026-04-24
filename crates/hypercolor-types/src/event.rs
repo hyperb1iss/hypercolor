@@ -95,6 +95,17 @@ pub enum EffectStopReason {
     Shutdown,
 }
 
+/// Degraded-mode state for an effect or render group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectDegradationState {
+    Loading,
+    Late,
+    Failed,
+    Retiring,
+    Recovered,
+}
+
 /// How a render group changed inside the active scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -503,6 +514,15 @@ pub enum HypercolorEvent {
         fallback: Option<String>,
     },
 
+    /// An effect entered or exited degraded mode.
+    EffectDegraded {
+        effect_id: String,
+        group_id: Option<RenderGroupId>,
+        group_name: Option<String>,
+        state: EffectDegradationState,
+        reason: Option<String>,
+    },
+
     // ── Scene Events ────────────────────────────────────────────────
     /// A scene was triggered and its associated profile is being applied.
     SceneActivated {
@@ -797,7 +817,8 @@ impl HypercolorEvent {
             | Self::EffectLayerAdded { .. }
             | Self::EffectLayerRemoved { .. }
             | Self::EffectRegistryUpdated { .. }
-            | Self::EffectError { .. } => EventCategory::Effect,
+            | Self::EffectError { .. }
+            | Self::EffectDegraded { .. } => EventCategory::Effect,
 
             Self::SceneActivated { .. }
             | Self::SceneTransitionStarted { .. }
@@ -863,7 +884,11 @@ impl HypercolorEvent {
 
             Self::DeviceConnected { .. }
             | Self::DeviceDisconnected { .. }
-            | Self::DeviceError { .. } => EventPriority::High,
+            | Self::DeviceError { .. }
+            | Self::EffectDegraded {
+                state: EffectDegradationState::Failed,
+                ..
+            } => EventPriority::High,
 
             Self::BeatDetected { .. }
             | Self::AudioLevelUpdate { .. }

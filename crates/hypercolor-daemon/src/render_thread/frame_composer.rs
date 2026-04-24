@@ -4,7 +4,7 @@ use anyhow::Result;
 use tracing::warn;
 
 use hypercolor_core::types::canvas::Canvas;
-use hypercolor_types::event::HypercolorEvent;
+use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
 use hypercolor_types::scene::RenderGroupId;
 
 use super::frame_policy::SkipDecision;
@@ -249,6 +249,7 @@ impl ComposeContext<'_> {
     ) -> RenderStageStats {
         match render_group_result {
             Ok(render_group_result) => {
+                self.publish_effect_recovered();
                 let scene_frame = render_group_result.scene_frame.clone();
                 let composition_start = Instant::now();
                 let compiled_plan = self.compose.composition_planner.compile_primary_frame(
@@ -452,6 +453,36 @@ impl ComposeContext<'_> {
             error: effect_error.to_string(),
             fallback: None,
         });
+        self.publish_effect_degraded(&effect_error, EffectDegradationState::Failed, Some(error));
+    }
+
+    fn publish_effect_recovered(&mut self) {
+        let Some(effect_error) = self
+            .compose
+            .render_group_runtime
+            .take_recovered_effect_error()
+        else {
+            return;
+        };
+
+        self.publish_effect_degraded(&effect_error, EffectDegradationState::Recovered, None);
+    }
+
+    fn publish_effect_degraded(
+        &self,
+        effect_error: &RenderGroupEffectError,
+        state: EffectDegradationState,
+        reason: Option<&anyhow::Error>,
+    ) {
+        self.state
+            .event_bus
+            .publish(HypercolorEvent::EffectDegraded {
+                effect_id: effect_error.effect_id.clone(),
+                group_id: Some(effect_error.group_id),
+                group_name: Some(effect_error.group_name.clone()),
+                state,
+                reason: reason.map(ToString::to_string),
+            });
     }
 }
 

@@ -87,6 +87,7 @@ pub(crate) struct RenderGroupRuntime {
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
+    recovered_effect_error: Option<RenderGroupEffectError>,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
     scene_width: u32,
@@ -113,6 +114,7 @@ impl RenderGroupRuntime {
             reconciled_dependency_key: None,
             retained_frame: None,
             last_effect_error: None,
+            recovered_effect_error: None,
             combined_led_layout: Arc::new(empty_group_layout(scene_width, scene_height)),
             combined_led_spatial_engine: SpatialEngine::new(empty_group_layout(
                 scene_width,
@@ -536,6 +538,7 @@ impl RenderGroupRuntime {
         &mut self,
         error: &RenderGroupEffectError,
     ) -> Option<RenderGroupEffectError> {
+        self.recovered_effect_error = None;
         if self.last_effect_error.as_ref() == Some(error) {
             return None;
         }
@@ -545,7 +548,13 @@ impl RenderGroupRuntime {
     }
 
     fn clear_effect_error(&mut self) {
-        self.last_effect_error = None;
+        if let Some(error) = self.last_effect_error.take() {
+            self.recovered_effect_error = Some(error);
+        }
+    }
+
+    pub(crate) fn take_recovered_effect_error(&mut self) -> Option<RenderGroupEffectError> {
+        self.recovered_effect_error.take()
     }
 
     fn single_full_scene_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
@@ -1179,6 +1188,24 @@ mod tests {
         runtime.clear_effect_error();
 
         assert_eq!(runtime.note_effect_error(&error), Some(error));
+    }
+
+    #[test]
+    fn recovered_effect_error_is_reported_once_after_clear() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let error = RenderGroupEffectError {
+            effect_id: "effect-1".into(),
+            effect_name: "Test Effect".into(),
+            group_id: RenderGroupId::new(),
+            group_name: "Test Group".into(),
+            error: "boom".into(),
+        };
+
+        assert_eq!(runtime.note_effect_error(&error), Some(error.clone()));
+        runtime.clear_effect_error();
+
+        assert_eq!(runtime.take_recovered_effect_error(), Some(error));
+        assert_eq!(runtime.take_recovered_effect_error(), None);
     }
 
     #[test]

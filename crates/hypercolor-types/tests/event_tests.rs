@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 
 use hypercolor_types::event::{
-    ChangeTrigger, ContextType, DisconnectReason, EffectRef, EffectStopReason, EventCategory,
-    EventControlValue, EventPriority, FrameData, FrameTiming, HypercolorEvent, InputButtonState,
-    InputEvent, RenderGroupChangeKind, SceneChangeReason, Severity, TransitionRef, ZoneColors,
-    ZoneRef,
+    ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState, EffectRef,
+    EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData, FrameTiming,
+    HypercolorEvent, InputButtonState, InputEvent, RenderGroupChangeKind, SceneChangeReason,
+    Severity, TransitionRef, ZoneColors, ZoneRef,
 };
 use hypercolor_types::scene::{
     RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode,
@@ -117,6 +117,13 @@ fn effect_events_have_effect_category() {
             effect_id: "broken".into(),
             error: "shader compile failed".into(),
             fallback: Some("solid_black".into()),
+        },
+        HypercolorEvent::EffectDegraded {
+            effect_id: "broken".into(),
+            group_id: Some(RenderGroupId::new()),
+            group_name: Some("Display Face".into()),
+            state: EffectDegradationState::Failed,
+            reason: Some("shader compile failed".into()),
         },
     ];
 
@@ -479,6 +486,13 @@ fn high_priority_events() {
             error: "timeout".into(),
             recoverable: false,
         },
+        HypercolorEvent::EffectDegraded {
+            effect_id: "broken".into(),
+            group_id: None,
+            group_name: None,
+            state: EffectDegradationState::Failed,
+            reason: Some("boom".into()),
+        },
     ];
 
     for event in &events {
@@ -564,6 +578,13 @@ fn normal_priority_is_default() {
             key: "daemon.fps".into(),
             old_value: None,
             new_value: serde_json::json!(60),
+        },
+        HypercolorEvent::EffectDegraded {
+            effect_id: "recovered".into(),
+            group_id: None,
+            group_name: None,
+            state: EffectDegradationState::Recovered,
+            reason: None,
         },
     ];
 
@@ -707,6 +728,38 @@ fn serialize_effect_started_with_transition() {
         assert_eq!(t.duration_ms, 1000);
     } else {
         panic!("Expected EffectStarted variant");
+    }
+}
+
+#[test]
+fn serialize_effect_degraded_roundtrip() {
+    let group_id = RenderGroupId::new();
+    let event = HypercolorEvent::EffectDegraded {
+        effect_id: "effect-1".into(),
+        group_id: Some(group_id),
+        group_name: Some("Display Face".into()),
+        state: EffectDegradationState::Failed,
+        reason: Some("boom".into()),
+    };
+
+    let json = serde_json::to_string(&event).expect("serialize");
+    let deserialized: HypercolorEvent = serde_json::from_str(&json).expect("deserialize");
+
+    if let HypercolorEvent::EffectDegraded {
+        effect_id,
+        group_id: deserialized_group_id,
+        group_name,
+        state,
+        reason,
+    } = deserialized
+    {
+        assert_eq!(effect_id, "effect-1");
+        assert_eq!(deserialized_group_id, Some(group_id));
+        assert_eq!(group_name, Some("Display Face".into()));
+        assert_eq!(state, EffectDegradationState::Failed);
+        assert_eq!(reason, Some("boom".into()));
+    } else {
+        panic!("Expected EffectDegraded variant");
     }
 }
 
