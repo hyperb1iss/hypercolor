@@ -67,3 +67,46 @@ pub fn image_data_rgba(
 ) -> Result<web_sys::ImageData, JsValue> {
     web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(pixels), width, height)
 }
+
+pub fn allocate_texture_u8(
+    gl: &web_sys::WebGlRenderingContext,
+    width: i32,
+    height: i32,
+    format: u32,
+    pixels: &js_sys::Uint8Array,
+) -> Result<(), JsValue> {
+    let internal_format =
+        i32::try_from(format).map_err(|_| JsValue::from_str("webgl texture format exceeds i32"))?;
+    gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
+        web_sys::WebGlRenderingContext::TEXTURE_2D,
+        0,
+        internal_format,
+        width,
+        height,
+        0,
+        format,
+        web_sys::WebGlRenderingContext::UNSIGNED_BYTE,
+        Some(pixels),
+    )
+}
+
+pub fn update_texture_u8_or_reallocate(
+    gl: &web_sys::WebGlRenderingContext,
+    width: i32,
+    height: i32,
+    format: u32,
+    pixels: &js_sys::Uint8Array,
+) -> Result<(), JsValue> {
+    gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_js_u8_array(
+        web_sys::WebGlRenderingContext::TEXTURE_2D,
+        0,
+        0,
+        0,
+        width,
+        height,
+        format,
+        web_sys::WebGlRenderingContext::UNSIGNED_BYTE,
+        Some(pixels),
+    )
+    .or_else(|_| allocate_texture_u8(gl, width, height, format, pixels))
+}

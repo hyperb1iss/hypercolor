@@ -1,4 +1,6 @@
-use hypercolor_leptos_ext::canvas::webgl_context;
+use hypercolor_leptos_ext::canvas::{
+    allocate_texture_u8, update_texture_u8_or_reallocate, webgl_context,
+};
 use web_sys::{
     HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader,
     WebGlTexture,
@@ -194,50 +196,16 @@ impl WebGlPreviewRuntime {
         };
 
         let upload_result = match texture_upload_strategy(self.texture_shape, shape) {
-            TextureUploadStrategy::Allocate => self
-                .gl
-                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
-                    Gl::TEXTURE_2D,
-                    0,
-                    gl_format as i32,
-                    width,
-                    height,
-                    0,
-                    gl_format,
-                    Gl::UNSIGNED_BYTE,
-                    Some(frame.pixels_js()),
-                ),
-            TextureUploadStrategy::Update => {
-                let sub_upload = self
-                    .gl
-                    .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_js_u8_array(
-                        Gl::TEXTURE_2D,
-                        0,
-                        0,
-                        0,
-                        width,
-                        height,
-                        gl_format,
-                        Gl::UNSIGNED_BYTE,
-                        Some(frame.pixels_js()),
-                    );
-                if sub_upload.is_ok() {
-                    Ok(())
-                } else {
-                    self.gl
-                        .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
-                            Gl::TEXTURE_2D,
-                            0,
-                            gl_format as i32,
-                            width,
-                            height,
-                            0,
-                            gl_format,
-                            Gl::UNSIGNED_BYTE,
-                            Some(frame.pixels_js()),
-                        )
-                }
+            TextureUploadStrategy::Allocate => {
+                allocate_texture_u8(&self.gl, width, height, gl_format, frame.pixels_js())
             }
+            TextureUploadStrategy::Update => update_texture_u8_or_reallocate(
+                &self.gl,
+                width,
+                height,
+                gl_format,
+                frame.pixels_js(),
+            ),
         };
 
         self.gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
