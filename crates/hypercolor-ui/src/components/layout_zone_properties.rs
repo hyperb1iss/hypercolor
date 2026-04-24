@@ -1,8 +1,8 @@
 //! Layout zone properties panel — horizontal editor below canvas viewport.
 
+use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
 use crate::async_helpers::spawn_identify;
@@ -362,19 +362,18 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         class="min-w-0 flex-1"
                                         prop:value=format!("{rot_offset:.0}")
                                         on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target
-                                                && let Ok(new_deg) = el.value().parse::<f32>() {
-                                                    let old_deg = group_rot_offset.get_untracked();
-                                                    let delta_rad = (new_deg - old_deg).to_radians();
-                                                    set_group_rot_offset.set(new_deg);
-                                                    set_layout.update(|l| {
-                                                        if let Some(layout) = l {
-                                                            layout_geometry::rotate_group(layout, &ids_rot_slider, delta_rad);
-                                                        }
-                                                    });
-                                                    set_is_dirty.set(true);
-                                                }
+                                            let event = Input::from_event(ev);
+                                            if let Some(new_deg) = event.value::<f32>() {
+                                                let old_deg = group_rot_offset.get_untracked();
+                                                let delta_rad = (new_deg - old_deg).to_radians();
+                                                set_group_rot_offset.set(new_deg);
+                                                set_layout.update(|l| {
+                                                    if let Some(layout) = l {
+                                                        layout_geometry::rotate_group(layout, &ids_rot_slider, delta_rad);
+                                                    }
+                                                });
+                                                set_is_dirty.set(true);
+                                            }
                                         }
                                     />
                                     <div class="flex items-center gap-0.5 shrink-0">
@@ -386,19 +385,18 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                    focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                             prop:value=format!("{rot_offset:.0}")
                                             on:change=move |ev| {
-                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                if let Some(el) = target
-                                                    && let Ok(new_deg) = el.value().parse::<f32>() {
-                                                        let old_deg = group_rot_offset.get_untracked();
-                                                        let delta_rad = (new_deg - old_deg).to_radians();
-                                                        set_group_rot_offset.set(new_deg);
-                                                        set_layout.update(|l| {
-                                                            if let Some(layout) = l {
-                                                                layout_geometry::rotate_group(layout, &ids_rot_input, delta_rad);
-                                                            }
-                                                        });
-                                                        set_is_dirty.set(true);
-                                                    }
+                                                let event = Change::from_event(ev);
+                                                if let Some(new_deg) = event.value::<f32>() {
+                                                    let old_deg = group_rot_offset.get_untracked();
+                                                    let delta_rad = (new_deg - old_deg).to_radians();
+                                                    set_group_rot_offset.set(new_deg);
+                                                    set_layout.update(|l| {
+                                                        if let Some(layout) = l {
+                                                            layout_geometry::rotate_group(layout, &ids_rot_input, delta_rad);
+                                                        }
+                                                    });
+                                                    set_is_dirty.set(true);
+                                                }
                                             }
                                         />
                                         <span class="text-[11px] font-mono text-fg-tertiary/30">{"\u{00b0}"}</span>
@@ -415,21 +413,20 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         class="min-w-0 flex-1"
                                         prop:value=format!("{scale_factor:.2}")
                                         on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target
-                                                && let Ok(new_factor) = el.value().parse::<f32>() {
-                                                    let old_factor = group_scale_factor.get_untracked();
-                                                    if old_factor.abs() > 0.001 {
-                                                        let ratio = new_factor / old_factor;
-                                                        set_group_scale_factor.set(new_factor);
-                                                        set_layout.update(|l| {
-                                                            if let Some(layout) = l {
-                                                                layout_geometry::scale_group(layout, &ids_scale_slider, ratio);
-                                                            }
-                                                        });
-                                                        set_is_dirty.set(true);
-                                                    }
+                                            let event = Input::from_event(ev);
+                                            if let Some(new_factor) = event.value::<f32>() {
+                                                let old_factor = group_scale_factor.get_untracked();
+                                                if old_factor.abs() > 0.001 {
+                                                    let ratio = new_factor / old_factor;
+                                                    set_group_scale_factor.set(new_factor);
+                                                    set_layout.update(|l| {
+                                                        if let Some(layout) = l {
+                                                            layout_geometry::scale_group(layout, &ids_scale_slider, ratio);
+                                                        }
+                                                    });
+                                                    set_is_dirty.set(true);
                                                 }
+                                            }
                                         }
                                     />
                                     <div class="flex items-center gap-0.5 shrink-0">
@@ -441,21 +438,20 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                    focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                             prop:value=format!("{scale_factor:.2}")
                                             on:change=move |ev| {
-                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                if let Some(el) = target
-                                                    && let Ok(new_factor) = el.value().parse::<f32>() {
-                                                        let old_factor = group_scale_factor.get_untracked();
-                                                        if old_factor.abs() > 0.001 {
-                                                            let ratio = new_factor / old_factor;
-                                                            set_group_scale_factor.set(new_factor);
-                                                            set_layout.update(|l| {
-                                                                if let Some(layout) = l {
-                                                                    layout_geometry::scale_group(layout, &ids_scale_input, ratio);
-                                                                }
-                                                            });
-                                                            set_is_dirty.set(true);
-                                                        }
+                                                let event = Change::from_event(ev);
+                                                if let Some(new_factor) = event.value::<f32>() {
+                                                    let old_factor = group_scale_factor.get_untracked();
+                                                    if old_factor.abs() > 0.001 {
+                                                        let ratio = new_factor / old_factor;
+                                                        set_group_scale_factor.set(new_factor);
+                                                        set_layout.update(|l| {
+                                                            if let Some(layout) = l {
+                                                                layout_geometry::scale_group(layout, &ids_scale_input, ratio);
+                                                            }
+                                                        });
+                                                        set_is_dirty.set(true);
                                                     }
+                                                }
                                             }
                                         />
                                         <span class="text-[11px] font-mono text-fg-tertiary/30">"x"</span>
@@ -739,9 +735,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                            focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                     prop:value=zone_name
                                     on:change=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target {
-                                            let val = el.value();
+                                        let event = Change::from_event(ev);
+                                        if let Some(val) = event.value_string() {
                                             let zid = zid_name.clone();
                                             update_zone(zid, Box::new(move |z| z.name = val));
                                         }
@@ -772,9 +767,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                            focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                     prop:value=channel_name.clone().unwrap_or_default()
                                     on:change=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target {
-                                            let val = el.value();
+                                        let event = Change::from_event(ev);
+                                        if let Some(val) = event.value_string() {
                                             let zid = zid_channel.clone();
                                             let zone_name = if val.trim().is_empty() { None } else { Some(val) };
                                             update_zone(zid, Box::new(move |z| z.zone_name = zone_name));
@@ -1183,13 +1177,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     class="min-w-0 flex-1"
                                     prop:value=format!("{rotation_deg:.0}")
                                     on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target
-                                            && let Ok(deg) = el.value().parse::<f32>() {
-                                                let rad = deg.to_radians();
-                                                let zid = zid_rotation.clone();
-                                                update_zone_rotation(zid, rad);
-                                            }
+                                        let event = Input::from_event(ev);
+                                        if let Some(deg) = event.value::<f32>() {
+                                            let rad = deg.to_radians();
+                                            let zid = zid_rotation.clone();
+                                            update_zone_rotation(zid, rad);
+                                        }
                                     }
                                 />
                                 <div class="flex items-center gap-0.5 shrink-0">
@@ -1201,13 +1194,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                         prop:value=format!("{rotation_deg:.0}")
                                         on:change=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target
-                                                && let Ok(deg) = el.value().parse::<f32>() {
-                                                    let rad = deg.to_radians();
-                                                    let zid = zid_rotation_input.clone();
-                                                    update_zone_rotation(zid, rad);
-                                                }
+                                            let event = Change::from_event(ev);
+                                            if let Some(deg) = event.value::<f32>() {
+                                                let rad = deg.to_radians();
+                                                let zid = zid_rotation_input.clone();
+                                                update_zone_rotation(zid, rad);
+                                            }
                                         }
                                     />
                                     <span class="text-[11px] font-mono text-fg-tertiary/30">{"\u{00b0}"}</span>
@@ -1224,12 +1216,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     class="min-w-0 flex-1"
                                     prop:value=format!("{scale:.1}")
                                     on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target
-                                            && let Ok(s) = el.value().parse::<f32>() {
-                                                let zid = zid_scale.clone();
-                                                update_zone(zid, Box::new(move |z| z.scale = s));
-                                            }
+                                        let event = Input::from_event(ev);
+                                        if let Some(s) = event.value::<f32>() {
+                                            let zid = zid_scale.clone();
+                                            update_zone(zid, Box::new(move |z| z.scale = s));
+                                        }
                                     }
                                 />
                                 <div class="flex items-center gap-0.5 shrink-0">
@@ -1241,12 +1232,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                         prop:value=format!("{scale:.1}")
                                         on:change=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target
-                                                && let Ok(s) = el.value().parse::<f32>() {
-                                                    let zid = zid_scale_input.clone();
-                                                    update_zone(zid, Box::new(move |z| z.scale = s));
-                                                }
+                                            let event = Change::from_event(ev);
+                                            if let Some(s) = event.value::<f32>() {
+                                                let zid = zid_scale_input.clone();
+                                                update_zone(zid, Box::new(move |z| z.scale = s));
+                                            }
                                         }
                                     />
                                     <span class="text-[11px] font-mono text-fg-tertiary/30">"x"</span>
@@ -1319,11 +1309,10 @@ fn zone_pixel_input(
                 prop:value=format!("{value_px:.precision$}")
                 on:change=move |ev| {
                     let on_change = on_change.clone();
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target
-                        && let Ok(v) = el.value().parse::<f32>() {
-                            on_change(v);
-                        }
+                    let event = Change::from_event(ev);
+                    if let Some(v) = event.value::<f32>() {
+                        on_change(v);
+                    }
                 }
             />
         </div>
