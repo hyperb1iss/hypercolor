@@ -1,7 +1,9 @@
 use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
 };
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_core::types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
 use super::{
@@ -42,14 +44,35 @@ impl CpuSparkleFlinger {
     }
 
     #[allow(
-        clippy::unused_self,
-        reason = "the CPU compositor keeps an instance method to match the GPU flinger API"
+        dead_code,
+        reason = "direct CPU compose is used by GPU comparison tests"
     )]
     pub(super) fn compose(
         &mut self,
         plan: CompositionPlan,
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
+    ) -> ComposedFrameSet {
+        let mut preview_surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2);
+        self.compose_with_preview_pool(
+            plan,
+            requires_cpu_sampling_canvas,
+            preview_surface_request,
+            &mut preview_surface_pool,
+        )
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "the CPU compositor keeps an instance method to match the GPU flinger API"
+    )]
+    pub(super) fn compose_with_preview_pool(
+        &mut self,
+        plan: CompositionPlan,
+        requires_cpu_sampling_canvas: bool,
+        preview_surface_request: Option<PreviewSurfaceRequest>,
+        preview_surface_pool: &mut RenderSurfacePool,
     ) -> ComposedFrameSet {
         let CompositionPlan {
             width,
@@ -73,6 +96,7 @@ impl CpuSparkleFlinger {
                     canvas.width(),
                     canvas.height(),
                     request,
+                    preview_surface_pool,
                 )
             });
             let mut composed = publish_composed_frame(
@@ -102,6 +126,7 @@ impl CpuSparkleFlinger {
                 preview_surface_request,
                 width,
                 height,
+                preview_surface_pool,
             );
         }
 
@@ -122,6 +147,7 @@ impl CpuSparkleFlinger {
                 sampling_canvas.width(),
                 sampling_canvas.height(),
                 request,
+                preview_surface_pool,
             )
         });
 
@@ -179,11 +205,18 @@ fn cached_surface_frame(
     preview_surface_request: Option<PreviewSurfaceRequest>,
     width: u32,
     height: u32,
+    preview_surface_pool: &mut RenderSurfacePool,
 ) -> ComposedFrameSet {
     let requires_published_surface = preview_surface_request
         .is_some_and(|request| request.width == width && request.height == height);
     let preview_surface = preview_surface_request.and_then(|request| {
-        scaled_preview_surface_from_rgba(surface.rgba_bytes(), width, height, request)
+        scaled_preview_surface_from_rgba(
+            surface.rgba_bytes(),
+            width,
+            height,
+            request,
+            preview_surface_pool,
+        )
     });
     let mut composed = publish_composed_frame(
         (Canvas::from_published_surface(&surface), Some(surface)),

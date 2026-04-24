@@ -6,7 +6,9 @@ mod gpu_sampling;
 
 use anyhow::{Result, bail};
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_core::types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 
@@ -184,6 +186,7 @@ enum SparkleFlingerBackend {
 #[derive(Debug)]
 pub struct SparkleFlinger {
     backend: SparkleFlingerBackend,
+    preview_surface_pool: RenderSurfacePool,
 }
 
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
@@ -203,6 +206,7 @@ impl SparkleFlinger {
     pub fn cpu() -> Self {
         Self {
             backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
+            preview_surface_pool: new_preview_surface_pool(),
         }
     }
 
@@ -216,7 +220,10 @@ impl SparkleFlinger {
             ),
             RenderAccelerationMode::Gpu => new_gpu_backend()?,
         };
-        Ok(Self { backend })
+        Ok(Self {
+            backend,
+            preview_surface_pool: new_preview_surface_pool(),
+        })
     }
 
     pub fn compose(&mut self, plan: CompositionPlan) -> ComposedFrameSet {
@@ -234,9 +241,12 @@ impl SparkleFlinger {
         preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
         match &mut self.backend {
-            SparkleFlingerBackend::Cpu(backend) => {
-                backend.compose(plan, requires_cpu_sampling_canvas, preview_surface_request)
-            }
+            SparkleFlingerBackend::Cpu(backend) => backend.compose_with_preview_pool(
+                plan,
+                requires_cpu_sampling_canvas,
+                preview_surface_request,
+                &mut self.preview_surface_pool,
+            ),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
                 if gpu.supports_plan(&plan)
@@ -245,10 +255,11 @@ impl SparkleFlinger {
                 {
                     return composed;
                 }
-                let mut composed = cpu_fallback.compose(
+                let mut composed = cpu_fallback.compose_with_preview_pool(
                     plan,
                     requires_cpu_sampling_canvas,
                     preview_surface_request,
+                    &mut self.preview_surface_pool,
                 );
                 composed.backend = CompositorBackendKind::GpuFallback;
                 composed
@@ -271,7 +282,11 @@ impl SparkleFlinger {
         ComposedFrameSet {
             sampling_canvas: None,
             sampling_surface: None,
-            preview_surface: preview_surface_for_frame(&frame, preview_surface_request),
+            preview_surface: preview_surface_for_frame(
+                &frame,
+                preview_surface_request,
+                &mut self.preview_surface_pool,
+            ),
             bypassed: true,
             backend,
         }
@@ -548,6 +563,7 @@ pub(super) fn publish_composed_frame(
 fn preview_surface_for_frame(
     frame: &ProducerFrame,
     preview_surface_request: Option<PreviewSurfaceRequest>,
+    preview_surface_pool: &mut RenderSurfacePool,
 ) -> Option<PublishedSurface> {
     let request = preview_surface_request?;
     match frame {
@@ -560,6 +576,7 @@ fn preview_surface_for_frame(
                 surface.width(),
                 surface.height(),
                 request,
+                preview_surface_pool,
             )
         }
         ProducerFrame::Canvas(canvas) => {
@@ -571,9 +588,14 @@ fn preview_surface_for_frame(
                 canvas.width(),
                 canvas.height(),
                 request,
+                preview_surface_pool,
             )
         }
     }
+}
+
+fn new_preview_surface_pool() -> RenderSurfacePool {
+    RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2)
 }
 
 fn preview_request_matches_dimensions(
@@ -589,6 +611,7 @@ pub(super) fn scaled_preview_surface_from_rgba(
     source_width: u32,
     source_height: u32,
     request: PreviewSurfaceRequest,
+    preview_surface_pool: &mut RenderSurfacePool,
 ) -> Option<PublishedSurface> {
     if request.width == 0
         || request.height == 0
@@ -597,8 +620,13 @@ pub(super) fn scaled_preview_surface_from_rgba(
         return None;
     }
 
-    let mut preview = Canvas::new(request.width, request.height);
-    let preview_bytes = preview.as_rgba_bytes_mut();
+    let descriptor = SurfaceDescriptor::rgba8888(request.width, request.height);
+    if preview_surface_pool.descriptor() != descriptor {
+        *preview_surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+    }
+
+    let mut lease = preview_surface_pool.dequeue()?;
+    let preview_bytes = lease.canvas_mut().as_rgba_bytes_mut();
     let source_width_usize = usize::try_from(source_width).ok()?;
     let source_height_usize = usize::try_from(source_height).ok()?;
     let target_width_usize = usize::try_from(request.width).ok()?;
@@ -627,7 +655,7 @@ pub(super) fn scaled_preview_surface_from_rgba(
         }
     }
 
-    Some(PublishedSurface::from_owned_canvas(preview, 0, 0))
+    Some(lease.submit(0, 0))
 }
 
 #[cfg(test)]
@@ -742,6 +770,42 @@ mod tests {
             .expect("scaled preview-only path should materialize a preview surface");
         assert_eq!(preview_surface.width(), 1);
         assert_eq!(preview_surface.height(), 1);
+    }
+
+    #[test]
+    fn sparkleflinger_scaled_preview_reuses_surface_pool_after_warmup() {
+        let source =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(32, 64, 96, 255)), 7, 11);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let request = Some(PreviewSurfaceRequest {
+            width: 1,
+            height: 1,
+        });
+
+        let first = sparkleflinger
+            .preview_only_frame(ProducerFrame::Surface(source.clone()), request)
+            .preview_surface
+            .expect("first scaled preview should publish")
+            .rgba_bytes()
+            .as_ptr()
+            .addr();
+        let second = sparkleflinger
+            .preview_only_frame(ProducerFrame::Surface(source.clone()), request)
+            .preview_surface
+            .expect("second scaled preview should publish")
+            .rgba_bytes()
+            .as_ptr()
+            .addr();
+        let third = sparkleflinger
+            .preview_only_frame(ProducerFrame::Surface(source), request)
+            .preview_surface
+            .expect("third scaled preview should publish")
+            .rgba_bytes()
+            .as_ptr()
+            .addr();
+
+        assert_ne!(first, second);
+        assert_eq!(first, third);
     }
 
     #[test]
