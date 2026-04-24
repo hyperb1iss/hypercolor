@@ -1090,6 +1090,60 @@ mod tests {
     }
 
     #[test]
+    fn render_into_uses_placeholder_while_servo_load_is_pending() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+
+        let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
+        install_running_shared_worker(worker);
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory");
+        let source_path = temp_dir.path().join("effect.html");
+        std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+            .expect("write source html");
+
+        let metadata = html_metadata(source_path);
+        let mut renderer = ServoRenderer::new();
+        renderer
+            .init_with_canvas_size(&metadata, 640, 480)
+            .expect("renderer should queue initialization");
+
+        load_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("create-session command should be queued asynchronously");
+
+        let audio = custom_audio(0.5);
+        let interaction = custom_interaction(&[], &[]);
+        let input = frame_input_with(1.0 / 30.0, 7, &audio, &interaction, 4, 3);
+        let mut target = Canvas::new(1, 1);
+        let started_at = Instant::now();
+
+        renderer
+            .render_into(&input, &mut target)
+            .expect("placeholder render should succeed while Servo load is pending");
+
+        assert!(started_at.elapsed() < Duration::from_millis(20));
+        assert!(renderer.load_task.is_some());
+        assert!(renderer.session.is_none());
+        assert_eq!(target.width(), 4);
+        assert_eq!(target.height(), 3);
+        assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 127, 39, 255));
+
+        release_tx.send(()).expect("release create-session");
+        wait_for_load_completion(&mut renderer);
+
+        renderer.destroy();
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("destroy should unload test worker");
+
+        shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn destroy_discards_completed_load_task_before_it_is_polled() {
         let (worker, load_rx, unload_rx, stopped) = spawn_load_test_worker();
         let mut session = ServoSessionHandle::new(
