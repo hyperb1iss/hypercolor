@@ -4,9 +4,7 @@ pub(crate) mod gpu;
 #[cfg(feature = "wgpu")]
 mod gpu_sampling;
 
-use anyhow::Result;
-#[cfg(not(feature = "wgpu"))]
-use anyhow::bail;
+use anyhow::{Result, bail};
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::config::RenderAccelerationMode;
@@ -213,7 +211,9 @@ impl SparkleFlinger {
             RenderAccelerationMode::Cpu => {
                 SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
             }
-            RenderAccelerationMode::Auto => new_auto_backend(),
+            RenderAccelerationMode::Auto => bail!(
+                "auto compositor acceleration must be resolved before constructing SparkleFlinger"
+            ),
             RenderAccelerationMode::Gpu => new_gpu_backend()?,
         };
         Ok(Self { backend })
@@ -489,16 +489,6 @@ impl SparkleFlinger {
 }
 
 #[cfg(feature = "wgpu")]
-fn new_auto_backend() -> SparkleFlingerBackend {
-    new_gpu_backend().unwrap_or_else(|_| SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()))
-}
-
-#[cfg(not(feature = "wgpu"))]
-fn new_auto_backend() -> SparkleFlingerBackend {
-    SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
-}
-
-#[cfg(feature = "wgpu")]
 fn new_gpu_backend() -> Result<SparkleFlingerBackend> {
     let gpu = gpu::GpuSparkleFlinger::new()?;
     Ok(SparkleFlingerBackend::Gpu {
@@ -646,7 +636,6 @@ mod tests {
     use hypercolor_types::config::RenderAccelerationMode;
 
     use super::{CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger};
-    use crate::performance::CompositorBackendKind;
     use crate::render_thread::producer_queue::ProducerFrame;
 
     fn solid_canvas(color: Rgba) -> Canvas {
@@ -667,17 +656,14 @@ mod tests {
     }
 
     #[test]
-    fn sparkleflinger_auto_mode_resolves_to_available_backend() {
-        let sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Auto)
-            .expect("auto mode should always resolve to a compositor backend");
-
-        #[cfg(feature = "wgpu")]
-        assert!(matches!(
-            sparkleflinger.backend_kind(),
-            CompositorBackendKind::Cpu | CompositorBackendKind::Gpu
-        ));
-        #[cfg(not(feature = "wgpu"))]
-        assert_eq!(sparkleflinger.backend_kind(), CompositorBackendKind::Cpu);
+    fn sparkleflinger_rejects_unresolved_auto_mode() {
+        let error = SparkleFlinger::new(RenderAccelerationMode::Auto)
+            .expect_err("auto mode must be resolved during daemon startup");
+        assert!(
+            error
+                .to_string()
+                .contains("must be resolved before constructing SparkleFlinger")
+        );
     }
 
     #[test]

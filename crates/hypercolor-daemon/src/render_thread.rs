@@ -168,7 +168,7 @@ pub struct RenderThreadState {
     /// Live render canvas dimensions (atomically updated on resize).
     pub canvas_dims: CanvasDims,
 
-    /// Requested render acceleration mode for the pipeline.
+    /// Resolved render acceleration mode for the pipeline.
     pub render_acceleration_mode: RenderAccelerationMode,
 
     /// Ceiling derived from user configuration before runtime admission.

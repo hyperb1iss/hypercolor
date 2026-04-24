@@ -985,7 +985,47 @@ impl PipelineRuntime {
 mod tests {
     use std::cell::Cell;
 
-    use super::{OutputFrameSource, OutputReuseKey, OutputReuseState};
+    use hypercolor_core::engine::FpsTier;
+    use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+    use super::{OutputFrameSource, OutputReuseKey, OutputReuseState, PipelineRuntime};
+
+    fn empty_layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "test".into(),
+            name: "Test Layout".into(),
+            description: None,
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn pipeline_runtime_rejects_unresolved_auto_acceleration_mode() {
+        let Err(error) = PipelineRuntime::new(
+            320,
+            200,
+            SpatialEngine::new(empty_layout()),
+            false,
+            RenderAccelerationMode::Auto,
+            FpsTier::Full,
+        ) else {
+            panic!("render runtime should only receive a resolved acceleration mode");
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("must be resolved before constructing SparkleFlinger")
+        );
+    }
 
     #[test]
     fn output_frame_source_reuses_routed_outputs_when_dependencies_match() {
