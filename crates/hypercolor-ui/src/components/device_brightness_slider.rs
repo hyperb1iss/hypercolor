@@ -9,8 +9,8 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
+use hypercolor_leptos_ext::events::Input;
 use crate::icons::*;
 
 #[component]
@@ -41,12 +41,8 @@ pub fn DeviceBrightnessSlider(
                 style=track_style
                 prop:value=move || value.get().0.to_string()
                 on:input=move |ev| {
-                    let target = ev
-                        .target()
-                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target
-                        && let Ok(brightness) = el.value().parse::<u8>()
-                    {
+                    let event = Input::from_event(ev);
+                    if let Some(brightness) = event.value::<u8>() {
                         on_change.run(brightness);
                     }
                 }

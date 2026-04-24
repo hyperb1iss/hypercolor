@@ -8,8 +8,8 @@
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
+use hypercolor_leptos_ext::events::Input;
 use crate::icons::LuSearch;
 
 #[component]
@@ -32,10 +32,9 @@ pub fn PageSearchBar(
                        search-glow glow-ring transition-all duration-300"
                 prop:value=move || value.get()
                 on:input=move |ev: ev::Event| {
-                    let target = ev.target()
-                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target {
-                        set_value.set(el.value());
+                    let event = Input::from_event(ev);
+                    if let Some(value) = event.value_string() {
+                        set_value.set(value);
                     }
                 }
             />

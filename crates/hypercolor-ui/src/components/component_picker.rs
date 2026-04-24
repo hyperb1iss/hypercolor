@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
@@ -281,8 +282,10 @@ pub fn ComponentPicker(
                                                focus:outline-none focus:border-accent-muted search-glow"
                                         prop:value=move || search.get()
                                         on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target { set_search.set(el.value()); }
+                                            let event = Input::from_event(ev);
+                                            if let Some(value) = event.value_string() {
+                                                set_search.set(value);
+                                            }
                                         }
                                         on:click=move |ev| ev.stop_propagation()
                                     />

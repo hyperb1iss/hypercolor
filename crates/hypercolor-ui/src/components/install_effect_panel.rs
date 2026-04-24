@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use hypercolor_leptos_ext::events::Change;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_navigate;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::api;
@@ -53,11 +53,9 @@ pub fn InstallEffectPanel() -> impl IntoView {
     let choose_another = open_picker;
 
     let on_change = move |ev: web_sys::Event| {
-        let target = ev
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok());
-        let Some(file) = target
-            .and_then(|input| input.files())
+        let event = Change::from_event(ev);
+        let Some(file) = event
+            .files()
             .and_then(|files| files.get(0))
         else {
             return;
