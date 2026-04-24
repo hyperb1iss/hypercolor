@@ -791,14 +791,23 @@ fn render_zone_rows(
                     .as_ref()
                     .map(|zone| zone.id.clone())
                     .unwrap_or_else(|| display_name.clone());
+                let binding_zone_name = zone_summary.as_ref().map(|zone| zone.name.clone());
                 let binding_device_id = channel_device_id.clone();
+                let binding_display_name = display_name.clone();
                 let zone_bindings = Signal::derive(move || {
                     let cache = attachment_cache.get();
                     cache.get(&binding_device_id)
                         .map(|bindings| {
                             bindings
                                 .iter()
-                                .filter(|binding| binding.slot_id == binding_slot_id)
+                                .filter(|binding| {
+                                    layout_utils::attachment_binding_matches_slot_alias(
+                                        &binding.slot_id,
+                                        Some(&binding_slot_id),
+                                        binding_zone_name.as_deref(),
+                                        &binding_display_name,
+                                    )
+                                })
                                 .cloned()
                                 .collect::<Vec<_>>()
                         })

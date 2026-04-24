@@ -254,6 +254,28 @@ fn zone_name_slot_alias_matching_is_symmetric() {
 }
 
 #[test]
+fn attachment_binding_slot_alias_matches_generated_zone_ids_and_names() {
+    assert!(layout_utils::attachment_binding_matches_slot_alias(
+        "gpu-strimer",
+        Some("zone_1"),
+        Some("GPU Strimer"),
+        "GPU Strimer",
+    ));
+    assert!(layout_utils::attachment_binding_matches_slot_alias(
+        "channel-1",
+        Some("channel-1"),
+        Some("Channel 1"),
+        "Radiator",
+    ));
+    assert!(!layout_utils::attachment_binding_matches_slot_alias(
+        "atx-strimer",
+        Some("zone_1"),
+        Some("GPU Strimer"),
+        "GPU Strimer",
+    ));
+}
+
+#[test]
 fn representative_zone_for_device_prefers_visible_attachment_over_suppressed_source() {
     let layout = prism_attachment_layout();
 

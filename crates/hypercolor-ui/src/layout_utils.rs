@@ -646,6 +646,24 @@ pub fn zone_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> 
     }
 }
 
+pub fn attachment_binding_matches_slot_alias(
+    binding_slot_id: &str,
+    zone_id: Option<&str>,
+    zone_name: Option<&str>,
+    display_name: &str,
+) -> bool {
+    zone_id_matches_attachment_slot(binding_slot_id, zone_id)
+        || zone_id_matches_attachment_slot(binding_slot_id, zone_name)
+        || slot_id_matches_zone_name(binding_slot_id, display_name)
+}
+
+fn zone_id_matches_attachment_slot(binding_slot_id: &str, candidate: Option<&str>) -> bool {
+    candidate.is_some_and(|candidate| {
+        binding_slot_id.eq_ignore_ascii_case(candidate)
+            || slot_id_matches_zone_name(binding_slot_id, candidate)
+    })
+}
+
 fn representative_zone_id_with_filter(
     layout: &SpatialLayout,
     mut filter: impl FnMut(&hypercolor_types::spatial::DeviceZone) -> bool,

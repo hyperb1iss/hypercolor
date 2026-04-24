@@ -13,7 +13,7 @@ use hypercolor_types::attachment::{
     AttachmentBinding, AttachmentSlot, AttachmentSuggestedZone, AttachmentTemplate,
     DeviceAttachmentProfile,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceFamily, DeviceId, DeviceInfo};
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use crate::api::AppState;
@@ -103,10 +103,11 @@ pub async fn get_attachments(
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    let profile = {
+    let mut profile = {
         let profiles = state.attachment_profiles.read().await;
         profiles.get_or_default(&tracked.info)
     };
+    normalize_profile_slots(&tracked.info, &mut profile);
     let registry = state.attachment_registry.read().await;
 
     ApiResponse::ok(summarize_attachment_profile(
@@ -130,7 +131,7 @@ pub async fn update_attachments(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
-    let slots = tracked.info.default_attachment_profile().slots;
+    let slots = effective_attachment_slots(&tracked.info, &body.bindings);
     let resolved = {
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
@@ -183,7 +184,7 @@ pub async fn preview_attachments(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
-    let slots = tracked.info.default_attachment_profile().slots;
+    let slots = effective_attachment_slots(&tracked.info, &body.bindings);
     let resolved = {
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
@@ -232,15 +233,14 @@ pub async fn delete_attachments(
 
 fn summarize_attachment_profile(
     device: &DeviceInfo,
-    profile: DeviceAttachmentProfile,
+    mut profile: DeviceAttachmentProfile,
     registry: &hypercolor_core::attachment::AttachmentRegistry,
 ) -> DeviceAttachmentsResponse {
-    let suggested_zones = if profile.suggested_zones.is_empty() {
-        resolve_profile_bindings(device, &profile, registry)
-            .map_or_else(Vec::new, |resolved| suggested_attachment_zones(&resolved))
-    } else {
-        profile.suggested_zones.clone()
-    };
+    normalize_profile_slots(device, &mut profile);
+    let suggested_zones = resolve_profile_bindings(device, &profile, registry).map_or_else(
+        || profile.suggested_zones.clone(),
+        |resolved| suggested_attachment_zones(&resolved),
+    );
     let bindings = profile
         .bindings
         .iter()
@@ -434,6 +434,44 @@ fn resolve_profile_bindings(
     validate_attachment_bindings(device, &profile.slots, &profile.bindings, registry).ok()
 }
 
+fn effective_attachment_slots(
+    device: &DeviceInfo,
+    bindings: &[AttachmentBinding],
+) -> Vec<AttachmentSlot> {
+    let mut slots = device.default_attachment_profile().slots;
+    normalize_prism_s_slot_offsets(device, bindings, &mut slots);
+    slots
+}
+
+fn normalize_profile_slots(device: &DeviceInfo, profile: &mut DeviceAttachmentProfile) {
+    normalize_prism_s_slot_offsets(device, &profile.bindings, &mut profile.slots);
+}
+
+fn normalize_prism_s_slot_offsets(
+    device: &DeviceInfo,
+    bindings: &[AttachmentBinding],
+    slots: &mut [AttachmentSlot],
+) {
+    if device.family != DeviceFamily::PrismRgb || device.model.as_deref() != Some("prism_s") {
+        return;
+    }
+
+    let has_enabled_atx = bindings
+        .iter()
+        .any(|binding| binding.enabled && binding.slot_id == "atx-strimer");
+    let has_enabled_gpu = bindings
+        .iter()
+        .any(|binding| binding.enabled && binding.slot_id == "gpu-strimer");
+
+    if !has_enabled_gpu || has_enabled_atx {
+        return;
+    }
+
+    if let Some(slot) = slots.iter_mut().find(|slot| slot.id == "gpu-strimer") {
+        slot.led_start = 0;
+    }
+}
+
 #[expect(
     clippy::result_large_err,
     reason = "private handler helper returns a concrete HTTP response on validation failure"
@@ -600,4 +638,84 @@ async fn active_layout_targets_device(
             .iter()
             .any(|candidate| candidate == &zone.device_id)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::attachment::AttachmentBinding;
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+        DeviceTopologyHint, ZoneInfo,
+    };
+
+    use super::effective_attachment_slots;
+
+    fn prism_s_info() -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "PrismRGB Prism S".to_owned(),
+            vendor: "PrismRGB".to_owned(),
+            family: DeviceFamily::PrismRgb,
+            model: Some("prism_s".to_owned()),
+            connection_type: ConnectionType::Usb,
+            zones: vec![
+                ZoneInfo {
+                    name: "ATX Strimer".to_owned(),
+                    led_count: 120,
+                    topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
+                    color_format: DeviceColorFormat::Rgb,
+                },
+                ZoneInfo {
+                    name: "GPU Strimer".to_owned(),
+                    led_count: 162,
+                    topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
+                    color_format: DeviceColorFormat::Rgb,
+                },
+            ],
+            capabilities: DeviceCapabilities::default(),
+            firmware_version: None,
+        }
+    }
+
+    fn binding(slot_id: &str, template_id: &str) -> AttachmentBinding {
+        AttachmentBinding {
+            slot_id: slot_id.to_owned(),
+            template_id: template_id.to_owned(),
+            name: None,
+            enabled: true,
+            instances: 1,
+            led_offset: 0,
+        }
+    }
+
+    #[test]
+    fn prism_s_gpu_only_slots_are_rebased_to_zero() {
+        let slots = effective_attachment_slots(
+            &prism_s_info(),
+            &[binding("gpu-strimer", "lian-li-gpu-strimer-4x27")],
+        );
+        let gpu = slots
+            .iter()
+            .find(|slot| slot.id == "gpu-strimer")
+            .expect("gpu slot should exist");
+
+        assert_eq!(gpu.led_start, 0);
+    }
+
+    #[test]
+    fn prism_s_dual_slot_profiles_keep_gpu_after_atx() {
+        let slots = effective_attachment_slots(
+            &prism_s_info(),
+            &[
+                binding("atx-strimer", "lian-li-atx-strimer"),
+                binding("gpu-strimer", "lian-li-gpu-strimer-4x27"),
+            ],
+        );
+        let gpu = slots
+            .iter()
+            .find(|slot| slot.id == "gpu-strimer")
+            .expect("gpu slot should exist");
+
+        assert_eq!(gpu.led_start, 120);
+    }
 }
