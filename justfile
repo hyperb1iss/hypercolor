@@ -21,8 +21,8 @@ alias f := fmt
 
 # ─── Core ─────────────────────────────────────────────────
 
-# Run all checks (format, lint, test)
-verify: fmt-check lint test
+# Run all checks (format, lint, test, design audit)
+verify: fmt-check lint test cinder-audit
     @echo '✅ All checks passed'
 
 # Build the workspace with the daemon's full feature set
@@ -58,6 +58,10 @@ test-crate crate *args='':
 # Run a specific test by name
 test-one name *args='':
     ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
+
+# Run the Cinder/Leptos extension design audit snapshot generator
+cinder-audit:
+    ./scripts/cinder-audit.sh >/dev/null
 
 # Observe an already-running daemon for graphics pipeline soak regressions
 graphics-soak *args='':
