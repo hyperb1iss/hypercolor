@@ -1,7 +1,9 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
 use std::rc::Rc;
+use std::time::Duration;
 
+use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -127,7 +129,8 @@ impl WsManager {
             StoredValue::new_local(None);
         let visibility_change_callback: StoredValue<Option<Closure<dyn FnMut()>>, LocalStorage> =
             StoredValue::new_local(None);
-        let reconnect_timeout_id: StoredValue<Option<i32>> = StoredValue::new(None);
+        let reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage> =
+            StoredValue::new_local(None);
 
         // Reconnection attempt counter for exponential backoff.
         let reconnect_attempts = StoredValue::new(0_u32);
@@ -144,7 +147,7 @@ impl WsManager {
         let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> = StoredValue::new_local(None);
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
-            clear_reconnect_timer(reconnect_timeout_id);
+            clear_reconnect_timer(reconnect_timeout);
             dispose_existing_socket(ws_handle, socket_callbacks);
             set_connection_state.set(ConnectionState::Connecting);
             set_backpressure_notice.set(None);
@@ -165,7 +168,7 @@ impl WsManager {
                 Ok(ws) => ws,
                 Err(_) => {
                     set_connection_state.set(ConnectionState::Error);
-                    schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
+                    schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
                     return;
                 }
             };
@@ -177,7 +180,7 @@ impl WsManager {
             let on_open = Closure::<dyn FnMut()>::new(move || {
                 set_connection_state.set(ConnectionState::Connected);
                 reconnect_attempts.set_value(0);
-                clear_reconnect_timer(reconnect_timeout_id);
+                clear_reconnect_timer(reconnect_timeout);
 
                 let subscribe_msg = serde_json::json!({
                     "type": "subscribe",
@@ -209,7 +212,7 @@ impl WsManager {
                     &set_web_viewport_canvas_frame,
                 );
                 set_display_preview_frame.set(None);
-                schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
+                schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
             });
             ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
 
@@ -542,47 +545,32 @@ impl WsManager {
 /// Schedule a reconnection attempt with exponential backoff + jitter.
 fn schedule_reconnect(
     reconnect_attempts: StoredValue<u32>,
-    reconnect_timeout_id: StoredValue<Option<i32>>,
+    reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage>,
     connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
 ) {
-    clear_reconnect_timer(reconnect_timeout_id);
+    clear_reconnect_timer(reconnect_timeout);
     let attempt = reconnect_attempts.get_value();
     reconnect_attempts.set_value(attempt.saturating_add(1));
 
     let delay = ExponentialBackoff::HYPERCOLOR_DEFAULT
         .delay_for_attempt_with_sample(attempt, js_sys::Math::random())
         .unwrap_or(ExponentialBackoff::HYPERCOLOR_DEFAULT.base);
-    let final_delay = i32::try_from(delay.as_millis()).unwrap_or(i32::MAX).max(100);
+    let final_delay = delay.max(Duration::from_millis(100));
 
-    let callback = Closure::once_into_js(move || {
+    let timeout = set_timeout(final_delay, move || {
         if let Some(connect_fn) = connect.get_value() {
             connect_fn();
         }
     });
-
-    if let Some(window) = web_sys::window()
-        && let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            callback.unchecked_ref(),
-            final_delay,
-        )
-    {
-        reconnect_timeout_id.set_value(Some(timeout_id));
-    }
+    reconnect_timeout.set_value(Some(timeout));
 }
 
-fn clear_reconnect_timer(reconnect_timeout_id: StoredValue<Option<i32>>) {
-    clear_timeout_handle(reconnect_timeout_id);
-}
-
-fn clear_timeout_handle(timeout_handle: StoredValue<Option<i32>>) {
-    let Some(timeout_id) = timeout_handle.get_value() else {
-        return;
-    };
-
-    if let Some(window) = web_sys::window() {
-        window.clear_timeout_with_handle(timeout_id);
-    }
-    timeout_handle.set_value(None);
+fn clear_reconnect_timer(reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage>) {
+    reconnect_timeout.update_value(|timeout| {
+        if let Some(mut timeout) = timeout.take() {
+            timeout.cancel();
+        }
+    });
 }
 
 fn dispose_existing_socket(
