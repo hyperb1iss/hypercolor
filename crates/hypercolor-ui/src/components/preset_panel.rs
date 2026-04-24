@@ -7,6 +7,7 @@ use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::effect::{ControlValue, PresetTemplate};
 
 use super::preset_matching::{
@@ -959,9 +960,9 @@ fn InlineNameInput(
                        transition-all duration-200"
                 prop:value=move || value.get()
                 on:input=move |ev| {
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target {
-                        set_value.set(el.value());
+                    let event = Input::from_event(ev);
+                    if let Some(value) = event.value_string() {
+                        set_value.set(value);
                     }
                 }
                 on:keydown=move |ev| {

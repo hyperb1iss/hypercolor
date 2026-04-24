@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::sleep;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -206,12 +207,9 @@ pub fn DevicePairingModal(
                                         class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
                                                placeholder-fg-tertiary/30 focus:outline-none focus:border-accent-muted transition-colors"
                                         on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| {
-                                                use wasm_bindgen::JsCast;
-                                                t.dyn_into::<web_sys::HtmlInputElement>().ok()
-                                            });
-                                            if let Some(el) = target {
-                                                update_field(key_for_handler.clone(), el.value());
+                                            let event = Input::from_event(ev);
+                                            if let Some(value) = event.value_string() {
+                                                update_field(key_for_handler.clone(), value);
                                             }
                                         }
                                     />

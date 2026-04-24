@@ -1,10 +1,10 @@
 //! App shell — sidebar + header + content area + command palette.
 
+use hypercolor_leptos_ext::events::Input;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
-use wasm_bindgen::JsCast;
 
 use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::sidebar::Sidebar;
@@ -166,9 +166,9 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         aria-autocomplete="list"
                         prop:value=move || query.get()
                         on:input=move |ev| {
-                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target {
-                                set_query.set(el.value());
+                            let event = Input::from_event(ev);
+                            if let Some(value) = event.value_string() {
+                                set_query.set(value);
                             }
                         }
                         on:keydown=move |ev| {
