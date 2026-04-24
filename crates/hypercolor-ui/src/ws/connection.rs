@@ -574,13 +574,13 @@ fn dispose_existing_socket(
         return;
     };
 
-    existing_ws.set_onopen(None);
-    existing_ws.set_onclose(None);
-    existing_ws.set_onerror(None);
-    existing_ws.set_onmessage(None);
+    socket_callbacks.update_value(|callbacks| {
+        if let Some(callbacks) = callbacks.take() {
+            callbacks.detach_from(&existing_ws);
+        }
+    });
     let _ = existing_ws.close();
     ws_handle.set_value(None);
-    socket_callbacks.set_value(None);
 }
 
 /// Build WS URL from current page origin.
