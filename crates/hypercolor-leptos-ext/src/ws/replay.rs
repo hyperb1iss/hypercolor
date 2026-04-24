@@ -112,6 +112,37 @@ impl SessionPlayer {
         })
     }
 
+    pub fn metadata(
+        &self,
+        channel_id: u16,
+        key: impl AsRef<str>,
+    ) -> impl Iterator<Item = &ReplayEntry> {
+        let key = key.as_ref().to_owned();
+        self.tape.entries.iter().filter(move |entry| {
+            matches!(
+                &entry.record,
+                SessionRecord::Metadata {
+                    channel_id: entry_channel_id,
+                    key: entry_key,
+                    ..
+                } if *entry_channel_id == channel_id && *entry_key == key
+            )
+        })
+    }
+
+    pub fn external_records(&self, source: impl AsRef<str>) -> impl Iterator<Item = &ReplayEntry> {
+        let source = source.as_ref().to_owned();
+        self.tape.entries.iter().filter(move |entry| {
+            matches!(
+                &entry.record,
+                SessionRecord::External {
+                    source: entry_source,
+                    ..
+                } if *entry_source == source
+            )
+        })
+    }
+
     pub fn into_tape(self) -> SessionTape {
         self.tape
     }

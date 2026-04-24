@@ -95,3 +95,34 @@ fn session_player_filters_transport_frames_by_channel_and_direction() {
         }
     );
 }
+
+#[test]
+fn session_player_filters_metadata_and_external_records() {
+    let mut recorder = SessionRecorder::new(vec![ChannelDescriptor::new(1, "control")]);
+    recorder.record_metadata(1, "method", json!("effects.apply"));
+    recorder.record_metadata(2, "method", json!("ignored"));
+    recorder.record_external("audio", Bytes::from_static(b"spectrum"));
+    recorder.record_external("screen", Bytes::from_static(b"pixels"));
+
+    let player = SessionPlayer::new(recorder.finish());
+    let metadata = player.metadata(1, "method").collect::<Vec<_>>();
+    let external = player.external_records("audio").collect::<Vec<_>>();
+
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(
+        metadata[0].record,
+        SessionRecord::Metadata {
+            channel_id: 1,
+            key: "method".to_owned(),
+            value: json!("effects.apply"),
+        }
+    );
+    assert_eq!(external.len(), 1);
+    assert_eq!(
+        external[0].record,
+        SessionRecord::External {
+            source: "audio",
+            body: Bytes::from_static(b"spectrum"),
+        }
+    );
+}
