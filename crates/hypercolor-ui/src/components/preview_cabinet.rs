@@ -18,13 +18,15 @@
 //!   and the canvas self-sizes via its own aspect ratio. Used on the
 //!   effects page where the preview sits in an unbounded sidebar.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use hypercolor_leptos_ext::raf::Scheduler;
 use hypercolor_types::effect::ControlValue;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::app::{EffectsContext, WsContext};
 use crate::color;
@@ -113,18 +115,21 @@ pub fn PreviewCabinet(
     // in between. Prev-id is stored so initial mount doesn't animate.
     let igniting = RwSignal::new(false);
     let prev_effect_id = StoredValue::new(fx.active_effect_id.get_untracked());
+    let ignition_scheduler = Rc::new(RefCell::new(None::<Scheduler>));
 
-    Effect::new(move |_| {
-        let current = fx.active_effect_id.get();
-        let previous = prev_effect_id.get_value();
-        if previous != current {
-            igniting.set(false);
-            if let Some(window) = web_sys::window() {
-                let cb = Closure::once_into_js(move || igniting.set(true));
-                let _ = window.request_animation_frame(cb.unchecked_ref());
+    Effect::new({
+        let ignition_scheduler = Rc::clone(&ignition_scheduler);
+        move |_| {
+            let current = fx.active_effect_id.get();
+            let previous = prev_effect_id.get_value();
+            if previous != current {
+                igniting.set(false);
+                let scheduler = Scheduler::new(move |_| igniting.set(true));
+                scheduler.schedule();
+                ignition_scheduler.borrow_mut().replace(scheduler);
             }
+            prev_effect_id.set_value(current);
         }
-        prev_effect_id.set_value(current);
     });
 
     // Sizing classes switch between the two modes.
