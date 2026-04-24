@@ -28,6 +28,7 @@ ws-client-wasm = [
 ]
 events = [
     "dep:gloo-events",
+    "dep:js-sys",
     "dep:wasm-bindgen",
     "dep:web-sys",
     "web-sys/Document",

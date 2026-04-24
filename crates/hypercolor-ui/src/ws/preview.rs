@@ -5,6 +5,7 @@ use leptos::prelude::*;
 use super::messages::CanvasFrame;
 use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use hypercolor_leptos_ext::prelude::current_page_location;
+use hypercolor_leptos_ext::ws::transport::send_websocket_json;
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
@@ -113,7 +114,7 @@ pub(super) fn request_preview_subscription(
             }
         }
     });
-    let _ = ws.send_with_str(&subscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &subscribe_msg);
 }
 
 pub(super) fn request_screen_preview_subscription(
@@ -144,7 +145,7 @@ pub(super) fn request_screen_preview_subscription(
             }
         }
     });
-    let _ = ws.send_with_str(&subscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &subscribe_msg);
 }
 
 pub(super) fn request_web_viewport_preview_subscription(
@@ -176,7 +177,7 @@ pub(super) fn request_web_viewport_preview_subscription(
             }
         }
     });
-    let _ = ws.send_with_str(&subscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &subscribe_msg);
 }
 
 pub(super) fn clear_preview_subscription(
@@ -212,7 +213,7 @@ pub(super) fn send_canvas_unsubscribe(ws: &web_sys::WebSocket) {
         "type": "unsubscribe",
         "channels": ["canvas"]
     });
-    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
 pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
@@ -220,7 +221,7 @@ pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
         "type": "unsubscribe",
         "channels": ["screen_canvas"]
     });
-    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
 pub(super) fn send_web_viewport_canvas_unsubscribe(ws: &web_sys::WebSocket) {
@@ -228,7 +229,7 @@ pub(super) fn send_web_viewport_canvas_unsubscribe(ws: &web_sys::WebSocket) {
         "type": "unsubscribe",
         "channels": ["web_viewport_canvas"]
     });
-    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
 /// Subscribe the `display_preview` channel to a specific device at the
@@ -246,7 +247,7 @@ pub(super) fn send_display_preview_subscribe(ws: &web_sys::WebSocket, device_id:
             }
         }
     });
-    let _ = ws.send_with_str(&subscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &subscribe_msg);
 }
 
 /// Unsubscribe from the `display_preview` channel and clear the target
@@ -263,12 +264,12 @@ pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket) {
             }
         }
     });
-    let _ = ws.send_with_str(&clear_msg.to_string());
+    let _ = send_websocket_json(ws, &clear_msg);
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
         "channels": ["display_preview"]
     });
-    let _ = ws.send_with_str(&unsubscribe_msg.to_string());
+    let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
 fn preview_hostname() -> String {

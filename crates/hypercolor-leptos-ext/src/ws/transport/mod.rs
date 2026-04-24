@@ -16,7 +16,7 @@ pub use websocket_axum::{AxumWebSocketTransport, AxumWebSocketTransportError};
 #[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
 pub use websocket_wasm::{
     WebSocketEventHandlers, WebSocketTransport, WebSocketTransportError, WebSocketTransportState,
-    arraybuffer_websocket, message_array_buffer,
+    arraybuffer_websocket, message_array_buffer, send_websocket_json, send_websocket_text,
 };
 
 #[async_trait(?Send)]

@@ -8,7 +8,7 @@ use hypercolor_leptos_ext::prelude::{
     TimeoutHandle, current_page_location, now_ms, random_unit, set_timeout,
 };
 use hypercolor_leptos_ext::ws::transport::{
-    WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer,
+    WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer, send_websocket_json,
 };
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
@@ -185,7 +185,7 @@ impl WsManager {
                         "metrics": { "interval_ms": 500 }
                     }
                 });
-                let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
+                let _ = send_websocket_json(&ws_clone, &subscribe_msg);
             };
 
             // onclose — schedule reconnect with backoff
@@ -425,14 +425,14 @@ impl WsManager {
                         "device_metrics": { "interval_ms": 500 }
                     }
                 });
-                let _ = ws.send_with_str(&msg.to_string());
+                let _ = send_websocket_json(&ws, &msg);
                 device_metrics_requested.set_value(true);
             } else if !want && have {
                 let msg = serde_json::json!({
                     "type": "unsubscribe",
                     "channels": ["device_metrics"]
                 });
-                let _ = ws.send_with_str(&msg.to_string());
+                let _ = send_websocket_json(&ws, &msg);
                 device_metrics_requested.set_value(false);
                 set_device_metrics.set(None);
             }

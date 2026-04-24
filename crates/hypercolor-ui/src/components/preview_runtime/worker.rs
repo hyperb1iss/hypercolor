@@ -5,8 +5,7 @@ use hypercolor_leptos_ext::canvas::{
     bitmap_renderer_context, message_image_bitmap, revoke_blob_url, script_blob_url,
     set_canvas_size, supports_global, supports_offscreen_canvas_2d_bitmap,
 };
-use hypercolor_leptos_ext::events::WorkerMessageHandler;
-use js_sys::Array;
+use hypercolor_leptos_ext::events::{WorkerMessageHandler, post_worker_canvas_frame};
 use wasm_bindgen::JsValue;
 use web_sys::{HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent, Worker};
 
@@ -322,12 +321,13 @@ fn create_worker_url() -> Result<String, JsValue> {
 }
 
 fn post_frame(worker: &Worker, frame: &CanvasFrame) -> Result<(), JsValue> {
-    let message = Array::new();
-    message.push(&JsValue::from_f64(f64::from(frame.width)));
-    message.push(&JsValue::from_f64(f64::from(frame.height)));
-    message.push(&JsValue::from_f64(f64::from(frame.pixel_format().tag())));
-    message.push(frame.pixels_js());
-    worker.post_message(&message)
+    post_worker_canvas_frame(
+        worker,
+        frame.width,
+        frame.height,
+        frame.pixel_format().tag(),
+        frame.pixels_js(),
+    )
 }
 
 fn present_bitmap(

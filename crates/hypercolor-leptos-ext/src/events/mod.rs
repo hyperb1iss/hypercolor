@@ -4,6 +4,7 @@ use std::str::FromStr;
 
 use gloo_events::{EventListener, EventListenerOptions};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 
 pub use gloo_events::EventListenerPhase;
@@ -222,4 +223,19 @@ impl WorkerMessageHandler {
     pub fn detach_from(&self, worker: &web_sys::Worker) {
         worker.set_onmessage(None);
     }
+}
+
+pub fn post_worker_canvas_frame(
+    worker: &web_sys::Worker,
+    width: u32,
+    height: u32,
+    format: u8,
+    pixels: &js_sys::Uint8Array,
+) -> Result<(), JsValue> {
+    let message = js_sys::Array::new();
+    message.push(&JsValue::from_f64(f64::from(width)));
+    message.push(&JsValue::from_f64(f64::from(height)));
+    message.push(&JsValue::from_f64(f64::from(format)));
+    message.push(pixels);
+    worker.post_message(&message)
 }

@@ -92,6 +92,20 @@ pub fn arraybuffer_websocket(
     Ok(ws)
 }
 
+pub fn send_websocket_text(ws: &WebSocket, message: &str) -> Result<(), WebSocketTransportError> {
+    ws.send_with_str(message)
+        .map_err(|error| WebSocketTransportError::Send {
+            message: js_error_message(&error),
+        })
+}
+
+pub fn send_websocket_json(
+    ws: &WebSocket,
+    message: &serde_json::Value,
+) -> Result<(), WebSocketTransportError> {
+    send_websocket_text(ws, &message.to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebSocketTransportState {
     Connecting,
