@@ -5,12 +5,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use hypercolor_leptos_ext::raf::Scheduler;
 use leptos::ev::Custom;
 use leptos::html::Canvas;
 use leptos::prelude::*;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
 
 use crate::app::WsContext;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
@@ -174,8 +173,7 @@ pub fn CanvasPreview(
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
     let latest_frame_received_at = Rc::new(RefCell::new(None::<f64>));
     let presenter = Rc::new(RefCell::new(PresenterState::default()));
-    let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
-    let animation_frame_id = Rc::new(RefCell::new(None::<i32>));
+    let presenter_scheduler = Rc::new(RefCell::new(None::<Scheduler>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
     let last_presented_at = Rc::new(RefCell::new(None::<f64>));
     let skipped_frames = Rc::new(RefCell::new(0_u32));
@@ -201,184 +199,152 @@ pub fn CanvasPreview(
         let latest_frame = Rc::clone(&latest_frame);
         let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
         let presenter = Rc::clone(&presenter);
-        let animation = Rc::clone(&animation);
-        let animation_frame_id = Rc::clone(&animation_frame_id);
+        let presenter_scheduler_handle = Rc::clone(&presenter_scheduler);
         let last_presented_frame = Rc::clone(&last_presented_frame);
         let last_presented_at = Rc::clone(&last_presented_at);
         let skipped_frames = Rc::clone(&skipped_frames);
         let last_published_telemetry = Rc::clone(&last_published_telemetry);
         let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
 
-        let schedule = Rc::new(move || {
-            if animation.borrow().is_some() {
+        let scheduler = Scheduler::new(move |frame_info| {
+            let raf_time_ms = frame_info.time_ms;
+
+            let Some(canvas_handle) = schedule_canvas_ref.get() else {
+                return;
+            };
+
+            if !canvas_handle.is_connected() {
+                presenter.borrow_mut().reset();
+                last_presented_frame.borrow_mut().take();
+                last_presented_at.borrow_mut().take();
+                *skipped_frames.borrow_mut() = 0;
+                if show_fps {
+                    presented_fps.set(0.0);
+                }
+                if runtime_mode.get_untracked().is_some() {
+                    runtime_mode.set(None);
+                }
+                *last_telemetry_published_at.borrow_mut() = None;
+                *last_published_telemetry.borrow_mut() = PreviewPresenterTelemetry::default();
+                if let Some(telemetry) = preview_telemetry {
+                    telemetry.set(PreviewPresenterTelemetry::default());
+                }
                 return;
             }
 
-            let Some(canvas) = schedule_canvas_ref.get() else {
-                return;
-            };
-
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-
-            let animation_handle = Rc::clone(&animation);
-            let animation_frame_id_handle = Rc::clone(&animation_frame_id);
-            let presenter_handle = Rc::clone(&presenter);
-            let latest_frame = Rc::clone(&latest_frame);
-            let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
-            let last_presented_frame = Rc::clone(&last_presented_frame);
-            let last_presented_at = Rc::clone(&last_presented_at);
-            let skipped_frames = Rc::clone(&skipped_frames);
-            let canvas_handle = canvas.clone();
-            let smooth_scaling = smooth_scaling;
-            let show_fps = show_fps;
-            let last_published_telemetry = Rc::clone(&last_published_telemetry);
-            let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
-
-            let callback = Closure::<dyn FnMut(f64)>::new(move |raf_time_ms| {
-                animation_frame_id_handle.borrow_mut().take();
-
-                if !canvas_handle.is_connected() {
-                    presenter_handle.borrow_mut().reset();
-                    last_presented_frame.borrow_mut().take();
-                    last_presented_at.borrow_mut().take();
-                    *skipped_frames.borrow_mut() = 0;
-                    if show_fps {
-                        presented_fps.set(0.0);
+            let latest_frame_ref = latest_frame.borrow();
+            if let Some(frame) = latest_frame_ref.as_ref()
+                && Some(frame.frame_number) != *last_presented_frame.borrow()
+            {
+                let mut presenter_state = presenter.borrow_mut();
+                if presenter_state.ensure_runtime(&canvas_handle, frame, smooth_scaling) {
+                    let mode = presenter_state.mode_label();
+                    if runtime_mode.get_untracked() != mode {
+                        runtime_mode.set(mode);
                     }
-                    if runtime_mode.get_untracked().is_some() {
-                        runtime_mode.set(None);
-                    }
-                    *last_telemetry_published_at.borrow_mut() = None;
-                    *last_published_telemetry.borrow_mut() = PreviewPresenterTelemetry::default();
-                    if let Some(telemetry) = preview_telemetry {
-                        telemetry.set(PreviewPresenterTelemetry::default());
-                    }
-                    animation_handle.borrow_mut().take();
-                    return;
-                }
+                    if let PresenterState::Ready {
+                        runtime: presenter,
+                        webgl_unavailable_streak,
+                    } = &mut *presenter_state
+                    {
+                        match presenter.render(&canvas_handle, frame) {
+                            PreviewRenderOutcome::Presented => {
+                                let skipped =
+                                    last_presented_frame.borrow().map_or(0, |previous_frame| {
+                                        frame
+                                            .frame_number
+                                            .saturating_sub(previous_frame.saturating_add(1))
+                                    });
+                                if skipped > 0 {
+                                    let mut skipped_total = skipped_frames.borrow_mut();
+                                    *skipped_total = skipped_total.saturating_add(skipped);
+                                }
 
-                let latest_frame_ref = latest_frame.borrow();
-                if let Some(frame) = latest_frame_ref.as_ref()
-                    && Some(frame.frame_number) != *last_presented_frame.borrow()
-                {
-                    let mut presenter_state = presenter_handle.borrow_mut();
-                    if presenter_state.ensure_runtime(&canvas_handle, frame, smooth_scaling) {
-                        let mode = presenter_state.mode_label();
-                        if runtime_mode.get_untracked() != mode {
-                            runtime_mode.set(mode);
-                        }
-                        if let PresenterState::Ready {
-                            runtime: presenter,
-                            webgl_unavailable_streak,
-                        } = &mut *presenter_state
-                        {
-                            match presenter.render(&canvas_handle, frame) {
-                                PreviewRenderOutcome::Presented => {
-                                    let skipped =
-                                        last_presented_frame.borrow().map_or(0, |previous_frame| {
-                                            frame
-                                                .frame_number
-                                                .saturating_sub(previous_frame.saturating_add(1))
-                                        });
-                                    if skipped > 0 {
-                                        let mut skipped_total = skipped_frames.borrow_mut();
-                                        *skipped_total = skipped_total.saturating_add(skipped);
-                                    }
-
-                                    let next_present_fps = if let Some(previous_presented_at) =
-                                        last_presented_at.borrow_mut().replace(raf_time_ms)
-                                    {
-                                        let elapsed_ms =
-                                            (raf_time_ms - previous_presented_at).max(0.0);
-                                        if elapsed_ms > 0.0 {
-                                            let max_present_fps = {
-                                                let target = fps_target.get_untracked();
-                                                if target > 0 { f64::from(target) } else { 120.0 }
-                                            };
-                                            let instant_fps =
-                                                (1000.0 / elapsed_ms).clamp(0.0, max_present_fps);
-                                            let previous_fps =
-                                                f64::from(presented_fps.get_untracked());
-                                            let next_fps = if previous_fps <= 0.0 {
-                                                instant_fps
-                                            } else {
-                                                previous_fps * 0.82 + instant_fps * 0.18
-                                            }
-                                            .clamp(0.0, max_present_fps);
-                                            #[allow(clippy::cast_possible_truncation)]
-                                            {
-                                                next_fps as f32
-                                            }
+                                let next_present_fps = if let Some(previous_presented_at) =
+                                    last_presented_at.borrow_mut().replace(raf_time_ms)
+                                {
+                                    let elapsed_ms = (raf_time_ms - previous_presented_at).max(0.0);
+                                    if elapsed_ms > 0.0 {
+                                        let max_present_fps = {
+                                            let target = fps_target.get_untracked();
+                                            if target > 0 { f64::from(target) } else { 120.0 }
+                                        };
+                                        let instant_fps =
+                                            (1000.0 / elapsed_ms).clamp(0.0, max_present_fps);
+                                        let previous_fps = f64::from(presented_fps.get_untracked());
+                                        let next_fps = if previous_fps <= 0.0 {
+                                            instant_fps
                                         } else {
-                                            presented_fps.get_untracked()
+                                            previous_fps * 0.82 + instant_fps * 0.18
+                                        }
+                                        .clamp(0.0, max_present_fps);
+                                        #[allow(clippy::cast_possible_truncation)]
+                                        {
+                                            next_fps as f32
                                         }
                                     } else {
-                                        0.0
-                                    };
-                                    if show_fps {
-                                        presented_fps.set(next_present_fps);
+                                        presented_fps.get_untracked()
                                     }
+                                } else {
+                                    0.0
+                                };
+                                if show_fps {
+                                    presented_fps.set(next_present_fps);
+                                }
 
-                                    if let Some(telemetry) = preview_telemetry {
-                                        let arrival_to_present_ms = latest_frame_received_at
-                                            .borrow()
-                                            .map_or(0.0, |received_at_ms| {
+                                if let Some(telemetry) = preview_telemetry {
+                                    let arrival_to_present_ms =
+                                        latest_frame_received_at.borrow().map_or(
+                                            0.0,
+                                            |received_at_ms| {
                                                 (raf_time_ms - received_at_ms).max(0.0)
-                                            });
-                                        let next_telemetry = PreviewPresenterTelemetry {
-                                            runtime_mode: mode,
-                                            present_fps: quantize_present_fps(next_present_fps),
-                                            arrival_to_present_ms: quantize_arrival_to_present_ms(
-                                                arrival_to_present_ms,
-                                            ),
-                                            skipped_frames: *skipped_frames.borrow(),
-                                            last_frame_number: Some(frame.frame_number),
-                                        };
-                                        let previous_telemetry =
-                                            last_published_telemetry.borrow().clone();
-                                        let last_published_at_ms =
-                                            *last_telemetry_published_at.borrow();
-                                        if should_publish_preview_telemetry(
-                                            &previous_telemetry,
-                                            &next_telemetry,
-                                            last_published_at_ms,
-                                            raf_time_ms,
-                                        ) {
-                                            telemetry.set(next_telemetry.clone());
-                                            *last_published_telemetry.borrow_mut() = next_telemetry;
-                                            *last_telemetry_published_at.borrow_mut() =
-                                                Some(raf_time_ms);
-                                        }
+                                            },
+                                        );
+                                    let next_telemetry = PreviewPresenterTelemetry {
+                                        runtime_mode: mode,
+                                        present_fps: quantize_present_fps(next_present_fps),
+                                        arrival_to_present_ms: quantize_arrival_to_present_ms(
+                                            arrival_to_present_ms,
+                                        ),
+                                        skipped_frames: *skipped_frames.borrow(),
+                                        last_frame_number: Some(frame.frame_number),
+                                    };
+                                    let previous_telemetry =
+                                        last_published_telemetry.borrow().clone();
+                                    let last_published_at_ms = *last_telemetry_published_at.borrow();
+                                    if should_publish_preview_telemetry(
+                                        &previous_telemetry,
+                                        &next_telemetry,
+                                        last_published_at_ms,
+                                        raf_time_ms,
+                                    ) {
+                                        telemetry.set(next_telemetry.clone());
+                                        *last_published_telemetry.borrow_mut() = next_telemetry;
+                                        *last_telemetry_published_at.borrow_mut() =
+                                            Some(raf_time_ms);
                                     }
-                                    *last_presented_frame.borrow_mut() = Some(frame.frame_number);
                                 }
-                                PreviewRenderOutcome::Reinitialize => {
-                                    let retry_streak = *webgl_unavailable_streak;
-                                    presenter_state
-                                        .schedule_retry(frame.frame_number, retry_streak);
-                                    last_presented_frame.borrow_mut().take();
-                                }
+                                *last_presented_frame.borrow_mut() = Some(frame.frame_number);
+                            }
+                            PreviewRenderOutcome::Reinitialize => {
+                                let retry_streak = *webgl_unavailable_streak;
+                                presenter_state.schedule_retry(frame.frame_number, retry_streak);
+                                last_presented_frame.borrow_mut().take();
                             }
                         }
                     }
                 }
-
-                animation_handle.borrow_mut().take();
-            });
-
-            if window
-                .request_animation_frame(callback.as_ref().unchecked_ref())
-                .map(|request_id| {
-                    *animation_frame_id.borrow_mut() = Some(request_id);
-                })
-                .is_ok()
-            {
-                *animation.borrow_mut() = Some(callback);
             }
         });
 
+        let schedule = Rc::new({
+            let scheduler = scheduler.clone();
+            move || scheduler.schedule()
+        });
+
+        presenter_scheduler_handle
+            .borrow_mut()
+            .replace(scheduler);
         *schedule_present.borrow_mut() = Some(schedule);
     }
 
@@ -450,8 +416,7 @@ pub fn CanvasPreview(
         Custom::new("webglcontextlost"),
         {
             let presenter = Rc::clone(&presenter);
-            let animation = Rc::clone(&animation);
-            let animation_frame_id = Rc::clone(&animation_frame_id);
+            let presenter_scheduler = Rc::clone(&presenter_scheduler);
             let last_presented_frame = Rc::clone(&last_presented_frame);
             let last_presented_at = Rc::clone(&last_presented_at);
             let skipped_frames = Rc::clone(&skipped_frames);
@@ -475,12 +440,9 @@ pub fn CanvasPreview(
                 if let Some(telemetry) = preview_telemetry {
                     telemetry.set(PreviewPresenterTelemetry::default());
                 }
-                if let Some(request_id) = animation_frame_id.borrow_mut().take()
-                    && let Some(window) = web_sys::window()
-                {
-                    let _ = window.cancel_animation_frame(request_id);
+                if let Some(scheduler) = presenter_scheduler.borrow().as_ref() {
+                    scheduler.pause();
                 }
-                animation.borrow_mut().take();
             }
         },
         UseEventListenerOptions::default().passive(false),
