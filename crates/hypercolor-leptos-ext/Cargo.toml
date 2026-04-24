@@ -72,6 +72,7 @@ prelude = [
     "web-sys/Performance",
     "web-sys/Storage",
     "web-sys/Window",
+    "web-sys/console",
 ]
 axum = ["ws-core", "dep:axum", "dep:tower", "dep:tower-http", "dep:tokio-tungstenite"]
 leptos = ["dep:leptos", "dep:leptos-use"]

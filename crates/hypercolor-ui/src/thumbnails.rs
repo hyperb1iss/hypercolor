@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use gloo_net::http::{Method, RequestBuilder};
 use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba, set_canvas_size};
-use hypercolor_leptos_ext::prelude::{now_ms, spawn_timeout};
+use hypercolor_leptos_ext::prelude::{console_warn_with_value, now_ms, spawn_timeout};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
@@ -119,12 +119,12 @@ impl ThumbnailStore {
             // quota trip loses the whole set, not just this one insert. Log
             // loudly so we notice when the localStorage ceiling starts biting
             // (typical browser quota is ~5 MB for the origin).
-            web_sys::console::warn_2(
-                &JsValue::from_str(&format!(
+            console_warn_with_value(
+                &format!(
                     "thumbnail persist failed: cache_size_bytes={} entries={}",
                     json.len(),
                     cache.effects.len()
-                )),
+                ),
                 &err,
             );
         }

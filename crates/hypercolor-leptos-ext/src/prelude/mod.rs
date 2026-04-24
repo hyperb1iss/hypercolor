@@ -251,6 +251,19 @@ pub fn storage_remove(key: &str) -> bool {
     local_storage().is_some_and(|storage| storage.remove_item(key).is_ok())
 }
 
+pub fn console_log_styled(message: &str, styles: &[&str]) {
+    let args = js_sys::Array::new();
+    args.push(&JsValue::from_str(message));
+    for style in styles {
+        args.push(&JsValue::from_str(style));
+    }
+    web_sys::console::log(&args);
+}
+
+pub fn console_warn_with_value(message: &str, value: &JsValue) {
+    web_sys::console::warn_2(&JsValue::from_str(message), value);
+}
+
 fn duration_to_ms(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis())
         .unwrap_or(i32::MAX)
