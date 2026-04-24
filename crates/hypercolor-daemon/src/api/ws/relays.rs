@@ -25,11 +25,11 @@ use super::cache::{
     try_encode_cached_canvas_binary_with_header_scaled, try_encode_cached_canvas_preview_binary,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsEffectHealth,
-    MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing, MetricsPayload, MetricsPreview,
-    MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages, MetricsTimeline, MetricsWebsocket,
-    ServerMessage, SpectrumConfig, SubscriptionState, WsChannel, event_message_parts,
-    should_relay_event,
+    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayOutput,
+    MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing,
+    MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages,
+    MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig, SubscriptionState, WsChannel,
+    event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
@@ -1151,6 +1151,7 @@ pub(super) async fn build_metrics_message(
     let canvas_demand = state.preview_runtime.canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
+    let display_output = state.display_frames.read().await.metrics_snapshot();
     let (servo_soft_stalls_total, servo_breaker_opens_total) = servo_effect_health_counts();
 
     ServerMessage::Metrics {
@@ -1275,6 +1276,15 @@ pub(super) async fn build_metrics_message(
                 canvas_demand: metrics_preview_demand(canvas_demand),
                 screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),
                 web_viewport_canvas_demand: metrics_preview_demand(web_viewport_canvas_demand),
+            },
+            display_output: MetricsDisplayOutput {
+                captured_devices: display_output.captured_devices,
+                preview_subscribers: display_output.preview_subscribers,
+                write_attempts_total: display_output.write_attempts_total,
+                write_successes_total: display_output.write_successes_total,
+                write_failures_total: display_output.write_failures_total,
+                retry_attempts_total: display_output.retry_attempts_total,
+                last_failure_age_ms: display_output.last_failure_age_ms,
             },
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,

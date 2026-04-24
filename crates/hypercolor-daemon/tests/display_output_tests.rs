@@ -2402,6 +2402,7 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
             .await
     );
 
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
@@ -2411,7 +2412,7 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
         power_state: default_power_state_rx(),
         static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
-        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+        display_frames: Arc::clone(&display_frames),
     });
 
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
@@ -2436,6 +2437,13 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
         pixel[0] > 200,
         "expected retried unchanged display frame to be red, got {pixel:?}"
     );
+
+    let metrics = display_frames.read().await.metrics_snapshot();
+    assert_eq!(metrics.write_attempts_total, 2);
+    assert_eq!(metrics.write_successes_total, 1);
+    assert_eq!(metrics.write_failures_total, 1);
+    assert_eq!(metrics.retry_attempts_total, 1);
+    assert!(metrics.last_failure_age_ms.is_some());
 
     thread.shutdown().await.expect("display thread should stop");
 }

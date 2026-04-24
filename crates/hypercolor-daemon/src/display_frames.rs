@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use tokio::sync::watch;
 
@@ -39,6 +39,27 @@ pub struct DisplayFrameSnapshot {
     pub captured_at: SystemTime,
 }
 
+/// Display-output counters exported through daemon metrics.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DisplayOutputMetricsSnapshot {
+    pub captured_devices: usize,
+    pub preview_subscribers: usize,
+    pub write_attempts_total: u64,
+    pub write_successes_total: u64,
+    pub write_failures_total: u64,
+    pub retry_attempts_total: u64,
+    pub last_failure_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct DisplayOutputMetrics {
+    write_attempts_total: u64,
+    write_successes_total: u64,
+    write_failures_total: u64,
+    retry_attempts_total: u64,
+    last_failure_at: Option<Instant>,
+}
+
 /// In-memory registry of the latest display frame per device.
 ///
 /// The worker pipeline publishes here on every write; API handlers read on
@@ -48,6 +69,7 @@ pub struct DisplayFrameSnapshot {
 #[derive(Debug, Default)]
 pub struct DisplayFrameRuntime {
     frames: HashMap<DeviceId, DisplayFrameSnapshot>,
+    metrics: DisplayOutputMetrics,
     /// Watch senders keyed by device. Senders are created lazily on first
     /// `subscribe()` call so idle displays incur no notification cost, and
     /// they're dropped in `remove()` so receivers observe closure once the
@@ -75,6 +97,45 @@ impl DisplayFrameRuntime {
             if sender.send(Some(Arc::clone(&shared))).is_err() {
                 self.watchers.remove(&device_id);
             }
+        }
+    }
+
+    /// Record a physical display write attempt.
+    pub fn record_write_attempt(&mut self, retry: bool) {
+        self.metrics.write_attempts_total = self.metrics.write_attempts_total.saturating_add(1);
+        if retry {
+            self.metrics.retry_attempts_total = self.metrics.retry_attempts_total.saturating_add(1);
+        }
+    }
+
+    /// Record a successful physical display write.
+    pub fn record_write_success(&mut self) {
+        self.metrics.write_successes_total = self.metrics.write_successes_total.saturating_add(1);
+    }
+
+    /// Record a failed physical display write.
+    pub fn record_write_failure(&mut self) {
+        self.metrics.write_failures_total = self.metrics.write_failures_total.saturating_add(1);
+        self.metrics.last_failure_at = Some(Instant::now());
+    }
+
+    /// Return a point-in-time display output metrics snapshot.
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> DisplayOutputMetricsSnapshot {
+        DisplayOutputMetricsSnapshot {
+            captured_devices: self.frames.len(),
+            preview_subscribers: self
+                .watchers
+                .values()
+                .map(watch::Sender::receiver_count)
+                .sum(),
+            write_attempts_total: self.metrics.write_attempts_total,
+            write_successes_total: self.metrics.write_successes_total,
+            write_failures_total: self.metrics.write_failures_total,
+            retry_attempts_total: self.metrics.retry_attempts_total,
+            last_failure_age_ms: self.metrics.last_failure_at.map(|last_failure_at| {
+                u64::try_from(last_failure_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+            }),
         }
     }
 

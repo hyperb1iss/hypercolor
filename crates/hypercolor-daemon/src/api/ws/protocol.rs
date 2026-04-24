@@ -726,6 +726,7 @@ pub(super) struct MetricsPayload {
     pub(super) timeline: MetricsTimeline,
     pub(super) render_surfaces: MetricsRenderSurfaces,
     pub(super) preview: MetricsPreview,
+    pub(super) display_output: MetricsDisplayOutput,
     pub(super) copies: MetricsCopies,
     pub(super) memory: MetricsMemory,
     pub(super) devices: MetricsDevices,
@@ -901,6 +902,17 @@ pub(super) struct MetricsPreview {
     pub(super) canvas_demand: MetricsPreviewDemand,
     pub(super) screen_canvas_demand: MetricsPreviewDemand,
     pub(super) web_viewport_canvas_demand: MetricsPreviewDemand,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MetricsDisplayOutput {
+    pub(super) captured_devices: usize,
+    pub(super) preview_subscribers: usize,
+    pub(super) write_attempts_total: u64,
+    pub(super) write_successes_total: u64,
+    pub(super) write_failures_total: u64,
+    pub(super) retry_attempts_total: u64,
+    pub(super) last_failure_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

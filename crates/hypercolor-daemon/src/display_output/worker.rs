@@ -55,23 +55,47 @@ pub(super) struct DisplayWorkerHandle {
 #[derive(Clone)]
 struct PendingDisplayFrame {
     frames: DisplayWorkerFrameSet,
-    force_send: bool,
+    force_reason: Option<ForcedDisplayFrameReason>,
 }
 
 impl PendingDisplayFrame {
     fn fresh(frames: DisplayWorkerFrameSet) -> Self {
         Self {
             frames,
-            force_send: false,
+            force_reason: None,
         }
     }
 
-    fn forced(frames: DisplayWorkerFrameSet) -> Self {
+    fn static_hold(frames: DisplayWorkerFrameSet) -> Self {
         Self {
             frames,
-            force_send: true,
+            force_reason: Some(ForcedDisplayFrameReason::StaticHold),
         }
     }
+
+    fn retry(frames: DisplayWorkerFrameSet) -> Self {
+        Self {
+            frames,
+            force_reason: Some(ForcedDisplayFrameReason::RetryAfterFailure),
+        }
+    }
+
+    const fn force_send(&self) -> bool {
+        self.force_reason.is_some()
+    }
+
+    const fn is_retry(&self) -> bool {
+        matches!(
+            self.force_reason,
+            Some(ForcedDisplayFrameReason::RetryAfterFailure)
+        )
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ForcedDisplayFrameReason {
+    StaticHold,
+    RetryAfterFailure,
 }
 
 #[derive(Clone)]
@@ -321,7 +345,7 @@ async fn run_display_worker(
                         if should_refresh_static_hold(&power_state)
                             && let Some(frames) = last_delivered_frames.as_ref()
                         {
-                            pending = Some(PendingDisplayFrame::forced(frames.clone()));
+                            pending = Some(PendingDisplayFrame::static_hold(frames.clone()));
                         }
                     }
                 }
@@ -377,9 +401,12 @@ async fn run_display_worker(
             }
         }
 
-        let Some(PendingDisplayFrame { frames, force_send }) = pending.take() else {
+        let Some(pending_frame) = pending.take() else {
             continue;
         };
+        let force_send = pending_frame.force_send();
+        let retry_attempt = pending_frame.is_retry();
+        let frames = pending_frame.frames;
 
         let zero_brightness_output = display_brightness_factor(target.brightness) == 0;
         let input_matches = last_delivered_input
@@ -418,10 +445,12 @@ async fn run_display_worker(
                 Arc::clone(jpeg),
             )
             .await;
-            if let Err(error) = backend_io
+            record_display_write_attempt(&display_frames, retry_attempt).await;
+            let write_result = backend_io
                 .write_display_frame_owned(device_id, Arc::clone(jpeg))
-                .await
-            {
+                .await;
+            if let Err(error) = write_result {
+                record_display_write_failure(&display_frames).await;
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
                 schedule_display_retry(
                     &mut pending,
@@ -433,6 +462,7 @@ async fn run_display_worker(
                 );
                 continue;
             }
+            record_display_write_success(&display_frames).await;
             last_delivered_frames = Some(frames);
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
@@ -531,6 +561,7 @@ async fn run_display_worker(
             Arc::clone(&jpeg),
         )
         .await;
+        record_display_write_attempt(&display_frames, retry_attempt).await;
         let write_result = backend_io
             .write_display_frame_owned(device_id, Arc::clone(&jpeg))
             .await;
@@ -544,6 +575,7 @@ async fn run_display_worker(
             encode_state.jpeg_buffer = reusable_jpeg;
         }
         if let Err(error) = write_result {
+            record_display_write_failure(&display_frames).await;
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
             schedule_display_retry(
                 &mut pending,
@@ -555,6 +587,7 @@ async fn run_display_worker(
             );
             continue;
         }
+        record_display_write_success(&display_frames).await;
         last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
         last_delivered_frames = Some(frames);
         next_hold_refresh_at = static_hold_refresh_deadline(
@@ -609,7 +642,22 @@ fn schedule_display_retry(
     } else {
         *retry_after = Some(retry_deadline);
     }
-    *pending = Some(PendingDisplayFrame::forced(frames));
+    *pending = Some(PendingDisplayFrame::retry(frames));
+}
+
+async fn record_display_write_attempt(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    retry: bool,
+) {
+    display_frames.write().await.record_write_attempt(retry);
+}
+
+async fn record_display_write_success(display_frames: &Arc<RwLock<DisplayFrameRuntime>>) {
+    display_frames.write().await.record_write_success();
+}
+
+async fn record_display_write_failure(display_frames: &Arc<RwLock<DisplayFrameRuntime>>) {
+    display_frames.write().await.record_write_failure();
 }
 
 fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -> bool {

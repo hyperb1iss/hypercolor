@@ -228,6 +228,13 @@ async fn metrics_message_includes_latest_frame_timeline() {
             },
         });
     }
+    {
+        let mut display_frames = state.display_frames.write().await;
+        display_frames.record_write_attempt(false);
+        display_frames.record_write_success();
+        display_frames.record_write_attempt(true);
+        display_frames.record_write_failure();
+    }
 
     let ServerMessage::Metrics { data, .. } = build_metrics_message(&state, 0.0).await else {
         panic!("expected metrics message");
@@ -268,6 +275,11 @@ async fn metrics_message_includes_latest_frame_timeline() {
         json["effect_health"]["servo_breaker_opens_total"],
         servo_breaker_opens_total
     );
+    assert_eq!(json["display_output"]["write_attempts_total"], 2);
+    assert_eq!(json["display_output"]["write_successes_total"], 1);
+    assert_eq!(json["display_output"]["write_failures_total"], 1);
+    assert_eq!(json["display_output"]["retry_attempts_total"], 1);
+    assert!(json["display_output"]["last_failure_age_ms"].is_number());
     assert_eq!(json["timeline"]["logical_layer_count"], 2);
     assert_eq!(json["timeline"]["render_group_count"], 1);
     assert_eq!(json["timeline"]["scene_active"], true);
