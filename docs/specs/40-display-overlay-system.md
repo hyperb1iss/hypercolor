@@ -6,7 +6,7 @@
 > future display transport (HDMI, DisplayPort, e-paper, DSI panels) without
 > changes to the compositor.
 
-**Status:** Draft (v2, partially superseded by Specs 42 and 48)
+**Status:** Compatibility fallback (v3, superseded for primary display content by Specs 42 and 48)
 **Author:** Nova
 **Date:** 2026-04-10
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -62,10 +62,11 @@ with a width, height, and optional circular flag, it can host overlays. That
 includes hypothetical future transports like USB-attached HDMI capture
 devices, e-paper panels, or directly framebuffered DRM outputs.
 
-Spec 42's HTML display faces are now the preferred long-term model for rich
-display content. Native overlays remain useful for lightweight widgets and
-fallback environments, but they should be read as one display-worker-local
-strategy inside the broader scene/display architecture.
+Spec 42's HTML display faces are now the canonical model for rich display
+content. Native overlays are a compatibility fallback for lightweight widgets,
+non-Servo builds, and explicit overlay-on-face use cases. New display content
+should be authored as a display face unless it specifically needs the native
+fallback path.
 
 The approach:
 
@@ -85,6 +86,10 @@ The approach:
   support. Until then, HTML overlays are mutually exclusive with HTML effects
   on the same daemon and the spec treats this as a known constraint, not a
   workaround
+- **Native overlays are opt-in compatibility features**. They must not be
+  silently inserted into the display path for new face-based configurations,
+  and UI/API surfaces should label them as legacy/fallback once display faces
+  are available
 - The architecture anticipates optional GPU composition (wgpu texture layers,
   shader-based blending) once the render pipeline modernization (design doc
   28, Wave 7) lands
@@ -1264,22 +1269,26 @@ offscreen render context PRs in `servo/servo`), but it's not something
 Hypercolor can ship today. Wave 3 is explicitly blocked on upstream
 progress.
 
-### 11.4 Interim Workaround: Native Renderers and Separate Daemons
+### 11.4 Interim Compatibility Path: Display Faces, Native Renderers, and Separate Daemons
 
 Users who want HTML-defined LCD faces today have two options:
 
-1. **Use native overlay renderers.** The Clock, Sensor, Image, and Text
+1. **Use display faces.** Servo-backed display faces are the canonical rich
+   content path. They render as direct group canvases, share the same surface
+   identity contract as the scene canvas, and can either replace the physical
+   display output or blend over the scene surface.
+2. **Use native overlay renderers as fallback.** The Clock, Sensor, Image, and Text
    renderers cover the common cases (clock faces, sensor gauges, temp
    displays, custom text). SVG templates via resvg let designers create
-   custom clock faces and gauge artwork without writing Rust. For most
-   users, this is enough.
-2. **Wait for Wave 3.** Users with hard requirements on HTML face
-   compatibility (existing HTML asset libraries, or very custom
-   widgets not covered by the native renderers) need to wait for
-   upstream Servo multi-session support. The strictly-interim
-   alternative is running HTML effects and HTML overlays in separate
-   daemon instances — one daemon per display — which is architecturally
-   ugly but technically possible.
+   custom clock faces and gauge artwork without writing Rust. This path is
+   explicitly compatibility-oriented and should not be the default for new
+   rich display content.
+3. **Wait for HTML overlays only when overlay semantics are required.** Users
+   with hard requirements on HTML widgets composited on top of some other
+   display source still need upstream Servo multi-session support. The
+   strictly-interim alternative is running HTML effects and HTML overlays in
+   separate daemon instances — one daemon per display — which is
+   architecturally ugly but technically possible.
 
 ### 11.5 LightScript Sensor Injection (Already Partially Done)
 
@@ -1657,7 +1666,8 @@ Servo roadmap but not shippable today.
 **Interim behavior (until Wave 3 unblocks):** The API accepts HTML overlay
 config but returns `409 Conflict` when an HTML effect is active on the
 same daemon. The error message points users at Wave 3's upstream gate and
-suggests native overlay renderers as the alternative.
+suggests Servo display faces first, then native overlay renderers as the
+fallback when true overlay semantics are required.
 
 **Exit criteria (future):** Reference HTML overlays (clock face, sensor
 readout, custom text) render correctly as Hypercolor overlays alongside
@@ -1794,15 +1804,15 @@ glamour:
 2. **Wave 1 (overlay infrastructure)** lands the per-display compositor,
    the shared `blend_math` module, the premultiplied staging pipeline,
    config reconciliation, failure policy, and the REST API. Tested
-   with a `MockRenderer` — no tiny-skia yet. This is the foundation
-   that Wave 2 builds on.
+   with a `MockRenderer` — no tiny-skia yet. This is compatibility
+   infrastructure for fallback/native overlays, not the canonical display
+   content path.
 
-3. **Wave 2 (native renderers)** is the feature users see. Clock, sensor
-   gauge, image/GIF, and text overlays with SVG template support. The
-   rendering stack (tiny-skia + cosmic-text + resvg) is pure Rust,
-   actively maintained by Linebender and System76, SIMD-optimized, and
-   adds ~2 MiB to the binary. No other combination offers the same
-   quality-to-weight ratio for CPU rendering at 480×480.
+3. **Wave 2 (native renderers)** is the fallback feature users see when
+   they choose native overlays. Clock, sensor gauge, image/GIF, and text
+   overlays with SVG template support remain useful for non-Servo builds and
+   low-overhead widgets, but they should be labeled as compatibility
+   renderers wherever display faces are available.
 
 4. **Wave 4 (effect sensor binding)** completes the `ControlKind::Sensor`
    path that already exists in the type system. Small, focused, unlocks
