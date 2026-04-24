@@ -50,11 +50,7 @@ impl ExponentialBackoff {
             return None;
         }
 
-        let exponent = if attempt > i32::MAX as u32 {
-            i32::MAX
-        } else {
-            attempt as i32
-        };
+        let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let scaled_secs = self.base.as_secs_f64() * self.multiplier.powi(exponent);
         let capped_secs = scaled_secs.min(self.max.as_secs_f64());
         let jittered_secs = match self.jitter {

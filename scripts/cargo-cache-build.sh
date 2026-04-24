@@ -6,6 +6,13 @@ set -euo pipefail
 # enables compiler caches so whole-workspace builds warm up instead of starting
 # from scratch on every clean target dir.
 
+# Servo builds spawn hundreds of parallel rustc+sccache clients; source hashing
+# trips EMFILE on macOS launchd's default soft limit (256).
+current_nofile="$(ulimit -Sn)"
+if [ "$current_nofile" != "unlimited" ] && [ "$current_nofile" -lt 65536 ]; then
+  ulimit -n 65536 2>/dev/null || true
+fi
+
 CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$CACHE_ROOT/target}"
 export MOZBUILD_STATE_PATH="${MOZBUILD_STATE_PATH:-$CACHE_ROOT/mozbuild}"
