@@ -4,6 +4,7 @@ use std::str::FromStr;
 
 use gloo_events::{EventListener, EventListenerOptions};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 pub use gloo_events::EventListenerPhase;
 
@@ -178,5 +179,28 @@ where
         listener: Some(EventListener::new_with_options(
             target, event_type, options, callback,
         )),
+    }
+}
+
+pub struct WorkerMessageHandler {
+    _on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
+}
+
+impl WorkerMessageHandler {
+    #[must_use]
+    pub fn attach<F>(worker: &web_sys::Worker, on_message: F) -> Self
+    where
+        F: FnMut(web_sys::MessageEvent) + 'static,
+    {
+        let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(on_message);
+        worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+
+        Self {
+            _on_message: on_message,
+        }
+    }
+
+    pub fn detach_from(&self, worker: &web_sys::Worker) {
+        worker.set_onmessage(None);
     }
 }

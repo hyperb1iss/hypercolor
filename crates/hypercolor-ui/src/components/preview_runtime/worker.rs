@@ -1,10 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use hypercolor_leptos_ext::events::WorkerMessageHandler;
 use js_sys::Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
-use wasm_bindgen::closure::Closure;
 use web_sys::{
     Blob, BlobPropertyBag, HtmlCanvasElement, ImageBitmap, ImageBitmapRenderingContext,
     MessageEvent, OffscreenCanvas, Url, Worker,
@@ -215,7 +215,7 @@ pub(super) struct PreviewWorkerRuntime {
     failed: Rc<Cell<bool>>,
     dispatch_state: Rc<RefCell<FrameDispatchState<CanvasFrame>>>,
     last_shape: Option<(u32, u32, CanvasPixelFormat)>,
-    _onmessage: Closure<dyn FnMut(MessageEvent)>,
+    onmessage: WorkerMessageHandler,
 }
 
 impl PreviewWorkerRuntime {
@@ -245,7 +245,7 @@ impl PreviewWorkerRuntime {
         let bitmap_ctx_handle = bitmap_ctx.clone();
         let worker_handle = worker.clone();
 
-        let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event| {
+        let onmessage = WorkerMessageHandler::attach(&worker, move |event| {
             if !present_bitmap(&canvas_handle, &bitmap_ctx_handle, &event) {
                 failed_handle.set(true);
                 return;
@@ -259,15 +259,13 @@ impl PreviewWorkerRuntime {
             }
         });
 
-        worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-
         Ok(Self {
             worker,
             worker_url,
             failed,
             dispatch_state,
             last_shape: None,
-            _onmessage: onmessage,
+            onmessage,
         })
     }
 
@@ -335,7 +333,7 @@ fn probe_worker_support(format: CanvasPixelFormat) -> Result<(), ()> {
 
 impl Drop for PreviewWorkerRuntime {
     fn drop(&mut self) {
-        self.worker.set_onmessage(None);
+        self.onmessage.detach_from(&self.worker);
         self.worker.terminate();
         let _ = Url::revoke_object_url(&self.worker_url);
     }
