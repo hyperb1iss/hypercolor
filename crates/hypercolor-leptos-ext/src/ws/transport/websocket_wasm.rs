@@ -83,6 +83,15 @@ impl Drop for WebSocketTransport {
     }
 }
 
+pub fn arraybuffer_websocket(
+    url: &str,
+    protocol: &str,
+) -> Result<WebSocket, WebSocketTransportError> {
+    let ws = create_websocket(url, &[protocol])?;
+    ws.set_binary_type(BinaryType::Arraybuffer);
+    Ok(ws)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebSocketTransportState {
     Connecting,

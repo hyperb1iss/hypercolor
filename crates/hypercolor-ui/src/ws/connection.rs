@@ -7,7 +7,9 @@ use hypercolor_leptos_ext::events::{EventHandle, document, document_event_target
 use hypercolor_leptos_ext::prelude::{
     TimeoutHandle, current_page_location, now_ms, random_unit, set_timeout,
 };
-use hypercolor_leptos_ext::ws::transport::{WebSocketEventHandlers, message_array_buffer};
+use hypercolor_leptos_ext::ws::transport::{
+    WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer,
+};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use web_sys::MessageEvent;
@@ -159,7 +161,7 @@ impl WsManager {
             set_preview_fps.set(0.0);
 
             let url = ws_url.get_value();
-            let ws = match web_sys::WebSocket::new_with_str(&url, HYPERCOLOR_WS_PROTOCOL) {
+            let ws = match arraybuffer_websocket(&url, HYPERCOLOR_WS_PROTOCOL) {
                 Ok(ws) => ws,
                 Err(_) => {
                     set_connection_state.set(ConnectionState::Error);
@@ -167,7 +169,6 @@ impl WsManager {
                     return;
                 }
             };
-            ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
             ws_handle.set_value(Some(ws.clone()));
 
             // onopen — subscribe to events + metrics
