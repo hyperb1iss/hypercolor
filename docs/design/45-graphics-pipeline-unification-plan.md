@@ -551,14 +551,15 @@ Verify:
 - Brightness output is predictable and tested.
 - LED brightness and display brightness are intentionally different where appropriate.
 
-### Task 7.3: Implement Or Retire Gaussian Sampling
+### Task 7.3: Pin Gaussian Sampling Backend Contract
 
-**Files:** spatial sampler modules and tests.
+**Files:** spatial sampler modules, GPU sampler modules, and tests.
 
 Implementation:
 
-- Implement real Gaussian sampling if it is meant to be a supported mode.
-- Otherwise remove or rename the advertised option so it does not silently alias bilinear.
+- Keep Gaussian-area sampling as a real CPU/prepared spatial sampler mode.
+- Make GPU LED sampling reject Gaussian plans explicitly so it falls back to CPU instead of aliasing bilinear or area-average behavior.
+- Document the backend split in the canonical render pipeline spec.
 
 Verify:
 

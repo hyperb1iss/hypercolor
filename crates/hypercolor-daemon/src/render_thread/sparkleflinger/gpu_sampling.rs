@@ -924,4 +924,18 @@ mod tests {
             .expect("area plans should stay GPU-sampleable");
         assert_eq!(plan.points[0].radius(), 3);
     }
+
+    #[test]
+    fn gpu_sampling_plan_rejects_gaussian_without_aliasing() {
+        let gaussian = SpatialEngine::new(test_layout(SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: 2,
+        }));
+        let sampling_plan = gaussian.sampling_plan();
+        let prepared_zones = sampling_plan.as_ref();
+
+        assert!(!GpuSamplingPlan::supports_prepared_zones(prepared_zones));
+        assert!(GpuSamplingPlan::key(prepared_zones).is_none());
+        assert!(GpuSamplingPlan::from_prepared_zones(prepared_zones).is_none());
+    }
 }

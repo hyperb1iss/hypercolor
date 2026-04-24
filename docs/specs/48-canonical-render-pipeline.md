@@ -142,12 +142,23 @@ What is not acceptable as the final state:
 - a preview path whose visible output disagrees with hardware for the same
   active scene
 
-### 4.3 Direct display groups
+### 4.3 LED sampling backends
+
+Nearest, bilinear, area-average, and Gaussian-area sampling are canonical LED
+sampling modes. The CPU/prepared spatial sampler implements all four and is the
+semantic source of truth.
+
+SparkleFlinger's GPU LED sampler currently accepts nearest, bilinear, and
+area-average prepared plans. Gaussian-area plans must not be silently lowered to
+bilinear or area-average on the GPU path; they fall back to the CPU sampler so
+the Gaussian kernel remains real.
+
+### 4.4 Direct display groups
 
 Display groups publish their own canvases at device-appropriate dimensions and
 cadence. They are siblings of the scene canvas, not layers composited into it.
 
-### 4.4 Color and output policy
+### 4.5 Color and output policy
 
 The canonical scene canvas is non-premultiplied sRGB RGBA. It is the shared
 visual artifact for preview and display-adjacent consumers, but the LED
