@@ -1,8 +1,8 @@
 //! Reusable setting control components for the Settings page.
 
+use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
@@ -126,16 +126,15 @@ pub fn SettingSlider(
                     max=max.to_string()
                     step=step.to_string()
                     on:change=move |ev| {
-                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                        if let Some(el) = target
-                            && let Ok(val) = el.value().parse::<f64>() {
-                                let json_val = if integer {
-                                    serde_json::json!(val as i64)
-                                } else {
-                                    serde_json::json!(val)
-                                };
-                                on_change.run((key_owned.clone(), json_val));
-                            }
+                        let event = Change::from_event(ev);
+                        if let Some(val) = event.value::<f64>() {
+                            let json_val = if integer {
+                                serde_json::json!(val as i64)
+                            } else {
+                                serde_json::json!(val)
+                            };
+                            on_change.run((key_owned.clone(), json_val));
+                        }
                     }
                 />
                 <span class="text-xs font-mono text-fg-tertiary tabular-nums w-12 text-right">
@@ -288,9 +287,9 @@ pub fn SettingTextInput(
                 prop:value=move || value.get()
                 placeholder=placeholder
                 on:change=move |ev| {
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target {
-                        on_change.run((key_owned.clone(), serde_json::json!(el.value())));
+                    let event = Change::from_event(ev);
+                    if let Some(value) = event.value_string() {
+                        on_change.run((key_owned.clone(), serde_json::json!(value)));
                     }
                 }
             />
@@ -356,12 +355,11 @@ pub fn SettingNumberInput(
                     max=max.to_string()
                     step=step.to_string()
                     on:change=move |ev| {
-                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                        if let Some(el) = target
-                            && let Ok(v) = el.value().parse::<f64>() {
-                                let val = commit(v);
-                                on_change.run((key_owned.clone(), val));
-                            }
+                        let event = Change::from_event(ev);
+                        if let Some(v) = event.value::<f64>() {
+                            let val = commit(v);
+                            on_change.run((key_owned.clone(), val));
+                        }
                     }
                 />
                 <button
@@ -448,9 +446,9 @@ pub fn SettingPathList(
                     placeholder="/path/to/effects/directory"
                     prop:value=move || new_path.get()
                     on:input=move |ev| {
-                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                        if let Some(el) = target {
-                            set_new_path.set(el.value());
+                        let event = Input::from_event(ev);
+                        if let Some(value) = event.value_string() {
+                            set_new_path.set(value);
                         }
                     }
                     on:keydown=move |ev| {
