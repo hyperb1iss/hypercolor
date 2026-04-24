@@ -1,4 +1,4 @@
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::scene::{RenderGroupId, SceneId};
 
 use super::producer_queue::ProducerFrame;
 use super::scene_snapshot::SceneRuntimeSnapshot;
@@ -32,8 +32,104 @@ impl PlannedSceneLayer {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(
+    dead_code,
+    reason = "Wave 6 graph model lands before display output routing consumes every output kind"
+)]
+pub(crate) enum CompositionOutputKind {
+    #[default]
+    PrimaryScene,
+    DirectDisplayGroup(RenderGroupId),
+    DisplayFaceBlend(RenderGroupId),
+}
+
+impl CompositionOutputKind {
+    #[allow(
+        dead_code,
+        reason = "Wave 6 graph model lands before display output routing consumes every output kind"
+    )]
+    pub(crate) const fn contributes_to_led_scene(self) -> bool {
+        matches!(self, Self::PrimaryScene)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlannedCompositionGraph {
+    output: CompositionOutputKind,
+    width: u32,
+    height: u32,
+    layers: Vec<PlannedSceneLayer>,
+}
+
+impl PlannedCompositionGraph {
+    pub(crate) fn primary_scene(width: u32, height: u32, layers: Vec<PlannedSceneLayer>) -> Self {
+        Self {
+            output: CompositionOutputKind::PrimaryScene,
+            width,
+            height,
+            layers,
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Wave 6 graph model lands before display output routing consumes every output kind"
+    )]
+    pub(crate) fn direct_display_group(
+        group_id: RenderGroupId,
+        width: u32,
+        height: u32,
+        frame: ProducerFrame,
+        opaque_hint: bool,
+    ) -> Self {
+        Self {
+            output: CompositionOutputKind::DirectDisplayGroup(group_id),
+            width,
+            height,
+            layers: vec![PlannedSceneLayer::replace(frame, opaque_hint)],
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Wave 6 graph model lands before display output routing consumes every output kind"
+    )]
+    pub(crate) fn display_face_blend(
+        group_id: RenderGroupId,
+        width: u32,
+        height: u32,
+        scene_frame: ProducerFrame,
+        face_frame: ProducerFrame,
+        face_opacity: f32,
+    ) -> Self {
+        Self {
+            output: CompositionOutputKind::DisplayFaceBlend(group_id),
+            width,
+            height,
+            layers: vec![
+                PlannedSceneLayer::replace(scene_frame, true),
+                PlannedSceneLayer::alpha(face_frame, face_opacity, false),
+            ],
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Wave 6 graph model lands before display output routing consumes every output kind"
+    )]
+    pub(crate) const fn output(&self) -> CompositionOutputKind {
+        self.output
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CompiledCompositionMetadata {
+    #[allow(
+        dead_code,
+        reason = "Wave 6 graph model lands before display output routing consumes every output kind"
+    )]
+    pub output_kind: CompositionOutputKind,
     pub logical_layer_count: u32,
     pub render_group_count: u32,
     pub scene_active: bool,
@@ -77,8 +173,19 @@ impl CompositionPlanner {
         scene_runtime: &SceneRuntimeSnapshot,
         layers: Vec<PlannedSceneLayer>,
     ) -> CompiledCompositionPlan {
-        let metadata = composition_metadata(scene_runtime, layers.len());
-        let composition_layers = layers
+        Self::compile_graph(
+            scene_runtime,
+            PlannedCompositionGraph::primary_scene(width, height, layers),
+        )
+    }
+
+    pub(crate) fn compile_graph(
+        scene_runtime: &SceneRuntimeSnapshot,
+        graph: PlannedCompositionGraph,
+    ) -> CompiledCompositionPlan {
+        let metadata = composition_metadata(scene_runtime, graph.output, graph.layers.len());
+        let composition_layers = graph
+            .layers
             .into_iter()
             .map(|layer| {
                 CompositionLayer::from_parts(
@@ -94,9 +201,9 @@ impl CompositionPlanner {
                 .into_iter()
                 .next()
                 .expect("single layer should exist");
-            CompositionPlan::single(width, height, layer)
+            CompositionPlan::single(graph.width, graph.height, layer)
         } else {
-            CompositionPlan::with_layers(width, height, composition_layers)
+            CompositionPlan::with_layers(graph.width, graph.height, composition_layers)
         };
 
         CompiledCompositionPlan { plan, metadata }
@@ -127,7 +234,11 @@ impl CompositionPlanner {
                         current_frame_opaque,
                     ),
                 ),
-                metadata: composition_metadata(scene_runtime, 1),
+                metadata: composition_metadata(
+                    scene_runtime,
+                    CompositionOutputKind::PrimaryScene,
+                    1,
+                ),
             };
         }
 
@@ -197,6 +308,7 @@ impl CompositionPlanner {
 
 fn composition_metadata(
     scene_runtime: &SceneRuntimeSnapshot,
+    output_kind: CompositionOutputKind,
     logical_layer_count: usize,
 ) -> CompiledCompositionMetadata {
     let logical_layer_count = u32::try_from(logical_layer_count).unwrap_or(u32::MAX);
@@ -211,6 +323,7 @@ fn composition_metadata(
         });
 
     CompiledCompositionMetadata {
+        output_kind,
         logical_layer_count,
         render_group_count: scene_runtime.active_render_group_count(),
         scene_active: scene_runtime.active_scene_id.is_some(),
@@ -239,7 +352,9 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{CompositionPlanner, PlannedSceneLayer};
+    use super::{
+        CompositionOutputKind, CompositionPlanner, PlannedCompositionGraph, PlannedSceneLayer,
+    };
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::scene_snapshot::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
     use crate::render_thread::sparkleflinger::SparkleFlinger;
@@ -356,6 +471,10 @@ mod tests {
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);
+        assert_eq!(
+            compiled.metadata.output_kind,
+            CompositionOutputKind::PrimaryScene
+        );
         assert_eq!(compiled.metadata.render_group_count, 0);
         assert!(!composed.bypassed);
         let canvas = composed
@@ -364,6 +483,53 @@ mod tests {
             .expect("planner test expects a materialized canvas");
         assert_eq!(canvas.width(), 2);
         assert_eq!(canvas.height(), 2);
+    }
+
+    #[test]
+    fn planner_uses_same_graph_for_scene_display_and_face_blend_outputs() {
+        let group_id = RenderGroupId::new();
+        let scene_frame = ProducerFrame::Canvas(solid_canvas(Rgba::new(255, 0, 0, 255)));
+        let face_frame = ProducerFrame::Canvas(solid_canvas(Rgba::new(0, 0, 255, 255)));
+
+        let primary = PlannedCompositionGraph::primary_scene(
+            2,
+            2,
+            vec![PlannedSceneLayer::replace(scene_frame.clone(), true)],
+        );
+        let direct =
+            PlannedCompositionGraph::direct_display_group(group_id, 2, 2, face_frame.clone(), true);
+        let blended = PlannedCompositionGraph::display_face_blend(
+            group_id,
+            2,
+            2,
+            scene_frame,
+            face_frame,
+            0.5,
+        );
+
+        assert!(primary.output().contributes_to_led_scene());
+        assert!(!direct.output().contributes_to_led_scene());
+        assert!(!blended.output().contributes_to_led_scene());
+
+        let primary = CompositionPlanner::compile_graph(&SceneRuntimeSnapshot::default(), primary);
+        let direct = CompositionPlanner::compile_graph(&SceneRuntimeSnapshot::default(), direct);
+        let blended = CompositionPlanner::compile_graph(&SceneRuntimeSnapshot::default(), blended);
+
+        assert_eq!(
+            primary.metadata.output_kind,
+            CompositionOutputKind::PrimaryScene
+        );
+        assert_eq!(
+            direct.metadata.output_kind,
+            CompositionOutputKind::DirectDisplayGroup(group_id)
+        );
+        assert_eq!(
+            blended.metadata.output_kind,
+            CompositionOutputKind::DisplayFaceBlend(group_id)
+        );
+        assert_eq!(primary.metadata.logical_layer_count, 1);
+        assert_eq!(direct.metadata.logical_layer_count, 1);
+        assert_eq!(blended.metadata.logical_layer_count, 2);
     }
 
     #[test]
