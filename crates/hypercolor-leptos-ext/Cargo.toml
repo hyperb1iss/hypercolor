@@ -36,7 +36,13 @@ events = [
 canvas = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
 webgpu = ["canvas", "dep:wgpu"]
 raf = ["dep:wasm-bindgen", "dep:web-sys", "web-sys/Performance", "web-sys/Window"]
-prelude = ["dep:wasm-bindgen", "dep:web-sys", "web-sys/Window"]
+prelude = [
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "web-sys/Window",
+]
 axum = ["ws-core", "dep:axum", "dep:tower", "dep:tower-http", "dep:tokio-tungstenite"]
 leptos = ["dep:leptos", "dep:leptos-use"]
 devtools = []

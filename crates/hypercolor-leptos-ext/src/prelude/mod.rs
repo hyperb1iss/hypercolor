@@ -100,6 +100,24 @@ where
     }
 }
 
+pub async fn sleep(delay: Duration) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let Some(window) = web_sys::window() else {
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+            return;
+        };
+
+        if window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, duration_to_ms(delay))
+            .is_err()
+        {
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+        }
+    });
+
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 fn duration_to_ms(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis())
         .unwrap_or(i32::MAX)

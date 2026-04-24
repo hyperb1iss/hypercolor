@@ -4,7 +4,9 @@
 //! from the same component, with no backend-specific branches.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use hypercolor_leptos_ext::prelude::sleep;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -83,16 +85,7 @@ pub fn DevicePairingModal(
                             set_stage.set(PairingStage::Success(msg.clone()));
                             devices_resource.refetch();
                             toasts::toast_success(&msg);
-                            // Auto-close after 800ms
-                            let promise = js_sys::Promise::new(&mut |resolve, _| {
-                                let _ = web_sys::window()
-                                    .expect("window")
-                                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                                        &resolve, 800,
-                                    );
-                            });
-                            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-                            // Pass device_id so parent can guard against stale dismissal
+                            sleep(Duration::from_millis(800)).await;
                             on_paired.run(device_id);
                         }
                         PairDeviceStatus::ActionRequired => {

@@ -1,5 +1,8 @@
 //! Device detail sidebar — hardware spec sheet with channels and components.
 
+use std::time::Duration;
+
+use hypercolor_leptos_ext::prelude::sleep;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::use_throttle_fn_with_arg;
@@ -149,12 +152,7 @@ pub fn DeviceDetail(
                 return;
             }
             toasts::toast_success("Flashing device");
-            let promise = js_sys::Promise::new(&mut |resolve, _| {
-                let _ = web_sys::window()
-                    .expect("window")
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 3_000);
-            });
-            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+            sleep(Duration::from_secs(3)).await;
             set_identify_active.set(false);
         });
     };
