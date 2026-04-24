@@ -1,4 +1,4 @@
-#![cfg(feature = "ws-core")]
+#![cfg(all(feature = "ws-core", not(target_arch = "wasm32")))]
 
 use hypercolor_leptos_ext::MaybeSend;
 use hypercolor_leptos_ext::ws::{

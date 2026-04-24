@@ -1,4 +1,4 @@
-#![cfg(feature = "ws-core")]
+#![cfg(all(feature = "ws-core", not(target_arch = "wasm32")))]
 
 use bytes::{Bytes, BytesMut};
 use hypercolor_leptos_ext::ws::{

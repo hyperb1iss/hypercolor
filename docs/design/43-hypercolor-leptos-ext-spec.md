@@ -1202,7 +1202,7 @@ Completed:
 Still deliberately deferred:
 
 - Full `Canvas`, `Ctx2d`, `WebGl`, `Texture`, and `PixelFormat` wrapper types. The current crate exposes focused helpers because that preserved UI behavior while proving the boundary.
-- `wasm-bindgen-test` browser tests for `events`, `canvas`, and `raf`.
+- CI execution for the `wasm-bindgen-test` browser suites. The suites exist and compile for the wasm test target, but the runner is not wired into CI yet.
 - Full control-panel, color-wheel, and canvas-preview component rewrites. Remaining UI `web_sys` references are mostly event type signatures, file upload/FormData, canvas handles, and rendering contexts rather than repeated raw browser plumbing.
 - Daemon-side `hypercolor-v2` control/state channel migration. The stream codec exists, but old daemon JSON message paths remain while the preview-media decision stays open.
 - README extraction plan for `cinder-stream`.

@@ -49,5 +49,10 @@ Run the extension and its known consumers separately:
 cargo test -p hypercolor-leptos-ext --features ws-core,axum
 cargo check --workspace
 cargo check -p hypercolor-leptos-ext --target wasm32-unknown-unknown --features ws-client-wasm
+cargo check -p hypercolor-leptos-ext --target wasm32-unknown-unknown --tests --features events,canvas,raf,prelude,ws-client-wasm
 cargo check --manifest-path crates/hypercolor-ui/Cargo.toml --target wasm32-unknown-unknown
 ```
+
+The `browser_*_tests.rs` files are `wasm-bindgen-test` suites. They compile
+under the wasm test target today; running them requires a local
+`wasm-bindgen-test-runner` or equivalent browser test harness.

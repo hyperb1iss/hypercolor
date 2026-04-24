@@ -1,4 +1,4 @@
-#![cfg(feature = "axum")]
+#![cfg(all(feature = "axum", not(target_arch = "wasm32")))]
 
 use hypercolor_leptos_ext::ws::transport::{AxumWebSocketTransport, CinderTransport};
 

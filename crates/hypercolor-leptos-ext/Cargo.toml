@@ -102,5 +102,8 @@ web-sys = { version = "0.3", optional = true }
 wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1.9"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
