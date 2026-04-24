@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::sleep;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::use_throttle_fn_with_arg;
-use wasm_bindgen::JsCast;
 
 use crate::api::{self, DeviceAuthState};
 use crate::app::DevicesContext;
@@ -236,8 +236,10 @@ pub fn DeviceDetail(
                                                    focus:outline-none focus:border-accent-muted"
                                             prop:value=move || name_input.get()
                                             on:input=move |ev| {
-                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                if let Some(el) = target { set_name_input.set(el.value()); }
+                                                let event = Input::from_event(ev);
+                                                if let Some(value) = event.value_string() {
+                                                    set_name_input.set(value);
+                                                }
                                             }
                                             on:keydown=move |ev| {
                                                 if ev.key() == "Enter" { save_name(); }
@@ -448,10 +450,8 @@ pub fn DeviceDetail(
                                     disabled=pairing_required
                                     prop:value=move || device_brightness.get().to_string()
                                     on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target
-                                            && let Ok(brightness) = el.value().parse::<u8>()
-                                        {
+                                        let event = Input::from_event(ev);
+                                        if let Some(brightness) = event.value::<u8>() {
                                             set_device_brightness.set(brightness);
                                             push_brightness(brightness);
                                         }
