@@ -77,9 +77,31 @@ struct RetainedDirectGroupFrame {
     dependency_key: SceneDependencyKey,
 }
 
+struct CachedGroupProjection {
+    scene_width: u32,
+    scene_height: u32,
+    layout: SpatialLayout,
+    zones: Vec<CachedZoneProjection>,
+}
+
+struct CachedZoneProjection {
+    zone: DeviceZone,
+    sampling_mode: SamplingMode,
+    edge_behavior: EdgeBehavior,
+    samples: Vec<ProjectionSample>,
+}
+
+#[derive(Clone, Copy)]
+struct ProjectionSample {
+    x: u32,
+    y: u32,
+    local_position: NormalizedPosition,
+}
+
 pub(crate) struct RenderGroupRuntime {
     effect_pool: EffectPool,
     target_canvases: HashMap<RenderGroupId, Canvas>,
+    scene_projection_cache: HashMap<RenderGroupId, CachedGroupProjection>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
     direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
@@ -99,6 +121,7 @@ impl RenderGroupRuntime {
         Self {
             effect_pool: EffectPool::new(),
             target_canvases: HashMap::new(),
+            scene_projection_cache: HashMap::new(),
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
@@ -350,6 +373,8 @@ impl RenderGroupRuntime {
             .collect::<HashSet<_>>();
         self.target_canvases
             .retain(|group_id, _| scene_group_ids.contains(group_id));
+        self.scene_projection_cache
+            .retain(|group_id, _| scene_group_ids.contains(group_id));
         self.spatial_engines
             .retain(|group_id, _| desired_ids.contains(group_id));
         self.direct_surface_pools
@@ -360,6 +385,7 @@ impl RenderGroupRuntime {
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
                 self.ensure_group_canvas(group);
+                self.ensure_scene_projection(group);
             }
             if group_publishes_direct_canvas(group) {
                 self.ensure_direct_surface_pool(group);
@@ -388,6 +414,23 @@ impl RenderGroupRuntime {
             self.target_canvases.insert(
                 group.id,
                 Canvas::new(group.layout.canvas_width, group.layout.canvas_height),
+            );
+        }
+    }
+
+    fn ensure_scene_projection(&mut self, group: &RenderGroup) {
+        let needs_projection =
+            self.scene_projection_cache
+                .get(&group.id)
+                .is_none_or(|projection| {
+                    projection.scene_width != self.scene_width
+                        || projection.scene_height != self.scene_height
+                        || projection.layout != group.layout
+                });
+        if needs_projection {
+            self.scene_projection_cache.insert(
+                group.id,
+                build_group_projection(group, self.scene_width, self.scene_height),
             );
         }
     }
@@ -635,6 +678,7 @@ impl RenderGroupRuntime {
                 &self.target_canvases,
                 self.scene_width,
                 self.scene_height,
+                &self.scene_projection_cache,
             );
             return ProducerFrame::Canvas(scene_canvas);
         };
@@ -645,6 +689,7 @@ impl RenderGroupRuntime {
             &self.target_canvases,
             self.scene_width,
             self.scene_height,
+            &self.scene_projection_cache,
         );
 
         ProducerFrame::Surface(lease.submit(0, 0))
@@ -682,6 +727,7 @@ fn compose_authoritative_scene_canvas(
     target_canvases: &HashMap<RenderGroupId, Canvas>,
     scene_width: u32,
     scene_height: u32,
+    scene_projection_cache: &HashMap<RenderGroupId, CachedGroupProjection>,
 ) {
     scene_canvas.clear();
 
@@ -693,16 +739,123 @@ fn compose_authoritative_scene_canvas(
             continue;
         };
 
-        for zone in &group.layout.zones {
-            blit_zone_projection(
-                scene_canvas,
-                source,
-                zone,
-                &group.layout,
-                scene_width,
-                scene_height,
-            );
+        let Some(projection) = scene_projection_cache.get(&group.id) else {
+            for zone in &group.layout.zones {
+                blit_zone_projection(
+                    scene_canvas,
+                    source,
+                    zone,
+                    &group.layout,
+                    scene_width,
+                    scene_height,
+                );
+            }
+            continue;
+        };
+
+        for zone_projection in &projection.zones {
+            for sample in &zone_projection.samples {
+                scene_canvas.set_pixel(
+                    sample.x,
+                    sample.y,
+                    sample_led(
+                        source,
+                        sample.local_position,
+                        &zone_projection.zone,
+                        &zone_projection.sampling_mode,
+                        zone_projection.edge_behavior,
+                    ),
+                );
+            }
         }
+    }
+}
+
+fn build_group_projection(
+    group: &RenderGroup,
+    scene_width: u32,
+    scene_height: u32,
+) -> CachedGroupProjection {
+    CachedGroupProjection {
+        scene_width,
+        scene_height,
+        layout: group.layout.clone(),
+        zones: group
+            .layout
+            .zones
+            .iter()
+            .map(|zone| build_zone_projection(zone, &group.layout, scene_width, scene_height))
+            .collect(),
+    }
+}
+
+fn build_zone_projection(
+    zone: &DeviceZone,
+    layout: &SpatialLayout,
+    target_width: u32,
+    target_height: u32,
+) -> CachedZoneProjection {
+    let sampling_mode = zone
+        .sampling_mode
+        .clone()
+        .unwrap_or_else(|| layout.default_sampling_mode.clone());
+    let edge_behavior = zone.edge_behavior.unwrap_or(layout.default_edge_behavior);
+    let Some((x0, y0, x1, y1)) = zone_projection_bounds(zone, target_width, target_height) else {
+        return CachedZoneProjection {
+            zone: zone.clone(),
+            sampling_mode,
+            edge_behavior,
+            samples: Vec::new(),
+        };
+    };
+
+    let mut samples = Vec::with_capacity(
+        usize::try_from(u64::from(x1 - x0) * u64::from(y1 - y0)).unwrap_or(usize::MAX),
+    );
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let Some(local_position) =
+                zone_local_position_for_scene_pixel(x, y, target_width, target_height, zone)
+            else {
+                continue;
+            };
+            samples.push(ProjectionSample {
+                x,
+                y,
+                local_position,
+            });
+        }
+    }
+
+    CachedZoneProjection {
+        zone: zone.clone(),
+        sampling_mode,
+        edge_behavior,
+        samples,
+    }
+}
+
+fn blit_zone_projection(
+    target: &mut Canvas,
+    source: &Canvas,
+    zone: &DeviceZone,
+    layout: &SpatialLayout,
+    target_width: u32,
+    target_height: u32,
+) {
+    let projection = build_zone_projection(zone, layout, target_width, target_height);
+    for sample in projection.samples {
+        target.set_pixel(
+            sample.x,
+            sample.y,
+            sample_led(
+                source,
+                sample.local_position,
+                &projection.zone,
+                &projection.sampling_mode,
+                projection.edge_behavior,
+            ),
+        );
     }
 }
 
@@ -713,18 +866,15 @@ fn compose_authoritative_scene_canvas(
     clippy::cast_sign_loss,
     reason = "zone projection rasterizes bounded normalized geometry into scene pixels"
 )]
-fn blit_zone_projection(
-    target: &mut Canvas,
-    source: &Canvas,
+fn zone_projection_bounds(
     zone: &DeviceZone,
-    layout: &SpatialLayout,
     target_width: u32,
     target_height: u32,
-) {
+) -> Option<(u32, u32, u32, u32)> {
     let span_x = zone.size.x * zone.scale;
     let span_y = zone.size.y * zone.scale;
     if span_x <= 0.0 || span_y <= 0.0 || target_width == 0 || target_height == 0 {
-        return;
+        return None;
     }
 
     let half_x = span_x * 0.5;
@@ -755,7 +905,7 @@ fn blit_zone_projection(
     end_x = end_x.clamp(0.0, 1.0);
     end_y = end_y.clamp(0.0, 1.0);
     if end_x <= start_x || end_y <= start_y {
-        return;
+        return None;
     }
 
     let x0 = ((start_x * target_width as f32).floor() as u32).min(target_width);
@@ -763,28 +913,10 @@ fn blit_zone_projection(
     let y0 = ((start_y * target_height as f32).floor() as u32).min(target_height);
     let y1 = ((end_y * target_height as f32).ceil() as u32).min(target_height);
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return None;
     }
 
-    let sampling_mode = zone
-        .sampling_mode
-        .clone()
-        .unwrap_or_else(|| layout.default_sampling_mode.clone());
-    let edge_behavior = zone.edge_behavior.unwrap_or(layout.default_edge_behavior);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let Some(local_position) =
-                zone_local_position_for_scene_pixel(x, y, target_width, target_height, zone)
-            else {
-                continue;
-            };
-            target.set_pixel(
-                x,
-                y,
-                sample_led(source, local_position, zone, &sampling_mode, edge_behavior),
-            );
-        }
-    }
+    Some((x0, y0, x1, y1))
 }
 
 #[expect(
@@ -1363,6 +1495,83 @@ mod tests {
         assert_eq!(surface.get_pixel(2, 0), Rgba::new(0, 255, 0, 255));
         assert_eq!(surface.get_pixel(1, 3), Rgba::new(0, 0, 255, 255));
         assert_eq!(surface.get_pixel(2, 3), Rgba::new(255, 255, 0, 255));
+    }
+
+    #[test]
+    fn render_scene_reuses_projection_cache_until_layout_changes() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut group = sample_group(2, 2);
+        group.effect_id = Some(solid_id);
+        group.controls =
+            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+        group.layout.zones = vec![point_zone_at("zone_cached", 0.25, 0.5)];
+        let display_group_target_fps = HashMap::new();
+        let mut zones = Vec::new();
+
+        render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            0,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("first render should build the projection cache");
+        let cached_samples = runtime
+            .scene_projection_cache
+            .get(&group.id)
+            .expect("scene group should have a cached projection")
+            .zones[0]
+            .samples
+            .as_ptr();
+
+        render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            1,
+            16,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("same dependency key should keep the projection cache");
+
+        assert_eq!(
+            runtime
+                .scene_projection_cache
+                .get(&group.id)
+                .expect("scene group should keep a cached projection")
+                .zones[0]
+                .samples
+                .as_ptr(),
+            cached_samples
+        );
+
+        group.layout.zones[0].size = NormalizedPosition::new(1.0, 1.0);
+        render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&group),
+            2,
+            32,
+            &display_group_target_fps,
+            &registry,
+            &mut zones,
+        )
+        .expect("layout changes should rebuild the projection cache");
+
+        assert!(
+            runtime
+                .scene_projection_cache
+                .get(&group.id)
+                .expect("scene group should rebuild a cached projection")
+                .zones[0]
+                .samples
+                .len()
+                > 4
+        );
     }
 
     #[test]
