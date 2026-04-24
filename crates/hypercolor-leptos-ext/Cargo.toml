@@ -54,6 +54,7 @@ canvas = [
     "web-sys/ImageBitmapRenderingContext",
     "web-sys/ImageData",
     "web-sys/MessageEvent",
+    "web-sys/OffscreenCanvas",
     "web-sys/WebGlRenderingContext",
     "web-sys/Window",
 ]

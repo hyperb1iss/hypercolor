@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gloo_net::http::{Method, RequestBuilder};
-use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba};
+use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba, set_canvas_size};
 use hypercolor_leptos_ext::prelude::spawn_timeout;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -169,8 +169,7 @@ pub fn capture_thumbnail(frame: &CanvasFrame, version: String) -> Option<Thumbna
 
 fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
     let canvas = create_canvas()?;
-    canvas.set_width(frame.width);
-    canvas.set_height(frame.height);
+    set_canvas_size(&canvas, frame.width, frame.height);
 
     let ctx = context_2d(&canvas).ok_or_else(|| JsValue::from_str("no 2d context"))?;
 

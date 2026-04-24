@@ -2,14 +2,15 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use hypercolor_leptos_ext::canvas::{
-    bitmap_renderer_context, message_image_bitmap, set_canvas_size,
+    bitmap_renderer_context, message_image_bitmap, set_canvas_size, supports_global,
+    supports_offscreen_canvas_2d_bitmap,
 };
 use hypercolor_leptos_ext::events::WorkerMessageHandler;
 use js_sys::Array;
 use wasm_bindgen::JsValue;
 use web_sys::{
     Blob, BlobPropertyBag, HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent,
-    OffscreenCanvas, Url, Worker,
+    Url, Worker,
 };
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -293,16 +294,7 @@ impl PreviewWorkerRuntime {
 }
 
 fn probe_worker_canvas_support() -> Result<(), ()> {
-    let offscreen = OffscreenCanvas::new(1, 1).map_err(|_| ())?;
-    let has_context = offscreen.get_context("2d").ok().flatten().is_some();
-    let has_bitmap = offscreen
-        .transfer_to_image_bitmap()
-        .map(|bitmap| {
-            bitmap.close();
-        })
-        .is_ok();
-
-    if has_context && has_bitmap {
+    if supports_offscreen_canvas_2d_bitmap() {
         Ok(())
     } else {
         Err(())
@@ -310,9 +302,7 @@ fn probe_worker_canvas_support() -> Result<(), ()> {
 }
 
 fn probe_worker_jpeg_support() -> Result<(), ()> {
-    js_sys::Reflect::has(&js_sys::global(), &JsValue::from_str("createImageBitmap"))
-        .map_err(|_| ())
-        .and_then(|supported| supported.then_some(()).ok_or(()))
+    supports_global("createImageBitmap").then_some(()).ok_or(())
 }
 
 fn probe_worker_support(format: CanvasPixelFormat) -> Result<(), ()> {

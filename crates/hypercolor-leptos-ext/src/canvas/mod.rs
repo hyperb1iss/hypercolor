@@ -69,6 +69,21 @@ pub fn supports_bitmap_worker_canvas() -> bool {
         && supports_global("Worker")
 }
 
+pub fn supports_offscreen_canvas_2d_bitmap() -> bool {
+    let Ok(offscreen) = web_sys::OffscreenCanvas::new(1, 1) else {
+        return false;
+    };
+    let has_context = offscreen.get_context("2d").ok().flatten().is_some();
+    let has_bitmap = offscreen
+        .transfer_to_image_bitmap()
+        .map(|bitmap| {
+            bitmap.close();
+        })
+        .is_ok();
+
+    has_context && has_bitmap
+}
+
 pub fn message_image_bitmap(event: &web_sys::MessageEvent) -> Option<web_sys::ImageBitmap> {
     event.data().dyn_into().ok()
 }
