@@ -8,13 +8,13 @@
 
 use std::collections::VecDeque;
 
+use hypercolor_leptos_ext::events::{EventHandle, on};
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
 
 use crate::api;
 use crate::app::WsContext;
@@ -187,6 +187,8 @@ pub fn DashboardPage() -> impl IntoView {
     let (dashboard_preview_cap, set_dashboard_preview_cap) = signal(DASHBOARD_PREVIEW_FPS_CAP);
     let preview_recovery_streak = StoredValue::new(0_u8);
     let last_skipped_frames = StoredValue::new(0_u32);
+    let fullscreenchange_listener: StoredValue<Option<EventHandle>, LocalStorage> =
+        StoredValue::new_local(None);
 
     // Resizable preview column — persisted across reloads.
     let (preview_width, set_preview_width) = signal(
@@ -275,23 +277,20 @@ pub fn DashboardPage() -> impl IntoView {
     // Sync our signal when the user exits fullscreen through the browser
     // (native Esc, address bar click, etc.). `fullscreenchange` fires on
     // document, which doesn't bubble to window, so we attach directly.
-    // The closure is forgotten so it lives for the page lifetime — one
-    // leaked listener per dashboard mount is cheap and avoids the
-    // cleanup dance for a listener that should never be removed anyway.
     if let Some(document) = web_sys::window().and_then(|win| win.document()) {
         let document_for_callback = document.clone();
         let fullscreen_signal = fullscreen;
-        let callback = Closure::<dyn FnMut()>::new(move || {
-            let browser_is_fullscreen = document_for_callback.fullscreen_element().is_some();
-            if !browser_is_fullscreen && fullscreen_signal.get_untracked() {
-                fullscreen_signal.set(false);
-            }
-        });
-        let _ = document.add_event_listener_with_callback(
+        let listener = on(
+            document.unchecked_ref::<web_sys::EventTarget>(),
             "fullscreenchange",
-            callback.as_ref().unchecked_ref(),
+            move |_| {
+                let browser_is_fullscreen = document_for_callback.fullscreen_element().is_some();
+                if !browser_is_fullscreen && fullscreen_signal.get_untracked() {
+                    fullscreen_signal.set(false);
+                }
+            },
         );
-        callback.forget();
+        fullscreenchange_listener.set_value(Some(listener));
     }
 
     Effect::new(move |_| {
