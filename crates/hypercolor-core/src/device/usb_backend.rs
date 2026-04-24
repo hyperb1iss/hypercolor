@@ -684,6 +684,15 @@ impl UsbBackend {
                         continue;
                     };
 
+                    Self::run_overdue_device_frame(
+                        device_id,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        &mut frame_rx,
+                        &mut frame_commands,
+                    )
+                    .await?;
+
                     Self::run_device_display_frame(
                         device_id,
                         protocol.as_ref(),
@@ -716,6 +725,24 @@ impl UsbBackend {
         }
 
         Ok(())
+    }
+
+    async fn run_overdue_device_frame(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        frame_rx: &mut watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        if !frame_rx.has_changed().unwrap_or(false) {
+            return Ok(());
+        }
+
+        let Some(frame) = frame_rx.borrow_and_update().clone() else {
+            return Ok(());
+        };
+
+        Self::run_device_frame(device_id, protocol, transport, &frame, commands).await
     }
 
     async fn run_device_frame(
@@ -1628,5 +1655,180 @@ fn protocol_zone_to_zone_info(zone: hypercolor_hal::protocol::ProtocolZone) -> Z
         led_count: zone.led_count,
         topology: zone.topology,
         color_format: zone.color_format,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use hypercolor_hal::protocol::{ProtocolResponse, ProtocolZone, TransferType};
+    use hypercolor_types::device::DeviceCapabilities;
+    use tokio::time::timeout;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn display_branch_services_pending_led_frame_before_display_frame() {
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+        let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+            colors: vec![[0x11, 0x22, 0x33]],
+        })));
+        display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
+            jpeg_data: Arc::new(vec![0xD1]),
+        })));
+
+        let transport = Arc::new(RecordingTransport::default());
+        let actor_protocol: Arc<dyn Protocol> = Arc::new(FairnessProtocol);
+        let actor_transport: Arc<dyn Transport> = transport.clone();
+
+        let actor = tokio::spawn(UsbBackend::run_device_actor(
+            DeviceId::new(),
+            "fairness-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ));
+
+        let writes = wait_for_writes(&transport, 2).await;
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(UsbDeviceCommand::Shutdown {
+                led_count: 0,
+                response_tx,
+            })
+            .expect("actor command channel should still be open");
+
+        response_rx
+            .await
+            .expect("shutdown response should be delivered")
+            .expect("shutdown should succeed");
+        actor
+            .await
+            .expect("actor task should join")
+            .expect("actor should exit cleanly");
+
+        assert_eq!(writes, vec![vec![0x11], vec![0xD1]]);
+    }
+
+    async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Vec<u8>> {
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let writes = transport.writes();
+                if writes.len() >= count {
+                    return writes;
+                }
+
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("transport writes should arrive before timeout")
+    }
+
+    struct FairnessProtocol;
+
+    impl Protocol for FairnessProtocol {
+        fn name(&self) -> &'static str {
+            "fairness-test"
+        }
+
+        fn init_sequence(&self) -> Vec<ProtocolCommand> {
+            Vec::new()
+        }
+
+        fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+            Vec::new()
+        }
+
+        fn encode_frame(&self, _colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+            vec![test_command(0x11)]
+        }
+
+        fn encode_display_frame(&self, _jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
+            Some(vec![test_command(0xD1)])
+        }
+
+        fn parse_response(
+            &self,
+            _data: &[u8],
+        ) -> std::result::Result<ProtocolResponse, ProtocolError> {
+            Ok(ProtocolResponse {
+                status: ResponseStatus::Ok,
+                data: Vec::new(),
+            })
+        }
+
+        fn zones(&self) -> Vec<ProtocolZone> {
+            Vec::new()
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            DeviceCapabilities::default()
+        }
+
+        fn total_leds(&self) -> u32 {
+            1
+        }
+
+        fn frame_interval(&self) -> Duration {
+            Duration::from_millis(16)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTransport {
+        writes: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl RecordingTransport {
+        fn writes(&self) -> Vec<Vec<u8>> {
+            self.writes
+                .lock()
+                .expect("recording transport mutex should not be poisoned")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl Transport for RecordingTransport {
+        fn name(&self) -> &'static str {
+            "recording-test"
+        }
+
+        async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+            self.writes
+                .lock()
+                .expect("recording transport mutex should not be poisoned")
+                .push(data.to_vec());
+            Ok(())
+        }
+
+        async fn receive(
+            &self,
+            _timeout: Duration,
+        ) -> std::result::Result<Vec<u8>, TransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn close(&self) -> std::result::Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    fn test_command(byte: u8) -> ProtocolCommand {
+        ProtocolCommand {
+            data: vec![byte],
+            expects_response: false,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
     }
 }
