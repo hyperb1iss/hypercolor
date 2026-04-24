@@ -1,5 +1,5 @@
+use hypercolor_leptos_ext::canvas::context_2d;
 use wasm_bindgen::Clamped;
-use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -26,11 +26,7 @@ pub(super) struct Canvas2dPreviewRuntime {
 
 impl Canvas2dPreviewRuntime {
     pub(super) fn new(canvas: &HtmlCanvasElement) -> Option<Self> {
-        let ctx = canvas
-            .get_context("2d")
-            .ok()
-            .flatten()
-            .and_then(|ctx| ctx.dyn_into::<CanvasRenderingContext2d>().ok())?;
+        let ctx = context_2d(canvas)?;
 
         Some(Self {
             ctx,

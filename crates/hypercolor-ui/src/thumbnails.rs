@@ -12,10 +12,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gloo_net::http::{Method, RequestBuilder};
+use hypercolor_leptos_ext::canvas::{context_2d, create_canvas};
 use hypercolor_leptos_ext::prelude::spawn_timeout;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsValue;
 
 use crate::color::{self, CanvasPalette};
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -167,22 +168,11 @@ pub fn capture_thumbnail(frame: &CanvasFrame, version: String) -> Option<Thumbna
 }
 
 fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
-    let document = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or_else(|| JsValue::from_str("no document"))?;
-    let canvas: web_sys::HtmlCanvasElement = document
-        .create_element("canvas")?
-        .dyn_into()
-        .map_err(|_| JsValue::from_str("not an HtmlCanvasElement"))?;
-
+    let canvas = create_canvas()?;
     canvas.set_width(frame.width);
     canvas.set_height(frame.height);
 
-    let ctx: web_sys::CanvasRenderingContext2d = canvas
-        .get_context("2d")?
-        .ok_or_else(|| JsValue::from_str("no 2d context"))?
-        .dyn_into()
-        .map_err(|_| JsValue::from_str("not a 2d context"))?;
+    let ctx = context_2d(&canvas).ok_or_else(|| JsValue::from_str("no 2d context"))?;
 
     let rgba = frame_to_rgba_vec(frame);
     let clamped = wasm_bindgen::Clamped(rgba.as_slice());

@@ -1,8 +1,8 @@
 //! Preview FPS cap logic, subscription management, and backpressure handling.
 
 use leptos::prelude::*;
-use wasm_bindgen::{JsCast, JsValue};
 
+use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use super::messages::CanvasFrame;
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
@@ -73,30 +73,7 @@ fn preview_canvas_format_for_host(hostname: &str) -> &'static str {
 }
 
 fn supports_remote_jpeg_preview() -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
-    let Some(document) = window.document() else {
-        return false;
-    };
-    let Ok(canvas) = document.create_element("canvas") else {
-        return false;
-    };
-    let Ok(canvas) = canvas.dyn_into::<web_sys::HtmlCanvasElement>() else {
-        return false;
-    };
-
-    let has_bitmap_renderer = canvas
-        .get_context("bitmaprenderer")
-        .ok()
-        .flatten()
-        .is_some();
-    let global = js_sys::global();
-    let has_create_image_bitmap =
-        js_sys::Reflect::has(&global, &JsValue::from_str("createImageBitmap")).unwrap_or(false);
-    let has_worker = js_sys::Reflect::has(&global, &JsValue::from_str("Worker")).unwrap_or(false);
-
-    has_bitmap_renderer && has_create_image_bitmap && has_worker
+    supports_bitmap_worker_canvas()
 }
 
 fn web_viewport_preview_request_dimensions() -> (u32, u32) {

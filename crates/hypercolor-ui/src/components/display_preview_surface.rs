@@ -1,34 +1,11 @@
 use leptos::prelude::*;
-use wasm_bindgen::{JsCast, JsValue};
 
+use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 fn supports_display_preview_canvas() -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
-    let Some(document) = window.document() else {
-        return false;
-    };
-    let Ok(canvas) = document.create_element("canvas") else {
-        return false;
-    };
-    let Ok(canvas) = canvas.dyn_into::<web_sys::HtmlCanvasElement>() else {
-        return false;
-    };
-
-    let has_bitmap_renderer = canvas
-        .get_context("bitmaprenderer")
-        .ok()
-        .flatten()
-        .is_some();
-    let global = js_sys::global();
-    let has_create_image_bitmap =
-        js_sys::Reflect::has(&global, &JsValue::from_str("createImageBitmap")).unwrap_or(false);
-    let has_worker = js_sys::Reflect::has(&global, &JsValue::from_str("Worker")).unwrap_or(false);
-
-    has_bitmap_renderer && has_create_image_bitmap && has_worker
+    supports_bitmap_worker_canvas()
 }
 
 fn jpeg_frame_blob_url(frame: &CanvasFrame) -> Option<String> {

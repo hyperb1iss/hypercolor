@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use hypercolor_leptos_ext::canvas::bitmap_renderer_context;
 use hypercolor_leptos_ext::events::WorkerMessageHandler;
 use js_sys::Array;
 use wasm_bindgen::JsCast;
@@ -227,12 +228,7 @@ impl PreviewWorkerRuntime {
             canvas.set_height(frame.height);
         }
 
-        let bitmap_ctx = canvas
-            .get_context("bitmaprenderer")
-            .ok()
-            .flatten()
-            .and_then(|ctx| ctx.dyn_into::<ImageBitmapRenderingContext>().ok())
-            .ok_or(())?;
+        let bitmap_ctx = bitmap_renderer_context(canvas).ok_or(())?;
         probe_worker_support(frame.pixel_format())?;
 
         let worker_url = create_worker_url().map_err(|_| ())?;

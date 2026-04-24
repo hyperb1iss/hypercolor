@@ -1,4 +1,4 @@
-use wasm_bindgen::JsCast;
+use hypercolor_leptos_ext::canvas::webgl_context;
 use web_sys::{
     HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader,
     WebGlTexture,
@@ -66,13 +66,7 @@ impl WebGlPreviewRuntime {
         canvas: &HtmlCanvasElement,
         smooth_scaling: bool,
     ) -> Result<Self, WebGlInitError> {
-        let gl = canvas
-            .get_context("webgl")
-            .ok()
-            .flatten()
-            .or_else(|| canvas.get_context("experimental-webgl").ok().flatten())
-            .and_then(|ctx| ctx.dyn_into::<Gl>().ok())
-            .ok_or(WebGlInitError::ContextUnavailable)?;
+        let gl = webgl_context(canvas).ok_or(WebGlInitError::ContextUnavailable)?;
 
         let vertex_shader = compile_shader(&gl, Gl::VERTEX_SHADER, PREVIEW_VERTEX_SHADER)
             .ok_or(WebGlInitError::InitializationFailed)?;

@@ -38,7 +38,17 @@ events = [
     "web-sys/MessageEvent",
     "web-sys/Worker",
 ]
-canvas = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+canvas = [
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+    "web-sys/CanvasRenderingContext2d",
+    "web-sys/Document",
+    "web-sys/HtmlCanvasElement",
+    "web-sys/ImageBitmapRenderingContext",
+    "web-sys/WebGlRenderingContext",
+    "web-sys/Window",
+]
 webgpu = ["canvas", "dep:wgpu"]
 raf = ["dep:wasm-bindgen", "dep:web-sys", "web-sys/Performance", "web-sys/Window"]
 prelude = [
