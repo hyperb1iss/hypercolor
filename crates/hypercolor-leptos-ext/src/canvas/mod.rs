@@ -96,6 +96,19 @@ pub fn image_data_rgba(
     web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(pixels), width, height)
 }
 
+pub fn blob_url_from_bytes(bytes: &js_sys::Uint8Array, mime_type: &str) -> Result<String, JsValue> {
+    let parts = js_sys::Array::new();
+    parts.push(bytes);
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime_type);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)?;
+    web_sys::Url::create_object_url_with_blob(&blob)
+}
+
+pub fn revoke_blob_url(url: &str) -> bool {
+    web_sys::Url::revoke_object_url(url).is_ok()
+}
+
 pub fn allocate_texture_u8(
     gl: &web_sys::WebGlRenderingContext,
     width: i32,

@@ -1,8 +1,10 @@
 use leptos::prelude::*;
 
-use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
+use hypercolor_leptos_ext::canvas::{
+    blob_url_from_bytes, revoke_blob_url, supports_bitmap_worker_canvas,
+};
 
 fn supports_display_preview_canvas() -> bool {
     supports_bitmap_worker_canvas()
@@ -13,12 +15,7 @@ fn jpeg_frame_blob_url(frame: &CanvasFrame) -> Option<String> {
         return None;
     }
 
-    let parts = js_sys::Array::new();
-    parts.push(frame.pixels_js());
-    let options = web_sys::BlobPropertyBag::new();
-    options.set_type("image/jpeg");
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).ok()?;
-    web_sys::Url::create_object_url_with_blob(&blob).ok()
+    blob_url_from_bytes(frame.pixels_js(), "image/jpeg").ok()
 }
 
 #[component]
@@ -40,7 +37,7 @@ pub fn DisplayPreviewSurface(
 
     Effect::new(move |previous: Option<Option<String>>| {
         if let Some(Some(old_url)) = previous.as_ref() {
-            let _ = web_sys::Url::revoke_object_url(old_url);
+            revoke_blob_url(old_url);
         }
 
         if prefer_canvas_presenter {
@@ -54,7 +51,7 @@ pub fn DisplayPreviewSurface(
     });
     on_cleanup(move || {
         if let Some(url) = live_blob_url.get_untracked() {
-            let _ = web_sys::Url::revoke_object_url(&url);
+            revoke_blob_url(&url);
         }
     });
 

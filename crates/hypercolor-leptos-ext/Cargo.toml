@@ -47,6 +47,8 @@ canvas = [
     "dep:js-sys",
     "dep:wasm-bindgen",
     "dep:web-sys",
+    "web-sys/Blob",
+    "web-sys/BlobPropertyBag",
     "web-sys/CanvasRenderingContext2d",
     "web-sys/Document",
     "web-sys/HtmlCanvasElement",
@@ -55,6 +57,7 @@ canvas = [
     "web-sys/ImageData",
     "web-sys/MessageEvent",
     "web-sys/OffscreenCanvas",
+    "web-sys/Url",
     "web-sys/WebGlRenderingContext",
     "web-sys/Window",
 ]
