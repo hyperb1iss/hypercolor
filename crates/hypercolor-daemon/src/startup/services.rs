@@ -460,6 +460,7 @@ impl DaemonState {
             driver_host,
             driver_registry,
             performance,
+            render_acceleration,
             device_metrics,
             lifecycle_manager,
             reconnect_tasks,

@@ -255,6 +255,36 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
 }
 
+#[cfg(not(feature = "wgpu"))]
+#[tokio::test]
+async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_feature() {
+    let _guard = TestDataDirGuard::new().await;
+    let temp = temp_config_file();
+    let mut config = default_config();
+    config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Auto;
+
+    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("auto render acceleration should initialize with CPU fallback");
+    let response = get_status(State(Arc::new(AppState::from_daemon_state(&state)))).await;
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("status body should read");
+    let json: Value = serde_json::from_slice(&body).expect("status should serialize");
+
+    assert_eq!(
+        json["data"]["render_acceleration"]["requested_mode"],
+        "auto"
+    );
+    assert_eq!(json["data"]["render_acceleration"]["effective_mode"], "cpu");
+    assert!(
+        json["data"]["render_acceleration"]["fallback_reason"]
+            .as_str()
+            .expect("auto fallback reason should be present")
+            .contains("built without the `wgpu` feature")
+    );
+    assert!(json["data"]["render_acceleration"]["gpu_probe"].is_null());
+}
+
 #[cfg(feature = "wgpu")]
 #[tokio::test]
 async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enabled() {

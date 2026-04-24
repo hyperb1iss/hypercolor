@@ -26,7 +26,6 @@ use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
 use super::discovery_worker::DiscoveryWorkerContext;
-use super::resolve_compositor_acceleration_mode;
 
 impl DaemonState {
     /// Start all subsystems — render loop, render thread, backend discovery.
@@ -76,9 +75,6 @@ impl DaemonState {
         }
 
         // Spawn the render thread.
-        let render_acceleration =
-            resolve_compositor_acceleration_mode(config.effect_engine.render_acceleration_mode)
-                .context("failed to resolve compositor acceleration mode while starting daemon")?;
         let rt_state = RenderThreadState {
             effect_registry: Arc::clone(&self.effect_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
@@ -96,7 +92,7 @@ impl DaemonState {
             scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
             canvas_dims: CanvasDims::new(config.daemon.canvas_width, config.daemon.canvas_height),
-            render_acceleration_mode: render_acceleration.effective_mode,
+            render_acceleration_mode: self.render_acceleration.effective_mode,
             configured_max_fps_tier: FpsTier::from_fps(config.daemon.target_fps),
         };
         self.render_thread = Some(

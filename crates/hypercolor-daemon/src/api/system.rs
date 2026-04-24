@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
+use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -46,6 +47,7 @@ pub struct SystemStatus {
     pub global_brightness: u8,
     pub audio_available: bool,
     pub capture_available: bool,
+    pub render_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
     pub latest_frame: Option<LatestFrameStatus>,
     pub effect_health: EffectHealthStatus,
@@ -62,6 +64,23 @@ pub struct RenderLoopStatus {
     pub actual_fps: f64,
     pub consecutive_misses: u32,
     pub total_frames: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RenderAccelerationStatus {
+    pub requested_mode: String,
+    pub effective_mode: String,
+    pub fallback_reason: Option<String>,
+    pub gpu_probe: Option<GpuCompositorProbeStatus>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GpuCompositorProbeStatus {
+    pub adapter_name: String,
+    pub backend: String,
+    pub texture_format: String,
+    pub max_texture_dimension_2d: u32,
+    pub max_storage_textures_per_shader_stage: u32,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -242,6 +261,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),
+        render_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
         latest_frame,
         effect_health,
@@ -409,6 +429,34 @@ fn overall_health(checks: &HealthChecks) -> &'static str {
 
 fn render_loop_is_operational(state: &str) -> bool {
     state != "stopped"
+}
+
+fn render_acceleration_status(
+    resolution: &crate::startup::CompositorAccelerationResolution,
+) -> RenderAccelerationStatus {
+    RenderAccelerationStatus {
+        requested_mode: render_acceleration_mode_name(resolution.requested_mode).to_owned(),
+        effective_mode: render_acceleration_mode_name(resolution.effective_mode).to_owned(),
+        fallback_reason: resolution.fallback_reason.map(str::to_owned),
+        gpu_probe: resolution
+            .gpu_probe
+            .as_ref()
+            .map(|probe| GpuCompositorProbeStatus {
+                adapter_name: probe.adapter_name.clone(),
+                backend: probe.backend.to_owned(),
+                texture_format: probe.texture_format.to_owned(),
+                max_texture_dimension_2d: probe.max_texture_dimension_2d,
+                max_storage_textures_per_shader_stage: probe.max_storage_textures_per_shader_stage,
+            }),
+    }
+}
+
+const fn render_acceleration_mode_name(mode: RenderAccelerationMode) -> &'static str {
+    match mode {
+        RenderAccelerationMode::Cpu => "cpu",
+        RenderAccelerationMode::Auto => "auto",
+        RenderAccelerationMode::Gpu => "gpu",
+    }
 }
 
 #[cfg(feature = "servo")]
@@ -642,6 +690,10 @@ mod tests {
         assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
+        assert_eq!(json["data"]["render_acceleration"]["requested_mode"], "cpu");
+        assert_eq!(json["data"]["render_acceleration"]["effective_mode"], "cpu");
+        assert!(json["data"]["render_acceleration"]["fallback_reason"].is_null());
+        assert!(json["data"]["render_acceleration"]["gpu_probe"].is_null());
         assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
         assert_eq!(
             json["data"]["latest_frame"]["compositor_backend"],

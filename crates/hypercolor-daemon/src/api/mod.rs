@@ -132,6 +132,9 @@ pub struct AppState {
     /// Rolling render-performance snapshot shared with metrics endpoints.
     pub performance: Arc<RwLock<PerformanceTracker>>,
 
+    /// Resolved compositor acceleration path exposed through status surfaces.
+    pub(crate) render_acceleration: crate::startup::CompositorAccelerationResolution,
+
     /// Rolling per-device metrics snapshot shared with device metrics endpoints.
     pub device_metrics: DeviceMetricsSnapshotStore,
 
@@ -454,6 +457,7 @@ impl AppState {
             backend_manager,
             usb_protocol_configs,
             performance,
+            render_acceleration: crate::startup::cpu_compositor_acceleration_resolution(),
             device_metrics,
             lifecycle_manager,
             reconnect_tasks,
@@ -538,6 +542,7 @@ impl AppState {
             backend_manager: Arc::clone(&daemon.backend_manager),
             usb_protocol_configs: daemon.usb_protocol_configs.clone(),
             performance: Arc::clone(&daemon.performance),
+            render_acceleration: daemon.render_acceleration.clone(),
             device_metrics: Arc::clone(&daemon.device_metrics),
             lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),

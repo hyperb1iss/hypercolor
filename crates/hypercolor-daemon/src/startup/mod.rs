@@ -59,7 +59,10 @@ pub mod logging;
 mod services;
 mod signals;
 
-pub(crate) use acceleration::resolve_compositor_acceleration_mode;
+pub(crate) use acceleration::{
+    CompositorAccelerationResolution, cpu_compositor_acceleration_resolution,
+    resolve_compositor_acceleration_mode,
+};
 pub use config::{default_config, load_config, parse_config_toml};
 pub use discovery_worker::collect_unmapped_prefixed_layout_targets;
 pub use signals::install_signal_handlers;
@@ -117,6 +120,9 @@ pub struct DaemonState {
 
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,
+
+    /// Resolved compositor acceleration path used by the render thread.
+    pub(crate) render_acceleration: CompositorAccelerationResolution,
 
     /// Rolling per-device metrics snapshot shared with the API.
     pub device_metrics: DeviceMetricsSnapshotStore,

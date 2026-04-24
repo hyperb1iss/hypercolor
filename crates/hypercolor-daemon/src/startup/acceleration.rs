@@ -29,6 +29,15 @@ pub(crate) struct CompositorAccelerationResolution {
     pub(crate) gpu_probe: Option<GpuCompositorProbeInfo>,
 }
 
+pub(crate) const fn cpu_compositor_acceleration_resolution() -> CompositorAccelerationResolution {
+    CompositorAccelerationResolution {
+        requested_mode: RenderAccelerationMode::Cpu,
+        effective_mode: RenderAccelerationMode::Cpu,
+        fallback_reason: None,
+        gpu_probe: None,
+    }
+}
+
 pub(crate) fn resolve_compositor_acceleration_mode(
     requested_mode: RenderAccelerationMode,
 ) -> Result<CompositorAccelerationResolution> {
