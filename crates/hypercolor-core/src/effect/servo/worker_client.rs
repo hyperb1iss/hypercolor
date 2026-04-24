@@ -384,6 +384,25 @@ impl ServoWorkerClient {
         result
     }
 
+    pub(super) fn destroy_session_detached(&self, session_id: ServoSessionId) -> Result<()> {
+        if !self.has_session(session_id) {
+            return Ok(());
+        }
+
+        let (response_tx, _response_rx) = mpsc::sync_channel(1);
+        if let Err(error) = self.command_tx.send(WorkerCommand::DestroySession {
+            session_id,
+            response_tx,
+        }) {
+            self.remove_session(session_id);
+            return Err(error)
+                .context("failed to send detached destroy-session command to Servo worker");
+        }
+
+        self.remove_session(session_id);
+        Ok(())
+    }
+
     fn transition_to(&self, session_id: ServoSessionId, next: WorkerClientState) -> Result<()> {
         self.with_session_slot(session_id, |slot| slot.store(next))
     }
@@ -438,5 +457,33 @@ mod tests {
         });
 
         assert_eq!(client.state(session_id), WorkerClientState::Idle);
+    }
+
+    #[test]
+    fn detached_destroy_removes_session_without_waiting_for_worker_reply() {
+        let (command_tx, command_rx) = mpsc::channel();
+        let client =
+            ServoWorkerClient::new(command_tx, Arc::new(ServoWorkerClientSharedState::new()));
+
+        let session_id = ServoSessionId(7);
+        client.with_sessions(|sessions| {
+            sessions.insert(session_id, ClientStateSlot::new());
+        });
+
+        client
+            .destroy_session_detached(session_id)
+            .expect("detached destroy should queue without waiting");
+
+        assert!(!client.has_session(session_id));
+        let WorkerCommand::DestroySession {
+            session_id: queued_id,
+            ..
+        } = command_rx
+            .try_recv()
+            .expect("detached destroy command should be queued")
+        else {
+            panic!("expected detached destroy command");
+        };
+        assert_eq!(queued_id, session_id);
     }
 }

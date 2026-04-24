@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -24,16 +24,6 @@ pub struct ServoSessionHandle {
     last_canvas: Option<Canvas>,
     #[allow(dead_code)]
     inject_engine_globals: bool,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum DrainPendingRenderError {
-    #[error(transparent)]
-    Worker(#[from] anyhow::Error),
-    #[error("Timed out waiting for in-flight Servo frame")]
-    TimedOut,
-    #[error("Servo worker disconnected while waiting for a frame")]
-    Disconnected,
 }
 
 impl ServoSessionHandle {
@@ -119,25 +109,6 @@ impl ServoSessionHandle {
             .map(|render| render.submitted_at.elapsed())
     }
 
-    pub fn drain_pending_render(
-        &mut self,
-        timeout: Duration,
-    ) -> std::result::Result<Option<Canvas>, DrainPendingRenderError> {
-        let Some(render) = self.pending_render.take() else {
-            return Ok(None);
-        };
-
-        match render.response_rx.recv_timeout(timeout) {
-            Ok(result) => {
-                let canvas = result?;
-                self.last_canvas = Some(canvas.clone());
-                Ok(Some(canvas))
-            }
-            Err(RecvTimeoutError::Timeout) => Err(DrainPendingRenderError::TimedOut),
-            Err(RecvTimeoutError::Disconnected) => Err(DrainPendingRenderError::Disconnected),
-        }
-    }
-
     #[must_use]
     pub fn last_canvas(&self) -> Option<&Canvas> {
         self.last_canvas.as_ref()
@@ -146,6 +117,11 @@ impl ServoSessionHandle {
     pub fn close(mut self) -> Result<()> {
         self.pending_render = None;
         self.worker.destroy_session(self.session_id)
+    }
+
+    pub fn close_detached(mut self) -> Result<()> {
+        self.pending_render = None;
+        self.worker.destroy_session_detached(self.session_id)
     }
 }
 

@@ -17,11 +17,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::session::DrainPendingRenderError;
 use super::telemetry::record_servo_soft_stall;
 use super::worker::{
-    RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, poison_shared_servo_worker,
-    prepare_runtime_html_source, servo_worker_is_fatal_error,
+    RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
+    servo_worker_is_fatal_error,
 };
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
@@ -376,47 +375,6 @@ impl ServoRenderer {
         }
     }
 
-    fn drain_in_flight_render(&mut self) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-
-        match session.drain_pending_render(RENDER_RESPONSE_TIMEOUT) {
-            Ok(Some(canvas)) => {
-                self.last_canvas = Some(canvas);
-                self.warned_fallback_frame = false;
-                self.warned_stalled_frame = false;
-            }
-            Ok(None) => {}
-            Err(DrainPendingRenderError::Worker(error)) => {
-                note_servo_session_error(
-                    "Servo frame render failed while draining effect teardown",
-                    &error,
-                );
-                if servo_worker_is_fatal_error(&error) {
-                    self.session = None;
-                }
-                warn!(%error, "Servo frame render failed while draining effect teardown");
-            }
-            Err(DrainPendingRenderError::TimedOut) => {
-                poison_shared_servo_worker(
-                    "Timed out waiting for in-flight Servo frame during effect teardown",
-                );
-                warn!(
-                    timeout_ms = RENDER_RESPONSE_TIMEOUT.as_millis(),
-                    "Timed out waiting for in-flight Servo frame during effect teardown"
-                );
-            }
-            Err(DrainPendingRenderError::Disconnected) => {
-                poison_shared_servo_worker(
-                    "Servo worker disconnected while draining effect teardown",
-                );
-                warn!("Servo worker disconnected while draining effect teardown");
-                self.session = None;
-            }
-        }
-    }
-
     fn active_fps_cap(&self) -> u32 {
         self.last_animation_fps_cap
             .unwrap_or(DEFAULT_EFFECT_FPS_CAP)
@@ -470,15 +428,11 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
-        self.drain_in_flight_render();
         if let Some(session) = self.session.take()
-            && let Err(error) = session.close()
+            && let Err(error) = session.close_detached()
         {
-            note_servo_session_error(
-                "Failed to destroy Servo effect session during destroy",
-                &error,
-            );
-            warn!(%error, "Failed to destroy Servo effect session during destroy");
+            note_servo_session_error("Failed to queue Servo effect session destroy", &error);
+            warn!(%error, "Failed to queue Servo effect session destroy");
         }
         self.pending_scripts.clear();
         self.queued_frame = None;
@@ -1309,8 +1263,8 @@ mod tests {
     }
 
     #[test]
-    fn destroy_waits_for_in_flight_render_then_unloads_worker_page() {
-        let (worker, render_rx, result_tx, _delivered_rx, unload_rx, stopped) =
+    fn destroy_detaches_in_flight_render_before_unloading_worker_page() {
+        let (worker, render_rx, result_tx, delivered_rx, unload_rx, stopped) =
             spawn_render_test_worker();
 
         let mut renderer = ServoRenderer::new();
@@ -1327,27 +1281,27 @@ mod tests {
             .recv_timeout(Duration::from_millis(100))
             .expect("first render command");
 
-        let release_render = thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
-            result_tx
-                .send(Ok(solid_canvas(
-                    DEFAULT_CANVAS_WIDTH,
-                    DEFAULT_CANVAS_HEIGHT,
-                    7,
-                    8,
-                    9,
-                )))
-                .expect("destroy should drain in-flight render");
-        });
+        let started_at = std::time::Instant::now();
 
         renderer.destroy();
 
+        assert!(started_at.elapsed() < Duration::from_millis(20));
+        assert!(unload_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        result_tx
+            .send(Ok(solid_canvas(
+                DEFAULT_CANVAS_WIDTH,
+                DEFAULT_CANVAS_HEIGHT,
+                7,
+                8,
+                9,
+            )))
+            .expect("cleanup render result");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("cleanup result delivery ack");
         unload_rx
             .recv_timeout(Duration::from_millis(100))
             .expect("destroy should unload the active Servo page");
-        release_render
-            .join()
-            .expect("render release helper should not panic");
 
         drop(worker);
         assert!(stopped.load(Ordering::SeqCst));
