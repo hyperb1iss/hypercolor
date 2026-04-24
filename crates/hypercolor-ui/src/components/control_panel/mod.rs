@@ -9,7 +9,7 @@ use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use hypercolor_leptos_ext::events::target_closest;
+use hypercolor_leptos_ext::events::{document, target_closest};
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, PreviewSource,
@@ -468,7 +468,7 @@ pub(super) fn install_control_dropdown_outside_handler(
     is_open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
 ) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+    let Some(doc) = document() else {
         return;
     };
     let selector = format!(".{class_name}");

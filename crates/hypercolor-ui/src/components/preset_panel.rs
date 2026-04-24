@@ -6,7 +6,7 @@ use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use std::collections::HashMap;
 
-use hypercolor_leptos_ext::events::{Input, target_closest};
+use hypercolor_leptos_ext::events::{Input, document, target_closest};
 use hypercolor_types::effect::{ControlValue, PresetTemplate};
 
 use super::preset_matching::{
@@ -850,7 +850,7 @@ fn DropdownItem(
 /// Install a one-time document-level mousedown listener that closes the
 /// dropdown when clicking outside `.preset-dropdown`.
 fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+    let Some(doc) = document() else {
         return;
     };
 

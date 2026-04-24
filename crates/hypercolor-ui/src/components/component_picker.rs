@@ -3,8 +3,7 @@
 
 use std::time::Duration;
 
-use hypercolor_leptos_ext::events::Input;
-use hypercolor_leptos_ext::events::target_closest;
+use hypercolor_leptos_ext::events::{Input, document, target_closest};
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
@@ -58,7 +57,7 @@ fn category_shape_svg(category: &str, size: u32) -> String {
 // ── Outside click handler ───────────────────────────────────────────────────
 
 fn install_outside_click_handler(set_open: WriteSignal<bool>) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+    let Some(doc) = document() else {
         return;
     };
 

@@ -5,6 +5,7 @@ use leptos_icons::Icon;
 use leptos_router::hooks::use_params_map;
 use leptos_use::use_debounce_fn;
 
+use hypercolor_leptos_ext::events::document;
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::components::calibration_guide::CalibrationGuide;
@@ -1117,10 +1118,7 @@ fn hex_to_color_value(hex: &str) -> Option<ControlValue> {
 }
 
 fn toggle_body_resizing(active: bool) {
-    if let Some(body) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.body())
-    {
+    if let Some(body) = document().and_then(|d| d.body()) {
         if active {
             let _ = body.class_list().add_1("resizing");
         } else {

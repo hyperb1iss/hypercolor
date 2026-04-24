@@ -3,7 +3,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use hypercolor_leptos_ext::events::{EventHandle, document_event_target, on};
+use hypercolor_leptos_ext::events::{EventHandle, document, document_event_target, on};
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use hypercolor_leptos_ext::ws::transport::{WebSocketEventHandlers, message_array_buffer};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
@@ -484,7 +484,7 @@ impl WsManager {
         });
 
         // Visibility change listener
-        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        if let Some(document) = document() {
             visibility_change_callback.update_value(|handle| {
                 if let Some(mut handle) = handle.take() {
                     handle.cancel();
@@ -612,7 +612,6 @@ fn build_ws_url() -> String {
 }
 
 fn document_is_visible() -> bool {
-    web_sys::window()
-        .and_then(|window| window.document())
+    document()
         .is_none_or(|document| !document.hidden())
 }

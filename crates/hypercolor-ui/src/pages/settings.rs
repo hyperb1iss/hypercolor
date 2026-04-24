@@ -136,8 +136,7 @@ pub fn SettingsPage() -> impl IntoView {
     // Scroll to section on tab click
     let scroll_to = move |id: &str| {
         set_active_section.set(id.to_string());
-        if let Some(window) = web_sys::window()
-            && let Some(doc) = window.document()
+        if let Some(doc) = document()
             && let Some(el) = doc.get_element_by_id(&format!("section-{id}"))
         {
             scroll_into_view_start(&el);

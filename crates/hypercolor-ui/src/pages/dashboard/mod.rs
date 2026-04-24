@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use hypercolor_leptos_ext::events::{EventHandle, document_event_target, on, target_closest};
+use hypercolor_leptos_ext::events::{EventHandle, document, document_event_target, on, target_closest};
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
@@ -252,7 +252,7 @@ pub fn DashboardPage() -> impl IntoView {
             if let Some(element) = preview_wrapper_ref.get_untracked() {
                 let _ = element.request_fullscreen();
             }
-        } else if let Some(document) = web_sys::window().and_then(|win| win.document())
+        } else if let Some(document) = document()
             && document.fullscreen_element().is_some()
         {
             document.exit_fullscreen();
@@ -265,7 +265,7 @@ pub fn DashboardPage() -> impl IntoView {
     window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
         if event.key() == "Escape" && fullscreen.get_untracked() {
             fullscreen.set(false);
-            if let Some(document) = web_sys::window().and_then(|win| win.document())
+            if let Some(document) = document()
                 && document.fullscreen_element().is_some()
             {
                 document.exit_fullscreen();
@@ -276,7 +276,7 @@ pub fn DashboardPage() -> impl IntoView {
     // Sync our signal when the user exits fullscreen through the browser
     // (native Esc, address bar click, etc.). `fullscreenchange` fires on
     // document, which doesn't bubble to window, so we attach directly.
-    if let Some(document) = web_sys::window().and_then(|win| win.document()) {
+    if let Some(document) = document() {
         let document_for_callback = document.clone();
         let fullscreen_signal = fullscreen;
         let listener = on(
@@ -666,10 +666,7 @@ fn persist_width(width: f64) {
 }
 
 fn set_resizing_body(active: bool) {
-    let Some(body) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.body())
-    else {
+    let Some(body) = document().and_then(|d| d.body()) else {
         return;
     };
     if active {
@@ -789,7 +786,7 @@ fn LayoutMenu(
 /// layout menu when the user clicks outside its anchor. Mirrors the
 /// pattern used in `preset_panel::install_dropdown_outside_handler`.
 fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+    let Some(doc) = document() else {
         return;
     };
 
