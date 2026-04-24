@@ -29,13 +29,7 @@ const DEFAULT_KEEP = 3
 const MAX_PRESETS_PER_EFFECT = 3
 
 /** Effect slugs we skip entirely — utility/diagnostic tools, not visual effects. */
-const SKIP_SLUGS = new Set([
-    'calibration',
-    'screen-cast',
-    'sensor-grid',
-    'solid-color',
-    'web-viewport',
-])
+const SKIP_SLUGS = new Set(['calibration', 'screen-cast', 'sensor-grid', 'solid-color', 'web-viewport'])
 
 /** Effect tags that mark utility effects. */
 const SKIP_TAGS = new Set(['utility', 'calibration'])
@@ -104,15 +98,15 @@ const MIN_SATURATION = 0.15
 
 function parseArgs(argv: readonly string[]): CliOptions {
     const opts: CliOptions = {
+        captureMs: DEFAULT_CAPTURE_MS,
         daemon: DEFAULT_DAEMON,
         effectFilter: null,
-        presetsOnly: false,
-        noPresets: false,
-        promote: false,
         framesPerVariant: DEFAULT_FRAMES,
-        warmupMs: DEFAULT_WARMUP_MS,
-        captureMs: DEFAULT_CAPTURE_MS,
         keepTopN: DEFAULT_KEEP,
+        noPresets: false,
+        presetsOnly: false,
+        promote: false,
+        warmupMs: DEFAULT_WARMUP_MS,
     }
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -162,6 +156,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
             case '--help':
                 printHelp()
                 process.exit(0)
+                break
             default:
                 throw new Error(`unknown argument: ${arg}`)
         }
@@ -209,11 +204,7 @@ function isUtility(effect: EffectSummary): boolean {
     if (SKIP_SLUGS.has(slug)) return true
     // "display" category effects are faces that attach to display devices,
     // not the LED pipeline — the apply endpoint rejects them with a 422.
-    if (
-        effect.category === 'utility' ||
-        effect.category === 'calibration' ||
-        effect.category === 'display'
-    ) {
+    if (effect.category === 'utility' || effect.category === 'calibration' || effect.category === 'display') {
         return true
     }
     for (const tag of effect.tags) {
@@ -233,9 +224,9 @@ async function restGet<T>(daemon: string, path: string): Promise<T> {
 
 async function restPost<T>(daemon: string, path: string, body: unknown = {}): Promise<T> {
     const res = await fetch(`${daemon}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify(body),
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        method: 'POST',
     })
     if (!res.ok && res.status !== 404) {
         throw new Error(`${path} failed: ${res.status} ${res.statusText}`)
@@ -258,9 +249,7 @@ async function getEffectDetail(daemon: string, effectId: string): Promise<Effect
  * `{"enum": "Horizontal"}`) into plain JSON — which is what the apply endpoint's
  * `json_to_control_value` expects. Values already in plain shape pass through.
  */
-function unwrapControlValues(
-    controls: Record<string, unknown>,
-): Record<string, unknown> {
+function unwrapControlValues(controls: Record<string, unknown>): Record<string, unknown> {
     const out: Record<string, unknown> = {}
     for (const [name, value] of Object.entries(controls)) {
         out[name] = unwrapControlValue(value)
@@ -318,7 +307,7 @@ function parseCanvasFrame(buffer: ArrayBuffer): FrameHeader | null {
     const format = formatByte === 1 ? 'rgba' : formatByte === 0 ? 'rgb' : null
     if (!format) return null
     if (width === 0 || height === 0) return null
-    return { width, height, format, payload: bytes.subarray(14) }
+    return { format, height, payload: bytes.subarray(14), width }
 }
 
 function rgbToRgba(payload: Uint8Array, width: number, height: number): Uint8Array {
@@ -333,11 +322,7 @@ function rgbToRgba(payload: Uint8Array, width: number, height: number): Uint8Arr
     return out
 }
 
-function collectFrames(
-    daemon: string,
-    frameCount: number,
-    captureMs: number,
-): Promise<CapturedFrame[]> {
+function collectFrames(daemon: string, frameCount: number, captureMs: number): Promise<CapturedFrame[]> {
     const wsUrl = `${daemon.replace(/^http/, 'ws')}/api/v1/ws`
     return new Promise((resolve, reject) => {
         const ws = new WebSocket(wsUrl)
@@ -366,14 +351,14 @@ function collectFrames(
             const { width, height, format, payload } = latestFrame
             const rgba = format === 'rgba' ? new Uint8Array(payload) : rgbToRgba(payload, width, height)
             frames.push({
-                width,
+                capturedAtMs: Date.now() - startedAt,
                 height,
+                luminanceVariance: 0,
+                meanLuminance: 0,
+                meanSaturation: 0,
                 rgba,
                 score: 0,
-                meanSaturation: 0,
-                meanLuminance: 0,
-                luminanceVariance: 0,
-                capturedAtMs: Date.now() - startedAt,
+                width,
             })
             if (frames.length >= frameCount) finish('ok')
         }
@@ -381,9 +366,9 @@ function collectFrames(
         ws.addEventListener('open', () => {
             ws.send(
                 JSON.stringify({
-                    type: 'subscribe',
                     channels: ['canvas'],
-                    config: { canvas: { fps: 30, format: 'rgba', width: 0, height: 0 } },
+                    config: { canvas: { format: 'rgba', fps: 30, height: 0, width: 0 } },
+                    type: 'subscribe',
                 }),
             )
             startedAt = Date.now()
@@ -462,16 +447,11 @@ function scoreFrame(frame: CapturedFrame): void {
 
 // ── file IO ───────────────────────────────────────────────────────────────
 
-async function writeDraftFrame(
-    slug: string,
-    variantKey: string,
-    rank: number,
-    frame: CapturedFrame,
-): Promise<string> {
+async function writeDraftFrame(slug: string, variantKey: string, rank: number, frame: CapturedFrame): Promise<string> {
     const dir = resolve(DRAFTS_ROOT, slug, variantKey)
     await mkdir(dir, { recursive: true })
     const filePath = resolve(dir, `rank-${rank}.png`)
-    await sharp(frame.rgba, { raw: { width: frame.width, height: frame.height, channels: 4 } })
+    await sharp(frame.rgba, { raw: { channels: 4, height: frame.height, width: frame.width } })
         .png({ compressionLevel: 6 })
         .toFile(filePath)
     return filePath
@@ -502,7 +482,7 @@ async function promoteRank1(): Promise<number> {
                 const outDir = resolve(CURATED_ROOT, slug)
                 await mkdir(outDir, { recursive: true })
                 const outPath = resolve(outDir, `${variantKey}.webp`)
-                await sharp(bytes).webp({ quality: 92, effort: 4 }).toFile(outPath)
+                await sharp(bytes).webp({ effort: 4, quality: 92 }).toFile(outPath)
                 promoted += 1
                 process.stdout.write(`promoted ${slug}/${variantKey}\n`)
             } catch {
@@ -533,11 +513,7 @@ function buildVariants(detail: EffectDetail, opts: CliOptions): Variant[] {
     return variants
 }
 
-async function captureVariant(
-    opts: CliOptions,
-    effect: EffectDetail,
-    variant: Variant,
-): Promise<void> {
+async function captureVariant(opts: CliOptions, effect: EffectDetail, variant: Variant): Promise<void> {
     const slug = slugify(effect.name)
     const label = `${effect.name} · ${variant.label}`
     process.stdout.write(`\n▸ ${label}\n`)
@@ -574,7 +550,7 @@ async function captureVariant(
     const kept = (fallbackUsed ? ranked : aboveFloor).slice(0, opts.keepTopN)
 
     if (kept.length === 0) {
-        process.stderr.write(`  ✗ no frames captured\n`)
+        process.stderr.write('  ✗ no frames captured\n')
         return
     }
     if (fallbackUsed) {
@@ -639,9 +615,7 @@ async function main(): Promise<void> {
             try {
                 await captureVariant(opts, detail, variant)
             } catch (err) {
-                process.stderr.write(
-                    `✗ ${effect.name} · ${variant.label}: ${String(err)}\n`,
-                )
+                process.stderr.write(`✗ ${effect.name} · ${variant.label}: ${String(err)}\n`)
             }
         }
     }
@@ -655,10 +629,10 @@ async function main(): Promise<void> {
     const elapsedSec = Math.round((Date.now() - startedAt) / 1000)
     process.stdout.write(`\nfinished in ${elapsedSec}s\n`)
     process.stdout.write(`drafts at ${DRAFTS_ROOT}\n`)
-    process.stdout.write(`run again with --promote to copy rank-1 frames into curated/\n`)
+    process.stdout.write('run again with --promote to copy rank-1 frames into curated/\n')
 }
 
 main().catch((err) => {
-    process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)
+    process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
     process.exit(1)
 })

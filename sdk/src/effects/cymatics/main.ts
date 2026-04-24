@@ -74,7 +74,8 @@ export default effect(
     {
         visualStyle: combo('Style', ['Twist', 'Particle Field'], {
             default: 'Particle Field',
-            tooltip: 'Twist bends a warping cube lattice through space; Particle Field drifts through a luminous 3D cell grid',
+            tooltip:
+                'Twist bends a warping cube lattice through space; Particle Field drifts through a luminous 3D cell grid',
             group: 'Scene',
         }),
         colorScheme: combo('Colors', ['Aurora', 'Cyberpunk', 'Lava', 'Prism', 'Toxic', 'Vaporwave'], {

@@ -184,11 +184,7 @@ interface RingModulation {
     hueNudge: number
 }
 
-function collectBurstModulation(
-    bursts: readonly Burst[],
-    ringT: number,
-    emitterIndex: number,
-): RingModulation {
+function collectBurstModulation(bursts: readonly Burst[], ringT: number, emitterIndex: number): RingModulation {
     let radiusBulge = 0
     let brightnessBoost = 0
     let hueNudge = 0
@@ -227,8 +223,23 @@ interface RingDrawArgs {
 
 function drawBullseyeRing(args: RingDrawArgs): void {
     const {
-        ctx, cx, cy, maxR, ringCount, ringIndex, pal, phase, flowTime, time, audio,
-        bursts, emitterIndex, intensityScale, hueBase, fieldScale, rotationBase,
+        ctx,
+        cx,
+        cy,
+        maxR,
+        ringCount,
+        ringIndex,
+        pal,
+        phase,
+        flowTime,
+        time,
+        audio,
+        bursts,
+        emitterIndex,
+        intensityScale,
+        hueBase,
+        fieldScale,
+        rotationBase,
     } = args
     const t = ringIndex / ringCount
     const baseR = t * maxR * fieldScale
@@ -236,11 +247,12 @@ function drawBullseyeRing(args: RingDrawArgs): void {
 
     // Harmonic breathing — multiple frequencies superposed per ring give organic,
     // non-periodic radius wobble instead of a single visible sine.
-    const breathe = (
-        Math.sin(time * 0.62 + ringIndex * 0.73) * 0.7 +
-        Math.sin(time * 1.37 + ringIndex * 1.21) * 0.35 +
-        Math.sin(time * 0.27 + ringIndex * 0.41) * 0.45
-    ) * maxR * 0.008
+    const breathe =
+        (Math.sin(time * 0.62 + ringIndex * 0.73) * 0.7 +
+            Math.sin(time * 1.37 + ringIndex * 1.21) * 0.35 +
+            Math.sin(time * 0.27 + ringIndex * 0.41) * 0.45) *
+        maxR *
+        0.008
 
     const r = baseR + breathe + maxR * mod.radiusBulge
     if (r <= 0) return
@@ -256,7 +268,12 @@ function drawBullseyeRing(args: RingDrawArgs): void {
     // Per-ring phase offset breaks lockstep so rings don't all change color at once.
     const perRingPhaseOffset = ringIndex * 0.043
     const hue =
-        hueBase + phase + t * 0.62 + flowTime + perRingPhaseOffset + mod.hueNudge +
+        hueBase +
+        phase +
+        t * 0.62 +
+        flowTime +
+        perRingPhaseOffset +
+        mod.hueNudge +
         Math.sin(time * 0.4 + ringIndex * 0.45) * 0.028
 
     const ambient = 0.58 + (1 - t) * 0.38
@@ -267,11 +284,9 @@ function drawBullseyeRing(args: RingDrawArgs): void {
     const ellipticity = 0.05 + audio.bass * 0.22 + audio.pulse * 0.1
     const ry = r * (1 - ellipticity)
     const direction = ringIndex % 2 === 0 ? 1 : -0.7
-    const ringRotRate = 0.55 + ((ringIndex % 3) * 0.18)
+    const ringRotRate = 0.55 + (ringIndex % 3) * 0.18
     const ringRot =
-        rotationBase * direction * ringRotRate +
-        ringIndex * 0.33 +
-        Math.sin(time * 0.19 + ringIndex * 0.9) * 0.09
+        rotationBase * direction * ringRotRate + ringIndex * 0.33 + Math.sin(time * 0.19 + ringIndex * 0.9) * 0.09
 
     ctx.fillStyle = samplePalette(pal, hue, brightness)
     ctx.beginPath()
@@ -347,8 +362,7 @@ function drawBrightRays(
         const a = primaryRotation + i * primaryAng
         // Coordinated length — all primary rays stretch together on beats.
         // Small per-ray variation keeps the pattern from feeling mechanical.
-        const lenMod = 0.52 + pulse * 0.38 + rawPulse * 0.18 + bass * 0.1 +
-            Math.sin(time * 0.28 + i * 0.47) * 0.07
+        const lenMod = 0.52 + pulse * 0.38 + rawPulse * 0.18 + bass * 0.1 + Math.sin(time * 0.28 + i * 0.47) * 0.07
         const outerR = primaryOuter * clamp(lenMod, 0.3, 1.2)
         const hue = phase + 0.34 + (i / spokes) * 0.18
         ctx.strokeStyle = samplePalette(pal, hue, primaryBrightness)
@@ -625,7 +639,9 @@ export default canvas.stateful(
                 if (scene === 'Twin Burst') {
                     bursts.push(spawnBurst(nextEmitter, analysis, speed, intensity, decay))
                     const side = nextEmitter === 0 ? centersA : centersB
-                    flashRings.push(spawnFlashRing(side[0], side[1], fieldMaxR, analysis, speed, intensity, nextEmitter))
+                    flashRings.push(
+                        spawnFlashRing(side[0], side[1], fieldMaxR, analysis, speed, intensity, nextEmitter),
+                    )
                     nextEmitter = 1 - nextEmitter
                     if (analysis.pulse > 0.55) {
                         bursts.push(spawnBurst(1 - nextEmitter, analysis, speed, intensity, decay))
@@ -636,9 +652,7 @@ export default canvas.stateful(
                     }
                 } else {
                     bursts.push(spawnBurst(-1, analysis, speed, intensity, decay))
-                    flashRings.push(
-                        spawnFlashRing(centersA[0], centersA[1], fieldMaxR, analysis, speed, intensity, -1),
-                    )
+                    flashRings.push(spawnFlashRing(centersA[0], centersA[1], fieldMaxR, analysis, speed, intensity, -1))
                 }
                 // Cap active entities.
                 if (bursts.length > ringCount * 2 + 6) {
@@ -663,7 +677,7 @@ export default canvas.stateful(
                 bassAccum -= bassThreshold
                 // Only spawn if we're not already saturated.
                 if (bursts.length < ringCount * 2 + 6) {
-                    const em = scene === 'Twin Burst' ? (bursts.length % 2) : -1
+                    const em = scene === 'Twin Burst' ? bursts.length % 2 : -1
                     bursts.push(spawnBurst(em, analysis, speed, intensity * 0.6, decay))
                 }
             }
@@ -751,19 +765,7 @@ export default canvas.stateful(
 
                 for (const fr of flashRings) drawFlashRing(ctx, fr, pal, phase, intensityScale)
 
-                drawCore(
-                    ctx,
-                    centersA[0],
-                    centersA[1],
-                    coreR,
-                    pal,
-                    phase,
-                    smBass,
-                    smPulse,
-                    rawPulse,
-                    intensityScale,
-                    0,
-                )
+                drawCore(ctx, centersA[0], centersA[1], coreR, pal, phase, smBass, smPulse, rawPulse, intensityScale, 0)
                 drawCore(
                     ctx,
                     centersB[0],
@@ -804,33 +806,41 @@ export default canvas.stateful(
                     // Wedge width pumps with the beat — pinwheel tightens then splays on hits.
                     const wedgeFrac = 0.12 + smPulse * 0.06
                     drawMandalaCuts(
-                        ctx, centersA[0], centersA[1], fieldMaxR, spokes,
-                        rotation, rgbCss(ground), wedgeFrac, time, smBass,
+                        ctx,
+                        centersA[0],
+                        centersA[1],
+                        fieldMaxR,
+                        spokes,
+                        rotation,
+                        rgbCss(ground),
+                        wedgeFrac,
+                        time,
+                        smBass,
                     )
                     // Two-tier ray system: primary rays lockstep with the beat (read as
                     // the pulse), accent rays weave between them at independent rates.
                     drawBrightRays(
-                        ctx, centersA[0], centersA[1], fieldMaxR, spokes,
-                        rayRotation, -rayRotation * 0.6,
-                        pal, phase, time, smPulse, rawPulse, smBass, smTreble, intensityScale,
+                        ctx,
+                        centersA[0],
+                        centersA[1],
+                        fieldMaxR,
+                        spokes,
+                        rayRotation,
+                        -rayRotation * 0.6,
+                        pal,
+                        phase,
+                        time,
+                        smPulse,
+                        rawPulse,
+                        smBass,
+                        smTreble,
+                        intensityScale,
                     )
                 }
 
                 for (const fr of flashRings) drawFlashRing(ctx, fr, pal, phase, intensityScale)
 
-                drawCore(
-                    ctx,
-                    centersA[0],
-                    centersA[1],
-                    coreR,
-                    pal,
-                    phase,
-                    smBass,
-                    smPulse,
-                    rawPulse,
-                    intensityScale,
-                    0,
-                )
+                drawCore(ctx, centersA[0], centersA[1], coreR, pal, phase, smBass, smPulse, rawPulse, intensityScale, 0)
             }
         }
     },
