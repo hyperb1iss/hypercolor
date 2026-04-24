@@ -10,6 +10,7 @@ just bench-smoke
 just bench-daemon daemon_sparkleflinger
 just bench-daemon daemon_publish_handoff
 just bench-daemon daemon_render_pipeline
+just bench-gate
 ```
 
 For before/after work:
@@ -20,6 +21,11 @@ just bench-daemon -- --baseline pre-change
 ```
 
 Criterion reports land under `target/criterion/`.
+
+`just bench-gate` reads Criterion `sample.json` output and reports p95/p99
+warning budgets for the render-pipeline hot paths. By default the gate is
+informational so local hardware can establish baselines without blocking work.
+Use `just bench-gate --strict` when a branch should fail on over-budget samples.
 
 ## SparkleFlinger Scenarios
 
@@ -44,6 +50,7 @@ machine and same scene:
 - GPU sampling removes enough CPU sampling cost to offset dispatch and readback.
 - Preview scaling moves off the render thread without increasing frame age.
 - No-readback GPU paths are fast enough to justify routing display-only faces through GPU.
+- Copy-sensitive handoff paths stay within the `bench-gate` warning budgets.
 
 If GPU only wins no-readback microbenches but loses end-to-end readback or LED
 sampling, keep it explicit and report the fallback reason through status and

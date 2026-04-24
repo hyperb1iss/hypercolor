@@ -91,6 +91,10 @@ bench:
     just bench-hal
     just bench-daemon
 
+# Check local Criterion output against render-pipeline warning budgets
+bench-gate *args='':
+    ./scripts/graphics-benchmark-gate.sh {{ args }}
+
 # Save a named Criterion baseline for all benchmark suites
 bench-baseline name:
     just bench-core -- --save-baseline {{ name }}
