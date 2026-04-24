@@ -8,6 +8,8 @@ use leptos::prelude::*;
 use wasm_bindgen::Clamped;
 use wasm_bindgen::prelude::*;
 
+use hypercolor_leptos_ext::canvas::context_2d;
+
 // ── Canvas geometry ──────────────────────────────────────────────────────────
 
 const CANVAS_SIZE: u32 = 220;
@@ -252,9 +254,7 @@ pub fn ColorWheel(
         let current_hsv = hsv_state.get();
         if let Some(canvas) = canvas_ref.get() {
             let el: &web_sys::HtmlCanvasElement = &canvas;
-            if let Ok(Some(ctx)) = el.get_context("2d")
-                && let Ok(ctx) = ctx.dyn_into::<web_sys::CanvasRenderingContext2d>()
-            {
+            if let Some(ctx) = context_2d(el) {
                 let _ = render_wheel(&ctx, current_hsv);
             }
         }

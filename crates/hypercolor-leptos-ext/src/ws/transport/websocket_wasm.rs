@@ -155,6 +155,10 @@ impl WebSocketEventHandlers {
     }
 }
 
+pub fn message_array_buffer(event: &MessageEvent) -> Option<js_sys::ArrayBuffer> {
+    event.data().dyn_into().ok()
+}
+
 #[async_trait(?Send)]
 impl CinderTransport for WebSocketTransport {
     type SendError = WebSocketTransportError;

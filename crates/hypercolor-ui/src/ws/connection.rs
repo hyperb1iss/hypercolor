@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use hypercolor_leptos_ext::events::{EventHandle, on};
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
-use hypercolor_leptos_ext::ws::transport::WebSocketEventHandlers;
+use hypercolor_leptos_ext::ws::transport::{WebSocketEventHandlers, message_array_buffer};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -217,7 +217,7 @@ impl WsManager {
             // onmessage — handle both JSON and binary frames
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
-                if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
+                if let Some(buffer) = message_array_buffer(&event) {
                     if let Some((channel, frame)) = decode_preview_frame(buffer) {
                         match channel {
                             PreviewFrameChannel::Canvas => {
