@@ -153,6 +153,13 @@ consumer-local staging buffers.
 
 This is the single most important rule in the spec.
 
+Canonical surfaces are non-premultiplied sRGB RGBA. Consumers that need a
+different representation own the conversion locally: the LED path decodes
+sampled sRGB into linear light before hardware output compensation, display
+workers may encode JPEG or device-native packets, and websocket relays may
+scale or serialize previews. None of those conversions redefine the canonical
+surface.
+
 ### 4.2 Producer and Consumer Roles Must Be Separate
 
 The effect engine is the producer.
@@ -661,6 +668,8 @@ Success criteria:
 - one WS preview payload build per frame per format, not per client
 - routing-plan rebuilds only on layout or mapping changes
 - display output reuses JPEG buffers and does not clone canonical surfaces
+- shared USB display traffic yields to overdue LED traffic and reports bounded
+  wait metrics
 
 ### 9.4 Adversarial Checks
 
@@ -669,6 +678,10 @@ Success criteria:
 - multiple WS clients with mixed RGB and RGBA subscriptions must share encoded
   caches where formats match
 - Servo fallback frame retention must not alias active producer storage
+- a Servo LED effect, Servo display face, preview stream, device metrics
+  stream, audio/screen capture toggles, and shared USB output must soak
+  together without unbounded queues, sustained FPS collapse, repeated failure
+  spam, or copy-counter growth after warmup
 
 ---
 

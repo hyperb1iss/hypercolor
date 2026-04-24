@@ -149,6 +149,19 @@ canvas isolation, and device routing.
 - **Backwards compatible** — native overlay renderers remain as fallback
   for non-Servo builds or lightweight widget use cases
 
+### 3.1.1 Display color and transport contract
+
+Display faces render non-premultiplied sRGB RGBA, matching the canonical scene
+canvas convention in Spec 48. A display worker owns any device-specific
+conversion after that point: viewport sampling, alpha handling, circular masks,
+JPEG compression, USB packetization, retry policy, and pacing.
+
+Display workers must treat the incoming face canvas as immutable. Any crop,
+mask, brightness, or compression step happens in worker-local staging. On
+shared transports, display packets have lower urgency than overdue LED frames;
+the USB actor must service a pending LED frame before a display frame and
+publish metrics when display traffic waits behind LED traffic.
+
 ### 3.2 Non-Goals
 
 - **GPU-accelerated face rendering** — Servo uses software rendering

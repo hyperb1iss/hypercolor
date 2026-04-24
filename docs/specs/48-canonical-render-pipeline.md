@@ -147,6 +147,26 @@ What is not acceptable as the final state:
 Display groups publish their own canvases at device-appropriate dimensions and
 cadence. They are siblings of the scene canvas, not layers composited into it.
 
+### 4.4 Color and output policy
+
+The canonical scene canvas is non-premultiplied sRGB RGBA. It is the shared
+visual artifact for preview and display-adjacent consumers, but the LED
+hardware path must decode sampled sRGB values into linear light before applying
+LED output compensation, brightness policy, and transport encoding. Preview
+consumers may apply UI-only presentation transforms, but those transforms must
+not feed back into hardware output.
+
+Display-face canvases follow the same non-premultiplied sRGB RGBA convention
+until a device worker performs a device-specific transform such as viewport
+sampling, circular masking, JPEG encoding, or USB packetization. Display output
+may run at a different cadence than LED output, but it must yield to overdue
+LED frames on shared device transports.
+
+Any future renderer, compositor, or display worker should document the exact
+boundary where it changes color space, alpha representation, compression, or
+transport ownership. Silent in-place mutation of a canonical surface is outside
+the architecture.
+
 ---
 
 ## 5. Invalidation Rules
@@ -261,6 +281,24 @@ The remaining work is simplification, not architectural replacement:
 3. Keep shrinking compatibility aliases and stale terminology where they no
    longer describe real runtime behavior, without reintroducing duplicate scene
    and preview execution paths.
+
+### 8.1 Soak contract
+
+Pipeline changes are not complete until they survive an end-to-end soak that
+exercises all active lanes together:
+
+1. Servo HTML LED effect plus at least one Servo display face.
+2. Audio and screen capture demand toggled while the scene remains active.
+3. LED output, display output, preview websocket metrics, and device metrics
+   subscribed simultaneously.
+4. At least one shared USB transport carrying both LED and display traffic.
+5. Runtime checks for frame-budget misses, queue drops, copy counters, Servo
+   lifecycle waits, USB display-delay counters, and async output failures.
+
+The acceptance bar is not merely "no crash." A passing soak must show bounded
+queues, latest-value backpressure instead of unbounded buffering, no sustained
+adaptive-FPS collapse, no repeated identical failure spam, and no unexplained
+copy-counter growth after warmup.
 
 ---
 
