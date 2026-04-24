@@ -10,7 +10,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -45,6 +45,7 @@ const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 pub(super) const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 pub(super) const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
+const SCHEDULER_DRAIN_LIMIT: usize = 64;
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
@@ -899,6 +900,106 @@ struct ServoWorkerRuntime {
     servo: Servo,
 }
 
+struct PendingRenderCommand {
+    session_id: ServoSessionId,
+    scripts: Vec<String>,
+    width: u32,
+    height: u32,
+    submitted_at: Instant,
+    response_tx: mpsc::SyncSender<Result<Canvas>>,
+}
+
+enum ScheduledServoWork {
+    Command(WorkerCommand),
+    Render(PendingRenderCommand),
+}
+
+enum ServoWorkKey {
+    Command(WorkerCommand),
+    Render {
+        session_id: ServoSessionId,
+        slot: u64,
+    },
+}
+
+#[derive(Default)]
+struct ServoWorkerScheduler {
+    queue: VecDeque<ServoWorkKey>,
+    pending_renders: HashMap<(ServoSessionId, u64), PendingRenderCommand>,
+    open_render_slots: HashMap<ServoSessionId, u64>,
+    next_render_slot: u64,
+}
+
+impl ServoWorkerScheduler {
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty() && self.pending_renders.is_empty()
+    }
+
+    fn push(&mut self, command: WorkerCommand) {
+        match command {
+            WorkerCommand::Render {
+                session_id,
+                scripts,
+                width,
+                height,
+                submitted_at,
+                response_tx,
+            } => {
+                let pending = PendingRenderCommand {
+                    session_id,
+                    scripts,
+                    width,
+                    height,
+                    submitted_at,
+                    response_tx,
+                };
+                let slot = if let Some(slot) = self.open_render_slots.get(&session_id).copied() {
+                    slot
+                } else {
+                    let slot = self.next_render_slot;
+                    self.next_render_slot = self.next_render_slot.saturating_add(1);
+                    self.open_render_slots.insert(session_id, slot);
+                    self.queue
+                        .push_back(ServoWorkKey::Render { session_id, slot });
+                    slot
+                };
+                if let Some(replaced) = self.pending_renders.insert((session_id, slot), pending) {
+                    let _ = replaced.response_tx.send(Err(anyhow!(
+                        "Servo render request superseded by a newer frame"
+                    )));
+                }
+            }
+            command => {
+                self.open_render_slots.clear();
+                self.queue.push_back(ServoWorkKey::Command(command));
+            }
+        }
+    }
+
+    fn next(&mut self) -> Option<ScheduledServoWork> {
+        while let Some(key) = self.queue.pop_front() {
+            match key {
+                ServoWorkKey::Command(command) => {
+                    return Some(ScheduledServoWork::Command(command));
+                }
+                ServoWorkKey::Render { session_id, slot } => {
+                    if let Some(render) = self.pending_renders.remove(&(session_id, slot)) {
+                        if self
+                            .open_render_slots
+                            .get(&session_id)
+                            .is_some_and(|open_slot| *open_slot == slot)
+                        {
+                            self.open_render_slots.remove(&session_id);
+                        }
+                        return Some(ScheduledServoWork::Render(render));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
 impl ServoWorkerRuntime {
     #[allow(
         clippy::unnecessary_wraps,
@@ -917,66 +1018,89 @@ impl ServoWorkerRuntime {
     }
 
     fn run(mut self, command_rx: Receiver<WorkerCommand>) {
-        for command in command_rx {
-            match command {
-                WorkerCommand::CreateSession {
+        let mut scheduler = ServoWorkerScheduler::default();
+
+        loop {
+            if scheduler.is_empty() {
+                let Ok(command) = command_rx.recv() else {
+                    break;
+                };
+                scheduler.push(command);
+            }
+
+            for _ in 0..SCHEDULER_DRAIN_LIMIT {
+                let Ok(command) = command_rx.try_recv() else {
+                    break;
+                };
+                scheduler.push(command);
+            }
+
+            let Some(work) = scheduler.next() else {
+                continue;
+            };
+
+            match work {
+                ScheduledServoWork::Command(WorkerCommand::CreateSession {
                     session_id,
                     width,
                     height,
                     response_tx,
-                } => {
+                }) => {
                     let result = self.create_session(session_id, width, height);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::Load {
+                ScheduledServoWork::Command(WorkerCommand::Load {
                     session_id,
                     html_path,
                     width,
                     height,
                     response_tx,
-                } => {
+                }) => {
                     let result = self.load_effect(session_id, &html_path, width, height);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::LoadUrl {
+                ScheduledServoWork::Command(WorkerCommand::LoadUrl {
                     session_id,
                     url,
                     width,
                     height,
                     response_tx,
-                } => {
+                }) => {
                     let result = self.load_url(session_id, &url, width, height);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::Unload {
+                ScheduledServoWork::Command(WorkerCommand::Unload {
                     session_id,
                     response_tx,
-                } => {
+                }) => {
                     let result = self.unload_effect(session_id);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::Render {
+                ScheduledServoWork::Render(PendingRenderCommand {
                     session_id,
                     scripts,
                     width,
                     height,
                     submitted_at,
                     response_tx,
-                } => {
+                }) => {
                     record_servo_render_queue_wait(submitted_at.elapsed());
                     let result = self.render_frame(session_id, &scripts, width, height);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::DestroySession {
+                ScheduledServoWork::Command(WorkerCommand::DestroySession {
                     session_id,
                     response_tx,
-                } => {
+                }) => {
                     let result = self.destroy_session(session_id);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::Shutdown { response_tx } => {
+                ScheduledServoWork::Command(WorkerCommand::Shutdown { response_tx }) => {
                     let _ = response_tx.send(());
                     break;
+                }
+                ScheduledServoWork::Command(WorkerCommand::Render { .. }) => {
+                    unreachable!("render commands are normalized into scheduled render work")
                 }
             }
         }
@@ -1784,6 +1908,158 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
+    use std::sync::mpsc::TryRecvError;
+
+    fn queued_render_command(
+        session_id: ServoSessionId,
+        script: &str,
+    ) -> (WorkerCommand, mpsc::Receiver<Result<Canvas>>) {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        (
+            WorkerCommand::Render {
+                session_id,
+                scripts: vec![script.to_owned()],
+                width: 320,
+                height: 200,
+                submitted_at: Instant::now(),
+                response_tx,
+            },
+            response_rx,
+        )
+    }
+
+    #[test]
+    fn scheduler_coalesces_redundant_renders_by_session() {
+        let mut scheduler = ServoWorkerScheduler::default();
+        let session_id = ServoSessionId(42);
+        let (first, first_rx) = queued_render_command(session_id, "old()");
+        let (second, second_rx) = queued_render_command(session_id, "new()");
+
+        scheduler.push(first);
+        scheduler.push(second);
+
+        let superseded = first_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("superseded render should receive a response");
+        assert!(superseded.is_err());
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected latest render work");
+        };
+        assert_eq!(render.session_id, session_id);
+        assert_eq!(render.scripts, vec!["new()"]);
+        assert_eq!(render.width, 320);
+        assert_eq!(render.height, 200);
+        assert!(matches!(second_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(scheduler.next().is_none());
+        assert!(scheduler.is_empty());
+    }
+
+    #[test]
+    fn scheduler_keeps_one_fair_render_slot_per_session() {
+        let mut scheduler = ServoWorkerScheduler::default();
+        let first_session = ServoSessionId(1);
+        let second_session = ServoSessionId(2);
+        let (first, first_rx) = queued_render_command(first_session, "first-old()");
+        let (second, _second_rx) = queued_render_command(second_session, "second()");
+        let (latest_first, _latest_first_rx) = queued_render_command(first_session, "first-new()");
+
+        scheduler.push(first);
+        scheduler.push(second);
+        scheduler.push(latest_first);
+
+        let superseded = first_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("superseded render should receive a response");
+        assert!(superseded.is_err());
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected first session render");
+        };
+        assert_eq!(render.session_id, first_session);
+        assert_eq!(render.scripts, vec!["first-new()"]);
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected second session render");
+        };
+        assert_eq!(render.session_id, second_session);
+        assert_eq!(render.scripts, vec!["second()"]);
+
+        assert!(scheduler.next().is_none());
+    }
+
+    #[test]
+    fn scheduler_preserves_lifecycle_command_order() {
+        let mut scheduler = ServoWorkerScheduler::default();
+        let (create_tx, _create_rx) = mpsc::sync_channel(1);
+        let (render, _render_rx) = queued_render_command(ServoSessionId(7), "tick()");
+        let (shutdown_tx, _shutdown_rx) = mpsc::sync_channel(1);
+
+        scheduler.push(WorkerCommand::CreateSession {
+            session_id: ServoSessionId(7),
+            width: 320,
+            height: 200,
+            response_tx: create_tx,
+        });
+        scheduler.push(render);
+        scheduler.push(WorkerCommand::Shutdown {
+            response_tx: shutdown_tx,
+        });
+
+        assert!(matches!(
+            scheduler.next(),
+            Some(ScheduledServoWork::Command(
+                WorkerCommand::CreateSession { .. }
+            ))
+        ));
+        assert!(matches!(
+            scheduler.next(),
+            Some(ScheduledServoWork::Render(PendingRenderCommand { .. }))
+        ));
+        assert!(matches!(
+            scheduler.next(),
+            Some(ScheduledServoWork::Command(WorkerCommand::Shutdown { .. }))
+        ));
+        assert!(scheduler.next().is_none());
+    }
+
+    #[test]
+    fn scheduler_treats_lifecycle_commands_as_render_barriers() {
+        let mut scheduler = ServoWorkerScheduler::default();
+        let session_id = ServoSessionId(7);
+        let (old_render, old_rx) = queued_render_command(session_id, "old()");
+        let (destroy_tx, _destroy_rx) = mpsc::sync_channel(1);
+        let (new_render, new_rx) = queued_render_command(session_id, "new()");
+
+        scheduler.push(old_render);
+        scheduler.push(WorkerCommand::DestroySession {
+            session_id,
+            response_tx: destroy_tx,
+        });
+        scheduler.push(new_render);
+
+        assert!(matches!(old_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(new_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected old render before destroy");
+        };
+        assert_eq!(render.scripts, vec!["old()"]);
+
+        assert!(matches!(
+            scheduler.next(),
+            Some(ScheduledServoWork::Command(
+                WorkerCommand::DestroySession { .. }
+            ))
+        ));
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected new render after destroy");
+        };
+        assert_eq!(render.scripts, vec!["new()"]);
+
+        assert!(scheduler.next().is_none());
+    }
 
     #[test]
     fn control_preamble_assigns_all_defaults() {
