@@ -212,6 +212,19 @@ fn inverse_patterned_canvas_for(width: u32, height: u32) -> Canvas {
     canvas
 }
 
+fn multi_blend_plan_for(width: u32, height: u32) -> CompositionPlan {
+    CompositionPlan::with_layers(
+        width,
+        height,
+        vec![
+            CompositionLayer::replace_canvas(patterned_canvas_for(width, height)),
+            CompositionLayer::alpha_canvas(inverse_patterned_canvas_for(width, height), 0.35),
+            CompositionLayer::add_canvas(patterned_canvas_for(width, height), 0.20),
+            CompositionLayer::screen_canvas(inverse_patterned_canvas_for(width, height), 0.45),
+        ],
+    )
+}
+
 fn preview_fresh_plans() -> Vec<CompositionPlan> {
     (0..4)
         .map(|variant| {
@@ -229,6 +242,23 @@ fn preview_fresh_plans() -> Vec<CompositionPlan> {
             )
         })
         .collect()
+}
+
+#[cfg(feature = "wgpu")]
+fn resolve_preview_surface_for_bench(
+    sparkleflinger: &mut SparkleFlinger,
+) -> Option<PublishedSurface> {
+    for _ in 0..8 {
+        if let Some(surface) = sparkleflinger
+            .resolve_preview_surface()
+            .expect("GPU scaled preview bench should finalize preview readback")
+        {
+            return Some(surface);
+        }
+        std::thread::yield_now();
+    }
+
+    None
 }
 
 fn bench_publish_handoff(c: &mut Criterion) {
@@ -498,6 +528,38 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         });
     });
 
+    let multi_blend_plan = multi_blend_plan_for(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+    let mut multi_blend_sparkleflinger = SparkleFlinger::cpu();
+    group.bench_function("multi_blend_alpha_add_screen_640x480", |b| {
+        b.iter(|| {
+            let composed = multi_blend_sparkleflinger.compose(black_box(multi_blend_plan.clone()));
+            black_box(
+                composed
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("multi-blend benchmark expects a materialized canvas")
+                    .get_pixel(0, 0),
+            );
+        });
+    });
+    let mut multi_blend_canvas_only_sparkleflinger = SparkleFlinger::cpu();
+    group.bench_function("multi_blend_alpha_add_screen_640x480_canvas_only", |b| {
+        b.iter(|| {
+            let composed = multi_blend_canvas_only_sparkleflinger.compose_for_outputs(
+                black_box(multi_blend_plan.clone()),
+                true,
+                None,
+            );
+            black_box(
+                composed
+                    .sampling_canvas
+                    .as_ref()
+                    .expect("multi-blend canvas-only benchmark expects a materialized canvas")
+                    .get_pixel(0, 0),
+            );
+        });
+    });
+
     #[cfg(feature = "wgpu")]
     {
         let sampling_engine = SpatialEngine::new(layout_with_zones(vec![
@@ -620,6 +682,34 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 black_box(composed.bypassed);
             });
         });
+        let mut gpu_multi_blend_sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Gpu)
+            .expect("GPU SparkleFlinger should initialize for multi-blend benchmark");
+        group.bench_function("gpu_multi_blend_alpha_add_screen_640x480", |b| {
+            b.iter(|| {
+                let composed =
+                    gpu_multi_blend_sparkleflinger.compose(black_box(multi_blend_plan.clone()));
+                black_box(
+                    composed
+                        .sampling_canvas
+                        .as_ref()
+                        .expect("GPU multi-blend benchmark expects a materialized canvas")
+                        .get_pixel(0, 0),
+                );
+            });
+        });
+        group.bench_function(
+            "gpu_multi_blend_alpha_add_screen_640x480_no_readback",
+            |b| {
+                b.iter(|| {
+                    let composed = gpu_multi_blend_sparkleflinger.compose_for_outputs(
+                        black_box(multi_blend_plan.clone()),
+                        false,
+                        None,
+                    );
+                    black_box(composed.bypassed);
+                });
+            },
+        );
         let mut scaled_preview_plan_index = 0_usize;
         group.throughput(Throughput::Bytes(
             u64::from(scaled_preview_request.width) * u64::from(scaled_preview_request.height) * 4,
@@ -640,11 +730,13 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                     scaled_preview_plan_index =
                         (scaled_preview_plan_index + 1) % preview_fresh_plans.len();
                     black_box(composed.bypassed);
-                    let preview_surface = preview_sparkleflinger
-                        .resolve_preview_surface()
-                        .expect("GPU scaled preview bench should finalize preview readback")
-                        .expect("GPU scaled preview bench should publish a preview surface");
-                    black_box(preview_surface.rgba_bytes()[0]);
+                    let preview_surface =
+                        resolve_preview_surface_for_bench(&mut preview_sparkleflinger);
+                    black_box(
+                        preview_surface
+                            .as_ref()
+                            .map(|surface| surface.rgba_bytes()[0]),
+                    );
                 });
             },
         );

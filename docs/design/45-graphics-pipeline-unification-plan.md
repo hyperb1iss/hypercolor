@@ -377,6 +377,8 @@ Verify:
 
 - GPU becomes default only when it improves throughput or latency stability.
 - CPU fallback remains healthy.
+- `docs/development/RENDER_PIPELINE_BENCHMARKS.md` documents the local
+  CPU/GPU evidence workflow.
 
 ## 11. Wave 5: Copy Budget And Zero-Copy Hardening
 

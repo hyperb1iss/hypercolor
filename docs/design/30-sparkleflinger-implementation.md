@@ -632,23 +632,23 @@ still Wave 6 work.
 
 ## 8. Benchmarks
 
-`crates/hypercolor-daemon/benches/render_pipeline.rs` has four groups:
+`crates/hypercolor-daemon/benches/render_pipeline.rs` has three groups:
 
 - `daemon_render_pipeline` — end-to-end pipeline at 60 FPS with 3 mock
   devices × 120 LEDs. Two scenarios: active effect with shared publish, and
   screen passthrough with a shared surface.
 - `daemon_publish_handoff` — isolates `CanvasFrame` publish cost with owned
   canvas vs slot-backed surface.
-- `daemon_sparkleflinger` — isolates composition cost: `single_replace_bypass`
-  measures the bypass fast path at 320×200, `alpha_two_layer_compose`
-  measures a non-bypass two-layer alpha compose.
-- `daemon_display_overlays` — isolates the display overlay worker path at
-  480×480, including zero-overlay bypass, cached overlay compose-only, and
-  compose-plus-RGB-writeback timings for 1, 2, and 4 layers.
+- `daemon_sparkleflinger` — isolates composition cost and CPU/GPU comparisons:
+  bypass, two-layer alpha transitions, multi-layer alpha/add/screen face
+  composition, preview scaling, LED zone sampling, and end-to-end
+  compose-plus-sampling paths.
 
-Run with `just bench-daemon daemon_display_overlays`,
-`just bench-daemon daemon_sparkleflinger`, or
-`cargo bench -p hypercolor-daemon --bench render_pipeline`.
+Run with `just bench-daemon daemon_sparkleflinger`,
+`just bench-daemon daemon_render_pipeline`, or
+`cargo bench -p hypercolor-daemon --bench render_pipeline`. See
+`docs/development/RENDER_PIPELINE_BENCHMARKS.md` for the CPU/GPU decision
+workflow.
 
 ## 9. Implementation references
 
