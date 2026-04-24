@@ -210,9 +210,10 @@ impl SparkleFlinger {
 
     pub fn new(mode: RenderAccelerationMode) -> Result<Self> {
         let backend = match mode {
-            RenderAccelerationMode::Cpu | RenderAccelerationMode::Auto => {
+            RenderAccelerationMode::Cpu => {
                 SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
             }
+            RenderAccelerationMode::Auto => new_auto_backend(),
             RenderAccelerationMode::Gpu => new_gpu_backend()?,
         };
         Ok(Self { backend })
@@ -488,6 +489,16 @@ impl SparkleFlinger {
 }
 
 #[cfg(feature = "wgpu")]
+fn new_auto_backend() -> SparkleFlingerBackend {
+    new_gpu_backend().unwrap_or_else(|_| SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()))
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn new_auto_backend() -> SparkleFlingerBackend {
+    SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
+}
+
+#[cfg(feature = "wgpu")]
 fn new_gpu_backend() -> Result<SparkleFlingerBackend> {
     let gpu = gpu::GpuSparkleFlinger::new()?;
     Ok(SparkleFlingerBackend::Gpu {
@@ -632,8 +643,10 @@ pub(super) fn scaled_preview_surface_from_rgba(
 #[cfg(test)]
 mod tests {
     use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
+    use hypercolor_types::config::RenderAccelerationMode;
 
     use super::{CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger};
+    use crate::performance::CompositorBackendKind;
     use crate::render_thread::producer_queue::ProducerFrame;
 
     fn solid_canvas(color: Rgba) -> Canvas {
@@ -651,6 +664,20 @@ mod tests {
             opacity,
         );
         RgbaF32::new(blended[0], blended[1], blended[2], blended[3]).to_srgba()
+    }
+
+    #[test]
+    fn sparkleflinger_auto_mode_resolves_to_available_backend() {
+        let sparkleflinger = SparkleFlinger::new(RenderAccelerationMode::Auto)
+            .expect("auto mode should always resolve to a compositor backend");
+
+        #[cfg(feature = "wgpu")]
+        assert!(matches!(
+            sparkleflinger.backend_kind(),
+            CompositorBackendKind::Cpu | CompositorBackendKind::Gpu
+        ));
+        #[cfg(not(feature = "wgpu"))]
+        assert_eq!(sparkleflinger.backend_kind(), CompositorBackendKind::Cpu);
     }
 
     #[test]
