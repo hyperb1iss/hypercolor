@@ -9,11 +9,12 @@
 //! no build-time assets, no bandwidth explosion.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use gloo_net::http::{Method, RequestBuilder};
+use hypercolor_leptos_ext::prelude::spawn_timeout;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
 use crate::color::{self, CanvasPalette};
@@ -342,7 +343,7 @@ pub fn install_auto_capture<F>(
             pending.insert(pending_key.clone());
         });
         let pending_captures_for_callback = pending_captures;
-        let cb = Closure::once_into_js(move || {
+        spawn_timeout(Duration::ZERO, move || {
             if let Some(thumbnail) = capture_thumbnail(&frame_for_capture, version_for_capture) {
                 store.insert(effect_id_for_capture, thumbnail);
             }
@@ -350,12 +351,6 @@ pub fn install_auto_capture<F>(
                 pending.remove(&pending_key);
             });
         });
-        if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                0,
-            );
-        }
     });
 }
 

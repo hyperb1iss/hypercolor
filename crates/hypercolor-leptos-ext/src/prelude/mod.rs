@@ -100,6 +100,27 @@ where
     }
 }
 
+pub fn spawn_timeout<F>(delay: Duration, callback: F) -> bool
+where
+    F: FnOnce() + 'static,
+{
+    let Some(window) = web_sys::window() else {
+        callback();
+        return false;
+    };
+
+    let callback = Closure::once(callback);
+    let Ok(_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        duration_to_ms(delay),
+    ) else {
+        return false;
+    };
+
+    callback.forget();
+    true
+}
+
 pub async fn sleep(delay: Duration) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         let Some(window) = web_sys::window() else {
