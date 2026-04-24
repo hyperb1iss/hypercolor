@@ -59,6 +59,10 @@ test-crate crate *args='':
 test-one name *args='':
     ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
 
+# Observe an already-running daemon for graphics pipeline soak regressions
+graphics-soak *args='':
+    bun scripts/graphics-pipeline-soak.ts {{ args }}
+
 # Compile and smoke-run benchmark targets without full measurement
 bench-smoke:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --bench core_pipeline
