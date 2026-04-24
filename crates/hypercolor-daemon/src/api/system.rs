@@ -98,10 +98,20 @@ pub struct LatestFrameStatus {
     pub cpu_readback_skipped: bool,
     pub total_ms: f64,
     pub wake_late_ms: f64,
+    pub jitter_ms: f64,
     pub frame_age_ms: f64,
+    pub input_sampling_ms: f64,
+    pub producer_ms: f64,
     pub producer_render_ms: f64,
     #[serde(rename = "producer_preview_compose_ms")]
     pub producer_scene_compose_ms: f64,
+    pub composition_ms: f64,
+    pub effect_rendering_ms: f64,
+    pub spatial_sampling_ms: f64,
+    pub device_output_ms: f64,
+    pub preview_postprocess_ms: f64,
+    pub event_bus_ms: f64,
+    pub coordination_overhead_ms: f64,
     pub publish_frame_data_ms: f64,
     pub publish_group_canvas_ms: f64,
     pub publish_preview_ms: f64,
@@ -570,9 +580,19 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         cpu_readback_skipped: frame.cpu_readback_skipped,
         total_ms: round_2(us_to_ms(frame.total_us)),
         wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
+        jitter_ms: round_2(us_to_ms(frame.jitter_us)),
         frame_age_ms: round_2(frame_age_ms),
+        input_sampling_ms: round_2(us_to_ms(frame.input_us)),
+        producer_ms: round_2(us_to_ms(frame.producer_us)),
         producer_render_ms: round_2(us_to_ms(frame.producer_render_us)),
         producer_scene_compose_ms: round_2(us_to_ms(frame.producer_scene_compose_us)),
+        composition_ms: round_2(us_to_ms(frame.composition_us)),
+        effect_rendering_ms: round_2(us_to_ms(frame.render_us)),
+        spatial_sampling_ms: round_2(us_to_ms(frame.sample_us)),
+        device_output_ms: round_2(us_to_ms(frame.push_us)),
+        preview_postprocess_ms: round_2(us_to_ms(frame.postprocess_us)),
+        event_bus_ms: round_2(us_to_ms(frame.publish_us)),
+        coordination_overhead_ms: round_2(us_to_ms(frame.overhead_us)),
         publish_frame_data_ms: round_2(us_to_ms(frame.publish_frame_data_us)),
         publish_group_canvas_ms: round_2(us_to_ms(frame.publish_group_canvas_us)),
         publish_preview_ms: round_2(us_to_ms(frame.publish_preview_us)),
@@ -811,10 +831,23 @@ mod tests {
             json["data"]["latest_frame"]["cpu_sampling_late_readback"],
             true
         );
+        assert_eq!(json["data"]["latest_frame"]["jitter_ms"], 0.03);
+        assert_eq!(json["data"]["latest_frame"]["input_sampling_ms"], 0.1);
+        assert_eq!(json["data"]["latest_frame"]["producer_ms"], 0.5);
         assert_eq!(json["data"]["latest_frame"]["producer_render_ms"], 0.32);
         assert_eq!(
             json["data"]["latest_frame"]["producer_preview_compose_ms"],
             0.06
+        );
+        assert_eq!(json["data"]["latest_frame"]["composition_ms"], 0.2);
+        assert_eq!(json["data"]["latest_frame"]["effect_rendering_ms"], 0.7);
+        assert_eq!(json["data"]["latest_frame"]["spatial_sampling_ms"], 0.15);
+        assert_eq!(json["data"]["latest_frame"]["device_output_ms"], 0.25);
+        assert_eq!(json["data"]["latest_frame"]["preview_postprocess_ms"], 0.0);
+        assert_eq!(json["data"]["latest_frame"]["event_bus_ms"], 0.12);
+        assert_eq!(
+            json["data"]["latest_frame"]["coordination_overhead_ms"],
+            0.05
         );
         assert_eq!(json["data"]["latest_frame"]["publish_frame_data_ms"], 0.03);
         assert_eq!(

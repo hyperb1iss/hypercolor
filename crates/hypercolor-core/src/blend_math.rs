@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use crate::types::canvas::{BlendMode, linear_to_srgb_u8, srgb_u8_to_linear};
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
+const DIFFERENCE_BLEND_LUT_SIZE: usize = 256 * 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RgbaBlendMode {
@@ -41,6 +42,15 @@ static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
 static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
     (0_u16..=u16::MAX)
         .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
+        .collect()
+});
+static DIFFERENCE_BLEND_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    (0..DIFFERENCE_BLEND_LUT_SIZE)
+        .map(|index| {
+            let dst = u8::try_from(index >> 8).expect("LUT high byte must fit in u8");
+            let src = u8::try_from(index & 0xff).expect("LUT low byte must fit in u8");
+            encode_srgb_channel((decode_srgb_channel(dst) - decode_srgb_channel(src)).abs())
+        })
         .collect()
 });
 
@@ -152,8 +162,7 @@ pub fn blend_rgba_pixels_in_place(
         | RgbaBlendMode::Multiply
         | RgbaBlendMode::Overlay
         | RgbaBlendMode::SoftLight
-        | RgbaBlendMode::ColorDodge
-        | RgbaBlendMode::Difference => {
+        | RgbaBlendMode::ColorDodge => {
             for (dst_px, src_px) in target_pixels
                 .chunks_exact_mut(4)
                 .zip(source_pixels.chunks_exact(4))
@@ -167,7 +176,74 @@ pub fn blend_rgba_pixels_in_place(
                 dst_px.copy_from_slice(&blended);
             }
         }
+        RgbaBlendMode::Difference => {
+            blend_difference_rgba_pixels_in_place(target_pixels, source_pixels, opacity);
+        }
     }
+}
+
+fn blend_difference_rgba_pixels_in_place(
+    target_pixels: &mut [u8],
+    source_pixels: &[u8],
+    opacity: f32,
+) {
+    if opacity < 1.0 {
+        blend_rgba_pixels_with_reference(
+            target_pixels,
+            source_pixels,
+            RgbaBlendMode::Difference,
+            opacity,
+        );
+        return;
+    }
+
+    for (dst_px, src_px) in target_pixels
+        .chunks_exact_mut(4)
+        .zip(source_pixels.chunks_exact(4))
+    {
+        if src_px[3] == 0 {
+            continue;
+        }
+
+        if src_px[3] == 255 && dst_px[3] == 255 {
+            dst_px[0] = difference_blend_channel(dst_px[0], src_px[0]);
+            dst_px[1] = difference_blend_channel(dst_px[1], src_px[1]);
+            dst_px[2] = difference_blend_channel(dst_px[2], src_px[2]);
+            continue;
+        }
+
+        let blended = blend_rgba_pixel(
+            [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
+            [src_px[0], src_px[1], src_px[2], src_px[3]],
+            RgbaBlendMode::Difference,
+            opacity,
+        );
+        dst_px.copy_from_slice(&blended);
+    }
+}
+
+fn blend_rgba_pixels_with_reference(
+    target_pixels: &mut [u8],
+    source_pixels: &[u8],
+    mode: RgbaBlendMode,
+    opacity: f32,
+) {
+    for (dst_px, src_px) in target_pixels
+        .chunks_exact_mut(4)
+        .zip(source_pixels.chunks_exact(4))
+    {
+        let blended = blend_rgba_pixel(
+            [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
+            [src_px[0], src_px[1], src_px[2], src_px[3]],
+            mode,
+            opacity,
+        );
+        dst_px.copy_from_slice(&blended);
+    }
+}
+
+fn difference_blend_channel(dst: u8, src: u8) -> u8 {
+    DIFFERENCE_BLEND_LUT[(usize::from(dst) << 8) | usize::from(src)]
 }
 
 pub fn blend_opaque_normal_rgba_pixels_in_place(
