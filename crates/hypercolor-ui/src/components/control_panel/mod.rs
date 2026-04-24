@@ -9,7 +9,10 @@ use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use hypercolor_leptos_ext::events::{document, target_closest};
+use hypercolor_leptos_ext::events::{document, target_closest, window};
+use hypercolor_leptos_ext::prelude::{
+    viewport_height as browser_viewport_height, viewport_width as browser_viewport_width,
+};
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, PreviewSource,
@@ -435,7 +438,7 @@ fn install_click_outside_handler(
     expanded_picker_id: ReadSignal<Option<String>>,
     set_expanded: WriteSignal<Option<String>>,
 ) {
-    let Some(win) = web_sys::window() else {
+    let Some(win) = window() else {
         return;
     };
 
@@ -502,7 +505,7 @@ pub(super) fn install_scroll_close_handler(
     is_open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
 ) {
-    let Some(win) = web_sys::window() else {
+    let Some(win) = window() else {
         return;
     };
     let selector = format!(".{class_name}");
@@ -536,20 +539,8 @@ pub(super) fn color_picker_panel_style(trigger: Option<web_sys::HtmlButtonElemen
         return String::new();
     };
     let rect = el.get_bounding_client_rect();
-    let Some(window) = web_sys::window() else {
-        return String::new();
-    };
-
-    let viewport_width = window
-        .inner_width()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(1024.0);
-    let viewport_height = window
-        .inner_height()
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(768.0);
+    let viewport_width = browser_viewport_width(1024.0);
+    let viewport_height = browser_viewport_height(768.0);
 
     let popover_width = 252.0;
     let margin = 8.0;
@@ -581,7 +572,7 @@ pub(super) fn install_scroll_close_handler_for_picker(
     expanded_picker_id: ReadSignal<Option<String>>,
     set_expanded: WriteSignal<Option<String>>,
 ) {
-    let Some(win) = web_sys::window() else {
+    let Some(win) = window() else {
         return;
     };
 
@@ -604,20 +595,8 @@ pub fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> Stri
     trigger
         .map(|el| {
             let rect = el.get_bounding_client_rect();
-            let Some(window) = web_sys::window() else {
-                return String::new();
-            };
-
-            let viewport_width = window
-                .inner_width()
-                .ok()
-                .and_then(|value| value.as_f64())
-                .unwrap_or(rect.right());
-            let viewport_height = window
-                .inner_height()
-                .ok()
-                .and_then(|value| value.as_f64())
-                .unwrap_or(rect.bottom());
+            let viewport_width = browser_viewport_width(rect.right());
+            let viewport_height = browser_viewport_height(rect.bottom());
 
             let horizontal_margin = 12.0;
             let vertical_margin = 12.0;

@@ -2,8 +2,9 @@
 
 use leptos::prelude::*;
 
-use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use super::messages::CanvasFrame;
+use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
+use hypercolor_leptos_ext::prelude::current_page_location;
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
@@ -271,10 +272,7 @@ pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket) {
 }
 
 fn preview_hostname() -> String {
-    web_sys::window()
-        .map(|window| window.location())
-        .and_then(|location| location.hostname().ok())
-        .unwrap_or_default()
+    current_page_location().hostname
 }
 
 fn is_loopback_host(hostname: &str) -> bool {

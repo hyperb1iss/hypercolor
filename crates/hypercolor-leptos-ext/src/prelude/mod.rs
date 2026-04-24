@@ -197,6 +197,27 @@ pub fn current_page_location() -> PageLocation {
     }
 }
 
+#[must_use]
+pub fn viewport_width(default: f64) -> f64 {
+    web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(default)
+}
+
+#[must_use]
+pub fn viewport_height(default: f64) -> f64 {
+    web_sys::window()
+        .and_then(|window| window.inner_height().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(default)
+}
+
+#[must_use]
+pub fn device_pixel_ratio(default: f64) -> f64 {
+    web_sys::window().map_or(default, |window| window.device_pixel_ratio())
+}
+
 pub fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window().and_then(|window| window.local_storage().ok().flatten())
 }

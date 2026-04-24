@@ -8,7 +8,12 @@
 
 use std::collections::VecDeque;
 
-use hypercolor_leptos_ext::events::{EventHandle, document, document_event_target, on, target_closest};
+use hypercolor_leptos_ext::events::{
+    EventHandle, document, document_event_target, on, target_closest,
+};
+use hypercolor_leptos_ext::prelude::{
+    device_pixel_ratio, viewport_width as browser_viewport_width,
+};
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
@@ -71,10 +76,7 @@ const DASHBOARD_PREVIEW_RECOVERY_SAMPLES: u8 = 6;
 /// Falls back to the floor on tiny viewports so the drag never feels more
 /// restrictive than it used to.
 fn max_preview_width() -> f64 {
-    let viewport_width = web_sys::window()
-        .and_then(|window| window.inner_width().ok())
-        .and_then(|value| value.as_f64())
-        .unwrap_or(1920.0);
+    let viewport_width = browser_viewport_width(1920.0);
     (viewport_width - PREVIEW_MAX_SIBLING_RESERVE_PX)
         .clamp(MIN_ADAPTIVE_MAX_PREVIEW_WIDTH, ABSOLUTE_MAX_PREVIEW_WIDTH)
 }
@@ -82,14 +84,11 @@ fn max_preview_width() -> f64 {
 /// Reads the viewport's CSS-pixel width, used when fullscreen takes over
 /// and the cabinet spans the entire window.
 fn viewport_width_px() -> f64 {
-    web_sys::window()
-        .and_then(|window| window.inner_width().ok())
-        .and_then(|value| value.as_f64())
-        .unwrap_or(1920.0)
+    browser_viewport_width(1920.0)
 }
 
 fn dashboard_preview_request_width(preview_width_px: f64, fullscreen: bool) -> u32 {
-    let device_pixel_ratio = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
+    let device_pixel_ratio = device_pixel_ratio(1.0);
     let effective_dpr = if fullscreen {
         device_pixel_ratio.min(DASHBOARD_PREVIEW_FULLSCREEN_MAX_DPR)
     } else {

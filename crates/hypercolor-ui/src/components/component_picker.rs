@@ -4,7 +4,10 @@
 use std::time::Duration;
 
 use hypercolor_leptos_ext::events::{Input, document, target_closest};
-use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
+use hypercolor_leptos_ext::prelude::{
+    TimeoutHandle, set_timeout, viewport_height as browser_viewport_height,
+    viewport_width as browser_viewport_width,
+};
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
@@ -88,12 +91,8 @@ fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
     trigger
         .map(|el| {
             let rect = el.get_bounding_client_rect();
-            let Some(window) = web_sys::window() else {
-                return String::new();
-            };
-
-            let vw = window.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(rect.right());
-            let vh = window.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(rect.bottom());
+            let vw = browser_viewport_width(rect.right());
+            let vh = browser_viewport_height(rect.bottom());
 
             let margin = 12.0;
             let width = rect.width().max(300.0);

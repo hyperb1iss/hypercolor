@@ -139,6 +139,10 @@ pub fn document() -> Option<web_sys::Document> {
     web_sys::window().and_then(|window| window.document())
 }
 
+pub fn window() -> Option<web_sys::Window> {
+    web_sys::window()
+}
+
 pub fn document_event_target(document: &web_sys::Document) -> &web_sys::EventTarget {
     document.unchecked_ref()
 }
