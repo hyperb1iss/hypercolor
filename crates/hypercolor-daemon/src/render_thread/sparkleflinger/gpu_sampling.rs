@@ -2,8 +2,8 @@ use std::sync::mpsc::{self, TryRecvError};
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
-use hypercolor_types::canvas::SamplingMethod;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::spatial::SamplingMode;
 
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
@@ -126,8 +126,8 @@ impl GpuSamplingPlan {
     pub(super) fn supports_prepared_zones(prepared_zones: &[PreparedZonePlan]) -> bool {
         prepared_zones.iter().all(|zone| {
             matches!(
-                zone.sampling_method,
-                SamplingMethod::Nearest | SamplingMethod::Bilinear | SamplingMethod::Area { .. }
+                zone.sampling_mode,
+                SamplingMode::Nearest | SamplingMode::Bilinear | SamplingMode::AreaAverage { .. }
             )
         })
     }
@@ -142,8 +142,8 @@ impl GpuSamplingPlan {
 
         for zone in prepared_zones {
             let start = points.len();
-            match (&zone.sampling_method, &zone.prepared_samples) {
-                (SamplingMethod::Nearest, PreparedZoneSamples::Nearest(samples)) => {
+            match (&zone.sampling_mode, &zone.prepared_samples) {
+                (SamplingMode::Nearest, PreparedZoneSamples::Nearest(samples)) => {
                     points.extend(zone.sample_positions.iter().zip(samples).map(
                         |(position, sample)| {
                             gpu_sample_point(
@@ -155,7 +155,7 @@ impl GpuSamplingPlan {
                         },
                     ));
                 }
-                (SamplingMethod::Bilinear, PreparedZoneSamples::Bilinear(samples)) => {
+                (SamplingMode::Bilinear, PreparedZoneSamples::Bilinear(samples)) => {
                     points.extend(zone.sample_positions.iter().zip(samples).map(
                         |(position, sample)| {
                             gpu_sample_point(
@@ -167,7 +167,7 @@ impl GpuSamplingPlan {
                         },
                     ));
                 }
-                (SamplingMethod::Area { .. }, PreparedZoneSamples::Area(samples)) => {
+                (SamplingMode::AreaAverage { .. }, PreparedZoneSamples::Area(samples)) => {
                     points.extend(zone.sample_positions.iter().zip(samples).map(
                         |(position, sample)| {
                             gpu_sample_point(

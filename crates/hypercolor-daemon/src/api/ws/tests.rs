@@ -76,6 +76,9 @@ const fn current_servo_effect_health() -> ServoEffectHealthForTests {
         page_load_wait_max_us: 0,
         detached_destroys_total: 0,
         detached_destroy_failures_total: 0,
+        render_requests_total: 0,
+        render_queue_wait_total_us: 0,
+        render_queue_wait_max_us: 0,
     }
 }
 
@@ -94,6 +97,9 @@ struct ServoEffectHealthForTests {
     page_load_wait_max_us: u64,
     detached_destroys_total: u64,
     detached_destroy_failures_total: u64,
+    render_requests_total: u64,
+    render_queue_wait_total_us: u64,
+    render_queue_wait_max_us: u64,
 }
 
 fn secured_state() -> Arc<AppState> {
@@ -350,6 +356,20 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(
         json["effect_health"]["servo_detached_destroy_failures_total"],
         servo_health.detached_destroy_failures_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_requests_total"],
+        servo_health.render_requests_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_queue_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_queue_wait_total_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_queue_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_queue_wait_max_us).as_secs_f64()
+            * 1000.0
     );
     assert_eq!(json["display_output"]["write_attempts_total"], 2);
     assert_eq!(json["display_output"]["write_successes_total"], 1);

@@ -1237,6 +1237,11 @@ pub(super) async fn build_metrics_message(
                 servo_page_load_wait_max_ms: us_to_ms_f64(servo_health.page_load_wait_max_us),
                 servo_detached_destroys_total: servo_health.detached_destroys_total,
                 servo_detached_destroy_failures_total: servo_health.detached_destroy_failures_total,
+                servo_render_requests_total: servo_health.render_requests_total,
+                servo_render_queue_wait_total_ms: us_to_ms_f64(
+                    servo_health.render_queue_wait_total_us,
+                ),
+                servo_render_queue_wait_max_ms: us_to_ms_f64(servo_health.render_queue_wait_max_us),
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,
@@ -1360,6 +1365,9 @@ struct ServoEffectHealthCounts {
     page_load_wait_max_us: u64,
     detached_destroys_total: u64,
     detached_destroy_failures_total: u64,
+    render_requests_total: u64,
+    render_queue_wait_total_us: u64,
+    render_queue_wait_max_us: u64,
 }
 
 #[cfg(feature = "servo")]
@@ -1378,6 +1386,9 @@ fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         page_load_wait_max_us: snapshot.page_load_wait_max_us,
         detached_destroys_total: snapshot.detached_destroys_total,
         detached_destroy_failures_total: snapshot.detached_destroy_failures_total,
+        render_requests_total: snapshot.render_requests_total,
+        render_queue_wait_total_us: snapshot.render_queue_wait_total_us,
+        render_queue_wait_max_us: snapshot.render_queue_wait_max_us,
     }
 }
 
@@ -1396,6 +1407,9 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         page_load_wait_max_us: 0,
         detached_destroys_total: 0,
         detached_destroy_failures_total: 0,
+        render_requests_total: 0,
+        render_queue_wait_total_us: 0,
+        render_queue_wait_max_us: 0,
     }
 }
 

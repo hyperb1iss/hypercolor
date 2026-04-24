@@ -15,6 +15,9 @@ pub struct ServoTelemetrySnapshot {
     pub page_load_wait_max_us: u64,
     pub detached_destroys_total: u64,
     pub detached_destroy_failures_total: u64,
+    pub render_requests_total: u64,
+    pub render_queue_wait_total_us: u64,
+    pub render_queue_wait_max_us: u64,
 }
 
 static SERVO_SOFT_STALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -29,6 +32,9 @@ static SERVO_PAGE_LOAD_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_PAGE_LOAD_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_DETACHED_DESTROYS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_DETACHED_DESTROY_FAILURES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_QUEUE_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_QUEUE_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn record_servo_soft_stall() {
     let _ = SERVO_SOFT_STALLS_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -69,6 +75,15 @@ pub(super) fn record_servo_detached_destroy(success: bool) {
     }
 }
 
+pub(super) fn record_servo_render_queue_wait(wait: Duration) {
+    record_wait(
+        wait,
+        &SERVO_RENDER_REQUESTS_TOTAL,
+        &SERVO_RENDER_QUEUE_WAIT_TOTAL_US,
+        &SERVO_RENDER_QUEUE_WAIT_MAX_US,
+    );
+}
+
 #[must_use]
 pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
     ServoTelemetrySnapshot {
@@ -85,6 +100,9 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
         detached_destroys_total: SERVO_DETACHED_DESTROYS_TOTAL.load(Ordering::Relaxed),
         detached_destroy_failures_total: SERVO_DETACHED_DESTROY_FAILURES_TOTAL
             .load(Ordering::Relaxed),
+        render_requests_total: SERVO_RENDER_REQUESTS_TOTAL.load(Ordering::Relaxed),
+        render_queue_wait_total_us: SERVO_RENDER_QUEUE_WAIT_TOTAL_US.load(Ordering::Relaxed),
+        render_queue_wait_max_us: SERVO_RENDER_QUEUE_WAIT_MAX_US.load(Ordering::Relaxed),
     }
 }
 

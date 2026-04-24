@@ -831,6 +831,9 @@ pub(super) struct MetricsEffectHealth {
     pub(super) servo_page_load_wait_max_ms: f64,
     pub(super) servo_detached_destroys_total: u64,
     pub(super) servo_detached_destroy_failures_total: u64,
+    pub(super) servo_render_requests_total: u64,
+    pub(super) servo_render_queue_wait_total_ms: f64,
+    pub(super) servo_render_queue_wait_max_ms: f64,
 }
 
 #[derive(Debug, Serialize)]

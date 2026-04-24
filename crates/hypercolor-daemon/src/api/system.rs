@@ -137,6 +137,9 @@ pub struct EffectHealthStatus {
     pub servo_page_load_wait_max_ms: f64,
     pub servo_detached_destroys_total: u64,
     pub servo_detached_destroy_failures_total: u64,
+    pub servo_render_requests_total: u64,
+    pub servo_render_queue_wait_total_ms: f64,
+    pub servo_render_queue_wait_max_ms: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -256,6 +259,9 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         servo_page_load_wait_max_ms: us_to_ms_f64(servo_health.page_load_wait_max_us),
         servo_detached_destroys_total: servo_health.detached_destroys_total,
         servo_detached_destroy_failures_total: servo_health.detached_destroy_failures_total,
+        servo_render_requests_total: servo_health.render_requests_total,
+        servo_render_queue_wait_total_ms: us_to_ms_f64(servo_health.render_queue_wait_total_us),
+        servo_render_queue_wait_max_ms: us_to_ms_f64(servo_health.render_queue_wait_max_us),
     };
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
@@ -493,6 +499,9 @@ struct ServoEffectHealthCounts {
     page_load_wait_max_us: u64,
     detached_destroys_total: u64,
     detached_destroy_failures_total: u64,
+    render_requests_total: u64,
+    render_queue_wait_total_us: u64,
+    render_queue_wait_max_us: u64,
 }
 
 #[cfg(feature = "servo")]
@@ -511,6 +520,9 @@ fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         page_load_wait_max_us: snapshot.page_load_wait_max_us,
         detached_destroys_total: snapshot.detached_destroys_total,
         detached_destroy_failures_total: snapshot.detached_destroy_failures_total,
+        render_requests_total: snapshot.render_requests_total,
+        render_queue_wait_total_us: snapshot.render_queue_wait_total_us,
+        render_queue_wait_max_us: snapshot.render_queue_wait_max_us,
     }
 }
 
@@ -529,6 +541,9 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         page_load_wait_max_us: 0,
         detached_destroys_total: 0,
         detached_destroy_failures_total: 0,
+        render_requests_total: 0,
+        render_queue_wait_total_us: 0,
+        render_queue_wait_max_us: 0,
     }
 }
 
@@ -630,7 +645,7 @@ fn round_2(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_sensor, get_sensors, get_status};
+    use super::{get_sensor, get_sensors, get_status, us_to_ms_f64};
     use crate::api::AppState;
     use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
     use crate::preview_runtime::{PreviewPixelFormat, PreviewStreamDemand};
@@ -836,6 +851,18 @@ mod tests {
         assert_eq!(
             json["data"]["effect_health"]["servo_detached_destroy_failures_total"],
             servo_health.detached_destroy_failures_total
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_requests_total"],
+            servo_health.render_requests_total
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_queue_wait_total_ms"],
+            us_to_ms_f64(servo_health.render_queue_wait_total_us)
+        );
+        assert_eq!(
+            json["data"]["effect_health"]["servo_render_queue_wait_max_ms"],
+            us_to_ms_f64(servo_health.render_queue_wait_max_us)
         );
         assert_eq!(json["data"]["preview_runtime"]["canvas_receivers"], 1);
         assert_eq!(

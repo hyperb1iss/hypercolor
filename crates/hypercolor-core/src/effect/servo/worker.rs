@@ -33,6 +33,7 @@ use tracing::{debug, trace, warn};
 
 use super::circuit_breaker::ServoCircuitBreaker;
 use super::delegate::{ConsoleMessage, HypercolorWebViewDelegate};
+use super::telemetry::record_servo_render_queue_wait;
 use super::worker_client::{
     ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState, UNLOAD_TIMEOUT,
     WORKER_READY_TIMEOUT, WorkerCommand,
@@ -959,8 +960,10 @@ impl ServoWorkerRuntime {
                     scripts,
                     width,
                     height,
+                    submitted_at,
                     response_tx,
                 } => {
+                    record_servo_render_queue_wait(submitted_at.elapsed());
                     let result = self.render_frame(session_id, &scripts, width, height);
                     let _ = response_tx.send(result);
                 }

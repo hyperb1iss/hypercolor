@@ -111,6 +111,7 @@ pub(super) enum WorkerCommand {
         scripts: Vec<String>,
         width: u32,
         height: u32,
+        submitted_at: Instant,
         response_tx: SyncSender<Result<Canvas>>,
     },
     DestroySession {
@@ -346,6 +347,7 @@ impl ServoWorkerClient {
                 scripts,
                 width,
                 height,
+                submitted_at: Instant::now(),
                 response_tx,
             })
             .context("failed to send render command to Servo worker")?;
