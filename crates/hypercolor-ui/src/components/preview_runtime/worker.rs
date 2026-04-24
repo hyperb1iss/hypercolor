@@ -1,14 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use hypercolor_leptos_ext::canvas::bitmap_renderer_context;
+use hypercolor_leptos_ext::canvas::{bitmap_renderer_context, message_image_bitmap};
 use hypercolor_leptos_ext::events::WorkerMessageHandler;
 use js_sys::Array;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::{
-    Blob, BlobPropertyBag, HtmlCanvasElement, ImageBitmap, ImageBitmapRenderingContext,
-    MessageEvent, OffscreenCanvas, Url, Worker,
+    Blob, BlobPropertyBag, HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent,
+    OffscreenCanvas, Url, Worker,
 };
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -370,7 +369,7 @@ fn present_bitmap(
     bitmap_ctx: &ImageBitmapRenderingContext,
     event: &MessageEvent,
 ) -> bool {
-    let Ok(bitmap) = event.data().dyn_into::<ImageBitmap>() else {
+    let Some(bitmap) = message_image_bitmap(event) else {
         return false;
     };
 

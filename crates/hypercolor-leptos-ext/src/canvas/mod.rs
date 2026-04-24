@@ -55,3 +55,7 @@ pub fn supports_bitmap_worker_canvas() -> bool {
         && supports_global("createImageBitmap")
         && supports_global("Worker")
 }
+
+pub fn message_image_bitmap(event: &web_sys::MessageEvent) -> Option<web_sys::ImageBitmap> {
+    event.data().dyn_into().ok()
+}
