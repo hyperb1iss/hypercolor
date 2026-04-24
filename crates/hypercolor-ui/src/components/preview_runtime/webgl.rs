@@ -1,5 +1,5 @@
 use hypercolor_leptos_ext::canvas::{
-    allocate_texture_u8, update_texture_u8_or_reallocate, webgl_context,
+    allocate_texture_u8, set_canvas_size, update_texture_u8_or_reallocate, webgl_context,
 };
 use web_sys::{
     HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader,
@@ -144,13 +144,7 @@ impl WebGlPreviewRuntime {
         width: u32,
         height: u32,
     ) -> bool {
-        if canvas.width() != width {
-            canvas.set_width(width);
-        }
-        if canvas.height() != height {
-            canvas.set_height(height);
-        }
-
+        set_canvas_size(canvas, width, height);
         let Ok(replacement) = Self::new(canvas, self.smooth_scaling) else {
             return false;
         };

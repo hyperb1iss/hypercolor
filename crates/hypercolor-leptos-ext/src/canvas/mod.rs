@@ -44,6 +44,19 @@ pub fn webgl_context(
         .and_then(|context| context.dyn_into().ok())
 }
 
+pub fn set_canvas_size(canvas: &web_sys::HtmlCanvasElement, width: u32, height: u32) -> bool {
+    let mut resized = false;
+    if canvas.width() != width {
+        canvas.set_width(width);
+        resized = true;
+    }
+    if canvas.height() != height {
+        canvas.set_height(height);
+        resized = true;
+    }
+    resized
+}
+
 pub fn supports_global(name: &str) -> bool {
     js_sys::Reflect::has(&js_sys::global(), &JsValue::from_str(name)).unwrap_or(false)
 }

@@ -1,7 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use hypercolor_leptos_ext::canvas::{bitmap_renderer_context, message_image_bitmap};
+use hypercolor_leptos_ext::canvas::{
+    bitmap_renderer_context, message_image_bitmap, set_canvas_size,
+};
 use hypercolor_leptos_ext::events::WorkerMessageHandler;
 use js_sys::Array;
 use wasm_bindgen::JsValue;
@@ -220,13 +222,7 @@ pub(super) struct PreviewWorkerRuntime {
 
 impl PreviewWorkerRuntime {
     pub(super) fn new(canvas: &HtmlCanvasElement, frame: &CanvasFrame) -> Result<Self, ()> {
-        if canvas.width() != frame.width {
-            canvas.set_width(frame.width);
-        }
-        if canvas.height() != frame.height {
-            canvas.set_height(frame.height);
-        }
-
+        set_canvas_size(canvas, frame.width, frame.height);
         let bitmap_ctx = bitmap_renderer_context(canvas).ok_or(())?;
         probe_worker_support(frame.pixel_format())?;
 
@@ -349,19 +345,9 @@ fn post_frame(worker: &Worker, frame: &CanvasFrame) -> Result<(), JsValue> {
     let message = Array::new();
     message.push(&JsValue::from_f64(f64::from(frame.width)));
     message.push(&JsValue::from_f64(f64::from(frame.height)));
-    message.push(&JsValue::from_f64(f64::from(pixel_format_code(
-        frame.pixel_format(),
-    ))));
+    message.push(&JsValue::from_f64(f64::from(frame.pixel_format().tag())));
     message.push(frame.pixels_js());
     worker.post_message(&message)
-}
-
-fn pixel_format_code(format: CanvasPixelFormat) -> u8 {
-    match format {
-        CanvasPixelFormat::Rgb => 0,
-        CanvasPixelFormat::Rgba => 1,
-        CanvasPixelFormat::Jpeg => 2,
-    }
 }
 
 fn present_bitmap(
@@ -373,13 +359,7 @@ fn present_bitmap(
         return false;
     };
 
-    if canvas.width() != bitmap.width() {
-        canvas.set_width(bitmap.width());
-    }
-    if canvas.height() != bitmap.height() {
-        canvas.set_height(bitmap.height());
-    }
-
+    set_canvas_size(canvas, bitmap.width(), bitmap.height());
     bitmap_ctx.transfer_from_image_bitmap(&bitmap);
     bitmap.close();
     true
@@ -387,9 +367,7 @@ fn present_bitmap(
 
 #[cfg(test)]
 mod tests {
-    use crate::ws::CanvasPixelFormat;
-
-    use super::{DispatchDecision, FrameDispatchState, pixel_format_code};
+    use super::{DispatchDecision, FrameDispatchState};
 
     #[test]
     fn dispatch_state_coalesces_frames_while_one_is_in_flight() {
@@ -401,10 +379,5 @@ mod tests {
         assert_eq!(state.push_or_defer(3), DispatchDecision::Deferred);
         assert_eq!(state.next_after_present(), Some(3));
         assert_eq!(state.next_after_present(), None);
-    }
-
-    #[test]
-    fn pixel_format_code_handles_jpeg() {
-        assert_eq!(pixel_format_code(CanvasPixelFormat::Jpeg), 2);
     }
 }

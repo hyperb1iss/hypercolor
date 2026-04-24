@@ -1,3 +1,4 @@
+use hypercolor_leptos_ext::canvas::set_canvas_size;
 use web_sys::HtmlCanvasElement;
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -99,10 +100,5 @@ impl PreviewRuntime {
 }
 
 fn prepare_canvas(canvas: &HtmlCanvasElement, frame: &CanvasFrame) {
-    if canvas.width() != frame.width {
-        canvas.set_width(frame.width);
-    }
-    if canvas.height() != frame.height {
-        canvas.set_height(frame.height);
-    }
+    set_canvas_size(canvas, frame.width, frame.height);
 }

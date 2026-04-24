@@ -1,4 +1,4 @@
-use hypercolor_leptos_ext::canvas::{context_2d, image_data_rgba};
+use hypercolor_leptos_ext::canvas::{context_2d, image_data_rgba, set_canvas_size};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -34,15 +34,6 @@ impl Canvas2dPreviewRuntime {
         })
     }
 
-    fn ensure_canvas_size(&mut self, canvas: &HtmlCanvasElement, width: u32, height: u32) {
-        if canvas.width() != width {
-            canvas.set_width(width);
-        }
-        if canvas.height() != height {
-            canvas.set_height(height);
-        }
-    }
-
     fn copy_frame_into_rgba(&mut self, frame: &CanvasFrame) {
         match frame.pixel_format() {
             CanvasPixelFormat::Rgba => {
@@ -69,7 +60,7 @@ impl Canvas2dPreviewRuntime {
             return PreviewRenderOutcome::Reinitialize;
         }
 
-        self.ensure_canvas_size(canvas, frame.width, frame.height);
+        set_canvas_size(canvas, frame.width, frame.height);
         self.copy_frame_into_rgba(frame);
 
         let Ok(image_data) = image_data_rgba(&self.scratch_rgba, frame.width, frame.height) else {
