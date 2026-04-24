@@ -3,6 +3,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use hypercolor_leptos_ext::events::{EventHandle, on};
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
@@ -127,7 +128,7 @@ impl WsManager {
         let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
         let socket_callbacks: StoredValue<Option<SocketCallbacks>, LocalStorage> =
             StoredValue::new_local(None);
-        let visibility_change_callback: StoredValue<Option<Closure<dyn FnMut()>>, LocalStorage> =
+        let visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
             StoredValue::new_local(None);
         let reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
@@ -499,13 +500,19 @@ impl WsManager {
 
         // Visibility change listener
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            document.set_onvisibilitychange(None);
-            visibility_change_callback.set_value(None);
-            let visibility_document = document.clone();
-            let on_visibility_change = Closure::<dyn FnMut()>::new(move || {
-                set_page_visible.set(!visibility_document.hidden());
+            visibility_change_callback.update_value(|handle| {
+                if let Some(mut handle) = handle.take() {
+                    handle.cancel();
+                }
             });
-            document.set_onvisibilitychange(Some(on_visibility_change.as_ref().unchecked_ref()));
+            let visibility_document = document.clone();
+            let on_visibility_change = on(
+                document.unchecked_ref::<web_sys::EventTarget>(),
+                "visibilitychange",
+                move |_| {
+                    set_page_visible.set(!visibility_document.hidden());
+                },
+            );
             visibility_change_callback.set_value(Some(on_visibility_change));
         }
 
