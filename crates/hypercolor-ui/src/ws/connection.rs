@@ -3,12 +3,11 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use hypercolor_leptos_ext::events::{EventHandle, on};
+use hypercolor_leptos_ext::events::{EventHandle, document_event_target, on};
 use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use hypercolor_leptos_ext::ws::transport::{WebSocketEventHandlers, message_array_buffer};
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
 use web_sys::MessageEvent;
 
 use super::messages::{
@@ -493,7 +492,7 @@ impl WsManager {
             });
             let visibility_document = document.clone();
             let on_visibility_change = on(
-                document.unchecked_ref::<web_sys::EventTarget>(),
+                document_event_target(&document),
                 "visibilitychange",
                 move |_| {
                     set_page_visible.set(!visibility_document.hidden());

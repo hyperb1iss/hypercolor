@@ -3,8 +3,8 @@
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
-use wasm_bindgen::JsCast;
 
+use hypercolor_leptos_ext::events::{document, scroll_into_view_start};
 use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_sections::*;
@@ -27,7 +27,7 @@ const SECTION_IDS: &[&str] = &[
 ];
 
 fn settings_section_targets() -> Vec<web_sys::Element> {
-    let Some(doc) = web_sys::window().and_then(|window| window.document()) else {
+    let Some(doc) = document() else {
         return Vec::new();
     };
 
@@ -35,18 +35,6 @@ fn settings_section_targets() -> Vec<web_sys::Element> {
         .iter()
         .filter_map(|id| doc.get_element_by_id(&format!("section-{id}")))
         .collect()
-}
-
-/// Smooth-scroll an element into view via JS interop.
-fn scroll_element_into_view(el: &web_sys::Element) {
-    let opts = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&opts, &"behavior".into(), &"smooth".into());
-    let _ = js_sys::Reflect::set(&opts, &"block".into(), &"start".into());
-    if let Ok(func) = js_sys::Reflect::get(el, &"scrollIntoView".into())
-        && let Ok(func) = func.dyn_into::<js_sys::Function>()
-    {
-        let _ = func.call1(el, &opts);
-    }
 }
 
 #[component]
@@ -152,7 +140,7 @@ pub fn SettingsPage() -> impl IntoView {
             && let Some(doc) = window.document()
             && let Some(el) = doc.get_element_by_id(&format!("section-{id}"))
         {
-            scroll_element_into_view(&el);
+            scroll_into_view_start(&el);
         }
     };
 

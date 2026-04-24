@@ -30,12 +30,17 @@ events = [
     "dep:gloo-events",
     "dep:wasm-bindgen",
     "dep:web-sys",
+    "web-sys/Document",
     "web-sys/Element",
     "web-sys/Event",
     "web-sys/EventTarget",
     "web-sys/FileList",
     "web-sys/HtmlInputElement",
     "web-sys/MessageEvent",
+    "web-sys/ScrollBehavior",
+    "web-sys/ScrollIntoViewOptions",
+    "web-sys/ScrollLogicalPosition",
+    "web-sys/Window",
     "web-sys/Worker",
 ]
 canvas = [

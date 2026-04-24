@@ -8,13 +8,12 @@
 
 use std::collections::VecDeque;
 
-use hypercolor_leptos_ext::events::{EventHandle, on, target_closest};
+use hypercolor_leptos_ext::events::{EventHandle, document_event_target, on, target_closest};
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
-use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::WsContext;
@@ -281,7 +280,7 @@ pub fn DashboardPage() -> impl IntoView {
         let document_for_callback = document.clone();
         let fullscreen_signal = fullscreen;
         let listener = on(
-            document.unchecked_ref::<web_sys::EventTarget>(),
+            document_event_target(&document),
             "fullscreenchange",
             move |_| {
                 let browser_is_fullscreen = document_for_callback.fullscreen_element().is_some();

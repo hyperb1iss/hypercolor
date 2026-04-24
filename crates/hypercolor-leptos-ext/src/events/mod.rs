@@ -135,6 +135,21 @@ pub fn target_is_text_entry(target: Option<web_sys::EventTarget>) -> bool {
     })
 }
 
+pub fn document() -> Option<web_sys::Document> {
+    web_sys::window().and_then(|window| window.document())
+}
+
+pub fn document_event_target(document: &web_sys::Document) -> &web_sys::EventTarget {
+    document.unchecked_ref()
+}
+
+pub fn scroll_into_view_start(element: &web_sys::Element) {
+    let options = web_sys::ScrollIntoViewOptions::new();
+    options.set_behavior(web_sys::ScrollBehavior::Smooth);
+    options.set_block(web_sys::ScrollLogicalPosition::Start);
+    element.scroll_into_view_with_scroll_into_view_options(&options);
+}
+
 /// RAII browser event listener handle.
 pub struct EventHandle {
     listener: Option<EventListener>,
