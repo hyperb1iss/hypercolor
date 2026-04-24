@@ -1,10 +1,13 @@
 //! Component picker — searchable dropdown for selecting from the component library.
 //! Used only for known hardware definitions (Lian Li fans, Corsair strips, etc.).
 
+use std::time::Duration;
+
+use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout};
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
-use wasm_bindgen::{JsCast, closure::Closure};
+use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::icons::*;
@@ -202,6 +205,8 @@ pub fn ComponentPicker(
     let search_ref = NodeRef::<leptos::html::Input>::new();
     let list_ref = NodeRef::<leptos::html::Div>::new();
     let components_store = StoredValue::new(components);
+    let focus_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage> =
+        StoredValue::new_local(None);
 
     let filtered = Memo::new(move |_| {
         let term = search.get();
@@ -210,19 +215,27 @@ pub fn ComponentPicker(
 
     Effect::new(move |_| {
         if !open.get() {
+            focus_timeout.update_value(|timeout| {
+                if let Some(mut timeout) = timeout.take() {
+                    timeout.cancel();
+                }
+            });
             return;
         }
 
         let selected_template_id = selected_template_id.get_untracked();
-        if let Some(window) = web_sys::window() {
-            let cb = Closure::once_into_js(move || {
-                if let Some(input) = search_ref.get() {
-                    let _ = input.focus();
-                }
-                restore_selected_component_scroll(list_ref, selected_template_id);
-            });
-            let _ = window.set_timeout_with_callback(cb.unchecked_ref());
-        }
+        focus_timeout.update_value(|timeout| {
+            if let Some(mut timeout) = timeout.take() {
+                timeout.cancel();
+            }
+        });
+        let timeout = set_timeout(Duration::ZERO, move || {
+            if let Some(input) = search_ref.get() {
+                let _ = input.focus();
+            }
+            restore_selected_component_scroll(list_ref, selected_template_id);
+        });
+        focus_timeout.set_value(Some(timeout));
     });
 
     view! {
