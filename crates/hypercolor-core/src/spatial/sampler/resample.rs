@@ -5,10 +5,11 @@
 //! so that the per-frame hot path is pure arithmetic on the canvas byte buffer.
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, SamplingMethod};
-use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SamplingMode};
 
 use super::super::plan::{
-    PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZoneSamples,
+    PreparedAreaSample, PreparedBilinearSample, PreparedGaussianSample, PreparedGaussianSamples,
+    PreparedNearestSample, PreparedZoneSamples,
 };
 use super::lut::{
     ATTENUATION_ONE, BILINEAR_ONE, BILINEAR_SHIFT, decode_srgb_byte, encode_linear_byte,
@@ -101,6 +102,74 @@ pub(super) fn prepare_area_sample_for_position(
     }
 }
 
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+pub(super) fn prepare_gaussian_sample_for_position(
+    position: NormalizedPosition,
+    edge_behavior: EdgeBehavior,
+    radius: u32,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> PreparedGaussianSample {
+    let attenuation = attenuation_for_position(position, edge_behavior);
+    let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
+    let cx = clamped.x * (canvas_width - 1) as f32;
+    let cy = clamped.y * (canvas_height - 1) as f32;
+
+    PreparedGaussianSample {
+        center_x: cx as i32,
+        center_y: cy as i32,
+        radius: i32::try_from(radius).unwrap_or(i32::MAX),
+        canvas_width: canvas_width as i32,
+        canvas_height: canvas_height as i32,
+        attenuation,
+    }
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+pub(super) fn prepare_gaussian_kernel(sigma: f32, radius: u32) -> (Vec<u16>, u32) {
+    if radius == 0 || sigma <= f32::EPSILON {
+        return (vec![u16::MAX], u32::from(u16::MAX));
+    }
+
+    let radius_i32 = i32::try_from(radius).unwrap_or(i32::MAX);
+    let diameter = radius.saturating_mul(2).saturating_add(1);
+    let capacity = usize::try_from(diameter.saturating_mul(diameter)).unwrap_or(usize::MAX);
+    let mut weights = Vec::with_capacity(capacity);
+    let sigma = f64::from(sigma.max(f32::EPSILON));
+    let denominator = 2.0 * sigma * sigma;
+    let mut weight_sum = 0_u32;
+
+    for dy in -radius_i32..=radius_i32 {
+        for dx in -radius_i32..=radius_i32 {
+            let dx = i64::from(dx);
+            let dy = i64::from(dy);
+            let distance_squared = (dx * dx + dy * dy) as f64;
+            let weight = (-distance_squared / denominator).exp();
+            let fixed = (weight * f64::from(u16::MAX))
+                .round()
+                .clamp(1.0, f64::from(u16::MAX));
+            let fixed = fixed as u16;
+            weights.push(fixed);
+            weight_sum = weight_sum.saturating_add(u32::from(fixed));
+        }
+    }
+
+    (weights, weight_sum.max(1))
+}
+
 // ── Per-frame sampling (hot path) ──────────────────────────────────────────
 
 #[must_use]
@@ -124,6 +193,9 @@ pub(super) fn sample_prepared_canvas_pixels(
         }
         PreparedZoneSamples::Area(samples) => {
             sample_prepared_area_pixels(bytes, row_stride, samples, has_attenuation)
+        }
+        PreparedZoneSamples::Gaussian(samples) => {
+            sample_prepared_gaussian_pixels(bytes, row_stride, samples, has_attenuation)
         }
     }
 }
@@ -149,6 +221,15 @@ pub(super) fn sample_prepared_canvas_pixels_into(
         }
         PreparedZoneSamples::Area(samples) => {
             sample_prepared_area_pixels_into(bytes, row_stride, samples, colors, has_attenuation);
+        }
+        PreparedZoneSamples::Gaussian(samples) => {
+            sample_prepared_gaussian_pixels_into(
+                bytes,
+                row_stride,
+                samples,
+                colors,
+                has_attenuation,
+            );
         }
     }
 }
@@ -181,22 +262,49 @@ pub(super) fn sample_positions_into_buffer(
     }
 }
 
-#[must_use]
-pub(super) fn sample_positions(
+pub(super) fn sample_positions_for_mode_into_buffer(
     canvas: &Canvas,
     positions: &[NormalizedPosition],
-    sampling_method: SamplingMethod,
+    mode: &SamplingMode,
     edge_behavior: EdgeBehavior,
-) -> Vec<[u8; 3]> {
-    let mut colors = Vec::new();
-    sample_positions_into_buffer(
-        canvas,
-        positions,
-        sampling_method,
-        edge_behavior,
-        &mut colors,
-    );
-    colors
+    colors: &mut Vec<[u8; 3]>,
+) {
+    let SamplingMode::GaussianArea { sigma, radius } = mode else {
+        let method = match mode {
+            SamplingMode::Nearest => SamplingMethod::Nearest,
+            SamplingMode::Bilinear => SamplingMethod::Bilinear,
+            SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
+                radius: (*radius_x).max(*radius_y),
+            },
+            SamplingMode::GaussianArea { .. } => unreachable!("gaussian mode handled above"),
+        };
+        sample_positions_into_buffer(canvas, positions, method, edge_behavior, colors);
+        return;
+    };
+
+    colors.clear();
+    colors.reserve(positions.len());
+    let bytes = canvas.as_rgba_bytes();
+    #[allow(
+        clippy::as_conversions,
+        reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
+    )]
+    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    let (weights, weight_sum) = prepare_gaussian_kernel(*sigma, *radius);
+
+    for &position in positions {
+        let sample = prepare_gaussian_sample_for_position(
+            position,
+            edge_behavior,
+            *radius,
+            canvas.width(),
+            canvas.height(),
+        );
+        colors.push(encode_linear_rgb(attenuate_rgb(
+            sample_gaussian_linear_rgb(bytes, row_stride, &sample, &weights, weight_sum),
+            sample.attenuation,
+        )));
+    }
 }
 
 #[must_use]
@@ -444,6 +552,47 @@ fn sample_area_linear_rgb(
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "gaussian sampling clamps coordinates and normalizes fixed-point weights before narrowing"
+)]
+fn sample_gaussian_linear_rgb(
+    bytes: &[u8],
+    row_stride: usize,
+    sample: &PreparedGaussianSample,
+    weights: &[u16],
+    weight_sum: u32,
+) -> [u16; 3] {
+    let mut sum_r = 0u64;
+    let mut sum_g = 0u64;
+    let mut sum_b = 0u64;
+    let mut weight_index = 0usize;
+
+    for dy in -sample.radius..=sample.radius {
+        let y = (sample.center_y + dy).clamp(0, sample.canvas_height - 1) as usize;
+        let row_offset = y * row_stride;
+        for dx in -sample.radius..=sample.radius {
+            let weight = u64::from(weights[weight_index]);
+            weight_index += 1;
+            let x = (sample.center_x + dx).clamp(0, sample.canvas_width - 1) as usize;
+            let offset = row_offset + x * BYTES_PER_PIXEL;
+            sum_r += u64::from(decode_srgb_byte(bytes[offset])) * weight;
+            sum_g += u64::from(decode_srgb_byte(bytes[offset + 1])) * weight;
+            sum_b += u64::from(decode_srgb_byte(bytes[offset + 2])) * weight;
+        }
+    }
+
+    let weight_sum = u64::from(weight_sum);
+    [
+        (sum_r / weight_sum) as u16,
+        (sum_g / weight_sum) as u16,
+        (sum_b / weight_sum) as u16,
+    ]
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
     reason = "attenuation math keeps channel values within the 0-65535 fixed-point range"
 )]
 fn attenuate_rgb(color: [u16; 3], attenuation: u16) -> [u16; 3] {
@@ -559,6 +708,52 @@ fn sample_prepared_area_pixels_into(
     } else {
         for (color, sample) in colors.iter_mut().zip(samples) {
             *color = encode_linear_rgb(sample_area_linear_rgb(bytes, row_stride, sample));
+        }
+    }
+}
+
+#[must_use]
+fn sample_prepared_gaussian_pixels(
+    bytes: &[u8],
+    row_stride: usize,
+    samples: &PreparedGaussianSamples,
+    has_attenuation: bool,
+) -> Vec<[u8; 3]> {
+    let mut colors = Vec::new();
+    sample_prepared_gaussian_pixels_into(bytes, row_stride, samples, &mut colors, has_attenuation);
+    colors
+}
+
+fn sample_prepared_gaussian_pixels_into(
+    bytes: &[u8],
+    row_stride: usize,
+    samples: &PreparedGaussianSamples,
+    colors: &mut Vec<[u8; 3]>,
+    has_attenuation: bool,
+) {
+    colors.resize(samples.samples.len(), [0, 0, 0]);
+    if has_attenuation {
+        for (color, sample) in colors.iter_mut().zip(&samples.samples) {
+            *color = encode_linear_rgb(attenuate_rgb(
+                sample_gaussian_linear_rgb(
+                    bytes,
+                    row_stride,
+                    sample,
+                    &samples.weights,
+                    samples.weight_sum,
+                ),
+                sample.attenuation,
+            ));
+        }
+    } else {
+        for (color, sample) in colors.iter_mut().zip(&samples.samples) {
+            *color = encode_linear_rgb(sample_gaussian_linear_rgb(
+                bytes,
+                row_stride,
+                sample,
+                &samples.weights,
+                samples.weight_sum,
+            ));
         }
     }
 }

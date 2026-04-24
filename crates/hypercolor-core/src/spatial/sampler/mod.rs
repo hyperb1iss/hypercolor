@@ -19,8 +19,9 @@ use hypercolor_types::spatial::{
 
 use super::plan::{PreparedZonePlan, PreparedZoneSamples};
 use resample::{
-    prepare_area_sample_for_position, prepare_bilinear_sample_for_position, prepare_nearest_sample,
-    sample_positions, sample_positions_into_buffer, sample_prepared_canvas_pixels,
+    prepare_area_sample_for_position, prepare_bilinear_sample_for_position,
+    prepare_gaussian_kernel, prepare_gaussian_sample_for_position, prepare_nearest_sample,
+    sample_positions_for_mode_into_buffer, sample_prepared_canvas_pixels,
     sample_prepared_canvas_pixels_into, sample_srgb_rgb,
 };
 
@@ -97,10 +98,13 @@ fn resolve_edge_behavior(zone: &DeviceZone, layout: &SpatialLayout) -> EdgeBehav
 fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
     match mode {
         SamplingMode::Nearest => SamplingMethod::Nearest,
-        // Gaussian falls back to bilinear until the PrecomputedSampler / SamplingLut
-        // implements full kernel sampling.
-        SamplingMode::Bilinear | SamplingMode::GaussianArea { .. } => SamplingMethod::Bilinear,
-        SamplingMode::AreaAverage { radius_x, .. } => SamplingMethod::Area { radius: *radius_x },
+        SamplingMode::Bilinear => SamplingMethod::Bilinear,
+        SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
+            radius: (*radius_x).max(*radius_y),
+        },
+        SamplingMode::GaussianArea { .. } => {
+            unreachable!("gaussian sampling uses the prepared kernel path")
+        }
     }
 }
 
@@ -111,19 +115,13 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
 pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> PreparedZonePlan {
     let mode = resolve_sampling_mode(zone, layout);
     let edge = resolve_edge_behavior(zone, layout);
-    let sampling_method = match mode {
-        SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
-            radius: radius_x.max(radius_y),
-        },
-        other => to_sampling_method(&other),
-    };
     let sample_positions = zone
         .led_positions
         .iter()
         .map(|&pos| zone_local_to_canvas(pos, zone, edge))
         .collect::<Vec<_>>();
-    let (prepared_samples, has_attenuation) = match sampling_method {
-        SamplingMethod::Nearest => {
+    let (prepared_samples, has_attenuation) = match mode {
+        SamplingMode::Nearest => {
             let samples = sample_positions
                 .iter()
                 .copied()
@@ -141,7 +139,7 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                 .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
             (PreparedZoneSamples::Nearest(samples), has_attenuation)
         }
-        SamplingMethod::Bilinear => {
+        SamplingMode::Bilinear => {
             let samples = sample_positions
                 .iter()
                 .copied()
@@ -159,7 +157,8 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                 .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
             (PreparedZoneSamples::Bilinear(samples), has_attenuation)
         }
-        SamplingMethod::Area { radius } => {
+        SamplingMode::AreaAverage { radius_x, radius_y } => {
+            let radius = radius_x.max(radius_y);
             let samples = sample_positions
                 .iter()
                 .copied()
@@ -178,11 +177,38 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
                 .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
             (PreparedZoneSamples::Area(samples), has_attenuation)
         }
+        SamplingMode::GaussianArea { sigma, radius } => {
+            let (weights, weight_sum) = prepare_gaussian_kernel(sigma, radius);
+            let samples = sample_positions
+                .iter()
+                .copied()
+                .map(|position| {
+                    prepare_gaussian_sample_for_position(
+                        position,
+                        edge,
+                        radius,
+                        layout.canvas_width,
+                        layout.canvas_height,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let has_attenuation = samples
+                .iter()
+                .any(|sample| sample.attenuation < lut::ATTENUATION_ONE);
+            (
+                PreparedZoneSamples::Gaussian(super::plan::PreparedGaussianSamples {
+                    samples,
+                    weights,
+                    weight_sum,
+                }),
+                has_attenuation,
+            )
+        }
     };
 
     PreparedZonePlan {
         zone_id: zone.id.clone(),
-        sampling_method,
+        sampling_mode: mode,
         edge_behavior: edge,
         sample_positions,
         has_attenuation,
@@ -203,12 +229,15 @@ pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZonePlan) -> 
         return sample_prepared_canvas_pixels(canvas, &zone.prepared_samples, zone.has_attenuation);
     }
 
-    sample_positions(
+    let mut colors = Vec::new();
+    sample_positions_for_mode_into_buffer(
         canvas,
         &zone.sample_positions,
-        zone.sampling_method,
+        &zone.sampling_mode,
         zone.edge_behavior,
-    )
+        &mut colors,
+    );
+    colors
 }
 
 pub(crate) fn sample_prepared_zone_into(
@@ -228,10 +257,10 @@ pub(crate) fn sample_prepared_zone_into(
         return;
     }
 
-    sample_positions_into_buffer(
+    sample_positions_for_mode_into_buffer(
         canvas,
         &zone.sample_positions,
-        zone.sampling_method,
+        &zone.sampling_mode,
         zone.edge_behavior,
         colors,
     );
@@ -253,12 +282,17 @@ pub fn sample_led(
 
     // For area average with distinct X/Y radii, use the canvas area sampler
     // with the larger radius (the canvas `sample_area` uses a square kernel).
-    let method = match mode {
-        SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
-            radius: radius_x.max(*radius_y),
-        },
-        other => to_sampling_method(other),
-    };
+    if matches!(mode, SamplingMode::GaussianArea { .. }) {
+        let mut colors = Vec::new();
+        sample_positions_for_mode_into_buffer(canvas, &[canvas_pos], mode, edge, &mut colors);
+        let [r, g, b] = colors
+            .into_iter()
+            .next()
+            .expect("single gaussian sample should produce one color");
+        return Rgba::new(r, g, b, 255);
+    }
+
+    let method = to_sampling_method(mode);
 
     let bytes = canvas.as_rgba_bytes();
     #[allow(

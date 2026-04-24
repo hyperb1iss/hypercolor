@@ -572,6 +572,74 @@ fn area_average_samples_region() {
 }
 
 #[test]
+fn gaussian_area_samples_weighted_kernel() {
+    let mut canvas = Canvas::new(3, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(1, 0, Rgba::new(0, 0, 255, 255));
+    canvas.set_pixel(2, 0, Rgba::new(255, 0, 0, 255));
+
+    let zone = custom_zone(
+        "bulb",
+        LedTopology::Point,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+        Some(SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: 1,
+        }),
+    );
+
+    let layout = test_layout(vec![zone], 3, 1);
+    let engine = SpatialEngine::new(layout);
+    let result = engine.sample(&canvas);
+    let color = &result[0].colors[0];
+
+    assert!(
+        color[0] > 170,
+        "gaussian kernel should mix neighboring red pixels, got {color:?}"
+    );
+    assert!(
+        color[2] > 150,
+        "gaussian kernel should retain center blue pixel, got {color:?}"
+    );
+}
+
+#[test]
+fn gaussian_area_keeps_kernel_sampling_after_canvas_resize() {
+    let mut canvas = Canvas::new(5, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(1, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(2, 0, Rgba::new(0, 0, 255, 255));
+    canvas.set_pixel(3, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(4, 0, Rgba::new(255, 0, 0, 255));
+
+    let zone = custom_zone(
+        "bulb",
+        LedTopology::Point,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+        Some(SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: 1,
+        }),
+    );
+
+    let layout = test_layout(vec![zone], 3, 1);
+    let engine = SpatialEngine::new(layout);
+    let result = engine.sample(&canvas);
+    let color = &result[0].colors[0];
+
+    assert!(
+        color[0] > 170,
+        "resized-canvas fallback should keep gaussian red contribution, got {color:?}"
+    );
+    assert!(
+        color[2] > 150,
+        "resized-canvas fallback should retain center blue pixel, got {color:?}"
+    );
+}
+
+#[test]
 fn matrix_sampling_preserves_solid_color() {
     let canvas = solid_canvas(32, 20, Rgba::new(196, 124, 170, 255));
     let zone = full_canvas_zone(
@@ -706,6 +774,32 @@ fn spatial_engine_exposes_prepared_sampling_plan() {
     match &plan[0].prepared_samples {
         PreparedZoneSamples::Bilinear(samples) => assert_eq!(samples.len(), 4),
         other => panic!("expected bilinear prepared samples, got {other:?}"),
+    }
+}
+
+#[test]
+fn spatial_engine_prepares_gaussian_sampling_plan() {
+    let zone = custom_zone(
+        "bulb",
+        LedTopology::Point,
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+        Some(SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: 1,
+        }),
+    );
+    let engine = SpatialEngine::new(test_layout(vec![zone], 3, 1));
+
+    let plan = engine.sampling_plan();
+    assert_eq!(plan.len(), 1);
+    match &plan[0].prepared_samples {
+        PreparedZoneSamples::Gaussian(samples) => {
+            assert_eq!(samples.samples.len(), 1);
+            assert_eq!(samples.weights.len(), 9);
+            assert!(samples.weight_sum > u32::from(u16::MAX));
+        }
+        other => panic!("expected gaussian prepared samples, got {other:?}"),
     }
 }
 
