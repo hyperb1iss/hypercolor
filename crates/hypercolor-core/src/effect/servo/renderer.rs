@@ -14,6 +14,9 @@ use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, Eff
 use hypercolor_types::sensor::SystemSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -63,6 +66,56 @@ impl AnimationCadence {
     }
 }
 
+struct ServoLoadTask {
+    response_rx: Receiver<Result<LoadedServoSession>>,
+    shared: Arc<Mutex<ServoLoadTaskState>>,
+    started_at: Instant,
+}
+
+impl ServoLoadTask {
+    fn try_discard_loaded_session(&self) {
+        let mut state = lock_servo_load_task_state(&self.shared);
+        state.canceled = true;
+        match self.response_rx.try_recv() {
+            Ok(Ok(loaded)) => loaded.discard(),
+            Ok(Err(_)) | Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
+        }
+    }
+}
+
+impl Drop for ServoLoadTask {
+    fn drop(&mut self) {
+        self.try_discard_loaded_session();
+    }
+}
+
+struct ServoLoadTaskState {
+    canceled: bool,
+}
+
+struct LoadedServoSession {
+    session: ServoSessionHandle,
+    runtime_source: PathBuf,
+    runtime_html_path: Option<PathBuf>,
+}
+
+impl LoadedServoSession {
+    fn discard(self) {
+        let runtime_html_path = self.runtime_html_path.clone();
+        match self.session.close_detached() {
+            Ok(()) => record_servo_detached_destroy(true),
+            Err(error) => {
+                record_servo_detached_destroy(false);
+                note_servo_session_error("Failed to queue abandoned Servo session destroy", &error);
+                warn!(%error, "Failed to queue abandoned Servo session destroy");
+            }
+        }
+        if let Some(path) = runtime_html_path.as_ref() {
+            cleanup_runtime_html_path(path);
+        }
+    }
+}
+
 /// Feature-gated renderer for HTML effects.
 pub struct ServoRenderer {
     html_source: Option<PathBuf>,
@@ -73,6 +126,8 @@ pub struct ServoRenderer {
     initialized: bool,
     pending_scripts: Vec<String>,
     session: Option<ServoSessionHandle>,
+    load_task: Option<ServoLoadTask>,
+    load_failed: Option<String>,
     queued_frame: Option<QueuedFrameInput>,
     last_canvas: Option<Canvas>,
     warned_fallback_frame: bool,
@@ -97,6 +152,8 @@ impl ServoRenderer {
             initialized: false,
             pending_scripts: Vec::new(),
             session: None,
+            load_task: None,
+            load_failed: None,
             queued_frame: None,
             last_canvas: None,
             warned_fallback_frame: false,
@@ -167,14 +224,8 @@ impl ServoRenderer {
     }
 
     fn cleanup_runtime_html(&mut self) {
-        if let Some(path) = self.runtime_html_path.take()
-            && let Err(error) = std::fs::remove_file(&path)
-        {
-            debug!(
-                path = %path.display(),
-                %error,
-                "Failed to remove temporary runtime HTML source"
-            );
+        if let Some(path) = self.runtime_html_path.take() {
+            cleanup_runtime_html_path(&path);
         }
     }
 
@@ -184,8 +235,6 @@ impl ServoRenderer {
         canvas_width: u32,
         canvas_height: u32,
     ) -> Result<()> {
-        use anyhow::Context;
-
         let EffectSource::Html { path } = &metadata.source else {
             bail!(
                 "ServoRenderer requires EffectSource::Html, got source {:?} for effect '{}'",
@@ -194,17 +243,11 @@ impl ServoRenderer {
             );
         };
 
-        let resolved = resolve_html_source_path(path).with_context(|| {
-            format!(
-                "failed to resolve HTML source for effect '{}' from '{}'",
-                metadata.name,
-                path.display()
-            )
-        })?;
-
         self.destroy();
         self.cleanup_runtime_html();
         self.session = None;
+        self.load_task = None;
+        self.load_failed = None;
         self.controls.clear();
         self.runtime = LightscriptRuntime::new(canvas_width, canvas_height);
         self.pending_scripts.clear();
@@ -236,68 +279,82 @@ impl ServoRenderer {
             );
         }
 
-        let (runtime_source, runtime_html_path) =
-            prepare_runtime_html_source(&resolved, &self.controls).with_context(|| {
-                format!(
-                    "failed to prepare runtime HTML source for '{}'",
-                    resolved.display()
-                )
-            })?;
-
-        let session_create_started = Instant::now();
-        let mut session = match ServoSessionHandle::new_shared(SessionConfig {
-            render_width: canvas_width,
-            render_height: canvas_height,
-            inject_engine_globals: true,
-        }) {
-            Ok(session) => {
-                record_servo_session_create(session_create_started.elapsed(), true);
-                session
-            }
-            Err(error) => {
-                record_servo_session_create(session_create_started.elapsed(), false);
-                note_servo_session_error("Servo effect session creation failed", &error);
-                return Err(error);
-            }
-        };
-        let page_load_started = Instant::now();
-        if let Err(error) = session.load_html_file(&runtime_source) {
-            record_servo_page_load(page_load_started.elapsed(), false);
-            match session.close_detached() {
-                Ok(()) => record_servo_detached_destroy(true),
-                Err(close_error) => {
-                    record_servo_detached_destroy(false);
-                    note_servo_session_error(
-                        "Failed to queue Servo effect session destroy after page-load failure",
-                        &close_error,
-                    );
-                    warn!(
-                        error = %close_error,
-                        "Failed to queue Servo effect session destroy after page-load failure"
-                    );
-                }
-            }
-            note_servo_session_error("Servo effect page load failed", &error);
-            return Err(error);
-        }
-        record_servo_page_load(page_load_started.elapsed(), true);
-        self.session = Some(session);
         self.html_source = Some(path.clone());
-        self.html_resolved_path = Some(runtime_source.clone());
-        self.runtime_html_path = runtime_html_path;
+        self.html_resolved_path = None;
+        self.runtime_html_path = None;
         self.initialized = true;
-        self.enqueue_bootstrap_scripts();
+        self.load_task = Some(start_servo_load_task(
+            metadata.name.clone(),
+            path.clone(),
+            self.controls.clone(),
+            canvas_width,
+            canvas_height,
+        ));
 
         info!(
             effect = %metadata.name,
             source = %path.display(),
-            resolved = %runtime_source.display(),
             canvas_width,
             canvas_height,
-            "Initialized ServoRenderer worker"
+            "Queued ServoRenderer load"
         );
 
         Ok(())
+    }
+
+    fn poll_load_task(&mut self) {
+        let Some(result) = self
+            .load_task
+            .as_ref()
+            .map(|task| task.response_rx.try_recv())
+        else {
+            return;
+        };
+
+        match result {
+            Ok(Ok(loaded)) => {
+                let started_at = self
+                    .load_task
+                    .as_ref()
+                    .map_or_else(Instant::now, |task| task.started_at);
+                let LoadedServoSession {
+                    session,
+                    runtime_source,
+                    runtime_html_path,
+                } = loaded;
+                self.load_task = None;
+                info!(
+                    resolved = %runtime_source.display(),
+                    wait_ms = started_at.elapsed().as_millis(),
+                    "ServoRenderer load completed"
+                );
+                self.html_resolved_path = Some(runtime_source);
+                self.runtime_html_path = runtime_html_path;
+                self.session = Some(session);
+                self.load_failed = None;
+                self.enqueue_bootstrap_scripts();
+            }
+            Ok(Err(error)) => {
+                self.load_task = None;
+                let message = error.to_string();
+                if self.load_failed.as_deref() != Some(message.as_str()) {
+                    warn!(%error, "ServoRenderer load failed; rendering placeholder frames");
+                }
+                self.load_failed = Some(message);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.load_task = None;
+                let message = "Servo load task disconnected before completion".to_owned();
+                if self.load_failed.as_deref() != Some(message.as_str()) {
+                    warn!(
+                        message,
+                        "ServoRenderer load failed; rendering placeholder frames"
+                    );
+                }
+                self.load_failed = Some(message);
+            }
+        }
     }
 
     fn queue_frame(&mut self, input: &FrameInput<'_>) {
@@ -413,6 +470,158 @@ impl ServoRenderer {
     }
 }
 
+fn start_servo_load_task(
+    effect_name: String,
+    html_source: PathBuf,
+    controls: HashMap<String, ControlValue>,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> ServoLoadTask {
+    let (response_tx, response_rx) = mpsc::sync_channel(1);
+    let response_tx_for_thread = response_tx.clone();
+    let shared = Arc::new(Mutex::new(ServoLoadTaskState { canceled: false }));
+    let shared_for_thread = Arc::clone(&shared);
+    let spawn_result = thread::Builder::new()
+        .name(format!("hypercolor-servo-load-{effect_name}"))
+        .spawn(move || {
+            let result = load_servo_session(
+                &effect_name,
+                html_source,
+                &controls,
+                canvas_width,
+                canvas_height,
+            );
+            match result {
+                Ok(loaded) => {
+                    let state = lock_servo_load_task_state(&shared_for_thread);
+                    if state.canceled {
+                        drop(state);
+                        loaded.discard();
+                    } else if let Err(mpsc::SendError(Ok(abandoned))) =
+                        response_tx_for_thread.send(Ok(loaded))
+                    {
+                        drop(state);
+                        abandoned.discard();
+                    }
+                }
+                Err(error) => {
+                    let state = lock_servo_load_task_state(&shared_for_thread);
+                    if !state.canceled {
+                        let _ = response_tx_for_thread.send(Err(error));
+                    }
+                }
+            }
+        });
+    if let Err(error) = spawn_result {
+        let _ = response_tx.send(Err(anyhow::anyhow!(
+            "failed to spawn Servo load helper thread: {error}"
+        )));
+    }
+
+    ServoLoadTask {
+        response_rx,
+        shared,
+        started_at: Instant::now(),
+    }
+}
+
+fn lock_servo_load_task_state(
+    shared: &Arc<Mutex<ServoLoadTaskState>>,
+) -> std::sync::MutexGuard<'_, ServoLoadTaskState> {
+    match shared.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn load_servo_session(
+    effect_name: &str,
+    html_source: PathBuf,
+    controls: &HashMap<String, ControlValue>,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> Result<LoadedServoSession> {
+    use anyhow::Context;
+
+    let resolved = resolve_html_source_path(&html_source).with_context(|| {
+        format!(
+            "failed to resolve HTML source for effect '{effect_name}' from '{}'",
+            html_source.display()
+        )
+    })?;
+
+    let (runtime_source, runtime_html_path) = prepare_runtime_html_source(&resolved, controls)
+        .with_context(|| {
+            format!(
+                "failed to prepare runtime HTML source for '{}'",
+                resolved.display()
+            )
+        })?;
+
+    let session_create_started = Instant::now();
+    let mut session = match ServoSessionHandle::new_shared(SessionConfig {
+        render_width: canvas_width,
+        render_height: canvas_height,
+        inject_engine_globals: true,
+    }) {
+        Ok(session) => {
+            record_servo_session_create(session_create_started.elapsed(), true);
+            session
+        }
+        Err(error) => {
+            record_servo_session_create(session_create_started.elapsed(), false);
+            cleanup_runtime_html_option(runtime_html_path.as_ref());
+            note_servo_session_error("Servo effect session creation failed", &error);
+            return Err(error);
+        }
+    };
+
+    let page_load_started = Instant::now();
+    if let Err(error) = session.load_html_file(&runtime_source) {
+        record_servo_page_load(page_load_started.elapsed(), false);
+        match session.close_detached() {
+            Ok(()) => record_servo_detached_destroy(true),
+            Err(close_error) => {
+                record_servo_detached_destroy(false);
+                note_servo_session_error(
+                    "Failed to queue Servo effect session destroy after page-load failure",
+                    &close_error,
+                );
+                warn!(
+                    error = %close_error,
+                    "Failed to queue Servo effect session destroy after page-load failure"
+                );
+            }
+        }
+        cleanup_runtime_html_option(runtime_html_path.as_ref());
+        note_servo_session_error("Servo effect page load failed", &error);
+        return Err(error);
+    }
+    record_servo_page_load(page_load_started.elapsed(), true);
+
+    Ok(LoadedServoSession {
+        session,
+        runtime_source,
+        runtime_html_path,
+    })
+}
+
+fn cleanup_runtime_html_option(path: Option<&PathBuf>) {
+    if let Some(path) = path {
+        cleanup_runtime_html_path(path);
+    }
+}
+
+fn cleanup_runtime_html_path(path: &PathBuf) {
+    if let Err(error) = std::fs::remove_file(path) {
+        debug!(
+            path = %path.display(),
+            %error,
+            "Failed to remove temporary runtime HTML source"
+        );
+    }
+}
+
 impl EffectRenderer for ServoRenderer {
     fn init(&mut self, metadata: &EffectMetadata) -> Result<()> {
         self.initialize_with_canvas_size(metadata, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
@@ -432,6 +641,7 @@ impl EffectRenderer for ServoRenderer {
             bail!("ServoRenderer tick called before init");
         }
 
+        self.poll_load_task();
         self.queue_frame(input);
         self.poll_in_flight_render();
         self.try_submit_queued_frame();
@@ -452,6 +662,7 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
+        self.load_task = None;
         if let Some(session) = self.session.take() {
             match session.close_detached() {
                 Ok(()) => record_servo_detached_destroy(true),
@@ -473,6 +684,7 @@ impl EffectRenderer for ServoRenderer {
         self.html_resolved_path = None;
         self.cleanup_runtime_html();
         self.initialized = false;
+        self.load_failed = None;
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
         self.include_audio_updates = true;
@@ -595,8 +807,8 @@ mod tests {
         install_running_shared_worker, reset_shared_servo_worker_state,
         shutdown_shared_servo_worker,
         test_support::{
-            SHARED_WORKER_STATE_TEST_LOCK, spawn_load_test_worker, spawn_render_test_worker,
-            spawn_test_worker, worker_client_from,
+            SHARED_WORKER_STATE_TEST_LOCK, spawn_blocking_load_test_worker, spawn_load_test_worker,
+            spawn_render_test_worker, spawn_test_worker, worker_client_from,
         },
     };
     use hypercolor_types::audio::AudioData;
@@ -605,7 +817,7 @@ mod tests {
     use std::sync::LazyLock;
     use std::sync::atomic::Ordering;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use uuid::Uuid;
 
     static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
@@ -673,6 +885,17 @@ mod tests {
         let mut canvas = Canvas::new(width, height);
         canvas.fill(Rgba::new(r, g, b, 255));
         canvas
+    }
+
+    fn wait_for_load_completion(renderer: &mut ServoRenderer) {
+        for _ in 0..20 {
+            renderer.poll_load_task();
+            if renderer.load_task.is_none() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("Servo load task should complete");
     }
 
     fn html_metadata(path: PathBuf) -> EffectMetadata {
@@ -822,6 +1045,96 @@ mod tests {
     }
 
     #[test]
+    fn init_with_canvas_size_returns_before_servo_session_create_completes() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+
+        let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
+        install_running_shared_worker(worker);
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory");
+        let source_path = temp_dir.path().join("effect.html");
+        std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+            .expect("write source html");
+
+        let metadata = html_metadata(source_path);
+        let mut renderer = ServoRenderer::new();
+        let started_at = Instant::now();
+        renderer
+            .init_with_canvas_size(&metadata, 640, 480)
+            .expect("renderer should queue initialization");
+
+        assert!(started_at.elapsed() < Duration::from_millis(50));
+        assert!(renderer.load_task.is_some());
+        assert!(renderer.session.is_none());
+
+        let load = load_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("create-session command should be queued asynchronously");
+        assert_eq!(load.width, 640);
+        assert_eq!(load.height, 480);
+
+        release_tx.send(()).expect("release create-session");
+        wait_for_load_completion(&mut renderer);
+        assert!(renderer.session.is_some());
+
+        renderer.destroy();
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("destroy should unload test worker");
+
+        shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn destroy_discards_completed_load_task_before_it_is_polled() {
+        let (worker, load_rx, unload_rx, stopped) = spawn_load_test_worker();
+        let mut session = ServoSessionHandle::new(
+            worker_client_from(&worker),
+            SessionConfig {
+                render_width: 640,
+                render_height: 480,
+                inject_engine_globals: true,
+            },
+        )
+        .expect("test session should initialize");
+
+        load_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("create-session command should be queued");
+        session
+            .load_html_file(std::path::Path::new("test.html"))
+            .expect("test session should load");
+
+        let (response_tx, response_rx) = std::sync::mpsc::sync_channel(1);
+        response_tx
+            .send(Ok(LoadedServoSession {
+                session,
+                runtime_source: PathBuf::from("runtime.html"),
+                runtime_html_path: None,
+            }))
+            .expect("completed load should queue");
+
+        let mut renderer = ServoRenderer::new();
+        renderer.load_task = Some(ServoLoadTask {
+            response_rx,
+            shared: Arc::new(Mutex::new(ServoLoadTaskState { canceled: false })),
+            started_at: Instant::now(),
+        });
+
+        renderer.destroy();
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("completed background load should be detached during destroy");
+
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn init_with_canvas_size_loads_servo_page_at_target_resolution() {
         let _lock = SHARED_WORKER_STATE_TEST_LOCK
             .lock()
@@ -847,6 +1160,7 @@ mod tests {
             .expect("load command should be recorded");
         assert_eq!(load.width, 640);
         assert_eq!(load.height, 480);
+        wait_for_load_completion(&mut renderer);
         assert!(
             renderer
                 .pending_scripts

@@ -1710,6 +1710,67 @@ pub(super) mod test_support {
         )
     }
 
+    pub fn spawn_blocking_load_test_worker() -> (
+        ServoWorker,
+        Receiver<RecordedLoadCommand>,
+        Sender<()>,
+        Receiver<()>,
+        Arc<AtomicBool>,
+    ) {
+        let (command_tx, command_rx) = mpsc::channel();
+        let client_state = Arc::new(ServoWorkerClientSharedState::new());
+        let (load_tx, load_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (unload_tx, unload_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let thread_handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                match command {
+                    WorkerCommand::CreateSession {
+                        width,
+                        height,
+                        response_tx,
+                        ..
+                    } => {
+                        let _ = load_tx.send(RecordedLoadCommand { width, height });
+                        let _ = release_rx.recv();
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Load { response_tx, .. }
+                    | WorkerCommand::LoadUrl { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Unload { response_tx, .. }
+                    | WorkerCommand::DestroySession { response_tx, .. } => {
+                        let _ = unload_tx.send(());
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Render { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
+                    }
+                    WorkerCommand::Shutdown { response_tx } => {
+                        stopped_clone.store(true, Ordering::SeqCst);
+                        let _ = response_tx.send(());
+                        break;
+                    }
+                }
+            }
+        });
+
+        (
+            ServoWorker {
+                command_tx: Some(command_tx),
+                thread_handle: Some(thread_handle),
+                client_state,
+            },
+            load_rx,
+            release_tx,
+            unload_rx,
+            stopped,
+        )
+    }
+
     pub fn worker_client_from(worker: &ServoWorker) -> ServoWorkerClient {
         worker.client().expect("test worker client")
     }
