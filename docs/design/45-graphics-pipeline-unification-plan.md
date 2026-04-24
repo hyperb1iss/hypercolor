@@ -331,7 +331,7 @@ Implementation:
 
 Verify:
 
-- `--render-acceleration-mode auto` selects GPU on a compatible system.
+- `--compositor-acceleration-mode auto` selects GPU on a compatible system.
 - `Auto` falls back to CPU with a visible reason on incompatible systems.
 - Startup logs and API state report requested and effective modes.
 

@@ -599,7 +599,7 @@ pub fn RenderingSection(
     });
     let render_acceleration = Signal::derive(move || {
         read_config(config, |cfg| {
-            match cfg.effect_engine.render_acceleration_mode {
+            match cfg.effect_engine.compositor_acceleration_mode {
                 hypercolor_types::config::RenderAccelerationMode::Cpu => "cpu".to_string(),
                 hypercolor_types::config::RenderAccelerationMode::Auto => "auto".to_string(),
                 hypercolor_types::config::RenderAccelerationMode::Gpu => "gpu".to_string(),
@@ -670,7 +670,7 @@ pub fn RenderingSection(
         <section id="section-rendering" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Rendering" icon=LuGauge />
             <div class="text-xs text-fg-tertiary/50 -mt-2 mb-4">
-                "Frame rate, canvas resolution, and render acceleration for the lighting engine"
+                "Frame rate, canvas resolution, and scene compositor acceleration"
             </div>
             <SettingSegmented
                 label="Target FPS"
@@ -708,9 +708,9 @@ pub fn RenderingSection(
                 />
             </Show>
             <SettingDropdown
-                label="Render Acceleration"
-                description="CPU is the safest default. Auto prefers GPU when available; GPU requires it (may fall back with a warning)"
-                key="effect_engine.render_acceleration_mode"
+                label="Compositor Acceleration"
+                description="Accelerates scene composition only. Servo HTML rendering still uses CPU readback; GPU requires a compatible compositor path."
+                key="effect_engine.compositor_acceleration_mode"
                 value=render_acceleration
                 options=Signal::stored(accel_options)
                 on_change=on_change
@@ -728,7 +728,7 @@ pub fn RenderingSection(
                 for key in &[
                     "daemon.target_fps",
                     "daemon.canvas_width", "daemon.canvas_height",
-                    "effect_engine.render_acceleration_mode",
+                    "effect_engine.compositor_acceleration_mode",
                     "effect_engine.effect_error_fallback",
                 ] {
                     on_reset.run(key.to_string());

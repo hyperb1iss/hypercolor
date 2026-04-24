@@ -47,7 +47,7 @@ pub struct SystemStatus {
     pub global_brightness: u8,
     pub audio_available: bool,
     pub capture_available: bool,
-    pub render_acceleration: RenderAccelerationStatus,
+    pub compositor_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
     pub latest_frame: Option<LatestFrameStatus>,
     pub effect_health: EffectHealthStatus,
@@ -89,9 +89,11 @@ pub struct LatestFrameStatus {
     pub compositor_backend: String,
     pub gpu_zone_sampling: bool,
     pub gpu_sample_deferred: bool,
+    pub gpu_sample_stale: bool,
     pub gpu_sample_retry_hit: bool,
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
+    pub gpu_sample_cpu_fallback: bool,
     pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
     pub total_ms: f64,
@@ -287,7 +289,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),
-        render_acceleration: render_acceleration_status(&state.render_acceleration),
+        compositor_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
         latest_frame,
         effect_health,
@@ -559,9 +561,11 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         compositor_backend: frame.compositor_backend.as_str().to_owned(),
         gpu_zone_sampling: frame.gpu_zone_sampling,
         gpu_sample_deferred: frame.gpu_sample_deferred,
+        gpu_sample_stale: frame.gpu_sample_stale,
         gpu_sample_retry_hit: frame.gpu_sample_retry_hit,
         gpu_sample_queue_saturated: frame.gpu_sample_queue_saturated,
         gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
+        gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
         cpu_sampling_late_readback: frame.cpu_sampling_late_readback,
         cpu_readback_skipped: frame.cpu_readback_skipped,
         total_ms: round_2(us_to_ms(frame.total_us)),
@@ -723,9 +727,11 @@ mod tests {
                 composition_bypassed: false,
                 gpu_zone_sampling: true,
                 gpu_sample_deferred: true,
+                gpu_sample_stale: true,
                 gpu_sample_retry_hit: true,
                 gpu_sample_queue_saturated: true,
                 gpu_sample_wait_blocked: true,
+                gpu_sample_cpu_fallback: true,
                 cpu_sampling_late_readback: true,
                 cpu_readback_skipped: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
@@ -770,10 +776,16 @@ mod tests {
         assert_eq!(json["data"]["render_loop"]["target_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["ceiling_fps"], 60);
         assert_eq!(json["data"]["render_loop"]["actual_fps"], 60.0);
-        assert_eq!(json["data"]["render_acceleration"]["requested_mode"], "cpu");
-        assert_eq!(json["data"]["render_acceleration"]["effective_mode"], "cpu");
-        assert!(json["data"]["render_acceleration"]["fallback_reason"].is_null());
-        assert!(json["data"]["render_acceleration"]["gpu_probe"].is_null());
+        assert_eq!(
+            json["data"]["compositor_acceleration"]["requested_mode"],
+            "cpu"
+        );
+        assert_eq!(
+            json["data"]["compositor_acceleration"]["effective_mode"],
+            "cpu"
+        );
+        assert!(json["data"]["compositor_acceleration"]["fallback_reason"].is_null());
+        assert!(json["data"]["compositor_acceleration"]["gpu_probe"].is_null());
         assert_eq!(json["data"]["latest_frame"]["frame_token"], 77);
         assert_eq!(
             json["data"]["latest_frame"]["compositor_backend"],
@@ -781,6 +793,7 @@ mod tests {
         );
         assert_eq!(json["data"]["latest_frame"]["gpu_zone_sampling"], true);
         assert_eq!(json["data"]["latest_frame"]["gpu_sample_deferred"], true);
+        assert_eq!(json["data"]["latest_frame"]["gpu_sample_stale"], true);
         assert_eq!(json["data"]["latest_frame"]["gpu_sample_retry_hit"], true);
         assert_eq!(
             json["data"]["latest_frame"]["gpu_sample_queue_saturated"],
@@ -788,6 +801,10 @@ mod tests {
         );
         assert_eq!(
             json["data"]["latest_frame"]["gpu_sample_wait_blocked"],
+            true
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["gpu_sample_cpu_fallback"],
             true
         );
         assert_eq!(

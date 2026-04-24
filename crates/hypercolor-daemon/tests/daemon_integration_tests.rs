@@ -334,7 +334,7 @@ async fn config_loading_all_sub_configs_have_defaults() {
     assert!(config.hue.use_cie_xy);
     assert_eq!(config.nanoleaf.transition_time, 1);
     assert_eq!(
-        config.effect_engine.render_acceleration_mode,
+        config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Cpu
     );
 
@@ -482,7 +482,7 @@ async fn api_state_config_snapshot_matches_init_config() {
     assert_eq!(snapshot.daemon.target_fps, 45);
     assert_eq!(snapshot.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(
-        snapshot.effect_engine.render_acceleration_mode,
+        snapshot.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Cpu
     );
 }

@@ -73,7 +73,7 @@ impl DaemonState {
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
         let render_acceleration =
-            resolve_compositor_acceleration_mode(config.effect_engine.render_acceleration_mode)
+            resolve_compositor_acceleration_mode(config.effect_engine.compositor_acceleration_mode)
                 .context("failed to resolve compositor acceleration mode")?;
         if let Some(reason) = render_acceleration.fallback_reason {
             warn!(

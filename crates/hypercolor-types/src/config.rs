@@ -125,7 +125,7 @@ mod defaults {
     pub fn auto_string() -> String {
         "auto".into()
     }
-    pub fn render_acceleration_mode() -> RenderAccelerationMode {
+    pub fn compositor_acceleration_mode() -> RenderAccelerationMode {
         RenderAccelerationMode::Cpu
     }
 
@@ -387,8 +387,11 @@ pub struct EffectEngineConfig {
     #[serde(default = "defaults::auto_string")]
     pub wgpu_backend: String,
 
-    #[serde(default = "defaults::render_acceleration_mode")]
-    pub render_acceleration_mode: RenderAccelerationMode,
+    #[serde(
+        default = "defaults::compositor_acceleration_mode",
+        alias = "render_acceleration_mode"
+    )]
+    pub compositor_acceleration_mode: RenderAccelerationMode,
 
     #[serde(default)]
     pub effect_error_fallback: EffectErrorFallbackPolicy,
@@ -409,7 +412,7 @@ impl Default for EffectEngineConfig {
             preferred_renderer: defaults::auto_string(),
             servo_enabled: defaults::bool_true(),
             wgpu_backend: defaults::auto_string(),
-            render_acceleration_mode: defaults::render_acceleration_mode(),
+            compositor_acceleration_mode: defaults::compositor_acceleration_mode(),
             effect_error_fallback: EffectErrorFallbackPolicy::default(),
             extra_effect_dirs: Vec::new(),
             watch_effects: defaults::bool_true(),
@@ -418,7 +421,7 @@ impl Default for EffectEngineConfig {
     }
 }
 
-/// Preferred render-surface acceleration path.
+/// Preferred scene compositor acceleration path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderAccelerationMode {

@@ -87,9 +87,11 @@ pub(crate) struct LedSamplingOutcome {
     pub(crate) layout: Arc<SpatialLayout>,
     pub(crate) gpu_zone_sampling: bool,
     pub(crate) gpu_sample_deferred: bool,
+    pub(crate) gpu_sample_stale: bool,
     pub(crate) gpu_sample_retry_hit: bool,
     pub(crate) gpu_sample_queue_saturated: bool,
     pub(crate) gpu_sample_wait_blocked: bool,
+    pub(crate) gpu_sample_cpu_fallback: bool,
     pub(crate) cpu_sampling_late_readback: bool,
     pub(crate) refresh_reused_frame_metadata: bool,
     pub(crate) reuses_published_frame: bool,
@@ -311,9 +313,11 @@ pub(crate) fn resolve_led_sampling(
     };
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_deferred = false;
+    let gpu_sample_stale = stale_deferred_sampling.is_some();
     let mut gpu_sample_retry_hit = false;
     let mut gpu_sample_queue_saturated = false;
     let mut gpu_sample_wait_blocked = false;
+    let mut gpu_sample_cpu_fallback = false;
     let mut cpu_sampling_late_readback = false;
     let mut refresh_reused_frame_metadata = false;
     let mut pending_gpu_zone_sampling = None;
@@ -545,6 +549,10 @@ pub(crate) fn resolve_led_sampling(
             LedSamplingStrategy::ReusePublished(_)
         )
     {
+        gpu_sample_cpu_fallback = matches!(
+            render_stage.composed_frame.backend,
+            crate::performance::CompositorBackendKind::Gpu
+        );
         let cpu_sample_start = Instant::now();
         let sampling_engine = sparkleflinger_sampling_engine
             .as_ref()
@@ -650,9 +658,11 @@ pub(crate) fn resolve_led_sampling(
         layout,
         gpu_zone_sampling,
         gpu_sample_deferred,
+        gpu_sample_stale,
         gpu_sample_retry_hit,
         gpu_sample_queue_saturated,
         gpu_sample_wait_blocked,
+        gpu_sample_cpu_fallback,
         cpu_sampling_late_readback,
         refresh_reused_frame_metadata,
         reuses_published_frame,

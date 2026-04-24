@@ -21,8 +21,9 @@ mod traits;
 pub mod watcher;
 
 pub use factory::{
-    RenderAccelerationResolution, create_renderer_for_metadata,
-    create_renderer_for_metadata_with_mode, resolve_render_acceleration_mode,
+    EffectRendererAccelerationResolution, create_renderer_for_metadata,
+    create_renderer_for_metadata_with_effect_acceleration,
+    resolve_effect_renderer_acceleration_mode,
 };
 pub use lightscript::{LightscriptRuntime, control_update_script, normalized_level_to_db};
 pub use loader::{

@@ -8,34 +8,34 @@ use hypercolor_types::effect::{EffectMetadata, EffectSource};
 use super::builtin::create_builtin_renderer;
 use super::traits::EffectRenderer;
 
-const GPU_UNAVAILABLE_REASON: &str = "gpu render acceleration is not available yet";
+const GPU_UNAVAILABLE_REASON: &str = "gpu effect renderer acceleration is not available yet";
 
-/// Resolved acceleration mode for the current runtime.
+/// Resolved effect renderer acceleration mode for the current runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderAccelerationResolution {
-    /// User-requested acceleration mode.
+pub struct EffectRendererAccelerationResolution {
+    /// User-requested effect renderer acceleration mode.
     pub requested_mode: RenderAccelerationMode,
-    /// Effective mode the runtime can actually provide.
+    /// Effective mode the effect renderer runtime can actually provide.
     pub effective_mode: RenderAccelerationMode,
     /// Why the runtime had to fall back, if it did.
     pub fallback_reason: Option<&'static str>,
 }
 
-/// Resolve the requested acceleration mode against the capabilities available today.
+/// Resolve the requested effect renderer acceleration mode against available capabilities.
 ///
 /// # Errors
 ///
 /// Returns an error when the caller explicitly requires GPU acceleration.
-pub fn resolve_render_acceleration_mode(
+pub fn resolve_effect_renderer_acceleration_mode(
     requested_mode: RenderAccelerationMode,
-) -> Result<RenderAccelerationResolution> {
+) -> Result<EffectRendererAccelerationResolution> {
     match requested_mode {
-        RenderAccelerationMode::Cpu => Ok(RenderAccelerationResolution {
+        RenderAccelerationMode::Cpu => Ok(EffectRendererAccelerationResolution {
             requested_mode,
             effective_mode: RenderAccelerationMode::Cpu,
             fallback_reason: None,
         }),
-        RenderAccelerationMode::Auto => Ok(RenderAccelerationResolution {
+        RenderAccelerationMode::Auto => Ok(EffectRendererAccelerationResolution {
             requested_mode,
             effective_mode: RenderAccelerationMode::Cpu,
             fallback_reason: Some(GPU_UNAVAILABLE_REASON),
@@ -52,7 +52,7 @@ pub fn resolve_render_acceleration_mode(
 ///
 /// Returns an error when the effect source has no runnable renderer path.
 pub fn create_renderer_for_metadata(metadata: &EffectMetadata) -> Result<Box<dyn EffectRenderer>> {
-    create_renderer_for_metadata_with_mode(metadata, RenderAccelerationMode::Cpu)
+    create_renderer_for_metadata_with_effect_acceleration(metadata, RenderAccelerationMode::Cpu)
 }
 
 /// Build a renderer instance for the provided effect metadata and acceleration request.
@@ -61,11 +61,11 @@ pub fn create_renderer_for_metadata(metadata: &EffectMetadata) -> Result<Box<dyn
 ///
 /// Returns an error when the requested acceleration mode is unsupported or
 /// when the effect source has no runnable renderer path.
-pub fn create_renderer_for_metadata_with_mode(
+pub fn create_renderer_for_metadata_with_effect_acceleration(
     metadata: &EffectMetadata,
     requested_mode: RenderAccelerationMode,
 ) -> Result<Box<dyn EffectRenderer>> {
-    let _resolution = resolve_render_acceleration_mode(requested_mode)?;
+    let _resolution = resolve_effect_renderer_acceleration_mode(requested_mode)?;
     create_renderer_for_metadata_internal(metadata)
 }
 

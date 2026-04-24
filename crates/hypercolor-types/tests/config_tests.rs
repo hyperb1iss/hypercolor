@@ -53,7 +53,7 @@ fn effect_engine_defaults_match_spec() {
     assert_eq!(e.preferred_renderer, "auto");
     assert!(e.servo_enabled);
     assert_eq!(e.wgpu_backend, "auto");
-    assert_eq!(e.render_acceleration_mode, RenderAccelerationMode::Cpu);
+    assert_eq!(e.compositor_acceleration_mode, RenderAccelerationMode::Cpu);
     assert_eq!(e.effect_error_fallback, EffectErrorFallbackPolicy::None);
     assert!(e.extra_effect_dirs.is_empty());
     assert!(e.watch_effects);
@@ -221,7 +221,7 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.audio.fft_size, 1024);
     assert!(!restored.capture.enabled);
     assert_eq!(
-        restored.effect_engine.render_acceleration_mode,
+        restored.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Cpu
     );
     assert_eq!(restored.discovery.scan_interval_secs, 300);
@@ -247,7 +247,7 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.audio.device, "default");
     assert!(!config.capture.enabled);
     assert_eq!(
-        config.effect_engine.render_acceleration_mode,
+        config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Cpu
     );
     assert_eq!(config.tui.theme, "silkcircuit");
@@ -261,9 +261,9 @@ fn minimal_toml_fills_defaults() {
 }
 
 #[test]
-fn effect_engine_acceleration_mode_toml_roundtrip() {
+fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     let original = EffectEngineConfig {
-        render_acceleration_mode: RenderAccelerationMode::Auto,
+        compositor_acceleration_mode: RenderAccelerationMode::Auto,
         effect_error_fallback: EffectErrorFallbackPolicy::ClearGroups,
         ..EffectEngineConfig::default()
     };
@@ -271,12 +271,27 @@ fn effect_engine_acceleration_mode_toml_roundtrip() {
     let restored: EffectEngineConfig =
         toml::from_str(&toml_str).expect("deserialize EffectEngineConfig");
     assert_eq!(
-        restored.render_acceleration_mode,
+        restored.compositor_acceleration_mode,
         RenderAccelerationMode::Auto
     );
     assert_eq!(
         restored.effect_error_fallback,
         EffectErrorFallbackPolicy::ClearGroups
+    );
+}
+
+#[test]
+fn legacy_render_acceleration_mode_deserializes_as_compositor_acceleration_mode() {
+    let toml = r#"
+preferred_renderer = "auto"
+render_acceleration_mode = "gpu"
+"#;
+    let restored: EffectEngineConfig =
+        toml::from_str(toml).expect("legacy acceleration key should deserialize");
+
+    assert_eq!(
+        restored.compositor_acceleration_mode,
+        RenderAccelerationMode::Gpu
     );
 }
 

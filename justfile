@@ -159,7 +159,7 @@ daemon *args='':
 
 # Run the daemon with the GPU compositor explicitly selected
 daemon-wgpu *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features wgpu -- --log-level debug --render-acceleration-mode gpu {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features wgpu -- --log-level debug --compositor-acceleration-mode gpu {{ args }}
 
 # Run the CLI
 cli *args='':
@@ -187,7 +187,7 @@ daemon-servo *args='':
 
 # Run Servo daemon with the GPU compositor enabled
 daemon-servo-wgpu *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --render-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }}
 
 # Run Servo daemon in release mode with cache wrapper
 daemon-servo-release *args='':
@@ -277,7 +277,7 @@ dev *args='':
     set -euo pipefail
     trap 'kill 0' EXIT
     just prepare-dev-assets
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --render-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }} &
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait

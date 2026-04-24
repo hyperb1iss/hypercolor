@@ -246,7 +246,7 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     let _guard = TestDataDirGuard::new().await;
     let temp = temp_config_file();
     let mut config = default_config();
-    config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
 
     let Err(error) = DaemonState::initialize(&config, temp.path().to_path_buf()) else {
         panic!("gpu render acceleration should fail explicitly without wgpu support");
@@ -261,7 +261,7 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
     let _guard = TestDataDirGuard::new().await;
     let temp = temp_config_file();
     let mut config = default_config();
-    config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Auto;
+    config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Auto;
 
     let state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("auto render acceleration should initialize with CPU fallback");
@@ -272,17 +272,20 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
     let json: Value = serde_json::from_slice(&body).expect("status should serialize");
 
     assert_eq!(
-        json["data"]["render_acceleration"]["requested_mode"],
+        json["data"]["compositor_acceleration"]["requested_mode"],
         "auto"
     );
-    assert_eq!(json["data"]["render_acceleration"]["effective_mode"], "cpu");
+    assert_eq!(
+        json["data"]["compositor_acceleration"]["effective_mode"],
+        "cpu"
+    );
     assert!(
-        json["data"]["render_acceleration"]["fallback_reason"]
+        json["data"]["compositor_acceleration"]["fallback_reason"]
             .as_str()
             .expect("auto fallback reason should be present")
             .contains("built without the `wgpu` feature")
     );
-    assert!(json["data"]["render_acceleration"]["gpu_probe"].is_null());
+    assert!(json["data"]["compositor_acceleration"]["gpu_probe"].is_null());
 }
 
 #[cfg(feature = "wgpu")]
@@ -291,7 +294,7 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     let _guard = TestDataDirGuard::new().await;
     let temp = temp_config_file();
     let mut config = default_config();
-    config.effect_engine.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
 
     match DaemonState::initialize(&config, temp.path().to_path_buf()) {
         Ok(daemon) => drop(daemon),

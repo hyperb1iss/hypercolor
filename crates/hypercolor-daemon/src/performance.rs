@@ -84,9 +84,11 @@ pub(crate) struct LatestFrameMetrics {
     pub composition_bypassed: bool,
     pub gpu_zone_sampling: bool,
     pub gpu_sample_deferred: bool,
+    pub gpu_sample_stale: bool,
     pub gpu_sample_retry_hit: bool,
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
+    pub gpu_sample_cpu_fallback: bool,
     pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
     pub compositor_backend: CompositorBackendKind,
@@ -153,9 +155,11 @@ pub(crate) struct PacingSummary {
     pub composition_bypassed: u32,
     pub gpu_zone_sampling: u32,
     pub gpu_sample_deferred: u32,
+    pub gpu_sample_stale: u32,
     pub gpu_sample_retry_hit: u32,
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
+    pub gpu_sample_cpu_fallback: u32,
     pub cpu_sampling_late_readback: u32,
     pub output_error_frames: u32,
     pub full_frame_copy_frames: u32,
@@ -207,9 +211,11 @@ impl PerformanceTracker {
             composition_bypassed: metrics.composition_bypassed,
             gpu_zone_sampling: metrics.gpu_zone_sampling,
             gpu_sample_deferred: metrics.gpu_sample_deferred,
+            gpu_sample_stale: metrics.gpu_sample_stale,
             gpu_sample_retry_hit: metrics.gpu_sample_retry_hit,
             gpu_sample_queue_saturated: metrics.gpu_sample_queue_saturated,
             gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
+            gpu_sample_cpu_fallback: metrics.gpu_sample_cpu_fallback,
             cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
             output_error: metrics.output_errors > 0,
             full_frame_copy: metrics.full_frame_copy_count > 0,
@@ -288,9 +294,11 @@ struct FramePacingSample {
     composition_bypassed: bool,
     gpu_zone_sampling: bool,
     gpu_sample_deferred: bool,
+    gpu_sample_stale: bool,
     gpu_sample_retry_hit: bool,
     gpu_sample_queue_saturated: bool,
     gpu_sample_wait_blocked: bool,
+    gpu_sample_cpu_fallback: bool,
     cpu_sampling_late_readback: bool,
     output_error: bool,
     full_frame_copy: bool,
@@ -382,6 +390,13 @@ fn summarize_pacing(
                 .count(),
         )
         .unwrap_or(u32::MAX),
+        gpu_sample_stale: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.gpu_sample_stale)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
         gpu_sample_retry_hit: u32::try_from(
             pacing_history
                 .iter()
@@ -400,6 +415,13 @@ fn summarize_pacing(
             pacing_history
                 .iter()
                 .filter(|sample| sample.gpu_sample_wait_blocked)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        gpu_sample_cpu_fallback: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.gpu_sample_cpu_fallback)
                 .count(),
         )
         .unwrap_or(u32::MAX),
