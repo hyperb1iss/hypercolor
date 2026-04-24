@@ -30,19 +30,22 @@ use super::render_groups::{RenderGroupResult, RenderGroupRuntime};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
-use super::screen_canvas::screen_data_to_canvas;
+use super::screen_canvas::screen_data_to_surface;
 use super::sparkleflinger::{PendingZoneSampling, SparkleFlinger};
 use super::{RenderThreadState, micros_u32};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
+const DEFAULT_SCREEN_SURFACE_WIDTH: u32 = 1;
+const DEFAULT_SCREEN_SURFACE_HEIGHT: u32 = 1;
 
 pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
     pub(crate) interaction: hypercolor_core::input::InteractionData,
     pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) sensors: Arc<SystemSnapshot>,
-    pub(crate) screen_canvas: Option<Canvas>,
+    pub(crate) screen_surface: Option<PublishedSurface>,
     pub(crate) screen_sector_grid: Vec<[u8; 3]>,
+    screen_surface_pool: Option<RenderSurfacePool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +98,12 @@ impl InputReuseState {
         delta_secs: f32,
     ) -> &'a mut FrameInputs {
         if matches!(skip_decision, SkipDecision::None) {
-            self.cached_inputs = FrameInputs::sample(state, delta_secs).await;
+            let screen_surface_pool = self
+                .cached_inputs
+                .screen_surface_pool
+                .take()
+                .unwrap_or_else(FrameInputs::new_screen_surface_pool);
+            self.cached_inputs = FrameInputs::sample(state, delta_secs, screen_surface_pool).await;
         }
 
         &mut self.cached_inputs
@@ -103,7 +111,11 @@ impl InputReuseState {
 }
 
 impl FrameInputs {
-    pub(crate) async fn sample(state: &RenderThreadState, delta_secs: f32) -> Self {
+    pub(crate) async fn sample(
+        state: &RenderThreadState,
+        delta_secs: f32,
+        screen_surface_pool: RenderSurfacePool,
+    ) -> Self {
         let (samples, events) = {
             let mut input_manager = state.input_manager.lock().await;
             (
@@ -137,8 +149,9 @@ impl FrameInputs {
             interaction,
             screen_data,
             sensors,
-            screen_canvas: None,
+            screen_surface: None,
             screen_sector_grid: Vec::new(),
+            screen_surface_pool: Some(screen_surface_pool),
         }
     }
 
@@ -148,19 +161,43 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             sensors: Arc::new(SystemSnapshot::empty()),
-            screen_canvas: None,
+            screen_surface: None,
             screen_sector_grid: Vec::new(),
+            screen_surface_pool: Some(Self::new_screen_surface_pool()),
         }
     }
 
-    pub(crate) fn screen_canvas_for_frame(&mut self, width: u32, height: u32) -> Option<Canvas> {
-        if self.screen_canvas.is_none() {
-            self.screen_canvas = self.screen_data.as_ref().and_then(|data| {
-                screen_data_to_canvas(data, width, height, &mut self.screen_sector_grid)
+    pub(crate) fn screen_surface_for_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Option<PublishedSurface> {
+        if self.screen_surface.is_none() {
+            let surface_pool = self
+                .screen_surface_pool
+                .get_or_insert_with(Self::new_screen_surface_pool);
+            self.screen_surface = self.screen_data.as_ref().and_then(|data| {
+                screen_data_to_surface(
+                    data,
+                    width,
+                    height,
+                    &mut self.screen_sector_grid,
+                    surface_pool,
+                )
             });
         }
 
-        self.screen_canvas.clone()
+        self.screen_surface.clone()
+    }
+
+    fn new_screen_surface_pool() -> RenderSurfacePool {
+        RenderSurfacePool::with_slot_count(
+            SurfaceDescriptor::rgba8888(
+                DEFAULT_SCREEN_SURFACE_WIDTH,
+                DEFAULT_SCREEN_SURFACE_HEIGHT,
+            ),
+            2,
+        )
     }
 }
 

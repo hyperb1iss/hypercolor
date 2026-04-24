@@ -310,7 +310,7 @@ pub(crate) async fn execute_frame(
                     .screen_data
                     .as_ref()
                     .and_then(|data| data.canvas_downscale.clone()),
-                web_viewport_preview_canvas: render_stage.web_viewport_preview,
+                web_viewport_preview_surface: render_stage.web_viewport_preview,
                 effect_running: scene_snapshot.effect_demand.effect_running,
                 screen_capture_active: scene_snapshot.effect_demand.screen_capture_active,
             },

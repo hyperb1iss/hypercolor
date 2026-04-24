@@ -1,17 +1,18 @@
 use hypercolor_core::input::ScreenData;
-use hypercolor_core::types::canvas::Canvas;
+use hypercolor_core::types::canvas::{PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 
-pub(crate) fn screen_data_to_canvas(
+pub(crate) fn screen_data_to_surface(
     screen_data: &ScreenData,
     canvas_width: u32,
     canvas_height: u32,
     sector_grid: &mut Vec<[u8; 3]>,
-) -> Option<Canvas> {
+    surface_pool: &mut RenderSurfacePool,
+) -> Option<PublishedSurface> {
     if let Some(surface) = &screen_data.canvas_downscale
         && surface.width() == canvas_width
         && surface.height() == canvas_height
     {
-        return Some(Canvas::from_published_surface(surface));
+        return Some(surface.clone());
     }
 
     if canvas_width == 0 || canvas_height == 0 {
@@ -63,8 +64,13 @@ pub(crate) fn screen_data_to_canvas(
         }
     }
 
-    let mut canvas = Canvas::new(canvas_width, canvas_height);
-    let pixels = canvas.as_rgba_bytes_mut();
+    let descriptor = SurfaceDescriptor::rgba8888(canvas_width, canvas_height);
+    if surface_pool.descriptor() != descriptor {
+        *surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+    }
+
+    let mut lease = surface_pool.dequeue()?;
+    let pixels = lease.canvas_mut().as_rgba_bytes_mut();
     let width_u64 = u64::from(canvas_width);
     let height_u64 = u64::from(canvas_height);
     let grid_cols_u64 = u64::from(cols);
@@ -101,7 +107,7 @@ pub(crate) fn screen_data_to_canvas(
         }
     }
 
-    Some(canvas)
+    Some(lease.submit(0, 0))
 }
 
 pub(crate) fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {

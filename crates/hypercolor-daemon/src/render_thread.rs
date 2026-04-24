@@ -302,12 +302,12 @@ mod tests {
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::Rgba;
+    use hypercolor_core::types::canvas::{RenderSurfacePool, Rgba, SurfaceDescriptor};
     use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
     use super::micros_u32;
-    use super::screen_canvas::{parse_sector_zone_id, screen_data_to_canvas};
+    use super::screen_canvas::{parse_sector_zone_id, screen_data_to_surface};
 
     fn frame_stats(
         budget_exceeded: bool,
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_data_to_canvas_maps_sector_colors() {
+    fn screen_data_to_surface_maps_sector_colors() {
         let screen_data = ScreenData::from_zones(
             vec![
                 ZoneColors {
@@ -387,11 +387,49 @@ mod tests {
         );
 
         let mut sector_grid = Vec::new();
-        let canvas = screen_data_to_canvas(&screen_data, 4, 4, &mut sector_grid)
-            .expect("canvas should build");
-        assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
-        assert_eq!(canvas.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
-        assert_eq!(canvas.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
-        assert_eq!(canvas.get_pixel(3, 3), Rgba::new(255, 255, 255, 255));
+        let mut surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
+        let surface =
+            screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+                .expect("surface should build");
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(surface.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
+        assert_eq!(surface.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
+        assert_eq!(surface.get_pixel(3, 3), Rgba::new(255, 255, 255, 255));
+    }
+
+    #[test]
+    fn screen_data_to_surface_reuses_pool_after_warmup() {
+        let screen_data = ScreenData::from_zones(
+            vec![ZoneColors {
+                zone_id: "screen:sector_0_0".to_owned(),
+                colors: vec![[255, 0, 0]],
+            }],
+            1,
+            1,
+        );
+        let mut sector_grid = Vec::new();
+        let mut surface_pool =
+            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
+
+        let first = screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+            .expect("first surface should build")
+            .rgba_bytes()
+            .as_ptr()
+            .addr();
+        let second =
+            screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+                .expect("second surface should build")
+                .rgba_bytes()
+                .as_ptr()
+                .addr();
+        let third = screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
+            .expect("third surface should build")
+            .rgba_bytes()
+            .as_ptr()
+            .addr();
+
+        assert_ne!(first, second);
+        assert_eq!(first, third);
     }
 }

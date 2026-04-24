@@ -548,6 +548,58 @@ fn screen_capture_input_produces_screen_data() {
 }
 
 #[test]
+fn screen_capture_input_reuses_downscale_surface_pool_after_warmup() {
+    let config = CaptureConfig {
+        grid_cols: 1,
+        grid_rows: 1,
+        letterbox_enabled: false,
+        ..CaptureConfig::default()
+    };
+    let mut input = ScreenCaptureInput::new(config);
+    input.start().expect("start should succeed");
+
+    let frame_a = solid_frame(4, 4, 10, 20, 30);
+    let frame_b = solid_frame(4, 4, 40, 50, 60);
+    let frame_c = solid_frame(4, 4, 70, 80, 90);
+
+    input.push_frame(&frame_a, 4, 4);
+    let first = match input.sample().expect("first sample should succeed") {
+        InputData::Screen(screen) => screen
+            .canvas_downscale
+            .expect("first sample should include downscale")
+            .rgba_bytes()
+            .as_ptr()
+            .addr(),
+        other => panic!("expected InputData::Screen, got {other:?}"),
+    };
+
+    input.push_frame(&frame_b, 4, 4);
+    let second = match input.sample().expect("second sample should succeed") {
+        InputData::Screen(screen) => screen
+            .canvas_downscale
+            .expect("second sample should include downscale")
+            .rgba_bytes()
+            .as_ptr()
+            .addr(),
+        other => panic!("expected InputData::Screen, got {other:?}"),
+    };
+
+    input.push_frame(&frame_c, 4, 4);
+    let third = match input.sample().expect("third sample should succeed") {
+        InputData::Screen(screen) => screen
+            .canvas_downscale
+            .expect("third sample should include downscale")
+            .rgba_bytes()
+            .as_ptr()
+            .addr(),
+        other => panic!("expected InputData::Screen, got {other:?}"),
+    };
+
+    assert_ne!(first, second);
+    assert_eq!(first, third);
+}
+
+#[test]
 fn screen_capture_input_zone_ids_in_screen_data() {
     let config = CaptureConfig {
         grid_cols: 2,

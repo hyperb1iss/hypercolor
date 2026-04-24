@@ -26,7 +26,10 @@ pub use smooth::TemporalSmoother;
 pub use wayland::WaylandScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData};
-use crate::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface};
+use crate::types::canvas::{
+    DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
+    SurfaceDescriptor,
+};
 use crate::types::event::ZoneColors;
 
 // ── CaptureConfig ─────────────────────────────────────────────────────────
@@ -121,6 +124,8 @@ pub struct ScreenCaptureInput {
     /// Latest downscaled capture frame for screen-reactive effects.
     latest_canvas_downscale: Option<PublishedSurface>,
 
+    downscale_pool: RenderSurfacePool,
+
     /// Whether the source is actively capturing.
     running: bool,
 
@@ -144,6 +149,10 @@ impl ScreenCaptureInput {
             latest_colors: None,
             latest_zone_ids: Vec::new(),
             latest_canvas_downscale: None,
+            downscale_pool: RenderSurfacePool::with_slot_count(
+                SurfaceDescriptor::rgba8888(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
+                2,
+            ),
             running: false,
             frame_width: 0,
             frame_height: 0,
@@ -170,6 +179,7 @@ impl ScreenCaptureInput {
             height,
             DEFAULT_CANVAS_WIDTH,
             DEFAULT_CANVAS_HEIGHT,
+            &mut self.downscale_pool,
         );
 
         // 1. Compute sector grid from raw pixels.
@@ -279,6 +289,7 @@ fn downscale_frame(
     height: u32,
     target_width: u32,
     target_height: u32,
+    surface_pool: &mut RenderSurfacePool,
 ) -> Option<PublishedSurface> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
         return None;
@@ -292,8 +303,13 @@ fn downscale_frame(
         return None;
     }
 
-    let mut canvas = Canvas::new(target_width, target_height);
-    let bytes = canvas.as_rgba_bytes_mut();
+    let descriptor = SurfaceDescriptor::rgba8888(target_width, target_height);
+    if surface_pool.descriptor() != descriptor {
+        *surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+    }
+
+    let mut lease = surface_pool.dequeue()?;
+    let bytes = lease.canvas_mut().as_rgba_bytes_mut();
     let src_width = usize::try_from(width).ok()?;
     let target_width_usize = usize::try_from(target_width).ok()?;
 
@@ -328,5 +344,5 @@ fn downscale_frame(
         }
     }
 
-    Some(PublishedSurface::from_owned_canvas(canvas, 0, 0))
+    Some(lease.submit(0, 0))
 }

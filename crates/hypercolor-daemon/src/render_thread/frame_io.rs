@@ -26,7 +26,7 @@ pub(crate) struct FramePublicationSurfaces {
     pub(crate) frame_surface: Option<PublishedSurface>,
     pub(crate) preview_surface: Option<PublishedSurface>,
     pub(crate) screen_capture_surface: Option<PublishedSurface>,
-    pub(crate) web_viewport_preview_canvas: Option<Canvas>,
+    pub(crate) web_viewport_preview_surface: Option<PublishedSurface>,
     pub(crate) effect_running: bool,
     pub(crate) screen_capture_active: bool,
 }
@@ -296,8 +296,8 @@ pub(crate) fn publish_frame_updates(
         let tracked_receivers = state.preview_runtime.web_viewport_canvas_receiver_count();
         let publish_web_viewport = {
             let current = state.event_bus.web_viewport_canvas_sender().borrow();
-            let changed = if let Some(canvas) = surfaces.web_viewport_preview_canvas.as_ref() {
-                should_publish_canvas_storage(&current, canvas)
+            let changed = if let Some(surface) = surfaces.web_viewport_preview_surface.as_ref() {
+                should_publish_surface_frame(&current, surface)
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
             };
@@ -310,15 +310,8 @@ pub(crate) fn publish_frame_updates(
                 )
         };
         if publish_web_viewport {
-            let preview_frame = if let Some(canvas) = surfaces.web_viewport_preview_canvas {
-                let canvas_rgba_len = usize_to_u32(canvas.rgba_len());
-                let (frame, copied) =
-                    CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
-                if copied {
-                    full_frame_copy_count = full_frame_copy_count.saturating_add(1);
-                    full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
-                }
-                frame
+            let preview_frame = if let Some(surface) = surfaces.web_viewport_preview_surface {
+                CanvasFrame::from_surface(surface.with_frame_metadata(frame_number, elapsed_ms))
             } else {
                 CanvasFrame::empty()
             };
@@ -662,7 +655,7 @@ mod tests {
             frame_surface: Some(frame_surface),
             preview_surface: Some(preview_surface.clone()),
             screen_capture_surface: Some(capture_surface),
-            web_viewport_preview_canvas: None,
+            web_viewport_preview_surface: None,
             effect_running: false,
             screen_capture_active: true,
         };
@@ -686,7 +679,7 @@ mod tests {
             frame_surface: Some(frame_surface.clone()),
             preview_surface: None,
             screen_capture_surface: Some(capture_surface),
-            web_viewport_preview_canvas: None,
+            web_viewport_preview_surface: None,
             effect_running: false,
             screen_capture_active: true,
         };
@@ -710,7 +703,7 @@ mod tests {
             frame_surface: Some(frame_surface),
             preview_surface: None,
             screen_capture_surface: Some(capture_surface.clone()),
-            web_viewport_preview_canvas: None,
+            web_viewport_preview_surface: None,
             effect_running: true,
             screen_capture_active: true,
         };

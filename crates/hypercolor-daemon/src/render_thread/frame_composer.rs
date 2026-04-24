@@ -3,7 +3,7 @@ use std::time::Instant;
 use anyhow::Result;
 use tracing::warn;
 
-use hypercolor_core::types::canvas::Canvas;
+use hypercolor_core::types::canvas::PublishedSurface;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
 use hypercolor_types::scene::RenderGroupId;
 
@@ -24,7 +24,7 @@ use crate::preview_runtime::PreviewDemandSummary;
 pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
     pub(crate) preview_requested: bool,
-    pub(crate) web_viewport_preview: Option<Canvas>,
+    pub(crate) web_viewport_preview: Option<PublishedSurface>,
     pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
@@ -389,14 +389,14 @@ impl ComposeContext<'_> {
                 .compose
                 .screen_queue
                 .submit_latest(ProducerFrame::Surface(screen_surface.clone()));
-        } else if let Some(screen_canvas) = self.inputs.screen_canvas_for_frame(
+        } else if let Some(screen_surface) = self.inputs.screen_surface_for_frame(
             self.state.canvas_dims.width(),
             self.state.canvas_dims.height(),
         ) {
             let _ = self
                 .compose
                 .screen_queue
-                .submit_latest(ProducerFrame::Canvas(screen_canvas));
+                .submit_latest(ProducerFrame::Surface(screen_surface));
         }
 
         self.compose
