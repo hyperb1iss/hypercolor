@@ -5,8 +5,8 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::attachment::AttachmentSuggestedZone;
 
 use crate::api;
@@ -242,8 +242,10 @@ pub fn WiringPanel(
                                                                         prop:value=move || name_input.get()
                                                                         on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
                                                                         on:input=move |ev| {
-                                                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                                            if let Some(el) = target { set_name_input.set(el.value()); }
+                                                                            let event = Input::from_event(ev);
+                                                                            if let Some(value) = event.value_string() {
+                                                                                set_name_input.set(value);
+                                                                            }
                                                                         }
                                                                         on:keydown={
                                                                             let save = save_name.clone();

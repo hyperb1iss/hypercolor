@@ -4,6 +4,7 @@ use leptos::ev;
 use leptos::prelude::*;
 use serde_json::json;
 
+use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
@@ -294,12 +295,8 @@ pub(super) fn ViewportPicker(
                     placeholder=placeholder
                     prop:value=move || url_text.get()
                     on:change=move |ev| {
-                        use wasm_bindgen::JsCast;
-                        let target = ev
-                            .target()
-                            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok());
-                        if let Some(input) = target {
-                            let next = input.value();
+                        let event = Change::from_event(ev);
+                        if let Some(next) = event.value_string() {
                             set_url_text.set(next.clone());
                             commit.run(next);
                         }
