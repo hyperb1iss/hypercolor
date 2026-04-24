@@ -130,14 +130,19 @@ pub(super) fn acquire_servo_worker() -> Result<ServoWorkerClient> {
 pub(super) fn servo_worker_is_fatal_error(error: &anyhow::Error) -> bool {
     let message = error.to_string().to_ascii_lowercase();
     message.contains("disconnected")
-        || message.contains("timed out waiting for servo page load")
-        || message.contains("timed out waiting for servo page unload")
-        || message.contains("timed out waiting for servo webview close")
+        || message.contains("timed out waiting for servo worker readiness")
+        || message.contains("timed out waiting for servo worker shutdown")
+        || message.contains("timed out waiting for servo session creation after")
+        || message.contains("timed out waiting for servo page load after")
+        || message.contains("timed out waiting for servo session destroy after")
         || message.contains("timed out waiting for servo frame response")
-        || message.contains("timed out waiting for javascript callback")
+        || message.contains("failed to send create-session command to servo worker")
         || message.contains("failed to send load command to servo worker")
+        || message.contains("failed to send load-url command to servo worker")
         || message.contains("failed to send render command to servo worker")
         || message.contains("failed to send unload command to servo worker")
+        || message.contains("failed to send destroy-session command to servo worker")
+        || message.contains("failed to send detached destroy-session command to servo worker")
 }
 
 /// Marks the shared worker poisoned if and only if the error is fatal.
@@ -2059,6 +2064,32 @@ mod tests {
         assert_eq!(render.scripts, vec!["new()"]);
 
         assert!(scheduler.next().is_none());
+    }
+
+    #[test]
+    fn fatal_classifier_keeps_session_local_page_failures_local() {
+        let page_timeout = anyhow!(
+            "timed out waiting for Servo page load completion (expected_url=Some(\"file:///bad.html\"), current_url=about:blank)"
+        );
+        let javascript_timeout = anyhow!("timed out waiting for JavaScript callback");
+        let javascript_error = anyhow!("javascript evaluation failed: TypeError: boom");
+
+        assert!(!servo_worker_is_fatal_error(&page_timeout));
+        assert!(!servo_worker_is_fatal_error(&javascript_timeout));
+        assert!(!servo_worker_is_fatal_error(&javascript_error));
+    }
+
+    #[test]
+    fn fatal_classifier_keeps_transport_failures_global() {
+        let worker_timeout = anyhow!("timed out waiting for Servo worker readiness after 10000ms");
+        let client_page_timeout = anyhow!("timed out waiting for Servo page load after 10000ms");
+        let disconnected = anyhow!("Servo worker disconnected before returning a frame");
+        let send_failure = anyhow!("failed to send render command to Servo worker");
+
+        assert!(servo_worker_is_fatal_error(&worker_timeout));
+        assert!(servo_worker_is_fatal_error(&client_page_timeout));
+        assert!(servo_worker_is_fatal_error(&disconnected));
+        assert!(servo_worker_is_fatal_error(&send_failure));
     }
 
     #[test]
