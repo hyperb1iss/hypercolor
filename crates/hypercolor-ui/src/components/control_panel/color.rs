@@ -4,6 +4,7 @@ use leptos::portal::Portal;
 use leptos::prelude::*;
 use serde_json::json;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::effect::ControlValue;
 
 use crate::components::color_wheel::ColorWheel;
@@ -125,10 +126,8 @@ pub(super) fn render_color_picker(
                                 placeholder="#E135FF"
                                 prop:value=move || hex_input.get()
                                 on:input=move |ev| {
-                                    use wasm_bindgen::JsCast;
-                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                    if let Some(el) = target {
-                                        let next = el.value();
+                                    let event = Input::from_event(ev);
+                                    if let Some(next) = event.value_string() {
                                         set_hex_input.set(next.clone());
                                         if let Some(normalized) = normalize_hex(&next) {
                                             set_color.set(normalized.clone());

@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use serde_json::json;
 
+use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::effect::ControlValue;
 
 pub(super) fn render_text_input(
@@ -44,10 +45,8 @@ pub(super) fn render_text_input(
                        placeholder-fg-tertiary/40 transition-all duration-150"
                 prop:value=move || text.get()
                 on:change=move |ev| {
-                    use wasm_bindgen::JsCast;
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target {
-                        let val = el.value();
+                    let event = Change::from_event(ev);
+                    if let Some(val) = event.value_string() {
                         set_text.set(val.clone());
                         on_change.run((control_name.clone(), json!(val)));
                     }

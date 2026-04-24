@@ -32,6 +32,8 @@ events = [
     "dep:web-sys",
     "web-sys/Event",
     "web-sys/EventTarget",
+    "web-sys/FileList",
+    "web-sys/HtmlInputElement",
 ]
 canvas = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
 webgpu = ["canvas", "dep:wgpu"]

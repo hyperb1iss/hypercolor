@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use serde_json::json;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
 #[allow(clippy::too_many_arguments)]
@@ -60,13 +61,11 @@ pub(super) fn render_slider(
                 step=step
                 prop:value=move || slider_value.get()
                 on:input=move |ev| {
-                    use wasm_bindgen::JsCast;
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target
-                        && let Ok(v) = el.value().parse::<f32>() {
-                            set_slider_value.set(v);
-                            on_change.run((control_name.clone(), json!(v)));
-                        }
+                    let event = Input::from_event(ev);
+                    if let Some(v) = event.value::<f32>() {
+                        set_slider_value.set(v);
+                        on_change.run((control_name.clone(), json!(v)));
+                    }
                 }
             />
             <span class="text-[10px] font-mono tabular-nums w-[36px] text-right shrink-0 px-1.5 py-0.5 rounded"
