@@ -43,6 +43,8 @@ pub use state_machine::{
     StateTransitionRecord,
 };
 pub use traits::{BackendInfo, DeviceBackend, DevicePlugin, HealthStatus};
-pub use usb_backend::{UsbBackend, UsbProtocolConfigStore};
+pub use usb_backend::{
+    UsbActorMetricsSnapshot, UsbBackend, UsbProtocolConfigStore, usb_actor_metrics_snapshot,
+};
 pub use usb_hotplug::{UsbHotplugEvent, UsbHotplugMonitor};
 pub use usb_scanner::UsbScanner;

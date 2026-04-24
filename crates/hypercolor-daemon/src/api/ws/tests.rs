@@ -273,6 +273,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     };
     let json = serde_json::to_value(&data).expect("metrics payload should serialize");
     let servo_health = current_servo_effect_health();
+    let usb_actor_metrics = hypercolor_core::device::usb_actor_metrics_snapshot();
 
     assert_eq!(json["timeline"]["frame_token"], 77);
     assert_eq!(json["timeline"]["compositor_backend"], "gpu");
@@ -354,6 +355,26 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["display_output"]["write_successes_total"], 1);
     assert_eq!(json["display_output"]["write_failures_total"], 1);
     assert_eq!(json["display_output"]["retry_attempts_total"], 1);
+    assert_eq!(
+        json["display_output"]["usb_display_frames_total"],
+        usb_actor_metrics.display_frames_total
+    );
+    assert_eq!(
+        json["display_output"]["usb_display_frames_delayed_for_led_total"],
+        usb_actor_metrics.display_frames_delayed_for_led_total
+    );
+    assert_eq!(
+        json["display_output"]["usb_display_led_priority_wait_total_ms"],
+        std::time::Duration::from_micros(usb_actor_metrics.display_led_priority_wait_total_us)
+            .as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["display_output"]["usb_display_led_priority_wait_max_ms"],
+        std::time::Duration::from_micros(usb_actor_metrics.display_led_priority_wait_max_us)
+            .as_secs_f64()
+            * 1000.0
+    );
     assert!(json["display_output"]["last_failure_age_ms"].is_number());
     assert_eq!(json["timeline"]["logical_layer_count"], 2);
     assert_eq!(json["timeline"]["render_group_count"], 1);

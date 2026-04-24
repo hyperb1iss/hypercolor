@@ -3,8 +3,9 @@
 use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
@@ -33,6 +34,49 @@ use super::usb_scanner::UsbScanner;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsbActorMetricsSnapshot {
+    pub display_frames_total: u64,
+    pub display_frames_delayed_for_led_total: u64,
+    pub display_led_priority_wait_total_us: u64,
+    pub display_led_priority_wait_max_us: u64,
+}
+
+static USB_DISPLAY_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static USB_DISPLAY_FRAMES_DELAYED_FOR_LED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static USB_DISPLAY_LED_PRIORITY_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
+static USB_DISPLAY_LED_PRIORITY_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
+
+#[must_use]
+pub fn usb_actor_metrics_snapshot() -> UsbActorMetricsSnapshot {
+    UsbActorMetricsSnapshot {
+        display_frames_total: USB_DISPLAY_FRAMES_TOTAL.load(Ordering::Relaxed),
+        display_frames_delayed_for_led_total: USB_DISPLAY_FRAMES_DELAYED_FOR_LED_TOTAL
+            .load(Ordering::Relaxed),
+        display_led_priority_wait_total_us: USB_DISPLAY_LED_PRIORITY_WAIT_TOTAL_US
+            .load(Ordering::Relaxed),
+        display_led_priority_wait_max_us: USB_DISPLAY_LED_PRIORITY_WAIT_MAX_US
+            .load(Ordering::Relaxed),
+    }
+}
+
+fn record_usb_display_lane(wait_for_led: Duration, delayed_for_led: bool) {
+    USB_DISPLAY_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
+
+    if !delayed_for_led {
+        return;
+    }
+
+    let wait_us = duration_micros(wait_for_led);
+    USB_DISPLAY_FRAMES_DELAYED_FOR_LED_TOTAL.fetch_add(1, Ordering::Relaxed);
+    USB_DISPLAY_LED_PRIORITY_WAIT_TOTAL_US.fetch_add(wait_us, Ordering::Relaxed);
+    USB_DISPLAY_LED_PRIORITY_WAIT_MAX_US.fetch_max(wait_us, Ordering::Relaxed);
+}
+
+fn duration_micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
 
 #[derive(Clone)]
 struct PendingUsbDevice {
@@ -684,7 +728,8 @@ impl UsbBackend {
                         continue;
                     };
 
-                    Self::run_overdue_device_frame(
+                    let wait_for_led_started = Instant::now();
+                    let delayed_for_led = Self::run_overdue_device_frame(
                         device_id,
                         protocol.as_ref(),
                         transport.as_ref(),
@@ -692,6 +737,7 @@ impl UsbBackend {
                         &mut frame_commands,
                     )
                     .await?;
+                    record_usb_display_lane(wait_for_led_started.elapsed(), delayed_for_led);
 
                     Self::run_device_display_frame(
                         device_id,
@@ -733,16 +779,18 @@ impl UsbBackend {
         transport: &dyn Transport,
         frame_rx: &mut watch::Receiver<Option<Arc<UsbFramePayload>>>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if !frame_rx.has_changed().unwrap_or(false) {
-            return Ok(());
+            return Ok(false);
         }
 
         let Some(frame) = frame_rx.borrow_and_update().clone() else {
-            return Ok(());
+            return Ok(false);
         };
 
-        Self::run_device_frame(device_id, protocol, transport, &frame, commands).await
+        Self::run_device_frame(device_id, protocol, transport, &frame, commands)
+            .await
+            .map(|()| true)
     }
 
     async fn run_device_frame(
@@ -1671,6 +1719,7 @@ mod tests {
 
     #[tokio::test]
     async fn display_branch_services_pending_led_frame_before_display_frame() {
+        let before = usb_actor_metrics_snapshot();
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
         let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -1682,7 +1731,8 @@ mod tests {
             jpeg_data: Arc::new(vec![0xD1]),
         })));
 
-        let transport = Arc::new(RecordingTransport::default());
+        let transport =
+            Arc::new(RecordingTransport::default().with_send_delay(Duration::from_millis(5)));
         let actor_protocol: Arc<dyn Protocol> = Arc::new(FairnessProtocol);
         let actor_transport: Arc<dyn Transport> = transport.clone();
 
@@ -1715,6 +1765,17 @@ mod tests {
             .expect("actor should exit cleanly");
 
         assert_eq!(writes, vec![vec![0x11], vec![0xD1]]);
+
+        let after = usb_actor_metrics_snapshot();
+        assert_eq!(after.display_frames_total, before.display_frames_total + 1);
+        assert_eq!(
+            after.display_frames_delayed_for_led_total,
+            before.display_frames_delayed_for_led_total + 1
+        );
+        assert!(
+            after.display_led_priority_wait_total_us > before.display_led_priority_wait_total_us
+        );
+        assert!(after.display_led_priority_wait_max_us >= before.display_led_priority_wait_max_us);
     }
 
     async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Vec<u8>> {
@@ -1785,9 +1846,15 @@ mod tests {
     #[derive(Default)]
     struct RecordingTransport {
         writes: Mutex<Vec<Vec<u8>>>,
+        send_delay: Duration,
     }
 
     impl RecordingTransport {
+        fn with_send_delay(mut self, send_delay: Duration) -> Self {
+            self.send_delay = send_delay;
+            self
+        }
+
         fn writes(&self) -> Vec<Vec<u8>> {
             self.writes
                 .lock()
@@ -1803,6 +1870,9 @@ mod tests {
         }
 
         async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+            if !self.send_delay.is_zero() {
+                tokio::time::sleep(self.send_delay).await;
+            }
             self.writes
                 .lock()
                 .expect("recording transport mutex should not be poisoned")

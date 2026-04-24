@@ -922,6 +922,10 @@ pub(super) struct MetricsDisplayOutput {
     pub(super) write_successes_total: u64,
     pub(super) write_failures_total: u64,
     pub(super) retry_attempts_total: u64,
+    pub(super) usb_display_frames_total: u64,
+    pub(super) usb_display_frames_delayed_for_led_total: u64,
+    pub(super) usb_display_led_priority_wait_total_ms: f64,
+    pub(super) usb_display_led_priority_wait_max_ms: f64,
     pub(super) last_failure_age_ms: Option<u64>,
 }
 

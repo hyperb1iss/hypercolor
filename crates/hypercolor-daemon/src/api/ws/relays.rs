@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
+use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, watch};
@@ -1153,6 +1154,7 @@ pub(super) async fn build_metrics_message(
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
     let display_output = state.display_frames.read().await.metrics_snapshot();
     let servo_health = servo_effect_health_counts();
+    let usb_actor_metrics = usb_actor_metrics_snapshot();
 
     ServerMessage::Metrics {
         timestamp: format_iso8601_now(),
@@ -1298,6 +1300,15 @@ pub(super) async fn build_metrics_message(
                 write_successes_total: display_output.write_successes_total,
                 write_failures_total: display_output.write_failures_total,
                 retry_attempts_total: display_output.retry_attempts_total,
+                usb_display_frames_total: usb_actor_metrics.display_frames_total,
+                usb_display_frames_delayed_for_led_total: usb_actor_metrics
+                    .display_frames_delayed_for_led_total,
+                usb_display_led_priority_wait_total_ms: us_to_ms_f64(
+                    usb_actor_metrics.display_led_priority_wait_total_us,
+                ),
+                usb_display_led_priority_wait_max_ms: us_to_ms_f64(
+                    usb_actor_metrics.display_led_priority_wait_max_us,
+                ),
                 last_failure_age_ms: display_output.last_failure_age_ms,
             },
             copies: MetricsCopies {
