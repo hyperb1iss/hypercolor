@@ -14,12 +14,17 @@ use hypercolor_core::effect::builtin::{
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::{InteractionData, ScreenData};
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::sensor::SystemSnapshot;
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use hypercolor_types::viewport::ViewportRect;
 use uuid::Uuid;
 
@@ -161,6 +166,184 @@ fn count_non_black_pixels_in_row(canvas: &Canvas, y: u32) -> usize {
     (0..canvas.width())
         .filter(|&x| canvas.get_pixel(x, y) != Rgba::BLACK)
         .count()
+}
+
+fn full_canvas_strip_layout(led_count: u32) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("hardware-visual-{led_count}"),
+        name: format!("Hardware Visual {led_count}"),
+        description: None,
+        canvas_width: W,
+        canvas_height: H,
+        zones: vec![DeviceZone {
+            id: "strip".to_owned(),
+            name: "Strip".to_owned(),
+            device_id: "test:strip".to_owned(),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: led_count,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: None,
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn sample_strip(canvas: &Canvas, led_count: u32) -> Vec<[u8; 3]> {
+    let engine = SpatialEngine::new(full_canvas_strip_layout(led_count));
+    engine
+        .sample(canvas)
+        .into_iter()
+        .next()
+        .expect("strip zone should sample")
+        .colors
+}
+
+fn lit_colors(colors: &[[u8; 3]]) -> impl Iterator<Item = [u8; 3]> + '_ {
+    colors
+        .iter()
+        .copied()
+        .filter(|[r, g, b]| u8::max(*r, u8::max(*g, *b)) >= 32)
+}
+
+fn average_saturation(colors: &[[u8; 3]]) -> f32 {
+    let mut total = 0.0;
+    let mut count = 0_u32;
+    for [r, g, b] in lit_colors(colors) {
+        let min = u8::min(r, u8::min(g, b));
+        let max = u8::max(r, u8::max(g, b));
+        total += 1.0 - f32::from(min) / f32::from(max);
+        count += 1;
+    }
+    if count == 0 {
+        0.0
+    } else {
+        total / count as f32
+    }
+}
+
+fn max_whiteness_ratio(colors: &[[u8; 3]]) -> f32 {
+    lit_colors(colors)
+        .map(|[r, g, b]| {
+            let min = u8::min(r, u8::min(g, b));
+            let max = u8::max(r, u8::max(g, b));
+            f32::from(min) / f32::from(max)
+        })
+        .fold(0.0, f32::max)
+}
+
+fn dark_ratio(colors: &[[u8; 3]]) -> f32 {
+    let dark = colors
+        .iter()
+        .filter(|[r, g, b]| u8::max(*r, u8::max(*g, *b)) < 24)
+        .count();
+    dark as f32 / colors.len() as f32
+}
+
+fn changed_led_ratio(previous: &[[u8; 3]], current: &[[u8; 3]]) -> f32 {
+    let changed = previous
+        .iter()
+        .zip(current)
+        .filter(|([pr, pg, pb], [cr, cg, cb])| {
+            pr.abs_diff(*cr) > 32 || pg.abs_diff(*cg) > 32 || pb.abs_diff(*cb) > 32
+        })
+        .count();
+    changed as f32 / previous.len() as f32
+}
+
+// ── Hardware Visual Quality Tests ───────────────────────────────────────────
+
+#[test]
+fn hardware_visual_color_zones_stay_vivid_after_led_sampling() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    r.set_control("zone_count", &ControlValue::Enum("2".to_owned()));
+    r.set_control("blend", &ControlValue::Float(0.0));
+    r.set_control("zone_1", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("zone_2", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    for led_count in [8, 96] {
+        let colors = sample_strip(&canvas, led_count);
+        assert!(
+            average_saturation(&colors) >= 0.95,
+            "{led_count}-LED strip should keep vivid saturation"
+        );
+        assert!(
+            max_whiteness_ratio(&colors) <= 0.05,
+            "{led_count}-LED strip should not wash vivid zones toward white"
+        );
+    }
+}
+
+#[test]
+fn hardware_visual_color_wave_preserves_dark_space_after_led_sampling() {
+    let mut r = ColorWaveRenderer::new();
+    r.init(&make_metadata("color_wave")).expect("init");
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+    r.set_control("wave_color", &ControlValue::Color([0.0, 1.0, 0.92, 1.0]));
+    r.set_control("wave_width", &ControlValue::Float(6.0));
+    r.set_control("speed", &ControlValue::Float(100.0));
+    r.set_control("trail", &ControlValue::Float(0.0));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    for led_count in [8, 96] {
+        let colors = sample_strip(&canvas, led_count);
+        assert!(
+            dark_ratio(&colors) >= 0.5,
+            "{led_count}-LED strip should retain intentional negative space"
+        );
+        assert!(
+            average_saturation(&colors) >= 0.7,
+            "{led_count}-LED strip should keep the wave color saturated"
+        );
+    }
+}
+
+#[test]
+fn hardware_visual_color_wave_retained_frames_do_not_flicker() {
+    let mut r = ColorWaveRenderer::new();
+    r.init(&make_metadata("color_wave")).expect("init");
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+    r.set_control("wave_color", &ControlValue::Color([0.0, 1.0, 0.92, 1.0]));
+    r.set_control("wave_width", &ControlValue::Float(12.0));
+    r.set_control("speed", &ControlValue::Float(35.0));
+    r.set_control("trail", &ControlValue::Float(80.0));
+
+    let mut previous = sample_strip(&r.tick(&frame(0.0, 0)).expect("tick"), 32);
+    for frame_number in 1..12 {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let time_secs = frame_number as f32 / 60.0;
+        let current = sample_strip(&r.tick(&frame(time_secs, frame_number)).expect("tick"), 32);
+        assert!(
+            changed_led_ratio(&previous, &current) <= 0.35,
+            "retained color-wave frames should evolve smoothly at frame {frame_number}"
+        );
+        previous = current;
+    }
 }
 
 // ── Initialization Tests ────────────────────────────────────────────────────
