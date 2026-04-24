@@ -583,7 +583,7 @@ impl OutputQueueMetrics {
 #[derive(Debug, Clone)]
 struct FramePayload {
     /// LED colors for the target device.
-    colors: Vec<[u8; 3]>,
+    colors: Arc<Vec<[u8; 3]>>,
     /// Monotonic sequence for dropped-frame diagnostics.
     sequence: u64,
     /// Timestamp when this payload was queued by the render loop.
@@ -718,7 +718,9 @@ impl OutputQueue {
 
                 let result = {
                     let mut backend = backend.lock().await;
-                    backend.write_colors(&device_id, &frame.colors).await
+                    backend
+                        .write_colors_shared(&device_id, Arc::clone(&frame.colors))
+                        .await
                 };
                 let send_completed = Instant::now();
                 let write_time = send_completed.saturating_duration_since(write_started);
@@ -804,16 +806,17 @@ impl OutputQueue {
         let produced_at = Instant::now();
         self.metrics.record_received(sequence);
 
-        let mut next_colors = Some(colors);
+        let mut next_colors = Some(Arc::new(colors));
         let mut recycled = None;
         self.tx.send_modify(|current| {
             if let Some(payload) = current.as_mut().and_then(Arc::get_mut) {
-                recycled = Some(std::mem::replace(
+                let previous = std::mem::replace(
                     &mut payload.colors,
                     next_colors
                         .take()
                         .expect("pending colors should exist before reuse"),
-                ));
+                );
+                recycled = Arc::try_unwrap(previous).ok();
                 payload.sequence = sequence;
                 payload.produced_at = produced_at;
             } else {

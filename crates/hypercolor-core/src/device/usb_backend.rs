@@ -90,7 +90,7 @@ struct PendingUsbDevice {
 
 #[derive(Debug)]
 struct UsbFramePayload {
-    colors: Vec<[u8; 3]>,
+    colors: Arc<Vec<[u8; 3]>>,
 }
 
 #[derive(Debug)]
@@ -154,10 +154,9 @@ impl UsbDevice {
         Ok(())
     }
 
-    fn queue_colors(&self, colors: &[[u8; 3]]) {
-        self.frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-            colors: colors.to_vec(),
-        })));
+    fn queue_colors(&self, colors: Arc<Vec<[u8; 3]>>) {
+        self.frame_tx
+            .send_replace(Some(Arc::new(UsbFramePayload { colors })));
     }
 
     fn queue_display_frame(&self, jpeg_data: Arc<Vec<u8>>) {
@@ -800,7 +799,7 @@ impl UsbBackend {
         frame: &UsbFramePayload,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        protocol.encode_frame_into(&frame.colors, commands);
+        protocol.encode_frame_into(frame.colors.as_slice(), commands);
         let first_packet = commands.first().map_or_else(
             || "<none>".to_owned(),
             |command| describe_packet(&command.data),
@@ -868,7 +867,7 @@ impl UsbBackend {
                 protocol,
                 transport,
                 &UsbFramePayload {
-                    colors: black_frame,
+                    colors: Arc::new(black_frame),
                 },
                 &mut commands,
             )
@@ -1399,13 +1398,22 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        self.write_colors_shared(id, Arc::new(colors.to_vec()))
+            .await
+    }
+
+    async fn write_colors_shared(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<()> {
         let Some(device) = self.connected.get_mut(id) else {
             bail!("device {id} is not connected");
         };
 
         device.ensure_actor_ready(*id).await?;
 
-        let frame_stats = summarize_frame(colors);
+        let frame_stats = summarize_frame(colors.as_slice());
         if !device.frame_diagnostics_emitted {
             debug!(
                 device_id = %id,
@@ -1725,7 +1733,7 @@ mod tests {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
         frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
-            colors: vec![[0x11, 0x22, 0x33]],
+            colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
         })));
         display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
             jpeg_data: Arc::new(vec![0xD1]),

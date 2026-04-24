@@ -128,6 +128,83 @@ struct DirectControlRecordingBackend {
     brightness_writes: Arc<Mutex<Vec<u8>>>,
 }
 
+type SharedLedPayloadWrites = Arc<Mutex<Vec<Arc<Vec<[u8; 3]>>>>>;
+
+struct SharedPayloadRecordingBackend {
+    expected_device_id: DeviceId,
+    writes: SharedLedPayloadWrites,
+}
+
+impl SharedPayloadRecordingBackend {
+    fn new(expected_device_id: DeviceId, writes: SharedLedPayloadWrites) -> Self {
+        Self {
+            expected_device_id,
+            writes,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for SharedPayloadRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "shared".to_owned(),
+            name: "Shared Payload Recording Backend".to_owned(),
+            description: "Records shared LED payloads for tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Shared Payload Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        bail!("borrowed color path should not be used for shared payload backend")
+    }
+
+    async fn write_colors_shared(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.writes.lock().await.push(colors);
+        Ok(())
+    }
+}
+
 impl DirectControlRecordingBackend {
     fn new(
         expected_device_id: DeviceId,
@@ -1084,6 +1161,34 @@ async fn connect_device_connects_backend_and_maps_layout_device() {
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn write_frame_hands_shared_led_payload_to_backend_queue() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let backend = SharedPayloadRecordingBackend::new(device_id, Arc::clone(&writes));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("shared", device_id, "shared:leds")
+        .await
+        .expect("connect_device should connect and map");
+
+    let layout = make_layout(vec![make_zone("zone_0", "shared:leds", 4)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    assert_eq!(stats.devices_written, 1);
+    assert!(stats.errors.is_empty());
+    let writes = writes.lock().await;
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].as_slice(), [expected_led_color([12, 34, 56]); 4]);
 }
 
 #[tokio::test]

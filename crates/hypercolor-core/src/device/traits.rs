@@ -128,6 +128,23 @@ pub trait DeviceBackend: Send + Sync {
     /// Returns an error if the device is disconnected or the write fails.
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()>;
 
+    /// Push shared LED color data to a connected device.
+    ///
+    /// Backends with internal latest-frame queues can override this to preserve
+    /// shared ownership instead of cloning the LED payload. The default keeps
+    /// compatibility for borrowed-slice backends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is disconnected or the write fails.
+    async fn write_colors_shared(
+        &mut self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<()> {
+        self.write_colors(id, colors.as_slice()).await
+    }
+
     /// Push a JPEG-compressed display frame to a connected device, if supported.
     ///
     /// This is used by display-capable devices such as LCD pump heads that
