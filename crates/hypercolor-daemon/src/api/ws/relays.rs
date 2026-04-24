@@ -1152,7 +1152,7 @@ pub(super) async fn build_metrics_message(
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
     let display_output = state.display_frames.read().await.metrics_snapshot();
-    let (servo_soft_stalls_total, servo_breaker_opens_total) = servo_effect_health_counts();
+    let servo_health = servo_effect_health_counts();
 
     ServerMessage::Metrics {
         timestamp: format_iso8601_now(),
@@ -1219,8 +1219,22 @@ pub(super) async fn build_metrics_message(
             effect_health: MetricsEffectHealth {
                 errors_total: performance_snapshot.effect_health.errors_total,
                 fallbacks_applied_total: performance_snapshot.effect_health.fallbacks_applied_total,
-                servo_soft_stalls_total,
-                servo_breaker_opens_total,
+                servo_soft_stalls_total: servo_health.soft_stalls_total,
+                servo_breaker_opens_total: servo_health.breaker_opens_total,
+                servo_session_creates_total: servo_health.session_creates_total,
+                servo_session_create_failures_total: servo_health.session_create_failures_total,
+                servo_session_create_wait_total_ms: us_to_ms_f64(
+                    servo_health.session_create_wait_total_us,
+                ),
+                servo_session_create_wait_max_ms: us_to_ms_f64(
+                    servo_health.session_create_wait_max_us,
+                ),
+                servo_page_loads_total: servo_health.page_loads_total,
+                servo_page_load_failures_total: servo_health.page_load_failures_total,
+                servo_page_load_wait_total_ms: us_to_ms_f64(servo_health.page_load_wait_total_us),
+                servo_page_load_wait_max_ms: us_to_ms_f64(servo_health.page_load_wait_max_us),
+                servo_detached_destroys_total: servo_health.detached_destroys_total,
+                servo_detached_destroy_failures_total: servo_health.detached_destroy_failures_total,
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,
@@ -1321,15 +1335,57 @@ pub(super) fn build_device_metrics_message(state: &AppState) -> ServerMessage {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ServoEffectHealthCounts {
+    soft_stalls_total: u64,
+    breaker_opens_total: u64,
+    session_creates_total: u64,
+    session_create_failures_total: u64,
+    session_create_wait_total_us: u64,
+    session_create_wait_max_us: u64,
+    page_loads_total: u64,
+    page_load_failures_total: u64,
+    page_load_wait_total_us: u64,
+    page_load_wait_max_us: u64,
+    detached_destroys_total: u64,
+    detached_destroy_failures_total: u64,
+}
+
 #[cfg(feature = "servo")]
-fn servo_effect_health_counts() -> (u64, u64) {
+fn servo_effect_health_counts() -> ServoEffectHealthCounts {
     let snapshot = hypercolor_core::effect::servo_telemetry_snapshot();
-    (snapshot.soft_stalls_total, snapshot.breaker_opens_total)
+    ServoEffectHealthCounts {
+        soft_stalls_total: snapshot.soft_stalls_total,
+        breaker_opens_total: snapshot.breaker_opens_total,
+        session_creates_total: snapshot.session_creates_total,
+        session_create_failures_total: snapshot.session_create_failures_total,
+        session_create_wait_total_us: snapshot.session_create_wait_total_us,
+        session_create_wait_max_us: snapshot.session_create_wait_max_us,
+        page_loads_total: snapshot.page_loads_total,
+        page_load_failures_total: snapshot.page_load_failures_total,
+        page_load_wait_total_us: snapshot.page_load_wait_total_us,
+        page_load_wait_max_us: snapshot.page_load_wait_max_us,
+        detached_destroys_total: snapshot.detached_destroys_total,
+        detached_destroy_failures_total: snapshot.detached_destroy_failures_total,
+    }
 }
 
 #[cfg(not(feature = "servo"))]
-const fn servo_effect_health_counts() -> (u64, u64) {
-    (0, 0)
+const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
+    ServoEffectHealthCounts {
+        soft_stalls_total: 0,
+        breaker_opens_total: 0,
+        session_creates_total: 0,
+        session_create_failures_total: 0,
+        session_create_wait_total_us: 0,
+        session_create_wait_max_us: 0,
+        page_loads_total: 0,
+        page_load_failures_total: 0,
+        page_load_wait_total_us: 0,
+        page_load_wait_max_us: 0,
+        detached_destroys_total: 0,
+        detached_destroy_failures_total: 0,
+    }
 }
 
 fn round_1(value: f64) -> f64 {
@@ -1350,6 +1406,10 @@ fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
 
 fn us_to_ms(value: u32) -> f64 {
     f64::from(value) / 1000.0
+}
+
+fn us_to_ms_f64(value: u64) -> f64 {
+    std::time::Duration::from_micros(value).as_secs_f64() * 1000.0
 }
 
 fn bytes_to_kib(value: u32) -> f64 {

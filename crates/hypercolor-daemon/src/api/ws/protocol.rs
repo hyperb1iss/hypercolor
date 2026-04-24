@@ -821,6 +821,16 @@ pub(super) struct MetricsEffectHealth {
     pub(super) fallbacks_applied_total: u64,
     pub(super) servo_soft_stalls_total: u64,
     pub(super) servo_breaker_opens_total: u64,
+    pub(super) servo_session_creates_total: u64,
+    pub(super) servo_session_create_failures_total: u64,
+    pub(super) servo_session_create_wait_total_ms: f64,
+    pub(super) servo_session_create_wait_max_ms: f64,
+    pub(super) servo_page_loads_total: u64,
+    pub(super) servo_page_load_failures_total: u64,
+    pub(super) servo_page_load_wait_total_ms: f64,
+    pub(super) servo_page_load_wait_max_ms: f64,
+    pub(super) servo_detached_destroys_total: u64,
+    pub(super) servo_detached_destroy_failures_total: u64,
 }
 
 #[derive(Debug, Serialize)]

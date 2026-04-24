@@ -14,10 +14,13 @@ use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, Eff
 use hypercolor_types::sensor::SystemSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-use super::telemetry::record_servo_soft_stall;
+use super::telemetry::{
+    record_servo_detached_destroy, record_servo_page_load, record_servo_session_create,
+    record_servo_soft_stall,
+};
 use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
     servo_worker_is_fatal_error,
@@ -241,22 +244,43 @@ impl ServoRenderer {
                 )
             })?;
 
+        let session_create_started = Instant::now();
         let mut session = match ServoSessionHandle::new_shared(SessionConfig {
             render_width: canvas_width,
             render_height: canvas_height,
             inject_engine_globals: true,
         }) {
-            Ok(session) => session,
+            Ok(session) => {
+                record_servo_session_create(session_create_started.elapsed(), true);
+                session
+            }
             Err(error) => {
+                record_servo_session_create(session_create_started.elapsed(), false);
                 note_servo_session_error("Servo effect session creation failed", &error);
                 return Err(error);
             }
         };
+        let page_load_started = Instant::now();
         if let Err(error) = session.load_html_file(&runtime_source) {
-            let _ = session.close();
+            record_servo_page_load(page_load_started.elapsed(), false);
+            match session.close_detached() {
+                Ok(()) => record_servo_detached_destroy(true),
+                Err(close_error) => {
+                    record_servo_detached_destroy(false);
+                    note_servo_session_error(
+                        "Failed to queue Servo effect session destroy after page-load failure",
+                        &close_error,
+                    );
+                    warn!(
+                        error = %close_error,
+                        "Failed to queue Servo effect session destroy after page-load failure"
+                    );
+                }
+            }
             note_servo_session_error("Servo effect page load failed", &error);
             return Err(error);
         }
+        record_servo_page_load(page_load_started.elapsed(), true);
         self.session = Some(session);
         self.html_source = Some(path.clone());
         self.html_resolved_path = Some(runtime_source.clone());
@@ -428,11 +452,18 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
-        if let Some(session) = self.session.take()
-            && let Err(error) = session.close_detached()
-        {
-            note_servo_session_error("Failed to queue Servo effect session destroy", &error);
-            warn!(%error, "Failed to queue Servo effect session destroy");
+        if let Some(session) = self.session.take() {
+            match session.close_detached() {
+                Ok(()) => record_servo_detached_destroy(true),
+                Err(error) => {
+                    record_servo_detached_destroy(false);
+                    note_servo_session_error(
+                        "Failed to queue Servo effect session destroy",
+                        &error,
+                    );
+                    warn!(%error, "Failed to queue Servo effect session destroy");
+                }
+            }
         }
         self.pending_scripts.clear();
         self.queued_frame = None;

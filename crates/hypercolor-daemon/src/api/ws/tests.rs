@@ -54,14 +54,46 @@ use crate::session::OutputPowerState;
 static WS_CACHE_TEST_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
 #[cfg(feature = "servo")]
-fn current_servo_effect_health() -> (u64, u64) {
-    let snapshot = hypercolor_core::effect::servo_telemetry_snapshot();
-    (snapshot.soft_stalls_total, snapshot.breaker_opens_total)
+type ServoEffectHealthForTests = hypercolor_core::effect::ServoTelemetrySnapshot;
+
+#[cfg(feature = "servo")]
+fn current_servo_effect_health() -> ServoEffectHealthForTests {
+    hypercolor_core::effect::servo_telemetry_snapshot()
 }
 
 #[cfg(not(feature = "servo"))]
-const fn current_servo_effect_health() -> (u64, u64) {
-    (0, 0)
+const fn current_servo_effect_health() -> ServoEffectHealthForTests {
+    ServoEffectHealthForTests {
+        soft_stalls_total: 0,
+        breaker_opens_total: 0,
+        session_creates_total: 0,
+        session_create_failures_total: 0,
+        session_create_wait_total_us: 0,
+        session_create_wait_max_us: 0,
+        page_loads_total: 0,
+        page_load_failures_total: 0,
+        page_load_wait_total_us: 0,
+        page_load_wait_max_us: 0,
+        detached_destroys_total: 0,
+        detached_destroy_failures_total: 0,
+    }
+}
+
+#[cfg(not(feature = "servo"))]
+#[derive(Clone, Copy)]
+struct ServoEffectHealthForTests {
+    soft_stalls_total: u64,
+    breaker_opens_total: u64,
+    session_creates_total: u64,
+    session_create_failures_total: u64,
+    session_create_wait_total_us: u64,
+    session_create_wait_max_us: u64,
+    page_loads_total: u64,
+    page_load_failures_total: u64,
+    page_load_wait_total_us: u64,
+    page_load_wait_max_us: u64,
+    detached_destroys_total: u64,
+    detached_destroy_failures_total: u64,
 }
 
 fn secured_state() -> Arc<AppState> {
@@ -240,7 +272,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         panic!("expected metrics message");
     };
     let json = serde_json::to_value(&data).expect("metrics payload should serialize");
-    let (servo_soft_stalls_total, servo_breaker_opens_total) = current_servo_effect_health();
+    let servo_health = current_servo_effect_health();
 
     assert_eq!(json["timeline"]["frame_token"], 77);
     assert_eq!(json["timeline"]["compositor_backend"], "gpu");
@@ -269,11 +301,54 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
     assert_eq!(
         json["effect_health"]["servo_soft_stalls_total"],
-        servo_soft_stalls_total
+        servo_health.soft_stalls_total
     );
     assert_eq!(
         json["effect_health"]["servo_breaker_opens_total"],
-        servo_breaker_opens_total
+        servo_health.breaker_opens_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_session_creates_total"],
+        servo_health.session_creates_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_session_create_failures_total"],
+        servo_health.session_create_failures_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_session_create_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.session_create_wait_total_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_session_create_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.session_create_wait_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_page_loads_total"],
+        servo_health.page_loads_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_page_load_failures_total"],
+        servo_health.page_load_failures_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_page_load_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.page_load_wait_total_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_page_load_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.page_load_wait_max_us).as_secs_f64() * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_detached_destroys_total"],
+        servo_health.detached_destroys_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_detached_destroy_failures_total"],
+        servo_health.detached_destroy_failures_total
     );
     assert_eq!(json["display_output"]["write_attempts_total"], 2);
     assert_eq!(json["display_output"]["write_successes_total"], 1);
