@@ -5,10 +5,9 @@
 //! A transparent drag overlay captures mouse events outside the canvas bounds.
 
 use leptos::prelude::*;
-use wasm_bindgen::Clamped;
 use wasm_bindgen::prelude::*;
 
-use hypercolor_leptos_ext::canvas::context_2d;
+use hypercolor_leptos_ext::canvas::{context_2d, image_data_rgba};
 
 // ── Canvas geometry ──────────────────────────────────────────────────────────
 
@@ -173,11 +172,7 @@ fn render_wheel(ctx: &web_sys::CanvasRenderingContext2d, hsv: Hsv) -> Result<(),
         }
     }
 
-    let image_data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-        Clamped(&pixels),
-        CANVAS_SIZE,
-        CANVAS_SIZE,
-    )?;
+    let image_data = image_data_rgba(&pixels, CANVAS_SIZE, CANVAS_SIZE)?;
     ctx.put_image_data(&image_data, 0.0, 0.0)?;
 
     // Hue ring thumb

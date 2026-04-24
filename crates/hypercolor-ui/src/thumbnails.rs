@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gloo_net::http::{Method, RequestBuilder};
-use hypercolor_leptos_ext::canvas::{context_2d, create_canvas};
+use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba};
 use hypercolor_leptos_ext::prelude::spawn_timeout;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -175,9 +175,7 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
     let ctx = context_2d(&canvas).ok_or_else(|| JsValue::from_str("no 2d context"))?;
 
     let rgba = frame_to_rgba_vec(frame);
-    let clamped = wasm_bindgen::Clamped(rgba.as_slice());
-    let image_data =
-        web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, frame.width, frame.height)?;
+    let image_data = image_data_rgba(&rgba, frame.width, frame.height)?;
     ctx.put_image_data(&image_data, 0.0, 0.0)?;
 
     canvas.to_data_url_with_type_and_encoder_options("image/webp", &JsValue::from_f64(WEBP_QUALITY))

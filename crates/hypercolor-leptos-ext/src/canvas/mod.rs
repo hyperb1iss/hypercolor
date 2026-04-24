@@ -1,6 +1,6 @@
 //! Browser-only canvas helpers.
 
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{Clamped, JsCast, JsValue};
 
 pub fn create_canvas() -> Result<web_sys::HtmlCanvasElement, JsValue> {
     let document = web_sys::window()
@@ -58,4 +58,12 @@ pub fn supports_bitmap_worker_canvas() -> bool {
 
 pub fn message_image_bitmap(event: &web_sys::MessageEvent) -> Option<web_sys::ImageBitmap> {
     event.data().dyn_into().ok()
+}
+
+pub fn image_data_rgba(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<web_sys::ImageData, JsValue> {
+    web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(pixels), width, height)
 }

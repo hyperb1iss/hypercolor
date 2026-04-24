@@ -52,6 +52,7 @@ canvas = [
     "web-sys/HtmlCanvasElement",
     "web-sys/ImageBitmap",
     "web-sys/ImageBitmapRenderingContext",
+    "web-sys/ImageData",
     "web-sys/MessageEvent",
     "web-sys/WebGlRenderingContext",
     "web-sys/Window",

@@ -1,6 +1,5 @@
-use hypercolor_leptos_ext::canvas::context_2d;
-use wasm_bindgen::Clamped;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
+use hypercolor_leptos_ext::canvas::{context_2d, image_data_rgba};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
@@ -73,11 +72,7 @@ impl Canvas2dPreviewRuntime {
         self.ensure_canvas_size(canvas, frame.width, frame.height);
         self.copy_frame_into_rgba(frame);
 
-        let Ok(image_data) = ImageData::new_with_u8_clamped_array_and_sh(
-            Clamped(self.scratch_rgba.as_slice()),
-            frame.width,
-            frame.height,
-        ) else {
+        let Ok(image_data) = image_data_rgba(&self.scratch_rgba, frame.width, frame.height) else {
             return PreviewRenderOutcome::Reinitialize;
         };
 
