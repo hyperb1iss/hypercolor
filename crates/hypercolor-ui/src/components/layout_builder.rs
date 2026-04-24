@@ -9,6 +9,7 @@ use leptos_icons::Icon;
 use leptos_use::use_debounce_fn_with_arg;
 use wasm_bindgen::JsCast;
 
+use hypercolor_leptos_ext::events::Input;
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::control_panel::ControlDropdownDismissHandlers;
@@ -990,15 +991,15 @@ pub fn LayoutBuilder() -> impl IntoView {
                                     prop:value=move || rename_value.get()
                                     autofocus=true
                                     on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target { set_rename_value.set(el.value()); }
+                                        let event = Input::from_event(ev);
+                                        if let Some(value) = event.value_string() {
+                                            set_rename_value.set(value);
+                                        }
                                     }
                                     on:blur=move |_| commit_rename()
                                     on:keydown=move |ev: web_sys::KeyboardEvent| {
                                         if ev.key() == "Enter" {
-                                            // Blur triggers commit_rename, so just blur the input
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target { let _ = el.blur(); }
+                                            commit_rename();
                                         } else if ev.key() == "Escape" {
                                             set_renaming.set(false);
                                         }
@@ -1059,8 +1060,10 @@ pub fn LayoutBuilder() -> impl IntoView {
                                        placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-40 transition-all"
                                 prop:value=move || new_layout_name.get()
                                 on:input=move |ev| {
-                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                    if let Some(el) = target { set_new_layout_name.set(el.value()); }
+                                    let event = Input::from_event(ev);
+                                    if let Some(value) = event.value_string() {
+                                        set_new_layout_name.set(value);
+                                    }
                                 }
                                 on:keydown=move |ev| {
                                     if ev.key() == "Enter" { create_layout(); }
