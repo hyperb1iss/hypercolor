@@ -1786,6 +1786,70 @@ mod tests {
         assert!(after.display_led_priority_wait_max_us >= before.display_led_priority_wait_max_us);
     }
 
+    #[tokio::test]
+    async fn display_load_services_new_led_before_next_display_frame() {
+        let before = usb_actor_metrics_snapshot();
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+        let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+
+        display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
+            jpeg_data: Arc::new(vec![0xD1]),
+        })));
+
+        let transport =
+            Arc::new(RecordingTransport::default().with_send_delay(Duration::from_millis(5)));
+        let actor_protocol: Arc<dyn Protocol> = Arc::new(FairnessProtocol);
+        let actor_transport: Arc<dyn Transport> = transport.clone();
+
+        let actor = tokio::spawn(UsbBackend::run_device_actor(
+            DeviceId::new(),
+            "display-load-fairness-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ));
+
+        let writes = wait_for_writes(&transport, 1).await;
+        assert_eq!(writes, vec![vec![0xD1]]);
+
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+            colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
+        })));
+        display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
+            jpeg_data: Arc::new(vec![0xD2]),
+        })));
+
+        let writes = wait_for_writes(&transport, 3).await;
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(UsbDeviceCommand::Shutdown {
+                led_count: 0,
+                response_tx,
+            })
+            .expect("actor command channel should still be open");
+
+        response_rx
+            .await
+            .expect("shutdown response should be delivered")
+            .expect("shutdown should succeed");
+        actor
+            .await
+            .expect("actor task should join")
+            .expect("actor should exit cleanly");
+
+        assert_eq!(writes, vec![vec![0xD1], vec![0x22], vec![0xD2]]);
+
+        let after = usb_actor_metrics_snapshot();
+        assert_eq!(after.display_frames_total, before.display_frames_total + 2);
+        assert_eq!(
+            after.display_frames_delayed_for_led_total,
+            before.display_frames_delayed_for_led_total + 1
+        );
+    }
+
     async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Vec<u8>> {
         timeout(Duration::from_secs(1), async {
             loop {
@@ -1816,12 +1880,14 @@ mod tests {
             Vec::new()
         }
 
-        fn encode_frame(&self, _colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-            vec![test_command(0x11)]
+        fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+            vec![test_command(colors.first().map_or(0x11, |color| color[0]))]
         }
 
-        fn encode_display_frame(&self, _jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-            Some(vec![test_command(0xD1)])
+        fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
+            Some(vec![test_command(
+                jpeg_data.first().copied().unwrap_or(0xD1),
+            )])
         }
 
         fn parse_response(
