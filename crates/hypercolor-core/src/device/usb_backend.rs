@@ -19,7 +19,7 @@ use hypercolor_hal::transport::midi::Push2Transport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -95,7 +95,7 @@ struct UsbFramePayload {
 
 #[derive(Debug)]
 struct UsbDisplayPayload {
-    jpeg_data: Arc<Vec<u8>>,
+    payload: Arc<OwnedDisplayFramePayload>,
 }
 
 enum UsbDeviceCommand {
@@ -159,9 +159,9 @@ impl UsbDevice {
             .send_replace(Some(Arc::new(UsbFramePayload { colors })));
     }
 
-    fn queue_display_frame(&self, jpeg_data: Arc<Vec<u8>>) {
+    fn queue_display_frame(&self, payload: Arc<OwnedDisplayFramePayload>) {
         self.display_tx
-            .send_replace(Some(Arc::new(UsbDisplayPayload { jpeg_data })));
+            .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
     }
 
     async fn set_brightness(&mut self, device_id: DeviceId, brightness: u8) -> Result<()> {
@@ -828,7 +828,7 @@ impl UsbBackend {
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         protocol
-            .encode_display_frame_into(frame.jpeg_data.as_ref(), commands)
+            .encode_display_payload_into(frame.payload.as_borrowed(), commands)
             .with_context(|| {
                 format!("USB protocol does not support display output for device {device_id}")
             })?;
@@ -841,7 +841,8 @@ impl UsbBackend {
             device_id = %device_id,
             protocol = protocol.name(),
             transport = transport.name(),
-            jpeg_bytes = frame.jpeg_data.len(),
+            display_format = %frame.payload.format,
+            display_bytes = frame.payload.data.len(),
             command_count = commands.len(),
             first_packet = %first_packet,
             "usb display write requested"
@@ -1465,6 +1466,15 @@ impl DeviceBackend for UsbBackend {
         id: &DeviceId,
         jpeg_data: Arc<Vec<u8>>,
     ) -> Result<()> {
+        let payload = Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, jpeg_data));
+        self.write_display_payload_owned(id, payload).await
+    }
+
+    async fn write_display_payload_owned(
+        &mut self,
+        id: &DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
         let Some(device) = self.connected.get_mut(id) else {
             bail!("device {id} is not connected");
         };
@@ -1478,11 +1488,12 @@ impl DeviceBackend for UsbBackend {
             device_id = %id,
             protocol = device.protocol.name(),
             transport = device.transport_name,
-            jpeg_bytes = jpeg_data.len(),
+            display_format = %payload.format,
+            display_bytes = payload.data.len(),
             "usb display frame queued for device actor"
         );
 
-        device.queue_display_frame(jpeg_data);
+        device.queue_display_frame(payload);
         Ok(())
     }
 
@@ -1736,7 +1747,7 @@ mod tests {
             colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
         })));
         display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-            jpeg_data: Arc::new(vec![0xD1]),
+            payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
         })));
 
         let transport =
@@ -1794,7 +1805,7 @@ mod tests {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
         display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-            jpeg_data: Arc::new(vec![0xD1]),
+            payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
         })));
 
         let transport =
@@ -1819,7 +1830,7 @@ mod tests {
             colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
         })));
         display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-            jpeg_data: Arc::new(vec![0xD2]),
+            payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD2]))),
         })));
 
         let writes = wait_for_writes(&transport, 3).await;

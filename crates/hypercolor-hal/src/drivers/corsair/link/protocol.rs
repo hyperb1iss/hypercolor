@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::drivers::corsair::CORSAIR_KEEPALIVE_INTERVAL;
 use crate::drivers::corsair::framing::{
-    LINK_MAX_PAYLOAD, build_link_packet, build_link_write_buffer, chunk_bytes,
+    LINK_MAX_PAYLOAD, build_link_packet, build_link_write_buffer,
 };
 use crate::drivers::corsair::types::{
     EP_GET_DEVICES, EP_SET_COLOR, EndpointConfig, LinkCommand, LinkDeviceType,
@@ -111,10 +111,10 @@ impl CorsairLinkProtocol {
         .unwrap_or_default()
     }
 
-    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Result<Vec<[u8; 3]>, ProtocolError> {
+    fn validate_color_count(&self, colors: &[[u8; 3]]) -> Result<usize, ProtocolError> {
         let expected = self.current_total_leds();
         if expected == 0 {
-            return Ok(Vec::new());
+            return Ok(0);
         }
 
         if colors.len() != expected {
@@ -126,7 +126,7 @@ impl CorsairLinkProtocol {
             });
         }
 
-        Ok(colors.to_vec())
+        Ok(expected)
     }
 
     fn parse_children_response(data: &[u8]) -> Result<Vec<LinkChild>, ProtocolError> {
@@ -233,25 +233,25 @@ impl Protocol for CorsairLinkProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-        let normalized = match self.normalize_colors(colors) {
-            Ok(frame) => frame,
+        let expected = match self.validate_color_count(colors) {
+            Ok(expected) => expected,
             Err(error) => {
                 warn!(%error, "corsair LINK encode_frame rejected frame");
                 return Vec::new();
             }
         };
-        if normalized.is_empty() {
+        if expected == 0 {
             return Vec::new();
         }
 
-        let rgb = normalized
+        let rgb = colors
             .iter()
             .flat_map(|color| [color[0], color[1], color[2]])
             .collect::<Vec<_>>();
         let framed = build_link_write_buffer(EP_SET_COLOR.data_type, &rgb);
-        let chunks = chunk_bytes(&framed, LINK_MAX_PAYLOAD);
 
-        let mut commands = Vec::with_capacity(chunks.len().saturating_add(3));
+        let mut commands =
+            Vec::with_capacity(framed.len().div_ceil(LINK_MAX_PAYLOAD).saturating_add(3));
         commands.push(Self::endpoint_command(
             LinkCommand::CloseEndpoint,
             EP_SET_COLOR,
@@ -263,7 +263,7 @@ impl Protocol for CorsairLinkProtocol {
             true,
         ));
 
-        for (index, chunk) in chunks.iter().enumerate() {
+        for (index, chunk) in framed.chunks(LINK_MAX_PAYLOAD).enumerate() {
             let command = if index == 0 {
                 LinkCommand::WriteColor
             } else {

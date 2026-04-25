@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::types::device::{DeviceId, DeviceInfo};
+use crate::types::device::{DeviceId, DeviceInfo, DisplayFrameFormat, OwnedDisplayFramePayload};
 
 // ── BackendInfo ──────────────────────────────────────────────────────────
 
@@ -177,6 +177,32 @@ pub trait DeviceBackend: Send + Sync {
         jpeg_data: Arc<Vec<u8>>,
     ) -> Result<()> {
         self.write_display_frame(id, jpeg_data.as_slice()).await
+    }
+
+    /// Push an owned display payload to a connected device.
+    ///
+    /// Backends that support raw display pixels can override this method;
+    /// the default preserves the established JPEG path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is disconnected, display output is
+    /// unsupported, the payload format is unsupported, or the write fails.
+    async fn write_display_payload_owned(
+        &mut self,
+        id: &DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        match payload.format {
+            DisplayFrameFormat::Jpeg => {
+                self.write_display_frame_owned(id, Arc::clone(&payload.data))
+                    .await
+            }
+            DisplayFrameFormat::Rgb => bail!(
+                "backend '{}' does not support RGB display output",
+                self.info().id
+            ),
+        }
     }
 
     /// Adjust hardware brightness for a connected device, if supported.

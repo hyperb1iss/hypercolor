@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, trace, warn};
 
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
-use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneAttachment};
 
@@ -204,6 +204,30 @@ impl BackendIo {
                 format!(
                     "failed to write {} display bytes to device {device_id} using backend '{}'",
                     byte_len, self.backend_id
+                )
+            })
+    }
+
+    /// Write an owned display payload directly to the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the display write fails.
+    pub async fn write_display_payload_owned(
+        &self,
+        device_id: DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        let byte_len = payload.data.len();
+        let format = payload.format;
+        let mut backend = self.backend.lock().await;
+        backend
+            .write_display_payload_owned(&device_id, payload)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write {byte_len} {format} display bytes to device {device_id} using backend '{}'",
+                    self.backend_id
                 )
             })
     }
@@ -1336,6 +1360,23 @@ impl BackendManager {
             bail!("backend '{backend_id}' is not registered");
         };
         io.write_display_frame_owned(device_id, jpeg_data).await
+    }
+
+    /// Write one owned display payload to a specific physical device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend is missing or the backend write fails.
+    pub async fn write_device_display_payload_owned(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        let Some(io) = self.backend_io(backend_id) else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+        io.write_display_payload_owned(device_id, payload).await
     }
 
     /// Cache a backend-provided output FPS for a physical device.

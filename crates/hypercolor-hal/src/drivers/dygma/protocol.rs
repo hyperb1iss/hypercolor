@@ -1,5 +1,6 @@
 //! Pure Dygma Focus protocol encoder/decoder.
 
+use std::borrow::Cow;
 use std::cmp::min;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
@@ -125,9 +126,9 @@ impl DygmaProtocol {
             .store(supported, Ordering::Release);
     }
 
-    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         if colors.len() == TOTAL_LEDS {
-            return colors.to_vec();
+            return Cow::Borrowed(colors);
         }
 
         let mut normalized = vec![[0_u8; 3]; TOTAL_LEDS];
@@ -141,7 +142,7 @@ impl DygmaProtocol {
             "dygma frame length mismatch; applying truncate/pad"
         );
 
-        normalized
+        Cow::Owned(normalized)
     }
 
     fn text_command(
@@ -212,8 +213,8 @@ impl DygmaProtocol {
                 .expect("TOTAL_LEDS should fit in u16")
                 .to_le_bytes(),
         );
-        for color in colors {
-            payload.extend_from_slice(&color);
+        for color in colors.iter() {
+            payload.extend_from_slice(color);
         }
 
         Self::binary_command(build_hypercolor_packet(sequence, &payload))
@@ -254,8 +255,6 @@ impl Protocol for DygmaProtocol {
         if self.supports_direct_stream() {
             return vec![self.encode_binary_frame(colors)];
         }
-
-        let _ = self.normalize_colors(colors);
 
         if !self.direct_stream_warned.swap(true, Ordering::AcqRel) {
             warn!(

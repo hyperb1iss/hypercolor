@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, ScrollMode,
+    DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat,
+    DisplayFramePayload, ScrollMode,
 };
 
 /// Pure byte-level protocol encoder/decoder.
@@ -108,6 +109,18 @@ pub trait Protocol: Send + Sync {
         commands.clear();
         commands.extend(self.encode_display_frame(jpeg_data)?);
         Some(())
+    }
+
+    /// Encode a display payload into a reusable command buffer.
+    fn encode_display_payload_into(
+        &self,
+        payload: DisplayFramePayload<'_>,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Option<()> {
+        match payload.format {
+            DisplayFrameFormat::Jpeg => self.encode_display_frame_into(payload.data, commands),
+            DisplayFrameFormat::Rgb => None,
+        }
     }
 
     /// Zone descriptors for this device.

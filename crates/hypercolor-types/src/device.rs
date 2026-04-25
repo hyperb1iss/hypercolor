@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -513,6 +514,90 @@ impl fmt::Display for DeviceColorFormat {
             Self::Grb => write!(f, "GRB"),
             Self::Rbg => write!(f, "RBG"),
             Self::Jpeg => write!(f, "JPEG"),
+        }
+    }
+}
+
+/// Pixel payload format for display-capable devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayFrameFormat {
+    /// JPEG-compressed image bytes.
+    Jpeg,
+
+    /// Raw RGB byte triplets, row-major.
+    Rgb,
+}
+
+impl DisplayFrameFormat {
+    /// Convert a display zone color format into a payload format.
+    #[must_use]
+    pub const fn from_device_color_format(format: DeviceColorFormat) -> Self {
+        match format {
+            DeviceColorFormat::Rgb => Self::Rgb,
+            DeviceColorFormat::Rgbw
+            | DeviceColorFormat::Grb
+            | DeviceColorFormat::Rbg
+            | DeviceColorFormat::Jpeg => Self::Jpeg,
+        }
+    }
+}
+
+impl fmt::Display for DisplayFrameFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Jpeg => write!(f, "JPEG"),
+            Self::Rgb => write!(f, "RGB"),
+        }
+    }
+}
+
+/// Borrowed display frame payload.
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayFramePayload<'a> {
+    /// Pixel payload format.
+    pub format: DisplayFrameFormat,
+    /// Display width in pixels.
+    pub width: u32,
+    /// Display height in pixels.
+    pub height: u32,
+    /// Pixel or compressed image bytes.
+    pub data: &'a [u8],
+}
+
+/// Owned display frame payload.
+#[derive(Debug, Clone)]
+pub struct OwnedDisplayFramePayload {
+    /// Pixel payload format.
+    pub format: DisplayFrameFormat,
+    /// Display width in pixels.
+    pub width: u32,
+    /// Display height in pixels.
+    pub height: u32,
+    /// Pixel or compressed image bytes.
+    pub data: Arc<Vec<u8>>,
+}
+
+impl OwnedDisplayFramePayload {
+    /// Create an owned JPEG display payload.
+    #[must_use]
+    pub fn jpeg(width: u32, height: u32, data: Arc<Vec<u8>>) -> Self {
+        Self {
+            format: DisplayFrameFormat::Jpeg,
+            width,
+            height,
+            data,
+        }
+    }
+
+    /// Return a borrowed view of the payload.
+    #[must_use]
+    pub fn as_borrowed(&self) -> DisplayFramePayload<'_> {
+        DisplayFramePayload {
+            format: self.format,
+            width: self.width,
+            height: self.height,
+            data: self.data.as_slice(),
         }
     }
 }

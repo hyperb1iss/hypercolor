@@ -12,7 +12,7 @@ use tracing::{trace, warn};
 
 use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::device::BackendIo;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePayload};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
@@ -46,6 +46,16 @@ async fn publish_display_frame_snapshot(
             captured_at: SystemTime::now(),
         },
     );
+}
+
+fn preview_jpeg_for_payload(
+    payload: &Arc<OwnedDisplayFramePayload>,
+    raw_preview: Option<Arc<Vec<u8>>>,
+) -> Option<Arc<Vec<u8>>> {
+    match payload.format {
+        DisplayFrameFormat::Jpeg => Some(Arc::clone(&payload.data)),
+        DisplayFrameFormat::Rgb => raw_preview,
+    }
 }
 
 pub(super) struct DisplayWorkerHandle {
@@ -309,7 +319,8 @@ async fn run_display_worker(
     // Decoupled from delivered_frame_number, which only advances on
     // successful device writes.
     let mut preview_frame_number = 0_u64;
-    let mut last_delivered_jpeg = None::<Arc<Vec<u8>>>;
+    let mut last_delivered_payload = None::<Arc<OwnedDisplayFramePayload>>;
+    let mut last_delivered_preview_jpeg = None::<Arc<Vec<u8>>>;
 
     loop {
         if pending.is_none() {
@@ -329,7 +340,7 @@ async fn run_display_worker(
                         let _ = power_state.borrow_and_update();
                     }
                         () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
-                        if should_refresh_static_hold(&power_state) && last_delivered_jpeg.is_some() {
+                        if should_refresh_static_hold(&power_state) && last_delivered_payload.is_some() {
                             pending = Some(PendingDisplayFrame::StaticHold);
                         }
                     }
@@ -353,7 +364,7 @@ async fn run_display_worker(
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_jpeg.is_some(),
+                last_delivered_payload.is_some(),
                 static_hold_refresh_interval,
             );
             continue;
@@ -393,19 +404,23 @@ async fn run_display_worker(
         let retry_attempt = pending_frame.is_retry();
 
         let Some(frames) = pending_frame.into_frames() else {
-            if let Some(jpeg) = last_delivered_jpeg.as_ref() {
-                preview_frame_number = preview_frame_number.saturating_add(1);
-                publish_display_frame_snapshot(
-                    &display_frames,
-                    device_id,
-                    &target.geometry,
-                    preview_frame_number,
-                    Arc::clone(jpeg),
-                )
-                .await;
+            if let Some(payload) = last_delivered_payload.as_ref() {
+                if let Some(preview_jpeg) =
+                    preview_jpeg_for_payload(payload, last_delivered_preview_jpeg.clone())
+                {
+                    preview_frame_number = preview_frame_number.saturating_add(1);
+                    publish_display_frame_snapshot(
+                        &display_frames,
+                        device_id,
+                        &target.geometry,
+                        preview_frame_number,
+                        preview_jpeg,
+                    )
+                    .await;
+                }
                 record_display_write_attempt(&display_frames, false).await;
                 let write_result = backend_io
-                    .write_display_frame_owned(device_id, Arc::clone(jpeg))
+                    .write_display_payload_owned(device_id, Arc::clone(payload))
                     .await;
                 if let Err(error) = write_result {
                     record_display_write_failure(&display_frames).await;
@@ -417,7 +432,7 @@ async fn run_display_worker(
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_jpeg.is_some(),
+                last_delivered_payload.is_some(),
                 static_hold_refresh_interval,
             );
             continue;
@@ -427,7 +442,7 @@ async fn run_display_worker(
         let input_matches = last_delivered_input
             .as_ref()
             .is_some_and(|previous| previous.matches(&frames, &target));
-        if zero_brightness_output && !force_send && last_delivered_jpeg.is_some() {
+        if zero_brightness_output && !force_send && last_delivered_payload.is_some() {
             trace!(
                 device = %target.name,
                 backend_id = %backend_key,
@@ -449,20 +464,24 @@ async fn run_display_worker(
         }
         if force_send
             && (input_matches || zero_brightness_output)
-            && let Some(jpeg) = last_delivered_jpeg.as_ref()
+            && let Some(payload) = last_delivered_payload.as_ref()
         {
-            preview_frame_number = preview_frame_number.saturating_add(1);
-            publish_display_frame_snapshot(
-                &display_frames,
-                device_id,
-                &target.geometry,
-                preview_frame_number,
-                Arc::clone(jpeg),
-            )
-            .await;
+            if let Some(preview_jpeg) =
+                preview_jpeg_for_payload(payload, last_delivered_preview_jpeg.clone())
+            {
+                preview_frame_number = preview_frame_number.saturating_add(1);
+                publish_display_frame_snapshot(
+                    &display_frames,
+                    device_id,
+                    &target.geometry,
+                    preview_frame_number,
+                    preview_jpeg,
+                )
+                .await;
+            }
             record_display_write_attempt(&display_frames, retry_attempt).await;
             let write_result = backend_io
-                .write_display_frame_owned(device_id, Arc::clone(jpeg))
+                .write_display_payload_owned(device_id, Arc::clone(payload))
                 .await;
             if let Err(error) = write_result {
                 record_display_write_failure(&display_frames).await;
@@ -480,7 +499,7 @@ async fn run_display_worker(
             record_display_write_success(&display_frames).await;
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_jpeg.is_some(),
+                last_delivered_payload.is_some(),
                 static_hold_refresh_interval,
             );
             delivered_frame_number = delivered_frame_number.saturating_add(1);
@@ -491,6 +510,8 @@ async fn run_display_worker(
         let viewport = target.viewport;
         let geometry = target.geometry;
         let brightness = target.brightness;
+        let frame_format = target.frame_format;
+        let include_preview_jpeg = target.preview_subscribed;
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = match encode_source {
@@ -499,6 +520,8 @@ async fn run_display_worker(
                     &viewport,
                     &geometry,
                     brightness,
+                    frame_format,
+                    include_preview_jpeg,
                     &mut encode_state,
                 ),
                 DisplayWorkerFrameSource::Face {
@@ -514,6 +537,8 @@ async fn run_display_worker(
                     brightness,
                     blend_mode,
                     opacity,
+                    frame_format,
+                    include_preview_jpeg,
                     &mut encode_state,
                 ),
             };
@@ -521,10 +546,10 @@ async fn run_display_worker(
         })
         .await;
 
-        let jpeg = match encode_result {
+        let encoded = match encode_result {
             Ok((returned_state, Ok(encoded))) => {
                 encode_state = returned_state;
-                Arc::new(encoded)
+                encoded
             }
             Ok((returned_state, Err(error))) => {
                 encode_state = returned_state;
@@ -555,21 +580,36 @@ async fn run_display_worker(
             }
         };
 
-        let jpeg_bytes = jpeg.len();
-        preview_frame_number = preview_frame_number.saturating_add(1);
-        publish_display_frame_snapshot(
-            &display_frames,
-            device_id,
-            &target.geometry,
-            preview_frame_number,
-            Arc::clone(&jpeg),
-        )
-        .await;
+        let payload_data = Arc::new(encoded.data);
+        let payload = Arc::new(OwnedDisplayFramePayload {
+            format: encoded.format,
+            width: target.geometry.width,
+            height: target.geometry.height,
+            data: Arc::clone(&payload_data),
+        });
+        let preview_jpeg = match payload.format {
+            DisplayFrameFormat::Jpeg => Some(Arc::clone(&payload_data)),
+            DisplayFrameFormat::Rgb => encoded.preview_jpeg.map(Arc::new),
+        };
+        if let Some(preview_jpeg) = preview_jpeg.as_ref() {
+            preview_frame_number = preview_frame_number.saturating_add(1);
+            publish_display_frame_snapshot(
+                &display_frames,
+                device_id,
+                &target.geometry,
+                preview_frame_number,
+                Arc::clone(preview_jpeg),
+            )
+            .await;
+        }
         record_display_write_attempt(&display_frames, retry_attempt).await;
         let write_result = backend_io
-            .write_display_frame_owned(device_id, Arc::clone(&jpeg))
+            .write_display_payload_owned(device_id, Arc::clone(&payload))
             .await;
-        last_delivered_jpeg = Some(Arc::clone(&jpeg));
+        let display_format = payload.format;
+        let display_bytes = payload.data.len();
+        last_delivered_payload = Some(Arc::clone(&payload));
+        last_delivered_preview_jpeg = preview_jpeg;
         if let Err(error) = write_result {
             record_display_write_failure(&display_frames).await;
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
@@ -587,7 +627,7 @@ async fn run_display_worker(
         last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
-            last_delivered_jpeg.is_some(),
+            last_delivered_payload.is_some(),
             static_hold_refresh_interval,
         );
         delivered_frame_number = delivered_frame_number.saturating_add(1);
@@ -596,7 +636,8 @@ async fn run_display_worker(
             device = %target.name,
             backend_id = %backend_key,
             device_id = %device_id,
-            jpeg_bytes,
+            display_format = %display_format,
+            display_bytes,
             target_fps,
             "display frame delivered"
         );
@@ -662,10 +703,10 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    has_cached_jpeg: bool,
+    has_cached_payload: bool,
     refresh_interval: Duration,
 ) -> Option<Instant> {
-    if !should_refresh_static_hold(power_state) || !has_cached_jpeg {
+    if !should_refresh_static_hold(power_state) || !has_cached_payload {
         return None;
     }
 

@@ -8,7 +8,8 @@ use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
+    DisplayFramePayload,
 };
 use tracing::warn;
 
@@ -316,6 +317,28 @@ impl Protocol for Push2Protocol {
             .encode_display_frame_from_jpeg(jpeg_data, commands)
     }
 
+    fn encode_display_payload_into(
+        &self,
+        payload: DisplayFramePayload<'_>,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Option<()> {
+        let mut encoder = self
+            .display_encoder
+            .lock()
+            .expect("Push 2 display encoder lock should not be poisoned");
+        match payload.format {
+            DisplayFrameFormat::Jpeg => {
+                encoder.encode_display_frame_from_jpeg(payload.data, commands)
+            }
+            DisplayFrameFormat::Rgb => encoder.encode_display_frame_from_rgb(
+                payload.width,
+                payload.height,
+                payload.data,
+                commands,
+            ),
+        }
+    }
+
     fn zones(&self) -> Vec<ProtocolZone> {
         vec![
             ProtocolZone {
@@ -368,7 +391,7 @@ impl Protocol for Push2Protocol {
                     height: 160,
                     circular: false,
                 },
-                color_format: DeviceColorFormat::Jpeg,
+                color_format: DeviceColorFormat::Rgb,
             },
         ]
     }

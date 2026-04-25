@@ -312,7 +312,7 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
     );
     assert_eq!(zones[5].led_count, 37);
     assert_eq!(zones[6].led_count, 31);
-    assert_eq!(zones[7].color_format, DeviceColorFormat::Jpeg);
+    assert_eq!(zones[7].color_format, DeviceColorFormat::Rgb);
     assert_eq!(
         zones[7].topology,
         DeviceTopologyHint::Display {

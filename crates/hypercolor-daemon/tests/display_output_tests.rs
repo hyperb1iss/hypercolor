@@ -12,7 +12,8 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint,
+    OwnedDisplayFramePayload, ZoneInfo,
 };
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
 use hypercolor_types::session::OffOutputBehavior;
@@ -110,6 +111,36 @@ impl RecordingDisplayBackend {
         self.transient_display_failures = failure_count;
         self
     }
+
+    async fn record_display_write_data(&mut self, id: &DeviceId, data: &[u8]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("display write while disconnected");
+        }
+
+        if let Some(display_write_attempt_times) = &self.display_write_attempt_times {
+            display_write_attempt_times
+                .lock()
+                .await
+                .push(Instant::now());
+        }
+        if self.transient_display_failures > 0 {
+            self.transient_display_failures -= 1;
+            bail!("intentional transient display write failure");
+        }
+
+        if !self.write_delay.is_zero() {
+            tokio::time::sleep(self.write_delay).await;
+        }
+
+        self.display_writes.lock().await.push(data.to_vec());
+        if let Some(display_write_times) = &self.display_write_times {
+            display_write_times.lock().await.push(Instant::now());
+        }
+        Ok(())
+    }
 }
 
 struct FailingDisplayBackend {
@@ -167,33 +198,16 @@ impl DeviceBackend for RecordingDisplayBackend {
     }
 
     async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-        if !self.connected {
-            bail!("display write while disconnected");
-        }
+        self.record_display_write_data(id, jpeg_data).await
+    }
 
-        if let Some(display_write_attempt_times) = &self.display_write_attempt_times {
-            display_write_attempt_times
-                .lock()
-                .await
-                .push(Instant::now());
-        }
-        if self.transient_display_failures > 0 {
-            self.transient_display_failures -= 1;
-            bail!("intentional transient display write failure");
-        }
-
-        if !self.write_delay.is_zero() {
-            tokio::time::sleep(self.write_delay).await;
-        }
-
-        self.display_writes.lock().await.push(jpeg_data.to_vec());
-        if let Some(display_write_times) = &self.display_write_times {
-            display_write_times.lock().await.push(Instant::now());
-        }
-        Ok(())
+    async fn write_display_payload_owned(
+        &mut self,
+        id: &DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        self.record_display_write_data(id, payload.data.as_slice())
+            .await
     }
 }
 
@@ -256,7 +270,15 @@ fn display_device_info(
     height: u32,
     circular: bool,
 ) -> DeviceInfo {
-    display_device_info_with_max_fps(device_id, has_display, width, height, circular, 30)
+    display_device_info_with_format_and_max_fps(
+        device_id,
+        has_display,
+        width,
+        height,
+        circular,
+        DeviceColorFormat::Jpeg,
+        30,
+    )
 }
 
 fn display_device_info_with_max_fps(
@@ -265,6 +287,43 @@ fn display_device_info_with_max_fps(
     width: u32,
     height: u32,
     circular: bool,
+    max_fps: u32,
+) -> DeviceInfo {
+    display_device_info_with_format_and_max_fps(
+        device_id,
+        has_display,
+        width,
+        height,
+        circular,
+        DeviceColorFormat::Jpeg,
+        max_fps,
+    )
+}
+
+fn display_device_info_with_format(
+    device_id: DeviceId,
+    width: u32,
+    height: u32,
+    color_format: DeviceColorFormat,
+) -> DeviceInfo {
+    display_device_info_with_format_and_max_fps(
+        device_id,
+        true,
+        width,
+        height,
+        false,
+        color_format,
+        30,
+    )
+}
+
+fn display_device_info_with_format_and_max_fps(
+    device_id: DeviceId,
+    has_display: bool,
+    width: u32,
+    height: u32,
+    circular: bool,
+    color_format: DeviceColorFormat,
     max_fps: u32,
 ) -> DeviceInfo {
     let zones = if has_display {
@@ -276,7 +335,7 @@ fn display_device_info_with_max_fps(
                 height,
                 circular,
             },
-            color_format: DeviceColorFormat::Jpeg,
+            color_format,
         }]
     } else {
         vec![ZoneInfo {
@@ -663,6 +722,80 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let writes = wait_for_display_writes(&display_writes).await;
     assert!(!writes[0].is_empty());
     assert_eq!(&writes[0][..3], &[0xFF, 0xD8, 0xFF]);
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "push2:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info_with_format(
+            device_id,
+            320,
+            200,
+            DeviceColorFormat::Rgb,
+        ))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::clone(&display_frames),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+
+    let canvas = sample_canvas();
+    let _ = event_bus
+        .scene_canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    assert_eq!(writes[0].len(), 320 * 200 * 3);
+    assert_eq!(&writes[0][..3], &[255, 0, 0]);
+    assert_ne!(&writes[0][..3], &[0xFF, 0xD8, 0xFF]);
+    assert!(display_frames.read().await.frame(device_id).is_none());
 
     thread.shutdown().await.expect("display thread should stop");
 }

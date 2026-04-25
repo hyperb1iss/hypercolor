@@ -1,5 +1,6 @@
 //! ASUS Aura USB motherboard/addressable/terminal protocol.
 
+use std::borrow::Cow;
 use std::sync::RwLock;
 use std::time::Duration;
 
@@ -213,16 +214,19 @@ impl AuraUsbProtocol {
         usize::try_from(self.total_leds()).unwrap_or_default()
     }
 
-    fn normalize_frame_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_frame_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         let expected = self.current_total_leds();
         if expected == 0 {
-            return Vec::new();
+            return Cow::Borrowed(&[]);
+        }
+        if colors.len() == expected {
+            return Cow::Borrowed(colors);
         }
 
         let mut normalized = vec![[0_u8; 3]; expected];
         let copy_len = colors.len().min(expected);
         normalized[..copy_len].copy_from_slice(&colors[..copy_len]);
-        normalized
+        Cow::Owned(normalized)
     }
 
     fn resolved_argb_led_counts(&self, channel_count: usize) -> Vec<u32> {

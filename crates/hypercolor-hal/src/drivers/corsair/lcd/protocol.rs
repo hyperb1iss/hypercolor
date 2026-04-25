@@ -1,5 +1,6 @@
 //! Corsair LCD display streaming protocol.
 
+use std::borrow::Cow;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,7 @@ use hypercolor_types::device::{
 };
 
 use crate::drivers::corsair::framing::{
-    LCD_DATA_PER_PACKET, append_lcd_display_packet, build_lcd_report, pad_to,
+    LCD_DATA_PER_PACKET, LCD_PACKET_SIZE, append_lcd_display_packet, build_lcd_report,
 };
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
@@ -130,16 +131,6 @@ impl CorsairLcdProtocol {
         }
     }
 
-    fn bulk_command(data: Vec<u8>) -> ProtocolCommand {
-        ProtocolCommand {
-            data,
-            expects_response: false,
-            response_delay: Duration::ZERO,
-            post_delay: Duration::ZERO,
-            transfer_type: TransferType::Bulk,
-        }
-    }
-
     fn keepalive_due(&self) -> bool {
         self.last_keepalive_at
             .read()
@@ -193,16 +184,19 @@ impl CorsairLcdProtocol {
         Self::hid_report(&payload, true)
     }
 
-    fn normalize_ring_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_ring_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         let expected = usize::try_from(self.ring_led_count).unwrap_or_default();
         if expected == 0 {
-            return Vec::new();
+            return Cow::Borrowed(&[]);
+        }
+        if colors.len() == expected {
+            return Cow::Borrowed(colors);
         }
 
         let mut normalized = vec![[0_u8; 3]; expected];
         let copy_len = colors.len().min(expected);
         normalized[..copy_len].copy_from_slice(&colors[..copy_len]);
-        normalized
+        Cow::Owned(normalized)
     }
 }
 
@@ -227,19 +221,37 @@ impl Protocol for CorsairLcdProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         if self.ring_led_count == 0 {
-            return Vec::new();
+            commands.truncate(0);
+            return;
         }
 
         let normalized = self.normalize_ring_colors(colors);
-        let mut payload = Vec::with_capacity(normalized.len().saturating_mul(3).saturating_add(3));
-        payload.extend_from_slice(&[0x02, 0x07, self.data_zone_byte]);
-        payload.extend(
-            normalized
-                .iter()
-                .flat_map(|color| [color[0], color[1], color[2]]),
+        let mut buffer = CommandBuffer::new(commands);
+        buffer.push_fill(
+            false,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Bulk,
+            |packet| {
+                packet.resize(LCD_PACKET_SIZE, 0);
+                packet[0] = 0x02;
+                packet[1] = 0x07;
+                packet[2] = self.data_zone_byte;
+
+                for (index, color) in normalized.iter().enumerate() {
+                    let offset = 3 + index * 3;
+                    packet[offset..offset + 3].copy_from_slice(color);
+                }
+            },
         );
-        vec![Self::bulk_command(pad_to(&payload, 1_024))]
+        buffer.finish();
     }
 
     fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {

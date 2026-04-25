@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use hypercolor_hal::drivers::push2::{Push2Protocol, build_push2_protocol};
 use hypercolor_hal::protocol::{Protocol, TransferType};
+use hypercolor_types::device::{DisplayFrameFormat, DisplayFramePayload};
 use image::{ColorType, ImageEncoder, RgbImage, codecs::jpeg::JpegEncoder};
 
 const PUSH2_DISPLAY_WIDTH: usize = 960;
@@ -209,6 +210,37 @@ fn solid_red_frame_encodes_to_expected_rgb565_pattern() {
     assert_eq!(
         first_pixel, &expected,
         "solid red first pixel should be RGB565 0x001F XOR'd with mask"
+    );
+}
+
+#[test]
+fn raw_rgb_frame_encodes_without_jpeg_decode() {
+    let protocol = Push2Protocol::new();
+    let rgb = vec![255; PUSH2_DISPLAY_WIDTH * PUSH2_DISPLAY_HEIGHT * 3];
+    let mut commands = Vec::new();
+
+    protocol
+        .encode_display_payload_into(
+            DisplayFramePayload {
+                format: DisplayFrameFormat::Rgb,
+                width: 960,
+                height: 160,
+                data: &rgb,
+            },
+            &mut commands,
+        )
+        .expect("raw RGB display payload should encode");
+
+    let expected = 1 + expected_chunk_count();
+    assert_eq!(commands.len(), expected);
+    assert_eq!(&commands[0].data[..4], &HEADER_MAGIC);
+    assert_eq!(
+        commands
+            .iter()
+            .skip(1)
+            .map(|command| command.data.len())
+            .sum::<usize>(),
+        TOTAL_FRAME_BYTES
     );
 }
 

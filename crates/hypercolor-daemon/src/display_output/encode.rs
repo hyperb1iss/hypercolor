@@ -14,6 +14,7 @@ use hypercolor_core::blend_math::{
     screen_blend,
 };
 use hypercolor_core::bus::CanvasFrame;
+use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::scene::DisplayFaceBlendMode;
 
 use super::render::{
@@ -24,6 +25,12 @@ use super::{DisplayGeometry, DisplayViewport};
 
 const JPEG_QUALITY: u8 = 85;
 const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
+
+pub(super) struct EncodedDisplayFrame {
+    pub format: DisplayFrameFormat,
+    pub data: Vec<u8>,
+    pub preview_jpeg: Option<Vec<u8>>,
+}
 
 pub(super) struct DisplayEncodeState {
     pub rgb_buffer: Vec<u8>,
@@ -67,12 +74,14 @@ pub(super) fn encode_canvas_frame(
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
-) -> Result<Vec<u8>> {
+) -> Result<EncodedDisplayFrame> {
     let brightness_factor = display_brightness_factor(brightness);
     if brightness_factor == 0 {
         prepare_black_frame(geometry, &mut encode_state.rgb_buffer);
-        return encode_rgb_to_jpeg(geometry, encode_state);
+        return finish_rgb_frame(geometry, frame_format, include_preview_jpeg, encode_state);
     }
 
     let use_brightness_lut = brightness_factor < u16::from(u8::MAX);
@@ -136,9 +145,9 @@ pub(super) fn encode_canvas_frame(
     }
 
     if used_fast_path {
-        encode_rgba_to_jpeg(geometry, encode_state)
+        finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
     } else {
-        encode_rgb_to_jpeg(geometry, encode_state)
+        finish_rgb_frame(geometry, frame_format, include_preview_jpeg, encode_state)
     }
 }
 
@@ -150,8 +159,10 @@ pub(super) fn encode_face_scene_blend(
     brightness: f32,
     face_blend_mode: DisplayFaceBlendMode,
     face_opacity: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
-) -> Result<Vec<u8>> {
+) -> Result<EncodedDisplayFrame> {
     if let Some(scene_source) = scene_source {
         render_canvas_frame_rgba(scene_source, viewport, geometry, encode_state, false)?;
     } else {
@@ -165,7 +176,13 @@ pub(super) fn encode_face_scene_blend(
         face_blend_mode,
         face_opacity,
     );
-    encode_prepared_rgba_frame(geometry, brightness, encode_state)
+    encode_prepared_rgba_frame(
+        geometry,
+        brightness,
+        frame_format,
+        include_preview_jpeg,
+        encode_state,
+    )
 }
 
 fn render_canvas_frame_rgba(
@@ -269,12 +286,14 @@ fn render_direct_canvas_frame_rgba(
 pub(super) fn encode_prepared_rgba_frame(
     geometry: &DisplayGeometry,
     brightness: f32,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
-) -> Result<Vec<u8>> {
+) -> Result<EncodedDisplayFrame> {
     let brightness_factor = display_brightness_factor(brightness);
     if brightness_factor == 0 {
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
-        return encode_rgba_to_jpeg(geometry, encode_state);
+        return finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state);
     }
 
     refresh_display_brightness_lut(encode_state, brightness_factor);
@@ -287,7 +306,7 @@ pub(super) fn encode_prepared_rgba_frame(
         );
     }
 
-    encode_rgba_to_jpeg(geometry, encode_state)
+    finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
 fn apply_display_brightness_rgba(rgba_buffer: &mut [u8], brightness_lut: &[u8; 256]) {
@@ -296,6 +315,85 @@ fn apply_display_brightness_rgba(rgba_buffer: &mut [u8], brightness_lut: &[u8; 2
         pixel[1] = brightness_lut[usize::from(pixel[1])];
         pixel[2] = brightness_lut[usize::from(pixel[2])];
     }
+}
+
+fn finish_rgb_frame(
+    geometry: &DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    match frame_format {
+        DisplayFrameFormat::Jpeg => Ok(EncodedDisplayFrame {
+            format: DisplayFrameFormat::Jpeg,
+            data: encode_rgb_to_jpeg(geometry, encode_state)?,
+            preview_jpeg: None,
+        }),
+        DisplayFrameFormat::Rgb => {
+            let preview_jpeg = include_preview_jpeg
+                .then(|| encode_rgb_to_jpeg(geometry, encode_state))
+                .transpose()?;
+            Ok(EncodedDisplayFrame {
+                format: DisplayFrameFormat::Rgb,
+                data: take_rgb_frame_data(geometry, encode_state)?,
+                preview_jpeg,
+            })
+        }
+    }
+}
+
+fn finish_rgba_frame(
+    geometry: &DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    match frame_format {
+        DisplayFrameFormat::Jpeg => Ok(EncodedDisplayFrame {
+            format: DisplayFrameFormat::Jpeg,
+            data: encode_rgba_to_jpeg(geometry, encode_state)?,
+            preview_jpeg: None,
+        }),
+        DisplayFrameFormat::Rgb => {
+            let preview_jpeg = include_preview_jpeg
+                .then(|| encode_rgba_to_jpeg(geometry, encode_state))
+                .transpose()?;
+            copy_rgba_to_rgb(geometry, encode_state)?;
+            Ok(EncodedDisplayFrame {
+                format: DisplayFrameFormat::Rgb,
+                data: take_rgb_frame_data(geometry, encode_state)?,
+                preview_jpeg,
+            })
+        }
+    }
+}
+
+fn take_rgb_frame_data(
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    let required_len =
+        rgb_buffer_len(geometry.width, geometry.height).context("display RGB buffer overflow")?;
+    let mut data = std::mem::take(&mut encode_state.rgb_buffer);
+    data.truncate(required_len);
+    Ok(data)
+}
+
+fn copy_rgba_to_rgb(
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<()> {
+    let required_len =
+        rgb_buffer_len(geometry.width, geometry.height).context("display RGB buffer overflow")?;
+    encode_state.rgb_buffer.resize(required_len, 0);
+    for (rgb, rgba) in encode_state
+        .rgb_buffer
+        .chunks_exact_mut(3)
+        .zip(encode_state.rgba_buffer.chunks_exact(4))
+    {
+        rgb.copy_from_slice(&rgba[..3]);
+    }
+    Ok(())
 }
 
 fn encode_rgb_to_jpeg(

@@ -72,6 +72,30 @@ impl Push2DisplayEncoder {
         self.cached_jpeg.extend_from_slice(jpeg_data);
         Some(())
     }
+
+    pub(super) fn encode_display_frame_from_rgb(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgb_data: &[u8],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Option<()> {
+        if width != u32::try_from(PUSH2_DISPLAY_WIDTH).ok()?
+            || height != u32::try_from(PUSH2_DISPLAY_HEIGHT).ok()?
+        {
+            return None;
+        }
+        let expected_len = PUSH2_DISPLAY_WIDTH
+            .checked_mul(PUSH2_DISPLAY_HEIGHT)?
+            .checked_mul(3)?;
+        if rgb_data.len() != expected_len {
+            return None;
+        }
+
+        self.cached_jpeg.clear();
+        build_display_commands(rgb_data, commands);
+        Some(())
+    }
 }
 
 fn encode_display_frame_uncached(

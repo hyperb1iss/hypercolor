@@ -21,7 +21,7 @@ use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
-use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
@@ -91,6 +91,8 @@ struct DisplayTarget {
     target_fps: u32,
     brightness: f32,
     geometry: DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    preview_subscribed: bool,
     canvas_source: DisplayCanvasSource,
     group_canvas_sender: Option<watch::Sender<CanvasFrame>>,
     display_target: Option<DisplayFaceTarget>,
@@ -104,6 +106,8 @@ pub(super) struct DisplayWorkerConfigSignature {
     target_fps: u32,
     brightness_bits: u32,
     geometry: DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    preview_subscribed: bool,
     canvas_source: DisplayCanvasSourceSignature,
     face_blend_mode: DisplayFaceBlendMode,
     face_opacity_bits: u32,
@@ -241,6 +245,8 @@ impl DisplayTarget {
             target_fps: self.target_fps,
             brightness_bits: self.brightness.to_bits(),
             geometry: self.geometry,
+            frame_format: self.frame_format,
+            preview_subscribed: self.preview_subscribed,
             canvas_source: self.canvas_source.signature(),
             face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),
@@ -680,17 +686,24 @@ async fn display_targets(
         if is_simulator && !display_preview_subscribers.contains(&tracked.info.id) {
             continue;
         }
-        let Some(geometry) = display_geometry_for_device(&tracked.info.zones).or_else(|| {
-            tracked
-                .info
-                .capabilities
-                .display_resolution
-                .map(|(width, height)| DisplayGeometry {
-                    width,
-                    height,
-                    circular: false,
-                })
-        }) else {
+        let Some((geometry, frame_format)) =
+            display_target_geometry_for_device(&tracked.info.zones).or_else(|| {
+                tracked
+                    .info
+                    .capabilities
+                    .display_resolution
+                    .map(|(width, height)| {
+                        (
+                            DisplayGeometry {
+                                width,
+                                height,
+                                circular: false,
+                            },
+                            DisplayFrameFormat::Jpeg,
+                        )
+                    })
+            })
+        else {
             continue;
         };
         let has_non_display_led_zones = tracked.info.zones.iter().any(|zone| {
@@ -738,6 +751,8 @@ async fn display_targets(
             ),
             brightness: tracked.user_settings.brightness,
             geometry,
+            frame_format,
+            preview_subscribed: display_preview_subscribers.contains(&tracked.info.id),
             canvas_source,
             group_canvas_sender,
             display_target,
@@ -759,19 +774,22 @@ async fn display_targets(
     }
 }
 
-fn display_geometry_for_device(
+fn display_target_geometry_for_device(
     zones: &[hypercolor_types::device::ZoneInfo],
-) -> Option<DisplayGeometry> {
+) -> Option<(DisplayGeometry, DisplayFrameFormat)> {
     zones.iter().find_map(|zone| match zone.topology {
         DeviceTopologyHint::Display {
             width,
             height,
             circular,
-        } => Some(DisplayGeometry {
-            width,
-            height,
-            circular,
-        }),
+        } => Some((
+            DisplayGeometry {
+                width,
+                height,
+                circular,
+            },
+            DisplayFrameFormat::from_device_color_format(zone.color_format),
+        )),
         _ => None,
     })
 }
@@ -951,6 +969,8 @@ mod tests {
                 height: 2,
                 circular: false,
             },
+            frame_format: DisplayFrameFormat::Jpeg,
+            preview_subscribed: false,
             canvas_source: DisplayCanvasSource::GroupDirect {
                 group_id: RenderGroupId::new(),
             },
