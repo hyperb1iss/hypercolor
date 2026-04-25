@@ -397,10 +397,9 @@ pub(crate) async fn execute_frame(
         performance.record_frame(frame_metrics);
     }
 
-    report_active_frame_completion(
-        FrameCompletionReport::new(frame_interval_us, frame_metrics, &write_stats),
-        &write_stats.errors,
-    );
+    let completion_report =
+        FrameCompletionReport::new(frame_interval_us, frame_metrics, &write_stats);
+    report_active_frame_completion(&completion_report, &write_stats.errors);
 
     let (next_wake, next_skip_decision) = {
         let mut rl = state.render_loop.write().await;

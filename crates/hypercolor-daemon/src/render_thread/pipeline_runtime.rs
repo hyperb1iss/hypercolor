@@ -858,6 +858,14 @@ pub(crate) struct RenderSurfaceSnapshot {
     pub(crate) scene_pool_grown_slots: u32,
     /// Same gauge summed across per-group direct-canvas pools.
     pub(crate) direct_pool_grown_slots: u32,
+    pub(crate) scene_pool_slot_count: u32,
+    pub(crate) scene_pool_max_slots: u32,
+    pub(crate) direct_pool_slot_count: u32,
+    pub(crate) direct_pool_max_slots: u32,
+    pub(crate) scene_pool_shared_published_slots: u32,
+    pub(crate) scene_pool_max_ref_count: u32,
+    pub(crate) direct_pool_shared_published_slots: u32,
+    pub(crate) direct_pool_max_ref_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -961,6 +969,22 @@ impl RenderCaches {
             self.render_group_runtime.scene_surface_pool_grown_slots();
         snapshot.direct_pool_grown_slots =
             self.render_group_runtime.direct_surface_pool_grown_slots();
+        snapshot.scene_pool_slot_count = self.render_group_runtime.scene_surface_pool_slot_count();
+        snapshot.scene_pool_max_slots = self.render_group_runtime.scene_surface_pool_max_slots();
+        snapshot.direct_pool_slot_count =
+            self.render_group_runtime.direct_surface_pool_slot_count();
+        snapshot.direct_pool_max_slots = self.render_group_runtime.direct_surface_pool_max_slots();
+        snapshot.scene_pool_shared_published_slots = self
+            .render_group_runtime
+            .scene_surface_pool_shared_published_slots();
+        snapshot.scene_pool_max_ref_count =
+            self.render_group_runtime.scene_surface_pool_max_ref_count();
+        snapshot.direct_pool_shared_published_slots = self
+            .render_group_runtime
+            .direct_surface_pool_shared_published_slots();
+        snapshot.direct_pool_max_ref_count = self
+            .render_group_runtime
+            .direct_surface_pool_max_ref_count();
 
         snapshot
     }

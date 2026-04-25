@@ -138,17 +138,20 @@ pub fn append_lcd_display_packet(
     packet_number: u8,
     payload: &[u8],
 ) {
-    let mut packet = LcdDisplayPacket::new_zeroed();
-    packet.command = 0x02;
-    packet.sub_command = 0x05;
-    packet.zone = zone_byte;
-    packet.is_final = u8::from(final_packet);
-    packet.packet_number = packet_number;
-    packet.data_length = U16::new(u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX));
-
+    buffer.resize(LCD_PACKET_SIZE, 0);
+    buffer[0] = 0x02;
+    buffer[1] = 0x05;
+    buffer[2] = zone_byte;
+    buffer[3] = u8::from(final_packet);
+    buffer[4] = packet_number;
+    buffer[5] = 0x00;
+    buffer[6..8].copy_from_slice(
+        &u16::try_from(LCD_DATA_PER_PACKET)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
     let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
-    packet.data[..copy_len].copy_from_slice(&payload[..copy_len]);
-    buffer.extend_from_slice(packet.as_bytes());
+    buffer[8..8 + copy_len].copy_from_slice(&payload[..copy_len]);
 }
 
 /// Build a fixed-size Corsair LCD HID feature report.

@@ -250,6 +250,14 @@ async fn metrics_message_includes_latest_frame_timeline() {
             direct_pool_saturation_reallocs: 0,
             scene_pool_grown_slots: 0,
             direct_pool_grown_slots: 0,
+            scene_pool_slot_count: 10,
+            scene_pool_max_slots: 12,
+            direct_pool_slot_count: 6,
+            direct_pool_max_slots: 8,
+            scene_pool_shared_published_slots: 9,
+            scene_pool_max_ref_count: 3,
+            direct_pool_shared_published_slots: 4,
+            direct_pool_max_ref_count: 2,
             canvas_receiver_count: 2,
             full_frame_copy_count: 1,
             full_frame_copy_bytes: 2_048,
@@ -310,6 +318,20 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 1);
     assert_eq!(json["pacing"]["output_error_frames"], 1);
     assert_eq!(json["pacing"]["full_frame_copy_frames"], 1);
+    assert_eq!(json["render_surfaces"]["scene_pool_slot_count"], 10);
+    assert_eq!(json["render_surfaces"]["scene_pool_max_slots"], 12);
+    assert_eq!(json["render_surfaces"]["direct_pool_slot_count"], 6);
+    assert_eq!(json["render_surfaces"]["direct_pool_max_slots"], 8);
+    assert_eq!(
+        json["render_surfaces"]["scene_pool_shared_published_slots"],
+        9
+    );
+    assert_eq!(json["render_surfaces"]["scene_pool_max_ref_count"], 3);
+    assert_eq!(
+        json["render_surfaces"]["direct_pool_shared_published_slots"],
+        4
+    );
+    assert_eq!(json["render_surfaces"]["direct_pool_max_ref_count"], 2);
     assert_eq!(json["effect_health"]["errors_total"], 2);
     assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
     assert_eq!(

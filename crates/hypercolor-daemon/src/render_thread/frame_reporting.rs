@@ -27,7 +27,7 @@ impl FrameCompletionReport {
 }
 
 pub(crate) fn report_active_frame_completion(
-    report: FrameCompletionReport,
+    report: &FrameCompletionReport,
     write_errors: &[String],
 ) {
     for err in write_errors {

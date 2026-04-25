@@ -614,6 +614,12 @@ impl Canvas {
         Arc::strong_count(&self.pixels) > 1
     }
 
+    /// Number of live handles sharing this pixel buffer.
+    #[must_use]
+    pub fn shared_ref_count(&self) -> usize {
+        Arc::strong_count(&self.pixels)
+    }
+
     /// Raw RGBA byte length for the current canvas dimensions.
     #[must_use]
     pub fn rgba_len(&self) -> usize {
@@ -1129,6 +1135,12 @@ pub struct SurfaceStateCounts {
     pub published: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SurfaceSharingCounts {
+    pub shared_published: usize,
+    pub max_ref_count: usize,
+}
+
 const DEFAULT_RENDER_SURFACE_SLOTS: usize = 3;
 
 /// Absolute floor for a pool's growth cap. Even a one-slot pool must be
@@ -1310,6 +1322,24 @@ impl RenderSurfacePool {
                 SurfaceState::Published => {
                     counts.published = counts.published.saturating_add(1);
                 }
+            }
+        }
+        counts
+    }
+
+    /// Count published slots still pinned by downstream surface handles.
+    #[must_use]
+    pub fn sharing_counts(&mut self) -> SurfaceSharingCounts {
+        self.reclaim_published_slots();
+        let mut counts = SurfaceSharingCounts::default();
+        for slot in &self.slots {
+            if slot.state != SurfaceState::Published {
+                continue;
+            }
+            let ref_count = slot.canvas.shared_ref_count();
+            counts.max_ref_count = counts.max_ref_count.max(ref_count);
+            if ref_count > 1 {
+                counts.shared_published = counts.shared_published.saturating_add(1);
             }
         }
         counts

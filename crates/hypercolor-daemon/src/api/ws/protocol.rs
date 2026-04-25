@@ -903,6 +903,14 @@ pub(super) struct MetricsRenderSurfaces {
     pub(super) scene_pool_grown_slots: u32,
     /// Same gauge summed across per-group direct-canvas pools.
     pub(super) direct_pool_grown_slots: u32,
+    pub(super) scene_pool_slot_count: u32,
+    pub(super) scene_pool_max_slots: u32,
+    pub(super) direct_pool_slot_count: u32,
+    pub(super) direct_pool_max_slots: u32,
+    pub(super) scene_pool_shared_published_slots: u32,
+    pub(super) scene_pool_max_ref_count: u32,
+    pub(super) direct_pool_shared_published_slots: u32,
+    pub(super) direct_pool_max_ref_count: u32,
 }
 
 #[derive(Debug, Serialize)]

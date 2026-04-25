@@ -21,18 +21,20 @@ use super::micros_u32;
 use super::producer_queue::ProducerFrame;
 use super::scene_dependency::SceneDependencyKey;
 
-/// Slot count for the full-resolution scene surface pool. Sized to absorb
+/// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
 /// dispatch, and one in-flight JPEG encode per HTML-face worker. Undersizing
 /// forces `begin_dequeue` to reallocate a fresh canvas every frame whenever
 /// all slots are still shared downstream, which shows up as producer-stage
 /// stalls proportional to `canvas_width * canvas_height * 4` bytes.
-const SCENE_SURFACE_POOL_SLOTS: usize = 6;
+const SCENE_SURFACE_POOL_INITIAL_SLOTS: usize = 8;
+const SCENE_SURFACE_POOL_MAX_SLOTS: usize = 64;
 
-/// Slot count for per-group direct-canvas pools (HTML-face render groups).
+/// Initial slot count for per-group direct-canvas pools (HTML-face render groups).
 /// Same failure mode as the scene surface pool, but at smaller canvas sizes; still
 /// needs room for watch channel + in-flight display encode.
-const DIRECT_SURFACE_POOL_SLOTS: usize = 4;
+const DIRECT_SURFACE_POOL_INITIAL_SLOTS: usize = 6;
+const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
 
 #[derive(Clone)]
 pub(crate) struct GroupCanvasFrame {
@@ -125,14 +127,14 @@ impl RenderGroupRuntime {
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
-            // 6 slots absorbs typical downstream fan-out (watch channel +
+            // 8 slots absorbs typical downstream fan-out (watch channel +
             // display-output dispatch + one pin per display worker mid-
-            // encode). 3 is enough when the UI isn't running but starves
-            // as soon as HTML-face devices JPEG-encode in parallel,
-            // causing every dequeue to realloc a fresh full-res canvas.
-            scene_surface_pool: RenderSurfacePool::with_slot_count(
+            // encode). The higher cap lets preview/display bursts settle
+            // into a larger working set instead of reallocating per frame.
+            scene_surface_pool: RenderSurfacePool::with_slot_count_and_cap(
                 SurfaceDescriptor::rgba8888(scene_width, scene_height),
-                SCENE_SURFACE_POOL_SLOTS,
+                SCENE_SURFACE_POOL_INITIAL_SLOTS,
+                SCENE_SURFACE_POOL_MAX_SLOTS,
             ),
             reconciled_dependency_key: None,
             retained_frame: None,
@@ -182,6 +184,57 @@ impl RenderGroupRuntime {
             .values()
             .map(RenderSurfacePool::grown_slots)
             .sum()
+    }
+
+    #[must_use]
+    pub(crate) fn scene_surface_pool_slot_count(&self) -> u32 {
+        u32::try_from(self.scene_surface_pool.slot_count()).unwrap_or(u32::MAX)
+    }
+
+    #[must_use]
+    pub(crate) fn scene_surface_pool_max_slots(&self) -> u32 {
+        u32::try_from(self.scene_surface_pool.max_slots()).unwrap_or(u32::MAX)
+    }
+
+    #[must_use]
+    pub(crate) fn direct_surface_pool_slot_count(&self) -> u32 {
+        self.direct_surface_pools
+            .values()
+            .map(|pool| u32::try_from(pool.slot_count()).unwrap_or(u32::MAX))
+            .fold(0_u32, u32::saturating_add)
+    }
+
+    #[must_use]
+    pub(crate) fn direct_surface_pool_max_slots(&self) -> u32 {
+        self.direct_surface_pools
+            .values()
+            .map(|pool| u32::try_from(pool.max_slots()).unwrap_or(u32::MAX))
+            .fold(0_u32, u32::saturating_add)
+    }
+
+    pub(crate) fn scene_surface_pool_shared_published_slots(&mut self) -> u32 {
+        let counts = self.scene_surface_pool.sharing_counts();
+        u32::try_from(counts.shared_published).unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn scene_surface_pool_max_ref_count(&mut self) -> u32 {
+        let counts = self.scene_surface_pool.sharing_counts();
+        u32::try_from(counts.max_ref_count).unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn direct_surface_pool_shared_published_slots(&mut self) -> u32 {
+        self.direct_surface_pools
+            .values_mut()
+            .map(|pool| u32::try_from(pool.sharing_counts().shared_published).unwrap_or(u32::MAX))
+            .fold(0_u32, u32::saturating_add)
+    }
+
+    pub(crate) fn direct_surface_pool_max_ref_count(&mut self) -> u32 {
+        self.direct_surface_pools
+            .values_mut()
+            .map(|pool| u32::try_from(pool.sharing_counts().max_ref_count).unwrap_or(u32::MAX))
+            .max()
+            .unwrap_or_default()
     }
 
     pub(crate) fn reuse_scene(
@@ -445,7 +498,11 @@ impl RenderGroupRuntime {
         if needs_pool {
             self.direct_surface_pools.insert(
                 group.id,
-                RenderSurfacePool::with_slot_count(descriptor, DIRECT_SURFACE_POOL_SLOTS),
+                RenderSurfacePool::with_slot_count_and_cap(
+                    descriptor,
+                    DIRECT_SURFACE_POOL_INITIAL_SLOTS,
+                    DIRECT_SURFACE_POOL_MAX_SLOTS,
+                ),
             );
         }
     }

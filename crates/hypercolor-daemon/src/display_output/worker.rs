@@ -1,5 +1,7 @@
 //! Per-device display worker event loop.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -53,55 +55,41 @@ pub(super) struct DisplayWorkerHandle {
 }
 
 #[derive(Clone)]
-struct PendingDisplayFrame {
-    frames: DisplayWorkerFrameSet,
-    force_reason: Option<ForcedDisplayFrameReason>,
+enum PendingDisplayFrame {
+    Fresh(DisplayWorkerFrameSet),
+    StaticHold,
+    RetryAfterFailure(DisplayWorkerFrameSet),
 }
 
 impl PendingDisplayFrame {
     fn fresh(frames: DisplayWorkerFrameSet) -> Self {
-        Self {
-            frames,
-            force_reason: None,
-        }
-    }
-
-    fn static_hold(frames: DisplayWorkerFrameSet) -> Self {
-        Self {
-            frames,
-            force_reason: Some(ForcedDisplayFrameReason::StaticHold),
-        }
+        Self::Fresh(frames)
     }
 
     fn retry(frames: DisplayWorkerFrameSet) -> Self {
-        Self {
-            frames,
-            force_reason: Some(ForcedDisplayFrameReason::RetryAfterFailure),
-        }
+        Self::RetryAfterFailure(frames)
     }
 
     const fn force_send(&self) -> bool {
-        self.force_reason.is_some()
+        !matches!(self, Self::Fresh(_))
     }
 
     const fn is_retry(&self) -> bool {
-        matches!(
-            self.force_reason,
-            Some(ForcedDisplayFrameReason::RetryAfterFailure)
-        )
+        matches!(self, Self::RetryAfterFailure(_))
     }
-}
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ForcedDisplayFrameReason {
-    StaticHold,
-    RetryAfterFailure,
+    fn into_frames(self) -> Option<DisplayWorkerFrameSet> {
+        match self {
+            Self::Fresh(frames) | Self::RetryAfterFailure(frames) => Some(frames),
+            Self::StaticHold => None,
+        }
+    }
 }
 
 #[derive(Clone)]
 struct CapturedDisplaySource {
     identity: DisplaySourceIdentity,
-    snapshot: Arc<CanvasFrame>,
+    content_hash: u64,
 }
 
 #[derive(Clone)]
@@ -201,10 +189,9 @@ fn display_source_matches(
         (Some(captured), Some(source)) => {
             let source_identity = display_source_identity(source.as_ref());
             captured.identity == source_identity
-                || Arc::ptr_eq(&captured.snapshot, source)
-                || (captured.snapshot.width == source.width
-                    && captured.snapshot.height == source.height
-                    && captured.snapshot.rgba_bytes() == source.rgba_bytes())
+                || (captured.identity.width == source.width
+                    && captured.identity.height == source.height
+                    && captured.content_hash == display_source_content_hash(source.as_ref()))
         }
         _ => false,
     }
@@ -213,7 +200,7 @@ fn display_source_matches(
 fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedDisplaySource> {
     source.map(|source| CapturedDisplaySource {
         identity: display_source_identity(source.as_ref()),
-        snapshot: Arc::clone(source),
+        content_hash: display_source_content_hash(source.as_ref()),
     })
 }
 
@@ -224,6 +211,14 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
         width: source.width,
         height: source.height,
     }
+}
+
+fn display_source_content_hash(source: &CanvasFrame) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.width.hash(&mut hasher);
+    source.height.hash(&mut hasher);
+    source.rgba_bytes().hash(&mut hasher);
+    hasher.finish()
 }
 
 impl DisplayWorkerHandle {
@@ -293,7 +288,6 @@ async fn run_display_worker(
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
-    let mut last_delivered_frames = None::<DisplayWorkerFrameSet>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
@@ -334,11 +328,9 @@ async fn run_display_worker(
                         }
                         let _ = power_state.borrow_and_update();
                     }
-                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
-                        if should_refresh_static_hold(&power_state)
-                            && let Some(frames) = last_delivered_frames.as_ref()
-                        {
-                            pending = Some(PendingDisplayFrame::static_hold(frames.clone()));
+                        () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
+                        if should_refresh_static_hold(&power_state) && last_delivered_jpeg.is_some() {
+                            pending = Some(PendingDisplayFrame::StaticHold);
                         }
                     }
                 }
@@ -361,7 +353,7 @@ async fn run_display_worker(
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_frames.as_ref(),
+                last_delivered_jpeg.is_some(),
                 static_hold_refresh_interval,
             );
             continue;
@@ -399,7 +391,37 @@ async fn run_display_worker(
         };
         let force_send = pending_frame.force_send();
         let retry_attempt = pending_frame.is_retry();
-        let frames = pending_frame.frames;
+
+        let Some(frames) = pending_frame.into_frames() else {
+            if let Some(jpeg) = last_delivered_jpeg.as_ref() {
+                preview_frame_number = preview_frame_number.saturating_add(1);
+                publish_display_frame_snapshot(
+                    &display_frames,
+                    device_id,
+                    &target.geometry,
+                    preview_frame_number,
+                    Arc::clone(jpeg),
+                )
+                .await;
+                record_display_write_attempt(&display_frames, false).await;
+                let write_result = backend_io
+                    .write_display_frame_owned(device_id, Arc::clone(jpeg))
+                    .await;
+                if let Err(error) = write_result {
+                    record_display_write_failure(&display_frames).await;
+                    maybe_warn_display_error(&mut last_warned_at, &target, &error);
+                } else {
+                    record_display_write_success(&display_frames).await;
+                    delivered_frame_number = delivered_frame_number.saturating_add(1);
+                }
+            }
+            next_hold_refresh_at = static_hold_refresh_deadline(
+                &power_state,
+                last_delivered_jpeg.is_some(),
+                static_hold_refresh_interval,
+            );
+            continue;
+        };
 
         let zero_brightness_output = display_brightness_factor(target.brightness) == 0;
         let input_matches = last_delivered_input
@@ -456,10 +478,9 @@ async fn run_display_worker(
                 continue;
             }
             record_display_write_success(&display_frames).await;
-            last_delivered_frames = Some(frames);
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                last_delivered_frames.as_ref(),
+                last_delivered_jpeg.is_some(),
                 static_hold_refresh_interval,
             );
             delivered_frame_number = delivered_frame_number.saturating_add(1);
@@ -548,15 +569,7 @@ async fn run_display_worker(
         let write_result = backend_io
             .write_display_frame_owned(device_id, Arc::clone(&jpeg))
             .await;
-        let keep_cached_jpeg = zero_brightness_output || should_refresh_static_hold(&power_state);
-        if keep_cached_jpeg {
-            last_delivered_jpeg = Some(Arc::clone(&jpeg));
-        } else {
-            last_delivered_jpeg = None;
-        }
-        if !keep_cached_jpeg && let Some(reusable_jpeg) = Arc::into_inner(jpeg) {
-            encode_state.jpeg_buffer = reusable_jpeg;
-        }
+        last_delivered_jpeg = Some(Arc::clone(&jpeg));
         if let Err(error) = write_result {
             record_display_write_failure(&display_frames).await;
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
@@ -572,10 +585,9 @@ async fn run_display_worker(
         }
         record_display_write_success(&display_frames).await;
         last_delivered_input = Some(DisplayFrameInputState::capture(&frames, &target));
-        last_delivered_frames = Some(frames);
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
-            last_delivered_frames.as_ref(),
+            last_delivered_jpeg.is_some(),
             static_hold_refresh_interval,
         );
         delivered_frame_number = delivered_frame_number.saturating_add(1);
@@ -650,10 +662,10 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    last_delivered_source: Option<&DisplayWorkerFrameSet>,
+    has_cached_jpeg: bool,
     refresh_interval: Duration,
 ) -> Option<Instant> {
-    if !should_refresh_static_hold(power_state) || last_delivered_source.is_none() {
+    if !should_refresh_static_hold(power_state) || !has_cached_jpeg {
         return None;
     }
 
