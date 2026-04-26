@@ -18,12 +18,14 @@ use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
-    DaemonState, collect_unmapped_prefixed_layout_targets, default_config, install_signal_handlers,
-    load_config, parse_config_toml,
+    DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
+    default_config, install_signal_handlers, load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
-use hypercolor_types::config::{EffectErrorFallbackPolicy, RenderAccelerationMode};
+use hypercolor_types::config::{
+    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, RenderAccelerationMode,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
@@ -209,7 +211,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
     // When no explicit path is provided and no file exists at the default
     // location, load_config should succeed with defaults.
     let (config, _path) = load_config(None).await.expect("default config should load");
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
 }
@@ -1012,6 +1014,59 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
 
     let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:");
     assert_eq!(unmapped, vec!["wled:wall".to_owned()]);
+}
+
+#[test]
+fn collect_unmapped_driver_layout_targets_groups_missing_registered_driver_prefixes() {
+    let layout = SpatialLayout {
+        id: "layout_test".to_owned(),
+        name: "Test".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            test_zone("zone_usb", "usb:laptop"),
+            test_zone("zone_wled_mapped", "wled:desk"),
+            test_zone("zone_wled_missing", "wled:wall"),
+            test_zone("zone_wled_missing_dup", "wled:wall"),
+            test_zone("zone_hue_missing", "hue:bridge"),
+            test_zone("zone_nanoleaf_ignored", "nanoleaf:panels"),
+        ],
+
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let routing = BackendRoutingDebugSnapshot {
+        backend_ids: vec!["usb".to_owned(), "wled".to_owned()],
+        mapping_count: 2,
+        queue_count: 2,
+        mappings: vec![
+            LayoutRoutingDebugEntry {
+                layout_device_id: "usb:laptop".to_owned(),
+                backend_id: "usb".to_owned(),
+                device_id: "device_usb".to_owned(),
+                backend_registered: true,
+                queue_active: true,
+            },
+            LayoutRoutingDebugEntry {
+                layout_device_id: "wled:desk".to_owned(),
+                backend_id: "wled".to_owned(),
+                device_id: "device_wled".to_owned(),
+                backend_registered: true,
+                queue_active: true,
+            },
+        ],
+        orphaned_queues: Vec::<OrphanedQueueDebugEntry>::new(),
+    };
+    let driver_ids = vec!["hue".to_owned(), "wled".to_owned()];
+
+    let unmapped = collect_unmapped_driver_layout_targets(&layout, &routing, &driver_ids);
+
+    assert_eq!(unmapped.len(), 2);
+    assert_eq!(unmapped["hue"], vec!["hue:bridge".to_owned()]);
+    assert_eq!(unmapped["wled"], vec!["wled:wall".to_owned()]);
 }
 
 #[test]

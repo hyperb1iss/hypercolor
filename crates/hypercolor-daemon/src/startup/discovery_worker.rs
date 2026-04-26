@@ -1,6 +1,6 @@
 //! Background discovery worker — periodic device scans plus startup recovery retries.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -33,8 +33,8 @@ use crate::network::DaemonDriverHost;
 use crate::scene_transactions::SceneTransactionQueue;
 use hypercolor_core::scene::SceneManager;
 
-const STARTUP_WLED_RECOVERY_ATTEMPTS: usize = 3;
-const STARTUP_WLED_RECOVERY_INTERVAL_SECS: u64 = 5;
+const STARTUP_NETWORK_RECOVERY_ATTEMPTS: usize = 3;
+const STARTUP_NETWORK_RECOVERY_INTERVAL_SECS: u64 = 5;
 
 #[derive(Clone)]
 pub(super) struct DiscoveryWorkerContext {
@@ -153,51 +153,74 @@ impl DiscoveryWorkerContext {
         .await;
     }
 
-    pub(super) async fn run_startup_wled_recovery_scans(&self) {
+    pub(super) async fn run_startup_network_recovery_scans(&self) {
         let latest_config = Arc::clone(&self.config_manager.get());
-        if !should_retry_unmapped_wled_targets(&latest_config) {
-            return;
-        }
 
-        for attempt in 1..=STARTUP_WLED_RECOVERY_ATTEMPTS {
-            let unmapped = self.active_layout_unmapped_wled_targets().await;
-            if unmapped.is_empty() {
+        for attempt in 1..=STARTUP_NETWORK_RECOVERY_ATTEMPTS {
+            let unmapped_by_driver = self
+                .active_layout_unmapped_network_targets(&latest_config)
+                .await;
+            if unmapped_by_driver.is_empty() {
                 return;
             }
+            let backends = unmapped_by_driver
+                .keys()
+                .cloned()
+                .map(DiscoveryBackend::network)
+                .collect::<Vec<_>>();
+            let drivers = discovery::backend_names(&backends);
+            let unmapped_layout_device_ids = unmapped_by_driver
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
 
             info!(
                 attempt,
-                max_attempts = STARTUP_WLED_RECOVERY_ATTEMPTS,
-                retry_after_secs = STARTUP_WLED_RECOVERY_INTERVAL_SECS,
-                unmapped_layout_device_ids = ?unmapped,
-                "Active layout still has unmapped WLED targets after startup scan; retrying discovery"
+                max_attempts = STARTUP_NETWORK_RECOVERY_ATTEMPTS,
+                retry_after_secs = STARTUP_NETWORK_RECOVERY_INTERVAL_SECS,
+                drivers = ?drivers,
+                unmapped_layout_device_ids = ?unmapped_layout_device_ids,
+                "Active layout still has unmapped network targets after startup scan; retrying discovery"
             );
 
             tokio::time::sleep(std::time::Duration::from_secs(
-                STARTUP_WLED_RECOVERY_INTERVAL_SECS,
+                STARTUP_NETWORK_RECOVERY_INTERVAL_SECS,
             ))
             .await;
 
             self.run_scan_if_idle(
                 Arc::clone(&latest_config),
-                vec![DiscoveryBackend::network("wled")],
-                "Skipping startup WLED recovery scan; discovery already in progress",
+                backends,
+                "Skipping startup network recovery scan; discovery already in progress",
             )
             .await;
         }
 
-        let unmapped = self.active_layout_unmapped_wled_targets().await;
-        if !unmapped.is_empty() {
+        let unmapped_by_driver = self
+            .active_layout_unmapped_network_targets(&latest_config)
+            .await;
+        if !unmapped_by_driver.is_empty() {
+            let drivers = unmapped_by_driver.keys().cloned().collect::<Vec<_>>();
+            let unmapped_layout_device_ids = unmapped_by_driver
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
             warn!(
-                retry_attempts = STARTUP_WLED_RECOVERY_ATTEMPTS,
-                unmapped_layout_device_ids = ?unmapped,
+                retry_attempts = STARTUP_NETWORK_RECOVERY_ATTEMPTS,
+                drivers = ?drivers,
+                unmapped_layout_device_ids = ?unmapped_layout_device_ids,
                 scan_interval_secs = latest_config.discovery.scan_interval_secs.max(1),
-                "Startup recovery scans exhausted; active layout still has unmapped WLED targets"
+                "Startup recovery scans exhausted; active layout still has unmapped network targets"
             );
         }
     }
 
-    async fn active_layout_unmapped_wled_targets(&self) -> Vec<String> {
+    async fn active_layout_unmapped_network_targets(
+        &self,
+        config: &HypercolorConfig,
+    ) -> BTreeMap<String, Vec<String>> {
         let layout = {
             let spatial = self.spatial_engine.read().await;
             spatial.layout().as_ref().clone()
@@ -206,8 +229,17 @@ impl DiscoveryWorkerContext {
             let manager = self.backend_manager.lock().await;
             manager.routing_snapshot()
         };
+        let driver_ids = self
+            .driver_registry
+            .discovery_drivers()
+            .into_iter()
+            .filter_map(|driver| {
+                let id = driver.descriptor().id;
+                crate::network::driver_enabled(config, id).then(|| id.to_owned())
+            })
+            .collect::<Vec<_>>();
 
-        collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:")
+        collect_unmapped_driver_layout_targets(&layout, &routing, &driver_ids)
     }
 }
 
@@ -239,14 +271,41 @@ pub fn collect_unmapped_prefixed_layout_targets(
     unmapped
 }
 
-fn should_retry_unmapped_wled_targets(config: &HypercolorConfig) -> bool {
-    let wled_enabled = config.drivers.get("wled").is_none_or(|entry| entry.enabled);
-    let has_known_ips = config
-        .drivers
-        .get("wled")
-        .and_then(|entry| entry.settings.get("known_ips"))
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|ips| !ips.is_empty());
+#[doc(hidden)]
+#[must_use]
+pub fn collect_unmapped_driver_layout_targets(
+    layout: &SpatialLayout,
+    routing: &BackendRoutingDebugSnapshot,
+    driver_ids: &[String],
+) -> BTreeMap<String, Vec<String>> {
+    let mapped_ids: HashSet<&str> = routing
+        .mappings
+        .iter()
+        .map(|entry| entry.layout_device_id.as_str())
+        .collect();
+    let driver_ids = driver_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut unmapped = BTreeMap::<String, Vec<String>>::new();
 
-    wled_enabled && config.discovery.mdns_enabled && !has_known_ips
+    for zone in &layout.zones {
+        let layout_device_id = zone.device_id.as_str();
+        let Some((driver_id, _)) = layout_device_id.split_once(':') else {
+            continue;
+        };
+        if driver_ids.contains(driver_id) && !mapped_ids.contains(layout_device_id) {
+            unmapped
+                .entry(driver_id.to_owned())
+                .or_default()
+                .push(zone.device_id.clone());
+        }
+    }
+
+    for targets in unmapped.values_mut() {
+        targets.sort();
+        targets.dedup();
+    }
+
+    unmapped
 }

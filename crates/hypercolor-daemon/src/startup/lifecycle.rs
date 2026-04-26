@@ -625,7 +625,7 @@ impl DaemonState {
                     "Skipping initial discovery scan; scan already in progress",
                 )
                 .await;
-            worker.run_startup_wled_recovery_scans().await;
+            worker.run_startup_network_recovery_scans().await;
 
             let mut ticker = tokio::time::interval(scan_interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

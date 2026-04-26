@@ -64,7 +64,9 @@ pub(crate) use acceleration::{
     resolve_compositor_acceleration_mode,
 };
 pub use config::{default_config, load_config, parse_config_toml};
-pub use discovery_worker::collect_unmapped_prefixed_layout_targets;
+pub use discovery_worker::{
+    collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
+};
 pub use signals::install_signal_handlers;
 
 /// The top-level daemon state, holding all subsystems.
