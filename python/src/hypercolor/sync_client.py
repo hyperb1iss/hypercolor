@@ -33,7 +33,7 @@ from .models.system import HealthStatus, SystemState
 
 
 class SyncHypercolorClient:
-    """Sync adapter around :class:`HypercolorClient` for CLI and scripts."""
+    """Sync adapter around :class:`HypercolorClient` for scripts."""
 
     def __init__(
         self, *args: Any, transport: httpx.AsyncBaseTransport | None = None, **kwargs: Any

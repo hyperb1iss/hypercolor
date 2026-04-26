@@ -1,6 +1,6 @@
 # Hypercolor Python
 
-Async Python client, CLI, and WebSocket helpers for the Hypercolor daemon.
+Async Python client and WebSocket helpers for the Hypercolor daemon.
 
 This package lives inside the main Hypercolor repository at `python/`. It is a
 standalone uv project, so Python contributors can work here without touching the
@@ -21,14 +21,6 @@ Or use the local recipes:
 ```bash
 just verify
 just fix
-```
-
-## CLI
-
-```bash
-uv run hypercolor status
-uv run hypercolor device list
-uv run hypercolor effect list
 ```
 
 ## Library

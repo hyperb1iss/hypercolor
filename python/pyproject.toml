@@ -5,12 +5,12 @@ build-backend = "uv_build"
 [project]
 name = "hypercolor"
 version = "0.1.0"
-description = "Async Python client and CLI for the Hypercolor daemon"
+description = "Async Python client for the Hypercolor daemon"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.13"
 authors = [{ name = "Stefanie Jane", email = "stef@hyperbliss.tech" }]
-keywords = ["hypercolor", "rgb", "lighting", "cli", "websocket"]
+keywords = ["hypercolor", "rgb", "lighting", "websocket"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
@@ -23,8 +23,6 @@ classifiers = [
 dependencies = [
     "httpx>=0.28.1",
     "msgspec>=0.21.1",
-    "rich>=15.0.0",
-    "typer>=0.24.2",
     "websockets>=16.0",
 ]
 
@@ -51,10 +49,6 @@ types = [
 Homepage = "https://github.com/hyperb1iss/hypercolor"
 Repository = "https://github.com/hyperb1iss/hypercolor/tree/main/python"
 Issues = "https://github.com/hyperb1iss/hypercolor/issues"
-
-[project.scripts]
-hypercolor = "hypercolor.cli.app:run"
-hyper = "hypercolor.cli.app:run"
 
 [tool.uv]
 package = true
@@ -106,7 +100,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"src/hypercolor/cli/app.py" = ["B008"]
 "tests/**/*.py" = ["PLR2004", "S101"]
 
 [tool.ruff.lint.isort]
