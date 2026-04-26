@@ -12,6 +12,7 @@ use hypercolor_types::device::DriverModuleDescriptor;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
+use crate::network;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DriverListResponse {
@@ -49,10 +50,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         .module_descriptors()
         .into_iter()
         .map(|descriptor| {
-            let enabled = config
-                .drivers
-                .get(&descriptor.id)
-                .map_or(descriptor.default_enabled, |entry| entry.enabled);
+            let enabled = network::module_enabled(&config, &descriptor);
             let config_key = format!("drivers.{}", descriptor.id);
 
             DriverSummary {

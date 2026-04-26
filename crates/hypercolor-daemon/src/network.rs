@@ -6,7 +6,8 @@ use anyhow::Result;
 use hypercolor_core::device::BackendManager;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_network::DriverRegistry;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
+use hypercolor_types::device::DriverModuleDescriptor;
 
 pub use host::DaemonDriverHost;
 pub use hypercolor_driver_builtin::build_driver_registry as build_builtin_driver_registry;
@@ -18,13 +19,29 @@ pub use hypercolor_driver_builtin::{
     resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
 };
 
-/// Whether a built-in network driver is enabled by the active config.
+/// Whether a network driver is enabled by the active config.
 #[must_use]
 pub fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
+    driver_enabled_with_default(config, driver_id, true)
+}
+
+/// Whether a driver is enabled after applying the module default.
+#[must_use]
+pub fn driver_enabled_with_default(
+    config: &HypercolorConfig,
+    driver_id: &str,
+    default_enabled: bool,
+) -> bool {
     config
         .drivers
         .get(driver_id)
-        .is_none_or(|entry| entry.enabled)
+        .map_or(default_enabled, |entry| entry.enabled)
+}
+
+/// Whether a driver module descriptor is enabled by the active config.
+#[must_use]
+pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescriptor) -> bool {
+    driver_enabled_with_default(config, &descriptor.id, descriptor.default_enabled)
 }
 
 /// Config key responsible for enabling a built-in network driver.
@@ -33,19 +50,13 @@ pub fn driver_config_flag(driver_id: &str) -> String {
     format!("drivers.{driver_id}.enabled")
 }
 
-/// Resolve the active config entry for a driver.
+/// Resolve one driver's config entry, falling back to an empty default entry.
 #[must_use]
-pub fn driver_config_view<'a>(
-    config: &'a HypercolorConfig,
-    driver_id: &'a str,
-) -> Option<DriverConfigView<'a>> {
-    config
-        .drivers
-        .get(driver_id)
-        .map(|entry| DriverConfigView { driver_id, entry })
+pub fn driver_config_entry(config: &HypercolorConfig, driver_id: &str) -> DriverConfigEntry {
+    config.drivers.get(driver_id).cloned().unwrap_or_default()
 }
 
-/// Register all enabled built-in network backends with the backend manager.
+/// Register all enabled network backends with the backend manager.
 ///
 /// # Errors
 ///
@@ -57,15 +68,19 @@ pub fn register_enabled_backends(
     config: &HypercolorConfig,
 ) -> Result<()> {
     for driver_id in registry.ids() {
-        if !driver_enabled(config, &driver_id) {
-            continue;
-        }
-
         let Some(driver) = registry.get(&driver_id) else {
             continue;
         };
-        let Some(config_view) = driver_config_view(config, &driver_id) else {
+
+        let descriptor = driver.module_descriptor();
+        if !module_enabled(config, &descriptor) {
             continue;
+        }
+
+        let config_entry = driver_config_entry(config, &driver_id);
+        let config_view = DriverConfigView {
+            driver_id: &driver_id,
+            entry: &config_entry,
         };
         let Some(backend) = driver.build_backend(host, config_view)? else {
             continue;

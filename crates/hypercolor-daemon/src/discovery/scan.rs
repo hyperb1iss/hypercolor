@@ -367,11 +367,7 @@ pub async fn execute_discovery_scan(
                     );
                     continue;
                 }
-                let Some(config_view) = network::driver_config_view(&config, &driver_id) else {
-                    warn!(driver_id, "skipping network driver without config entry");
-                    continue;
-                };
-                let driver_config = config_view.entry.clone();
+                let driver_config = network::driver_config_entry(&config, &driver_id);
                 orchestrator.add_scanner(Box::new(NetworkDriverScanner::new(
                     driver,
                     driver_id,
