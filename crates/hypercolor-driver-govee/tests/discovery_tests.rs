@@ -4,8 +4,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    build_cloud_discovered_device, build_device_info, merge_cloud_inventory, parse_scan_response,
-    resolve_govee_probe_devices_from_sources,
+    GoveeKnownDevice, build_cloud_discovered_device, build_device_info, merge_cloud_inventory,
+    parse_scan_response, resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{
@@ -67,6 +67,26 @@ fn resolve_probe_devices_merges_config_and_tracked_metadata() {
     assert_eq!(resolved[1].ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)));
     assert_eq!(resolved[1].sku.as_deref(), Some("H6163"));
     assert_eq!(resolved[1].mac.as_deref(), Some("aabbccddeeff"));
+}
+
+#[test]
+fn resolve_probe_devices_merges_cached_runtime_hints() {
+    let config = GoveeConfig {
+        known_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))],
+        ..GoveeConfig::default()
+    };
+    let cached = vec![GoveeKnownDevice {
+        ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+        sku: Some("H619A".to_owned()),
+        mac: Some("001122334455".to_owned()),
+    }];
+
+    let resolved = resolve_govee_probe_devices(&config, &[], &cached);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+    assert_eq!(resolved[0].sku.as_deref(), Some("H619A"));
+    assert_eq!(resolved[0].mac.as_deref(), Some("001122334455"));
 }
 
 #[test]

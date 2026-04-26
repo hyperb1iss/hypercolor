@@ -1,19 +1,19 @@
 //! Govee network driver.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_core::device::{DeviceBackend, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
-    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
-    TrackedDeviceCtx,
+    DiscoveryResult, DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
+    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{
@@ -30,12 +30,14 @@ pub mod lan;
 
 use backend::GoveeBackend;
 use cloud::{CloudClient, V1Device};
-use lan::discovery::{GoveeKnownDevice, GoveeLanScanner, profile_led_count, topology_for_family};
+use lan::discovery::{GoveeLanScanner, profile_led_count, topology_for_family};
 
 pub use capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_sku_count, profile_for_sku,
 };
-pub use lan::discovery::{GoveeLanDevice, build_device_info, parse_scan_response};
+pub use lan::discovery::{
+    GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,
+};
 
 const GOVEE_ACCOUNT_CREDENTIAL_KEY: &str = "govee:account";
 const GOVEE_PAIRING_INSTRUCTIONS: &[&str] = &[
@@ -77,6 +79,13 @@ impl GoveeDriverFactory {
             None => CloudClient::new(api_key),
         }
     }
+
+    fn resolved_config(&self, config: DriverConfigView<'_>) -> Result<GoveeConfig> {
+        if config.entry.settings.is_empty() {
+            return Ok(self.config.clone());
+        }
+        config.parse_settings()
+    }
 }
 
 impl NetworkDriverFactory for GoveeDriverFactory {
@@ -84,8 +93,27 @@ impl NetworkDriverFactory for GoveeDriverFactory {
         &DESCRIPTOR
     }
 
-    fn build_backend(&self, _host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(GoveeBackend::new(self.config.clone()))))
+    fn build_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let mut backend = GoveeBackend::new(self.resolved_config(config)?);
+        for device in load_cached_probe_devices(host)? {
+            let (Some(sku), Some(mac)) = (device.sku, device.mac) else {
+                continue;
+            };
+            let profile = profile_for_sku(&sku).unwrap_or_else(|| fallback_profile(&sku));
+            backend.remember_device(GoveeLanDevice {
+                ip: device.ip,
+                sku,
+                mac,
+                name: profile.name.to_owned(),
+                firmware_version: None,
+            });
+        }
+
+        Ok(Some(Box::new(backend)))
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -93,6 +121,10 @@ impl NetworkDriverFactory for GoveeDriverFactory {
     }
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
+        Some(self)
+    }
+
+    fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
     }
 }
@@ -103,10 +135,13 @@ impl DiscoveryCapability for GoveeDriverFactory {
         &self,
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
+        config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
+        let config = self.resolved_config(config)?;
         let tracked_devices = host.discovery_state().tracked_devices("govee").await;
+        let cached_devices = load_cached_probe_devices(host)?;
         let known_devices =
-            resolve_govee_probe_devices_from_sources(&self.config, &tracked_devices);
+            resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
         let mut devices: Vec<_> = scanner
             .scan()
@@ -125,6 +160,24 @@ impl DiscoveryCapability for GoveeDriverFactory {
         }
 
         Ok(DiscoveryResult { devices })
+    }
+}
+
+#[async_trait]
+impl DriverRuntimeCacheProvider for GoveeDriverFactory {
+    async fn snapshot(
+        &self,
+        host: &dyn DriverHost,
+    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        let tracked_devices = host.discovery_state().tracked_devices("govee").await;
+        let probe_devices =
+            resolve_govee_probe_devices(&GoveeConfig::default(), &tracked_devices, &[]);
+
+        Ok(BTreeMap::from([(
+            "probe_devices".to_owned(),
+            serde_json::to_value(probe_devices)
+                .context("failed to serialize Govee probe devices")?,
+        )]))
     }
 }
 
@@ -245,6 +298,15 @@ pub fn resolve_govee_probe_devices_from_sources(
     config: &GoveeConfig,
     tracked_devices: &[DriverTrackedDevice],
 ) -> Vec<GoveeKnownDevice> {
+    resolve_govee_probe_devices(config, tracked_devices, &[])
+}
+
+#[must_use]
+pub fn resolve_govee_probe_devices(
+    config: &GoveeConfig,
+    tracked_devices: &[DriverTrackedDevice],
+    cached_devices: &[GoveeKnownDevice],
+) -> Vec<GoveeKnownDevice> {
     let mut known_devices: HashMap<IpAddr, GoveeKnownDevice> = config
         .known_ips
         .iter()
@@ -252,6 +314,13 @@ pub fn resolve_govee_probe_devices_from_sources(
         .map(GoveeKnownDevice::from_ip)
         .map(|device| (device.ip, device))
         .collect();
+
+    for cached in cached_devices {
+        known_devices
+            .entry(cached.ip)
+            .and_modify(|existing| merge_known_device(existing, cached))
+            .or_insert_with(|| cached.clone());
+    }
 
     for tracked in tracked_devices {
         let Some(ip_raw) = tracked.metadata.get("ip") else {
@@ -271,20 +340,31 @@ pub fn resolve_govee_probe_devices_from_sources(
         };
         known_devices
             .entry(ip)
-            .and_modify(|existing| {
-                if existing.sku.is_none() {
-                    existing.sku.clone_from(&known.sku);
-                }
-                if existing.mac.is_none() {
-                    existing.mac.clone_from(&known.mac);
-                }
-            })
+            .and_modify(|existing| merge_known_device(existing, &known))
             .or_insert(known);
     }
 
     let mut resolved: Vec<_> = known_devices.into_values().collect();
     resolved.sort_by_key(|device| device.ip);
     resolved
+}
+
+fn load_cached_probe_devices(host: &dyn DriverHost) -> Result<Vec<GoveeKnownDevice>> {
+    host.discovery_state()
+        .load_cached_json("govee", "probe_devices")?
+        .map(serde_json::from_value)
+        .transpose()
+        .map(Option::unwrap_or_default)
+        .map_err(Into::into)
+}
+
+fn merge_known_device(existing: &mut GoveeKnownDevice, incoming: &GoveeKnownDevice) {
+    if existing.sku.is_none() {
+        existing.sku.clone_from(&incoming.sku);
+    }
+    if existing.mac.is_none() {
+        existing.mac.clone_from(&incoming.mac);
+    }
 }
 
 pub fn merge_cloud_inventory(
