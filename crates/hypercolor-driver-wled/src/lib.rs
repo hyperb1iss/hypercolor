@@ -31,6 +31,12 @@ const FIELD_KNOWN_IPS: &str = "known_ips";
 const FIELD_DEFAULT_PROTOCOL: &str = "default_protocol";
 const FIELD_REALTIME_HTTP_ENABLED: &str = "realtime_http_enabled";
 const FIELD_DEDUP_THRESHOLD: &str = "dedup_threshold";
+const DEVICE_FIELD_IP: &str = "ip";
+const DEVICE_FIELD_HOSTNAME: &str = "hostname";
+const DEVICE_FIELD_FIRMWARE_VERSION: &str = "firmware_version";
+const DEVICE_FIELD_LED_COUNT: &str = "led_count";
+const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
+const DEVICE_FIELD_RGBW: &str = "rgbw";
 
 /// Default protocol for WLED realtime streaming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -173,8 +179,8 @@ impl DriverControlProvider for WledDriverFactory {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<Option<ControlSurfaceDocument>> {
-        let _ = (host, device);
-        Ok(None)
+        let _ = host;
+        Ok(Some(wled_device_control_surface(device)))
     }
 
     async fn validate_changes(
@@ -266,6 +272,151 @@ pub fn wled_driver_control_surface(config: &WledConfig) -> ControlSurfaceDocumen
     });
     document.fields = wled_driver_control_fields();
     document.values = wled_config_values(config);
+    document.availability = document
+        .fields
+        .iter()
+        .map(|field| {
+            (
+                field.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
+    document
+}
+
+#[must_use]
+pub fn wled_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
+        ControlSurfaceScope::Device {
+            device_id: device.device_id,
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.revision = wled_device_control_revision(device);
+    document.groups.push(ControlGroupDescriptor {
+        id: "connection".to_owned(),
+        label: "Connection".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Connection,
+        ordering: 0,
+    });
+    document.groups.push(ControlGroupDescriptor {
+        id: "diagnostics".to_owned(),
+        label: "Diagnostics".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Diagnostics,
+        ordering: 10,
+    });
+
+    if let Some(metadata) = device.metadata {
+        if let Some(ip) = metadata.get("ip") {
+            document.fields.push(wled_device_readonly_field(
+                DEVICE_FIELD_IP,
+                "IP Address",
+                "connection",
+                ControlValueType::IpAddress,
+                0,
+            ));
+            document.values.insert(
+                DEVICE_FIELD_IP.to_owned(),
+                ControlValue::IpAddress(ip.clone()),
+            );
+        }
+        if let Some(hostname) = metadata.get("hostname") {
+            document.fields.push(wled_device_readonly_field(
+                DEVICE_FIELD_HOSTNAME,
+                "Hostname",
+                "connection",
+                ControlValueType::String {
+                    min_len: None,
+                    max_len: Some(255),
+                    pattern: None,
+                },
+                10,
+            ));
+            document.values.insert(
+                DEVICE_FIELD_HOSTNAME.to_owned(),
+                ControlValue::String(hostname.clone()),
+            );
+        }
+    }
+
+    if let Some(firmware_version) = &device.info.firmware_version {
+        document.fields.push(wled_device_readonly_field(
+            DEVICE_FIELD_FIRMWARE_VERSION,
+            "Firmware",
+            "diagnostics",
+            ControlValueType::String {
+                min_len: None,
+                max_len: Some(80),
+                pattern: None,
+            },
+            20,
+        ));
+        document.values.insert(
+            DEVICE_FIELD_FIRMWARE_VERSION.to_owned(),
+            ControlValue::String(firmware_version.clone()),
+        );
+    }
+
+    document.fields.extend([
+        wled_device_readonly_field(
+            DEVICE_FIELD_LED_COUNT,
+            "LED Count",
+            "diagnostics",
+            ControlValueType::Integer {
+                min: Some(0),
+                max: None,
+                step: Some(1),
+            },
+            30,
+        ),
+        wled_device_readonly_field(
+            DEVICE_FIELD_MAX_FPS,
+            "Max FPS",
+            "diagnostics",
+            ControlValueType::Integer {
+                min: Some(0),
+                max: None,
+                step: Some(1),
+            },
+            40,
+        ),
+    ]);
+    document.values.extend([
+        (
+            DEVICE_FIELD_LED_COUNT.to_owned(),
+            ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ),
+        (
+            DEVICE_FIELD_MAX_FPS.to_owned(),
+            ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ),
+    ]);
+
+    if let Some(rgbw) = device.info.zones.first().map(|zone| {
+        matches!(
+            zone.color_format,
+            hypercolor_types::device::DeviceColorFormat::Rgbw
+        )
+    }) {
+        document.fields.push(wled_device_readonly_field(
+            DEVICE_FIELD_RGBW,
+            "RGBW",
+            "diagnostics",
+            ControlValueType::Bool,
+            50,
+        ));
+        document
+            .values
+            .insert(DEVICE_FIELD_RGBW.to_owned(), ControlValue::Bool(rgbw));
+    }
+
     document.availability = document
         .fields
         .iter()
@@ -395,6 +546,54 @@ fn wled_driver_field(
         availability: ControlAvailabilityExpr::Always,
         ordering,
     }
+}
+
+fn wled_device_readonly_field(
+    id: &str,
+    label: &str,
+    group_id: &str,
+    value_type: ControlValueType,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: Some(group_id.to_owned()),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadOnly,
+        persistence: ControlPersistence::RuntimeOnly,
+        apply_impact: ApplyImpact::None,
+        visibility: ControlVisibility::Diagnostics,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
+fn wled_device_control_revision(device: &TrackedDeviceCtx<'_>) -> u64 {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(device.device_id.to_string().as_bytes());
+    payload.extend_from_slice(device.info.name.as_bytes());
+    payload.extend_from_slice(&device.info.total_led_count().to_le_bytes());
+    payload.extend_from_slice(&device.info.capabilities.max_fps.to_le_bytes());
+    if let Some(firmware_version) = &device.info.firmware_version {
+        payload.extend_from_slice(firmware_version.as_bytes());
+    }
+    if let Some(metadata) = device.metadata {
+        let mut metadata_entries = metadata.iter().collect::<Vec<_>>();
+        metadata_entries.sort_by_key(|(key, _)| key.as_str());
+        for (key, value) in metadata_entries {
+            payload.extend_from_slice(key.as_bytes());
+            payload.extend_from_slice(value.as_bytes());
+        }
+    }
+    payload.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn wled_config_values(config: &WledConfig) -> ControlValueMap {

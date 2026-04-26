@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_core::device::wled::WledKnownTarget;
-use hypercolor_driver_api::{DriverTrackedDevice, NetworkDriverFactory};
+use hypercolor_driver_api::{DriverTrackedDevice, NetworkDriverFactory, TrackedDeviceCtx};
 use hypercolor_driver_wled::{
     WledConfig, WledDriverFactory, WledProtocolConfig, resolve_wled_probe_ips_from_sources,
-    resolve_wled_probe_targets_from_sources, wled_driver_control_surface,
+    resolve_wled_probe_targets_from_sources, wled_device_control_surface,
+    wled_driver_control_surface,
 };
-use hypercolor_types::controls::{ApplyImpact, ControlValue};
+use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -145,4 +146,51 @@ fn wled_driver_control_surface_exposes_typed_config_fields() {
         ControlValue::Bool(false)
     );
     assert_eq!(surface.values["dedup_threshold"], ControlValue::Integer(7));
+}
+
+#[test]
+fn wled_device_control_surface_exposes_tracked_metadata() {
+    let tracked = tracked_wled_device("10.0.0.5", "desk.local", "Desk Strip");
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let surface = wled_device_control_surface(&device);
+
+    assert_eq!(
+        surface.surface_id,
+        format!("driver:wled:device:{}", tracked.info.id)
+    );
+    assert_eq!(
+        surface.scope,
+        hypercolor_types::controls::ControlSurfaceScope::Device {
+            device_id: tracked.info.id,
+            driver_id: "wled".to_owned(),
+        }
+    );
+    assert!(surface.revision > 0);
+    assert!(
+        surface
+            .fields
+            .iter()
+            .all(|field| field.access == ControlAccess::ReadOnly)
+    );
+    assert_eq!(
+        surface.values["ip"],
+        ControlValue::IpAddress("10.0.0.5".to_owned())
+    );
+    assert_eq!(
+        surface.values["hostname"],
+        ControlValue::String("desk.local".to_owned())
+    );
+    assert_eq!(
+        surface.values["firmware_version"],
+        ControlValue::String("0.15.0".to_owned())
+    );
+    assert_eq!(surface.values["led_count"], ControlValue::Integer(60));
+    assert_eq!(surface.values["max_fps"], ControlValue::Integer(55));
+    assert_eq!(surface.values["rgbw"], ControlValue::Bool(true));
 }

@@ -1964,10 +1964,15 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
     let surfaces = json["data"]["surfaces"]
         .as_array()
         .expect("surfaces should be an array");
-    assert_eq!(surfaces.len(), 2);
+    assert_eq!(surfaces.len(), 3);
     assert!(surfaces.iter().any(|surface| {
         surface["surface_id"] == format!("device:{device_id}")
             && surface["scope"]["device"]["driver_id"] == "wled"
+    }));
+    assert!(surfaces.iter().any(|surface| {
+        surface["surface_id"] == format!("driver:wled:device:{device_id}")
+            && surface["scope"]["device"]["driver_id"] == "wled"
+            && surface["values"]["led_count"]["value"] == 60
     }));
     assert!(surfaces.iter().any(|surface| {
         surface["surface_id"] == "driver:wled" && surface["scope"]["driver"]["driver_id"] == "wled"
