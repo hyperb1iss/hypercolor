@@ -1712,6 +1712,26 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(wled["descriptor"]["capabilities"]["backend_factory"], true);
     assert_eq!(wled["enabled"], true);
     assert_eq!(wled["config_key"], "drivers.wled");
+
+    let nollie = items
+        .iter()
+        .find(|item| item["descriptor"]["id"] == "nollie")
+        .expect("Nollie HAL module descriptor should be present");
+    assert_eq!(nollie["descriptor"]["module_kind"], "hal");
+    assert_eq!(
+        nollie["descriptor"]["transports"],
+        serde_json::json!(["usb"])
+    );
+    assert_eq!(
+        nollie["descriptor"]["capabilities"]["protocol_catalog"],
+        true
+    );
+    assert_eq!(
+        nollie["descriptor"]["capabilities"]["backend_factory"],
+        false
+    );
+    assert_eq!(nollie["enabled"], true);
+    assert_eq!(nollie["config_key"], "drivers.nollie");
 }
 
 #[tokio::test]

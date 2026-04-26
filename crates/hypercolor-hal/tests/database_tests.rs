@@ -27,7 +27,9 @@ use hypercolor_hal::drivers::razer::{
     PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
-use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceFamily, DeviceTopologyHint, DriverModuleKind, DriverTransportKind,
+};
 
 const PID_BLADE_14_2022: u16 = 0x028C;
 const PID_BLACKWIDOW_V3: u16 = 0x024E;
@@ -796,4 +798,41 @@ fn by_vendor_returns_only_razer_entries() {
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
     assert!(ProtocolDatabase::count() >= 28);
+}
+
+#[test]
+fn module_descriptors_group_hal_protocols_by_family() {
+    let modules = ProtocolDatabase::module_descriptors();
+    let ids = modules
+        .iter()
+        .map(|module| module.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(ids.contains(&"asus"));
+    assert!(ids.contains(&"nollie"));
+    assert!(ids.contains(&"prismrgb"));
+    assert!(ids.contains(&"razer"));
+
+    let nollie = modules
+        .iter()
+        .find(|module| module.id == "nollie")
+        .expect("Nollie module descriptor should exist");
+    assert_eq!(nollie.display_name, "Nollie");
+    assert_eq!(nollie.module_kind, DriverModuleKind::Hal);
+    assert_eq!(nollie.transports, vec![DriverTransportKind::Usb]);
+    assert!(nollie.capabilities.protocol_catalog);
+    assert!(!nollie.capabilities.backend_factory);
+    assert!(nollie.default_enabled);
+
+    let ableton = modules
+        .iter()
+        .find(|module| module.id == "ableton")
+        .expect("Ableton module descriptor should exist");
+    assert_eq!(ableton.transports, vec![DriverTransportKind::Midi]);
+
+    let dygma = modules
+        .iter()
+        .find(|module| module.id == "dygma")
+        .expect("Dygma module descriptor should exist");
+    assert_eq!(dygma.transports, vec![DriverTransportKind::Serial]);
 }
