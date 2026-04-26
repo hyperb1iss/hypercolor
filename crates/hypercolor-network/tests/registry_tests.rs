@@ -333,6 +333,10 @@ impl NetworkDriverFactory for ControlOnlyDriver {
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(&ControlOnlyCapability)
     }
+
+    fn has_backend_factory(&self) -> bool {
+        false
+    }
 }
 
 #[test]
@@ -447,6 +451,7 @@ fn registry_filters_control_surface_drivers() {
     assert!(control_descriptor.capabilities.controls);
     assert!(!control_descriptor.capabilities.discovery);
     assert!(!control_descriptor.capabilities.pairing);
+    assert!(!control_descriptor.capabilities.backend_factory);
 }
 
 #[test]
