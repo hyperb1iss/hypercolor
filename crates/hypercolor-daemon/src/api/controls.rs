@@ -10,11 +10,11 @@ use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView, TrackedDeviceC
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesRequest, ApplyControlChangesResponse, ApplyImpact,
-    ControlAccess, ControlActionResult, ControlAvailability, ControlAvailabilityExpr,
-    ControlAvailabilityState, ControlChange, ControlFieldDescriptor, ControlGroupDescriptor,
-    ControlGroupKind, ControlOwner, ControlPersistence, ControlSurfaceDocument,
-    ControlSurfaceEvent, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
-    ControlVisibility,
+    ControlAccess, ControlActionDescriptor, ControlActionResult, ControlAvailability,
+    ControlAvailabilityExpr, ControlAvailabilityState, ControlChange, ControlFieldDescriptor,
+    ControlGroupDescriptor, ControlGroupKind, ControlObjectField, ControlOwner, ControlPersistence,
+    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope, ControlValue,
+    ControlValueMap, ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
 use hypercolor_types::event::HypercolorEvent;
@@ -30,6 +30,7 @@ use crate::network;
 const DEVICE_FIELD_NAME: &str = "name";
 const DEVICE_FIELD_ENABLED: &str = "enabled";
 const DEVICE_FIELD_BRIGHTNESS: &str = "brightness";
+const DEVICE_ACTION_IDENTIFY: &str = "identify";
 type ControlApiResult<T> = Result<T, Box<Response>>;
 
 #[derive(Debug, Deserialize)]
@@ -544,6 +545,13 @@ pub(crate) fn device_control_surface(
         kind: ControlGroupKind::General,
         ordering: 0,
     });
+    document.groups.push(ControlGroupDescriptor {
+        id: "diagnostics".to_owned(),
+        label: "Diagnostics".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Diagnostics,
+        ordering: 100,
+    });
 
     document.fields.extend([
         host_field(
@@ -579,6 +587,38 @@ pub(crate) fn device_control_surface(
             20,
         ),
     ]);
+    document.actions.push(ControlActionDescriptor {
+        id: DEVICE_ACTION_IDENTIFY.to_owned(),
+        owner: ControlOwner::Host,
+        group_id: Some("diagnostics".to_owned()),
+        label: "Identify".to_owned(),
+        description: Some("Flash this device so it can be found physically.".to_owned()),
+        input_fields: vec![
+            ControlObjectField {
+                id: "duration_ms".to_owned(),
+                label: "Duration".to_owned(),
+                value_type: ControlValueType::DurationMs {
+                    min: Some(1),
+                    max: Some(120_000),
+                    step: Some(100),
+                },
+                required: false,
+                default_value: Some(ControlValue::DurationMs(3000)),
+            },
+            ControlObjectField {
+                id: "color".to_owned(),
+                label: "Color".to_owned(),
+                value_type: ControlValueType::ColorRgb,
+                required: false,
+                default_value: None,
+            },
+        ],
+        result_type: None,
+        confirmation: None,
+        apply_impact: ApplyImpact::Live,
+        availability: ControlAvailabilityExpr::Always,
+        ordering: 0,
+    });
 
     document.values = ControlValueMap::from([
         (

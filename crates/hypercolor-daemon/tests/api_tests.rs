@@ -6339,6 +6339,31 @@ async fn get_device_controls_returns_host_control_surface() {
     assert!(fields.iter().any(|field| field["id"] == "name"));
     assert!(fields.iter().any(|field| field["id"] == "enabled"));
     assert!(fields.iter().any(|field| field["id"] == "brightness"));
+    let actions = data["actions"]
+        .as_array()
+        .expect("actions should be an array");
+    let identify = actions
+        .iter()
+        .find(|action| action["id"] == "identify")
+        .expect("identify action should be exposed");
+    assert_eq!(identify["owner"], "host");
+    assert_eq!(identify["group_id"], "diagnostics");
+    assert_eq!(identify["apply_impact"], "live");
+    assert_eq!(identify["input_fields"][0]["id"], "duration_ms");
+    assert_eq!(
+        identify["input_fields"][0]["value_type"]["kind"],
+        "duration_ms"
+    );
+    assert_eq!(
+        identify["input_fields"][0]["default_value"]["kind"],
+        "duration_ms"
+    );
+    assert_eq!(identify["input_fields"][0]["default_value"]["value"], 3000);
+    assert_eq!(identify["input_fields"][1]["id"], "color");
+    assert_eq!(
+        identify["input_fields"][1]["value_type"]["kind"],
+        "color_rgb"
+    );
 }
 
 #[tokio::test]
