@@ -8,7 +8,7 @@ use utoipa::openapi::{HttpMethod, Required, Response, Tag};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{devices, drivers, effects, envelope, system};
+use crate::api::{controls, devices, drivers, effects, envelope, system};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -35,6 +35,10 @@ use crate::api::{devices, drivers, effects, envelope, system};
             envelope::ApiResponse<drivers::DriverListResponse>,
             envelope::ApiResponse<devices::DeviceListResponse>,
             envelope::ApiResponse<devices::DeviceSummary>,
+            envelope::ApiResponse<controls::ControlSurfaceListResponse>,
+            envelope::ApiResponse<hypercolor_types::controls::ControlSurfaceDocument>,
+            envelope::ApiResponse<hypercolor_types::controls::ApplyControlChangesResponse>,
+            envelope::ApiResponse<hypercolor_types::controls::ControlActionResult>,
             envelope::ApiResponse<effects::EffectListResponse>,
             envelope::ApiResponse<effects::EffectDetailResponse>,
             envelope::ApiResponse<effects::ActiveEffectResponse>,
@@ -56,6 +60,35 @@ use crate::api::{devices, drivers, effects, envelope, system};
             devices::ZoneSummary,
             devices::ZoneTopologySummary,
             devices::Pagination,
+            controls::ControlSurfaceListResponse,
+            controls::InvokeControlActionRequest,
+            hypercolor_types::controls::ActionConfirmation,
+            hypercolor_types::controls::ActionConfirmationLevel,
+            hypercolor_types::controls::AppliedControlChange,
+            hypercolor_types::controls::ApplyControlChangesRequest,
+            hypercolor_types::controls::ApplyControlChangesResponse,
+            hypercolor_types::controls::ApplyImpact,
+            hypercolor_types::controls::ControlAccess,
+            hypercolor_types::controls::ControlActionDescriptor,
+            hypercolor_types::controls::ControlActionResult,
+            hypercolor_types::controls::ControlActionStatus,
+            hypercolor_types::controls::ControlApplyError,
+            hypercolor_types::controls::ControlAvailability,
+            hypercolor_types::controls::ControlAvailabilityState,
+            hypercolor_types::controls::ControlChange,
+            hypercolor_types::controls::ControlEnumOption,
+            hypercolor_types::controls::ControlFieldDescriptor,
+            hypercolor_types::controls::ControlGroupDescriptor,
+            hypercolor_types::controls::ControlGroupKind,
+            hypercolor_types::controls::ControlObjectField,
+            hypercolor_types::controls::ControlOwner,
+            hypercolor_types::controls::ControlPersistence,
+            hypercolor_types::controls::ControlSurfaceDocument,
+            hypercolor_types::controls::ControlSurfaceEvent,
+            hypercolor_types::controls::ControlSurfaceScope,
+            hypercolor_types::controls::ControlValueKind,
+            hypercolor_types::controls::ControlVisibility,
+            hypercolor_types::controls::RejectedControlChange,
             effects::ApplyEffectRequest,
             effects::TransitionRequest,
             effects::EffectListResponse,

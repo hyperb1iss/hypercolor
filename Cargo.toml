@@ -153,7 +153,7 @@ axum = { version = "0.8", features = ["multipart", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 rmcp = { version = "1.1.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_path_order"] }
+utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"] }
 
 # CLI

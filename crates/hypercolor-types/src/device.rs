@@ -21,7 +21,7 @@ use uuid::Uuid;
 ///
 /// Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
 /// database keys, map keys, and log correlation IDs.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub struct DeviceId(pub Uuid);
 
 impl DeviceId {

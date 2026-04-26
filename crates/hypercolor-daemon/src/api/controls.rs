@@ -20,6 +20,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSett
 use hypercolor_types::event::HypercolorEvent;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::devices;
@@ -40,12 +41,12 @@ pub struct ControlSurfaceListQuery {
     pub include_driver: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ControlSurfaceListResponse {
     pub surfaces: Vec<ControlSurfaceDocument>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct InvokeControlActionRequest {
     #[serde(default)]
     pub input: ControlValueMap,
