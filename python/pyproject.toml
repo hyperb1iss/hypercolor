@@ -65,7 +65,7 @@ source-include = ["tests/**"]
 line-length = 99
 target-version = "py313"
 src = ["scripts", "src", "tests"]
-extend-exclude = ["src/hypercolor/generated"]
+extend-exclude = ["src/hypercolor/_generated"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -117,7 +117,7 @@ python-version = "3.13"
 
 [tool.ty.src]
 include = ["scripts/**/*.py", "src/**/*.py", "tests/**/*.py"]
-exclude = ["src/hypercolor/generated/**"]
+exclude = ["src/hypercolor/_generated/**"]
 
 [tool.ty.terminal]
 output-format = "concise"

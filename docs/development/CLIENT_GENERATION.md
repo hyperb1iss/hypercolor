@@ -17,8 +17,8 @@ The daemon exports OpenAPI without starting the HTTP server:
 cargo run -p hypercolor-daemon --bin hypercolor-openapi --quiet
 ```
 
-Python vendors the generated REST client under
-`python/src/hypercolor/generated/`:
+Python vendors the generated REST client under the private package
+`python/src/hypercolor/_generated/`:
 
 ```bash
 just python-generate
@@ -74,5 +74,5 @@ When the TypeScript client lands, it should use the same two inputs:
   frame decoding, and subscription config types.
 
 Keep generated TypeScript output isolated from hand-written ergonomic wrappers,
-matching the Python split between `hypercolor/generated/` and the public
-`HypercolorClient`.
+matching the Python split between private `hypercolor._generated` plumbing and
+the public `HypercolorClient`.
