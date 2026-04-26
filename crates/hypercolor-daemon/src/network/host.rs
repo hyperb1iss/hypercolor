@@ -166,6 +166,16 @@ impl DaemonDriverHost {
     pub fn credential_store(&self) -> Arc<CredentialStore> {
         Arc::clone(&self.credential_store)
     }
+
+    async fn device_control_settings_key(&self, device_id: DeviceId) -> String {
+        self.device_registry
+            .fingerprint_for_id(&device_id)
+            .await
+            .map_or_else(
+                || device_id.to_string(),
+                |fingerprint| fingerprint.to_string(),
+            )
+    }
 }
 
 #[async_trait]
@@ -299,13 +309,16 @@ impl DriverControlStore for DaemonDriverHost {
 #[async_trait]
 impl DeviceControlStore for DaemonDriverHost {
     async fn load_device_values(&self, device_id: DeviceId) -> Result<ControlValueMap> {
-        let _ = device_id;
-        Ok(ControlValueMap::new())
+        let key = self.device_control_settings_key(device_id).await;
+        let store = self.device_settings.read().await;
+        Ok(store.driver_control_values_for_key(&key))
     }
 
     async fn save_device_values(&self, device_id: DeviceId, values: ControlValueMap) -> Result<()> {
-        let _ = (device_id, values);
-        bail!("driver-owned device control persistence is unavailable")
+        let key = self.device_control_settings_key(device_id).await;
+        let mut store = self.device_settings.write().await;
+        store.set_driver_control_values(&key, values);
+        store.save()
     }
 }
 

@@ -31,11 +31,13 @@ const FIELD_KNOWN_IPS: &str = "known_ips";
 const FIELD_DEFAULT_PROTOCOL: &str = "default_protocol";
 const FIELD_REALTIME_HTTP_ENABLED: &str = "realtime_http_enabled";
 const FIELD_DEDUP_THRESHOLD: &str = "dedup_threshold";
+const DEVICE_FIELD_PROTOCOL: &str = "protocol";
 const DEVICE_FIELD_IP: &str = "ip";
 const DEVICE_FIELD_HOSTNAME: &str = "hostname";
 const DEVICE_FIELD_FIRMWARE_VERSION: &str = "firmware_version";
 const DEVICE_FIELD_LED_COUNT: &str = "led_count";
 const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
+const DEVICE_FIELD_DEDUP_THRESHOLD: &str = "dedup_threshold";
 const DEVICE_FIELD_RGBW: &str = "rgbw";
 
 /// Default protocol for WLED realtime streaming.
@@ -179,8 +181,30 @@ impl DriverControlProvider for WledDriverFactory {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<Option<ControlSurfaceDocument>> {
-        let _ = host;
-        Ok(Some(wled_device_control_surface(device)))
+        let (driver_values, device_values) = if let Some(control_host) = host.control_host() {
+            let driver_values = control_host
+                .driver_config_store()
+                .load_driver_values(DESCRIPTOR.id)
+                .await
+                .unwrap_or_else(|_| wled_config_values(&WledConfig::default()));
+            let device_values = control_host
+                .device_config_store()
+                .load_device_values(device.device_id)
+                .await
+                .unwrap_or_default();
+            (driver_values, device_values)
+        } else {
+            (
+                wled_config_values(&WledConfig::default()),
+                ControlValueMap::new(),
+            )
+        };
+
+        Ok(Some(wled_device_control_surface(
+            device,
+            &driver_values,
+            &device_values,
+        )))
     }
 
     async fn validate_changes(
@@ -199,41 +223,67 @@ impl DriverControlProvider for WledDriverFactory {
         target: &ControlApplyTarget<'_>,
         changes: ValidatedControlChanges,
     ) -> Result<ApplyControlChangesResponse> {
-        let ControlApplyTarget::Driver { driver_id, config } = target else {
-            bail!("WLED device controls are not exposed yet");
-        };
-        if *driver_id != DESCRIPTOR.id {
-            bail!("WLED controls cannot apply to driver '{driver_id}'");
-        }
+        match target {
+            ControlApplyTarget::Driver { driver_id, config } => {
+                if *driver_id != DESCRIPTOR.id {
+                    bail!("WLED controls cannot apply to driver '{driver_id}'");
+                }
 
-        let control_host = host
-            .control_host()
-            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
-        let mut values = wled_config_values(&config.parse_settings::<WledConfig>()?);
-        for change in &changes.changes {
-            values.insert(change.field_id.clone(), change.value.clone());
-        }
-        control_host
-            .driver_config_store()
-            .save_driver_values(DESCRIPTOR.id, values.clone())
-            .await?;
+                let control_host = host
+                    .control_host()
+                    .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+                let mut values = wled_config_values(&config.parse_settings::<WledConfig>()?);
+                for change in &changes.changes {
+                    values.insert(change.field_id.clone(), change.value.clone());
+                }
+                control_host
+                    .driver_config_store()
+                    .save_driver_values(DESCRIPTOR.id, values.clone())
+                    .await?;
 
-        Ok(ApplyControlChangesResponse {
-            surface_id: format!("driver:{}", DESCRIPTOR.id),
-            previous_revision: 0,
-            revision: 0,
-            accepted: changes
-                .changes
-                .into_iter()
-                .map(|change| AppliedControlChange {
-                    field_id: change.field_id,
-                    value: change.value,
-                })
-                .collect(),
-            rejected: Vec::new(),
-            impacts: changes.impacts,
-            values,
-        })
+                Ok(wled_apply_response(
+                    format!("driver:{}", DESCRIPTOR.id),
+                    changes,
+                    values,
+                ))
+            }
+            ControlApplyTarget::Device { device } => {
+                if device.info.origin.driver_id != DESCRIPTOR.id {
+                    bail!(
+                        "WLED controls cannot apply to device owned by '{}'",
+                        device.info.origin.driver_id
+                    );
+                }
+
+                let control_host = host
+                    .control_host()
+                    .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+                let driver_values = control_host
+                    .driver_config_store()
+                    .load_driver_values(DESCRIPTOR.id)
+                    .await
+                    .unwrap_or_else(|_| wled_config_values(&WledConfig::default()));
+                let existing_device_values = control_host
+                    .device_config_store()
+                    .load_device_values(device.device_id)
+                    .await?;
+                let mut values =
+                    wled_effective_device_values(&driver_values, &existing_device_values);
+                for change in &changes.changes {
+                    values.insert(change.field_id.clone(), change.value.clone());
+                }
+                control_host
+                    .device_config_store()
+                    .save_device_values(device.device_id, values.clone())
+                    .await?;
+
+                Ok(wled_apply_response(
+                    format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
+                    changes,
+                    values,
+                ))
+            }
+        }
     }
 
     async fn invoke_action(
@@ -289,7 +339,11 @@ pub fn wled_driver_control_surface(config: &WledConfig) -> ControlSurfaceDocumen
 }
 
 #[must_use]
-pub fn wled_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
+pub fn wled_device_control_surface(
+    device: &TrackedDeviceCtx<'_>,
+    driver_values: &ControlValueMap,
+    device_values: &ControlValueMap,
+) -> ControlSurfaceDocument {
     let mut document = ControlSurfaceDocument::empty(
         format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
         ControlSurfaceScope::Device {
@@ -297,7 +351,6 @@ pub fn wled_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurf
             driver_id: DESCRIPTOR.id.to_owned(),
         },
     );
-    document.revision = wled_device_control_revision(device);
     document.groups.push(ControlGroupDescriptor {
         id: "connection".to_owned(),
         label: "Connection".to_owned(),
@@ -306,12 +359,21 @@ pub fn wled_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurf
         ordering: 0,
     });
     document.groups.push(ControlGroupDescriptor {
+        id: "output".to_owned(),
+        label: "Output".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Output,
+        ordering: 10,
+    });
+    document.groups.push(ControlGroupDescriptor {
         id: "diagnostics".to_owned(),
         label: "Diagnostics".to_owned(),
         description: None,
         kind: ControlGroupKind::Diagnostics,
-        ordering: 10,
+        ordering: 20,
     });
+    document.fields.extend(wled_device_control_fields());
+    document.values = wled_effective_device_values(driver_values, device_values);
 
     if let Some(metadata) = device.metadata {
         if let Some(ip) = metadata.get("ip") {
@@ -430,6 +492,7 @@ pub fn wled_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurf
             )
         })
         .collect();
+    document.revision = wled_device_control_revision(device, &document.values);
     document
 }
 
@@ -437,14 +500,25 @@ fn validate_wled_driver_changes(
     target: &ControlApplyTarget<'_>,
     changes: &[ControlChange],
 ) -> Result<ValidatedControlChanges> {
-    let ControlApplyTarget::Driver { driver_id, .. } = target else {
-        bail!("WLED device control surface is read-only");
+    let fields = match target {
+        ControlApplyTarget::Driver { driver_id, .. } => {
+            if *driver_id != DESCRIPTOR.id {
+                bail!("WLED controls cannot validate driver '{driver_id}'");
+            }
+            wled_driver_control_fields()
+        }
+        ControlApplyTarget::Device { device } => {
+            if device.info.origin.driver_id != DESCRIPTOR.id {
+                bail!(
+                    "WLED controls cannot validate device owned by '{}'",
+                    device.info.origin.driver_id
+                );
+            }
+            wled_device_control_fields()
+        }
     };
-    if *driver_id != DESCRIPTOR.id {
-        bail!("WLED controls cannot validate driver '{driver_id}'");
-    }
 
-    let fields = wled_driver_control_fields()
+    let fields = fields
         .into_iter()
         .map(|field| (field.id.clone(), field))
         .collect::<BTreeMap<_, _>>();
@@ -548,6 +622,32 @@ fn wled_driver_field(
     }
 }
 
+fn wled_device_control_fields() -> Vec<ControlFieldDescriptor> {
+    vec![
+        wled_device_config_field(
+            DEVICE_FIELD_PROTOCOL,
+            "Protocol",
+            ControlValueType::Enum {
+                options: vec![
+                    ControlEnumOption::new("ddp", "DDP"),
+                    ControlEnumOption::new("e131", "E1.31"),
+                ],
+            },
+            0,
+        ),
+        wled_device_config_field(
+            DEVICE_FIELD_DEDUP_THRESHOLD,
+            "Dedup Threshold",
+            ControlValueType::Integer {
+                min: Some(0),
+                max: Some(i64::from(u8::MAX)),
+                step: Some(1),
+            },
+            10,
+        ),
+    ]
+}
+
 fn wled_device_readonly_field(
     id: &str,
     label: &str,
@@ -574,7 +674,32 @@ fn wled_device_readonly_field(
     }
 }
 
-fn wled_device_control_revision(device: &TrackedDeviceCtx<'_>) -> u64 {
+fn wled_device_config_field(
+    id: &str,
+    label: &str,
+    value_type: ControlValueType,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: Some("output".to_owned()),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadWrite,
+        persistence: ControlPersistence::DeviceConfig,
+        apply_impact: ApplyImpact::Live,
+        visibility: ControlVisibility::Standard,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
+fn wled_device_control_revision(device: &TrackedDeviceCtx<'_>, values: &ControlValueMap) -> u64 {
     let mut payload = Vec::new();
     payload.extend_from_slice(device.device_id.to_string().as_bytes());
     payload.extend_from_slice(device.info.name.as_bytes());
@@ -591,9 +716,62 @@ fn wled_device_control_revision(device: &TrackedDeviceCtx<'_>) -> u64 {
             payload.extend_from_slice(value.as_bytes());
         }
     }
+    for (key, value) in values {
+        payload.extend_from_slice(key.as_bytes());
+        payload.extend_from_slice(format!("{value:?}").as_bytes());
+    }
     payload.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
+}
+
+fn wled_effective_device_values(
+    driver_values: &ControlValueMap,
+    device_values: &ControlValueMap,
+) -> ControlValueMap {
+    let mut values = ControlValueMap::from([
+        (
+            DEVICE_FIELD_PROTOCOL.to_owned(),
+            driver_values
+                .get(FIELD_DEFAULT_PROTOCOL)
+                .cloned()
+                .unwrap_or_else(|| ControlValue::Enum("ddp".to_owned())),
+        ),
+        (
+            DEVICE_FIELD_DEDUP_THRESHOLD.to_owned(),
+            driver_values
+                .get(FIELD_DEDUP_THRESHOLD)
+                .cloned()
+                .unwrap_or(ControlValue::Integer(i64::from(default_dedup_threshold()))),
+        ),
+    ]);
+    for (key, value) in device_values {
+        values.insert(key.clone(), value.clone());
+    }
+    values
+}
+
+fn wled_apply_response(
+    surface_id: String,
+    changes: ValidatedControlChanges,
+    values: ControlValueMap,
+) -> ApplyControlChangesResponse {
+    ApplyControlChangesResponse {
+        surface_id,
+        previous_revision: 0,
+        revision: 0,
+        accepted: changes
+            .changes
+            .into_iter()
+            .map(|change| AppliedControlChange {
+                field_id: change.field_id,
+                value: change.value,
+            })
+            .collect(),
+        rejected: Vec::new(),
+        impacts: changes.impacts,
+        values,
+    }
 }
 
 fn wled_config_values(config: &WledConfig) -> ControlValueMap {

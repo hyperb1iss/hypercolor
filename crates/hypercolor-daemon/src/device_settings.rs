@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use hypercolor_types::controls::ControlValueMap;
 use serde::{Deserialize, Serialize};
 
 fn default_brightness() -> f32 {
@@ -54,6 +55,7 @@ struct PersistedSettingsSnapshot {
     #[serde(default = "default_brightness")]
     global_brightness: f32,
     devices: HashMap<String, StoredDeviceSettings>,
+    driver_controls: HashMap<String, ControlValueMap>,
 }
 
 impl Default for PersistedSettingsSnapshot {
@@ -61,6 +63,7 @@ impl Default for PersistedSettingsSnapshot {
         Self {
             global_brightness: default_brightness(),
             devices: HashMap::new(),
+            driver_controls: HashMap::new(),
         }
     }
 }
@@ -153,6 +156,24 @@ impl DeviceSettingsStore {
         settings.disabled = !enabled;
         self.set_device_settings(key, settings);
     }
+
+    #[must_use]
+    pub fn driver_control_values_for_key(&self, key: &str) -> ControlValueMap {
+        self.snapshot
+            .driver_controls
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn set_driver_control_values(&mut self, key: &str, values: ControlValueMap) {
+        if values.is_empty() {
+            self.snapshot.driver_controls.remove(key);
+        } else {
+            self.snapshot.driver_controls.insert(key.to_owned(), values);
+        }
+    }
+
     /// Save the current snapshot to disk.
     pub fn save(&self) -> anyhow::Result<()> {
         if let Some(parent) = self.path.parent() {
@@ -172,6 +193,7 @@ impl DeviceSettingsStore {
                 .iter()
                 .map(|(key, settings)| (key.clone(), settings.clone().normalized()))
                 .collect(),
+            driver_controls: self.snapshot.driver_controls.clone(),
         })
         .context("failed to serialize device settings")?;
         let tmp_path = self.path.with_extension("tmp");
@@ -198,5 +220,8 @@ impl DeviceSettingsStore {
             *settings = settings.clone().normalized();
             !settings.is_default()
         });
+        self.snapshot
+            .driver_controls
+            .retain(|_, values| !values.is_empty());
     }
 }

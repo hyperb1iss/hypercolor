@@ -1980,13 +1980,15 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
 }
 
 #[tokio::test]
-async fn patch_driver_owned_device_control_surface_routes_to_provider() {
-    let state = Arc::new(isolated_state());
+async fn patch_driver_owned_device_control_surface_persists_values() {
+    let (state, tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(state);
+    let app = test_app_with_state(Arc::clone(&state));
     let surface_id = format!("driver:wled:device:{device_id}");
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("PATCH")
@@ -1998,8 +2000,12 @@ async fn patch_driver_owned_device_control_surface_routes_to_provider() {
                         "dry_run": false,
                         "changes": [
                             {
-                                "field_id": "led_count",
-                                "value": { "kind": "integer", "value": 61 }
+                                "field_id": "protocol",
+                                "value": { "kind": "enum", "value": "e131" }
+                            },
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 6 }
                             }
                         ]
                     })
@@ -2010,14 +2016,46 @@ async fn patch_driver_owned_device_control_surface_routes_to_provider() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message")
-            .contains("read-only")
+    assert_eq!(json["data"]["surface_id"], surface_id);
+    assert_eq!(json["data"]["values"]["protocol"]["value"], "e131");
+    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 6);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/control-surfaces?device_id={device_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let surfaces = json["data"]["surfaces"]
+        .as_array()
+        .expect("surfaces should be an array");
+    let driver_device_surface = surfaces
+        .iter()
+        .find(|surface| surface["surface_id"] == surface_id)
+        .expect("driver-owned device surface should be present");
+    assert_eq!(driver_device_surface["values"]["protocol"]["value"], "e131");
+    assert_eq!(
+        driver_device_surface["values"]["dedup_threshold"]["value"],
+        6
     );
+
+    let raw = fs::read_to_string(tmp.path().join("data/device-settings.json"))
+        .expect("device settings should be persisted");
+    let saved: serde_json::Value =
+        serde_json::from_str(&raw).expect("device settings should be valid JSON");
+    assert!(saved["driver_controls"].as_object().is_some_and(|values| {
+        values
+            .values()
+            .any(|entry| entry["protocol"]["value"] == "e131")
+    }));
 }
 
 #[tokio::test]

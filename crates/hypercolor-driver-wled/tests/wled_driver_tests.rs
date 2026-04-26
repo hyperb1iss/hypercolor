@@ -8,7 +8,7 @@ use hypercolor_driver_wled::{
     resolve_wled_probe_targets_from_sources, wled_device_control_surface,
     wled_driver_control_surface,
 };
-use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue};
+use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue, ControlValueMap};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -158,7 +158,17 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
         current_state: &tracked.current_state,
     };
 
-    let surface = wled_device_control_surface(&device);
+    let driver_values = ControlValueMap::from([
+        (
+            "default_protocol".to_owned(),
+            ControlValue::Enum("e131".to_owned()),
+        ),
+        ("dedup_threshold".to_owned(), ControlValue::Integer(9)),
+    ]);
+    let device_values =
+        ControlValueMap::from([("dedup_threshold".to_owned(), ControlValue::Integer(3))]);
+
+    let surface = wled_device_control_surface(&device, &driver_values, &device_values);
 
     assert_eq!(
         surface.surface_id,
@@ -176,8 +186,22 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
         surface
             .fields
             .iter()
-            .all(|field| field.access == ControlAccess::ReadOnly)
+            .any(|field| { field.id == "protocol" && field.access == ControlAccess::ReadWrite })
     );
+    assert!(surface.fields.iter().any(|field| {
+        field.id == "dedup_threshold" && field.access == ControlAccess::ReadWrite
+    }));
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| { field.id == "ip" && field.access == ControlAccess::ReadOnly })
+    );
+    assert_eq!(
+        surface.values["protocol"],
+        ControlValue::Enum("e131".to_owned())
+    );
+    assert_eq!(surface.values["dedup_threshold"], ControlValue::Integer(3));
     assert_eq!(
         surface.values["ip"],
         ControlValue::IpAddress("10.0.0.5".to_owned())
