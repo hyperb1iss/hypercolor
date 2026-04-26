@@ -117,6 +117,16 @@ impl DriverRegistry {
             .map(Arc::clone)
             .collect()
     }
+
+    /// Return all drivers that advertise control-surface capability.
+    #[must_use]
+    pub fn control_drivers(&self) -> Vec<Arc<dyn NetworkDriverFactory>> {
+        self.drivers
+            .values()
+            .filter(|driver| driver.controls().is_some())
+            .map(Arc::clone)
+            .collect()
+    }
 }
 
 /// Errors produced by the driver registry.

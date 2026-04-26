@@ -279,6 +279,28 @@ fn driver_capability_set_empty_has_no_capabilities() {
     assert!(!capabilities.runtime_cache);
     assert!(!capabilities.credentials);
     assert!(!capabilities.presentation);
+    assert!(!capabilities.controls);
+}
+
+#[test]
+fn driver_capability_set_defaults_missing_controls_flag() {
+    let json = r#"{
+        "config": false,
+        "discovery": true,
+        "pairing": false,
+        "backend_factory": true,
+        "protocol_catalog": false,
+        "runtime_cache": true,
+        "credentials": false,
+        "presentation": false
+    }"#;
+
+    let capabilities: DriverCapabilitySet =
+        serde_json::from_str(json).expect("legacy capabilities should deserialize");
+
+    assert!(capabilities.discovery);
+    assert!(capabilities.backend_factory);
+    assert!(!capabilities.controls);
 }
 
 #[test]

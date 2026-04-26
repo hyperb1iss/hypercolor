@@ -100,6 +100,7 @@ impl HalModuleAccumulator {
                 runtime_cache: false,
                 credentials: false,
                 presentation: false,
+                controls: false,
             },
             api_schema_version: 1,
             config_version: 1,

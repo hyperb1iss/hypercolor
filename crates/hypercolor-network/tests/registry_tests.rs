@@ -2,13 +2,18 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary, DiscoveryCapability,
-    DiscoveryRequest, DiscoveryResult, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
-    PairDeviceOutcome, PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
+    ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
+    DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    PairDeviceRequest, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverRegistry, DriverRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::controls::{
+    ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
+    ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
+};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DriverModuleKind, DriverTransportKind};
 
 struct NullCredentialStore;
@@ -178,6 +183,71 @@ impl PairingCapability for PairingOnlyCapability {
     }
 }
 
+struct ControlOnlyCapability;
+
+#[async_trait]
+impl DriverControlProvider for ControlOnlyCapability {
+    async fn driver_surface(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        let _ = (host, config);
+        Ok(Some(ControlSurfaceDocument::empty(
+            "driver:control-only",
+            ControlSurfaceScope::Driver {
+                driver_id: "control-only".to_owned(),
+            },
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        let _ = (host, device);
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> Result<ValidatedControlChanges> {
+        let _ = (host, target);
+        Ok(ValidatedControlChanges::new(changes.to_vec()))
+    }
+
+    async fn apply_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> Result<ApplyControlChangesResponse> {
+        let _ = (host, target, changes);
+        unreachable!("apply is not exercised in registry tests")
+    }
+
+    async fn invoke_action(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        let _ = (host, target, input);
+        Ok(ControlActionResult {
+            surface_id: "driver:control-only".to_owned(),
+            action_id: action_id.to_owned(),
+            status: ControlActionStatus::Completed,
+            result: None,
+            revision: 0,
+        })
+    }
+}
+
 struct DiscoveryOnlyDriver;
 
 static DISCOVERY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
@@ -233,6 +303,35 @@ impl NetworkDriverFactory for PairingOnlyDriver {
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
         Some(&PairingOnlyCapability)
+    }
+}
+
+struct ControlOnlyDriver;
+
+static CONTROL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "control-only",
+    "Control Only",
+    DriverTransport::Network,
+    false,
+    false,
+);
+
+impl NetworkDriverFactory for ControlOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &CONTROL_ONLY_DESCRIPTOR
+    }
+
+    fn build_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(&ControlOnlyCapability)
     }
 }
 
@@ -318,6 +417,36 @@ fn registry_filters_discovery_and_pairing_drivers() {
 
     assert_eq!(discovery_ids, vec!["discovery-only".to_owned()]);
     assert_eq!(pairing_ids, vec!["pairing-only".to_owned()]);
+}
+
+#[test]
+fn registry_filters_control_surface_drivers() {
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(PairingOnlyDriver)
+        .expect("pairing driver should register");
+    registry
+        .register(ControlOnlyDriver)
+        .expect("control driver should register");
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("discovery driver should register");
+
+    let control_ids = registry
+        .control_drivers()
+        .into_iter()
+        .map(|driver| driver.descriptor().id.to_owned())
+        .collect::<Vec<_>>();
+    let descriptors = registry.module_descriptors();
+    let control_descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == "control-only")
+        .expect("control descriptor should be present");
+
+    assert_eq!(control_ids, vec!["control-only".to_owned()]);
+    assert!(control_descriptor.capabilities.controls);
+    assert!(!control_descriptor.capabilities.discovery);
+    assert!(!control_descriptor.capabilities.pairing);
 }
 
 #[test]

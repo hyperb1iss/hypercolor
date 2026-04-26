@@ -397,6 +397,10 @@ pub struct DriverCapabilitySet {
 
     /// Provides presentation metadata.
     pub presentation: bool,
+
+    /// Exposes typed dynamic control surfaces.
+    #[serde(default)]
+    pub controls: bool,
 }
 
 impl DriverCapabilitySet {
@@ -412,6 +416,7 @@ impl DriverCapabilitySet {
             runtime_cache: false,
             credentials: false,
             presentation: false,
+            controls: false,
         }
     }
 }
