@@ -131,12 +131,15 @@ impl DriverConfigProvider for NanoleafDriverFactory {
     }
 
     fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
-        DriverConfigView {
+        let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
-        .parse_settings::<NanoleafConfig>()
-        .map(|_| ())
+        .parse_settings::<NanoleafConfig>()?;
+        for ip in config.device_ips {
+            validate_ip(ip).with_context(|| format!("invalid Nanoleaf device IP: {ip}"))?;
+        }
+        Ok(())
     }
 }
 

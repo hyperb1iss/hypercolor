@@ -185,12 +185,15 @@ impl DriverConfigProvider for WledDriverFactory {
     }
 
     fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
-        DriverConfigView {
+        let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
-        .parse_settings::<WledConfig>()
-        .map(|_| ())
+        .parse_settings::<WledConfig>()?;
+        for ip in config.known_ips {
+            validate_ip(ip).with_context(|| format!("invalid WLED known IP: {ip}"))?;
+        }
+        Ok(())
     }
 }
 

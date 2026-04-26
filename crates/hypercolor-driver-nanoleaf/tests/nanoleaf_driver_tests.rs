@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
-use hypercolor_driver_api::DriverTrackedDevice;
+use hypercolor_core::device::net::CredentialStore;
+use hypercolor_driver_api::{DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory};
 use hypercolor_driver_nanoleaf::{
-    NanoleafConfig, nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
+    NanoleafConfig, NanoleafDriverFactory, nanoleaf_driver_control_surface,
+    resolve_nanoleaf_probe_devices_from_sources,
 };
 use hypercolor_types::controls::{ApplyImpact, ControlValue};
 use hypercolor_types::device::{
@@ -68,6 +71,29 @@ fn resolve_nanoleaf_probe_devices_merges_tracked_metadata() {
     assert_eq!(tracked.device_id, "nanoleaf-shapes");
     assert_eq!(tracked.name, "Shapes");
     assert_eq!(tracked.model, "NL42");
+}
+
+#[test]
+fn nanoleaf_config_validation_rejects_non_routable_device_ips() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let factory = NanoleafDriverFactory::new(
+        Arc::new(
+            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+        ),
+        false,
+    );
+    let mut config = factory
+        .config()
+        .expect("Nanoleaf should expose config provider")
+        .default_config();
+    config
+        .settings
+        .insert("device_ips".to_owned(), serde_json::json!(["127.0.0.1"]));
+
+    let error = factory
+        .validate_config(&config)
+        .expect_err("loopback device IP should be rejected");
+    assert!(error.to_string().contains("invalid Nanoleaf device IP"));
 }
 
 #[test]

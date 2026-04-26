@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_core::device::wled::WledKnownTarget;
-use hypercolor_driver_api::{DriverTrackedDevice, NetworkDriverFactory, TrackedDeviceCtx};
+use hypercolor_driver_api::{
+    DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory, TrackedDeviceCtx,
+};
 use hypercolor_driver_wled::{
     WledConfig, WledDriverFactory, WledProtocolConfig, resolve_wled_probe_ips_from_sources,
     resolve_wled_probe_targets_from_sources, wled_device_control_surface,
@@ -112,6 +114,23 @@ fn wled_factory_advertises_control_surface_capability() {
     assert!(descriptor.capabilities.discovery);
     assert!(descriptor.capabilities.backend_factory);
     assert!(descriptor.capabilities.runtime_cache);
+}
+
+#[test]
+fn wled_config_validation_rejects_non_routable_known_ips() {
+    let factory = WledDriverFactory::new(false);
+    let mut config = factory
+        .config()
+        .expect("WLED should expose config provider")
+        .default_config();
+    config
+        .settings
+        .insert("known_ips".to_owned(), serde_json::json!(["127.0.0.1"]));
+
+    let error = factory
+        .validate_config(&config)
+        .expect_err("loopback known IP should be rejected");
+    assert!(error.to_string().contains("invalid WLED known IP"));
 }
 
 #[test]

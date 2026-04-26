@@ -130,12 +130,15 @@ impl DriverConfigProvider for HueDriverFactory {
     }
 
     fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
-        DriverConfigView {
+        let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
-        .parse_settings::<HueConfig>()
-        .map(|_| ())
+        .parse_settings::<HueConfig>()?;
+        for ip in config.bridge_ips {
+            validate_ip(ip).with_context(|| format!("invalid Hue bridge IP: {ip}"))?;
+        }
+        Ok(())
     }
 }
 
