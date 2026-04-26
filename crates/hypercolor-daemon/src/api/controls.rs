@@ -16,6 +16,7 @@ use hypercolor_types::controls::{
     ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
+use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::devices;
@@ -243,6 +244,11 @@ async fn apply_driver_control_surface_values(
         }
     };
     let updated_entry = driver_config_entry_for_state(state, &driver_id);
+    if let Err(error) = apply_driver_control_impacts(state, &driver_id, &response.impacts).await {
+        return ApiError::internal(format!(
+            "Applied driver controls for {driver_id}, but dynamic impact handling failed: {error}"
+        ));
+    }
     response.previous_revision = previous_revision;
     response.revision = driver_control_revision(&updated_entry);
     response.values = driver_surface_values(provider, state, &driver_id, &updated_entry).await;
@@ -413,6 +419,77 @@ async fn driver_surface_values(
         .ok()
         .flatten()
         .map_or_else(ControlValueMap::new, |surface| surface.values)
+}
+
+async fn apply_driver_control_impacts(
+    state: &AppState,
+    driver_id: &str,
+    impacts: &[ApplyImpact],
+) -> anyhow::Result<()> {
+    if impacts.contains(&ApplyImpact::BackendRebind) {
+        rebind_driver_backend(state, driver_id).await?;
+    }
+    if impacts.contains(&ApplyImpact::DiscoveryRescan) {
+        queue_driver_discovery_rescan(state, driver_id);
+    }
+    Ok(())
+}
+
+async fn rebind_driver_backend(state: &AppState, driver_id: &str) -> anyhow::Result<()> {
+    let config = state.config_manager.as_ref().map_or_else(
+        || Arc::new(HypercolorConfig::default()),
+        |manager| Arc::clone(&manager.get()),
+    );
+    let Some(driver) = state.driver_registry.get(driver_id) else {
+        return Ok(());
+    };
+    if !network::module_enabled(&config, &driver.module_descriptor()) {
+        return Ok(());
+    }
+
+    let config_entry = network::driver_config_entry(&config, driver_id);
+    let config_view = DriverConfigView {
+        driver_id,
+        entry: &config_entry,
+    };
+    let Some(backend) = driver.build_backend(state.driver_host.as_ref(), config_view)? else {
+        return Ok(());
+    };
+
+    let mut manager = state.backend_manager.lock().await;
+    manager.register_backend(backend);
+    Ok(())
+}
+
+fn queue_driver_discovery_rescan(state: &AppState, driver_id: &str) {
+    let driver_id = driver_id.to_owned();
+    let config = state.config_manager.as_ref().map_or_else(
+        || Arc::new(HypercolorConfig::default()),
+        |manager| Arc::clone(&manager.get()),
+    );
+    let runtime = state.driver_host.discovery_runtime();
+    let driver_registry = Arc::clone(&state.driver_registry);
+    let driver_host = Arc::clone(&state.driver_host);
+    let backends = vec![core_discovery::DiscoveryBackend::network(driver_id.clone())];
+
+    tokio::spawn(async move {
+        if core_discovery::execute_discovery_scan_if_idle(
+            runtime,
+            driver_registry,
+            driver_host,
+            config,
+            backends,
+            core_discovery::default_timeout(),
+        )
+        .await
+        .is_none()
+        {
+            warn!(
+                driver_id,
+                "Skipped driver control rescan because discovery is already running"
+            );
+        }
+    });
 }
 
 async fn resolve_device_id(state: &AppState, id_or_name: &str) -> Result<Option<DeviceId>, String> {

@@ -1873,6 +1873,9 @@ async fn patch_driver_control_surface_updates_config() {
         .expect("wled config should exist");
     assert_eq!(wled.settings["default_protocol"], "e131");
     assert_eq!(wled.settings["dedup_threshold"], 7);
+
+    let backend_manager = state.backend_manager.lock().await;
+    assert!(backend_manager.backend_ids().contains(&"wled"));
 }
 
 #[tokio::test]
