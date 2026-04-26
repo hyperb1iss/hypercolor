@@ -214,7 +214,7 @@ async fn collect_tracked_devices_for_backend(
             .metadata_for_id(&tracked.info.id)
             .await
             .unwrap_or_default();
-        if backend_id_for_device(&tracked.info.family, Some(&metadata)) != backend_id {
+        if backend_id_for_device(&tracked.info) != backend_id {
             continue;
         }
         let fingerprint = device_registry.fingerprint_for_id(&tracked.info.id).await;
@@ -451,11 +451,7 @@ pub async fn execute_discovery_scan(
         .any(|scanner| scanner.error.is_some());
     let mut scoped_registry_ids = HashSet::new();
     for tracked in runtime.device_registry.list().await {
-        let metadata = runtime
-            .device_registry
-            .metadata_for_id(&tracked.info.id)
-            .await;
-        let backend_id = backend_id_for_device(&tracked.info.family, metadata.as_ref());
+        let backend_id = backend_id_for_device(&tracked.info);
         if scanned_backend_ids.contains(&backend_id) {
             scoped_registry_ids.insert(tracked.info.id);
         }
@@ -591,8 +587,7 @@ async fn retain_transient_smbus_devices(
             continue;
         }
 
-        let metadata = runtime.device_registry.metadata_for_id(&id).await;
-        if backend_id_for_device(&tracked.info.family, metadata.as_ref()) != "smbus" {
+        if backend_id_for_device(&tracked.info) != "smbus" {
             continue;
         }
 
@@ -667,8 +662,7 @@ async fn process_discovered_device(
     let tracked_before = runtime.device_registry.get(&device_id).await?;
     let was_renderable = tracked_before.state.is_renderable();
 
-    let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
-    let backend = backend_id_for_device(&tracked_before.info.family, metadata.as_ref());
+    let backend = backend_id_for_device(&tracked_before.info);
     let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
     let connect_behavior = desired_connect_behavior(
         runtime,
@@ -717,12 +711,7 @@ async fn process_discovered_device(
     sync_registry_state(runtime, device_id).await;
 
     let tracked_after = runtime.device_registry.get(&device_id).await?;
-    let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
-    let device_ref = device_ref_for_tracked(
-        &tracked_after.info.family,
-        &tracked_after.info,
-        metadata.as_ref(),
-    );
+    let device_ref = device_ref_for_tracked(&tracked_after.info);
 
     let should_publish_reappeared = !was_renderable || had_actions;
     let should_publish = match kind {

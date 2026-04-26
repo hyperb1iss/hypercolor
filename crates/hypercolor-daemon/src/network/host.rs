@@ -215,8 +215,7 @@ impl DriverDiscoveryState for DaemonDriverHost {
                 .metadata_for_id(&tracked.info.id)
                 .await
                 .unwrap_or_default();
-            if discovery::backend_id_for_device(&tracked.info.family, Some(&metadata)) != backend_id
-            {
+            if discovery::backend_id_for_device(&tracked.info) != backend_id {
                 continue;
             }
             let fingerprint = self

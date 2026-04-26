@@ -739,7 +739,7 @@ async fn display_targets(
             continue;
         };
 
-        let backend_id = backend_id_for_device(&tracked.info.family, metadata.as_ref());
+        let backend_id = backend_id_for_device(&tracked.info);
         targets.push(Arc::new(DisplayTarget {
             worker_key: (backend_id.clone(), tracked.info.id),
             backend_id,

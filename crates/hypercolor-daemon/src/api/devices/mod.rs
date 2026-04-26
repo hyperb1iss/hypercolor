@@ -24,8 +24,7 @@ use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager}
 use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
 use hypercolor_types::device::{
-    ConnectionType, DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint,
-    DeviceUserSettings,
+    ConnectionType, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::HypercolorEvent;
 
@@ -495,7 +494,7 @@ pub async fn identify_device(
         ));
     }
 
-    let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
+    let backend_id = resolved_backend_id(&tracked.info);
     let network_metadata = state.device_registry.metadata_for_id(&device_id).await;
     let network_ip = network_metadata
         .as_ref()
@@ -630,7 +629,7 @@ pub async fn identify_zone(
 
     let on_frame = build_zone_identify_frame(&tracked.info, zone_index, identify_color);
 
-    let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
+    let backend_id = resolved_backend_id(&tracked.info);
     let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
         &state,
         device_id,
@@ -768,7 +767,7 @@ pub async fn identify_attachment(
         }
     };
 
-    let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
+    let backend_id = resolved_backend_id(&tracked.info);
     let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
         &state,
         device_id,
@@ -864,7 +863,7 @@ pub(super) async fn summarize_device_for_response(
         id: info.id.to_string(),
         layout_device_id,
         name: info.name.clone(),
-        backend: crate::discovery::backend_id_for_device(&info.family, metadata),
+        backend: crate::discovery::backend_id_for_device(info),
         status: device_state.variant_name().to_lowercase(),
         brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),
@@ -971,12 +970,11 @@ async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -
         return layout_device_id;
     }
 
-    let metadata = state.device_registry.metadata_for_id(&device_info.id).await;
     let fingerprint = state
         .device_registry
         .fingerprint_for_id(&device_info.id)
         .await;
-    let backend_id = core_discovery::backend_id_for_device(&device_info.family, metadata.as_ref());
+    let backend_id = core_discovery::backend_id_for_device(device_info);
     DeviceLifecycleManager::canonical_layout_device_id(
         &backend_id,
         device_info,
@@ -1111,13 +1109,8 @@ pub(super) async fn resolve_device_id_or_response(
     }
 }
 
-pub(super) async fn resolved_backend_id(
-    state: &AppState,
-    device_id: DeviceId,
-    family: &DeviceFamily,
-) -> String {
-    let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    crate::discovery::backend_id_for_device(family, metadata.as_ref())
+pub(super) fn resolved_backend_id(info: &DeviceInfo) -> String {
+    crate::discovery::backend_id_for_device(info)
 }
 
 fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {

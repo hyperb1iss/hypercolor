@@ -318,14 +318,16 @@ impl Drop for DiscoveryFlagGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::{
         DiscoveryBackend, backend_id_for_device, default_timeout, normalize_timeout_ms,
         resolve_backends,
     };
     use crate::api::AppState;
-    use hypercolor_types::{config::HypercolorConfig, device::DeviceFamily};
+    use hypercolor_types::config::HypercolorConfig;
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+        DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    };
 
     fn builtin_registry() -> AppState {
         AppState::new()
@@ -344,6 +346,26 @@ mod tests {
             DiscoveryBackend::Blocks,
         ]);
         backends
+    }
+
+    fn device_info_with_origin(origin: DeviceOrigin) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Test Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("test".to_owned()),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 1,
+                topology: DeviceTopologyHint::Point,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
     }
 
     #[test]
@@ -431,34 +453,10 @@ mod tests {
     }
 
     #[test]
-    fn backend_id_for_device_prefers_scanner_metadata() {
-        let mut metadata = HashMap::new();
-        metadata.insert("backend_id".to_owned(), "smbus".to_owned());
+    fn backend_id_for_device_uses_device_origin() {
+        let info =
+            device_info_with_origin(DeviceOrigin::native("ableton", "usb", ConnectionType::Usb));
 
-        assert_eq!(
-            backend_id_for_device(&DeviceFamily::Asus, Some(&metadata)),
-            "smbus"
-        );
-    }
-
-    #[test]
-    fn backend_id_for_device_infers_usb_from_usb_metadata() {
-        let mut metadata = HashMap::new();
-        metadata.insert("vendor_id".to_owned(), "0x2982".to_owned());
-        metadata.insert("product_id".to_owned(), "0x1967".to_owned());
-        metadata.insert("usb_path".to_owned(), "001-12".to_owned());
-
-        assert_eq!(
-            backend_id_for_device(&DeviceFamily::Custom("Ableton".to_owned()), Some(&metadata)),
-            "usb"
-        );
-    }
-
-    #[test]
-    fn backend_id_for_device_keeps_custom_fallback_without_usb_metadata() {
-        assert_eq!(
-            backend_id_for_device(&DeviceFamily::Custom("Ableton".to_owned()), None),
-            "ableton"
-        );
+        assert_eq!(backend_id_for_device(&info), "usb");
     }
 }

@@ -38,9 +38,7 @@ pub async fn apply_user_enabled_state(
         let Some(tracked) = runtime.device_registry.get(&device_id).await else {
             return Ok(UserEnabledStateResult::MissingLifecycle);
         };
-        let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
-        let backend =
-            super::device_helpers::backend_id_for_device(&tracked.info.family, metadata.as_ref());
+        let backend = super::device_helpers::backend_id_for_device(&tracked.info);
         let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
 
         desired_connect_behavior(

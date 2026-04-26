@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::Context;
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager, SegmentRange};
 use hypercolor_types::device::{
@@ -382,39 +380,15 @@ pub(super) fn format_error_chain(error: &anyhow::Error) -> String {
         .join(" | caused_by: ")
 }
 
-pub(crate) fn backend_id_for_device(
-    family: &DeviceFamily,
-    metadata: Option<&HashMap<String, String>>,
-) -> String {
-    if let Some(metadata) = metadata {
-        if let Some(backend_id) = metadata.get("backend_id")
-            && !backend_id.trim().is_empty()
-        {
-            return backend_id.clone();
-        }
-
-        let has_usb_identity = metadata.contains_key("usb_path")
-            || (metadata.contains_key("vendor_id") && metadata.contains_key("product_id"));
-        if has_usb_identity {
-            return "usb".to_owned();
-        }
-    }
-
-    match family {
-        DeviceFamily::Custom(_) => family.id().into_owned(),
-        _ => family.backend_id().to_owned(),
-    }
+pub(crate) fn backend_id_for_device(info: &DeviceInfo) -> String {
+    info.origin.backend_id.clone()
 }
 
-pub(super) fn device_ref_for_tracked(
-    family: &DeviceFamily,
-    info: &DeviceInfo,
-    metadata: Option<&HashMap<String, String>>,
-) -> DeviceRef {
+pub(super) fn device_ref_for_tracked(info: &DeviceInfo) -> DeviceRef {
     DeviceRef {
         id: info.id.to_string(),
         name: info.name.clone(),
-        backend: backend_id_for_device(family, metadata),
+        backend: backend_id_for_device(info),
         led_count: info.total_led_count(),
     }
 }

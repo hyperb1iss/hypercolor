@@ -102,7 +102,7 @@ pub async fn list_logical_devices(
             tracked.info.id,
             PhysicalSnapshot {
                 name: tracked.info.name.clone(),
-                backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
+                backend: resolved_backend_id(&tracked.info),
                 status: tracked.state.variant_name().to_ascii_lowercase(),
             },
         ));
@@ -161,7 +161,7 @@ pub async fn list_device_logical_devices(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
+            backend: resolved_backend_id(&tracked.info),
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -244,7 +244,7 @@ pub async fn create_logical_device(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
+            backend: resolved_backend_id(&tracked.info),
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -271,7 +271,7 @@ pub async fn get_logical_device(
             tracked.info.id,
             PhysicalSnapshot {
                 name: tracked.info.name.clone(),
-                backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
+                backend: resolved_backend_id(&tracked.info),
                 status: tracked.state.variant_name().to_ascii_lowercase(),
             },
         ));
@@ -366,7 +366,7 @@ pub async fn update_logical_device(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
+            backend: resolved_backend_id(&tracked.info),
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -456,7 +456,7 @@ pub(super) async fn sync_live_logical_mappings_for_device(state: &AppState, phys
 
     let fallback_layout_id = ensure_default_logical_entry(state, &tracked.info).await;
 
-    let backend_id = resolved_backend_id(state, physical_id, &tracked.info.family).await;
+    let backend_id = resolved_backend_id(&tracked.info);
     let logical_entries = {
         let store = state.logical_devices.read().await;
         logical_devices::list_for_physical(&store, physical_id)
