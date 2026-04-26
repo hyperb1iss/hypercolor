@@ -140,6 +140,10 @@ impl NetworkDriverFactory for ControlOnlyDriver {
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(&ControlOnlyProvider)
     }
+
+    fn has_backend_factory(&self) -> bool {
+        false
+    }
 }
 
 #[test]
@@ -150,6 +154,7 @@ fn network_driver_factory_advertises_control_provider_capability() {
     assert!(!module.capabilities.discovery);
     assert!(!module.capabilities.pairing);
     assert!(!module.capabilities.credentials);
+    assert!(!module.capabilities.backend_factory);
 }
 
 #[test]

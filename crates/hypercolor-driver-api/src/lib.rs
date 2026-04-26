@@ -659,6 +659,7 @@ pub trait NetworkDriverFactory: Send + Sync {
         descriptor.capabilities.pairing = self.pairing().is_some();
         descriptor.capabilities.runtime_cache = descriptor.capabilities.discovery;
         descriptor.capabilities.credentials = descriptor.capabilities.pairing;
+        descriptor.capabilities.backend_factory = self.has_backend_factory();
         descriptor.capabilities.controls = self.controls().is_some();
         descriptor
     }
@@ -666,6 +667,11 @@ pub trait NetworkDriverFactory: Send + Sync {
     /// Config capability, if the driver exposes host-readable defaults or validation.
     fn config(&self) -> Option<&dyn DriverConfigProvider> {
         None
+    }
+
+    /// Whether this driver contributes a runtime backend for color output.
+    fn has_backend_factory(&self) -> bool {
+        true
     }
 
     /// Build the optional runtime backend used for color output.
