@@ -11,13 +11,6 @@ use hypercolor_types::device::DriverModuleDescriptor;
 
 pub use host::DaemonDriverHost;
 pub use hypercolor_driver_builtin::build_driver_registry as build_builtin_driver_registry;
-#[cfg(feature = "hue")]
-pub use hypercolor_driver_builtin::resolve_hue_probe_bridges_from_sources;
-#[cfg(feature = "nanoleaf")]
-pub use hypercolor_driver_builtin::resolve_nanoleaf_probe_devices_from_sources;
-pub use hypercolor_driver_builtin::{
-    resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
-};
 
 /// Whether a network driver is enabled by the active config.
 #[must_use]

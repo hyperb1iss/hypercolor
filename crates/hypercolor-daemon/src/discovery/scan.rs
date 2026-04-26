@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,19 +18,6 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-#[cfg(feature = "hue")]
-use hypercolor_driver_builtin::HueConfig;
-#[cfg(feature = "hue")]
-use hypercolor_driver_builtin::HueKnownBridge;
-#[cfg(feature = "nanoleaf")]
-use hypercolor_driver_builtin::NanoleafConfig;
-#[cfg(feature = "nanoleaf")]
-use hypercolor_driver_builtin::NanoleafKnownDevice;
-
-use hypercolor_core::device::wled::WledKnownTarget;
-use hypercolor_driver_api::DriverTrackedDevice;
-use hypercolor_driver_builtin::WledConfig;
-
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
     apply_persisted_device_settings, backend_id_for_device, desired_connect_behavior,
@@ -40,7 +26,6 @@ use super::device_helpers::{
 use super::lifecycle::execute_lifecycle_actions;
 use super::{DiscoveryBackend, DiscoveryRuntime, DiscoveryScannerResult};
 use crate::network::{self, DaemonDriverHost};
-use crate::runtime_state;
 
 use hypercolor_core::device::ScannerScanReport;
 
@@ -108,134 +93,6 @@ pub async fn execute_discovery_scan_if_idle(
         )
         .await,
     )
-}
-
-/// Resolve the IPs that the WLED scanner should probe during discovery.
-///
-/// This merges explicit config with IP metadata cached from previous WLED
-/// discoveries so a transient mDNS miss does not immediately orphan a device
-/// that was recently reachable over HTTP.
-pub async fn resolve_wled_probe_ips(
-    device_registry: &hypercolor_core::device::DeviceRegistry,
-    config: &WledConfig,
-    runtime_state_path: &std::path::Path,
-) -> Vec<IpAddr> {
-    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "wled").await;
-    let cached_probe_ips = load_cached_wled_probe_ips(runtime_state_path).unwrap_or_else(|error| {
-        warn!(
-            path = %runtime_state_path.display(),
-            %error,
-            "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
-        );
-        Vec::new()
-    });
-    let cached_targets =
-        load_cached_wled_probe_targets(runtime_state_path).unwrap_or_else(|error| {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "failed to load cached WLED probe targets; ignoring persisted runtime cache"
-            );
-            Vec::new()
-        });
-
-    network::resolve_wled_probe_ips_from_sources(
-        config,
-        &tracked_devices,
-        &cached_probe_ips,
-        &cached_targets,
-    )
-}
-
-/// Resolve the WLED targets that discovery should probe, including cached
-/// identity hints for friendly fallback labels when HTTP enrichment fails.
-pub async fn resolve_wled_probe_targets(
-    device_registry: &hypercolor_core::device::DeviceRegistry,
-    config: &WledConfig,
-    runtime_state_path: &std::path::Path,
-) -> Vec<WledKnownTarget> {
-    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "wled").await;
-    let cached_probe_ips = load_cached_wled_probe_ips(runtime_state_path).unwrap_or_else(|error| {
-        warn!(
-            path = %runtime_state_path.display(),
-            %error,
-            "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
-        );
-        Vec::new()
-    });
-    let cached_targets =
-        load_cached_wled_probe_targets(runtime_state_path).unwrap_or_else(|error| {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "failed to load cached WLED probe targets; ignoring persisted runtime cache"
-            );
-            Vec::new()
-        });
-
-    network::resolve_wled_probe_targets_from_sources(
-        config,
-        &tracked_devices,
-        &cached_probe_ips,
-        &cached_targets,
-    )
-}
-
-#[cfg(feature = "nanoleaf")]
-/// Resolve the Nanoleaf devices that discovery should probe from config and
-/// currently tracked registry metadata.
-pub async fn resolve_nanoleaf_probe_devices(
-    device_registry: &hypercolor_core::device::DeviceRegistry,
-    config: &NanoleafConfig,
-) -> Vec<NanoleafKnownDevice> {
-    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "nanoleaf").await;
-    network::resolve_nanoleaf_probe_devices_from_sources(config, &tracked_devices)
-}
-
-#[cfg(feature = "hue")]
-/// Resolve the Hue bridges that discovery should probe from config and
-/// registry metadata.
-pub async fn resolve_hue_probe_bridges(
-    device_registry: &hypercolor_core::device::DeviceRegistry,
-    config: &HueConfig,
-) -> Vec<HueKnownBridge> {
-    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "hue").await;
-    network::resolve_hue_probe_bridges_from_sources(config, &tracked_devices)
-}
-
-async fn collect_tracked_devices_for_backend(
-    device_registry: &hypercolor_core::device::DeviceRegistry,
-    backend_id: &str,
-) -> Vec<DriverTrackedDevice> {
-    let mut tracked_devices = Vec::new();
-
-    for tracked in device_registry.list().await {
-        let metadata = device_registry
-            .metadata_for_id(&tracked.info.id)
-            .await
-            .unwrap_or_default();
-        if backend_id_for_device(&tracked.info) != backend_id {
-            continue;
-        }
-        let fingerprint = device_registry.fingerprint_for_id(&tracked.info.id).await;
-
-        tracked_devices.push(DriverTrackedDevice {
-            info: tracked.info,
-            metadata,
-            fingerprint,
-            current_state: tracked.state,
-        });
-    }
-
-    tracked_devices
-}
-
-fn load_cached_wled_probe_ips(path: &std::path::Path) -> Result<Vec<IpAddr>> {
-    runtime_state::load_wled_probe_ips(path).map_err(Into::into)
-}
-
-fn load_cached_wled_probe_targets(path: &std::path::Path) -> Result<Vec<WledKnownTarget>> {
-    runtime_state::load_wled_probe_targets(path).map_err(Into::into)
 }
 
 struct NetworkDriverScanner {

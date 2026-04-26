@@ -48,15 +48,7 @@ pub use lifecycle::{
     UserEnabledStateResult, activate_pairable_device, apply_user_enabled_state,
     disconnect_tracked_device, release_renderable_devices, shutdown_renderable_devices,
 };
-pub use scan::{
-    DiscoveryScanResult, execute_discovery_scan, execute_discovery_scan_if_idle,
-    resolve_wled_probe_ips, resolve_wled_probe_targets,
-};
-
-#[cfg(feature = "hue")]
-pub use scan::resolve_hue_probe_bridges;
-#[cfg(feature = "nanoleaf")]
-pub use scan::resolve_nanoleaf_probe_devices;
+pub use scan::{DiscoveryScanResult, execute_discovery_scan, execute_discovery_scan_if_idle};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
