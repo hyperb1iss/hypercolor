@@ -38,6 +38,12 @@ pub enum Credentials {
         auth_token: String,
     },
 
+    /// Govee cloud API credentials.
+    Govee {
+        /// Personal API key issued to the user's Govee account.
+        api_key: String,
+    },
+
     /// WLED credentials for secured HTTP/API deployments.
     Wled {
         /// Optional username for future/basic-auth-style flows.

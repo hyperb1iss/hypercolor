@@ -589,6 +589,9 @@ pub enum DeviceFamily {
     /// Nanoleaf `WiFi` panels (Shapes, Canvas, Elements, Lines, Skylight).
     Nanoleaf,
 
+    /// Govee Wi-Fi lights and RGBIC devices.
+    Govee,
+
     /// Native Razer USB devices.
     Razer,
 
@@ -628,6 +631,7 @@ impl DeviceFamily {
             Self::Wled => "WLED",
             Self::Hue => "Philips Hue",
             Self::Nanoleaf => "Nanoleaf",
+            Self::Govee => "Govee",
             Self::Razer => "Razer",
             Self::Corsair => "Corsair",
             Self::Dygma => "Dygma",
@@ -652,6 +656,7 @@ impl DeviceFamily {
             Self::Wled => "wled".into(),
             Self::Hue => "hue".into(),
             Self::Nanoleaf => "nanoleaf".into(),
+            Self::Govee => "govee".into(),
             Self::Razer => "razer".into(),
             Self::Corsair => "corsair".into(),
             Self::Dygma => "dygma".into(),
@@ -680,6 +685,7 @@ impl DeviceFamily {
             Self::Wled => "wled",
             Self::Hue => "hue",
             Self::Nanoleaf => "nanoleaf",
+            Self::Govee => "govee",
             Self::Roli => "blocks",
             Self::Custom(_) => "custom",
             _ => "usb",
