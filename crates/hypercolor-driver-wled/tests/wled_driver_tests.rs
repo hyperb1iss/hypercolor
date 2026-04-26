@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_core::device::wled::WledKnownTarget;
-use hypercolor_driver_api::DriverTrackedDevice;
+use hypercolor_driver_api::{DriverTrackedDevice, NetworkDriverFactory};
 use hypercolor_driver_wled::{
-    WledConfig, resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
+    WledConfig, WledDriverFactory, WledProtocolConfig, resolve_wled_probe_ips_from_sources,
+    resolve_wled_probe_targets_from_sources, wled_driver_control_surface,
 };
+use hypercolor_types::controls::{ApplyImpact, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -99,4 +101,47 @@ fn resolve_probe_targets_prefers_tracked_metadata() {
     assert_eq!(resolved[0].hostname.as_deref(), Some("desk.local"));
     assert_eq!(resolved[0].led_count, Some(60));
     assert_eq!(resolved[0].rgbw, Some(true));
+}
+
+#[test]
+fn wled_factory_advertises_control_surface_capability() {
+    let descriptor = WledDriverFactory::new(false).module_descriptor();
+
+    assert!(descriptor.capabilities.controls);
+    assert!(descriptor.capabilities.discovery);
+    assert!(descriptor.capabilities.backend_factory);
+}
+
+#[test]
+fn wled_driver_control_surface_exposes_typed_config_fields() {
+    let config = WledConfig {
+        known_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))],
+        default_protocol: WledProtocolConfig::E131,
+        realtime_http_enabled: false,
+        dedup_threshold: 7,
+    };
+
+    let surface = wled_driver_control_surface(&config);
+
+    assert_eq!(surface.surface_id, "driver:wled");
+    assert_eq!(surface.fields.len(), 4);
+    assert!(surface.fields.iter().any(|field| {
+        field.id == "known_ips" && field.apply_impact == ApplyImpact::DiscoveryRescan
+    }));
+    assert!(surface.fields.iter().any(|field| {
+        field.id == "default_protocol" && field.apply_impact == ApplyImpact::BackendRebind
+    }));
+    assert_eq!(
+        surface.values["known_ips"],
+        ControlValue::List(vec![ControlValue::IpAddress("10.0.0.2".to_owned())])
+    );
+    assert_eq!(
+        surface.values["default_protocol"],
+        ControlValue::Enum("e131".to_owned())
+    );
+    assert_eq!(
+        surface.values["realtime_http_enabled"],
+        ControlValue::Bool(false)
+    );
+    assert_eq!(surface.values["dedup_threshold"], ControlValue::Integer(7));
 }

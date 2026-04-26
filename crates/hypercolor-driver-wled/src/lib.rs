@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::IpAddr;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_core::device::wled::{
     WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol, WledScanner,
@@ -9,14 +9,28 @@ use hypercolor_core::device::wled::{
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
+    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
+    DriverTrackedDevice, DriverTransport, NetworkDriverFactory, TrackedDeviceCtx,
+    ValidatedControlChanges,
+};
+use hypercolor_types::controls::{
+    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
+    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
+    ControlChange, ControlEnumOption, ControlFieldDescriptor, ControlGroupDescriptor,
+    ControlGroupKind, ControlOwner, ControlPersistence, ControlSurfaceDocument,
+    ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::DeviceId;
 use serde::{Deserialize, Serialize};
 
 pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
+
+const FIELD_KNOWN_IPS: &str = "known_ips";
+const FIELD_DEFAULT_PROTOCOL: &str = "default_protocol";
+const FIELD_REALTIME_HTTP_ENABLED: &str = "realtime_http_enabled";
+const FIELD_DEDUP_THRESHOLD: &str = "dedup_threshold";
 
 /// Default protocol for WLED realtime streaming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -100,6 +114,10 @@ impl NetworkDriverFactory for WledDriverFactory {
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
 }
 
 #[async_trait]
@@ -130,6 +148,287 @@ impl DiscoveryCapability for WledDriverFactory {
             .collect();
 
         Ok(DiscoveryResult { devices })
+    }
+}
+
+#[async_trait]
+impl DriverControlProvider for WledDriverFactory {
+    async fn driver_surface(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        let _ = host;
+        Ok(Some(wled_driver_control_surface(
+            &config.parse_settings::<WledConfig>()?,
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        let _ = (host, device);
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> Result<ValidatedControlChanges> {
+        let _ = host;
+        validate_wled_driver_changes(target, changes)
+    }
+
+    async fn apply_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> Result<ApplyControlChangesResponse> {
+        let ControlApplyTarget::Driver { driver_id, config } = target else {
+            bail!("WLED device controls are not exposed yet");
+        };
+        if *driver_id != DESCRIPTOR.id {
+            bail!("WLED controls cannot apply to driver '{driver_id}'");
+        }
+
+        let control_host = host
+            .control_host()
+            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+        let mut values = wled_config_values(&config.parse_settings::<WledConfig>()?);
+        for change in &changes.changes {
+            values.insert(change.field_id.clone(), change.value.clone());
+        }
+        control_host
+            .driver_config_store()
+            .save_driver_values(DESCRIPTOR.id, values.clone())
+            .await?;
+
+        Ok(ApplyControlChangesResponse {
+            surface_id: format!("driver:{}", DESCRIPTOR.id),
+            previous_revision: 0,
+            revision: 0,
+            accepted: changes
+                .changes
+                .into_iter()
+                .map(|change| AppliedControlChange {
+                    field_id: change.field_id,
+                    value: change.value,
+                })
+                .collect(),
+            rejected: Vec::new(),
+            impacts: changes.impacts,
+            values,
+        })
+    }
+
+    async fn invoke_action(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        let _ = (host, target, input);
+        bail!("unknown WLED control action: {action_id}")
+    }
+}
+
+#[must_use]
+pub fn wled_driver_control_surface(config: &WledConfig) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}", DESCRIPTOR.id),
+        ControlSurfaceScope::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.push(ControlGroupDescriptor {
+        id: "connection".to_owned(),
+        label: "Connection".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Connection,
+        ordering: 0,
+    });
+    document.groups.push(ControlGroupDescriptor {
+        id: "output".to_owned(),
+        label: "Output".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Output,
+        ordering: 10,
+    });
+    document.fields = wled_driver_control_fields();
+    document.values = wled_config_values(config);
+    document.availability = document
+        .fields
+        .iter()
+        .map(|field| {
+            (
+                field.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
+    document
+}
+
+fn validate_wled_driver_changes(
+    target: &ControlApplyTarget<'_>,
+    changes: &[ControlChange],
+) -> Result<ValidatedControlChanges> {
+    let ControlApplyTarget::Driver { driver_id, .. } = target else {
+        bail!("WLED device controls are not exposed yet");
+    };
+    if *driver_id != DESCRIPTOR.id {
+        bail!("WLED controls cannot validate driver '{driver_id}'");
+    }
+
+    let fields = wled_driver_control_fields()
+        .into_iter()
+        .map(|field| (field.id.clone(), field))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut impacts = Vec::new();
+
+    for change in changes {
+        if !seen.insert(change.field_id.as_str()) {
+            bail!("duplicate WLED control field: {}", change.field_id);
+        }
+        let field = fields
+            .get(&change.field_id)
+            .ok_or_else(|| anyhow!("unknown WLED control field: {}", change.field_id))?;
+        field
+            .value_type
+            .validate_value(&change.value)
+            .with_context(|| format!("invalid WLED control field: {}", change.field_id))?;
+        push_unique_impact(&mut impacts, field.apply_impact.clone());
+    }
+
+    Ok(ValidatedControlChanges {
+        changes: changes.to_vec(),
+        impacts,
+    })
+}
+
+fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {
+    vec![
+        wled_driver_field(
+            FIELD_KNOWN_IPS,
+            "Known IPs",
+            Some("connection"),
+            ControlValueType::List {
+                item_type: Box::new(ControlValueType::IpAddress),
+                min_items: None,
+                max_items: Some(64),
+            },
+            ApplyImpact::DiscoveryRescan,
+            0,
+        ),
+        wled_driver_field(
+            FIELD_DEFAULT_PROTOCOL,
+            "Default Protocol",
+            Some("output"),
+            ControlValueType::Enum {
+                options: vec![
+                    ControlEnumOption::new("ddp", "DDP"),
+                    ControlEnumOption::new("e131", "E1.31"),
+                ],
+            },
+            ApplyImpact::BackendRebind,
+            10,
+        ),
+        wled_driver_field(
+            FIELD_REALTIME_HTTP_ENABLED,
+            "Realtime HTTP",
+            Some("output"),
+            ControlValueType::Bool,
+            ApplyImpact::BackendRebind,
+            20,
+        ),
+        wled_driver_field(
+            FIELD_DEDUP_THRESHOLD,
+            "Dedup Threshold",
+            Some("output"),
+            ControlValueType::Integer {
+                min: Some(0),
+                max: Some(i64::from(u8::MAX)),
+                step: Some(1),
+            },
+            ApplyImpact::Live,
+            30,
+        ),
+    ]
+}
+
+fn wled_driver_field(
+    id: &str,
+    label: &str,
+    group_id: Option<&str>,
+    value_type: ControlValueType,
+    apply_impact: ApplyImpact,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: group_id.map(str::to_owned),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadWrite,
+        persistence: ControlPersistence::DriverConfig,
+        apply_impact,
+        visibility: ControlVisibility::Standard,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
+fn wled_config_values(config: &WledConfig) -> ControlValueMap {
+    ControlValueMap::from([
+        (
+            FIELD_KNOWN_IPS.to_owned(),
+            ControlValue::List(
+                config
+                    .known_ips
+                    .iter()
+                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .collect(),
+            ),
+        ),
+        (
+            FIELD_DEFAULT_PROTOCOL.to_owned(),
+            ControlValue::Enum(
+                match config.default_protocol {
+                    WledProtocolConfig::Ddp => "ddp",
+                    WledProtocolConfig::E131 => "e131",
+                }
+                .to_owned(),
+            ),
+        ),
+        (
+            FIELD_REALTIME_HTTP_ENABLED.to_owned(),
+            ControlValue::Bool(config.realtime_http_enabled),
+        ),
+        (
+            FIELD_DEDUP_THRESHOLD.to_owned(),
+            ControlValue::Integer(i64::from(config.dedup_threshold)),
+        ),
+    ])
+}
+
+fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
+    if !impacts.contains(&impact) {
+        impacts.push(impact);
     }
 }
 
