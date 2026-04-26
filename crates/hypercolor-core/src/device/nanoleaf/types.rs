@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 use super::topology::NanoleafShapeType;
@@ -88,6 +88,7 @@ impl NanoleafDiscoveredDevice {
 
         DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: self.info.origin.clone(),
             name: self.info.name.clone(),
             family: DeviceFamily::Nanoleaf,
             fingerprint,
@@ -136,6 +137,7 @@ pub fn build_device_info(
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
         zones,
         firmware_version: firmware
             .map(str::trim)

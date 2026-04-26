@@ -16,7 +16,7 @@ use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, Trans
 use crate::device::net::MdnsBrowser;
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 /// mDNS service type for WLED devices.
@@ -197,6 +197,7 @@ impl WledScanner {
             family: DeviceFamily::Wled,
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: u32::from(led_count),
@@ -227,6 +228,7 @@ impl WledScanner {
 
         DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: device_info.origin.clone(),
             name,
             family: DeviceFamily::Wled,
             fingerprint,
@@ -273,6 +275,7 @@ impl WledScanner {
             family: DeviceFamily::Wled,
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count,
@@ -300,6 +303,7 @@ impl WledScanner {
 
         Some(DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: device_info.origin.clone(),
             name,
             family: DeviceFamily::Wled,
             fingerprint,

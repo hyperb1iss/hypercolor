@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 use super::connection::{self, BlocksConnection};
@@ -295,6 +295,7 @@ fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
         family: DeviceFamily::Roli,
         model: Some(block_type.display_name().to_owned()),
         connection_type: ConnectionType::Bridge,
+        origin: DeviceOrigin::native("roli", "blocks", ConnectionType::Bridge),
         zones: vec![ZoneInfo {
             name: "Grid".to_owned(),
             led_count,

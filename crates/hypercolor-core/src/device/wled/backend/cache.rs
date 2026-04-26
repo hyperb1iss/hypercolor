@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 // ── WLED Device Info ────────────────────────────────────────────────────
@@ -222,6 +222,7 @@ pub(super) fn build_device_info(
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: u32::from(wled_info.led_count),

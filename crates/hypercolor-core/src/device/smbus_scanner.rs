@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo};
+use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo, DeviceOrigin};
 
 use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
@@ -147,6 +147,7 @@ impl TransportScanner for SmBusScanner {
             .into_iter()
             .map(|probe| DiscoveredDevice {
                 connection_type: ConnectionType::SmBus,
+                origin: probe.info.origin.clone(),
                 name: probe.info.name.clone(),
                 family: probe.info.family.clone(),
                 fingerprint: probe.fingerprint,
@@ -657,6 +658,8 @@ fn build_device_info(
         family: DeviceFamily::Asus,
         model: Some(controller_kind.model_id().to_owned()),
         connection_type: ConnectionType::SmBus,
+        origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
+            .with_protocol_id("asus/aura-smbus"),
         zones,
         firmware_version: firmware_name,
         capabilities: protocol.capabilities(),

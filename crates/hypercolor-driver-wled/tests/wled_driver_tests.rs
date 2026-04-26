@@ -8,7 +8,8 @@ use hypercolor_driver_wled::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    ZoneInfo,
 };
 
 fn tracked_wled_device(ip: &str, hostname: &str, name: &str) -> DriverTrackedDevice {
@@ -20,6 +21,7 @@ fn tracked_wled_device(ip: &str, hostname: &str, name: &str) -> DriverTrackedDev
             family: DeviceFamily::Wled,
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 60,

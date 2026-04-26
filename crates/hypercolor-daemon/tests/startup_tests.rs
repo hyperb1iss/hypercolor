@@ -26,7 +26,7 @@ use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{EffectErrorFallbackPolicy, RenderAccelerationMode};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
@@ -179,6 +179,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
         family: DeviceFamily::Custom("cleanup".to_owned()),
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("cleanup", "cleanup", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 8,
@@ -757,6 +758,7 @@ async fn runtime_state_captures_default_scene_groups() {
                 family: DeviceFamily::Wled,
                 model: None,
                 connection_type: ConnectionType::Network,
+                origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
                 zones: vec![ZoneInfo {
                     name: "Main".to_owned(),
                     led_count: 30,
@@ -1085,6 +1087,7 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 30,
@@ -1135,6 +1138,7 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
         family: DeviceFamily::Custom("display".to_owned()),
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("display", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Screen".to_owned(),
             led_count: 1,
@@ -1182,6 +1186,7 @@ fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
         family: DeviceFamily::Razer,
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 10,
@@ -1232,6 +1237,7 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
         family: DeviceFamily::Razer,
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 11,
@@ -1282,6 +1288,7 @@ fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry()
         family: DeviceFamily::Corsair,
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "iCUE LINK H-Series AIO (AIO123)".to_owned(),
@@ -1365,6 +1372,7 @@ fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panick
         family: DeviceFamily::Custom("Ableton".to_owned()),
         model: Some("push2".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("ableton", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "Pads".to_owned(),
@@ -1449,6 +1457,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
         family: DeviceFamily::Razer,
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 10,
@@ -1517,6 +1526,7 @@ fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_to
         family: DeviceFamily::Corsair,
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "iCUE LINK H-Series AIO (AIO123)".to_owned(),
@@ -1638,6 +1648,8 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
         family: DeviceFamily::PrismRgb,
         model: Some("prism_s".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
+            .with_protocol_id("prismrgb/prism-s"),
         zones: vec![ZoneInfo {
             name: "GPU Strimer".to_owned(),
             led_count: 108,

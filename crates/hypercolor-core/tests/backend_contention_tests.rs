@@ -18,7 +18,7 @@ use anyhow::{Result, bail};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 // ── ContentionMockBackend ───────────────────────────────────────────────────
@@ -95,6 +95,11 @@ impl DeviceBackend for ContentionMockBackend {
             family: DeviceFamily::Custom("Contention".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native(
+                "contention",
+                self.backend_id.clone(),
+                ConnectionType::Network,
+            ),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 8,

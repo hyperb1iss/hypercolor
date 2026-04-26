@@ -18,7 +18,7 @@ use hypercolor_core::device::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
-    DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -32,6 +32,7 @@ fn mock_device_info(name: &str) -> DeviceInfo {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Zone 1".to_owned(),
             led_count: 30,
@@ -222,6 +223,7 @@ impl TransportScanner for DelayedScanner {
 fn mock_discovered(name: &str, fingerprint: &str) -> DiscoveredDevice {
     DiscoveredDevice {
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
         name: name.to_owned(),
         family: DeviceFamily::Wled,
         fingerprint: DeviceFingerprint(fingerprint.to_owned()),
@@ -455,6 +457,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         family: DeviceFamily::Corsair,
         model: Some("icue_link_system_hub".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "iCUE LINK H-Series AIO".to_owned(),
@@ -497,6 +500,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         family: DeviceFamily::Corsair,
         model: Some("icue_link_system_hub".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
         zones: Vec::new(),
         firmware_version: Some("2.2.0".to_owned()),
         capabilities: DeviceCapabilities::default(),
@@ -600,6 +604,22 @@ async fn registry_preserves_scanner_metadata() {
 }
 
 #[tokio::test]
+async fn registry_add_discovered_persists_explicit_origin() {
+    let registry = DeviceRegistry::new();
+    let mut discovered = mock_discovered("Origin Device", "net:origin-device");
+    discovered.origin = DeviceOrigin::native("wled", "wled-alt", ConnectionType::Network);
+
+    let id = registry.add_discovered(discovered).await;
+    let tracked = registry
+        .get(&id)
+        .await
+        .expect("discovered device should be tracked");
+
+    assert_eq!(tracked.info.origin.driver_id, "wled");
+    assert_eq!(tracked.info.origin.backend_id, "wled-alt");
+}
+
+#[tokio::test]
 async fn registry_remove() {
     let registry = DeviceRegistry::new();
     let device = mock_device_info("Temporary Device");
@@ -674,6 +694,7 @@ async fn registry_update_info_preserves_id_and_state() {
         family: DeviceFamily::Corsair,
         model: Some("iCUE LINK".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "Pump Ring".to_owned(),
@@ -1272,6 +1293,7 @@ async fn orchestrator_tracks_reappeared_devices() {
     // Scanner rediscovers the same device (same DeviceId in info)
     let rediscovered = DiscoveredDevice {
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
         name: "Known Device".to_owned(),
         family: DeviceFamily::Wled,
         fingerprint,
@@ -1311,6 +1333,7 @@ async fn orchestrator_tracks_vanished_devices() {
         "mDNS",
         vec![DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             name: keep.name.clone(),
             family: keep.family.clone(),
             fingerprint: keep_fingerprint,
@@ -1343,6 +1366,7 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
         "mDNS",
         vec![DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             name: "Stable".to_owned(),
             family: DeviceFamily::Wled,
             fingerprint,

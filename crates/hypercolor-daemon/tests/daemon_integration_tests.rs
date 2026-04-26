@@ -15,7 +15,7 @@ use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, RenderAccelerationMode};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -105,6 +105,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "main".to_string(),
             led_count,

@@ -12,7 +12,9 @@ use anyhow::Result;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-use crate::types::device::{ConnectionType, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo};
+use crate::types::device::{
+    ConnectionType, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
+};
 
 use super::registry::DeviceRegistry;
 
@@ -84,6 +86,9 @@ impl DiscoveryConnectBehavior {
 pub struct DiscoveredDevice {
     /// How this device connects to the host.
     pub connection_type: ConnectionType,
+
+    /// Driver ownership and output routing metadata.
+    pub origin: DeviceOrigin,
 
     /// Preliminary device name (from mDNS, USB descriptor, etc.).
     pub name: String,

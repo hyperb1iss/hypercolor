@@ -5,7 +5,7 @@ use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_driver_nanoleaf::{NanoleafConfig, resolve_nanoleaf_probe_devices_from_sources};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 
 fn tracked_nanoleaf_device() -> DriverTrackedDevice {
@@ -17,6 +17,7 @@ fn tracked_nanoleaf_device() -> DriverTrackedDevice {
             family: DeviceFamily::Nanoleaf,
             model: Some("NL42".to_owned()),
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Panels".to_owned(),
                 led_count: 1,

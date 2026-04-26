@@ -573,7 +573,7 @@ mod tests {
     use super::{DeviceLifecycleManager, LifecycleAction, ReconnectPolicy};
     use crate::types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-        DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+        DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
     };
     use std::time::Duration;
 
@@ -585,6 +585,7 @@ mod tests {
             family,
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 16,

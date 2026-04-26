@@ -32,7 +32,8 @@ use hypercolor_daemon::session::{current_global_brightness, set_global_brightnes
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
@@ -1415,6 +1416,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 60,
@@ -1446,6 +1448,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         family: DeviceFamily::Wled,
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "LCD".to_owned(),
             led_count: 320 * 320,
@@ -1488,6 +1491,7 @@ async fn insert_test_hue_bridge_device(
         family: DeviceFamily::Hue,
         model: Some("Bridge".to_owned()),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Bridge".to_owned(),
             led_count: 1,
@@ -1534,6 +1538,7 @@ async fn insert_test_nanoleaf_device(
         family: DeviceFamily::Nanoleaf,
         model: Some("Shapes".to_owned()),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Panel".to_owned(),
             led_count: 12,
@@ -1572,6 +1577,8 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
         family: DeviceFamily::Asus,
         model: Some("ROG STRIX Test".to_owned()),
         connection_type: ConnectionType::SmBus,
+        origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
+            .with_protocol_id("asus/aura-smbus"),
         zones: vec![ZoneInfo {
             name: "GPU".to_owned(),
             led_count: 24,
@@ -1683,6 +1690,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Panel".to_owned(),
             led_count: 96,
@@ -6412,6 +6420,7 @@ async fn list_devices_includes_network_metadata_when_available() {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 60,
@@ -7105,6 +7114,7 @@ async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() 
             family: DeviceFamily::Wled,
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 60,

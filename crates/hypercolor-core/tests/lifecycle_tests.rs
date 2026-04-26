@@ -16,7 +16,8 @@ use hypercolor_core::device::{
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    ZoneInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -164,6 +165,7 @@ fn device_info(id: DeviceId, name: &str) -> DeviceInfo {
         family: DeviceFamily::Custom("mock".to_owned()),
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 4,

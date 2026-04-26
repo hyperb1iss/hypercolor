@@ -13,7 +13,7 @@ use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -79,6 +79,7 @@ impl DeviceBackend for SlowRecordingBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 10,
@@ -162,6 +163,7 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
@@ -238,6 +240,7 @@ impl DeviceBackend for DirectControlRecordingBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
@@ -339,6 +342,7 @@ impl DeviceBackend for FailOnceRecordingBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
@@ -391,6 +395,7 @@ impl MetadataRefreshingBackend {
                 family: DeviceFamily::Custom("Test".to_owned()),
                 model: Some("Connected".to_owned()),
                 connection_type: ConnectionType::Network,
+                origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
                 zones: vec![
                     ZoneInfo {
                         name: "Pump Ring".to_owned(),
@@ -439,6 +444,7 @@ impl DeviceBackend for MetadataRefreshingBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: Some("Initial".to_owned()),
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 1,
@@ -549,6 +555,7 @@ impl DeviceBackend for DiscoverRetryBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
@@ -655,6 +662,7 @@ impl DeviceBackend for CleanupRetryBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 4,
@@ -733,6 +741,7 @@ impl DeviceBackend for DisplayRecordingBackend {
             family: DeviceFamily::Custom("Test".to_owned()),
             model: None,
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Display".to_owned(),
                 led_count: 0,
@@ -895,6 +904,7 @@ fn make_multi_zone_device_info(
         family: DeviceFamily::Dygma,
         model: Some("defy_wired".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "Left Keys".to_owned(),
@@ -2354,6 +2364,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
             family: DeviceFamily::Dygma,
             model: Some("defy_wired".to_owned()),
             connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
             zones: vec![
                 ZoneInfo {
                     name: "Left Keys".to_owned(),
@@ -2450,6 +2461,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
             family: DeviceFamily::Dygma,
             model: Some("defy_wired".to_owned()),
             connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
             zones: vec![
                 ZoneInfo {
                     name: "Left Keys".to_owned(),

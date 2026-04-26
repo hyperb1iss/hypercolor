@@ -15,7 +15,7 @@ use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -119,6 +119,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 60,
@@ -150,6 +151,8 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
         family: DeviceFamily::PrismRgb,
         model: Some("prism_8".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
+            .with_protocol_id("prismrgb/prism-8"),
         zones: vec![ZoneInfo {
             name: "Channel 1".to_owned(),
             led_count: 126,

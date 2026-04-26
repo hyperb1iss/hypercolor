@@ -13,7 +13,7 @@ use anyhow::{Result, bail};
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::spatial::LedTopology;
@@ -260,6 +260,7 @@ impl MockTransportScanner {
 
         self.devices.push(DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: info.origin.clone(),
             name: config.name.clone(),
             family: DeviceFamily::Custom("Mock".to_owned()),
             fingerprint: DeviceFingerprint(fingerprint_key),
@@ -546,6 +547,7 @@ fn build_device_info(
         family: DeviceFamily::Custom("Mock".to_owned()),
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: format!("{name} Zone"),
             led_count,

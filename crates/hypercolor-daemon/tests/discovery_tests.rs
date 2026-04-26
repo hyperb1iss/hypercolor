@@ -35,7 +35,8 @@ use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    ZoneInfo,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -126,6 +127,8 @@ fn usb_device_info() -> DeviceInfo {
         family: DeviceFamily::PrismRgb,
         model: Some("test_prism".into()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
+            .with_protocol_id("prismrgb/test-prism"),
         zones: vec![ZoneInfo {
             name: "Channel 1".into(),
             led_count: 16,
@@ -154,6 +157,8 @@ fn smbus_device_info(name: &str) -> DeviceInfo {
         family: DeviceFamily::Asus,
         model: Some("asus_aura_smbus_dram".into()),
         connection_type: ConnectionType::SmBus,
+        origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
+            .with_protocol_id("asus/aura-smbus"),
         zones: vec![ZoneInfo {
             name: "Main".into(),
             led_count: 8,
@@ -182,6 +187,7 @@ fn wled_device_info(name: &str) -> DeviceInfo {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".into(),
             led_count: 30,
@@ -210,6 +216,7 @@ fn mock_device_info() -> DeviceInfo {
         family: DeviceFamily::Custom("mock".into()),
         model: Some("mock_layout_device".into()),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".into(),
             led_count: 16,

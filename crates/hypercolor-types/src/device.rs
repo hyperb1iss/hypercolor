@@ -97,6 +97,9 @@ pub struct DeviceInfo {
     /// Transport / connection type.
     pub connection_type: ConnectionType,
 
+    /// Driver ownership and output routing metadata.
+    pub origin: DeviceOrigin,
+
     /// Zones within this device, each with its own LED topology.
     pub zones: Vec<ZoneInfo>,
 
@@ -355,6 +358,18 @@ pub enum DriverTransportKind {
     Custom(String),
 }
 
+impl From<ConnectionType> for DriverTransportKind {
+    fn from(value: ConnectionType) -> Self {
+        match value {
+            ConnectionType::Usb => Self::Usb,
+            ConnectionType::SmBus => Self::Smbus,
+            ConnectionType::Network => Self::Network,
+            ConnectionType::Bluetooth => Self::Custom("bluetooth".to_owned()),
+            ConnectionType::Bridge => Self::Custom("bridge".to_owned()),
+        }
+    }
+}
+
 /// Capability flags exposed by a driver module.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriverCapabilitySet {
@@ -506,6 +521,20 @@ pub struct DeviceOrigin {
 }
 
 impl DeviceOrigin {
+    /// Create origin metadata from a high-level connection type.
+    #[must_use]
+    pub fn native(
+        driver_id: impl Into<String>,
+        backend_id: impl Into<String>,
+        connection_type: ConnectionType,
+    ) -> Self {
+        Self::new(
+            driver_id,
+            backend_id,
+            DriverTransportKind::from(connection_type),
+        )
+    }
+
     /// Create origin metadata without a protocol selection.
     #[must_use]
     pub fn new(

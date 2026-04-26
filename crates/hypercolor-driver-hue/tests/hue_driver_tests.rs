@@ -5,7 +5,7 @@ use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_driver_hue::{HueConfig, resolve_hue_probe_bridges_from_sources};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 
 fn tracked_hue_device() -> DriverTrackedDevice {
@@ -17,6 +17,7 @@ fn tracked_hue_device() -> DriverTrackedDevice {
             family: DeviceFamily::Hue,
             model: Some("BSB002".to_owned()),
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Bridge".to_owned(),
                 led_count: 1,

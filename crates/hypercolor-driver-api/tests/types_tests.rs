@@ -8,7 +8,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 #[test]
@@ -66,6 +66,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 60,
@@ -107,6 +108,7 @@ fn discovered_device_converts_from_core_payload() {
         family: DeviceFamily::Hue,
         model: Some("bridge".to_owned()),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
         zones: Vec::new(),
         firmware_version: Some("1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -122,6 +124,7 @@ fn discovered_device_converts_from_core_payload() {
     };
     let discovered = DriverDiscoveredDevice::from(DiscoveredDevice {
         connection_type: ConnectionType::Network,
+        origin: info.origin.clone(),
         name: "Bridge".to_owned(),
         family: DeviceFamily::Hue,
         info,

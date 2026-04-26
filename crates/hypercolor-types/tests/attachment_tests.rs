@@ -4,7 +4,7 @@ use hypercolor_types::attachment::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition};
 
@@ -47,6 +47,7 @@ fn sample_device() -> DeviceInfo {
         family: DeviceFamily::PrismRgb,
         model: Some("prism_s".into()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "ATX Strimer".into(),

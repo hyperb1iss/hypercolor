@@ -24,7 +24,7 @@ use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -97,6 +97,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         family: DeviceFamily::Wled,
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "LCD".to_owned(),
             led_count: 320 * 320,

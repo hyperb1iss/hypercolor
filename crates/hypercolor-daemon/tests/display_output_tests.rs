@@ -12,7 +12,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     OwnedDisplayFramePayload, ZoneInfo,
 };
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
@@ -353,6 +353,7 @@ fn display_device_info_with_format_and_max_fps(
         family: DeviceFamily::Corsair,
         model: None,
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
         zones,
         firmware_version: None,
         capabilities: DeviceCapabilities {
@@ -628,6 +629,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
         family: DeviceFamily::Corsair,
         model: Some("hybrid-display".to_owned()),
         connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "Pads".to_owned(),

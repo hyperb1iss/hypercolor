@@ -223,7 +223,7 @@ mod tests {
     use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceTopologyHint, ZoneInfo,
+        DeviceOrigin, DeviceTopologyHint, ZoneInfo,
     };
 
     use super::AttachmentProfileStore;
@@ -236,6 +236,8 @@ mod tests {
             family: hypercolor_types::device::DeviceFamily::PrismRgb,
             model: Some("prism_s".to_owned()),
             connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
+                .with_protocol_id("prismrgb/prism-s"),
             zones: vec![
                 ZoneInfo {
                     name: "ATX Strimer".to_owned(),
@@ -368,6 +370,7 @@ mod tests {
             family: DeviceFamily::Hue,
             model: Some("Bridge".to_owned()),
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
             zones: vec![
                 ZoneInfo {
                     name: "Channel 0".to_owned(),

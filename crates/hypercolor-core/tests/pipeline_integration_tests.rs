@@ -29,7 +29,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -186,6 +186,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "main".to_string(),
             led_count,
@@ -211,6 +212,7 @@ fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
     let fp = DeviceFingerprint(format!("test:{name}"));
     DiscoveredDevice {
         connection_type: ConnectionType::Network,
+        origin: info.origin.clone(),
         name: name.to_string(),
         family: DeviceFamily::Wled,
         fingerprint: fp,
@@ -1425,6 +1427,7 @@ async fn multiple_scanners_aggregate_results() {
             family: DeviceFamily::Custom("prism".to_string()),
             model: None,
             connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("prism", "usb", ConnectionType::Usb),
             zones: vec![ZoneInfo {
                 name: "channel-1".to_string(),
                 led_count: 40,
@@ -1445,6 +1448,7 @@ async fn multiple_scanners_aggregate_results() {
         };
         DiscoveredDevice {
             connection_type: ConnectionType::Usb,
+            origin: info.origin.clone(),
             name: "USB HID Controller".to_string(),
             family: DeviceFamily::Custom("prism".to_string()),
             fingerprint: DeviceFingerprint("usb:prism-1".to_string()),

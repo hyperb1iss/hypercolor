@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 use hypercolor_core::device::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, ZoneInfo,
 };
 
 use crate::discovery::{
@@ -59,6 +59,11 @@ impl SimulatedDisplayConfig {
             family: DeviceFamily::Custom(SIMULATED_DISPLAY_FAMILY.to_owned()),
             model: Some("virtual_display".to_owned()),
             connection_type: ConnectionType::Bridge,
+            origin: DeviceOrigin::native(
+                SIMULATED_DISPLAY_FAMILY,
+                SIMULATED_DISPLAY_BACKEND_ID,
+                ConnectionType::Bridge,
+            ),
             zones: vec![ZoneInfo {
                 name: "Display".to_owned(),
                 led_count: 0,

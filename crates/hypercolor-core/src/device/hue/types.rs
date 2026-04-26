@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 
 use super::color::{ColorGamut, GAMUT_A, GAMUT_B, GAMUT_C};
@@ -124,6 +124,7 @@ impl HueDiscoveredBridge {
 
         DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: self.info.origin.clone(),
             name: self.info.name.clone(),
             family: DeviceFamily::Hue,
             fingerprint,
@@ -205,6 +206,7 @@ pub fn build_device_info(
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
         zones,
         firmware_version: sw_version
             .map(str::trim)
