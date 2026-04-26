@@ -429,6 +429,7 @@ impl AppState {
             Arc::clone(&credential_store),
             Arc::clone(&discovery_in_progress),
             scene_transactions.clone(),
+            None,
         ));
         let driver_registry = Arc::new(
             network::build_builtin_driver_registry(

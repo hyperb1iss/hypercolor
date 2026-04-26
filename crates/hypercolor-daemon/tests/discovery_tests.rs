@@ -316,6 +316,7 @@ fn make_runtime(
         credential_store,
         in_progress,
         scene_transactions,
+        None,
     ));
     let driver_registry = Arc::new(
         network::build_builtin_driver_registry(

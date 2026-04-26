@@ -6,8 +6,8 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use hypercolor_driver_api::DriverConfigView;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView};
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesRequest, ApplyControlChangesResponse, ApplyImpact,
     ControlAccess, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
@@ -56,7 +56,10 @@ pub async fn get_driver_control_surface(
         .driver_surface(state.driver_host.as_ref(), config_view)
         .await
     {
-        Ok(Some(surface)) => ApiResponse::ok(surface),
+        Ok(Some(mut surface)) => {
+            surface.revision = driver_control_revision(&config_entry);
+            ApiResponse::ok(surface)
+        }
         Ok(None) => ApiError::not_found(format!("Driver does not expose controls: {driver_id}")),
         Err(error) => ApiError::internal(format!(
             "Failed to build driver control surface for {driver_id}: {error}"
@@ -99,6 +102,10 @@ pub async fn apply_control_surface_values(
     }
     if body.changes.is_empty() {
         return ApiError::validation("At least one control change is required");
+    }
+
+    if let Some(driver_id) = parse_driver_surface_id(&surface_id) {
+        return apply_driver_control_surface_values(&state, surface_id, driver_id, body).await;
     }
 
     let Some(device_id) = parse_device_surface_id(&surface_id) else {
@@ -160,6 +167,86 @@ pub async fn apply_control_surface_values(
         impacts: normalized.impacts,
         values: document.values,
     })
+}
+
+async fn apply_driver_control_surface_values(
+    state: &AppState,
+    surface_id: String,
+    driver_id: String,
+    body: ApplyControlChangesRequest,
+) -> Response {
+    let Some(driver) = state.driver_registry.get(&driver_id) else {
+        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+    };
+    let Some(provider) = driver.controls() else {
+        return ApiError::not_found(format!("Driver does not expose controls: {driver_id}"));
+    };
+
+    if !body.dry_run && state.config_manager.is_none() {
+        return ApiError::internal("Config manager unavailable in this runtime");
+    }
+
+    let config_entry = driver_config_entry_for_state(state, &driver_id);
+    let previous_revision = driver_control_revision(&config_entry);
+    if let Some(expected) = body.expected_revision
+        && expected != previous_revision
+    {
+        return ApiError::conflict(format!(
+            "Control surface revision conflict: expected {expected}, current {previous_revision}"
+        ));
+    }
+
+    let config_view = DriverConfigView {
+        driver_id: &driver_id,
+        entry: &config_entry,
+    };
+    let target = ControlApplyTarget::Driver {
+        driver_id: &driver_id,
+        config: config_view,
+    };
+    let validated = match provider
+        .validate_changes(state.driver_host.as_ref(), &target, &body.changes)
+        .await
+    {
+        Ok(changes) => changes,
+        Err(error) => return ApiError::validation(format!("Invalid driver controls: {error}")),
+    };
+
+    if body.dry_run {
+        return ApiResponse::ok(ApplyControlChangesResponse {
+            surface_id,
+            previous_revision,
+            revision: previous_revision,
+            accepted: validated
+                .changes
+                .into_iter()
+                .map(|change| AppliedControlChange {
+                    field_id: change.field_id,
+                    value: change.value,
+                })
+                .collect(),
+            rejected: Vec::new(),
+            impacts: validated.impacts,
+            values: driver_surface_values(provider, state, &driver_id, &config_entry).await,
+        });
+    }
+
+    let mut response = match provider
+        .apply_changes(state.driver_host.as_ref(), &target, validated)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return ApiError::internal(format!(
+                "Failed to apply driver controls for {driver_id}: {error}"
+            ));
+        }
+    };
+    let updated_entry = driver_config_entry_for_state(state, &driver_id);
+    response.previous_revision = previous_revision;
+    response.revision = driver_control_revision(&updated_entry);
+    response.values = driver_surface_values(provider, state, &driver_id, &updated_entry).await;
+    ApiResponse::ok(response)
 }
 
 /// Build the host-owned base device control surface.
@@ -284,6 +371,48 @@ fn parse_device_surface_id(surface_id: &str) -> Option<DeviceId> {
     surface_id
         .strip_prefix("device:")
         .and_then(|id| id.parse::<DeviceId>().ok())
+}
+
+fn parse_driver_surface_id(surface_id: &str) -> Option<String> {
+    surface_id
+        .strip_prefix("driver:")
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn driver_config_entry_for_state(state: &AppState, driver_id: &str) -> DriverConfigEntry {
+    state.config_manager.as_ref().map_or_else(
+        || network::driver_config_entry(&HypercolorConfig::default(), driver_id),
+        |manager| {
+            let config = manager.get();
+            network::driver_config_entry(&config, driver_id)
+        },
+    )
+}
+
+fn driver_control_revision(entry: &DriverConfigEntry) -> u64 {
+    let payload = serde_json::to_vec(entry).unwrap_or_default();
+    payload.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+async fn driver_surface_values(
+    provider: &dyn hypercolor_driver_api::DriverControlProvider,
+    state: &AppState,
+    driver_id: &str,
+    config_entry: &DriverConfigEntry,
+) -> ControlValueMap {
+    let config_view = DriverConfigView {
+        driver_id,
+        entry: config_entry,
+    };
+    provider
+        .driver_surface(state.driver_host.as_ref(), config_view)
+        .await
+        .ok()
+        .flatten()
+        .map_or_else(ControlValueMap::new, |surface| surface.values)
 }
 
 async fn resolve_device_id(state: &AppState, id_or_name: &str) -> Result<Option<DeviceId>, String> {

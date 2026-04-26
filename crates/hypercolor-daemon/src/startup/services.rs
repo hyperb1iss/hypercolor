@@ -396,6 +396,7 @@ impl DaemonState {
             Arc::clone(&credential_store),
             Arc::clone(&discovery_in_progress),
             scene_transactions.clone(),
+            Some(Arc::clone(&config_manager)),
         ));
         let driver_registry = Arc::new(
             network::build_builtin_driver_registry(config, Arc::clone(&credential_store))

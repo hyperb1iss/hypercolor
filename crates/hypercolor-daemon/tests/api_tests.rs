@@ -85,6 +85,21 @@ fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
 }
 
+fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, tempfile::TempDir) {
+    let (mut state, dir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(dir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_config_manager(Some(Arc::clone(&manager))),
+    );
+    (Arc::new(state), manager, dir)
+}
+
 struct NoopBackend {
     info: BackendInfo,
 }
@@ -1791,6 +1806,106 @@ async fn get_unknown_driver_controls_returns_not_found() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn patch_driver_control_surface_updates_config() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let surface_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/wled/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(surface_response.status(), StatusCode::OK);
+    let surface_json = body_json(surface_response).await;
+    let revision = surface_json["data"]["revision"]
+        .as_u64()
+        .expect("revision should be an integer");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:wled/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:wled",
+                        "expected_revision": revision,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "default_protocol",
+                                "value": { "kind": "enum", "value": "e131" }
+                            },
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 7 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], "driver:wled");
+    assert_eq!(json["data"]["previous_revision"], revision);
+    assert_ne!(json["data"]["revision"], revision);
+    assert_eq!(json["data"]["values"]["default_protocol"]["value"], "e131");
+    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 7);
+
+    let config = manager.get();
+    let wled = config
+        .drivers
+        .get("wled")
+        .expect("wled config should exist");
+    assert_eq!(wled.settings["default_protocol"], "e131");
+    assert_eq!(wled.settings["dedup_threshold"], 7);
+}
+
+#[tokio::test]
+async fn patch_driver_control_surface_rejects_stale_revision() {
+    let (state, _manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:wled/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:wled",
+                        "expected_revision": 1,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 7 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]
