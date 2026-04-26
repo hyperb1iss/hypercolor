@@ -145,6 +145,18 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
+# Format all Markdown prose with Prettier
+prettier:
+    npx --yes prettier --write "**/*.md"
+
+# Check Markdown prose formatting without modifying
+prettier-check:
+    npx --yes prettier --check "**/*.md"
+
+# Format all code (rustfmt) and prose (prettier)
+format: fmt prettier
+    @echo '✅ Formatted'
+
 # ─── Supply Chain ─────────────────────────────────────────
 
 # Audit dependencies (licenses, advisories, bans)
