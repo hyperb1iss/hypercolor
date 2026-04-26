@@ -2073,9 +2073,32 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(MockDeviceBackend::new()));
+
+    let layout_device_id = "wled:unknown_device";
+    let layout = make_layout(vec![make_zone("zone_0", layout_device_id, 5)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 255, 0]; 5],
+    }];
+
+    manager.write_frame(&zone_colors, &layout).await;
+
+    assert_eq!(manager.unmapped_layout_warning_count(), 0);
+
+    manager.enable_unmapped_layout_warnings();
+    manager.write_frame(&zone_colors, &layout).await;
+
+    assert_eq!(manager.unmapped_layout_warning_count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
     let mut manager = BackendManager::new();
     manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.enable_unmapped_layout_warnings();
 
     let layout_device_id = "wled:unknown_device";
     let layout = make_layout(vec![make_zone("zone_0", layout_device_id, 5)]);

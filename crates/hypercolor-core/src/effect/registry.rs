@@ -119,11 +119,19 @@ impl EffectRegistry {
     /// the old entry is returned.
     pub fn register(&mut self, entry: EffectEntry) -> Option<EffectEntry> {
         let id = entry.metadata.id;
-        debug!(id = %id, name = %entry.metadata.name, "Registering effect");
-        let invalidates = self
-            .effects
-            .get(&id)
-            .is_none_or(|existing| !existing.matches_active_scene_semantics(&entry));
+        let existing = self.effects.get(&id);
+        if let Some(existing) = existing {
+            debug!(
+                id = %id,
+                name = %entry.metadata.name,
+                previous_name = %existing.metadata.name,
+                "Replacing effect"
+            );
+        } else {
+            debug!(id = %id, name = %entry.metadata.name, "Registering effect");
+        }
+        let invalidates =
+            existing.is_none_or(|existing| !existing.matches_active_scene_semantics(&entry));
         let replaced = self.effects.insert(id, entry);
         if invalidates {
             self.bump_generation();

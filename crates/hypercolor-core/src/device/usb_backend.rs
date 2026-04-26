@@ -1337,13 +1337,13 @@ impl DeviceBackend for UsbBackend {
                     transport = transport.name(),
                     "USB post-connect diagnostic probe succeeded"
                 ),
-                Err(error) => warn!(
+                Err(error) => debug!(
                     device_id = %id,
                     descriptor = pending.descriptor.name,
                     protocol = protocol.name(),
                     transport = transport.name(),
                     error = %error,
-                    "USB post-connect diagnostic probe failed; write-only traffic may be silently ignored"
+                    "USB post-connect diagnostic probe failed; first frame diagnostics will confirm write path"
                 ),
             }
         }

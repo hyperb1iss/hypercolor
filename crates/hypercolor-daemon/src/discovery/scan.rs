@@ -408,6 +408,10 @@ pub async fn execute_discovery_scan(
     );
 
     sync_active_layout_for_renderable_devices(&runtime, None).await;
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.enable_unmapped_layout_warnings();
+    }
 
     DiscoveryScanResult {
         backends: backend_names,

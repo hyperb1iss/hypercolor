@@ -60,25 +60,34 @@ impl BackendIo {
 
         if let Err(initial_error) = backend.connect(&device_id).await {
             let initial_message = initial_error.to_string();
-            debug!(
-                backend_id = %self.backend_id,
-                %device_id,
-                error = %initial_message,
-                "initial connect failed; refreshing backend discovery state and retrying"
-            );
+            if is_missing_discovery_descriptor(&initial_message) {
+                debug!(
+                    backend_id = %self.backend_id,
+                    %device_id,
+                    error = %initial_message,
+                    "backend discovery state missing; refreshing before connect retry"
+                );
+            } else {
+                debug!(
+                    backend_id = %self.backend_id,
+                    %device_id,
+                    error = %initial_message,
+                    "initial connect failed; refreshing backend discovery state and retrying"
+                );
 
-            match backend.disconnect(&device_id).await {
-                Ok(()) => debug!(
-                    backend_id = %self.backend_id,
-                    %device_id,
-                    "best-effort cleanup after failed connect completed"
-                ),
-                Err(cleanup_error) => debug!(
-                    backend_id = %self.backend_id,
-                    %device_id,
-                    error = %cleanup_error,
-                    "best-effort cleanup after failed connect could not release an existing session"
-                ),
+                match backend.disconnect(&device_id).await {
+                    Ok(()) => debug!(
+                        backend_id = %self.backend_id,
+                        %device_id,
+                        "best-effort cleanup after failed connect completed"
+                    ),
+                    Err(cleanup_error) => debug!(
+                        backend_id = %self.backend_id,
+                        %device_id,
+                        error = %cleanup_error,
+                        "best-effort cleanup after failed connect could not release an existing session"
+                    ),
+                }
             }
 
             backend.discover().await.with_context(|| {
@@ -231,6 +240,10 @@ impl BackendIo {
                 )
             })
     }
+}
+
+fn is_missing_discovery_descriptor(message: &str) -> bool {
+    message.contains(" has no pending ") && message.contains(" descriptor; run discover()")
 }
 
 /// Contiguous LED range on a physical device.
@@ -991,6 +1004,9 @@ pub struct BackendManager {
     /// Layout device IDs already warned as unmapped in the current layout state.
     warned_unmapped_layout_devices: HashSet<String>,
 
+    /// Whether unmapped layout targets should warn instead of being skipped quietly.
+    unmapped_layout_warnings_enabled: bool,
+
     /// Number of unmapped-layout warnings emitted since process start.
     unmapped_layout_warning_count: u64,
 
@@ -1511,6 +1527,11 @@ impl BackendManager {
         self.unmapped_layout_warning_count
     }
 
+    /// Enable warnings for layout targets that still lack a connected device mapping.
+    pub fn enable_unmapped_layout_warnings(&mut self) {
+        self.unmapped_layout_warnings_enabled = true;
+    }
+
     /// List registered backend IDs.
     #[must_use]
     pub fn backend_ids(&self) -> Vec<&str> {
@@ -1939,6 +1960,9 @@ impl BackendManager {
             let PlannedZoneRoute::Unmapped { layout_device_id } = route else {
                 unreachable!("only mapped or unmapped zone routes are compiled");
             };
+            if !self.unmapped_layout_warnings_enabled {
+                return;
+            }
             if self
                 .warned_unmapped_layout_devices
                 .insert(layout_device_id.clone())
