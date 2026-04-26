@@ -10,10 +10,10 @@ use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView, TrackedDeviceC
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesRequest, ApplyControlChangesResponse, ApplyImpact,
-    ControlAccess, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
-    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
-    ControlValueType, ControlVisibility,
+    ControlAccess, ControlActionResult, ControlAvailability, ControlAvailabilityExpr,
+    ControlAvailabilityState, ControlChange, ControlFieldDescriptor, ControlGroupDescriptor,
+    ControlGroupKind, ControlOwner, ControlPersistence, ControlSurfaceDocument,
+    ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,12 @@ pub struct ControlSurfaceListQuery {
 #[derive(Debug, Serialize)]
 pub struct ControlSurfaceListResponse {
     pub surfaces: Vec<ControlSurfaceDocument>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InvokeControlActionRequest {
+    #[serde(default)]
+    pub input: ControlValueMap,
 }
 
 /// `GET /api/v1/control-surfaces` - Return control surfaces for a UI view.
@@ -282,6 +288,118 @@ pub async fn apply_control_surface_values(
         impacts: normalized.impacts,
         values: document.values,
     })
+}
+
+/// `POST /api/v1/control-surfaces/:surface_id/actions/:action_id` - Invoke a
+/// typed control-surface action.
+pub async fn invoke_control_surface_action(
+    State(state): State<Arc<AppState>>,
+    Path((surface_id, action_id)): Path<(String, String)>,
+    Json(body): Json<InvokeControlActionRequest>,
+) -> Response {
+    if let Some(driver_id) = parse_driver_surface_id(&surface_id) {
+        return invoke_driver_control_action(&state, surface_id, driver_id, action_id, body).await;
+    }
+
+    let Some(device_id) = parse_device_surface_id(&surface_id) else {
+        return ApiError::not_found(format!("Unknown control surface: {surface_id}"));
+    };
+    invoke_device_control_action(&state, surface_id, device_id, action_id, body).await
+}
+
+async fn invoke_driver_control_action(
+    state: &AppState,
+    surface_id: String,
+    driver_id: String,
+    action_id: String,
+    body: InvokeControlActionRequest,
+) -> Response {
+    let Some(driver) = state.driver_registry.get(&driver_id) else {
+        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+    };
+    let Some(provider) = driver.controls() else {
+        return ApiError::not_found(format!("Driver does not expose controls: {driver_id}"));
+    };
+
+    let config_entry = driver_config_entry_for_state(state, &driver_id);
+    let config_view = DriverConfigView {
+        driver_id: &driver_id,
+        entry: &config_entry,
+    };
+    let target = ControlApplyTarget::Driver {
+        driver_id: &driver_id,
+        config: config_view,
+    };
+
+    match provider
+        .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
+        .await
+    {
+        Ok(result) => ApiResponse::ok(normalize_action_result(
+            result,
+            surface_id,
+            action_id,
+            driver_control_revision(&driver_config_entry_for_state(state, &driver_id)),
+        )),
+        Err(error) => ApiError::validation(format!("Control action failed: {error}")),
+    }
+}
+
+async fn invoke_device_control_action(
+    state: &AppState,
+    surface_id: String,
+    device_id: DeviceId,
+    action_id: String,
+    body: InvokeControlActionRequest,
+) -> Response {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device_id}"));
+    };
+    let Some(driver) = state.driver_registry.get(&tracked.info.origin.driver_id) else {
+        return ApiError::not_found(format!(
+            "Driver not found: {}",
+            tracked.info.origin.driver_id
+        ));
+    };
+    let Some(provider) = driver.controls() else {
+        return ApiError::not_found(format!(
+            "Driver does not expose controls: {}",
+            tracked.info.origin.driver_id
+        ));
+    };
+    let metadata = state.device_registry.metadata_for_id(&device_id).await;
+    let device = TrackedDeviceCtx {
+        device_id,
+        info: &tracked.info,
+        metadata: metadata.as_ref(),
+        current_state: &tracked.state,
+    };
+    let target = ControlApplyTarget::Device { device: &device };
+
+    match provider
+        .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
+        .await
+    {
+        Ok(result) => ApiResponse::ok(normalize_action_result(
+            result,
+            surface_id,
+            action_id,
+            tracked.revision,
+        )),
+        Err(error) => ApiError::validation(format!("Control action failed: {error}")),
+    }
+}
+
+fn normalize_action_result(
+    mut result: ControlActionResult,
+    surface_id: String,
+    action_id: String,
+    revision: u64,
+) -> ControlActionResult {
+    result.surface_id = surface_id;
+    result.action_id = action_id;
+    result.revision = revision;
+    result
 }
 
 async fn apply_driver_control_surface_values(

@@ -1188,6 +1188,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/control-surfaces/{surface_id}/values",
             axum::routing::patch(controls::apply_control_surface_values),
         )
+        .route(
+            "/control-surfaces/{surface_id}/actions/{action_id}",
+            axum::routing::post(controls::invoke_control_surface_action),
+        )
         // ── Diagnostics ──────────────────────────────────────────────
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
         // ── WebSocket ────────────────────────────────────────────────

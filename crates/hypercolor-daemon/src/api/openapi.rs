@@ -841,6 +841,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "Apply control surface values",
     ),
     RouteSpec::post(
+        "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+        "invoke_control_surface_action",
+        "controls",
+        "Invoke control surface action",
+    ),
+    RouteSpec::post(
         "/api/v1/diagnose",
         "run_diagnostics",
         "diagnostics",
