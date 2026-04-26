@@ -228,6 +228,13 @@ pub async fn apply_control_surface_values(
         return ApiError::validation("At least one control change is required");
     }
 
+    if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
+        return apply_driver_device_control_surface_values(
+            &state, surface_id, driver_id, device_id, body,
+        )
+        .await;
+    }
+
     if let Some(driver_id) = parse_driver_surface_id(&surface_id) {
         return apply_driver_control_surface_values(&state, surface_id, driver_id, body).await;
     }
@@ -304,6 +311,13 @@ pub async fn invoke_control_surface_action(
     Path((surface_id, action_id)): Path<(String, String)>,
     Json(body): Json<InvokeControlActionRequest>,
 ) -> Response {
+    if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
+        return invoke_driver_device_control_action(
+            &state, surface_id, driver_id, device_id, action_id, body,
+        )
+        .await;
+    }
+
     if let Some(driver_id) = parse_driver_surface_id(&surface_id) {
         return invoke_driver_control_action(&state, surface_id, driver_id, action_id, body).await;
     }
@@ -432,6 +446,61 @@ async fn invoke_device_control_action(
     {
         Ok(result) => {
             let result = normalize_action_result(result, surface_id, action_id, tracked.revision);
+            publish_action_progress(state, &result);
+            ApiResponse::ok(result)
+        }
+        Err(error) => ApiError::validation(format!("Control action failed: {error}")),
+    }
+}
+
+async fn invoke_driver_device_control_action(
+    state: &AppState,
+    surface_id: String,
+    driver_id: String,
+    device_id: DeviceId,
+    action_id: String,
+    body: InvokeControlActionRequest,
+) -> Response {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device_id}"));
+    };
+    let Some(driver) = state.driver_registry.get(&driver_id) else {
+        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+    };
+    let Some(provider) = driver.controls() else {
+        return ApiError::not_found(format!("Driver does not expose controls: {driver_id}"));
+    };
+    let metadata = state.device_registry.metadata_for_id(&device_id).await;
+    let device = TrackedDeviceCtx {
+        device_id,
+        info: &tracked.info,
+        metadata: metadata.as_ref(),
+        current_state: &tracked.state,
+    };
+    let revision = match provider
+        .device_surface(state.driver_host.as_ref(), &device)
+        .await
+    {
+        Ok(Some(surface)) => surface.revision,
+        Ok(None) => {
+            return ApiError::not_found(format!(
+                "Driver does not expose device controls: {surface_id}"
+            ));
+        }
+        Err(error) => {
+            return ApiError::internal(format!(
+                "Failed to build device control surface for {device_id}: {error}"
+            ));
+        }
+    };
+    let target = ControlApplyTarget::Device { device: &device };
+
+    match provider
+        .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
+        .await
+    {
+        Ok(result) => {
+            let result = normalize_action_result(result, surface_id, action_id, revision);
             publish_action_progress(state, &result);
             ApiResponse::ok(result)
         }
@@ -593,6 +662,105 @@ async fn apply_driver_control_surface_values(
     response.values = driver_surface_values(provider, state, &driver_id, &updated_entry).await;
     publish_values_changed(state, &response);
     ApiResponse::ok(response)
+}
+
+async fn apply_driver_device_control_surface_values(
+    state: &AppState,
+    surface_id: String,
+    driver_id: String,
+    device_id: DeviceId,
+    body: ApplyControlChangesRequest,
+) -> Response {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device_id}"));
+    };
+    let Some(driver) = state.driver_registry.get(&driver_id) else {
+        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+    };
+    let Some(provider) = driver.controls() else {
+        return ApiError::not_found(format!("Driver does not expose controls: {driver_id}"));
+    };
+    let metadata = state.device_registry.metadata_for_id(&device_id).await;
+    let device = TrackedDeviceCtx {
+        device_id,
+        info: &tracked.info,
+        metadata: metadata.as_ref(),
+        current_state: &tracked.state,
+    };
+    let surface = match provider
+        .device_surface(state.driver_host.as_ref(), &device)
+        .await
+    {
+        Ok(Some(surface)) => surface,
+        Ok(None) => {
+            return ApiError::not_found(format!(
+                "Driver does not expose device controls: {surface_id}"
+            ));
+        }
+        Err(error) => {
+            return ApiError::internal(format!(
+                "Failed to build device control surface for {device_id}: {error}"
+            ));
+        }
+    };
+    let previous_revision = surface.revision;
+    if let Some(expected) = body.expected_revision
+        && expected != previous_revision
+    {
+        return ApiError::conflict(format!(
+            "Control surface revision conflict: expected {expected}, current {previous_revision}"
+        ));
+    }
+    let target = ControlApplyTarget::Device { device: &device };
+    let validated = match provider
+        .validate_changes(state.driver_host.as_ref(), &target, &body.changes)
+        .await
+    {
+        Ok(changes) => changes,
+        Err(error) => return ApiError::validation(format!("Invalid device controls: {error}")),
+    };
+
+    if body.dry_run {
+        return ApiResponse::ok(ApplyControlChangesResponse {
+            surface_id,
+            previous_revision,
+            revision: previous_revision,
+            accepted: validated
+                .changes
+                .into_iter()
+                .map(|change| AppliedControlChange {
+                    field_id: change.field_id,
+                    value: change.value,
+                })
+                .collect(),
+            rejected: Vec::new(),
+            impacts: validated.impacts,
+            values: surface.values,
+        });
+    }
+
+    match provider
+        .apply_changes(state.driver_host.as_ref(), &target, validated)
+        .await
+    {
+        Ok(mut response) => {
+            let refreshed = provider
+                .device_surface(state.driver_host.as_ref(), &device)
+                .await
+                .ok()
+                .flatten();
+            response.previous_revision = previous_revision;
+            if let Some(surface) = refreshed {
+                response.revision = surface.revision;
+                response.values = surface.values;
+            }
+            publish_values_changed(state, &response);
+            ApiResponse::ok(response)
+        }
+        Err(error) => ApiError::internal(format!(
+            "Failed to apply device controls for {surface_id}: {error}"
+        )),
+    }
 }
 
 /// Build the host-owned base device control surface.
@@ -763,6 +931,14 @@ fn parse_driver_surface_id(surface_id: &str) -> Option<String> {
         .strip_prefix("driver:")
         .filter(|id| !id.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn parse_driver_device_surface_id(surface_id: &str) -> Option<(String, DeviceId)> {
+    let (driver_id, device_id) = surface_id.strip_prefix("driver:")?.split_once(":device:")?;
+    if driver_id.is_empty() {
+        return None;
+    }
+    Some((driver_id.to_owned(), device_id.parse().ok()?))
 }
 
 fn driver_config_entry_for_state(state: &AppState, driver_id: &str) -> DriverConfigEntry {

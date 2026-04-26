@@ -1980,6 +1980,47 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
 }
 
 #[tokio::test]
+async fn patch_driver_owned_device_control_surface_routes_to_provider() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(state);
+    let surface_id = format!("driver:wled:device:{device_id}");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": surface_id,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "led_count",
+                                "value": { "kind": "integer", "value": 61 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("read-only")
+    );
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_updates_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));

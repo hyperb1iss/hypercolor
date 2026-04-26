@@ -438,7 +438,7 @@ fn validate_wled_driver_changes(
     changes: &[ControlChange],
 ) -> Result<ValidatedControlChanges> {
     let ControlApplyTarget::Driver { driver_id, .. } = target else {
-        bail!("WLED device controls are not exposed yet");
+        bail!("WLED device control surface is read-only");
     };
     if *driver_id != DESCRIPTOR.id {
         bail!("WLED controls cannot validate driver '{driver_id}'");
