@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::response::Response;
-use hypercolor_hal::ProtocolDatabase;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -46,13 +45,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         |manager| Arc::clone(&manager.get()),
     );
 
-    let mut descriptors = state
-        .driver_registry
-        .module_descriptors()
-        .into_iter()
-        .collect::<Vec<_>>();
-    descriptors.extend(ProtocolDatabase::module_descriptors().iter().cloned());
-    descriptors.sort_by(|left, right| left.id.cmp(&right.id));
+    let descriptors = network::module_descriptors(state.driver_registry.as_ref());
 
     let items = descriptors
         .into_iter()

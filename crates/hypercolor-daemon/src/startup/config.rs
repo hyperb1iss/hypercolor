@@ -7,9 +7,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_hal::ProtocolDatabase;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::server::ServerIdentity;
+
+use crate::network;
 
 /// Default configuration file name within the config directory.
 const CONFIG_FILE_NAME: &str = "hypercolor.toml";
@@ -91,9 +92,7 @@ pub fn parse_config_toml(toml_str: &str) -> Result<HypercolorConfig> {
 }
 
 pub(super) fn normalize_daemon_driver_configs(config: &mut HypercolorConfig) {
-    for descriptor in ProtocolDatabase::module_descriptors() {
-        config.drivers.entry(descriptor.id.clone()).or_default();
-    }
+    network::normalize_hal_driver_config_entries(config);
 }
 
 pub(super) fn resolve_server_identity(config: &HypercolorConfig) -> Result<ServerIdentity> {

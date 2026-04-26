@@ -43,16 +43,41 @@ pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescri
 /// Whether a HAL driver module is enabled by the active config.
 #[must_use]
 pub fn hal_driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
-    ProtocolDatabase::module_descriptors()
+    hal_module_descriptors()
         .iter()
         .find(|descriptor| descriptor.id == driver_id)
         .is_some_and(|descriptor| module_enabled(config, descriptor))
 }
 
+/// Module descriptors for HAL-backed driver modules.
+#[must_use]
+pub fn hal_module_descriptors() -> &'static [DriverModuleDescriptor] {
+    ProtocolDatabase::module_descriptors()
+}
+
+/// Module descriptors for all driver modules known by this daemon.
+#[must_use]
+pub fn module_descriptors(registry: &DriverRegistry) -> Vec<DriverModuleDescriptor> {
+    let mut descriptors = registry
+        .module_descriptors()
+        .into_iter()
+        .collect::<Vec<_>>();
+    descriptors.extend(hal_module_descriptors().iter().cloned());
+    descriptors.sort_by(|left, right| left.id.cmp(&right.id));
+    descriptors
+}
+
+/// Ensure config entries exist for HAL-backed driver modules.
+pub fn normalize_hal_driver_config_entries(config: &mut HypercolorConfig) {
+    for descriptor in hal_module_descriptors() {
+        config.drivers.entry(descriptor.id.clone()).or_default();
+    }
+}
+
 /// Enabled HAL driver module IDs from the shared protocol catalog.
 #[must_use]
 pub fn enabled_hal_driver_ids(config: &HypercolorConfig) -> BTreeSet<String> {
-    ProtocolDatabase::module_descriptors()
+    hal_module_descriptors()
         .iter()
         .filter(|descriptor| module_enabled(config, descriptor))
         .map(|descriptor| descriptor.id.clone())
