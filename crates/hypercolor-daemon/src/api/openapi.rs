@@ -828,6 +828,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "config",
         "Reset daemon config value",
     ),
+    RouteSpec::get(
+        "/api/v1/control-surfaces",
+        "list_control_surfaces",
+        "controls",
+        "List control surfaces",
+    ),
     RouteSpec::patch(
         "/api/v1/control-surfaces/{surface_id}/values",
         "apply_control_surface_values",

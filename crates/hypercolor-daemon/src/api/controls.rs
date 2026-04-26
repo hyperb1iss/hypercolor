@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView};
+use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView, TrackedDeviceCtx};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesRequest, ApplyControlChangesResponse, ApplyImpact,
@@ -16,6 +16,7 @@ use hypercolor_types::controls::{
     ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::api::AppState;
@@ -29,27 +30,110 @@ const DEVICE_FIELD_ENABLED: &str = "enabled";
 const DEVICE_FIELD_BRIGHTNESS: &str = "brightness";
 type ControlApiResult<T> = Result<T, Box<Response>>;
 
+#[derive(Debug, Deserialize)]
+pub struct ControlSurfaceListQuery {
+    pub device_id: Option<String>,
+    pub driver_id: Option<String>,
+    pub include_driver: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ControlSurfaceListResponse {
+    pub surfaces: Vec<ControlSurfaceDocument>,
+}
+
+/// `GET /api/v1/control-surfaces` - Return control surfaces for a UI view.
+pub async fn list_control_surfaces(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ControlSurfaceListQuery>,
+) -> Response {
+    let mut surfaces = Vec::new();
+
+    if let Some(device_id_or_name) = query.device_id.as_deref() {
+        let device_id = match resolve_device_id(&state, device_id_or_name).await {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                return ApiError::not_found(format!("Device not found: {device_id_or_name}"));
+            }
+            Err(name) => return ApiError::conflict(format!("Device name is ambiguous: {name}")),
+        };
+        let Some(tracked) = state.device_registry.get(&device_id).await else {
+            return ApiError::not_found(format!("Device not found: {device_id}"));
+        };
+
+        surfaces.push(device_control_surface(
+            &tracked.info,
+            &tracked.user_settings,
+            tracked.revision,
+        ));
+        match driver_device_control_surface(&state, &tracked.info, tracked.state).await {
+            Ok(Some(surface)) => surfaces.push(surface),
+            Ok(None) => {}
+            Err(response) => return response,
+        }
+        if query.include_driver.unwrap_or(false) {
+            let driver_id = &tracked.info.origin.driver_id;
+            match driver_control_surface_document(&state, driver_id).await {
+                Ok(Some(surface)) => surfaces.push(surface),
+                Ok(None) => {}
+                Err(response) => return response,
+            }
+        }
+    }
+
+    if let Some(driver_id) = query.driver_id.as_deref() {
+        match driver_control_surface_document(&state, driver_id).await {
+            Ok(Some(surface)) => surfaces.push(surface),
+            Ok(None) => {
+                return ApiError::not_found(format!(
+                    "Driver does not expose controls: {driver_id}"
+                ));
+            }
+            Err(response) => return response,
+        }
+    }
+
+    if surfaces.is_empty() {
+        return ApiError::validation("Query must select at least one control surface");
+    }
+
+    ApiResponse::ok(ControlSurfaceListResponse { surfaces })
+}
+
 /// `GET /api/v1/drivers/:id/controls` - Return a driver-level control surface.
 pub async fn get_driver_control_surface(
     State(state): State<Arc<AppState>>,
     Path(driver_id): Path<String>,
 ) -> Response {
+    match driver_control_surface_document(&state, &driver_id).await {
+        Ok(Some(surface)) => ApiResponse::ok(surface),
+        Ok(None) => ApiError::not_found(format!("Driver does not expose controls: {driver_id}")),
+        Err(response) => response,
+    }
+}
+
+async fn driver_control_surface_document(
+    state: &AppState,
+    driver_id: &str,
+) -> Result<Option<ControlSurfaceDocument>, Response> {
     let Some(driver) = state.driver_registry.get(&driver_id) else {
-        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+        return Err(ApiError::not_found(format!(
+            "Driver not found: {driver_id}"
+        )));
     };
     let Some(provider) = driver.controls() else {
-        return ApiError::not_found(format!("Driver does not expose controls: {driver_id}"));
+        return Ok(None);
     };
 
     let config_entry = state.config_manager.as_ref().map_or_else(
-        || network::driver_config_entry(&HypercolorConfig::default(), &driver_id),
+        || network::driver_config_entry(&HypercolorConfig::default(), driver_id),
         |manager| {
             let config = manager.get();
-            network::driver_config_entry(&config, &driver_id)
+            network::driver_config_entry(&config, driver_id)
         },
     );
     let config_view = DriverConfigView {
-        driver_id: &driver_id,
+        driver_id,
         entry: &config_entry,
     };
 
@@ -57,15 +141,45 @@ pub async fn get_driver_control_surface(
         .driver_surface(state.driver_host.as_ref(), config_view)
         .await
     {
-        Ok(Some(mut surface)) => {
+        Ok(surface) => Ok(surface.map(|mut surface| {
             surface.revision = driver_control_revision(&config_entry);
-            ApiResponse::ok(surface)
-        }
-        Ok(None) => ApiError::not_found(format!("Driver does not expose controls: {driver_id}")),
-        Err(error) => ApiError::internal(format!(
+            surface
+        })),
+        Err(error) => Err(ApiError::internal(format!(
             "Failed to build driver control surface for {driver_id}: {error}"
-        )),
+        ))),
     }
+}
+
+async fn driver_device_control_surface(
+    state: &AppState,
+    info: &DeviceInfo,
+    current_state: DeviceState,
+) -> Result<Option<ControlSurfaceDocument>, Response> {
+    let driver_id = &info.origin.driver_id;
+    let Some(driver) = state.driver_registry.get(driver_id) else {
+        return Ok(None);
+    };
+    let Some(provider) = driver.controls() else {
+        return Ok(None);
+    };
+    let metadata = state.device_registry.metadata_for_id(&info.id).await;
+    let device = TrackedDeviceCtx {
+        device_id: info.id,
+        info,
+        metadata: metadata.as_ref(),
+        current_state: &current_state,
+    };
+
+    provider
+        .device_surface(state.driver_host.as_ref(), &device)
+        .await
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "Failed to build device control surface for {}: {error}",
+                info.id
+            ))
+        })
 }
 
 /// `GET /api/v1/devices/:id/controls` — Return the generic device control

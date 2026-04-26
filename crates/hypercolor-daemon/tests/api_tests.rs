@@ -1809,6 +1809,39 @@ async fn get_unknown_driver_controls_returns_not_found() {
 }
 
 #[tokio::test]
+async fn list_control_surfaces_batches_device_and_driver_surfaces() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/control-surfaces?device_id={device_id}&include_driver=true"
+                ))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let surfaces = json["data"]["surfaces"]
+        .as_array()
+        .expect("surfaces should be an array");
+    assert_eq!(surfaces.len(), 2);
+    assert!(surfaces.iter().any(|surface| {
+        surface["surface_id"] == format!("device:{device_id}")
+            && surface["scope"]["device"]["driver_id"] == "wled"
+    }));
+    assert!(surfaces.iter().any(|surface| {
+        surface["surface_id"] == "driver:wled" && surface["scope"]["driver"]["driver_id"] == "wled"
+    }));
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_updates_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));

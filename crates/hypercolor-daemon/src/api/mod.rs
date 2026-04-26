@@ -1181,6 +1181,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         // ── Control Surfaces ────────────────────────────────────────
         .route(
+            "/control-surfaces",
+            axum::routing::get(controls::list_control_surfaces),
+        )
+        .route(
             "/control-surfaces/{surface_id}/values",
             axum::routing::patch(controls::apply_control_surface_values),
         )
