@@ -1,4 +1,8 @@
-use hypercolor_driver_govee::cloud::{CloudClient, V1Command};
+use std::time::{Duration, Instant};
+
+use hypercolor_driver_govee::cloud::{
+    CloudClient, RateBudget, RateLimitScope, V1Command, V1RateOperation,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -134,6 +138,91 @@ async fn v1_control_sends_command_body() {
         body["cmd"]["value"],
         serde_json::json!({ "r": 255, "g": 64, "b": 0 })
     );
+}
+
+#[test]
+fn rate_budget_enforces_endpoint_minute_per_device() {
+    let mut budget = RateBudget::with_limits(100, 10);
+    let now = Instant::now();
+
+    for _ in 0..10 {
+        budget
+            .reserve_v1_at(
+                V1RateOperation::DeviceState,
+                Some("H6159"),
+                Some("device-a"),
+                now,
+            )
+            .expect("first ten state calls should fit the minute bucket");
+    }
+
+    let rejection = budget
+        .reserve_v1_at(
+            V1RateOperation::DeviceState,
+            Some("H6159"),
+            Some("device-a"),
+            now,
+        )
+        .expect_err("eleventh state call should be rate limited");
+    assert_eq!(rejection.scope, RateLimitScope::EndpointMinute);
+
+    budget
+        .reserve_v1_at(
+            V1RateOperation::DeviceState,
+            Some("H6159"),
+            Some("device-b"),
+            now,
+        )
+        .expect("a different device gets an independent endpoint bucket");
+    budget
+        .reserve_v1_at(
+            V1RateOperation::DeviceState,
+            Some("H6159"),
+            Some("device-a"),
+            now + Duration::from_secs(61),
+        )
+        .expect("minute bucket should reset after its window");
+}
+
+#[test]
+fn rate_budget_enforces_account_day_limit() {
+    let mut budget = RateBudget::with_limits(2, 10);
+    let now = Instant::now();
+
+    budget
+        .reserve_v1_at(V1RateOperation::DeviceList, None, None, now)
+        .expect("first account call should fit");
+    budget
+        .reserve_v1_at(V1RateOperation::DeviceList, None, None, now)
+        .expect("second account call should fit");
+
+    let rejection = budget
+        .reserve_v1_at(V1RateOperation::DeviceList, None, None, now)
+        .expect_err("third account call should be rate limited");
+    assert_eq!(rejection.scope, RateLimitScope::AccountDay);
+
+    budget
+        .reserve_v1_at(
+            V1RateOperation::DeviceList,
+            None,
+            None,
+            now + Duration::from_secs(24 * 60 * 60 + 1),
+        )
+        .expect("account day bucket should reset after its window");
+}
+
+#[tokio::test]
+async fn cloud_client_rejects_when_rate_budget_is_exhausted_before_http() {
+    let client = CloudClient::with_base_url("test-key", "http://127.0.0.1:9/v1")
+        .expect("base URL should parse")
+        .with_rate_budget(RateBudget::with_limits(100, 0));
+
+    let error = client
+        .v1_control("H6159", "99:E5:A4:C1:38:29:DA:7B", V1Command::Turn(true))
+        .await
+        .expect_err("exhausted budget should reject before HTTP");
+
+    assert!(error.to_string().contains("endpoint rate limit exceeded"));
 }
 
 async fn serve_once(status: u16, body: &'static str) -> (String, tokio::task::JoinHandle<String>) {

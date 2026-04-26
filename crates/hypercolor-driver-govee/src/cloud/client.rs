@@ -1,6 +1,10 @@
-use anyhow::{Context, Result, bail};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
+
+use super::rate::{RateBudget, V1RateOperation};
 
 const DEFAULT_BASE_URL: &str = "https://developer-api.govee.com/v1/";
 const API_KEY_HEADER: &str = "Govee-API-Key";
@@ -10,6 +14,7 @@ pub struct CloudClient {
     http: reqwest::Client,
     api_key: String,
     base_url: Url,
+    budget: Arc<Mutex<RateBudget>>,
 }
 
 impl CloudClient {
@@ -34,7 +39,14 @@ impl CloudClient {
             http: reqwest::Client::new(),
             api_key: api_key.into(),
             base_url,
+            budget: Arc::new(Mutex::new(RateBudget::default())),
         })
+    }
+
+    #[must_use]
+    pub fn with_rate_budget(mut self, budget: RateBudget) -> Self {
+        self.budget = Arc::new(Mutex::new(budget));
+        self
     }
 
     /// List lights, plugs, and switches exposed through Govee Developer API v1.
@@ -44,6 +56,7 @@ impl CloudClient {
     /// Returns an error if the request fails, the key is rejected, or Govee
     /// returns a non-success API code.
     pub async fn list_v1_devices(&self) -> Result<Vec<V1Device>> {
+        self.reserve(V1RateOperation::DeviceList, None, None)?;
         let url = self
             .base_url
             .join("devices")
@@ -86,6 +99,7 @@ impl CloudClient {
     /// Returns an error if the request fails, the key is rejected, or Govee
     /// returns a non-success API code.
     pub async fn v1_state(&self, model: &str, device: &str) -> Result<V1State> {
+        self.reserve(V1RateOperation::DeviceState, Some(model), Some(device))?;
         let url = self
             .base_url
             .join("devices/state")
@@ -117,6 +131,7 @@ impl CloudClient {
     /// Returns an error if the request fails, the key is rejected, or Govee
     /// returns a non-success API code.
     pub async fn v1_control(&self, model: &str, device: &str, command: V1Command) -> Result<()> {
+        self.reserve(V1RateOperation::DeviceControl, Some(model), Some(device))?;
         let url = self
             .base_url
             .join("devices/control")
@@ -141,6 +156,20 @@ impl CloudClient {
         )
         .await?;
 
+        Ok(())
+    }
+
+    fn reserve(
+        &self,
+        operation: V1RateOperation,
+        model: Option<&str>,
+        device: Option<&str>,
+    ) -> Result<()> {
+        let mut budget = self
+            .budget
+            .lock()
+            .map_err(|_| anyhow!("Govee cloud rate budget mutex is poisoned"))?;
+        budget.reserve_v1(operation, model, device)?;
         Ok(())
     }
 }
