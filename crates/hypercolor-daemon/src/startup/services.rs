@@ -377,6 +377,10 @@ impl DaemonState {
         );
 
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
+        let driver_registry = Arc::new(
+            network::build_builtin_driver_registry(config, Arc::clone(&credential_store))
+                .context("failed to build network driver registry")?,
+        );
         let driver_host = Arc::new(DaemonDriverHost::new(
             device_registry.clone(),
             Arc::clone(&backend_manager),
@@ -395,14 +399,11 @@ impl DaemonState {
             runtime_state_path.clone(),
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
+            Arc::clone(&driver_registry),
             Arc::clone(&discovery_in_progress),
             scene_transactions.clone(),
             Some(Arc::clone(&config_manager)),
         ));
-        let driver_registry = Arc::new(
-            network::build_builtin_driver_registry(config, Arc::clone(&credential_store))
-                .context("failed to build network driver registry")?,
-        );
         info!(
             drivers = ?driver_registry.ids(),
             "Network driver registry ready"

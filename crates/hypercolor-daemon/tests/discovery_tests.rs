@@ -296,6 +296,13 @@ fn make_runtime(
         in_progress: Arc::clone(&in_progress),
         task_spawner: tokio::runtime::Handle::current(),
     };
+    let driver_registry = Arc::new(
+        network::build_builtin_driver_registry(
+            &HypercolorConfig::default(),
+            Arc::clone(&runtime.credential_store),
+        )
+        .expect("test driver registry"),
+    );
     let driver_host = Arc::new(DaemonDriverHost::new(
         device_registry,
         backend_manager,
@@ -314,17 +321,11 @@ fn make_runtime(
         runtime_state_path_for_host,
         usb_protocol_configs,
         credential_store,
+        Arc::clone(&driver_registry),
         in_progress,
         scene_transactions,
         None,
     ));
-    let driver_registry = Arc::new(
-        network::build_builtin_driver_registry(
-            &HypercolorConfig::default(),
-            Arc::clone(&runtime.credential_store),
-        )
-        .expect("test driver registry"),
-    );
 
     TestDiscoveryRuntime {
         runtime,

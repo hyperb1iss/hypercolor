@@ -409,6 +409,13 @@ impl AppState {
         let effect_layout_links = Arc::new(RwLock::new(HashMap::new()));
         let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+        let driver_registry = Arc::new(
+            network::build_builtin_driver_registry(
+                &HypercolorConfig::default(),
+                Arc::clone(&credential_store),
+            )
+            .expect("default app state should build network driver registry"),
+        );
         let driver_host = Arc::new(DaemonDriverHost::new(
             device_registry.clone(),
             Arc::clone(&backend_manager),
@@ -427,17 +434,11 @@ impl AppState {
             runtime_state_path.clone(),
             usb_protocol_configs.clone(),
             Arc::clone(&credential_store),
+            Arc::clone(&driver_registry),
             Arc::clone(&discovery_in_progress),
             scene_transactions.clone(),
             None,
         ));
-        let driver_registry = Arc::new(
-            network::build_builtin_driver_registry(
-                &HypercolorConfig::default(),
-                Arc::clone(&credential_store),
-            )
-            .expect("default app state should build network driver registry"),
-        );
         {
             let mut manager = backend_manager.try_lock().expect(
                 "default app state should register the simulator backend without contention",

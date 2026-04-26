@@ -18,8 +18,9 @@ use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
-    ControlApplyTarget, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
-    DriverTransport, NetworkDriverFactory, ValidatedControlChanges,
+    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory,
+    ValidatedControlChanges,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -268,6 +269,133 @@ impl DriverControlProvider for ActionTestDriver {
             result: None,
             revision: 0,
         })
+    }
+}
+
+static RESCAN_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "rescan_test",
+    "Rescan Test",
+    DriverTransport::Network,
+    true,
+    false,
+);
+
+struct RescanTestDriver {
+    discoveries: Arc<AtomicUsize>,
+}
+
+impl RescanTestDriver {
+    fn new(discoveries: Arc<AtomicUsize>) -> Self {
+        Self { discoveries }
+    }
+}
+
+impl NetworkDriverFactory for RescanTestDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &RESCAN_TEST_DRIVER
+    }
+
+    fn has_backend_factory(&self) -> bool {
+        false
+    }
+
+    fn build_backend(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
+        Ok(None)
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoveryCapability for RescanTestDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<DiscoveryResult> {
+        self.discoveries.fetch_add(1, Ordering::Relaxed);
+        Ok(DiscoveryResult::default())
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverControlProvider for RescanTestDriver {
+    async fn driver_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        Ok(Some(ControlSurfaceDocument::empty(
+            "driver:rescan_test",
+            ControlSurfaceScope::Driver {
+                driver_id: "rescan_test".to_owned(),
+            },
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _device: &hypercolor_driver_api::TrackedDeviceCtx<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> anyhow::Result<ValidatedControlChanges> {
+        Ok(ValidatedControlChanges {
+            changes: changes.to_vec(),
+            impacts: vec![ApplyImpact::DiscoveryRescan],
+        })
+    }
+
+    async fn apply_changes(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> anyhow::Result<ApplyControlChangesResponse> {
+        Ok(ApplyControlChangesResponse {
+            surface_id: "driver:rescan_test".to_owned(),
+            previous_revision: 0,
+            revision: 0,
+            accepted: changes
+                .changes
+                .into_iter()
+                .map(|change| hypercolor_types::controls::AppliedControlChange {
+                    field_id: change.field_id,
+                    value: change.value,
+                })
+                .collect(),
+            rejected: Vec::new(),
+            impacts: changes.impacts,
+            values: ControlValueMap::new(),
+        })
+    }
+
+    async fn invoke_action(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        _input: ControlValueMap,
+    ) -> anyhow::Result<ControlActionResult> {
+        bail!("unexpected rescan test action: {action_id}")
     }
 }
 
@@ -2293,7 +2421,9 @@ async fn invoke_driver_control_surface_action_publishes_progress_event() {
     registry
         .register(ActionTestDriver)
         .expect("test action driver should register");
-    state.driver_registry = Arc::new(registry);
+    let registry = Arc::new(registry);
+    state.driver_registry = Arc::clone(&registry);
+    state.driver_host = Arc::new(state.driver_host.with_driver_registry(registry));
     let state = Arc::new(state);
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
@@ -2356,6 +2486,72 @@ async fn invoke_driver_control_surface_action_publishes_progress_event() {
         }
         _ => panic!("expected action_progress control surface event"),
     }
+}
+
+#[tokio::test]
+async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
+    let (mut state, dir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(dir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(RescanTestDriver::new(Arc::clone(&discoveries)))
+        .expect("test rescan driver should register");
+    let registry = Arc::new(registry);
+
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_registry = Arc::clone(&registry);
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_config_manager(Some(manager))
+            .with_driver_registry(registry),
+    );
+    let state = Arc::new(state);
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:rescan_test/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:rescan_test",
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "scan",
+                                "value": { "kind": "bool", "value": true }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], "driver:rescan_test");
+    assert_eq!(
+        json["data"]["impacts"],
+        serde_json::json!(["discovery_rescan"])
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while discoveries.load(Ordering::Relaxed) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for driver discovery rescan");
 }
 
 #[tokio::test]
