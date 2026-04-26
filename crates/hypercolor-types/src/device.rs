@@ -117,6 +117,12 @@ impl DeviceInfo {
     pub fn total_led_count(&self) -> u32 {
         self.zones.iter().map(|z| z.led_count).sum()
     }
+
+    /// Output backend responsible for writing frames to this device.
+    #[must_use]
+    pub fn backend_id(&self) -> &str {
+        &self.origin.backend_id
+    }
 }
 
 // ── DeviceCapabilities ────────────────────────────────────────────────────

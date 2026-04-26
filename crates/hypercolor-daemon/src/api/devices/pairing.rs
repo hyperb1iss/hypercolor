@@ -80,7 +80,7 @@ pub(super) async fn build_device_auth_summary(
     device_state: &DeviceState,
     metadata: Option<&HashMap<String, String>>,
 ) -> Option<DeviceAuthSummary> {
-    let backend_id = crate::discovery::backend_id_for_device(info);
+    let backend_id = info.backend_id();
     let driver = state.driver_registry.get(&backend_id)?;
     let pairing = driver.pairing()?;
     let device = TrackedDeviceCtx {
@@ -139,7 +139,7 @@ async fn pair_device_for_ui(
         )));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let backend_id = crate::discovery::backend_id_for_device(&tracked.info);
+    let backend_id = tracked.info.backend_id();
     let Some(driver) = state.driver_registry.get(&backend_id) else {
         return Err(ApiError::validation(format!(
             "Pairing is not supported for backend '{backend_id}'"
@@ -201,7 +201,7 @@ async fn delete_device_pairing(
         )));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let backend_id = crate::discovery::backend_id_for_device(&tracked.info);
+    let backend_id = tracked.info.backend_id();
     let Some(driver) = state.driver_registry.get(&backend_id) else {
         return Err(ApiError::validation(format!(
             "Pairing is not supported for backend '{backend_id}'"

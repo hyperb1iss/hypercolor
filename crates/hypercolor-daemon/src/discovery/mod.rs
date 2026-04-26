@@ -39,9 +39,7 @@ pub use auto_layout::{
     append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device,
     sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
-pub(crate) use device_helpers::{
-    apply_persisted_device_settings, backend_id_for_device, sync_registry_state,
-};
+pub(crate) use device_helpers::{apply_persisted_device_settings, sync_registry_state};
 pub(crate) use lifecycle::execute_lifecycle_actions;
 pub(crate) use lifecycle::handle_async_write_failures;
 pub use lifecycle::{
@@ -310,10 +308,7 @@ impl Drop for DiscoveryFlagGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DiscoveryBackend, backend_id_for_device, default_timeout, normalize_timeout_ms,
-        resolve_backends,
-    };
+    use super::{DiscoveryBackend, default_timeout, normalize_timeout_ms, resolve_backends};
     use crate::api::AppState;
     use hypercolor_types::config::HypercolorConfig;
     use hypercolor_types::device::{
@@ -449,6 +444,6 @@ mod tests {
         let info =
             device_info_with_origin(DeviceOrigin::native("ableton", "usb", ConnectionType::Usb));
 
-        assert_eq!(backend_id_for_device(&info), "usb");
+        assert_eq!(info.backend_id(), "usb");
     }
 }

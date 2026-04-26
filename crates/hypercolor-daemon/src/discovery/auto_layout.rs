@@ -10,7 +10,6 @@ use hypercolor_types::spatial::{
 use tracing::{debug, info, warn};
 
 use super::DiscoveryRuntime;
-use super::device_helpers::backend_id_for_device;
 use crate::scene_transactions::apply_layout_update;
 
 #[doc(hidden)]
@@ -72,9 +71,9 @@ pub async fn sync_active_layout_for_renderable_devices(
                 layout_device_id.clone()
             } else {
                 let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-                let backend_id = backend_id_for_device(&tracked.info);
+                let backend_id = tracked.info.backend_id();
                 DeviceLifecycleManager::canonical_layout_device_id(
-                    &backend_id,
+                    backend_id,
                     &tracked.info,
                     fingerprint.as_ref(),
                 )
@@ -175,13 +174,13 @@ pub async fn sync_active_layout_connectivity(
             continue;
         }
 
-        let backend = backend_id_for_device(&tracked.info);
+        let backend = tracked.info.backend_id();
         let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
         let connect_behavior = super::device_helpers::desired_connect_behavior(
             runtime,
             device_id,
             &tracked.info,
-            &backend,
+            backend,
             fingerprint.as_ref(),
             tracked.connect_behavior,
             tracked.user_settings.enabled,

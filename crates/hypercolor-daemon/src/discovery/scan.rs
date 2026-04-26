@@ -20,8 +20,8 @@ use tracing::{debug, info, warn};
 
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
-    apply_persisted_device_settings, backend_id_for_device, desired_connect_behavior,
-    device_log_label, device_ref_for_tracked, sync_registry_state,
+    apply_persisted_device_settings, desired_connect_behavior, device_log_label,
+    device_ref_for_tracked, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
 use super::{DiscoveryBackend, DiscoveryRuntime, DiscoveryScannerResult};
@@ -304,7 +304,7 @@ pub async fn execute_discovery_scan(
         .any(|scanner| scanner.error.is_some());
     let mut scoped_registry_ids = HashSet::new();
     for tracked in runtime.device_registry.list().await {
-        let backend_id = backend_id_for_device(&tracked.info);
+        let backend_id = tracked.info.backend_id().to_owned();
         if scanned_backend_ids.contains(&backend_id) {
             scoped_registry_ids.insert(tracked.info.id);
         }
@@ -444,7 +444,7 @@ async fn retain_transient_smbus_devices(
             continue;
         }
 
-        if backend_id_for_device(&tracked.info) != "smbus" {
+        if tracked.info.backend_id() != "smbus" {
             continue;
         }
 
@@ -519,7 +519,7 @@ async fn process_discovered_device(
     let tracked_before = runtime.device_registry.get(&device_id).await?;
     let was_renderable = tracked_before.state.is_renderable();
 
-    let backend = backend_id_for_device(&tracked_before.info);
+    let backend = tracked_before.info.backend_id().to_owned();
     let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
     let connect_behavior = desired_connect_behavior(
         runtime,

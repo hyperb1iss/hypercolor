@@ -26,7 +26,6 @@ use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGro
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use self::render::display_viewport_signature;
-use crate::discovery::backend_id_for_device;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::logical_devices::LogicalDevice;
 use crate::preview_runtime::PreviewRuntime;
@@ -739,7 +738,7 @@ async fn display_targets(
             continue;
         };
 
-        let backend_id = backend_id_for_device(&tracked.info);
+        let backend_id = tracked.info.backend_id().to_owned();
         targets.push(Arc::new(DisplayTarget {
             worker_key: (backend_id.clone(), tracked.info.id),
             backend_id,

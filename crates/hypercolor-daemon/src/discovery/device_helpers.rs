@@ -395,15 +395,11 @@ pub(super) fn format_error_chain(error: &anyhow::Error) -> String {
         .join(" | caused_by: ")
 }
 
-pub(crate) fn backend_id_for_device(info: &DeviceInfo) -> String {
-    info.origin.backend_id.clone()
-}
-
 pub(super) fn device_ref_for_tracked(info: &DeviceInfo) -> DeviceRef {
     DeviceRef {
         id: info.id.to_string(),
         name: info.name.clone(),
-        backend: backend_id_for_device(info),
+        backend: info.backend_id().to_owned(),
         led_count: info.total_led_count(),
     }
 }
