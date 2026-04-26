@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
@@ -139,39 +139,11 @@ impl DaemonDriverHost {
 #[async_trait]
 impl DriverCredentialStore for DaemonDriverHost {
     async fn get_json(&self, key: &str) -> Result<Option<Value>> {
-        let Some(credentials) = self.credential_store.get(key).await else {
-            return Ok(None);
-        };
-
-        let value = match credentials {
-            Credentials::HueBridge {
-                api_key,
-                client_key,
-            } => serde_json::json!({
-                "api_key": api_key,
-                "client_key": client_key,
-            }),
-            Credentials::Nanoleaf { auth_token } => serde_json::json!({
-                "auth_token": auth_token,
-            }),
-            Credentials::Wled {
-                username,
-                password,
-                token,
-            } => serde_json::json!({
-                "username": username,
-                "password": password,
-                "token": token,
-            }),
-            Credentials::Custom { data, .. } => data,
-        };
-
-        Ok(Some(value))
+        Ok(self.credential_store.get_json(key).await)
     }
 
     async fn set_json(&self, key: &str, value: Value) -> Result<()> {
-        let credentials = credentials_from_json(key, value)?;
-        self.credential_store.store(key, credentials).await
+        self.credential_store.store_json(key, value).await
     }
 
     async fn remove(&self, key: &str) -> Result<()> {
@@ -265,61 +237,5 @@ impl DriverHost for DaemonDriverHost {
 
     fn discovery_state(&self) -> &dyn DriverDiscoveryState {
         self
-    }
-}
-
-fn credentials_from_json(key: &str, value: Value) -> Result<Credentials> {
-    let backend_id = key.split(':').next().unwrap_or("custom");
-    match backend_id {
-        "hue" => {
-            let api_key = value
-                .get("api_key")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .context("Hue credentials are missing api_key")?;
-            let client_key = value
-                .get("client_key")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .context("Hue credentials are missing client_key")?;
-            Ok(Credentials::HueBridge {
-                api_key,
-                client_key,
-            })
-        }
-        "nanoleaf" => {
-            let auth_token = value
-                .get("auth_token")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .context("Nanoleaf credentials are missing auth_token")?;
-            Ok(Credentials::Nanoleaf { auth_token })
-        }
-        "wled" => {
-            let username = value
-                .get("username")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            let password = value
-                .get("password")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            let token = value
-                .get("token")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            if username.is_none() && password.is_none() && token.is_none() {
-                bail!("WLED credentials require at least one configured field");
-            }
-            Ok(Credentials::Wled {
-                username,
-                password,
-                token,
-            })
-        }
-        _ => Ok(Credentials::Custom {
-            backend_id: backend_id.to_owned(),
-            data: value,
-        }),
     }
 }

@@ -9,6 +9,7 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
 
@@ -57,6 +58,97 @@ pub enum Credentials {
         /// Backend-defined credential payload.
         data: serde_json::Value,
     },
+}
+
+impl Credentials {
+    /// Convert stored credentials to the driver-facing JSON payload.
+    #[must_use]
+    pub fn into_driver_json(self) -> Value {
+        match self {
+            Self::HueBridge {
+                api_key,
+                client_key,
+            } => serde_json::json!({
+                "api_key": api_key,
+                "client_key": client_key,
+            }),
+            Self::Nanoleaf { auth_token } => serde_json::json!({
+                "auth_token": auth_token,
+            }),
+            Self::Wled {
+                username,
+                password,
+                token,
+            } => serde_json::json!({
+                "username": username,
+                "password": password,
+                "token": token,
+            }),
+            Self::Custom { data, .. } => data,
+        }
+    }
+
+    /// Build stored credentials from a driver-facing JSON payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a built-in credential payload is missing required
+    /// fields or is otherwise empty.
+    pub fn from_driver_json(key: &str, value: Value) -> Result<Self> {
+        let backend_id = key.split(':').next().unwrap_or("custom");
+        match backend_id {
+            "hue" => {
+                let api_key = value
+                    .get("api_key")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .context("Hue credentials are missing api_key")?;
+                let client_key = value
+                    .get("client_key")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .context("Hue credentials are missing client_key")?;
+                Ok(Self::HueBridge {
+                    api_key,
+                    client_key,
+                })
+            }
+            "nanoleaf" => {
+                let auth_token = value
+                    .get("auth_token")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .context("Nanoleaf credentials are missing auth_token")?;
+                Ok(Self::Nanoleaf { auth_token })
+            }
+            "wled" => {
+                let username = value
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                let password = value
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                let token = value
+                    .get("token")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                if username.is_none() && password.is_none() && token.is_none() {
+                    bail!("WLED credentials require at least one configured field");
+                }
+                Ok(Self::Wled {
+                    username,
+                    password,
+                    token,
+                })
+            }
+            _ => Ok(Self::Custom {
+                backend_id: backend_id.to_owned(),
+                data: value,
+            }),
+        }
+    }
 }
 
 /// Encrypted credential store rooted in Hypercolor's data directory.
@@ -124,6 +216,11 @@ impl CredentialStore {
         self.cache.read().await.get(key).cloned()
     }
 
+    /// Retrieve credentials as a driver-facing JSON payload.
+    pub async fn get_json(&self, key: &str) -> Option<Value> {
+        self.get(key).await.map(Credentials::into_driver_json)
+    }
+
     /// Store or replace credentials for one key.
     ///
     /// # Errors
@@ -136,6 +233,17 @@ impl CredentialStore {
             cache.clone()
         };
         self.persist_snapshot(&snapshot).await
+    }
+
+    /// Store or replace credentials from a driver-facing JSON payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JSON payload is invalid for the credential key
+    /// or the encrypted payload cannot be persisted.
+    pub async fn store_json(&self, key: &str, value: Value) -> Result<()> {
+        self.store(key, Credentials::from_driver_json(key, value)?)
+            .await
     }
 
     /// Remove credentials for one key if present.
