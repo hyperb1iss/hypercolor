@@ -12,13 +12,15 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["hue", "nanoleaf"]
+default = ["hue", "nanoleaf", "govee"]
+govee = ["dep:hypercolor-driver-govee"]
 hue = ["dep:hypercolor-driver-hue"]
 nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
 
 [dependencies]
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-driver-api = { workspace = true }
+hypercolor-driver-govee = { workspace = true, optional = true }
 hypercolor-driver-hue = { workspace = true, optional = true }
 hypercolor-driver-nanoleaf = { workspace = true, optional = true }
 hypercolor-driver-wled = { workspace = true }

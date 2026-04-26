@@ -4508,6 +4508,7 @@ dependencies = [
  "anyhow",
  "hypercolor-core",
  "hypercolor-driver-api",
+ "hypercolor-driver-govee",
  "hypercolor-driver-hue",
  "hypercolor-driver-nanoleaf",
  "hypercolor-driver-wled",
@@ -4528,6 +4529,8 @@ dependencies = [
  "hypercolor-types",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

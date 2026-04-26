@@ -8,8 +8,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_network::DriverRegistry;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{GoveeConfig, HypercolorConfig};
 
+#[cfg(feature = "govee")]
+use hypercolor_driver_govee::GoveeDriverFactory;
 #[cfg(feature = "hue")]
 use hypercolor_driver_hue::HueDriverFactory;
 #[cfg(feature = "nanoleaf")]
@@ -42,8 +44,11 @@ pub fn register_drivers(
     credential_store: Arc<CredentialStore>,
 ) -> Result<()> {
     registry.register(WledDriverFactory::new(config.discovery.mdns_enabled))?;
-    #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
+    #[cfg(not(any(feature = "govee", feature = "hue", feature = "nanoleaf")))]
     let _ = &credential_store;
+
+    #[cfg(feature = "govee")]
+    registry.register(GoveeDriverFactory::new(GoveeConfig::default()))?;
 
     #[cfg(feature = "hue")]
     registry.register(HueDriverFactory::new(
