@@ -12,10 +12,11 @@ use hypercolor_hal::drivers::lianli::{
     LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
     PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL_INFINITY, TL_REPORT_ID,
 };
-use hypercolor_hal::drivers::prismrgb::{
-    NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
-    PRISM_GCS_VENDOR_ID, PRISM_VENDOR_ID,
+use hypercolor_hal::drivers::nollie::{
+    NOLLIE_GEN2_VENDOR_ID, NOLLIE_VENDOR_ID, PID_NOLLIE_1, PID_NOLLIE_8_V2, PID_NOLLIE_16_V3,
+    PID_NOLLIE_28_12_A, PID_NOLLIE_32, PID_PRISM_8, PRISM_VENDOR_ID,
 };
+use hypercolor_hal::drivers::prismrgb::{PID_PRISM_MINI, PID_PRISM_S, PRISM_GCS_VENDOR_ID};
 use hypercolor_hal::drivers::push2::{
     ABLETON_VENDOR_ID, PID_PUSH_2, PUSH2_DISPLAY_ENDPOINT, PUSH2_DISPLAY_INTERFACE,
     PUSH2_MIDI_INTERFACE,
@@ -93,7 +94,7 @@ fn lookup_returns_prism_8_descriptor() {
 
     assert_eq!(descriptor.name, "PrismRGB Prism 8");
     assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
-    assert_eq!(descriptor.protocol.id, "prismrgb/prism-8");
+    assert_eq!(descriptor.protocol.id, "nollie/prism-8");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
     let protocol = (descriptor.protocol.build)();
@@ -380,9 +381,53 @@ fn lookup_returns_nollie_8_v2_descriptor() {
         .expect("Nollie 8 v2 descriptor should exist");
 
     assert_eq!(descriptor.name, "Nollie 8 v2");
-    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
-    assert_eq!(descriptor.protocol.id, "prismrgb/nollie-8-v2");
+    assert_eq!(descriptor.family, DeviceFamily::Nollie);
+    assert_eq!(descriptor.protocol.id, "nollie/nollie-8-v2");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+}
+
+#[test]
+fn lookup_returns_nollie_1_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(NOLLIE_VENDOR_ID, PID_NOLLIE_1)
+        .expect("Nollie 1 descriptor should exist");
+
+    assert_eq!(descriptor.name, "Nollie 1");
+    assert_eq!(descriptor.family, DeviceFamily::Nollie);
+    assert_eq!(descriptor.protocol.id, "nollie/nollie-1");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 630);
+    assert_eq!(protocol.zones().len(), 1);
+}
+
+#[test]
+fn lookup_returns_nollie_28_12_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(NOLLIE_VENDOR_ID, PID_NOLLIE_28_12_A)
+        .expect("Nollie 28/12 descriptor should exist");
+
+    assert_eq!(descriptor.name, "Nollie 28/12");
+    assert_eq!(descriptor.family, DeviceFamily::Nollie);
+    assert_eq!(descriptor.protocol.id, "nollie/nollie-28-12");
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 504);
+    assert_eq!(protocol.zones().len(), 12);
+}
+
+#[test]
+fn lookup_returns_nollie_gen2_descriptors() {
+    let nollie16 = ProtocolDatabase::lookup(NOLLIE_GEN2_VENDOR_ID, PID_NOLLIE_16_V3)
+        .expect("Nollie 16 v3 descriptor should exist");
+    assert_eq!(nollie16.name, "Nollie 16 v3");
+    assert_eq!(nollie16.family, DeviceFamily::Nollie);
+    assert_eq!(nollie16.protocol.id, "nollie/nollie-16-v3");
+
+    let nollie32 = ProtocolDatabase::lookup(NOLLIE_GEN2_VENDOR_ID, PID_NOLLIE_32)
+        .expect("Nollie 32 descriptor should exist");
+    assert_eq!(nollie32.name, "Nollie 32");
+    assert_eq!(nollie32.family, DeviceFamily::Nollie);
+    assert_eq!(nollie32.protocol.id, "nollie/nollie-32");
 }
 
 #[test]

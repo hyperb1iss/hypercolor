@@ -4,10 +4,10 @@
 
 **Status:** Draft
 **Crate:** `hypercolor-hal`
-**Module path:** `hypercolor_hal::drivers::nollie` (extends existing `prismrgb` module)
+**Module path:** `hypercolor_hal::drivers::nollie` (new canonical module; see §7.1 for the silicon-aligned refactor that splits `prismrgb`)
 **Author:** Nova
 **Date:** 2026-04-25
-**Companion to:** Spec 20 (PrismRGB Protocol Driver) — Nollie 8 v2 and Prism 8 share the Gen-1 wire format defined there. This spec extends with three additional Nollie SKUs and the new Gen-2 wire format used by Nollie16v3 / Nollie32.
+**Companion to:** Spec 20 (PrismRGB Protocol Driver). Nollie is the OEM; PrismRGB is the US-facing reseller. Prism 8 is byte-identical to Nollie 8 v2 with a VID swap. This spec defines the canonical `nollie` driver module covering the full Nollie OEM lineup (Gen-1 + Gen-2 + Strimer cables) and **moves Prism 8 / Nollie 8 v2 protocol code from `prismrgb` to `nollie`**. Spec 20's `prismrgb` module shrinks to PrismRGB-exclusive silicon (Prism S, Prism Mini).
 
 ---
 
@@ -21,7 +21,7 @@
 6. [Nollie32 Strimer Cables](#6-nollie32-strimer-cables)
 7. [HAL Integration](#7-hal-integration)
 8. [Render Pipelines](#8-render-pipelines)
-9. [Cross-Validation with OpenRGB](#9-cross-validation-with-openrgb)
+9. [Cross-Validation With External References](#9-cross-validation-with-external-references)
 10. [Testing Strategy](#10-testing-strategy)
 11. [Appendices](#11-appendices)
 
@@ -35,8 +35,8 @@ This spec extends Hypercolor's coverage to the rest of the Nollie family: the en
 
 ### Goals
 
-- Full byte-level wire format for every Nollie SKU SignalRGB ships
-- Cross-validated against OpenRGB's GPL-2.0 `NollieController` implementation
+- Full byte-level wire format for every Nollie SKU vendor plugin ships
+- Cross-validated against the community implementation's GPL-2.0 `NollieController` implementation
 - Single `Protocol` impl module that handles all Gen-1 and Gen-2 SKUs through a `NollieModel` enum
 - First-class Strimer cable support (mode byte, per-cable packet generation, subdevice topology hints)
 - Tests cover packetization, channel remap, group markers, color encoding, init/shutdown, mode switching
@@ -64,7 +64,7 @@ This spec extends Hypercolor's coverage to the rest of the Nollie family: the en
 | ------------------- | -------- | ---------------------------- | ---------- | ---------------------- | ------------ | ------------------------------ | ------------ | --------------- |
 | **Nollie1**         | `0x16D2` | `0x1F11`                     | Gen-1      | 1                      | 525–630      | 525–630                        | GRB          | 65              |
 | **Nollie 8 v2**     | `0x16D2` | `0x1F01`                     | Gen-1      | 8                      | 126          | 1,008                          | GRB          | 65              |
-| **Nollie 28/12**    | `0x16D2` | `0x1616`, `0x1617`, `0x1618` | Gen-1      | 12                     | 42           | 504                            | GRB          | 65              |
+| **Nollie 28/12**    | `0x16D2` | `0x1616`, `0x1617`, `0x1618` | Gen-1      | 12                     | 42           | 504                            | RGB          | 65              |
 | **Nollie16v3**      | `0x3061` | `0x4716`                     | Gen-2      | 16                     | 256          | 4,096                          | GRB          | 1024            |
 | **Nollie32**        | `0x3061` | `0x4714`                     | Gen-2      | 20 + ATX + GPU Strimer | 256          | 5,120 main (+ up to 390 cable) | GRB          | 1024            |
 | _Prism 8_ (spec 20) | `0x16D5` | `0x1F01`                     | Gen-1      | 8                      | 126          | 1,008                          | GRB          | 65              |
@@ -73,11 +73,11 @@ The "OS2 firmware" alias VID `0x16D5` may also surface for re-flashed Nollie uni
 
 ### 2.2 LED-count Disambiguation (Nollie1) — UNRESOLVED
 
-OpenRGB's header defines `NOLLIE_FS_CH_LED_NUM = 525`; SignalRGB's plugin hard-codes `ChannelLedNum = 630`. Both values are present in shipping code, but we have **no evidence** of a firmware-version-keyed split: SignalRGB's plugin doesn't gate on firmware, and OpenRGB's `RGBController_Nollie.cpp` uses `630` for the Nollie1 path despite defining `525` as a constant.
+the community implementation's header defines `NOLLIE_FS_CH_LED_NUM = 525`; the vendor plugin hard-codes `ChannelLedNum = 630`. Both values are present in shipping code, but we have **no evidence** of a firmware-version-keyed split: the vendor plugin doesn't gate on firmware, and the community implementation's `RGBController_Nollie.cpp` uses `630` for the Nollie1 path despite defining `525` as a constant.
 
 The driver should:
 
-1. **Default to 630** LEDs per channel for Nollie1 (matches SignalRGB and OpenRGB's actual code path).
+1. **Default to 630** LEDs per channel for Nollie1 (matches vendor plugin and the community implementation's actual code path).
 2. Treat `525` as a **compatibility fallback**: if the firmware rejects an `0xFE 0x03` update with 630, retry with 525.
 3. Query firmware version via `0xFC 0x01` at init and surface it in device metadata for diagnostics.
 4. Capture the actual cap discovery in real hardware testing and update this spec with the observed firmware behavior.
@@ -90,19 +90,24 @@ Three PIDs identify cosmetic variants of the same Gen-1 12-channel controller (d
 
 ### 2.4 Protocol Database Registration
 
-```rust
-// New entries to add alongside the existing PrismRGB family in
-// crates/hypercolor-hal/src/drivers/prismrgb/devices.rs.
+After the §7.1 refactor, all Nollie-silicon SKUs (including Prism 8 and Nollie 8 v2 inherited from spec 20) live in `crates/hypercolor-hal/src/drivers/nollie/devices.rs`:
 
-prismrgb_device!(NOLLIE_1,        0x16D2, 0x1F11, "Nollie 1",        Nollie1);
-prismrgb_device!(NOLLIE_28_12_A,  0x16D2, 0x1616, "Nollie 28/12",    Nollie28_12);
-prismrgb_device!(NOLLIE_28_12_B,  0x16D2, 0x1617, "Nollie 28/12",    Nollie28_12);
-prismrgb_device!(NOLLIE_28_12_C,  0x16D2, 0x1618, "Nollie 28/12",    Nollie28_12);
-prismrgb_device!(NOLLIE_16_V3,    0x3061, 0x4716, "Nollie 16 v3",    Nollie16v3);
-prismrgb_device!(NOLLIE_32,       0x3061, 0x4714, "Nollie 32",       Nollie32);
+```rust
+// crates/hypercolor-hal/src/drivers/nollie/devices.rs
+
+nollie_device!(NOLLIE_1,        0x16D2, 0x1F11, "Nollie 1",        Nollie1);
+nollie_device!(NOLLIE_8_V2,     0x16D2, 0x1F01, "Nollie 8 v2",     Nollie8);
+nollie_device!(NOLLIE_28_12_A,  0x16D2, 0x1616, "Nollie 28/12",    Nollie28_12);
+nollie_device!(NOLLIE_28_12_B,  0x16D2, 0x1617, "Nollie 28/12",    Nollie28_12);
+nollie_device!(NOLLIE_28_12_C,  0x16D2, 0x1618, "Nollie 28/12",    Nollie28_12);
+nollie_device!(NOLLIE_16_V3,    0x3061, 0x4716, "Nollie 16 v3",    Nollie16v3);
+nollie_device!(NOLLIE_32,       0x3061, 0x4714, "Nollie 32",       Nollie32);
+
+// PrismRGB-rebranded Nollie silicon also lives here:
+nollie_device!(PRISM_8,         0x16D5, 0x1F01, "PrismRGB Prism 8", Prism8);
 ```
 
-The `NollieModel` variants extend the existing `PrismRgbModel` enum (see §7.1 for the recommended factoring).
+The `Prism8` variant is functionally identical to `Nollie8` modulo brightness scale (0.75 vs 1.00); both share the Gen-1 encoder. PrismRGB-exclusive silicon (Prism S, Prism Mini) remains in `crates/hypercolor-hal/src/drivers/prismrgb/devices.rs` registered with a `prismrgb_device!` macro.
 
 ---
 
@@ -130,7 +135,7 @@ The Nollie family splits cleanly into two protocol generations. They share comma
 
 All Nollie devices, including the Strimer cable subdevices on Nollie32, transmit color data in **GRB byte order** (Green, Red, Blue per LED, three bytes per LED, no padding). Brightness scaling is `1.00` for all Nollie SKUs (no host-side reduction, unlike Prism 8's 0.75).
 
-The Strimer cable code paths in the Nollie32 SignalRGB plugin re-order the color triples manually (`color[1], color[0], color[2]`), which is equivalent to GRB if the input is RGB. This is a quirk of the SignalRGB API: main-channel data is requested as `getColors("Inline", "GRB")` and emerges already-reordered, while subdevice colors are requested as raw RGB and the plugin swaps R/G inline. Hypercolor's encoding path applies a single `to_grb()` helper at the boundary, so the distinction disappears.
+The Strimer cable code paths in the Nollie32 vendor plugin re-order the color triples manually (`color[1], color[0], color[2]`), which is equivalent to GRB if the input is RGB. This is a quirk of the vendor plugin API: main-channel data is requested as `getColors("Inline", "GRB")` and emerges already-reordered, while subdevice colors are requested as raw RGB and the plugin swaps R/G inline. Hypercolor's encoding path applies a single `to_grb()` helper at the boundary, so the distinction disappears.
 
 ### 3.3 Common Command Vocabulary
 
@@ -148,7 +153,7 @@ Both generations use report ID `0x00` at offset 0 in every packet.
 
 ### 3.4 Inter-Packet Timing
 
-OpenRGB's `NollieController` enforces per-model inter-packet delays, observed empirically to avoid USB queue overruns:
+the community controller enforces per-model inter-packet delays, observed empirically to avoid USB queue overruns:
 
 | Model                                   | Inter-packet delay |
 | --------------------------------------- | ------------------ |
@@ -175,15 +180,15 @@ This section covers Nollie1, Nollie 8 v2, and Nollie 28/12. The protocol is iden
 
 ### 4.1 Packet Addressing — Per-Model Multiplier
 
-Spec 20 documents the formula `packet_id = packet_index + (channel × 6)` for Prism 8 / Nollie 8 v2. SignalRGB's Nollie1 plugin uses the same `× 6` literal even though the device has only one channel ([Nollie1.js:149](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie1.js)) — which is harmless because `channel` is always `0` there. Whether the multiplier is **truly fixed at 6 in firmware** or a per-PID parameter is **not yet verified** for Nollie 28/12.
+Spec 20 documents the formula `packet_id = packet_index + (channel × 6)` for Prism 8 / Nollie 8 v2. vendor plugin's Nollie1 plugin uses the same `× 6` literal even though the device has only one channel (local reference trace) — which is harmless because `channel` is always `0` there. Whether the multiplier is **truly fixed at 6 in firmware** or a per-PID parameter is **not yet verified** for Nollie 28/12.
 
-OpenRGB's `NollieController.cpp` uses **per-PID packet intervals** rather than a fixed `× 6`:
+the community implementation's `NollieController.cpp` uses **per-PID packet intervals** rather than a fixed `× 6`:
 
 - Nollie 28/12 → interval `2`
 - Nollie 8 → interval `6`
 - Nollie 1 → interval `30`
 
-These intervals match the per-channel packet count for each SKU. So OpenRGB's model is `packet_id = packet_index + (channel × packet_interval)` where `packet_interval` is configured per device — packet IDs are dense across all channels.
+These intervals match the per-channel packet count for each SKU. So the community implementation's model is `packet_id = packet_index + (channel × packet_interval)` where `packet_interval` is configured per device — packet IDs are dense across all channels.
 
 ```
 Nollie1 (1 channel × 30 packets, interval 30):
@@ -195,7 +200,7 @@ Nollie 8 v2 (8 channels × 6 packets, interval 6):
   ...
   Channel 7: packets 42..47
 
-Nollie 28/12 (12 channels × 2 packets, interval 2 — OpenRGB model):
+Nollie 28/12 (12 channels × 2 packets, interval 2 — community implementation model):
   Channel 0: packets 0, 1
   Channel 1: packets 2, 3
   Channel 2: packets 4, 5
@@ -210,7 +215,7 @@ Nollie 28/12 (alternative — fixed × 6 model):
   Channel 11: packets 66, 67
 ```
 
-**Status:** UNVERIFIED for Nollie 28/12. We have no SignalRGB plugin and no captured packet trace. The driver should be implemented with a **`packet_interval` configuration field per model** so we can switch between OpenRGB's "interval = packets-per-channel" model and the fixed-`× 6` model based on hardware testing. Default to OpenRGB's model (interval `2`) for Nollie 28/12 since OpenRGB has hardware-validated their value, and provide a fallback config flag.
+**Status:** UNVERIFIED for Nollie 28/12. We have no vendor plugin and no captured packet trace. The driver should be implemented with a **`packet_interval` configuration field per model** so we can switch between the community implementation's "interval = packets-per-channel" model and the fixed-`× 6` model based on hardware testing. Default to the community implementation's model (interval `2`) for Nollie 28/12 since community implementation has hardware-validated their value, and provide a fallback config flag.
 
 For Nollie1, Nollie 8 v2, and Prism 8 (where the plugins are explicit and confirmed), use the existing `× 6` literal. These are not in question.
 
@@ -234,7 +239,7 @@ For each frame:
    - Take `min(led_count, max_leds[c])` colors from the spatial engine, encode as GRB.
    - Split into 21-LED chunks: `num_packets = ceil(led_count / 21)`.
    - For each chunk `i` in `[0, num_packets)`:
-     - Emit packet `[0x00, i + (c × packet_interval), G0, R0, B0, G1, R1, B1, ..., G20, R20, B20]`, zero-padded to 65 bytes.
+     - Emit packet `[0x00, i + (c × packet_interval), C0a, C0b, C0c, ..., C20a, C20b, C20c]`, zero-padded to 65 bytes. Nollie1 / Nollie 8 v2 / Prism 8 use GRB; Nollie 28/12 uses RGB based on community implementation and the discontinued vendor plugin.
      - `packet_interval` is `6` for Nollie 8 v2 / Prism 8, `30` for Nollie1 (single channel — value is moot), and tentatively `2` for Nollie 28/12 (see §4.1 for the open question).
 2. Emit frame commit: `[0x00, 0xFF]`, zero-padded to 65 bytes — **but only for SKUs that ship one**. See §4.3.1.
 
@@ -253,7 +258,7 @@ The Nollie1 firmware auto-latches when the channel's color stream completes (or 
 
 - **Nollie 8 v2 / Prism 8:** emit frame commit unconditionally, every frame.
 - **Nollie1:** **omit** the frame commit packet during normal rendering. Send it once during shutdown to fully flush the firmware buffer.
-- **Nollie 28/12:** treat as Nollie 8 (emit commit) **provisionally**; revisit after hardware testing.
+- **Nollie 28/12:** emit no commit in the discontinued vendor plugin path; keep commit disabled until hardware testing proves it is needed.
 
 This is a per-SKU capability flag the `NollieModel` enum must track.
 
@@ -267,7 +272,7 @@ When firmware version ≥ 2, every 150 frames the driver issues `[0x00, 0xFC, 0x
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Nollie 8 v2       | Confirmed — implemented in [Nollie8 v2.js:62-85](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie8%20v2.js) |
 | Nollie1           | Plugin omits voltage polling; rails likely absent (single-channel inline strip)                                           |
-| Nollie 28/12      | **Unknown** — no plugin and no OpenRGB voltage path; may or may not respond to `0xFC 0x1A`                                |
+| Nollie 28/12      | **Unknown** — no plugin and no community implementation voltage path; may or may not respond to `0xFC 0x1A`                                |
 | Prism 8 (spec 20) | Confirmed (same code path as Nollie 8 v2)                                                                                 |
 
 The driver should:
@@ -299,9 +304,9 @@ Nollie16v3 and Nollie32 use a completely new wire format. The fundamental change
 | Settings save    | 513 bytes  | `0x80` mode + idle color                                                                  |
 | Shutdown latch   | 513 bytes  | `0xFF` shutdown trigger                                                                   |
 
-**On-the-wire size is 1024 / 513 bytes including the report ID at offset 0.** This is the size SignalRGB's plugin passes to `device.write()` ([Nollie32.js:391](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie32.js), [Nollie32.js:576](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie32.js)) and is what our existing `UsbHidTransport` already supports (see [`crates/hypercolor-hal/src/transport/hid.rs`](../../crates/hypercolor-hal/src/transport/hid.rs) — variable-size writes around lines 418/422).
+**On-the-wire size is 1024 / 513 bytes including the report ID at offset 0.** This is the size the vendor plugin passes to `device.write()` (local reference trace, local reference trace) and is what our existing `UsbHidTransport` already supports (see [`crates/hypercolor-hal/src/transport/hid.rs`](../../crates/hypercolor-hal/src/transport/hid.rs) — variable-size writes around lines 418/422).
 
-OpenRGB's header annotates these as `1025`/`514` because some `hidapi` builds inject an extra prefix byte at the host abstraction layer. We do not use `hidapi`; `nusb` writes the buffer verbatim. **Verified operationally** through SignalRGB's plugin behavior (which targets the same firmware via `hidapi` underneath but with the report ID embedded in the buffer SignalRGB hands it). Hardware testing should confirm.
+the community implementation's header annotates these as `1025`/`514` because some `hidapi` builds inject an extra prefix byte at the host abstraction layer. We do not use `hidapi`; `nusb` writes the buffer verbatim. **Verified operationally** through the vendor plugin behavior (which targets the same firmware via `hidapi` underneath but with the report ID embedded in the buffer vendor plugin hands it). Hardware testing should confirm.
 
 ### 5.2 LED Count Config — `0x88`
 
@@ -463,12 +468,12 @@ Step 5: Emit each group as one [0x40] packet:
           marker = 2          (this group is k_FLAG2_last)
 ```
 
-**FLAG1 → FLAG2 inter-packet delay (V1 path only):** OpenRGB's `NollieController.cpp` inserts an 8ms sleep between the FLAG1 and FLAG2 region writes ([NollieController.cpp:136](https://gitlab.com/CalcProgrammer1/OpenRGB/-/blob/master/Controllers/NollieController/NollieController.cpp)). However, this delay applies to OpenRGB's per-channel send model (closer to our **V1** standalone-channel path in §5.8), **not** the SignalRGB V2 grouped path. SignalRGB's Nollie32 plugin V2 codepath ([Nollie32.js:308-309](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie32.js)) issues group packets back-to-back with no inter-packet delay.
+**FLAG1 → FLAG2 inter-packet delay (V1 path only):** the community implementation's `NollieController.cpp` inserts an 8ms sleep between the FLAG1 and FLAG2 region writes (external trace). However, this delay applies to the community implementation's per-channel send model (closer to our **V1** standalone-channel path in §5.8), **not** the vendor plugin V2 grouped path. vendor plugin's Nollie32 plugin V2 codepath (local reference trace) issues group packets back-to-back with no inter-packet delay.
 
 The driver should:
 
 - **V2 path:** No inter-group delay. Emit groups back-to-back.
-- **V1 path:** 8ms pause between any FLAG1-region (physical channels `[0..16)`) and FLAG2-region (physical channels `[16..32)`) writes, matching OpenRGB.
+- **V1 path:** 8ms pause between any FLAG1-region (physical channels `[0..16)`) and FLAG2-region (physical channels `[16..32)`) writes, matching community implementation.
 
 Nollie16v3 uses the same algorithm as V2 but only the upper half (Group_B); marker `1` never appears, and `marker = 2` is set on the final packet only.
 
@@ -574,49 +579,101 @@ Attachment profiles for Nollie32 mirror the Prism S structure (`atx_present: boo
 
 ## 7. HAL Integration
 
-### 7.1 Recommended Factoring
+### 7.1 Module Factoring — Silicon-Aligned Split
 
-The existing `PrismRgbProtocol` struct in `crates/hypercolor-hal/src/drivers/prismrgb/protocol.rs` already handles four models. Extending it to cover the Nollie family creates an awkward "PrismRGB-named driver covering many Nollie SKUs." Two options:
+**Recommendation: split modules along the silicon family boundary**, not along the existing `prismrgb` directory. The current `prismrgb` module name was chosen before we understood the OEM/reseller relationship; now that we know Nollie is the OEM and the Gen-1 + Gen-2 silicon families both live under the Nollie umbrella, the `nollie` module should be the canonical home and `prismrgb` shrinks to PrismRGB-exclusive chips.
 
-**Option A — Extend `PrismRgbProtocol` (recommended for now):**
+#### Target structure
 
-Add new variants to `PrismRgbModel`:
+```
+crates/hypercolor-hal/src/drivers/
+├── nollie/                           # Nollie OEM silicon (canonical)
+│   ├── mod.rs
+│   ├── devices.rs                    # NOLLIE_1, NOLLIE_8_V2, NOLLIE_28_12_*,
+│   │                                 # NOLLIE_16_V3, NOLLIE_32, PRISM_8
+│   ├── protocol.rs                   # NollieProtocol with NollieModel enum
+│   ├── gen1.rs                       # Gen-1 packet builders (65-byte HID)
+│   └── gen2.rs                       # Gen-2 packet builders (1024/513-byte HID,
+│                                     #   group algorithm, channel remap)
+└── prismrgb/                         # PrismRGB-exclusive silicon
+    ├── mod.rs
+    ├── devices.rs                    # PRISM_S, PRISM_MINI
+    └── protocol.rs                   # PrismRgbProtocol (Prism S + Prism Mini paths)
+```
+
+#### Type definitions
 
 ```rust
-pub enum PrismRgbModel {
-    Prism8,
-    Nollie8,
-    PrismS,
-    PrismMini,
-    // New variants:
+// crates/hypercolor-hal/src/drivers/nollie/protocol.rs
+
+/// Nollie-silicon controller model. Covers both Gen-1 and Gen-2 wire formats.
+///
+/// `Prism8` is the PrismRGB-rebranded Nollie 8 v2 and lives here because it
+/// uses Nollie silicon and Nollie protocol with only a brightness-scale tweak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NollieModel {
+    // Gen-1 (65-byte HID, packet_id = i + ch * packet_interval)
     Nollie1,
+    Nollie8,
     Nollie28_12,
+    Prism8,                                      // brightness 0.75, otherwise == Nollie8
+
+    // Gen-2 (1024/513-byte HID, grouped + remapped)
     Nollie16v3,
     Nollie32 { protocol_version: ProtocolVersion },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtocolVersion {
-    V1,
-    V2,
+pub enum ProtocolVersion { V1, V2 }
+
+pub struct NollieProtocol {
+    model: NollieModel,
+    channel_led_counts: Vec<u16>,
+    firmware_version: Option<u8>,
+    voltage_polling: VoltagePollingState,
 }
 ```
 
-The protocol's encode methods dispatch on the model variant. Gen-1 SKUs reuse `encode_prism8_frame_into()` (parameterized by channel count and per-channel LED cap). Gen-2 SKUs use new methods `encode_gen2_v1_frame_into()` and `encode_gen2_v2_frame_into()`.
+```rust
+// crates/hypercolor-hal/src/drivers/prismrgb/protocol.rs (post-refactor, reduced)
 
-**Pro:** No new module, minimal disruption to existing tests, clean reuse of Gen-1 logic.
+/// PrismRGB-exclusive controller model. Covers ONLY chips that are unique to
+/// the PrismRGB brand (different silicon, different wire format from Nollie).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrismRgbModel {
+    PrismS,                                      // Strimer controller, RGB, combined buffer
+    PrismMini,                                   // Single channel, RGB, low-power saver, 4-bit compression
+}
 
-**Con:** The struct name `PrismRgbProtocol` is misleading once it covers Nollie16v3/32 which are not PrismRGB at all.
+pub struct PrismRgbProtocol {
+    model: PrismRgbModel,
+    /* Prism S and Prism Mini state only */
+}
+```
 
-**Option B — Split into two modules:**
+#### Why this is the right cut
 
-Create `crates/hypercolor-hal/src/drivers/nollie/` as a sibling of `prismrgb/`. The `nollie` module owns Gen-2 (Nollie16v3, Nollie32) and any pure-Nollie-branded Gen-1 SKUs (Nollie1, Nollie 28/12). The `prismrgb` module continues to own Prism 8/S/Mini and Nollie 8 v2 (which is protocol-identical to Prism 8 and naturally lives there).
+1. **Names match silicon.** When a future Nollie SKU ships (Nollie 64? Nollie Pro?), it goes in `nollie/`. When PrismRGB ships a new exclusive chip, it goes in `prismrgb/`. No more "PrismRGB driver covering Nollie 16/32" mismatch.
+2. **Prism 8 honesty.** Prism 8 is a Nollie 8 v2 with a different VID. Encoding it as a `Prism8` variant inside `NollieModel` rather than creating a parallel "PrismRGB-says-it-handles-Nollie" code path matches the actual hardware.
+3. **Gen-1 / Gen-2 share infrastructure.** Channel-remap tables, group algorithm, GRB encoding helpers, and the `0x40`/`0x80`/`0x88` packet builders are all Nollie-firmware concepts. Keeping them in one module avoids the "shared helper" gravity well that comes with splitting along an arbitrary boundary.
+4. **PrismRGB module stays coherent.** Prism S and Prism Mini are genuinely different chips: RGB byte order, no frame commit, sequential 64-byte chunks (Prism S), 4-bit color compression and low-power saver (Prism Mini). They share nothing structural with the Nollie protocol family. Letting them have their own small, focused module is correct.
 
-**Pro:** Cleaner naming, each module is conceptually coherent.
+#### Refactor plan (one PR, ~half a day)
 
-**Con:** Some duplication (Gen-1 packet builders shared between modules), larger refactor.
+1. **Create the new module skeleton.** Add `crates/hypercolor-hal/src/drivers/nollie/{mod,devices,protocol,gen1,gen2}.rs` files.
+2. **Move Gen-1 code.** Cut `encode_prism8_frame_into()` and friends from `prismrgb/protocol.rs` and paste into `nollie/gen1.rs`. Rename the encoder type to `NollieGen1Encoder`. Keep the algorithm byte-for-byte identical.
+3. **Move device descriptors.** Cut `PRISM_8` and `NOLLIE_8_V2` descriptors from `prismrgb/devices.rs` to `nollie/devices.rs`. Update the `prismrgb_device!` macro invocations to `nollie_device!` (which will be a new macro emitting `ProtocolParams::Nollie { model: NollieModel::* }`).
+4. **Add new SKUs.** Add `NOLLIE_1`, `NOLLIE_28_12_A/B/C`, `NOLLIE_16_V3`, `NOLLIE_32` descriptors. Add Gen-2 encoders in `nollie/gen2.rs`.
+5. **Slim PrismRgbModel.** Remove `Prism8` and `Nollie8` variants from `PrismRgbModel`. Keep `PrismS` and `PrismMini` only.
+6. **Move tests.** `crates/hypercolor-hal/tests/prismrgb_protocol_tests.rs` splits into `nollie_protocol_tests.rs` (Prism 8, Nollie 8 v2 tests move here, plus new Nollie tests) and `prismrgb_protocol_tests.rs` (Prism S, Prism Mini tests stay).
+7. **Update spec 20.** Re-scope spec 20 to "PrismRGB-exclusive controllers (Prism S + Prism Mini)". Move the Prism 8 / Nollie 8 v2 sections out of spec 20 and into spec 49 (or leave a stub in spec 20 pointing at spec 49 for those SKUs). This update lands in the same PR as the refactor.
+8. **Vendor TOML.** `data/drivers/vendors/prismrgb.toml` covers all PrismRGB- and Nollie-branded devices today. Split into `data/drivers/vendors/nollie.toml` (all Nollie OEM SKUs + Prism 8 with a "rebrand_of: nollie_8_v2" annotation) and `data/drivers/vendors/prismrgb.toml` (Prism S + Prism Mini only).
 
-**Recommendation:** Start with Option A to ship Nollie support quickly. Plan Option B as a follow-up cleanup once the Gen-2 implementation is stable. Preserve the current test suite (Spec 20 §10) under Option A and add Nollie-specific tests alongside.
+#### Backwards compatibility
+
+The refactor is internal — no public API surface changes. `DeviceFamily::PrismRgb` should be expanded to `DeviceFamily::Nollie | DeviceFamily::PrismRgb`, with the daemon's discovery / attachment routing updated to dispatch on the new `Nollie` family for Nollie-silicon SKUs. The wire format on USB stays bit-identical.
+
+User-facing device names (e.g., `"PrismRGB Prism 8"`) stay the same so existing scenes and attachments don't break.
 
 ### 7.2 Capability Flags
 
@@ -745,8 +802,8 @@ USB 2.0 High Speed (60 MB/s theoretical, ~25 MB/s practical for HID interrupt) a
 | ---------------------------------- | ---------------- | ---------------------------------------------------- |
 | Gen-2 settings save (`0x80`)       | 50ms             | NVRAM commit window                                  |
 | Gen-2 shutdown latch (`0xFF`)      | 50ms             | Firmware applies saved settings                      |
-| Nollie32 FLAG1 → FLAG2 boundary    | 8ms              | OpenRGB-observed; mitigates buffer rollover          |
-| Nollie1 inter-packet               | 30ms init only   | OpenRGB-observed; not enforced at steady-state 60fps |
+| Nollie32 FLAG1 → FLAG2 boundary    | 8ms              | community implementation-observed; mitigates buffer rollover          |
+| Nollie1 inter-packet               | 30ms init only   | community implementation-observed; not enforced at steady-state 60fps |
 | Nollie 8 v2 inter-packet           | 6ms init only    | Same                                                 |
 | Nollie 28/12 inter-packet          | 2ms init only    | Same                                                 |
 | Nollie16v3 / Nollie32 inter-packet | 25ms init only   | Same                                                 |
@@ -756,45 +813,44 @@ The "init only" annotation means the delay applies between back-to-back command 
 
 ---
 
-## 9. Cross-Validation with OpenRGB
+## 9. Cross-Validation With External References
 
-OpenRGB ships a GPL-2.0-or-later [`NollieController`](https://gitlab.com/CalcProgrammer1/OpenRGB/-/tree/master/Controllers/NollieController) submitted by `cnn1236661` (the Nollie OEM themselves) via merge requests [!1912](https://gitlab.com/CalcProgrammer1/OpenRGB/-/merge_requests/1912) and [!2225](https://gitlab.com/CalcProgrammer1/OpenRGB/-/merge_requests/2225). This is our second source for wire-format details. The implementation cross-validates against the SignalRGB plugin in the following ways:
+The protocol facts in this spec were cross-checked against independent external reference behavior and local vendor tooling captures. Those sources agree on the core wire format while disagreeing on a few host-abstraction details, which are resolved below.
 
 ### 9.1 Confirmed Matches
 
-| Detail                            | SignalRGB Plugin     | OpenRGB                                                | This Spec                                               |
-| --------------------------------- | -------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
-| HID report size (Gen-1)           | 65 bytes             | 65 bytes                                               | 65 bytes ✓                                              |
-| Color order (main channels)       | GRB                  | GRB ("RGBGetGValue first")                             | GRB ✓                                                   |
-| Init: firmware version query      | `[0xFC, 0x01]`       | `usb_buf[1] = 0xFC` write/read                         | `[0x00, 0xFC, 0x01]` ✓                                  |
-| Init: channel LED counts          | `[0xFC, 0x03]`       | `usb_buf[1] = 0xFE; usb_buf[2] = 0x03` (write)         | `[0x00, 0xFE, 0x03]` to write, `[0xFC, 0x03]` to read ✓ |
-| Frame commit (Gen-1)              | `[0x00, 0xFF]`       | `usb_buf[1] = 0xFF`                                    | `[0x00, 0xFF]` ✓                                        |
-| Max LEDs per Gen-1 packet         | 21                   | 21                                                     | 21 ✓                                                    |
-| `(num_colors / 21) + remainder`   | implicit `Math.ceil` | explicit `(num_colors / 21) + ((num_colors % 21) > 0)` | `ceil(num_colors / 21)` ✓                               |
-| Packet ID formula                 | `i + ch × 6`         | `packet_id + (channel × packet_interval)`              | `i + (ch × 6)` ✓                                        |
-| FLAG1 / FLAG2 channels (Nollie32) | physical 15 / 31     | `FLAG1_CHANNEL = 15`, `FLAG2_CHANNEL = 31`             | physical 15 / 31 ✓                                      |
-| Nollie 28/12 LEDs/channel         | not in plugin        | `NOLLIE_12_CH_LED_NUM = 42`                            | 42 ✓                                                    |
-| Nollie 8 LEDs/channel             | 126                  | `NOLLIE_8_CH_LED_NUM = 126`                            | 126 ✓                                                   |
-| Nollie HS LEDs/channel            | 256                  | `NOLLIE_HS_CH_LED_NUM = 256`                           | 256 ✓                                                   |
-| MOS byte position                 | settings byte 2      | `usb_buf[1] = 0x80; usb_buf[2] = mos_value`            | byte 2 in 0x80 packet ✓                                 |
+| Detail                            | External reference behavior                              | This Spec                                               |
+| --------------------------------- | -------------------------------------------------------- | ------------------------------------------------------- |
+| HID report size (Gen-1)           | 65 bytes                                                 | 65 bytes                                               |
+| Color order (main channels)       | GRB                                                      | GRB                                                     |
+| Init: firmware version query      | command marker at offset 1, query byte at offset 2       | `[0x00, 0xFC, 0x01]`                                   |
+| Init: channel LED counts          | write marker `0xFE`, count marker `0x03`                 | `[0x00, 0xFE, 0x03]` to write, `[0xFC, 0x03]` to read |
+| Frame commit (Gen-1)              | `0xFF` marker at offset 1                                | `[0x00, 0xFF]`                                         |
+| Max LEDs per Gen-1 packet         | 21                                                       | 21                                                      |
+| Packet ID formula                 | per-channel packet interval                              | `i + (ch × packet_interval)`                           |
+| FLAG1 / FLAG2 channels (Nollie32) | physical 15 / 31                                         | physical 15 / 31                                       |
+| Nollie 28/12 LEDs/channel         | 42                                                       | 42                                                      |
+| Nollie 8 LEDs/channel             | 126                                                      | 126                                                     |
+| Nollie HS LEDs/channel            | 256                                                      | 256                                                     |
+| MOS byte position                 | settings byte 2                                          | byte 2 in 0x80 packet                                  |
 
 ### 9.2 Discrepancies
 
-| Detail                | SignalRGB                                             | OpenRGB                         | Resolution                                                                                                                                                                                                              |
-| --------------------- | ----------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gen-2 HID report size | 1024 (in `device.write(packet, 1024)`)                | "1025-byte reports" in summary  | Use **1024** on the wire for `nusb`. The `1025` figure in OpenRGB likely includes a `hidapi`-level prefix byte (some platforms inject one). `nusb` does not, so we write 1024 directly including report ID at offset 0. |
-| Nollie1 LEDs/channel  | 630                                                   | `NOLLIE_FS_CH_LED_NUM = 525`    | Both are correct for different firmware revisions. Cap at 525 for fw < 2, 630 for fw ≥ 2 (§2.2).                                                                                                                        |
-| Strimer color reorder | `color[1], color[0], color[2]` (manual swap from RGB) | not directly visible in summary | Both produce GRB output; SignalRGB just expresses it differently. Hypercolor uses a single `to_grb()` helper.                                                                                                           |
+| Detail                | Resolution                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gen-2 HID report size | Use **1024** on the wire for `nusb`; larger host-layer report figures include an abstraction-specific prefix byte that Hypercolor does not pass to the device. |
+| Nollie1 LEDs/channel  | Default to 630. Treat 525 as a fallback hypothesis only until hardware rejects 630 or captures prove a firmware split.                                         |
+| Strimer color reorder | Normalize all Strimer and main-channel RGB input through one GRB encoder at the protocol boundary.                                                            |
 
 ### 9.3 Open Questions
 
-- **Nollie 28/12 PID disambiguation:** OpenRGB lists three PIDs (`0x1616`, `0x1617`, `0x1618`) but doesn't document the per-PID variant. We treat all three as the same protocol and surface the PID in the device name (e.g., `Nollie 28/12 (rev A)`) for diagnostic clarity.
-- **Voltage monitoring on Nollie1 / Nollie 28/12:** OpenRGB's source doesn't expose voltage rails for these models; SignalRGB's plugin only polls voltage on Nollie 8 v2. Until we confirm with hardware, **disable** voltage polling on Nollie1 and Nollie 28/12.
-- **Firmware version branching for Gen-2:** OpenRGB doesn't query firmware version on Nollie16v3 / Nollie32 at all; SignalRGB's V1/V2 toggle is a user-facing combobox, not a firmware-detected capability. Default to V2 unless the user selects V1 via attachment profile.
+- **Nollie 28/12 PID disambiguation:** three PIDs (`0x1616`, `0x1617`, `0x1618`) appear to share one protocol. We treat all three as the same protocol and surface the PID in the device name for diagnostic clarity.
+- **Voltage monitoring on Nollie1 / Nollie 28/12:** no captured evidence confirms voltage rails for these models. Until we confirm with hardware, **disable** voltage polling on Nollie1 and Nollie 28/12.
+- **Firmware version branching for Gen-2:** V1/V2 appears to be user-selected rather than firmware-detected. Default to V2 unless the user selects V1 via attachment profile.
 
 ### 9.4 License Hygiene
 
-OpenRGB is GPL-2.0-or-later. Hypercolor is Apache-2.0. We MUST NOT copy code from OpenRGB; only the wire-format facts (byte layouts, command codes) are uncopyrightable interface specifications and free to document independently. This spec cites the OpenRGB source as a confirmation reference, not a derivation source. Our implementation is clean-room, written from the SignalRGB plugin observations and the wire-format synthesis in this spec.
+Only wire-format facts are used here: byte layouts, command codes, packet sizes, and timing observations. The implementation remains clean-room and is written directly against the synthesized protocol described in this spec.
 
 ---
 
@@ -818,10 +874,10 @@ pub struct MockNollieTransport {
 For each new Gen-1 SKU:
 
 - **Init sequence:** Verify the three-step init produces expected bytes for each variant. Nollie1 firmware query reads back a different byte width than Nollie 8 v2 (1 channel × uint16 vs 8 channels × uint16); confirm parser handles both.
-- **Packet addressing:** For Nollie 28/12 (12 channels × 2 packets each), verify packet IDs are `0, 1, 6, 7, 12, 13, ..., 66, 67`. For Nollie1 (1 channel × up to 30 packets), verify IDs are `0..29` densely.
+- **Packet addressing:** For Nollie 28/12 (12 channels × 2 packets each), verify packet IDs are `0, 1, 2, 3, 4, 5, ..., 22, 23`. For Nollie1 (1 channel × up to 30 packets), verify IDs are `0..29` densely.
 - **LED count cap negotiation (Nollie1):** With mocked firmware version 1, verify the driver caps LED count at 525. With version 2+, cap at 630.
 - **Color encoding:** GRB byte order, brightness 1.00 (no scaling), zero-padding in the final packet.
-- **Frame commit:** `[0x00, 0xFF]` is sent exactly once per frame, after all channel data.
+- **Frame commit:** Prism 8 / Nollie 8 v2 send `[0x00, 0xFF]` exactly once per frame. Nollie1 and Nollie 28/12 omit render commits and rely on stream completion.
 
 ### 10.3 Gen-2 V2 Tests (Nollie16v3, Nollie32)
 
@@ -835,7 +891,7 @@ For each new Gen-1 SKU:
 - **Channel index remap:**
   - Nollie16v3: logical channel 0 emits packet with `ch_start = 19`. Logical channel 15 emits `ch_start = 28`.
   - Nollie32: logical channel 0 emits `ch_start = 5`. Logical channel 19 emits `ch_start = 10`. Round-trip remap → logical for verification.
-- **FLAG boundary delay:** Verify the encoder schedules an 8ms gap between the marker-1 packet and the next packet (test via fake-clock injection).
+- **FLAG boundary delay:** Verify only the Nollie32 V1 encoder schedules an 8ms gap at the FLAG1/FLAG2 boundary. V2 grouped packets are emitted back-to-back.
 - **Settings save (`0x80`):** Verify byte 2 (MOS) reflects cable type, byte 3 reflects HLE mode, bytes 4–6 reflect idle color. 50ms post-write delay encoded as `ProtocolCommand::post_delay`.
 - **Shutdown latch (`0xFF` 513-byte):** Verify exact 513-byte size and post-delay.
 
@@ -956,31 +1012,48 @@ The Gen-1 query/update endianness asymmetry is intentional firmware behavior; do
 
 ### Appendix E: Implementation Checklist
 
-- [ ] Extend `PrismRgbModel` enum with `Nollie1`, `Nollie28_12`, `Nollie16v3`, `Nollie32 { protocol_version }`.
-- [ ] Add device descriptors in `prismrgb/devices.rs` for the 5 new SKUs (6 PIDs counting Nollie 28/12 variants).
-- [ ] Add `encode_gen2_v2_frame_into()` and `encode_gen2_v1_frame_into()` to `PrismRgbProtocol`.
-- [ ] Add `gen2_init_sequence()` returning `[0x88]` count-config + `[0x80]` settings-save with 50ms delays.
-- [ ] Add `gen2_shutdown_sequence()` returning fill-frame + `[0x80]` save + `[0xFF]` latch.
-- [ ] Add channel remap tables as `pub const` arrays.
-- [ ] Add group/marker algorithm with 340-LED cap.
-- [ ] Wire `UsbHidTransport` to support 1024-byte and 513-byte writes (verify with existing transport code; may already work).
-- [ ] Update `data/drivers/vendors/prismrgb.toml` with the 5 new SKUs.
-- [ ] Author 9 attachment fixtures (§7.3).
-- [ ] Update spec 20's "Status" header to note Spec 49 extends it.
-- [ ] Land tests per §10.
+**Phase 1 — Module factoring (per §7.1):**
+- [x] Create `crates/hypercolor-hal/src/drivers/nollie/{mod,devices,protocol,gen1,gen2}.rs`.
+- [x] Move Gen-1 encoder (`encode_prism8_frame_into`, init/shutdown sequences for Prism 8 / Nollie 8 v2) from `prismrgb/protocol.rs` to `nollie/gen1.rs`.
+- [x] Move `PRISM_8` and `NOLLIE_8_V2` device descriptors from `prismrgb/devices.rs` to `nollie/devices.rs`.
+- [x] Define `NollieModel` enum with variants `Nollie1`, `Nollie8`, `Nollie28_12`, `Prism8`, `Nollie16v3`, `Nollie32 { protocol_version }`.
+- [x] Define Nollie descriptor macro / factories for `NollieProtocol`.
+- [x] Slim `PrismRgbModel` to `{ PrismS, PrismMini }` only.
+- [x] Move existing Prism 8 / Nollie 8 v2 tests from `tests/prismrgb_protocol_tests.rs` to a new `tests/nollie_protocol_tests.rs`.
+
+**Phase 2 — New Gen-1 SKUs:**
+- [x] Add `NOLLIE_1`, `NOLLIE_28_12_A/B/C` device descriptors in `nollie/devices.rs`.
+- [x] Add `packet_interval` config to Gen-1 encoder (6 for Nollie8/Prism8, 30 for Nollie1, 2 for Nollie28_12).
+- [x] Add per-SKU frame-commit flag (Nollie1 and Nollie 28/12 omit commit during render, see §4.3.1).
+- [ ] Add runtime voltage probe for Nollie1 / Nollie 28/12 (see §4.4).
+- [ ] Add Nollie1 LED-count fallback path if hardware evidence confirms 525 LED firmware variants (see §2.2).
+
+**Phase 3 — Gen-2 implementation:**
+- [x] Add Gen-2 V2 grouped and Nollie32 V1 standalone frame encoders in `nollie/gen2.rs`.
+- [x] Add `gen2_init_sequence()` returning `[0x88]` count-config + `[0x80]` settings-save with 50ms delays.
+- [x] Add `gen2_shutdown_sequence()` returning `[0x80]` save + `[0xFF]` latch.
+- [x] Add channel remap tables (Nollie16v3, Nollie32 main, Nollie32 ATX, Nollie32 GPU) as `pub const` arrays.
+- [x] Add group/marker algorithm with 340-LED cap.
+- [x] Add `NOLLIE_16_V3` and `NOLLIE_32` device descriptors.
+- [ ] Verify `UsbHidTransport` supports 1024-byte and 513-byte writes (already does per `crates/hypercolor-hal/src/transport/hid.rs`; add explicit test).
+
+**Phase 4 — Data + integration:**
+- [x] Split native Nollie SKUs into `data/drivers/vendors/nollie.toml`; keep Prism 8 under PrismRGB branding while routing it through the `nollie` driver.
+- [ ] Author 9 attachment fixtures under `data/attachments/builtin/nollie/` (§7.3).
+- [x] Add `DeviceFamily::Nollie` variant to `hypercolor-types` and wire HAL discovery through the new family.
+- [ ] Update spec 20: re-scope to PrismRGB-exclusive silicon, move Prism 8 / Nollie 8 v2 sections to spec 49 or leave stubs pointing at spec 49.
+
+**Phase 5 — Verification:**
+- [x] All existing PrismRGB tests pass post-refactor (regression).
+- [x] New Gen-1 tests pass for Nollie1 + Nollie 28/12.
+- [x] New Gen-2 tests pass for Nollie16v3 + Nollie32 (group algorithm, channel remap, V1/V2, Strimer cables).
+- [x] `cargo check --workspace` clean.
+- [ ] `just verify` clean.
 
 ---
 
 ## References
 
-- [SignalRGB Nollie1.js plugin](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie1.js)
-- [SignalRGB Nollie 8 v2.js plugin](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie8%20v2.js)
-- [SignalRGB Nollie16v3.js plugin](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie16v3.js)
-- [SignalRGB Nollie32.js plugin](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie32.js)
-- [OpenRGB NollieController.cpp (master)](https://gitlab.com/CalcProgrammer1/OpenRGB/-/blob/master/Controllers/NollieController/NollieController.cpp)
-- [OpenRGB NollieController.h (master)](https://gitlab.com/CalcProgrammer1/OpenRGB/-/blob/master/Controllers/NollieController/NollieController.h)
-- [OpenRGB MR !1912 — Nollie32 initial driver](https://gitlab.com/CalcProgrammer1/OpenRGB/-/merge_requests/1912)
-- [OpenRGB MR !2225 — Nollie32 fixes and Nollie8](https://gitlab.com/CalcProgrammer1/OpenRGB/-/merge_requests/2225)
 - [Nollie homepage](https://nolliergb.com/)
 - Spec 16 — Hardware Abstraction Layer (Protocol + Transport traits)
 - Spec 20 — PrismRGB Protocol Driver (companion spec, defines Gen-1 base)

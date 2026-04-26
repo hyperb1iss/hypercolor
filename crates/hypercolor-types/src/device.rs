@@ -341,6 +341,9 @@ pub enum DeviceFamily {
     /// Native Lian Li USB hub devices.
     LianLi,
 
+    /// Native Nollie OEM USB ARGB controllers.
+    Nollie,
+
     /// Native `PrismRGB` / `Nollie` USB controllers.
     PrismRgb,
 
@@ -369,6 +372,7 @@ impl DeviceFamily {
             Self::Corsair => "Corsair",
             Self::Dygma => "Dygma",
             Self::LianLi => "Lian Li",
+            Self::Nollie => "Nollie",
             Self::PrismRgb => "PrismRGB",
             Self::Asus => "ASUS",
             Self::Qmk => "QMK",
@@ -392,6 +396,7 @@ impl DeviceFamily {
             Self::Corsair => "corsair".into(),
             Self::Dygma => "dygma".into(),
             Self::LianLi => "lianli".into(),
+            Self::Nollie => "nollie".into(),
             Self::PrismRgb => "prismrgb".into(),
             Self::Asus => "asus".into(),
             Self::Qmk => "qmk".into(),

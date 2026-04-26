@@ -1,0 +1,67 @@
+[vendor]
+name = "Nollie"
+vid = [0x16D2, 0x3061]
+website = "https://nolliergb.cn"
+
+[[devices]]
+pid = 0x1F11
+name = "Nollie 1"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x16D2, 1 channel x 630 LEDs, GRB byte order"
+
+[[devices]]
+pid = 0x1F01
+name = "Nollie 8 v2"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x16D2, 8 channels x 126 LEDs, GRB byte order"
+
+[[devices]]
+pid = 0x1616
+name = "Nollie 28/12"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x16D2, 12 channels x 42 LEDs, RGB byte order"
+
+[[devices]]
+pid = 0x1617
+name = "Nollie 28/12 (rev B)"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x16D2, 12 channels x 42 LEDs, RGB byte order"
+
+[[devices]]
+pid = 0x1618
+name = "Nollie 28/12 (rev C)"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x16D2, 12 channels x 42 LEDs, RGB byte order"
+
+[[devices]]
+pid = 0x4716
+name = "Nollie 16 v3"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x3061, 16 channels x 256 LEDs, Gen-2 grouped HID protocol"
+
+[[devices]]
+pid = 0x4714
+name = "Nollie 32"
+type = "argb_controller"
+status = "supported"
+driver = "nollie"
+transport = "usb_hid"
+notes = "VID 0x3061, 20 main channels x 256 LEDs plus optional ATX/GPU Strimer cable rows"

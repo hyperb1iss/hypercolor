@@ -1727,17 +1727,22 @@ fn protocol_zone_to_zone_info(zone: hypercolor_hal::protocol::ProtocolZone) -> Z
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{LazyLock, Mutex};
 
     use async_trait::async_trait;
     use hypercolor_hal::protocol::{ProtocolResponse, ProtocolZone, TransferType};
     use hypercolor_types::device::DeviceCapabilities;
+    use tokio::sync::Mutex as AsyncMutex;
     use tokio::time::timeout;
 
     use super::*;
 
+    static USB_ACTOR_METRICS_TEST_LOCK: LazyLock<AsyncMutex<()>> =
+        LazyLock::new(|| AsyncMutex::new(()));
+
     #[tokio::test]
     async fn display_branch_services_pending_led_frame_before_display_frame() {
+        let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;
         let before = usb_actor_metrics_snapshot();
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
         let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
@@ -1799,6 +1804,7 @@ mod tests {
 
     #[tokio::test]
     async fn display_load_services_new_led_before_next_display_frame() {
+        let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;
         let before = usb_actor_metrics_snapshot();
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
         let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);

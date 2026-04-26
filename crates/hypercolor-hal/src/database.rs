@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 
 pub use crate::registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
 
-use crate::drivers::{asus, corsair, dygma, lianli, prismrgb, push2, qmk, razer};
+use crate::drivers::{asus, corsair, dygma, lianli, nollie, prismrgb, push2, qmk, razer};
 
 static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     let mut descriptors = Vec::new();
@@ -13,6 +13,7 @@ static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     descriptors.extend_from_slice(corsair::devices::descriptors());
     descriptors.extend_from_slice(dygma::devices::descriptors());
     descriptors.extend_from_slice(lianli::devices::descriptors());
+    descriptors.extend_from_slice(nollie::devices::descriptors());
     descriptors.extend_from_slice(prismrgb::devices::descriptors());
     descriptors.extend_from_slice(push2::descriptors());
     descriptors.extend_from_slice(qmk::devices::descriptors());

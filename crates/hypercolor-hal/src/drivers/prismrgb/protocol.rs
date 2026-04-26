@@ -15,10 +15,6 @@ use crate::protocol::{
     ResponseStatus, TransferType,
 };
 
-const CHANNELS_PRISM_8: usize = 8;
-const LEDS_PER_PRISM_8_CHANNEL: usize = 126;
-const PRISM_8_LEDS_PER_PACKET: usize = 21;
-
 const PRISM_S_ATX_LEDS: usize = 120;
 const PRISM_S_GPU_DUAL_LEDS: usize = 108;
 const PRISM_S_GPU_TRIPLE_LEDS: usize = 162;
@@ -38,28 +34,9 @@ const PRISM_MINI_LEDS_PER_PACKET: usize = 20;
 pub const HID_REPORT_SIZE: usize = 65;
 
 const _: () = assert!(
-    std::mem::size_of::<Prism8DataPacket>() == HID_REPORT_SIZE,
-    "Prism8DataPacket must match HID_REPORT_SIZE (65 bytes)"
-);
-const _: () = assert!(
     std::mem::size_of::<PrismMiniDataPacket>() == HID_REPORT_SIZE,
     "PrismMiniDataPacket must match HID_REPORT_SIZE (65 bytes)"
 );
-
-/// Wire-format Prism 8 / Nollie 8 color data packet (65 bytes).
-///
-/// Each packet carries up to 21 RGB triples (63 bytes of color data)
-/// for a sequential chunk of LEDs. A final commit packet uses `packet_id = 0xFF`.
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
-#[repr(C)]
-struct Prism8DataPacket {
-    /// HID report padding (always 0x00).
-    padding: u8,
-    /// Sequential packet ID (0-based data packets, `0xFF` = commit).
-    packet_id: u8,
-    /// Interleaved color bytes (up to 21 LEDs × 3 = 63 bytes).
-    colors: [u8; 63],
-}
 
 /// Wire-format Prism Mini color data packet (65 bytes).
 ///
@@ -87,8 +64,6 @@ pub const LOW_POWER_THRESHOLD: u16 = 175;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrismRgbModel {
-    Prism8,
-    Nollie8,
     PrismS,
     PrismMini,
 }
@@ -176,8 +151,6 @@ impl PrismRgbModel {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Prism8 => "PrismRGB Prism 8",
-            Self::Nollie8 => "Nollie 8 v2",
             Self::PrismS => "PrismRGB Prism S",
             Self::PrismMini => "PrismRGB Prism Mini",
         }
@@ -186,7 +159,6 @@ impl PrismRgbModel {
     #[must_use]
     pub const fn color_format(self) -> DeviceColorFormat {
         match self {
-            Self::Prism8 | Self::Nollie8 => DeviceColorFormat::Grb,
             Self::PrismS | Self::PrismMini => DeviceColorFormat::Rgb,
         }
     }
@@ -194,8 +166,7 @@ impl PrismRgbModel {
     #[must_use]
     pub const fn brightness_scale(self) -> f32 {
         match self {
-            Self::Prism8 => 0.75,
-            Self::Nollie8 | Self::PrismMini => 1.0,
+            Self::PrismMini => 1.0,
             Self::PrismS => 0.50,
         }
     }
@@ -203,7 +174,6 @@ impl PrismRgbModel {
     #[must_use]
     pub const fn total_leds(self) -> usize {
         match self {
-            Self::Prism8 | Self::Nollie8 => CHANNELS_PRISM_8 * LEDS_PER_PRISM_8_CHANNEL,
             Self::PrismS => PRISM_S_ATX_LEDS + PRISM_S_GPU_TRIPLE_LEDS,
             Self::PrismMini => PRISM_MINI_MAX_LEDS,
         }
@@ -254,7 +224,7 @@ impl PrismRgbProtocol {
     const fn expected_leds(&self) -> usize {
         match self.model {
             PrismRgbModel::PrismS => self.prism_s_config.total_leds(),
-            _ => self.model.total_leds(),
+            PrismRgbModel::PrismMini => self.model.total_leds(),
         }
     }
 
@@ -282,53 +252,6 @@ impl PrismRgbProtocol {
         }
 
         Cow::Owned(normalized)
-    }
-
-    fn encode_prism8_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
-        let normalized = self.normalize_colors(colors);
-        let normalized = normalized.as_ref();
-        let mut command_buffer = CommandBuffer::new(commands);
-
-        for channel in 0..CHANNELS_PRISM_8 {
-            let start = channel * LEDS_PER_PRISM_8_CHANNEL;
-            let end = start + LEDS_PER_PRISM_8_CHANNEL;
-            for (packet_index, chunk) in normalized[start..end]
-                .chunks(PRISM_8_LEDS_PER_PACKET)
-                .enumerate()
-            {
-                let mut packet = Prism8DataPacket::new_zeroed();
-                packet.packet_id = u8::try_from(packet_index + channel * 6).unwrap_or(u8::MAX);
-
-                for (index, color) in chunk.iter().enumerate() {
-                    let encoded = encode_color(
-                        *color,
-                        self.model.brightness_scale(),
-                        self.model.color_format(),
-                    );
-                    let offset = index * 3;
-                    packet.colors[offset..offset + 3].copy_from_slice(&encoded);
-                }
-
-                command_buffer.push_struct(
-                    &packet,
-                    false,
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    TransferType::Primary,
-                );
-            }
-        }
-
-        let mut commit = Prism8DataPacket::new_zeroed();
-        commit.packet_id = 0xFF;
-        command_buffer.push_struct(
-            &commit,
-            false,
-            Duration::ZERO,
-            Duration::ZERO,
-            TransferType::Primary,
-        );
-        command_buffer.finish();
     }
 
     fn prism_s_settings_command(&self) -> ProtocolCommand {
@@ -477,28 +400,6 @@ impl Protocol for PrismRgbProtocol {
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
         match self.model {
-            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 => {
-                let mut firmware = [0_u8; HID_REPORT_SIZE];
-                firmware[1] = 0xFC;
-                firmware[2] = 0x01;
-
-                let mut channels = [0_u8; HID_REPORT_SIZE];
-                channels[1] = 0xFC;
-                channels[2] = 0x03;
-
-                let mut hardware_effect = [0_u8; HID_REPORT_SIZE];
-                hardware_effect[1] = 0xFE;
-                hardware_effect[2] = 0x02;
-                hardware_effect[7] = 0x64;
-                hardware_effect[8] = 0x0A;
-                hardware_effect[10] = 0x01;
-
-                vec![
-                    command_from_packet(firmware, true, Duration::ZERO),
-                    command_from_packet(channels, true, Duration::ZERO),
-                    command_from_packet(hardware_effect, false, Duration::ZERO),
-                ]
-            }
             PrismRgbModel::PrismS => vec![self.prism_s_settings_command()],
             PrismRgbModel::PrismMini => vec![Self::prism_mini_firmware_query()],
         }
@@ -506,23 +407,6 @@ impl Protocol for PrismRgbProtocol {
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
         match self.model {
-            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 => {
-                let mut hardware_effect = [0_u8; HID_REPORT_SIZE];
-                hardware_effect[1] = 0xFE;
-                hardware_effect[2] = 0x02;
-                hardware_effect[7] = 0x64;
-                hardware_effect[8] = 0x0A;
-                hardware_effect[10] = 0x01;
-
-                let mut hardware_mode = [0_u8; HID_REPORT_SIZE];
-                hardware_mode[1] = 0xFE;
-                hardware_mode[2] = 0x01;
-
-                vec![
-                    command_from_packet(hardware_effect, false, Duration::ZERO),
-                    command_from_packet(hardware_mode, false, Duration::ZERO),
-                ]
-            }
             PrismRgbModel::PrismS => vec![self.prism_s_settings_command()],
             PrismRgbModel::PrismMini => Vec::new(),
         }
@@ -536,9 +420,6 @@ impl Protocol for PrismRgbProtocol {
 
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         match self.model {
-            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 => {
-                self.encode_prism8_frame_into(colors, commands);
-            }
             PrismRgbModel::PrismS => self.encode_prism_s_frame_into(colors, commands),
             PrismRgbModel::PrismMini => self.encode_prism_mini_frame_into(colors, commands),
         }
@@ -547,7 +428,7 @@ impl Protocol for PrismRgbProtocol {
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
         let min_len = match self.model {
             PrismRgbModel::PrismMini => 4,
-            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 | PrismRgbModel::PrismS => 1,
+            PrismRgbModel::PrismS => 1,
         };
 
         if data.len() < min_len {
@@ -568,14 +449,6 @@ impl Protocol for PrismRgbProtocol {
 
     fn zones(&self) -> Vec<ProtocolZone> {
         match self.model {
-            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 => (0..CHANNELS_PRISM_8)
-                .map(|index| ProtocolZone {
-                    name: format!("Channel {}", index + 1),
-                    led_count: u32::try_from(LEDS_PER_PRISM_8_CHANNEL).unwrap_or(u32::MAX),
-                    topology: DeviceTopologyHint::Strip,
-                    color_format: self.model.color_format(),
-                })
-                .collect(),
             PrismRgbModel::PrismS => {
                 let mut zones = Vec::new();
                 if self.prism_s_config.atx_present {

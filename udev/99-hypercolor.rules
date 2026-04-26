@@ -28,6 +28,9 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d5", MODE="0660
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d2", MODE="0660", GROUP="users", TAG+="uaccess"
 
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
+
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
 
@@ -49,7 +52,7 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0cf2", MODE="0660
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 
-# ─── QMK OpenRGB keyboards ───────────────────────────────────────────────
+# ─── QMK community implementation keyboards ───────────────────────────────────────────────
 # Keychron
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"

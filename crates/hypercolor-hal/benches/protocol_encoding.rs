@@ -5,7 +5,7 @@ use criterion::{
     BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
     measurement::WallTime,
 };
-use hypercolor_hal::drivers::prismrgb::{PrismRgbModel, PrismRgbProtocol};
+use hypercolor_hal::drivers::nollie::{NollieModel, NollieProtocol, ProtocolVersion};
 use hypercolor_hal::drivers::qmk::{ProtocolRevision, QmkKeyboardConfig, QmkProtocol};
 use hypercolor_hal::protocol::Protocol;
 
@@ -55,11 +55,17 @@ fn bench_protocol_encoding(c: &mut Criterion) {
     let mut group = c.benchmark_group("hal_protocol_encoding");
     let qmk_revd_87 = QmkProtocol::new(QmkKeyboardConfig::new(87, ProtocolRevision::RevD));
     let qmk_revd_104 = QmkProtocol::new(QmkKeyboardConfig::new(104, ProtocolRevision::RevD));
-    let prism8 = PrismRgbProtocol::new(PrismRgbModel::Prism8);
+    let prism8 = NollieProtocol::new(NollieModel::Prism8);
+    let nollie16v3 = NollieProtocol::new(NollieModel::Nollie16v3);
+    let nollie32 = NollieProtocol::new(NollieModel::Nollie32 {
+        protocol_version: ProtocolVersion::V2,
+    });
 
     bench_protocol_case(&mut group, "qmk_revd_87", 87, &qmk_revd_87);
     bench_protocol_case(&mut group, "qmk_revd_104", 104, &qmk_revd_104);
     bench_protocol_case(&mut group, "prism8_1008", 1_008, &prism8);
+    bench_protocol_case(&mut group, "nollie16v3_4096", 4_096, &nollie16v3);
+    bench_protocol_case(&mut group, "nollie32_5120", 5_120, &nollie32);
 
     group.finish();
 }

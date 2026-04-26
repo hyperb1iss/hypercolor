@@ -272,6 +272,7 @@ fn device_family_display() {
     assert_eq!(DeviceFamily::Corsair.to_string(), "Corsair");
     assert_eq!(DeviceFamily::Dygma.to_string(), "Dygma");
     assert_eq!(DeviceFamily::LianLi.to_string(), "Lian Li");
+    assert_eq!(DeviceFamily::Nollie.to_string(), "Nollie");
     assert_eq!(DeviceFamily::PrismRgb.to_string(), "PrismRGB");
     assert_eq!(DeviceFamily::Asus.to_string(), "ASUS");
     assert_eq!(
@@ -305,6 +306,7 @@ fn device_family_serde_round_trip() {
         DeviceFamily::Corsair,
         DeviceFamily::Dygma,
         DeviceFamily::LianLi,
+        DeviceFamily::Nollie,
         DeviceFamily::PrismRgb,
         DeviceFamily::Asus,
         DeviceFamily::Custom("PrismRGB".into()),
