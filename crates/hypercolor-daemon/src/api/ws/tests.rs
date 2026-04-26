@@ -17,9 +17,10 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
     WS_CANVAS_JPEG_BODY_CACHE_HIT_COUNT, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CANVAS_RAW_BODY_BUILD_COUNT,
-    WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT, WS_FRAME_PAYLOAD_CACHE,
-    WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_SPECTRUM_PAYLOAD_BUILD_COUNT,
-    WS_SPECTRUM_PAYLOAD_CACHE, WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, cached_frame_payload,
+    WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_DISPLAY_PREVIEW_HEADER, WS_FRAME_PAYLOAD_BUILD_COUNT,
+    WS_FRAME_PAYLOAD_CACHE, WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER,
+    WS_SPECTRUM_PAYLOAD_BUILD_COUNT, WS_SPECTRUM_PAYLOAD_CACHE,
+    WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, WS_WEB_VIEWPORT_CANVAS_HEADER, cached_frame_payload,
     cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
     encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
     encode_spectrum_binary, reset_canvas_jpeg_body_cache_for_tests,
@@ -1015,6 +1016,70 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"display_preview".to_owned()));
     assert!(capabilities.contains(&"commands".to_owned()));
     assert!(capabilities.contains(&"canvas_format_jpeg".to_owned()));
+}
+
+#[test]
+fn websocket_manifest_matches_protocol_constants() {
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../protocol/websocket-v1.json"
+    )))
+    .expect("websocket protocol manifest should parse");
+
+    let manifest_channels = manifest["channels"]
+        .as_array()
+        .expect("manifest channels should be an array")
+        .iter()
+        .map(|channel| {
+            channel["name"]
+                .as_str()
+                .expect("manifest channel should have a name")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let protocol_channels = WsChannel::SUPPORTED
+        .iter()
+        .map(|channel| channel.as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(manifest_channels, protocol_channels);
+
+    let manifest_capabilities = manifest["capabilities"]
+        .as_array()
+        .expect("manifest capabilities should be an array")
+        .iter()
+        .map(|capability| {
+            capability
+                .as_str()
+                .expect("manifest capability should be a string")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(manifest_capabilities, ws_capabilities());
+
+    let binary_tags = manifest["binary_messages"]
+        .as_array()
+        .expect("manifest binary messages should be an array")
+        .iter()
+        .map(|message| {
+            let name = message["name"]
+                .as_str()
+                .expect("binary message should have a name");
+            let tag = message["tag"]
+                .as_u64()
+                .and_then(|value| u8::try_from(value).ok())
+                .expect("binary message tag should fit in u8");
+            (name, tag)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(binary_tags["led_frame"], 0x01);
+    assert_eq!(binary_tags["spectrum"], 0x02);
+    assert_eq!(binary_tags["canvas"], WS_CANVAS_HEADER);
+    assert_eq!(binary_tags["screen_canvas"], WS_SCREEN_CANVAS_HEADER);
+    assert_eq!(
+        binary_tags["web_viewport_canvas"],
+        WS_WEB_VIEWPORT_CANVAS_HEADER
+    );
+    assert_eq!(binary_tags["display_preview"], WS_DISPLAY_PREVIEW_HEADER);
 }
 
 #[test]
