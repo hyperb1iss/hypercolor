@@ -9,39 +9,39 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store(
+        .store_json(
             "hue:bridge-1",
-            Credentials::HueBridge {
-                api_key: "api-key".to_owned(),
-                client_key: "client-key".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "api-key",
+                "client_key": "client-key",
+            }),
         )
         .await?;
     store
-        .store(
+        .store_json(
             "nanoleaf:panel-1",
-            Credentials::Nanoleaf {
-                auth_token: "nano-token".to_owned(),
-            },
+            serde_json::json!({
+                "auth_token": "nano-token",
+            }),
         )
         .await?;
     store
-        .store(
+        .store_json(
             "wled:living-room",
-            Credentials::Wled {
-                username: Some("wled".to_owned()),
-                password: Some("secret".to_owned()),
-                token: None,
-            },
+            serde_json::json!({
+                "username": "wled",
+                "password": "secret",
+                "token": null,
+            }),
         )
         .await?;
 
     assert_eq!(
-        store.get("hue:bridge-1").await,
-        Some(Credentials::HueBridge {
-            api_key: "api-key".to_owned(),
-            client_key: "client-key".to_owned(),
-        })
+        store.get_json("hue:bridge-1").await,
+        Some(serde_json::json!({
+            "api_key": "api-key",
+            "client_key": "client-key",
+        }))
     );
     assert_eq!(
         store.keys().await,
@@ -54,18 +54,18 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
 
     let reopened = CredentialStore::open(tempdir.path()).await?;
     assert_eq!(
-        reopened.get("nanoleaf:panel-1").await,
-        Some(Credentials::Nanoleaf {
-            auth_token: "nano-token".to_owned(),
-        })
+        reopened.get_json("nanoleaf:panel-1").await,
+        Some(serde_json::json!({
+            "auth_token": "nano-token",
+        }))
     );
     assert_eq!(
-        reopened.get("wled:living-room").await,
-        Some(Credentials::Wled {
-            username: Some("wled".to_owned()),
-            password: Some("secret".to_owned()),
-            token: None,
-        })
+        reopened.get_json("wled:living-room").await,
+        Some(serde_json::json!({
+            "username": "wled",
+            "password": "secret",
+            "token": null,
+        }))
     );
 
     Ok(())
@@ -79,10 +79,7 @@ async fn credential_store_remove_updates_persisted_state() -> TestResult {
     store
         .store(
             "custom:test",
-            Credentials::Custom {
-                backend_id: "custom".to_owned(),
-                data: serde_json::json!({ "token": "value" }),
-            },
+            Credentials::new("custom", serde_json::json!({ "token": "value" })),
         )
         .await?;
     store.remove("custom:test").await?;
@@ -153,9 +150,26 @@ async fn credential_store_keeps_driver_json_opaque() -> TestResult {
     );
     assert_eq!(
         store.get("wled:strip").await,
-        Some(Credentials::Custom {
-            backend_id: "wled".to_owned(),
-            data: serde_json::json!({}),
+        Some(Credentials::new("wled", serde_json::json!({})))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn credentials_migrate_legacy_typed_payloads_to_opaque_driver_json() -> TestResult {
+    let credentials: Credentials = serde_json::from_value(serde_json::json!({
+        "kind": "hue_bridge",
+        "api_key": "api-key",
+        "client_key": "client-key",
+    }))?;
+
+    assert_eq!(credentials.backend_id, "hue");
+    assert_eq!(
+        credentials.into_driver_json(),
+        serde_json::json!({
+            "api_key": "api-key",
+            "client_key": "client-key",
         })
     );
 
@@ -168,12 +182,12 @@ async fn credential_store_keeps_plaintext_out_of_encrypted_file() -> TestResult 
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store(
+        .store_json(
             "hue:bridge-1",
-            Credentials::HueBridge {
-                api_key: "visible-api-key".to_owned(),
-                client_key: "visible-client-key".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "visible-api-key",
+                "client_key": "visible-client-key",
+            }),
         )
         .await?;
 

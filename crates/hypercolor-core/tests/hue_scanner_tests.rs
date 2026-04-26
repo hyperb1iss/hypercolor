@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use hypercolor_core::device::DiscoveryConnectBehavior;
 use hypercolor_core::device::hue::{HueKnownBridge, HueScanner};
-use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::net::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -50,12 +50,12 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
     store
-        .store(
+        .store_json(
             "hue:test-bridge",
-            Credentials::HueBridge {
-                api_key: "test-api-key".to_owned(),
-                client_key: "00112233445566778899aabbccddeeff".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "test-api-key",
+                "client_key": "00112233445566778899aabbccddeeff",
+            }),
         )
         .await?;
 

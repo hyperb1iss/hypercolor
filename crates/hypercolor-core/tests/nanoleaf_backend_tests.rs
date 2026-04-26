@@ -8,7 +8,7 @@ use hypercolor_core::device::DiscoveryConnectBehavior;
 use hypercolor_core::device::nanoleaf::{
     NanoleafBackend, NanoleafConfig, NanoleafDiscoveredDevice, build_device_info,
 };
-use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::net::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
@@ -62,11 +62,11 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
     store
-        .store(
+        .store_json(
             "nanoleaf:living-room",
-            Credentials::Nanoleaf {
-                auth_token: "test-token".to_owned(),
-            },
+            serde_json::json!({
+                "auth_token": "test-token",
+            }),
         )
         .await?;
 

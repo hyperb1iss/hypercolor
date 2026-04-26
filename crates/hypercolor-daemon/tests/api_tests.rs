@@ -13,7 +13,6 @@ use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::net::Credentials;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
@@ -7845,12 +7844,12 @@ async fn list_devices_includes_hue_auth_summary_when_configured() {
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
         .credential_store
-        .store(
+        .store_json(
             "hue:test-bridge",
-            Credentials::HueBridge {
-                api_key: "api-key".to_owned(),
-                client_key: "client-key".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "api-key",
+                "client_key": "client-key",
+            }),
         )
         .await
         .expect("store credentials");
@@ -8666,11 +8665,11 @@ async fn pair_device_route_pairs_hue_by_device_id() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "configured");
 
     assert_eq!(
-        state.credential_store.get("hue:test-bridge").await,
-        Some(Credentials::HueBridge {
-            api_key: "test-api-key".to_owned(),
-            client_key: "00112233445566778899aabbccddeeff".to_owned(),
-        })
+        state.credential_store.get_json("hue:test-bridge").await,
+        Some(serde_json::json!({
+            "api_key": "test-api-key",
+            "client_key": "00112233445566778899aabbccddeeff",
+        }))
     );
 
     server_task.await.expect("Hue mock task should finish");
@@ -8782,10 +8781,10 @@ async fn pair_device_route_pairs_nanoleaf_by_device_id() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "configured");
 
     assert_eq!(
-        state.credential_store.get("nanoleaf:serial42").await,
-        Some(Credentials::Nanoleaf {
-            auth_token: "nanoleaf-token".to_owned(),
-        })
+        state.credential_store.get_json("nanoleaf:serial42").await,
+        Some(serde_json::json!({
+            "auth_token": "nanoleaf-token",
+        }))
     );
 
     server_task.await.expect("Nanoleaf mock task should finish");
@@ -8800,23 +8799,23 @@ async fn delete_pairing_removes_hue_credentials() {
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
         .credential_store
-        .store(
+        .store_json(
             "hue:test-bridge",
-            Credentials::HueBridge {
-                api_key: "api-key".to_owned(),
-                client_key: "client-key".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "api-key",
+                "client_key": "client-key",
+            }),
         )
         .await
         .expect("store Hue credentials");
     state
         .credential_store
-        .store(
+        .store_json(
             "hue:ip:10.0.0.5",
-            Credentials::HueBridge {
-                api_key: "api-key".to_owned(),
-                client_key: "client-key".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "api-key",
+                "client_key": "client-key",
+            }),
         )
         .await
         .expect("store Hue IP credentials");
@@ -8851,21 +8850,21 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
             .await;
     state
         .credential_store
-        .store(
+        .store_json(
             "nanoleaf:serial42",
-            Credentials::Nanoleaf {
-                auth_token: "auth-token".to_owned(),
-            },
+            serde_json::json!({
+                "auth_token": "auth-token",
+            }),
         )
         .await
         .expect("store Nanoleaf credentials");
     state
         .credential_store
-        .store(
+        .store_json(
             "nanoleaf:ip:10.0.0.8",
-            Credentials::Nanoleaf {
-                auth_token: "auth-token".to_owned(),
-            },
+            serde_json::json!({
+                "auth_token": "auth-token",
+            }),
         )
         .await
         .expect("store Nanoleaf IP credentials");

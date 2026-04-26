@@ -7,7 +7,7 @@ use hypercolor_core::device::DiscoveryConnectBehavior;
 use hypercolor_core::device::hue::{
     GAMUT_C, HueBackend, HueConfig, HueDiscoveredBridge, build_device_info, rgb_to_cie_xyb,
 };
-use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::net::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
@@ -110,12 +110,12 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
     store
-        .store(
+        .store_json(
             "hue:test-bridge",
-            Credentials::HueBridge {
-                api_key: "test-api-key".to_owned(),
-                client_key: "00112233445566778899aabbccddeeff".to_owned(),
-            },
+            serde_json::json!({
+                "api_key": "test-api-key",
+                "client_key": "00112233445566778899aabbccddeeff",
+            }),
         )
         .await?;
 
