@@ -199,7 +199,7 @@ fn build_discovered_device(device: GoveeLanDevice) -> DiscoveredDevice {
     }
 }
 
-fn profile_led_count(profile: &SkuProfile) -> u32 {
+pub(crate) fn profile_led_count(profile: &SkuProfile) -> u32 {
     u32::from(
         profile
             .razer_led_count
@@ -208,7 +208,7 @@ fn profile_led_count(profile: &SkuProfile) -> u32 {
     )
 }
 
-fn topology_for_family(family: SkuFamily) -> DeviceTopologyHint {
+pub(crate) fn topology_for_family(family: SkuFamily) -> DeviceTopologyHint {
     match family {
         SkuFamily::Bulb => DeviceTopologyHint::Point,
         SkuFamily::RgbicBar => DeviceTopologyHint::Matrix { rows: 2, cols: 1 },

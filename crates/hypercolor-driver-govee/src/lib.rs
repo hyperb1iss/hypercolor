@@ -5,7 +5,7 @@ use std::net::IpAddr;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::{DeviceBackend, TransportScanner};
+use hypercolor_core::device::{DeviceBackend, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
@@ -16,7 +16,12 @@ use hypercolor_driver_api::{
     TrackedDeviceCtx,
 };
 use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceInfo, ZoneInfo,
+};
 use serde_json::json;
+use tracing::warn;
 
 pub mod backend;
 pub mod capabilities;
@@ -24,8 +29,8 @@ pub mod cloud;
 pub mod lan;
 
 use backend::GoveeBackend;
-use cloud::CloudClient;
-use lan::discovery::{GoveeKnownDevice, GoveeLanScanner};
+use cloud::{CloudClient, V1Device};
+use lan::discovery::{GoveeKnownDevice, GoveeLanScanner, profile_led_count, topology_for_family};
 
 pub use capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_sku_count, profile_for_sku,
@@ -103,12 +108,21 @@ impl DiscoveryCapability for GoveeDriverFactory {
         let known_devices =
             resolve_govee_probe_devices_from_sources(&self.config, &tracked_devices);
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
-        let devices = scanner
+        let mut devices: Vec<_> = scanner
             .scan()
             .await?
             .into_iter()
             .map(DriverDiscoveredDevice::from)
             .collect();
+
+        if let Some(api_key) = account_api_key(host).await? {
+            match self.cloud_client(api_key)?.list_v1_devices().await {
+                Ok(cloud_devices) => merge_cloud_inventory(&mut devices, cloud_devices),
+                Err(error) => {
+                    warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
+                }
+            }
+        }
 
         Ok(DiscoveryResult { devices })
     }
@@ -271,6 +285,136 @@ pub fn resolve_govee_probe_devices_from_sources(
     let mut resolved: Vec<_> = known_devices.into_values().collect();
     resolved.sort_by_key(|device| device.ip);
     resolved
+}
+
+pub fn merge_cloud_inventory(
+    devices: &mut Vec<DriverDiscoveredDevice>,
+    cloud_devices: Vec<V1Device>,
+) {
+    let mut index_by_fingerprint: HashMap<String, usize> = devices
+        .iter()
+        .enumerate()
+        .map(|(index, device)| (device.fingerprint.0.clone(), index))
+        .collect();
+
+    for cloud_device in cloud_devices {
+        let discovered = build_cloud_discovered_device(cloud_device);
+        if let Some(index) = index_by_fingerprint.get(&discovered.fingerprint.0).copied() {
+            merge_cloud_metadata(&mut devices[index], discovered.metadata);
+        } else {
+            index_by_fingerprint.insert(discovered.fingerprint.0.clone(), devices.len());
+            devices.push(discovered);
+        }
+    }
+}
+
+#[must_use]
+pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice {
+    let profile = profile_for_sku(&device.model).unwrap_or_else(|| fallback_profile(&device.model));
+    let mac = normalized_cloud_mac(&device.device);
+    let fingerprint = mac.as_ref().map_or_else(
+        || DeviceFingerprint(format!("cloud:govee:{}", device.device)),
+        |mac| DeviceFingerprint(format!("net:govee:{mac}")),
+    );
+    let led_count = profile_led_count(&profile);
+    let name = if device.device_name.trim().is_empty() {
+        profile.name.to_owned()
+    } else {
+        device.device_name.clone()
+    };
+    let supports_brightness = profile.capabilities.contains(GoveeCapabilities::BRIGHTNESS)
+        || device
+            .support_cmds
+            .iter()
+            .any(|command| command == "brightness");
+    let info = DeviceInfo {
+        id: fingerprint.stable_device_id(),
+        name: name.clone(),
+        vendor: "Govee".to_owned(),
+        family: DeviceFamily::Govee,
+        model: Some(device.model.clone()),
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count,
+            topology: topology_for_family(profile.family),
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count,
+            supports_direct: false,
+            supports_brightness,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 1,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+
+    let mut metadata = HashMap::from([
+        ("backend_id".to_owned(), "govee".to_owned()),
+        ("sku".to_owned(), device.model),
+        ("cloud_device_id".to_owned(), device.device),
+        (
+            "cloud_controllable".to_owned(),
+            device.controllable.to_string(),
+        ),
+        (
+            "cloud_retrievable".to_owned(),
+            device.retrievable.to_string(),
+        ),
+    ]);
+    if !device.support_cmds.is_empty() {
+        metadata.insert(
+            "cloud_support_cmds".to_owned(),
+            device.support_cmds.join(","),
+        );
+    }
+    if let Some(mac) = mac {
+        metadata.insert("mac".to_owned(), mac);
+    }
+
+    DriverDiscoveredDevice {
+        info,
+        fingerprint,
+        metadata,
+        connect_behavior: DiscoveryConnectBehavior::Deferred,
+    }
+}
+
+async fn account_api_key(host: &dyn DriverHost) -> Result<Option<String>> {
+    Ok(host
+        .credentials()
+        .get_json(GOVEE_ACCOUNT_CREDENTIAL_KEY)
+        .await?
+        .and_then(|value| {
+            value
+                .get("api_key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|value| !value.is_empty()))
+}
+
+fn merge_cloud_metadata(
+    device: &mut DriverDiscoveredDevice,
+    cloud_metadata: HashMap<String, String>,
+) {
+    for (key, value) in cloud_metadata {
+        device.metadata.entry(key).or_insert(value);
+    }
+}
+
+fn normalized_cloud_mac(device_id: &str) -> Option<String> {
+    let normalized = device_id
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (normalized.len() == 12).then_some(normalized)
 }
 
 fn api_key_from_request(request: &PairDeviceRequest) -> Option<String> {

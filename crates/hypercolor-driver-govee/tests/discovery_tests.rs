@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_driver_api::DriverTrackedDevice;
+use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    build_device_info, parse_scan_response, resolve_govee_probe_devices_from_sources,
+    build_cloud_discovered_device, build_device_info, merge_cloud_inventory, parse_scan_response,
+    resolve_govee_probe_devices_from_sources,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{
@@ -65,6 +67,82 @@ fn resolve_probe_devices_merges_config_and_tracked_metadata() {
     assert_eq!(resolved[1].ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)));
     assert_eq!(resolved[1].sku.as_deref(), Some("H6163"));
     assert_eq!(resolved[1].mac.as_deref(), Some("aabbccddeeff"));
+}
+
+#[test]
+fn cloud_inventory_device_uses_mac_fingerprint_when_device_id_is_mac() {
+    let discovered = build_cloud_discovered_device(V1Device {
+        device: "AA:BB:CC:DD:EE:FF".to_owned(),
+        model: "H6163".to_owned(),
+        device_name: "Desk Strip".to_owned(),
+        controllable: true,
+        retrievable: true,
+        support_cmds: vec!["turn".to_owned(), "brightness".to_owned()],
+        properties: None,
+    });
+
+    assert_eq!(discovered.fingerprint.0, "net:govee:aabbccddeeff");
+    assert_eq!(discovered.info.name, "Desk Strip");
+    assert_eq!(
+        discovered.metadata.get("mac"),
+        Some(&"aabbccddeeff".to_owned())
+    );
+    assert_eq!(
+        discovered.metadata.get("cloud_device_id"),
+        Some(&"AA:BB:CC:DD:EE:FF".to_owned())
+    );
+    assert!(!discovered.connect_behavior.should_auto_connect());
+}
+
+#[test]
+fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
+    let lan_device = parse_scan_response(
+        br#"{"msg":{"data":{"ip":"10.0.0.8","device":"001122334455","sku":"H619A"}}}"#,
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)),
+    )
+    .expect("scan response should parse");
+    let mut devices = vec![hypercolor_driver_api::DriverDiscoveredDevice::from(
+        hypercolor_core::device::DiscoveredDevice {
+            connection_type: ConnectionType::Network,
+            name: build_device_info(&lan_device).name,
+            family: DeviceFamily::Govee,
+            fingerprint: DeviceFingerprint("net:govee:001122334455".to_owned()),
+            connect_behavior: hypercolor_core::device::DiscoveryConnectBehavior::AutoConnect,
+            info: build_device_info(&lan_device),
+            metadata: HashMap::from([
+                ("backend_id".to_owned(), "govee".to_owned()),
+                ("ip".to_owned(), "10.0.0.8".to_owned()),
+                ("sku".to_owned(), "H619A".to_owned()),
+                ("mac".to_owned(), "001122334455".to_owned()),
+            ]),
+        },
+    )];
+
+    merge_cloud_inventory(
+        &mut devices,
+        vec![V1Device {
+            device: "00:11:22:33:44:55".to_owned(),
+            model: "H619A".to_owned(),
+            device_name: "Cloud Name".to_owned(),
+            controllable: true,
+            retrievable: true,
+            support_cmds: vec!["color".to_owned()],
+            properties: None,
+        }],
+    );
+
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].metadata.get("ip"), Some(&"10.0.0.8".to_owned()));
+    assert_eq!(devices[0].info.name, "RGBIC Pro Strip H619A");
+    assert_eq!(
+        devices[0].metadata.get("cloud_device_id"),
+        Some(&"00:11:22:33:44:55".to_owned())
+    );
+    assert_eq!(
+        devices[0].metadata.get("cloud_support_cmds"),
+        Some(&"color".to_owned())
+    );
+    assert!(devices[0].connect_behavior.should_auto_connect());
 }
 
 fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
