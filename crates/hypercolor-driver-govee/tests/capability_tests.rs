@@ -1,4 +1,4 @@
-use hypercolor_driver_govee::{GoveeCapabilities, profile_for_sku};
+use hypercolor_driver_govee::{GoveeCapabilities, known_sku_count, profile_for_sku};
 
 #[test]
 fn h6163_is_basic_lan_not_streaming() {
@@ -39,8 +39,33 @@ fn h619a_keeps_lan_segments_separate_from_razer_leds() {
 }
 
 #[test]
-fn seeded_profiles_have_a_reachable_transport() {
-    for profile in hypercolor_driver_govee::capabilities::SKU_PROFILES {
+fn h70b1_uses_openrgb_razer_override_without_lan_segments() {
+    let profile = profile_for_sku("H70B1").expect("H70B1 profile should exist");
+
+    assert!(
+        profile
+            .capabilities
+            .contains(GoveeCapabilities::RAZER_STREAMING)
+    );
+    assert_eq!(profile.lan_segment_count, None);
+    assert_eq!(profile.razer_led_count, Some(20));
+}
+
+#[test]
+fn registry_covers_current_local_capability_table() {
+    assert_eq!(known_sku_count(), 266);
+    for sku in hypercolor_driver_govee::capabilities::BASIC_LAN_SKUS {
+        let profile = profile_for_sku(sku).expect("basic SKU should resolve");
+        assert!(
+            profile
+                .capabilities
+                .intersects(GoveeCapabilities::LAN | GoveeCapabilities::CLOUD),
+            "{} should have at least one reachable transport",
+            profile.sku
+        );
+    }
+    for seed in hypercolor_driver_govee::capabilities::CUSTOM_LAN_PROFILES {
+        let profile = profile_for_sku(seed.sku).expect("custom SKU should resolve");
         assert!(
             profile
                 .capabilities

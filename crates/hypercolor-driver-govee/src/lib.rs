@@ -21,7 +21,7 @@ use backend::GoveeBackend;
 use lan::discovery::{GoveeKnownDevice, GoveeLanScanner};
 
 pub use capabilities::{
-    GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, profile_for_sku,
+    GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_sku_count, profile_for_sku,
 };
 pub use lan::discovery::{GoveeLanDevice, build_device_info, parse_scan_response};
 

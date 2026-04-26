@@ -41,9 +41,7 @@ impl GoveeBackend {
 
     pub fn remember_device(&mut self, device: GoveeLanDevice) {
         let info = build_device_info(&device);
-        let profile = profile_for_sku(&device.sku)
-            .cloned()
-            .unwrap_or_else(|| fallback_profile(&device.sku));
+        let profile = profile_for_sku(&device.sku).unwrap_or_else(|| fallback_profile(&device.sku));
         self.devices.insert(
             info.id,
             GoveeDeviceState {

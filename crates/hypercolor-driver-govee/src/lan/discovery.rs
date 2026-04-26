@@ -123,9 +123,7 @@ pub fn parse_scan_response(bytes: &[u8], source_ip: IpAddr) -> Result<GoveeLanDe
         .ip
         .and_then(|value| value.parse().ok())
         .unwrap_or(source_ip);
-    let profile = profile_for_sku(&sku)
-        .cloned()
-        .unwrap_or_else(|| fallback_profile(&sku));
+    let profile = profile_for_sku(&sku).unwrap_or_else(|| fallback_profile(&sku));
     let firmware_version = data.wifi_version_soft.or(data.ble_version_soft);
 
     Ok(GoveeLanDevice {
@@ -138,9 +136,7 @@ pub fn parse_scan_response(bytes: &[u8], source_ip: IpAddr) -> Result<GoveeLanDe
 }
 
 pub fn build_device_info(device: &GoveeLanDevice) -> DeviceInfo {
-    let profile = profile_for_sku(&device.sku)
-        .cloned()
-        .unwrap_or_else(|| fallback_profile(&device.sku));
+    let profile = profile_for_sku(&device.sku).unwrap_or_else(|| fallback_profile(&device.sku));
     let fingerprint = fingerprint_for_mac(&device.mac);
     let led_count = profile_led_count(&profile);
     let topology = topology_for_family(profile.family);
