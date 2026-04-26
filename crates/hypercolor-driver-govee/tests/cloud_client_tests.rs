@@ -126,10 +126,14 @@ async fn v1_control_sends_command_body() {
     let request = request.await.expect("server task should join");
     assert!(request.starts_with("PUT /v1/devices/control HTTP/1.1"));
     assert_header_present(&request, "govee-api-key", "test-key");
-    assert!(request.contains(r#""device":"99:E5:A4:C1:38:29:DA:7B""#));
-    assert!(request.contains(r#""model":"H6159""#));
-    assert!(request.contains(r#""name":"color""#));
-    assert!(request.contains(r#""value":{"b":0,"g":64,"r":255}"#));
+    let body = request_json_body(&request);
+    assert_eq!(body["device"], "99:E5:A4:C1:38:29:DA:7B");
+    assert_eq!(body["model"], "H6159");
+    assert_eq!(body["cmd"]["name"], "color");
+    assert_eq!(
+        body["cmd"]["value"],
+        serde_json::json!({ "r": 255, "g": 64, "b": 0 })
+    );
 }
 
 async fn serve_once(status: u16, body: &'static str) -> (String, tokio::task::JoinHandle<String>) {
@@ -214,4 +218,11 @@ fn assert_header_present(request: &str, name: &str, value: &str) {
             .any(|line| line.eq_ignore_ascii_case(&expected)),
         "missing expected header {expected:?} in request:\n{request}"
     );
+}
+
+fn request_json_body(request: &str) -> serde_json::Value {
+    let (_, body) = request
+        .split_once("\r\n\r\n")
+        .expect("HTTP request should contain a header/body separator");
+    serde_json::from_str(body).expect("HTTP request body should be JSON")
 }
