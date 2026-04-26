@@ -69,6 +69,14 @@ python-fix:
 python-typecheck:
     cd python && uv run ty check
 
+# Generate the Python OpenAPI client
+python-generate *args='':
+    cd python && uv run python scripts/generate_openapi_client.py {{ args }}
+
+# Verify the generated Python OpenAPI client is current
+python-generate-check:
+    cd python && uv run python scripts/generate_openapi_client.py --check
+
 # Test the Python client
 python-test:
     cd python && uv run pytest

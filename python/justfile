@@ -31,6 +31,14 @@ fmt:
 typecheck:
     uv run ty check
 
+# Generate the vendored OpenAPI client
+generate *args='':
+    uv run python scripts/generate_openapi_client.py {{ args }}
+
+# Verify the vendored OpenAPI client is current
+generate-check:
+    uv run python scripts/generate_openapi_client.py --check
+
 # Run pytest
 test:
     uv run pytest

@@ -21,6 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "attrs>=26.1.0",
     "httpx>=0.28.1",
     "msgspec>=0.21.1",
     "websockets>=16.0",
@@ -31,6 +32,9 @@ dev = [
     { include-group = "lint" },
     { include-group = "test" },
     { include-group = "types" },
+]
+generate = [
+    "openapi-python-client==0.28.3",
 ]
 lint = [
     "ruff>=0.15.12",
@@ -60,7 +64,8 @@ source-include = ["tests/**"]
 [tool.ruff]
 line-length = 99
 target-version = "py313"
-src = ["src", "tests"]
+src = ["scripts", "src", "tests"]
+extend-exclude = ["src/hypercolor/generated"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -100,6 +105,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/**/*.py" = ["S603", "S607"]
 "tests/**/*.py" = ["PLR2004", "S101"]
 
 [tool.ruff.lint.isort]
@@ -110,7 +116,8 @@ combine-as-imports = true
 python-version = "3.13"
 
 [tool.ty.src]
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["scripts/**/*.py", "src/**/*.py", "tests/**/*.py"]
+exclude = ["src/hypercolor/generated/**"]
 
 [tool.ty.terminal]
 output-format = "concise"

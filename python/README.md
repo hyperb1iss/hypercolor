@@ -14,6 +14,7 @@ uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest
+uv run python scripts/generate_openapi_client.py --check
 ```
 
 Or use the local recipes:
@@ -21,6 +22,7 @@ Or use the local recipes:
 ```bash
 just verify
 just fix
+just generate
 ```
 
 ## Library

@@ -1,8 +1,10 @@
 #![allow(clippy::needless_for_each)]
 
 use utoipa::openapi::path::OperationBuilder;
+use utoipa::openapi::path::{Parameter, ParameterBuilder, ParameterIn};
+use utoipa::openapi::schema::{ObjectBuilder, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::openapi::{HttpMethod, Response, Tag};
+use utoipa::openapi::{HttpMethod, Required, Response, Tag};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -914,8 +916,12 @@ pub(crate) fn router() -> SwaggerUi {
     SwaggerUi::new("/api/v1/docs").url("/api/v1/openapi.json", ApiDoc::openapi())
 }
 
+pub fn document_json_pretty() -> serde_json::Result<String> {
+    serde_json::to_string_pretty(&ApiDoc::openapi())
+}
+
 fn operation(route: &RouteSpec) -> utoipa::openapi::path::Operation {
-    OperationBuilder::new()
+    let mut builder = OperationBuilder::new()
         .tag(route.tag)
         .summary(Some(route.summary))
         .operation_id(Some(route.operation_id))
@@ -927,8 +933,37 @@ fn operation(route: &RouteSpec) -> utoipa::openapi::path::Operation {
         .response("404", Response::new("Resource not found"))
         .response("409", Response::new("State conflict"))
         .response("422", Response::new("Validation error"))
-        .response("500", Response::new("Internal daemon error"))
-        .build()
+        .response("500", Response::new("Internal daemon error"));
+
+    for parameter in path_parameters(route.path) {
+        builder = builder.parameter(parameter);
+    }
+
+    builder.build()
+}
+
+fn path_parameters(path: &str) -> Vec<Parameter> {
+    let mut parameters = Vec::new();
+    let mut remaining = path;
+
+    while let Some(start) = remaining.find('{') {
+        let after_start = &remaining[start + 1..];
+        let Some(end) = after_start.find('}') else {
+            break;
+        };
+        let name = &after_start[..end];
+        parameters.push(
+            ParameterBuilder::new()
+                .name(name)
+                .parameter_in(ParameterIn::Path)
+                .required(Required::True)
+                .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                .build(),
+        );
+        remaining = &after_start[end + 1..];
+    }
+
+    parameters
 }
 
 fn http_method(method: &str) -> HttpMethod {

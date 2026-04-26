@@ -186,10 +186,52 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+  # ── Python Generated Client Drift ──────────────────────────────
+  python-generated:
+    name: Python Generated Client
+    needs: changes
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.python == 'true' ||
+      needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.LINUX_DEPS }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: python/.python-version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Verify generated client is current
+        run: uv run python scripts/generate_openapi_client.py --check
+
   # ── Python Package ───────────────────────────────────────────────
   python-build:
     name: Python Package
-    needs: python
+    needs: [python, python-generated]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     defaults:
