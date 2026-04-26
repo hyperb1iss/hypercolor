@@ -281,6 +281,20 @@ fn display_device_info(
     )
 }
 
+fn simulated_display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceInfo {
+    let mut info = display_device_info(device_id, true, width, height, true);
+    "Simulated Display".clone_into(&mut info.name);
+    "Hypercolor".clone_into(&mut info.vendor);
+    info.family = DeviceFamily::Custom(SIMULATED_DISPLAY_BACKEND_ID.to_owned());
+    info.connection_type = ConnectionType::Network;
+    info.origin = DeviceOrigin::native(
+        SIMULATED_DISPLAY_BACKEND_ID,
+        SIMULATED_DISPLAY_BACKEND_ID,
+        ConnectionType::Network,
+    );
+    info
+}
+
 fn display_device_info_with_max_fps(
     device_id: DeviceId,
     has_display: bool,
@@ -910,7 +924,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
 
     let tracked_id = device_registry
         .add_with_fingerprint_and_metadata(
-            display_device_info(device_id, true, 480, 480, true),
+            simulated_display_device_info(device_id, 480, 480),
             DeviceFingerprint(format!("simulator:{device_id}")),
             simulated_display_metadata(),
         )
@@ -982,7 +996,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
 
     let tracked_id = device_registry
         .add_with_fingerprint_and_metadata(
-            display_device_info(device_id, true, 480, 480, true),
+            simulated_display_device_info(device_id, 480, 480),
             DeviceFingerprint(format!("simulator:{device_id}")),
             simulated_display_metadata(),
         )
