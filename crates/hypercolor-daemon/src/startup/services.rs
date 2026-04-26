@@ -105,6 +105,7 @@ impl DaemonState {
         // ── Configuration ───────────────────────────────────────────────
         let config_manager =
             ConfigManager::new(config_path).context("failed to initialize config manager")?;
+        config_manager.update(config.clone());
         let config_manager = Arc::new(config_manager);
 
         // ── Event Bus ───────────────────────────────────────────────────

@@ -368,6 +368,7 @@ wasm_plugins = true
         false
     );
     assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
+    assert!(config.drivers["nollie"].enabled);
     assert!(config.features.wasm_plugins);
 }
 
@@ -391,6 +392,8 @@ fn default_config_has_sane_values() {
     assert_eq!(config.daemon.canvas_height, DEFAULT_CANVAS_HEIGHT);
     assert!(config.drivers["wled"].enabled);
     assert!(config.drivers["wled"].settings.is_empty());
+    assert!(config.drivers["asus"].enabled);
+    assert!(config.drivers["nollie"].enabled);
     assert!(config.include.is_empty());
 }
 

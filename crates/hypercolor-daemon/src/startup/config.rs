@@ -7,6 +7,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_hal::ProtocolDatabase;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::server::ServerIdentity;
 
@@ -38,8 +39,9 @@ pub async fn load_config(config_path: Option<&Path>) -> Result<(HypercolorConfig
     info!(path = %resolved_path.display(), "Resolved config path");
 
     if resolved_path.exists() {
-        let config = ConfigManager::load(&resolved_path)
+        let mut config = ConfigManager::load(&resolved_path)
             .with_context(|| format!("failed to load config from {}", resolved_path.display()))?;
+        normalize_daemon_driver_configs(&mut config);
         info!(
             schema_version = config.schema_version,
             "Configuration loaded from file"
@@ -69,7 +71,9 @@ fn resolve_config_path(explicit: Option<&Path>) -> PathBuf {
 
 /// Construct a default configuration (all defaults, current schema version).
 pub fn default_config() -> HypercolorConfig {
-    HypercolorConfig::default()
+    let mut config = HypercolorConfig::default();
+    normalize_daemon_driver_configs(&mut config);
+    config
 }
 
 /// Parse a TOML string into a [`HypercolorConfig`].
@@ -80,7 +84,16 @@ pub fn default_config() -> HypercolorConfig {
 ///
 /// Returns an error if the TOML is malformed or cannot be deserialized.
 pub fn parse_config_toml(toml_str: &str) -> Result<HypercolorConfig> {
-    toml::from_str(toml_str).context("failed to parse config TOML")
+    let mut config: HypercolorConfig =
+        toml::from_str(toml_str).context("failed to parse config TOML")?;
+    normalize_daemon_driver_configs(&mut config);
+    Ok(config)
+}
+
+pub(super) fn normalize_daemon_driver_configs(config: &mut HypercolorConfig) {
+    for descriptor in ProtocolDatabase::module_descriptors() {
+        config.drivers.entry(descriptor.id.clone()).or_default();
+    }
 }
 
 pub(super) fn resolve_server_identity(config: &HypercolorConfig) -> Result<ServerIdentity> {
