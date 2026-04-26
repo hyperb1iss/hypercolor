@@ -22,7 +22,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DriverTransportKind};
 use hypercolor_types::spatial::SpatialLayout;
 use serde::Serialize;
 use tokio::runtime::Handle;
@@ -295,10 +295,15 @@ pub fn resolve_backends(
                 }
             }
             DiscoveryBackend::SmBus => {
-                if !crate::network::hal_driver_enabled(config, "asus") {
+                if crate::network::enabled_hal_driver_ids_for_transport(
+                    config,
+                    &DriverTransportKind::Smbus,
+                )
+                .is_empty()
+                {
                     if explicit_request {
                         return Err(
-                            "Discovery backend 'smbus' is disabled by config (drivers.asus.enabled=false)"
+                            "Discovery backend 'smbus' has no enabled SMBus HAL driver modules"
                                 .to_owned(),
                         );
                     }
@@ -466,8 +471,8 @@ mod tests {
         );
         let requested = vec!["smbus".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
-            .expect_err("smbus must fail when ASUS HAL module is disabled");
-        assert!(error.contains("drivers.asus.enabled=false"));
+            .expect_err("smbus must fail when all SMBus HAL modules are disabled");
+        assert!(error.contains("no enabled SMBus HAL driver modules"));
     }
 
     #[test]

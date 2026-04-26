@@ -53,6 +53,9 @@ static MODULE_DESCRIPTORS: LazyLock<Vec<DriverModuleDescriptor>> = LazyLock::new
         });
         entry.add_transport(transport_kind(descriptor.transport));
     }
+    if let Some(module) = modules.get_mut("asus") {
+        module.add_transport(DriverTransportKind::Smbus);
+    }
 
     modules
         .into_values()

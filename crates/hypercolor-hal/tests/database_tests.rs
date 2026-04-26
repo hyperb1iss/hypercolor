@@ -849,6 +849,15 @@ fn module_descriptors_group_hal_protocols_by_family() {
     assert!(!nollie.capabilities.backend_factory);
     assert!(nollie.default_enabled);
 
+    let asus = modules
+        .iter()
+        .find(|module| module.id == "asus")
+        .expect("ASUS module descriptor should exist");
+    assert_eq!(
+        asus.transports,
+        vec![DriverTransportKind::Usb, DriverTransportKind::Smbus]
+    );
+
     let ableton = modules
         .iter()
         .find(|module| module.id == "ableton")

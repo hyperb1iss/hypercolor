@@ -10,7 +10,7 @@ use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_hal::ProtocolDatabase;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::DriverModuleDescriptor;
+use hypercolor_types::device::{DriverModuleDescriptor, DriverTransportKind};
 
 pub use host::DaemonDriverHost;
 pub use hypercolor_driver_builtin::build_driver_registry as build_builtin_driver_registry;
@@ -79,6 +79,20 @@ pub fn normalize_hal_driver_config_entries(config: &mut HypercolorConfig) {
 pub fn enabled_hal_driver_ids(config: &HypercolorConfig) -> BTreeSet<String> {
     hal_module_descriptors()
         .iter()
+        .filter(|descriptor| module_enabled(config, descriptor))
+        .map(|descriptor| descriptor.id.clone())
+        .collect()
+}
+
+/// Enabled HAL driver module IDs that advertise one transport category.
+#[must_use]
+pub fn enabled_hal_driver_ids_for_transport(
+    config: &HypercolorConfig,
+    transport: &DriverTransportKind,
+) -> BTreeSet<String> {
+    hal_module_descriptors()
+        .iter()
+        .filter(|descriptor| descriptor.transports.iter().any(|item| item == transport))
         .filter(|descriptor| module_enabled(config, descriptor))
         .map(|descriptor| descriptor.id.clone())
         .collect()

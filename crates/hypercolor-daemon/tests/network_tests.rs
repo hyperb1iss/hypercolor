@@ -11,7 +11,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DriverTransportKind};
 
 #[test]
 fn default_app_state_registers_builtin_network_drivers() {
@@ -98,6 +98,21 @@ fn enabled_hal_driver_ids_honor_driver_config_entries() {
     assert!(enabled.contains("prismrgb"));
     assert!(network::hal_driver_enabled(&config, "prismrgb"));
     assert!(!network::hal_driver_enabled(&config, "nollie"));
+}
+
+#[test]
+fn enabled_hal_driver_ids_can_filter_by_transport() {
+    let mut config = HypercolorConfig::default();
+    config.drivers.insert(
+        "asus".to_owned(),
+        DriverConfigEntry::disabled(BTreeMap::new()),
+    );
+
+    let enabled =
+        network::enabled_hal_driver_ids_for_transport(&config, &DriverTransportKind::Smbus);
+
+    assert!(!enabled.contains("asus"));
+    assert!(enabled.is_empty());
 }
 
 #[test]
