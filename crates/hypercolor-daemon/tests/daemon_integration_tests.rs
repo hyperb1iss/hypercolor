@@ -469,7 +469,8 @@ async fn api_state_config_snapshot_matches_init_config() {
     let mut config = default_config();
     config.daemon.target_fps = 45;
 
-    let toml_str = "schema_version = 3\n[daemon]\ntarget_fps = 45\n";
+    let toml_str =
+        format!("schema_version = {CURRENT_SCHEMA_VERSION}\n[daemon]\ntarget_fps = 45\n");
     let mut temp = NamedTempFile::new().expect("create temp");
     temp.write_all(toml_str.as_bytes()).expect("write");
     temp.flush().expect("flush");
