@@ -1,4 +1,4 @@
-use hypercolor_driver_govee::cloud::CloudClient;
+use hypercolor_driver_govee::cloud::{CloudClient, V1Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -69,6 +69,65 @@ async fn list_v1_devices_rejects_non_success_api_code() {
     assert!(error.to_string().contains("Govee API returned code 400"));
 }
 
+#[tokio::test]
+async fn v1_state_sends_device_query_and_parses_properties() {
+    let body = r#"{
+        "code": 200,
+        "message": "Success",
+        "data": {
+            "device": "99:E5:A4:C1:38:29:DA:7B",
+            "model": "H6159",
+            "properties": [
+                { "online": "true" },
+                { "brightness": 82 },
+                { "color": { "r": 255, "g": 64, "b": 0 } }
+            ]
+        }
+    }"#;
+    let (base_url, request) = serve_once(200, body).await;
+    let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
+
+    let state = client
+        .v1_state("H6159", "99:E5:A4:C1:38:29:DA:7B")
+        .await
+        .expect("state response should parse");
+
+    assert_eq!(state.model, "H6159");
+    assert_eq!(state.properties.len(), 3);
+    let request = request.await.expect("server task should join");
+    assert!(request.starts_with("GET /v1/devices/state?"));
+    assert!(request.contains("device=99%3AE5%3AA4%3AC1%3A38%3A29%3ADA%3A7B"));
+    assert!(request.contains("model=H6159"));
+    assert_header_present(&request, "govee-api-key", "test-key");
+}
+
+#[tokio::test]
+async fn v1_control_sends_command_body() {
+    let (base_url, request) = serve_once(200, r#"{"code":200,"message":"Success","data":{}}"#).await;
+    let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
+
+    client
+        .v1_control(
+            "H6159",
+            "99:E5:A4:C1:38:29:DA:7B",
+            V1Command::Color {
+                r: 255,
+                g: 64,
+                b: 0,
+            },
+        )
+        .await
+        .expect("control response should parse");
+
+    let request = request.await.expect("server task should join");
+    assert!(request.starts_with("PUT /v1/devices/control HTTP/1.1"));
+    assert_header_present(&request, "govee-api-key", "test-key");
+    assert!(request.contains(r#""device":"99:E5:A4:C1:38:29:DA:7B""#));
+    assert!(request.contains(r#""model":"H6159""#));
+    assert!(request.contains(r#""name":"color""#));
+    assert!(request.contains(r#""value":{"b":0,"g":64,"r":255}"#));
+}
+
 async fn serve_once(
     status: u16,
     body: &'static str,
@@ -84,12 +143,9 @@ async fn serve_once(
             .accept()
             .await
             .expect("test HTTP connection should arrive");
-        let mut buf = [0_u8; 4096];
-        let len = stream
-            .read(&mut buf)
+        let request = read_http_request(&mut stream)
             .await
             .expect("test HTTP request should read");
-        let request = String::from_utf8(buf[..len].to_vec()).expect("request should be UTF-8");
         let response = http_response(status, body);
         stream
             .write_all(response.as_bytes())
@@ -99,6 +155,42 @@ async fn serve_once(
     });
 
     (format!("http://{address}/v1"), task)
+}
+
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<String> {
+    let mut request = Vec::new();
+    let mut buf = [0_u8; 4096];
+    loop {
+        let len = stream.read(&mut buf).await?;
+        if len == 0 {
+            break;
+        }
+        request.extend_from_slice(&buf[..len]);
+        if request_complete(&request) {
+            break;
+        }
+    }
+
+    Ok(String::from_utf8(request).expect("request should be UTF-8"))
+}
+
+fn request_complete(request: &[u8]) -> bool {
+    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length: "))
+        .or_else(|| {
+            headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+        })
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+
+    request.len() >= header_end + 4 + content_length
 }
 
 fn http_response(status: u16, body: &str) -> String {
