@@ -50,7 +50,7 @@ This spec extends Hypercolor's coverage to the rest of the Nollie family: the en
 
 ### Relationship to Other Specs
 
-- **Spec 20 (PrismRGB Protocol Driver):** Defines the Gen-1 base for Prism 8 and Nollie 8 v2. This spec **extends** that module rather than duplicating it. The shared `PrismRgbProtocol` becomes `NollieGen1Protocol` internally with a wider model enum, OR the existing `PrismRgbProtocol` accepts new model variants (`Nollie1`, `Nollie28_12`, `Nollie16v3`, `Nollie32`). Section 7 specifies the recommended factoring.
+- **Spec 20 (PrismRGB Protocol Driver):** Now owns only PrismRGB-exclusive controllers (Prism S and Prism Mini). This spec owns the Gen-1 Prism 8 / Nollie 8 v2 protocol and the wider Nollie OEM controller family.
 - **Spec 16 (HAL):** Provides the `Protocol` and `Transport` traits this driver implements. Gen-2 may need a new `report_size` capability advertised by `UsbHidTransport`.
 - **Spec 19 (Lian Li Uni Hub):** Shares the Strimer Plus visual aesthetic for Nollie32's Strimer subdevices, but the wire formats are unrelated.
 
@@ -1041,7 +1041,7 @@ The Gen-1 query/update endianness asymmetry is intentional firmware behavior; do
 - [x] Split native Nollie SKUs into `data/drivers/vendors/nollie.toml`; keep Prism 8 under PrismRGB branding while routing it through the `nollie` driver.
 - [x] Author 9 attachment fixtures under `data/attachments/builtin/nollie/` (§7.3).
 - [x] Add `DeviceFamily::Nollie` variant to `hypercolor-types` and wire HAL discovery through the new family.
-- [ ] Update spec 20: re-scope to PrismRGB-exclusive silicon, move Prism 8 / Nollie 8 v2 sections to spec 49 or leave stubs pointing at spec 49.
+- [x] Update spec 20: re-scope to PrismRGB-exclusive silicon, move Prism 8 / Nollie 8 v2 sections to spec 49 or leave stubs pointing at spec 49.
 
 **Phase 5 — Verification:**
 - [x] All existing PrismRGB tests pass post-refactor (regression).

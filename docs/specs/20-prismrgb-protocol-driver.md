@@ -1,13 +1,14 @@
 # 20 -- PrismRGB Protocol Driver
 
-> Native USB HID driver for the PrismRGB and Nollie controller family. Four controller variants, two color orderings, three packetization strategies, and clean-room integration with the HAL.
+> Native USB HID driver for PrismRGB-exclusive controllers. The Gen-1 Prism 8 and Nollie 8 v2 protocol moved to Spec 49.
 
-**Status:** Draft
+**Status:** Implemented for Prism S / Prism Mini; Gen-1 sections superseded by Spec 49
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::prismrgb`
 **Author:** Nova
 **Date:** 2026-03-04
 **Supersedes:** Spec 04 (USB HID Backend — now deprecated)
+**Companion:** Spec 49 (Nollie Protocol Driver)
 
 ---
 
@@ -28,27 +29,29 @@
 
 ## 1. Overview
 
-Native USB HID driver for PrismRGB and Nollie LED controllers via the `hypercolor-hal` abstraction layer. All four controllers communicate over USB HID with 65-byte reports (1-byte report ID + 64-byte payload), sharing a common command vocabulary but differing in channel layout, color format, and packetization strategy.
+Native USB HID driver for Prism S and Prism Mini via the `hypercolor-hal` abstraction layer. Both controllers communicate over USB HID with 65-byte reports (1-byte report ID + 64-byte payload), while Gen-1 Prism 8 / Nollie 8 v2 support now lives in Spec 49 under the canonical Nollie module.
 
 Clean-room implementation derived from publicly available protocol knowledge:
 
-- OpenRGB's `ENESMBusInterface` and `LianLiController` implementations (C++)
+- Public C++ controller implementations for related RGB devices
 - uni-sync Rust crate by EightB1ts
 - Original community driver source documentation
 
 ### Controller Family
 
-| Controller      | Channels | Max LEDs | Color Format | Unique Traits                              |
-| --------------- | -------- | -------- | ------------ | ------------------------------------------ |
-| **Prism 8**     | 8        | 1,008    | GRB          | Voltage monitoring, dynamic channel counts |
-| **Nollie 8 v2** | 8        | 1,008    | GRB          | Identical protocol to Prism 8              |
-| **Prism S**     | 2        | 282      | RGB          | Strimer cable controller, combined buffer  |
-| **Prism Mini**  | 1        | 128      | RGB          | Low-power saver, 4-bit color compression   |
+| Controller     | Channels | Max LEDs | Color Format | Unique Traits                            |
+| -------------- | -------- | -------- | ------------ | ---------------------------------------- |
+| **Prism S**    | 2        | 282      | RGB          | Strimer cable controller, combined buffer |
+| **Prism Mini** | 1        | 128      | RGB          | Low-power saver, 4-bit color compression |
+
+Historical Gen-1 notes remain in §4 for traceability, but the implementation
+owner for Prism 8 and Nollie 8 v2 is Spec 49.
 
 ### Relationship to Other Specs
 
 - **Spec 16 (HAL):** Defines the `Protocol` and `Transport` traits this driver implements
 - **Spec 19 (Lian Li):** Covers Uni Hub controllers (VID `0x0CF2`). PrismRGB uses different VIDs (`0x16D5`, `0x16D2`, `0x16D0`) and completely separate protocols — no code is shared between the two driver families
+- **Spec 49 (Nollie):** Owns Gen-1 Prism 8 / Nollie 8 v2 plus the wider Nollie OEM controller family. This spec keeps only Prism S and Prism Mini as active PrismRGB module scope.
 - **Spec 04 (USB HID Backend):** Superseded by this spec. Spec 04 used `hidapi` and defined a `HidController` trait that no longer exists. This spec migrates all protocol knowledge to the HAL's `Protocol` + `Transport` architecture using `nusb`
 
 ---
@@ -57,28 +60,22 @@ Clean-room implementation derived from publicly available protocol knowledge:
 
 ### 2.1 Controller Variants
 
-| Device          | VID      | PID      | HID Interface | Channels | LEDs/Channel | Max LEDs | Color Format | Brightness Scale |
-| --------------- | -------- | -------- | ------------- | -------- | ------------ | -------- | ------------ | ---------------- |
-| **Prism 8**     | `0x16D5` | `0x1F01` | 0             | 8        | 126          | 1,008    | GRB          | 0.75             |
-| **Nollie 8 v2** | `0x16D2` | `0x1F01` | 0             | 8        | 126          | 1,008    | GRB          | 1.00             |
-| **Prism S**     | `0x16D0` | `0x1294` | 2             | 2        | variable     | 282      | RGB          | 0.50             |
-| **Prism Mini**  | `0x16D0` | `0x1407` | 2             | 1        | 128          | 128      | RGB          | 1.00             |
+| Device         | VID      | PID      | HID Interface | Channels | LEDs/Channel | Max LEDs | Color Format | Brightness Scale |
+| -------------- | -------- | -------- | ------------- | -------- | ------------ | -------- | ------------ | ---------------- |
+| **Prism S**    | `0x16D0` | `0x1294` | 2             | 2        | variable     | 282      | RGB          | 0.50             |
+| **Prism Mini** | `0x16D0` | `0x1407` | 2             | 1        | 128          | 128      | RGB          | 1.00             |
 
 ### 2.2 VID Disambiguation
 
-PrismRGB uses three different Vendor IDs. Prism S and Prism Mini share VID `0x16D0` but have distinct PIDs:
+Prism S and Prism Mini share VID `0x16D0` but have distinct PIDs:
 
 | VID      | Vendor                | Controllers         |
 | -------- | --------------------- | ------------------- |
-| `0x16D5` | PrismRGB              | Prism 8             |
-| `0x16D2` | PrismRGB (Nollie)     | Nollie 8 v2         |
 | `0x16D0` | GCS (MCS Electronics) | Prism S, Prism Mini |
 
 ### 2.3 Protocol Database Registration
 
 ```rust
-prismrgb_device!(PRISM_8, 0x16D5, 0x1F01, "PrismRGB Prism 8", Prism8);
-prismrgb_device!(NOLLIE_8_V2, 0x16D2, 0x1F01, "Nollie 8 v2", Nollie8);
 prismrgb_device!(PRISM_S, 0x16D0, 0x1294, "PrismRGB Prism S", PrismS);
 prismrgb_device!(PRISM_MINI, 0x16D0, 0x1407, "PrismRGB Prism Mini", PrismMini);
 ```
@@ -203,6 +200,10 @@ fn encode_color(r: u8, g: u8, b: u8, scale: f32, format: DeviceColorFormat) -> [
 ---
 
 ## 4. Prism 8 / Nollie 8 v2 Protocol
+
+> Superseded by Spec 49. This section is retained as historical context only;
+> active descriptors, protocol code, and tests live in
+> `hypercolor_hal::drivers::nollie`.
 
 **Devices:** Prism 8 (`0x16D5`/`0x1F01`) and Nollie 8 v2 (`0x16D2`/`0x1F01`)
 **Interface:** 0 | **Color format:** GRB | **Channels:** 8
@@ -748,7 +749,7 @@ Requires `DeviceFamily::PrismRgb` variant in `hypercolor-types` (defined in spec
 
 ```rust
 pub enum DeviceFamily {
-    OpenRgb,
+    ExternalRgb,
     Wled,
     Hue,
     Razer,
@@ -1027,7 +1028,7 @@ This endianness mismatch is intentional behavior observed in the original firmwa
 
 ## References
 
-- `~/dev/OpenRGB/Controllers/LianLiController/` — C++ PrismRGB controller implementations
+- Public C++ controller implementations — PrismRGB controller references
 - uni-sync Rust crate by EightB1ts — Lian Li Uni Hub communication reference
 - Spec 04 (USB HID Backend) — protocol details migrated to this spec
 - Spec 16 (HAL) — Protocol and Transport trait definitions
