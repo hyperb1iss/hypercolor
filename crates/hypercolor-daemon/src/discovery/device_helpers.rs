@@ -1,7 +1,7 @@
 use anyhow::Context;
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager, SegmentRange};
 use hypercolor_types::device::{
-    DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
 use tracing::info;
@@ -93,40 +93,17 @@ pub(super) async fn apply_dynamic_usb_protocol_config(
         return;
     };
 
-    let is_prism_s = tracked.info.family == DeviceFamily::PrismRgb
-        && tracked.info.model.as_deref() == Some("prism_s");
-    let is_nollie32 = tracked.info.family == DeviceFamily::Nollie
-        && tracked.info.model.as_deref() == Some("nollie_32");
-
-    if !is_prism_s && !is_nollie32 {
-        runtime.usb_protocol_configs.remove_device(device_id).await;
-        return;
-    }
-
-    let (prism_s_config, nollie32_config) = {
+    let (profile, registry) = {
         let registry = runtime.attachment_registry.read().await;
         let profiles = runtime.attachment_profiles.read().await;
-        (
-            profiles.prism_s_config_for_device(&tracked.info, &registry),
-            profiles.nollie32_config_for_device(&tracked.info, &registry),
-        )
+        (profiles.get_or_default(&tracked.info), registry.clone())
     };
+    let applied = runtime
+        .usb_protocol_configs
+        .apply_attachment_profile(device_id, &tracked.info, &profile, &registry)
+        .await;
 
-    if let Some(config) = prism_s_config {
-        runtime
-            .usb_protocol_configs
-            .set_prism_s_config(device_id, config)
-            .await;
-    }
-
-    if let Some(config) = nollie32_config {
-        runtime
-            .usb_protocol_configs
-            .set_nollie32_config(device_id, config)
-            .await;
-    }
-
-    if prism_s_config.is_none() && nollie32_config.is_none() {
+    if !applied {
         runtime.usb_protocol_configs.remove_device(device_id).await;
     }
 }

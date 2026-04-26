@@ -454,7 +454,9 @@ mod tests {
         let mut cfg = HypercolorConfig::default();
         cfg.drivers.insert(
             "asus".to_owned(),
-            hypercolor_types::config::DriverConfigEntry::disabled(Default::default()),
+            hypercolor_types::config::DriverConfigEntry::disabled(
+                std::collections::BTreeMap::default(),
+            ),
         );
         let requested = vec!["smbus".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())

@@ -10,9 +10,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
 use hypercolor_hal::drivers::nollie::{
-    Nollie32Config, NollieModel, NollieProtocol, ProtocolVersion,
+    GpuCableType, Nollie32Config, NollieModel, NollieProtocol, ProtocolVersion,
 };
-use hypercolor_hal::drivers::prismrgb::{PrismRgbModel, PrismRgbProtocol, PrismSConfig};
+use hypercolor_hal::drivers::prismrgb::{
+    PrismRgbModel, PrismRgbProtocol, PrismSConfig, PrismSGpuCable,
+};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
@@ -22,7 +24,10 @@ use hypercolor_hal::transport::midi::Push2Transport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
+use hypercolor_types::attachment::DeviceAttachmentProfile;
+use hypercolor_types::device::{
+    DeviceFamily, DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo,
+};
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -34,6 +39,7 @@ use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 use super::discovery::TransportScanner;
 use super::traits::{BackendInfo, DeviceBackend};
 use super::usb_scanner::UsbScanner;
+use crate::attachment::AttachmentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
@@ -293,6 +299,119 @@ impl UsbProtocolConfigStore {
         nollie32.remove(&device_id);
         prism_s.remove(&device_id);
     }
+
+    pub async fn apply_attachment_profile(
+        &self,
+        device_id: DeviceId,
+        device: &DeviceInfo,
+        profile: &DeviceAttachmentProfile,
+        registry: &AttachmentRegistry,
+    ) -> bool {
+        let prism_s_config = prism_s_config_for_attachment_profile(device, profile, registry);
+        let nollie32_config = nollie32_config_for_attachment_profile(device, profile, registry);
+
+        if let Some(config) = prism_s_config {
+            self.set_prism_s_config(device_id, config).await;
+        }
+
+        if let Some(config) = nollie32_config {
+            self.set_nollie32_config(device_id, config).await;
+        }
+
+        prism_s_config.is_some() || nollie32_config.is_some()
+    }
+}
+
+fn prism_s_config_for_attachment_profile(
+    device: &DeviceInfo,
+    profile: &DeviceAttachmentProfile,
+    registry: &AttachmentRegistry,
+) -> Option<PrismSConfig> {
+    if !is_protocol_device(
+        device,
+        "prismrgb/prism-s",
+        DeviceFamily::PrismRgb,
+        "prism_s",
+    ) {
+        return None;
+    }
+
+    let has_enabled_bindings = profile.bindings.iter().any(|binding| binding.enabled);
+    if !has_enabled_bindings {
+        return Some(PrismSConfig::default());
+    }
+
+    let mut config = PrismSConfig {
+        atx_present: false,
+        gpu_cable: None,
+    };
+
+    for binding in profile.bindings.iter().filter(|binding| binding.enabled) {
+        match binding.slot_id.as_str() {
+            "atx-strimer" => config.atx_present = true,
+            "gpu-strimer" => {
+                let Some(template) = registry.get(&binding.template_id) else {
+                    continue;
+                };
+
+                config.gpu_cable = match binding.effective_led_count(template) {
+                    108 => Some(PrismSGpuCable::Dual8Pin),
+                    162 => Some(PrismSGpuCable::Triple8Pin),
+                    _ => config.gpu_cable,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    Some(config)
+}
+
+fn nollie32_config_for_attachment_profile(
+    device: &DeviceInfo,
+    profile: &DeviceAttachmentProfile,
+    registry: &AttachmentRegistry,
+) -> Option<Nollie32Config> {
+    if !is_protocol_device(
+        device,
+        "nollie/nollie-32",
+        DeviceFamily::Nollie,
+        "nollie_32",
+    ) {
+        return None;
+    }
+
+    let mut config = Nollie32Config::default();
+
+    for binding in profile.bindings.iter().filter(|binding| binding.enabled) {
+        match binding.slot_id.as_str() {
+            "atx-strimer" => config.atx_cable_present = true,
+            "gpu-strimer" => {
+                let Some(template) = registry.get(&binding.template_id) else {
+                    continue;
+                };
+
+                config.gpu_cable_type = match binding.effective_led_count(template) {
+                    108 => GpuCableType::Dual8Pin,
+                    162 => GpuCableType::Triple8Pin,
+                    _ => config.gpu_cable_type,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    Some(config)
+}
+
+fn is_protocol_device(
+    device: &DeviceInfo,
+    protocol_id: &str,
+    family: DeviceFamily,
+    model: &str,
+) -> bool {
+    device.origin.protocol_id.as_deref() == Some(protocol_id)
+        || (device.family == family && device.model.as_deref() == Some(model))
 }
 
 /// Core USB backend for HAL-managed device families.
