@@ -15,10 +15,10 @@ use hypercolor_driver_api::support::{
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
-    DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
-    TrackedDeviceCtx,
+    DiscoveryResult, DriverConfigView, DriverCredentialStore, DriverDescriptor,
+    DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
+    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFlowKind, TrackedDeviceCtx,
 };
 
 const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
@@ -105,13 +105,15 @@ impl DiscoveryCapability for HueDriverFactory {
 impl PairingCapability for HueDriverFactory {
     async fn auth_summary(
         &self,
-        _host: &dyn DriverHost,
+        host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Option<DeviceAuthSummary> {
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
-        let configured = hue_credentials_present(&self.credential_store, device.metadata).await;
+        let configured = hue_credentials_present(host.credentials(), device.metadata)
+            .await
+            .unwrap_or_default();
 
         Some(DeviceAuthSummary {
             state: if last_error.is_some() {
@@ -133,7 +135,10 @@ impl PairingCapability for HueDriverFactory {
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
     ) -> Result<PairDeviceOutcome> {
-        if hue_credentials_present(&self.credential_store, device.metadata).await {
+        if hue_credentials_present(host.credentials(), device.metadata)
+            .await
+            .unwrap_or_default()
+        {
             let activated =
                 activate_if_requested(host, request.activate_after_pair, device.device_id, "hue")
                     .await;
@@ -196,7 +201,7 @@ impl PairingCapability for HueDriverFactory {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
-        clear_hue_credentials(&self.credential_store, device.metadata).await?;
+        clear_hue_credentials(host.credentials(), device.metadata).await?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "hue").await;
 
         Ok(ClearPairingOutcome {
@@ -343,11 +348,11 @@ fn hue_credential_keys(metadata: Option<&HashMap<String, String>>) -> Vec<String
 }
 
 async fn hue_credentials_present(
-    credential_store: &CredentialStore,
+    credential_store: &dyn DriverCredentialStore,
     metadata: Option<&HashMap<String, String>>,
-) -> bool {
+) -> Result<bool> {
     for key in hue_credential_keys(metadata) {
-        let Some(credentials) = credential_store.get_json(&key).await else {
+        let Some(credentials) = credential_store.get_json(&key).await? else {
             continue;
         };
         if credentials
@@ -359,14 +364,14 @@ async fn hue_credentials_present(
                 .and_then(serde_json::Value::as_str)
                 .is_some()
         {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 async fn clear_hue_credentials(
-    credential_store: &CredentialStore,
+    credential_store: &dyn DriverCredentialStore,
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<()> {
     for key in hue_credential_keys(metadata) {
