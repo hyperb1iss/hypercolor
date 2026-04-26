@@ -2,6 +2,7 @@ use anyhow::Context;
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager, SegmentRange};
 use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
+    DriverTransportKind,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
 use tracing::info;
@@ -81,17 +82,16 @@ pub(super) async fn backend_io(
 
 pub(super) async fn apply_dynamic_usb_protocol_config(
     runtime: &DiscoveryRuntime,
-    backend_id: &str,
     device_id: DeviceId,
 ) {
-    if backend_id != "usb" {
-        return;
-    }
-
     let Some(tracked) = runtime.device_registry.get(&device_id).await else {
         runtime.usb_protocol_configs.remove_device(device_id).await;
         return;
     };
+
+    if tracked.info.origin.transport != DriverTransportKind::Usb {
+        return;
+    }
 
     let (profile, registry) = {
         let registry = runtime.attachment_registry.read().await;
@@ -114,7 +114,7 @@ pub(super) async fn connect_backend_device(
     device_id: DeviceId,
     layout_device_id: &str,
 ) -> anyhow::Result<()> {
-    apply_dynamic_usb_protocol_config(runtime, backend_id, device_id).await;
+    apply_dynamic_usb_protocol_config(runtime, device_id).await;
     let io = backend_io(runtime, backend_id).await?;
     let target_fps = io.connect_with_refresh(device_id).await?;
 
