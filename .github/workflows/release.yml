@@ -38,6 +38,7 @@ jobs:
       nextest: true
       generate-release-notes: true
       pass-run-id: true
+      cicd-workflow: ci.yml
       patch-workspace-dep-versions: true
     permissions:
       contents: write

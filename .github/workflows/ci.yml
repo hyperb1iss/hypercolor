@@ -42,6 +42,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      python: ${{ steps.filter.outputs.python }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
@@ -54,6 +55,10 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'deny.toml'
+              - '.github/workflows/ci.yml'
+            python:
+              - 'python/**'
+              - 'justfile'
               - '.github/workflows/ci.yml'
 
   # ── Rust Check (fmt + clippy) ──────────────────────────────────
@@ -141,6 +146,103 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
+
+  # ── Python Client ────────────────────────────────────────────────
+  python:
+    name: Python Client
+    needs: changes
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: python/.python-version
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run ty check
+
+      - name: Run tests
+        run: uv run pytest
+
+  # ── Python Package ───────────────────────────────────────────────
+  python-build:
+    name: Python Package
+    needs: python
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: python/.python-version
+
+      - name: Patch package version from tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = \".*\"/version = \"${version}\"/" pyproject.toml
+          grep '^version = ' pyproject.toml
+
+      - name: Build package
+        run: uv build
+
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: python/dist/*
+          if-no-files-found: error
+
+  # ── PyPI Publish ────────────────────────────────────────────────
+  python-publish:
+    name: Publish Python Package
+    needs: python-build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/hypercolor
+    permissions:
+      id-token: write
+    steps:
+      - name: Download Python distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
 
   # ── SDK (TypeScript / Bun) ─────────────────────────────────────
   sdk:
@@ -466,7 +568,7 @@ jobs:
   # ── Create GitHub Release ──────────────────────────────────────
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build-release
+    needs: [build-release, python-publish]
     uses: hyperb1iss/shared-workflows/.github/workflows/github-release.yml@main
     with:
       attach-artifacts: true
