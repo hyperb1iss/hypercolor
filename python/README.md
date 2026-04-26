@@ -6,6 +6,8 @@ This package lives inside the main Hypercolor repository at `python/`. It is a
 standalone uv project, so Python contributors can work here without touching the
 Rust workspace.
 
+Generation details live in `../docs/development/CLIENT_GENERATION.md`.
+
 ## Tooling
 
 ```bash
