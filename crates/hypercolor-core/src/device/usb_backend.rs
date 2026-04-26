@@ -1939,10 +1939,10 @@ mod tests {
         assert_eq!(writes, vec![vec![0x11], vec![0xD1]]);
 
         let after = usb_actor_metrics_snapshot();
-        assert!(after.display_frames_total >= before.display_frames_total + 1);
+        assert!(after.display_frames_total > before.display_frames_total);
         assert!(
             after.display_frames_delayed_for_led_total
-                >= before.display_frames_delayed_for_led_total + 1
+                > before.display_frames_delayed_for_led_total
         );
         assert!(
             after.display_led_priority_wait_total_us > before.display_led_priority_wait_total_us
@@ -2011,7 +2011,7 @@ mod tests {
         assert!(after.display_frames_total >= before.display_frames_total + 2);
         assert!(
             after.display_frames_delayed_for_led_total
-                >= before.display_frames_delayed_for_led_total + 1
+                > before.display_frames_delayed_for_led_total
         );
     }
 
