@@ -6,6 +6,8 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
+use hypercolor_driver_api::DriverConfigView;
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesRequest, ApplyControlChangesResponse, ApplyImpact,
     ControlAccess, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
@@ -19,11 +21,48 @@ use crate::api::AppState;
 use crate::api::devices;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::discovery as core_discovery;
+use crate::network;
 
 const DEVICE_FIELD_NAME: &str = "name";
 const DEVICE_FIELD_ENABLED: &str = "enabled";
 const DEVICE_FIELD_BRIGHTNESS: &str = "brightness";
 type ControlApiResult<T> = Result<T, Box<Response>>;
+
+/// `GET /api/v1/drivers/:id/controls` - Return a driver-level control surface.
+pub async fn get_driver_control_surface(
+    State(state): State<Arc<AppState>>,
+    Path(driver_id): Path<String>,
+) -> Response {
+    let Some(driver) = state.driver_registry.get(&driver_id) else {
+        return ApiError::not_found(format!("Driver not found: {driver_id}"));
+    };
+    let Some(provider) = driver.controls() else {
+        return ApiError::not_found(format!("Driver does not expose controls: {driver_id}"));
+    };
+
+    let config_entry = state.config_manager.as_ref().map_or_else(
+        || network::driver_config_entry(&HypercolorConfig::default(), &driver_id),
+        |manager| {
+            let config = manager.get();
+            network::driver_config_entry(&config, &driver_id)
+        },
+    );
+    let config_view = DriverConfigView {
+        driver_id: &driver_id,
+        entry: &config_entry,
+    };
+
+    match provider
+        .driver_surface(state.driver_host.as_ref(), config_view)
+        .await
+    {
+        Ok(Some(surface)) => ApiResponse::ok(surface),
+        Ok(None) => ApiError::not_found(format!("Driver does not expose controls: {driver_id}")),
+        Err(error) => ApiError::internal(format!(
+            "Failed to build driver control surface for {driver_id}: {error}"
+        )),
+    }
+}
 
 /// `GET /api/v1/devices/:id/controls` — Return the generic device control
 /// surface for a tracked device.

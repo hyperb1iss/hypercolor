@@ -1735,6 +1735,65 @@ async fn list_drivers_returns_registered_module_descriptors() {
 }
 
 #[tokio::test]
+async fn get_driver_controls_returns_module_control_surface() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/wled/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let data = &json["data"];
+    assert_eq!(data["surface_id"], "driver:wled");
+    assert_eq!(data["schema_version"], 1);
+    assert_eq!(data["scope"]["driver"]["driver_id"], "wled");
+    assert_eq!(data["values"]["known_ips"]["kind"], "list");
+    assert_eq!(data["values"]["known_ips"]["value"], serde_json::json!([]));
+    assert_eq!(data["values"]["default_protocol"]["kind"], "enum");
+    assert_eq!(data["values"]["default_protocol"]["value"], "ddp");
+    assert_eq!(data["values"]["realtime_http_enabled"]["kind"], "bool");
+    assert_eq!(data["values"]["realtime_http_enabled"]["value"], true);
+    assert_eq!(data["values"]["dedup_threshold"]["kind"], "integer");
+    assert_eq!(data["values"]["dedup_threshold"]["value"], 2);
+
+    let fields = data["fields"]
+        .as_array()
+        .expect("fields should be an array");
+    assert!(fields.iter().any(|field| field["id"] == "known_ips"));
+    assert!(fields.iter().any(|field| field["id"] == "default_protocol"));
+    assert!(
+        fields
+            .iter()
+            .any(|field| field["id"] == "realtime_http_enabled")
+    );
+    assert!(fields.iter().any(|field| field["id"] == "dedup_threshold"));
+}
+
+#[tokio::test]
+async fn get_unknown_driver_controls_returns_not_found() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/missing/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn list_devices_includes_structured_zone_topology_hints() {
     let state = Arc::new(isolated_state());
     let id = DeviceId::new();

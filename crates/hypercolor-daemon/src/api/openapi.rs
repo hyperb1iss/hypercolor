@@ -212,6 +212,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "List driver modules",
     ),
     RouteSpec::get(
+        "/api/v1/drivers/{id}/controls",
+        "get_driver_control_surface",
+        "controls",
+        "Get driver control surface",
+    ),
+    RouteSpec::get(
         "/api/v1/system/sensors",
         "get_sensors",
         "system",
