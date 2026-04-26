@@ -2,8 +2,9 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    EffectErrorFallbackPolicy, FeatureFlags, HypercolorConfig, LogLevel, McpConfig, NetworkConfig,
-    RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig, LogLevel, McpConfig,
+    NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig,
+    default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -101,9 +102,20 @@ fn driver_registry_defaults_include_builtin_drivers() {
     assert!(drivers["wled"].enabled);
     assert!(drivers["hue"].enabled);
     assert!(drivers["nanoleaf"].enabled);
+    assert!(drivers["govee"].enabled);
     assert!(drivers["wled"].settings.is_empty());
     assert!(drivers["hue"].settings.is_empty());
     assert!(drivers["nanoleaf"].settings.is_empty());
+    assert!(drivers["govee"].settings.is_empty());
+}
+
+#[test]
+fn govee_defaults_match_spec() {
+    let g = GoveeConfig::default();
+    assert!(g.known_ips.is_empty());
+    assert!(!g.power_off_on_disconnect);
+    assert_eq!(g.lan_state_fps, 10);
+    assert_eq!(g.razer_fps, 25);
 }
 
 #[test]
@@ -210,6 +222,7 @@ fn full_config_toml_roundtrip() {
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
     assert!(restored.drivers["wled"].enabled);
+    assert!(restored.drivers["govee"].enabled);
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
     assert!(!restored.features.wasm_plugins);
