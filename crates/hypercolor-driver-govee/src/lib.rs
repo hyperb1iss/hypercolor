@@ -15,6 +15,7 @@ use hypercolor_types::config::GoveeConfig;
 
 pub mod backend;
 pub mod capabilities;
+pub mod cloud;
 pub mod lan;
 
 use backend::GoveeBackend;
