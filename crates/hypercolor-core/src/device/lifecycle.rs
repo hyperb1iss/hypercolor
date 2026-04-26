@@ -467,13 +467,12 @@ impl DeviceLifecycleManager {
         };
         let value = fingerprint.0.to_ascii_lowercase();
 
-        if backend_id == "wled"
-            && let Some(value) = value.strip_prefix("net:")
-        {
-            if let Some(hostname) = value.strip_prefix("wled:") {
-                return format!("wled:{}", sanitize_component(hostname));
+        if let Some(value) = value.strip_prefix("net:") {
+            let backend_prefix = format!("{backend_id}:");
+            if let Some(driver_scoped_value) = value.strip_prefix(&backend_prefix) {
+                return format!("{backend_id}:{}", sanitize_component(driver_scoped_value));
             }
-            return format!("wled:{value}");
+            return format!("{backend_id}:{value}");
         }
 
         if let Some(value) = value.strip_prefix("usb:") {
@@ -511,11 +510,10 @@ impl DeviceLifecycleManager {
                     address,
                 };
             }
-            if backend_id == "wled"
-                && let Some(rest) = value.strip_prefix("net:")
-            {
+            if let Some(rest) = value.strip_prefix("net:") {
+                let backend_prefix = format!("{backend_id}:");
                 let mdns_hostname = rest
-                    .strip_prefix("wled:")
+                    .strip_prefix(&backend_prefix)
                     .map(ToOwned::to_owned)
                     .or_else(|| Some(device_info.name.clone()));
                 return DeviceIdentifier::Network {
@@ -802,5 +800,27 @@ mod tests {
         let info = device_info("My Test Device", DeviceFamily::Custom("Mock".to_owned()));
         let layout_id = DeviceLifecycleManager::layout_device_id("mock", &info);
         assert_eq!(layout_id, "mock:my-test-device");
+    }
+
+    #[test]
+    fn network_fingerprints_use_driver_prefix_without_driver_special_cases() {
+        let info = device_info("Living Room", DeviceFamily::Hue);
+        let fingerprint = DeviceFingerprint("net:hue:bridge.local".to_owned());
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id("hue", &info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "hue:bridge-local");
+    }
+
+    #[test]
+    fn unscoped_network_fingerprints_preserve_existing_wled_layout_ids() {
+        let info = device_info("Case Strip", DeviceFamily::Wled);
+        let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id("wled", &info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "wled:aa:bb:cc:dd:ee:ff");
     }
 }
