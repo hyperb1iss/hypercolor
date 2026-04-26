@@ -28,6 +28,7 @@ fn sample_stats(
         avg_write_ms: 5,
         last_error: last_error.map(str::to_owned),
         errors_total,
+        write_failure_warnings_total: errors_total,
         last_sent_ago_ms: Some(25),
         last_sequence: frames_sent,
     }

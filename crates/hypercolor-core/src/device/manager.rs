@@ -361,6 +361,9 @@ pub struct OutputQueueDebugSnapshot {
     /// Total async write failures observed by this queue worker.
     pub errors_total: u64,
 
+    /// Total async write failure warning logs emitted by this queue worker.
+    pub write_failure_warnings_total: u64,
+
     /// Milliseconds since last worker write attempt.
     pub last_sent_ago_ms: Option<u64>,
 
@@ -410,6 +413,9 @@ pub struct DeviceOutputStatistics {
     /// Total async write failures observed by this queue worker.
     pub errors_total: u64,
 
+    /// Total async write failure warning logs emitted by this queue worker.
+    pub write_failure_warnings_total: u64,
+
     /// Milliseconds since last worker write attempt.
     pub last_sent_ago_ms: Option<u64>,
 
@@ -433,6 +439,7 @@ impl DeviceOutputStatistics {
             avg_write_ms: self.avg_write_ms,
             last_error: self.last_error,
             errors_total: self.errors_total,
+            write_failure_warnings_total: self.write_failure_warnings_total,
             last_sent_ago_ms: self.last_sent_ago_ms,
             last_sequence: self.last_sequence,
         }
@@ -461,6 +468,7 @@ struct OutputQueueMetrics {
     total_queue_wait_us: AtomicU64,
     total_write_time_us: AtomicU64,
     errors_total: AtomicU64,
+    write_failure_warnings_total: AtomicU64,
     last_sent_offset_us: AtomicU64,
     last_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
@@ -480,6 +488,7 @@ impl OutputQueueMetrics {
             total_queue_wait_us: AtomicU64::new(0),
             total_write_time_us: AtomicU64::new(0),
             errors_total: AtomicU64::new(0),
+            write_failure_warnings_total: AtomicU64::new(0),
             last_sent_offset_us: AtomicU64::new(0),
             last_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
@@ -537,6 +546,11 @@ impl OutputQueueMetrics {
         }
     }
 
+    fn record_write_failure_warning(&self) {
+        self.write_failure_warnings_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(
         &self,
         backend_id: &str,
@@ -588,6 +602,7 @@ impl OutputQueueMetrics {
             avg_write_ms,
             last_error,
             errors_total: self.errors_total.load(Ordering::Relaxed),
+            write_failure_warnings_total: self.write_failure_warnings_total.load(Ordering::Relaxed),
             last_sent_ago_ms,
             last_sequence: self.last_sequence.load(Ordering::Relaxed),
         }
@@ -783,6 +798,7 @@ impl OutputQueue {
                             || repeated_write_failures_since_log
                                 >= OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL
                         {
+                            metrics_for_task.record_write_failure_warning();
                             warn!(
                                 backend_id = %backend_id,
                                 device_id = %device_id,

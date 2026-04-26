@@ -2170,15 +2170,6 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
-    let buffer = SharedLogBuffer::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(buffer.clone())
-        .with_ansi(false)
-        .without_time()
-        .with_target(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
     let device_id = DeviceId::new();
     let mock_config = MockDeviceConfig {
         name: "Failing Strip".into(),
@@ -2223,8 +2214,7 @@ async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
             .contains("mock write failure")
     );
 
-    let logs = buffer.contents();
-    assert_eq!(logs.matches("device output worker write failed").count(), 1);
+    assert_eq!(queue.write_failure_warnings_total, 1);
 }
 
 #[tokio::test]
