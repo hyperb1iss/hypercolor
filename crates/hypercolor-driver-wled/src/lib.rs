@@ -11,8 +11,8 @@ use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
     DriverControlProvider, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
-    DriverTrackedDevice, DriverTransport, NetworkDriverFactory, TrackedDeviceCtx,
-    ValidatedControlChanges,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
@@ -116,6 +116,10 @@ impl NetworkDriverFactory for WledDriverFactory {
     }
 
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
+
+    fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
     }
 }
@@ -429,6 +433,36 @@ fn wled_config_values(config: &WledConfig) -> ControlValueMap {
 fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
     if !impacts.contains(&impact) {
         impacts.push(impact);
+    }
+}
+
+#[async_trait]
+impl DriverRuntimeCacheProvider for WledDriverFactory {
+    async fn snapshot(
+        &self,
+        host: &dyn DriverHost,
+    ) -> Result<std::collections::BTreeMap<String, serde_json::Value>> {
+        let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
+        let probe_ips =
+            resolve_wled_probe_ips_from_sources(&WledConfig::default(), &tracked_devices, &[], &[]);
+        let probe_targets = resolve_wled_probe_targets_from_sources(
+            &WledConfig::default(),
+            &tracked_devices,
+            &[],
+            &[],
+        );
+
+        Ok(std::collections::BTreeMap::from([
+            (
+                "probe_ips".to_owned(),
+                serde_json::to_value(probe_ips).context("failed to serialize WLED probe IPs")?,
+            ),
+            (
+                "probe_targets".to_owned(),
+                serde_json::to_value(probe_targets)
+                    .context("failed to serialize WLED probe targets")?,
+            ),
+        ]))
     }
 }
 

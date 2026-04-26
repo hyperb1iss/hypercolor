@@ -256,10 +256,11 @@ impl DaemonState {
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
         snapshot.global_brightness = current_global_brightness(&self.power_state);
-        snapshot.wled_probe_ips =
-            runtime_state::collect_wled_probe_ips(&self.device_registry).await;
-        snapshot.wled_probe_targets =
-            runtime_state::collect_wled_probe_targets(&self.device_registry).await;
+        snapshot.driver_runtime_cache = runtime_state::collect_driver_runtime_cache(
+            self.driver_registry.as_ref(),
+            self.driver_host.as_ref(),
+        )
+        .await;
 
         if let Err(error) = runtime_state::save(&self.runtime_state_path, &snapshot) {
             warn!(

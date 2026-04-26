@@ -2,18 +2,18 @@
 //!
 //! Stores the active scene snapshot so daemon startup can restore the previous user session.
 
-use std::collections::HashSet;
-use std::net::IpAddr;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tracing::warn;
 
-use hypercolor_core::device::DeviceRegistry;
-use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::scene::SceneManager;
-use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
+use hypercolor_driver_api::DriverHost;
+use hypercolor_network::DriverRegistry;
 use hypercolor_types::scene::{RenderGroup, SceneId};
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
@@ -36,11 +36,8 @@ pub struct RuntimeSessionSnapshot {
     /// User-configured global output brightness.
     pub global_brightness: f32,
 
-    /// Last-known WLED IPs discovered in previous sessions.
-    pub wled_probe_ips: Vec<IpAddr>,
-
-    /// Last-known WLED device identity hints used when probe enrichment fails.
-    pub wled_probe_targets: Vec<WledKnownTarget>,
+    /// Driver-scoped runtime cache payloads.
+    pub driver_runtime_cache: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -93,8 +90,7 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
         default_scene_groups,
         active_layout_id: None,
         global_brightness: 1.0,
-        wled_probe_ips: Vec::new(),
-        wled_probe_targets: Vec::new(),
+        driver_runtime_cache: BTreeMap::new(),
     }
 }
 
@@ -118,98 +114,44 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
     Ok(Some(snapshot))
 }
 
-/// Load the cached WLED probe IPs from `path`.
-pub fn load_wled_probe_ips(path: &Path) -> Result<Vec<IpAddr>, RuntimeSessionError> {
-    let Some(snapshot) = load(path)? else {
-        return Ok(Vec::new());
-    };
-
-    let mut probe_ips = snapshot.wled_probe_ips;
-    probe_ips.extend(
-        snapshot
-            .wled_probe_targets
-            .into_iter()
-            .map(|target| target.ip),
-    );
-    probe_ips.sort_unstable();
-    probe_ips.dedup();
-    Ok(probe_ips)
+/// Load one driver-scoped cached JSON payload from `path`.
+pub fn load_driver_cached_json(
+    path: &Path,
+    driver_id: &str,
+    key: &str,
+) -> Result<Option<Value>, RuntimeSessionError> {
+    Ok(load(path)?
+        .and_then(|mut snapshot| snapshot.driver_runtime_cache.remove(driver_id))
+        .and_then(|mut cache| cache.remove(key)))
 }
 
-/// Load the cached WLED identity hints from `path`.
-pub fn load_wled_probe_targets(path: &Path) -> Result<Vec<WledKnownTarget>, RuntimeSessionError> {
-    Ok(load(path)?.map_or_else(Vec::new, |snapshot| snapshot.wled_probe_targets))
-}
+/// Collect all driver-owned runtime cache payloads.
+pub async fn collect_driver_runtime_cache(
+    driver_registry: &DriverRegistry,
+    host: &dyn DriverHost,
+) -> BTreeMap<String, BTreeMap<String, Value>> {
+    let mut cache = BTreeMap::new();
 
-/// Collect the last-known WLED probe IPs from registry metadata.
-pub async fn collect_wled_probe_ips(device_registry: &DeviceRegistry) -> Vec<IpAddr> {
-    let mut probe_ips = HashSet::new();
-
-    for tracked in device_registry.list().await {
-        if tracked.info.family != DeviceFamily::Wled {
+    for driver_id in driver_registry.ids() {
+        let Some(driver) = driver_registry.get(&driver_id) else {
             continue;
+        };
+        let Some(provider) = driver.runtime_cache() else {
+            continue;
+        };
+
+        match provider.snapshot(host).await {
+            Ok(values) if !values.is_empty() => {
+                cache.insert(driver_id, values);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(driver_id, %error, "Failed to collect driver runtime cache");
+            }
         }
-
-        let Some(metadata) = device_registry.metadata_for_id(&tracked.info.id).await else {
-            continue;
-        };
-        let Some(ip_raw) = metadata.get("ip") else {
-            continue;
-        };
-        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-            continue;
-        };
-
-        probe_ips.insert(ip);
     }
 
-    let mut resolved: Vec<IpAddr> = probe_ips.into_iter().collect();
-    resolved.sort_unstable();
-    resolved
-}
-
-/// Collect the last-known WLED identity hints from the registry.
-pub async fn collect_wled_probe_targets(device_registry: &DeviceRegistry) -> Vec<WledKnownTarget> {
-    let tracked_devices = device_registry.list().await;
-    let mut targets = Vec::new();
-
-    for tracked in tracked_devices {
-        if tracked.info.family != DeviceFamily::Wled {
-            continue;
-        }
-
-        let Some(metadata) = device_registry.metadata_for_id(&tracked.info.id).await else {
-            continue;
-        };
-        let Some(ip_raw) = metadata.get("ip") else {
-            continue;
-        };
-        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-            continue;
-        };
-
-        let rgbw = tracked
-            .info
-            .zones
-            .first()
-            .map(|zone| matches!(zone.color_format, DeviceColorFormat::Rgbw));
-        let fingerprint = device_registry.fingerprint_for_id(&tracked.info.id).await;
-
-        targets.push(WledKnownTarget {
-            ip,
-            hostname: metadata.get("hostname").cloned(),
-            fingerprint,
-            name: Some(tracked.info.name.clone()),
-            led_count: Some(tracked.info.total_led_count()),
-            firmware_version: tracked.info.firmware_version.clone(),
-            max_fps: Some(tracked.info.capabilities.max_fps),
-            rgbw,
-        });
-    }
-
-    targets.sort_by_key(|target| target.ip);
-    targets.dedup_by_key(|target| target.ip);
-    targets
+    cache
 }
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
@@ -252,6 +194,7 @@ fn unique_temp_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Barrier};
 
     use tempfile::TempDir;
@@ -269,11 +212,13 @@ mod tests {
             default_scene_groups: Vec::new(),
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
-            wled_probe_ips: vec![
-                "10.0.0.8".parse().expect("valid IP"),
-                "10.0.0.9".parse().expect("valid IP"),
-            ],
-            wled_probe_targets: Vec::new(),
+            driver_runtime_cache: BTreeMap::from([(
+                "wled".to_owned(),
+                BTreeMap::from([(
+                    "probe_ips".to_owned(),
+                    serde_json::json!(["10.0.0.8", "10.0.0.9"]),
+                )]),
+            )]),
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -283,7 +228,7 @@ mod tests {
         assert_eq!(loaded.active_scene_id, expected.active_scene_id);
         assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
         assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
-        assert_eq!(loaded.wled_probe_ips, expected.wled_probe_ips);
+        assert_eq!(loaded.driver_runtime_cache, expected.driver_runtime_cache);
     }
 
     #[test]
@@ -303,8 +248,7 @@ mod tests {
             default_scene_groups: Vec::new(),
             active_layout_id: None,
             global_brightness: 1.0,
-            wled_probe_ips: vec!["10.0.0.42".parse().expect("valid IP")],
-            wled_probe_targets: Vec::new(),
+            driver_runtime_cache: BTreeMap::new(),
         });
 
         let worker_count = 8;

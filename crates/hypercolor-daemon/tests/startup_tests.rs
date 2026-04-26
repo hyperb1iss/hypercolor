@@ -645,8 +645,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             default_scene_groups: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
-            wled_probe_ips: Vec::new(),
-            wled_probe_targets: Vec::new(),
+            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -787,8 +786,14 @@ async fn runtime_state_captures_default_scene_groups() {
         Some(metadata.id)
     );
     assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
+    let wled_cache = snapshot
+        .driver_runtime_cache
+        .get("wled")
+        .expect("WLED runtime cache should be persisted");
+    let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
+        .expect("probe IP cache should deserialize");
     assert_eq!(
-        snapshot.wled_probe_ips,
+        probe_ips,
         vec!["10.0.0.42".parse::<std::net::IpAddr>().expect("valid IP"),]
     );
 }
@@ -836,8 +841,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             default_scene_groups: vec![default_group.clone()],
             active_layout_id: None,
             global_brightness: 1.0,
-            wled_probe_ips: Vec::new(),
-            wled_probe_targets: Vec::new(),
+            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");
@@ -900,8 +904,7 @@ async fn default_scene_contents_restore_on_restart() {
             }],
             active_layout_id: None,
             global_brightness: 1.0,
-            wled_probe_ips: Vec::new(),
-            wled_probe_targets: Vec::new(),
+            driver_runtime_cache: std::collections::BTreeMap::new(),
         },
     )
     .expect("runtime state should save");

@@ -5,7 +5,7 @@
 //! traits and shared request/response types instead of reaching into daemon
 //! internals directly.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -118,7 +118,7 @@ impl DriverDescriptor {
                 pairing: self.supports_pairing,
                 backend_factory: true,
                 protocol_catalog: false,
-                runtime_cache: self.supports_discovery,
+                runtime_cache: false,
                 credentials: self.supports_pairing,
                 presentation: false,
                 controls: false,
@@ -646,6 +646,17 @@ pub trait DriverControlProvider: Send + Sync {
     ) -> Result<ControlActionResult>;
 }
 
+/// Driver capability for persisting discovery/runtime hints between daemon runs.
+#[async_trait]
+pub trait DriverRuntimeCacheProvider: Send + Sync {
+    /// Build a driver-scoped cache snapshot from host state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cache serialization fails.
+    async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>>;
+}
+
 /// Factory and capability root for one modular network driver.
 pub trait NetworkDriverFactory: Send + Sync {
     /// Static metadata about the driver.
@@ -657,7 +668,7 @@ pub trait NetworkDriverFactory: Send + Sync {
         descriptor.capabilities.config = self.config().is_some();
         descriptor.capabilities.discovery = self.discovery().is_some();
         descriptor.capabilities.pairing = self.pairing().is_some();
-        descriptor.capabilities.runtime_cache = descriptor.capabilities.discovery;
+        descriptor.capabilities.runtime_cache = self.runtime_cache().is_some();
         descriptor.capabilities.credentials = descriptor.capabilities.pairing;
         descriptor.capabilities.backend_factory = self.has_backend_factory();
         descriptor.capabilities.controls = self.controls().is_some();
@@ -700,6 +711,11 @@ pub trait NetworkDriverFactory: Send + Sync {
 
     /// Control-surface capability, if supported.
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        None
+    }
+
+    /// Runtime cache capability, if supported.
+    fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         None
     }
 }

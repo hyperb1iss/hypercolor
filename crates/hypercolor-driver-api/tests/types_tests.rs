@@ -44,6 +44,7 @@ fn driver_descriptor_converts_to_module_descriptor() {
     assert!(module.capabilities.discovery);
     assert!(module.capabilities.pairing);
     assert!(module.capabilities.backend_factory);
+    assert!(!module.capabilities.runtime_cache);
     assert!(module.capabilities.credentials);
     assert!(!module.capabilities.controls);
 }
@@ -155,6 +156,7 @@ fn network_driver_factory_advertises_control_provider_capability() {
     assert!(!module.capabilities.pairing);
     assert!(!module.capabilities.credentials);
     assert!(!module.capabilities.backend_factory);
+    assert!(!module.capabilities.runtime_cache);
 }
 
 #[test]

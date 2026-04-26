@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
@@ -239,22 +239,8 @@ impl DriverDiscoveryState for DaemonDriverHost {
     }
 
     fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
-        match (driver_id, key) {
-            ("wled", "probe_ips") => {
-                let cached = runtime_state::load_wled_probe_ips(&self.runtime_state_path)?;
-                Ok(Some(
-                    serde_json::to_value(cached)
-                        .context("failed to serialize cached WLED probe IPs")?,
-                ))
-            }
-            ("wled", "probe_targets") => {
-                let cached = runtime_state::load_wled_probe_targets(&self.runtime_state_path)?;
-                Ok(Some(serde_json::to_value(cached).context(
-                    "failed to serialize cached WLED probe targets",
-                )?))
-            }
-            _ => Ok(None),
-        }
+        runtime_state::load_driver_cached_json(&self.runtime_state_path, driver_id, key)
+            .map_err(Into::into)
     }
 }
 

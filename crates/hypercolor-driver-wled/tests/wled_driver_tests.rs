@@ -110,6 +110,7 @@ fn wled_factory_advertises_control_surface_capability() {
     assert!(descriptor.capabilities.controls);
     assert!(descriptor.capabilities.discovery);
     assert!(descriptor.capabilities.backend_factory);
+    assert!(descriptor.capabilities.runtime_cache);
 }
 
 #[test]

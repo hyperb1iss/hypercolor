@@ -839,9 +839,11 @@ pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
         snapshot.active_layout_id = Some(spatial.layout().id.clone());
     }
     snapshot.global_brightness = current_global_brightness(&state.power_state);
-    snapshot.wled_probe_ips = runtime_state::collect_wled_probe_ips(&state.device_registry).await;
-    snapshot.wled_probe_targets =
-        runtime_state::collect_wled_probe_targets(&state.device_registry).await;
+    snapshot.driver_runtime_cache = runtime_state::collect_driver_runtime_cache(
+        state.driver_registry.as_ref(),
+        state.driver_host.as_ref(),
+    )
+    .await;
 
     if let Err(error) = save_scene_store_snapshot(state).await {
         warn!(%error, "Failed to persist scene store before runtime snapshot save");
