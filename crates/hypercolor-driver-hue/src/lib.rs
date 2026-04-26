@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient, HueScanner};
 pub use hypercolor_core::device::hue::{HueConfig, HueKnownBridge};
-use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
@@ -307,18 +307,18 @@ pub async fn pair_hue_bridge_at_ip(
     };
 
     let bridge_identity = client.bridge_identity().await.ok();
-    let credentials = Credentials::HueBridge {
-        api_key: pair_result.api_key,
-        client_key: pair_result.client_key,
-    };
+    let credentials = serde_json::json!({
+        "api_key": pair_result.api_key,
+        "client_key": pair_result.client_key,
+    });
 
     if let Some(identity) = bridge_identity.as_ref() {
         credential_store
-            .store(&format!("hue:{}", identity.bridge_id), credentials.clone())
+            .store_json(&format!("hue:{}", identity.bridge_id), credentials.clone())
             .await?;
     }
     credential_store
-        .store(&format!("hue:ip:{bridge_ip}"), credentials)
+        .store_json(&format!("hue:ip:{bridge_ip}"), credentials)
         .await?;
 
     Ok(Some(StoredHuePairingResult {
@@ -347,10 +347,18 @@ async fn hue_credentials_present(
     metadata: Option<&HashMap<String, String>>,
 ) -> bool {
     for key in hue_credential_keys(metadata) {
-        if matches!(
-            credential_store.get(&key).await,
-            Some(Credentials::HueBridge { .. })
-        ) {
+        let Some(credentials) = credential_store.get_json(&key).await else {
+            continue;
+        };
+        if credentials
+            .get("api_key")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && credentials
+                .get("client_key")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        {
             return true;
         }
     }

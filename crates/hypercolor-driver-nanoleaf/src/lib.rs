@@ -8,7 +8,7 @@ use hypercolor_core::device::nanoleaf::{
     DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
 };
 pub use hypercolor_core::device::nanoleaf::{NanoleafConfig, NanoleafKnownDevice};
-use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
@@ -299,17 +299,17 @@ pub async fn pair_nanoleaf_device_at_ip(
         return Ok(None);
     };
 
-    let credentials = Credentials::Nanoleaf {
-        auth_token: pair_result.auth_token,
-    };
+    let credentials = serde_json::json!({
+        "auth_token": pair_result.auth_token,
+    });
     credential_store
-        .store(
+        .store_json(
             &format!("nanoleaf:{}", pair_result.device_key),
             credentials.clone(),
         )
         .await?;
     credential_store
-        .store(&format!("nanoleaf:ip:{device_ip}"), credentials)
+        .store_json(&format!("nanoleaf:ip:{device_ip}"), credentials)
         .await?;
 
     Ok(Some(StoredNanoleafPairingResult {
@@ -334,10 +334,14 @@ async fn nanoleaf_credentials_present(
     metadata: Option<&HashMap<String, String>>,
 ) -> bool {
     for key in nanoleaf_credential_keys(metadata) {
-        if matches!(
-            credential_store.get(&key).await,
-            Some(Credentials::Nanoleaf { .. })
-        ) {
+        let Some(credentials) = credential_store.get_json(&key).await else {
+            continue;
+        };
+        if credentials
+            .get("auth_token")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        {
             return true;
         }
     }

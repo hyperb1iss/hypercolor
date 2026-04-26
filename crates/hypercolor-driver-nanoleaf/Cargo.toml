@@ -17,3 +17,4 @@ hypercolor-driver-api = { workspace = true }
 hypercolor-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+serde_json = { workspace = true }
