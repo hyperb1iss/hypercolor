@@ -18,6 +18,7 @@ alias c := check
 alias t := test
 alias l := lint
 alias f := fmt
+alias py := python-verify
 
 # ─── Core ─────────────────────────────────────────────────
 
@@ -44,6 +45,37 @@ release-bin *args='':
 # Type-check without building
 check *args='':
     ./scripts/cargo-cache-build.sh cargo check {{ workspace_args }} {{ args }}
+
+# ─── Python Client ────────────────────────────────────────
+
+# Sync Python client dependencies
+python-sync:
+    cd python && uv sync
+
+# Lint the Python client with Ruff
+python-lint:
+    cd python && uv run ruff check .
+
+# Format-check the Python client with Ruff
+python-fmt-check:
+    cd python && uv run ruff format --check .
+
+# Apply Python client Ruff fixes
+python-fix:
+    cd python && uv run ruff check --fix .
+    cd python && uv run ruff format .
+
+# Type-check the Python client with ty
+python-typecheck:
+    cd python && uv run ty check
+
+# Test the Python client
+python-test:
+    cd python && uv run pytest
+
+# Run the full Python client verification suite
+python-verify: python-lint python-fmt-check python-typecheck python-test
+    @echo '✅ Python checks passed'
 
 # ─── Testing ──────────────────────────────────────────────
 

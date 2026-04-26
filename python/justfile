@@ -1,0 +1,40 @@
+# Hypercolor Python client commands
+
+set dotenv-load := false
+
+[private]
+default:
+    @just --list
+
+# Sync project dependencies
+sync:
+    uv sync
+
+# Run Ruff lint checks
+lint:
+    uv run ruff check .
+
+# Apply Ruff lint fixes and formatting
+fix:
+    uv run ruff check --fix .
+    uv run ruff format .
+
+# Check Ruff formatting
+fmt-check:
+    uv run ruff format --check .
+
+# Format Python sources
+fmt:
+    uv run ruff format .
+
+# Type-check with ty
+typecheck:
+    uv run ty check
+
+# Run pytest
+test:
+    uv run pytest
+
+# Run the full Python verification suite
+verify: lint fmt-check typecheck test
+    @echo '✅ Python checks passed'

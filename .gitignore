@@ -2,6 +2,19 @@
 /target
 **/*.rs.bk
 
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ty/
+.coverage
+.coverage.*
+htmlcov/
+python/.venv/
+python/dist/
+python/*.egg-info/
+
 # IDE
 .idea/
 .vscode/

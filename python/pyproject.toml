@@ -1,0 +1,155 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hypercolor"
+version = "0.1.0"
+description = "Async Python client and CLI for the Hypercolor daemon"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.13"
+authors = [{ name = "Stefanie Jane", email = "stef@hyperbliss.tech" }]
+keywords = ["hypercolor", "rgb", "lighting", "cli", "websocket"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "httpx>=0.28.1",
+    "msgspec>=0.21.1",
+    "rich>=15.0.0",
+    "typer>=0.24.2",
+    "websockets>=16.0",
+]
+
+[dependency-groups]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+    { include-group = "types" },
+]
+lint = [
+    "ruff>=0.15.12",
+]
+test = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
+]
+types = [
+    "ty>=0.0.32",
+]
+
+[project.urls]
+Homepage = "https://github.com/hyperb1iss/hypercolor"
+Repository = "https://github.com/hyperb1iss/hypercolor/tree/main/python"
+Issues = "https://github.com/hyperb1iss/hypercolor/issues"
+
+[project.scripts]
+hypercolor = "hypercolor.cli.app:run"
+hyper = "hypercolor.cli.app:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hypercolor"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/README.md", "/LICENSE"]
+
+[tool.uv]
+package = true
+default-groups = ["dev"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "ASYNC",
+    "B",
+    "BLE",
+    "C4",
+    "DTZ",
+    "E",
+    "ERA",
+    "F",
+    "G",
+    "I",
+    "N",
+    "PL",
+    "PT",
+    "RET",
+    "RSE",
+    "RUF",
+    "S",
+    "SIM",
+    "TRY",
+    "UP",
+    "W",
+]
+ignore = [
+    "COM812",
+    "E501",
+    "ISC001",
+    "PLR0913",
+    "PLR2004",
+    "S101",
+    "TRY003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/hypercolor/cli/app.py" = ["B008"]
+"tests/**/*.py" = ["PLR2004", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hypercolor"]
+combine-as-imports = true
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["src/**/*.py", "tests/**/*.py"]
+
+[tool.ty.terminal]
+output-format = "concise"
+
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+possibly-unresolved-reference = "warn"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "-v",
+]
+filterwarnings = [
+    "error",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
