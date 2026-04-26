@@ -1,0 +1,30 @@
+[package]
+name = "hypercolor-driver-builtin"
+description = "Built-in driver bundle for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["hue", "nanoleaf"]
+hue = ["dep:hypercolor-driver-hue"]
+nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
+
+[dependencies]
+hypercolor-core = { path = "../hypercolor-core", default-features = false }
+hypercolor-driver-api = { workspace = true }
+hypercolor-driver-hue = { workspace = true, optional = true }
+hypercolor-driver-nanoleaf = { workspace = true, optional = true }
+hypercolor-driver-wled = { workspace = true }
+hypercolor-network = { workspace = true }
+hypercolor-types = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

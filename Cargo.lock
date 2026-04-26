@@ -4472,9 +4472,7 @@ dependencies = [
  "httpdate",
  "hypercolor-core",
  "hypercolor-driver-api",
- "hypercolor-driver-hue",
- "hypercolor-driver-nanoleaf",
- "hypercolor-driver-wled",
+ "hypercolor-driver-builtin",
  "hypercolor-hal",
  "hypercolor-leptos-ext",
  "hypercolor-network",
@@ -4530,6 +4528,21 @@ dependencies = [
  "serde_json",
  "tracing",
  "utoipa",
+]
+
+[[package]]
+name = "hypercolor-driver-builtin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hypercolor-core",
+ "hypercolor-driver-api",
+ "hypercolor-driver-hue",
+ "hypercolor-driver-nanoleaf",
+ "hypercolor-driver-wled",
+ "hypercolor-network",
+ "hypercolor-types",
+ "tempfile",
 ]
 
 [[package]]

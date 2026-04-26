@@ -114,6 +114,7 @@ hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
+hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default-features = false }
 hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue" }
 hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf" }
 hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled" }

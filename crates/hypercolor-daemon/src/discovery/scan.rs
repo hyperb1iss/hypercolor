@@ -20,17 +20,17 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 #[cfg(feature = "hue")]
-use hypercolor_driver_hue::HueConfig;
+use hypercolor_driver_builtin::HueConfig;
 #[cfg(feature = "hue")]
-use hypercolor_driver_hue::HueKnownBridge;
+use hypercolor_driver_builtin::HueKnownBridge;
 #[cfg(feature = "nanoleaf")]
-use hypercolor_driver_nanoleaf::NanoleafConfig;
+use hypercolor_driver_builtin::NanoleafConfig;
 #[cfg(feature = "nanoleaf")]
-use hypercolor_driver_nanoleaf::NanoleafKnownDevice;
+use hypercolor_driver_builtin::NanoleafKnownDevice;
 
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_driver_api::DriverTrackedDevice;
-use hypercolor_driver_wled::WledConfig;
+use hypercolor_driver_builtin::WledConfig;
 
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{

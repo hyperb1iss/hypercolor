@@ -29,8 +29,7 @@ use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_driver_hue::{HueConfig, HueKnownBridge};
-use hypercolor_driver_wled::WledConfig;
+use hypercolor_driver_builtin::{HueConfig, HueKnownBridge, WledConfig};
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
