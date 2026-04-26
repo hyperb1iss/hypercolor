@@ -4,7 +4,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{devices, effects, envelope, system};
+use crate::api::{devices, drivers, effects, envelope, system};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -12,6 +12,7 @@ use crate::api::{devices, effects, envelope, system};
         system::health_check,
         system::get_server,
         system::get_status,
+        drivers::list_drivers,
         devices::list_devices,
         devices::get_device,
         effects::list_effects,
@@ -27,6 +28,7 @@ use crate::api::{devices, effects, envelope, system};
             envelope::ApiErrorResponse,
             envelope::ApiResponse<system::SystemStatus>,
             envelope::ApiResponse<system::ServerInfo>,
+            envelope::ApiResponse<drivers::DriverListResponse>,
             envelope::ApiResponse<devices::DeviceListResponse>,
             envelope::ApiResponse<devices::DeviceSummary>,
             envelope::ApiResponse<effects::EffectListResponse>,
@@ -43,6 +45,8 @@ use crate::api::{devices, effects, envelope, system};
             system::ServerInfo,
             system::HealthChecks,
             system::HealthResponse,
+            drivers::DriverListResponse,
+            drivers::DriverSummary,
             devices::DeviceListResponse,
             devices::DeviceSummary,
             devices::ZoneSummary,
@@ -64,6 +68,12 @@ use crate::api::{devices, effects, envelope, system};
             hypercolor_driver_api::PairingFieldDescriptor,
             hypercolor_driver_api::PairingDescriptor,
             hypercolor_driver_api::DeviceAuthSummary,
+            hypercolor_types::device::DriverModuleKind,
+            hypercolor_types::device::DriverTransportKind,
+            hypercolor_types::device::DriverCapabilitySet,
+            hypercolor_types::device::DeviceClassHint,
+            hypercolor_types::device::DriverPresentation,
+            hypercolor_types::device::DriverModuleDescriptor,
             hypercolor_types::server::ServerIdentity,
             hypercolor_types::effect::GradientStop,
             hypercolor_types::effect::ControlType,
@@ -78,6 +88,7 @@ use crate::api::{devices, effects, envelope, system};
     ),
     tags(
         (name = "system", description = "Daemon identity, health, and status"),
+        (name = "drivers", description = "Driver module inventory and capabilities"),
         (name = "devices", description = "Tracked device inventory"),
         (name = "effects", description = "Effect catalog and runtime control"),
     ),

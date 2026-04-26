@@ -1680,6 +1680,41 @@ async fn list_devices_returns_empty_list() {
 }
 
 #[tokio::test]
+async fn list_drivers_returns_registered_module_descriptors() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let items = json["data"]["items"]
+        .as_array()
+        .expect("drivers response should include items");
+
+    let wled = items
+        .iter()
+        .find(|item| item["descriptor"]["id"] == "wled")
+        .expect("WLED module descriptor should be present");
+    assert_eq!(wled["descriptor"]["module_kind"], "network");
+    assert_eq!(
+        wled["descriptor"]["transports"],
+        serde_json::json!(["network"])
+    );
+    assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
+    assert_eq!(wled["descriptor"]["capabilities"]["backend_factory"], true);
+    assert_eq!(wled["enabled"], true);
+    assert_eq!(wled["config_key"], "drivers.wled");
+}
+
+#[tokio::test]
 async fn list_devices_includes_structured_zone_topology_hints() {
     let state = Arc::new(isolated_state());
     let id = DeviceId::new();

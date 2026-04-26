@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 // ── DeviceId ──────────────────────────────────────────────────────────────
@@ -316,7 +317,7 @@ pub enum ConnectionType {
 // ── Driver Metadata ──────────────────────────────────────────────────────
 
 /// High-level module category used for driver registry introspection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DriverModuleKind {
     /// Driver owns network discovery, pairing, and output.
@@ -333,7 +334,7 @@ pub enum DriverModuleKind {
 }
 
 /// API-facing transport category for a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DriverTransportKind {
     /// IP network transport.
@@ -371,7 +372,7 @@ impl From<ConnectionType> for DriverTransportKind {
 }
 
 /// Capability flags exposed by a driver module.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DriverCapabilitySet {
     /// Exposes driver-scoped configuration.
     pub config: bool,
@@ -416,7 +417,7 @@ impl DriverCapabilitySet {
 }
 
 /// Presentation hint for devices owned by a driver module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceClassHint {
     /// Keyboard-like device.
@@ -445,7 +446,7 @@ pub enum DeviceClassHint {
 }
 
 /// API and UI presentation metadata for a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DriverPresentation {
     /// Human-readable driver label.
     pub label: String,
@@ -472,7 +473,7 @@ pub struct DriverPresentation {
 }
 
 /// Stable module descriptor for native and future Wasm driver registries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DriverModuleDescriptor {
     /// Stable driver identifier.
     pub id: String,

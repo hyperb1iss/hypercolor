@@ -11,6 +11,7 @@ pub mod control_values;
 pub mod devices;
 pub mod diagnose;
 pub mod displays;
+pub mod drivers;
 pub mod effects;
 pub mod envelope;
 pub mod layouts;
@@ -879,6 +880,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let api = Router::new()
         // ── Devices ──────────────────────────────────────────────────
         .route("/devices", axum::routing::get(devices::list_devices))
+        .route("/drivers", axum::routing::get(drivers::list_drivers))
         .route(
             "/devices/discover",
             axum::routing::post(devices::discover_devices),
