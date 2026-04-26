@@ -295,6 +295,7 @@ fi
 
 if [[ "${IS_LINUX}" -eq 1 ]]; then
   cp packaging/systemd/user/hypercolor.service "${DIST_DIR}/lib/systemd/user/"
+  cp packaging/systemd/user/hypercolor.service.system "${DIST_DIR}/lib/systemd/user/"
   cp udev/99-hypercolor.rules "${DIST_DIR}/lib/udev/rules.d/"
   cp packaging/modules-load/i2c-dev.conf "${DIST_DIR}/etc/modules-load.d/"
 fi

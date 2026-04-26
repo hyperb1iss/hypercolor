@@ -14,7 +14,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   # System deps shared across Linux jobs
@@ -41,8 +41,8 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      python: ${{ steps.filter.outputs.python }}
+      rust: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || steps.filter.outputs.rust }}
+      python: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || steps.filter.outputs.python }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
@@ -436,7 +436,7 @@ jobs:
   # ── Build Release Tarballs ────────────────────────────────────
   build-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust-check, rust-test, rust-deny, sdk, ui, web-assets]
+    needs: [rust-check, rust-test, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -474,11 +474,10 @@ jobs:
           -p hypercolor-daemon --features servo
           --target ${{ matrix.rust-target }}
 
-      - name: Build CLI + TUI + tray
+      - name: Build CLI + tray
         run: >-
           cargo build --release --locked
           -p hypercolor-cli
-          -p hypercolor-tui
           -p hypercolor-tray
           --target ${{ matrix.rust-target }}
 
@@ -506,10 +505,11 @@ jobs:
           mkdir -p "${DIST}"/share/fish/vendor_completions.d
 
           # Binaries
-          for bin in hypercolor hyper hypercolor-tray hypercolor-tui; do
-            cp "${REL}/${bin}" "${DIST}/bin/"
+          for bin in hypercolor-daemon hypercolor hypercolor-tray; do
+            install -m755 "${REL}/${bin}" "${DIST}/bin/${bin}"
           done
-          cp packaging/bin/hypercolor-open "${DIST}/bin/"
+          install -m755 packaging/bin/hypercolor-tui "${DIST}/bin/"
+          install -m755 packaging/bin/hypercolor-open "${DIST}/bin/"
           chmod 755 "${DIST}/bin/"*
 
           # Web assets
@@ -531,15 +531,16 @@ jobs:
 
           # Shell completions (host builds only)
           if [ "${{ matrix.rust-target }}" = "$(rustc -vV | sed -n 's/host: //p')" ]; then
-            "${DIST}/bin/hyper" completions bash > "${DIST}/share/bash-completion/completions/hyper" || true
-            "${DIST}/bin/hyper" completions zsh  > "${DIST}/share/zsh/site-functions/_hyper" || true
-            "${DIST}/bin/hyper" completions fish > "${DIST}/share/fish/vendor_completions.d/hyper.fish" || true
+            "${DIST}/bin/hypercolor" completions bash > "${DIST}/share/bash-completion/completions/hypercolor"
+            "${DIST}/bin/hypercolor" completions zsh  > "${DIST}/share/zsh/site-functions/_hypercolor"
+            "${DIST}/bin/hypercolor" completions fish > "${DIST}/share/fish/vendor_completions.d/hypercolor.fish"
           fi
 
           # Linux integration
           if [ "${{ runner.os }}" = "Linux" ]; then
             mkdir -p "${DIST}"/{lib/systemd/user,lib/udev/rules.d,etc/modules-load.d}
             cp packaging/systemd/user/hypercolor.service "${DIST}/lib/systemd/user/"
+            cp packaging/systemd/user/hypercolor.service.system "${DIST}/lib/systemd/user/"
             cp udev/99-hypercolor.rules "${DIST}/lib/udev/rules.d/"
             cp packaging/modules-load/i2c-dev.conf "${DIST}/etc/modules-load.d/"
           fi

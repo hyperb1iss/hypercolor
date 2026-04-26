@@ -233,10 +233,16 @@ do_install() {
   # macOS launchd
   if [[ -f "${src}/share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist" ]]; then
     local agents_dir="${HOME}/Library/LaunchAgents"
+    local log_dir="${HOME}/Library/Logs/hypercolor"
+    local plist
     mkdir -p "${agents_dir}"
-    sed "s|~/.local/bin/hypercolor-daemon|${bin_dir}/hypercolor-daemon|g" \
-      "${src}/share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist" \
-      > "${agents_dir}/tech.hyperbliss.hypercolor.plist"
+    mkdir -p "${log_dir}"
+    plist="$(<"${src}/share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist")"
+    plist="${plist//@BIN_DIR@/${bin_dir}}"
+    plist="${plist//@UI_DIR@/${share_dir}/hypercolor/ui}"
+    plist="${plist//@LOG_DIR@/${log_dir}}"
+    plist="${plist//~\/.local\/bin\/hypercolor-daemon/${bin_dir}/hypercolor-daemon}"
+    printf "%s\n" "$plist" > "${agents_dir}/tech.hyperbliss.hypercolor.plist"
     info "Launchd plist installed — load with: launchctl load ${agents_dir}/tech.hyperbliss.hypercolor.plist"
   fi
 

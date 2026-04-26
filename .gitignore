@@ -46,6 +46,7 @@ bun.lock
 /effects/screenshots/drafts/
 
 # Trunk dev output
+crates/hypercolor-ui/dist/
 crates/hypercolor-ui/.dist-dev/
 
 # Zola docs build output
@@ -60,7 +61,7 @@ site/out/
 .tmp
 
 # Distribution
-dist/
+/dist/
 
 # Claude vomit
 .agents/scheduled_tasks.lock

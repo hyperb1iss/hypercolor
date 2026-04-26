@@ -433,50 +433,21 @@ install_launchd_agent() {
         return
     fi
 
+    local source="${RELEASE_DIR}/share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist"
+    if [[ ! -f "$source" ]]; then
+        warn "Release payload does not contain a launchd plist, skipping"
+        return
+    fi
+
     mkdir -p "$LAUNCHD_DIR"
     mkdir -p "$LOG_DIR"
 
-    cat > "$LAUNCHD_PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>tech.hyperbliss.hypercolor</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${INSTALL_DIR}/hypercolor</string>
-        <string>--ui-dir</string>
-        <string>${UI_DIR}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>ThrottleInterval</key>
-    <integer>3</integer>
-    <key>StandardOutPath</key>
-    <string>~/Library/Logs/hypercolor/hypercolor.log</string>
-    <key>StandardErrorPath</key>
-    <string>~/Library/Logs/hypercolor/hypercolor.log</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HYPERCOLOR_LOG</key>
-        <string>info</string>
-        <key>PATH</key>
-        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${INSTALL_DIR}</string>
-    </dict>
-    <key>ProcessType</key>
-    <string>Standard</string>
-    <key>LowPriorityBackgroundIO</key>
-    <true/>
-</dict>
-</plist>
-PLIST
+    local plist
+    plist="$(<"$source")"
+    plist="${plist//@BIN_DIR@/${INSTALL_DIR}}"
+    plist="${plist//@UI_DIR@/${UI_DIR}}"
+    plist="${plist//@LOG_DIR@/${LOG_DIR}}"
+    printf "%s\n" "$plist" > "$LAUNCHD_PLIST"
 
     success "Installed launchd plist to ${LAUNCHD_PLIST}"
 

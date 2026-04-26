@@ -8,7 +8,9 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>~/.local/bin/hypercolor-daemon</string>
+        <string>@BIN_DIR@/hypercolor-daemon</string>
+        <string>--ui-dir</string>
+        <string>@UI_DIR@</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -24,17 +26,17 @@
     <integer>3</integer>
 
     <key>StandardOutPath</key>
-    <string>~/Library/Logs/hypercolor/hypercolor.log</string>
+    <string>@LOG_DIR@/hypercolor.log</string>
 
     <key>StandardErrorPath</key>
-    <string>~/Library/Logs/hypercolor/hypercolor.log</string>
+    <string>@LOG_DIR@/hypercolor.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>HYPERCOLOR_LOG</key>
         <string>info</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:~/.local/bin</string>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:@BIN_DIR@</string>
     </dict>
 
     <key>ProcessType</key>

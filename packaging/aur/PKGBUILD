@@ -2,7 +2,7 @@
 # https://github.com/hyperb1iss/hypercolor
 
 pkgname=hypercolor-bin
-pkgver=0.2.0
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='Open-source RGB lighting orchestration engine for Linux'
 arch=('x86_64' 'aarch64')
@@ -78,12 +78,9 @@ package() {
   install -Dm644 share/fish/vendor_completions.d/hypercolor.fish \
     "${pkgdir}/usr/share/fish/vendor_completions.d/hypercolor.fish"
 
-  # Systemd user service (rewrite paths for system-wide install)
-  sed -e 's|%h/.local/bin/hypercolor-daemon|/usr/bin/hypercolor-daemon|g' \
-      -e 's|%h/.local/share/hypercolor|/usr/share/hypercolor|g' \
-    lib/systemd/user/hypercolor.service \
-    > "${pkgdir}/usr/lib/systemd/user/hypercolor.service"
-  chmod 644 "${pkgdir}/usr/lib/systemd/user/hypercolor.service"
+  # Systemd user service with system-package paths
+  install -Dm644 lib/systemd/user/hypercolor.service.system \
+    "${pkgdir}/usr/lib/systemd/user/hypercolor.service"
 
   # udev rules
   install -Dm644 lib/udev/rules.d/99-hypercolor.rules \
