@@ -278,7 +278,27 @@ pub fn resolve_backends(
                     continue;
                 }
             }
-            DiscoveryBackend::Usb | DiscoveryBackend::SmBus => {}
+            DiscoveryBackend::Usb => {
+                if crate::network::enabled_hal_driver_ids(config).is_empty() {
+                    if explicit_request {
+                        return Err(
+                            "Discovery backend 'usb' has no enabled HAL driver modules".to_owned()
+                        );
+                    }
+                    continue;
+                }
+            }
+            DiscoveryBackend::SmBus => {
+                if !crate::network::hal_driver_enabled(config, "asus") {
+                    if explicit_request {
+                        return Err(
+                            "Discovery backend 'smbus' is disabled by config (drivers.asus.enabled=false)"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+            }
         }
 
         out.push(backend);
@@ -426,6 +446,20 @@ mod tests {
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("hue must fail");
         assert!(error.contains("disabled"));
+    }
+
+    #[test]
+    fn resolve_backends_rejects_disabled_smbus_hal_driver() {
+        let state = builtin_registry();
+        let mut cfg = HypercolorConfig::default();
+        cfg.drivers.insert(
+            "asus".to_owned(),
+            hypercolor_types::config::DriverConfigEntry::disabled(Default::default()),
+        );
+        let requested = vec!["smbus".to_owned()];
+        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+            .expect_err("smbus must fail when ASUS HAL module is disabled");
+        assert!(error.contains("drivers.asus.enabled=false"));
     }
 
     #[test]

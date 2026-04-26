@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::asus::{
     ASUS_VID, AURA_REPORT_ID, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
@@ -792,6 +794,29 @@ fn by_vendor_returns_only_razer_entries() {
             .iter()
             .all(|descriptor| descriptor.vendor_id == RAZER_VENDOR_ID)
     );
+}
+
+#[test]
+fn lookup_filters_by_enabled_hal_driver_ids() {
+    let nollie_only = BTreeSet::from(["nollie".to_owned()]);
+    let razer_only = BTreeSet::from(["razer".to_owned()]);
+
+    let enabled = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+        NOLLIE_VENDOR_ID,
+        PID_NOLLIE_1,
+        None,
+        Some(&nollie_only),
+    )
+    .expect("enabled Nollie descriptor should resolve");
+    assert_eq!(enabled.family, DeviceFamily::Nollie);
+
+    let disabled = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+        NOLLIE_VENDOR_ID,
+        PID_NOLLIE_1,
+        None,
+        Some(&razer_only),
+    );
+    assert!(disabled.is_none());
 }
 
 #[test]

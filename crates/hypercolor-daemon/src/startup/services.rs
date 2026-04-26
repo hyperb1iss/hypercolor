@@ -436,9 +436,14 @@ impl DaemonState {
                     hypercolor_core::device::BlocksBackend::new(socket_path),
                 ));
             }
-            backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
+            if network::hal_driver_enabled(config, "asus") {
+                backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
+            }
             backend_manager_inner.register_backend(Box::new(
-                UsbBackend::with_protocol_config_store(usb_protocol_configs.clone()),
+                UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
+                    usb_protocol_configs.clone(),
+                    network::enabled_hal_driver_ids(config),
+                ),
             ));
         }
         info!("Device backends registered");

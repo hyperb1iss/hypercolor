@@ -237,7 +237,9 @@ pub async fn execute_discovery_scan(
                 )));
             }
             DiscoveryBackend::Usb => {
-                orchestrator.add_scanner(Box::new(UsbScanner::new()));
+                orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
+                    network::enabled_hal_driver_ids(&config),
+                )));
             }
             DiscoveryBackend::SmBus => {
                 orchestrator.add_scanner(Box::new(SmBusScanner::new()));

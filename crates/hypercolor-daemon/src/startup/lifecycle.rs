@@ -639,13 +639,27 @@ impl DaemonState {
                         event = hotplug_rx.recv() => {
                             let run_usb_scan = match event {
                                 Ok(UsbHotplugEvent::Arrived { vendor_id, product_id, descriptor }) => {
-                                    info!(
-                                        vendor_id,
-                                        product_id,
-                                        device = descriptor.name,
-                                        "USB hotplug arrival detected"
-                                    );
-                                    true
+                                    if crate::network::hal_driver_enabled(
+                                        &config,
+                                        descriptor.family.id().as_ref(),
+                                    ) {
+                                        info!(
+                                            vendor_id,
+                                            product_id,
+                                            device = descriptor.name,
+                                            "USB hotplug arrival detected"
+                                        );
+                                        true
+                                    } else {
+                                        debug!(
+                                            vendor_id,
+                                            product_id,
+                                            driver_id = %descriptor.family.id(),
+                                            device = descriptor.name,
+                                            "Ignoring USB hotplug arrival for disabled HAL driver"
+                                        );
+                                        false
+                                    }
                                 }
                                 Ok(UsbHotplugEvent::Removed { vendor_id, product_id }) => {
                                     info!(vendor_id, product_id, "USB hotplug removal detected");

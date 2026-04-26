@@ -1,6 +1,6 @@
 //! USB scanner backed by the HAL protocol database.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
@@ -13,13 +13,25 @@ use hypercolor_types::device::{
 use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 /// USB transport scanner that discovers HAL-backed devices by VID/PID.
-pub struct UsbScanner;
+pub struct UsbScanner {
+    enabled_driver_ids: Option<BTreeSet<String>>,
+}
 
 impl UsbScanner {
     /// Create a USB scanner.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            enabled_driver_ids: None,
+        }
+    }
+
+    /// Create a USB scanner limited to enabled HAL driver module IDs.
+    #[must_use]
+    pub fn with_enabled_driver_ids(enabled_driver_ids: BTreeSet<String>) -> Self {
+        Self {
+            enabled_driver_ids: Some(enabled_driver_ids),
+        }
     }
 
     fn build_device_info(
@@ -101,9 +113,12 @@ impl TransportScanner for UsbScanner {
             let product_id = usb.product_id();
             let firmware_hint = usb.product_string();
 
-            let Some(descriptor) =
-                ProtocolDatabase::lookup_with_firmware(vendor_id, product_id, firmware_hint)
-            else {
+            let Some(descriptor) = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+                vendor_id,
+                product_id,
+                firmware_hint,
+                self.enabled_driver_ids.as_ref(),
+            ) else {
                 continue;
             };
 

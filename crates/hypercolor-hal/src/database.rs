@@ -154,10 +154,32 @@ impl ProtocolDatabase {
         product_id: u16,
         firmware: Option<&str>,
     ) -> Option<&'static DeviceDescriptor> {
+        Self::lookup_with_firmware_for_driver_ids(vendor_id, product_id, firmware, None)
+    }
+
+    /// Lookup a descriptor by `(VID, PID)`, firmware string, and optional
+    /// enabled driver module IDs.
+    ///
+    /// When `enabled_driver_ids` is provided, descriptors whose family ID is
+    /// absent are ignored.
+    #[must_use]
+    pub fn lookup_with_firmware_for_driver_ids(
+        vendor_id: u16,
+        product_id: u16,
+        firmware: Option<&str>,
+        enabled_driver_ids: Option<&BTreeSet<String>>,
+    ) -> Option<&'static DeviceDescriptor> {
         let candidates = MAP_BY_VID_PID.get(&(vendor_id, product_id))?;
+        let driver_enabled = |descriptor: &DeviceDescriptor| {
+            enabled_driver_ids.is_none_or(|ids| ids.contains(descriptor.family.id().as_ref()))
+        };
 
         if let Some(firmware) = firmware {
-            for descriptor in candidates {
+            for descriptor in candidates
+                .iter()
+                .copied()
+                .filter(|descriptor| driver_enabled(descriptor))
+            {
                 if descriptor
                     .firmware_predicate
                     .is_some_and(|predicate| predicate(firmware))
@@ -169,9 +191,15 @@ impl ProtocolDatabase {
 
         candidates
             .iter()
-            .find(|descriptor| descriptor.firmware_predicate.is_none())
             .copied()
-            .or_else(|| candidates.first().copied())
+            .filter(|descriptor| driver_enabled(descriptor))
+            .find(|descriptor| descriptor.firmware_predicate.is_none())
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|descriptor| driver_enabled(descriptor))
+            })
     }
 
     /// All known VID/PID pairs used by the scanner filter.

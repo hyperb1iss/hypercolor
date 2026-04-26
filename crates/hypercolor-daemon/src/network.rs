@@ -2,9 +2,12 @@
 
 mod host;
 
+use std::collections::BTreeSet;
+
 use anyhow::Result;
 use hypercolor_core::device::BackendManager;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
+use hypercolor_hal::ProtocolDatabase;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::DriverModuleDescriptor;
@@ -35,6 +38,25 @@ pub fn driver_enabled_with_default(
 #[must_use]
 pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescriptor) -> bool {
     driver_enabled_with_default(config, &descriptor.id, descriptor.default_enabled)
+}
+
+/// Whether a HAL driver module is enabled by the active config.
+#[must_use]
+pub fn hal_driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
+    ProtocolDatabase::module_descriptors()
+        .iter()
+        .find(|descriptor| descriptor.id == driver_id)
+        .is_some_and(|descriptor| module_enabled(config, descriptor))
+}
+
+/// Enabled HAL driver module IDs from the shared protocol catalog.
+#[must_use]
+pub fn enabled_hal_driver_ids(config: &HypercolorConfig) -> BTreeSet<String> {
+    ProtocolDatabase::module_descriptors()
+        .iter()
+        .filter(|descriptor| module_enabled(config, descriptor))
+        .map(|descriptor| descriptor.id.clone())
+        .collect()
 }
 
 /// Config key responsible for enabling a built-in network driver.

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -82,6 +82,34 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
             .discovery()
             .is_some()
     );
+}
+
+#[test]
+fn enabled_hal_driver_ids_honor_driver_config_entries() {
+    let mut config = HypercolorConfig::default();
+    config.drivers.insert(
+        "nollie".to_owned(),
+        DriverConfigEntry::disabled(BTreeMap::new()),
+    );
+
+    let enabled = network::enabled_hal_driver_ids(&config);
+
+    assert!(!enabled.contains("nollie"));
+    assert!(enabled.contains("prismrgb"));
+    assert!(network::hal_driver_enabled(&config, "prismrgb"));
+    assert!(!network::hal_driver_enabled(&config, "nollie"));
+}
+
+#[test]
+fn enabled_hal_driver_ids_include_default_enabled_hal_modules() {
+    let enabled = network::enabled_hal_driver_ids(&HypercolorConfig::default());
+
+    assert!(enabled.is_superset(&BTreeSet::from([
+        "asus".to_owned(),
+        "nollie".to_owned(),
+        "prismrgb".to_owned(),
+        "razer".to_owned(),
+    ])));
 }
 
 struct NullCredentialStore;

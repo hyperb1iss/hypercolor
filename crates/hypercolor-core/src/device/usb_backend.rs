@@ -1,7 +1,7 @@
 //! USB backend that bridges HAL protocols to the core `DeviceBackend` trait.
 
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -301,6 +301,7 @@ pub struct UsbBackend {
     pending: HashMap<DeviceId, PendingUsbDevice>,
     connected: HashMap<DeviceId, UsbDevice>,
     protocol_configs: UsbProtocolConfigStore,
+    enabled_driver_ids: Option<BTreeSet<String>>,
 }
 
 impl UsbBackend {
@@ -314,6 +315,18 @@ impl UsbBackend {
     pub fn with_protocol_config_store(protocol_configs: UsbProtocolConfigStore) -> Self {
         Self {
             protocol_configs,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_protocol_config_store_and_enabled_driver_ids(
+        protocol_configs: UsbProtocolConfigStore,
+        enabled_driver_ids: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            protocol_configs,
+            enabled_driver_ids: Some(enabled_driver_ids),
             ..Self::default()
         }
     }
@@ -1222,7 +1235,12 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
-        let mut scanner = UsbScanner::new();
+        let mut scanner = self
+            .enabled_driver_ids
+            .as_ref()
+            .map_or_else(UsbScanner::new, |ids| {
+                UsbScanner::with_enabled_driver_ids(ids.clone())
+            });
         let discovered = scanner.scan().await?;
 
         self.pending.clear();
