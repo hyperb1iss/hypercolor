@@ -17,6 +17,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.typing import Subprotocol
 
 from .constants import WS_SUBPROTOCOL
+from .ws_protocol import BINARY_MESSAGE_TAGS, CANVAS_FORMAT_TAGS, PREVIEW_CHANNEL_TAGS
 
 type JsonObject = dict[str, Any]
 type EventHandler = Callable[[Any], Any]
@@ -102,6 +103,7 @@ class CanvasData:
     height: int
     format: str
     pixels: bytes
+    channel: str = "canvas"
 
 
 type WsMessage = (
@@ -125,6 +127,7 @@ class HypercolorEventStream:
         self._handlers: dict[str, list[EventHandler]] = defaultdict(list)
         self._frame_handlers: list[EventHandler] = []
         self._spectrum_handlers: list[EventHandler] = []
+        self._canvas_handlers: list[EventHandler] = []
         self._metrics_handlers: list[EventHandler] = []
         self._pending_responses: dict[str, asyncio.Future[CommandResponse]] = {}
         self._send_lock = asyncio.Lock()
@@ -187,6 +190,10 @@ class HypercolorEventStream:
     def on_spectrum(self, handler: EventHandler) -> None:
         """Register a handler for spectrum messages."""
         self._spectrum_handlers.append(handler)
+
+    def on_canvas(self, handler: EventHandler) -> None:
+        """Register a handler for canvas preview messages."""
+        self._canvas_handlers.append(handler)
 
     def on_metrics(self, handler: EventHandler) -> None:
         """Register a handler for metrics messages."""
@@ -292,11 +299,11 @@ class HypercolorEventStream:
     @staticmethod
     def _decode_binary(payload: bytes) -> FrameData | SpectrumData | CanvasData:
         message_type = payload[0]
-        if message_type == 0x01:
+        if message_type == BINARY_MESSAGE_TAGS["led_frame"]:
             return HypercolorEventStream._parse_led_frame(payload)
-        if message_type == 0x02:
+        if message_type == BINARY_MESSAGE_TAGS["spectrum"]:
             return HypercolorEventStream._parse_spectrum(payload)
-        if message_type == 0x03:
+        if message_type in PREVIEW_CHANNEL_TAGS:
             return HypercolorEventStream._parse_canvas(payload)
         msg = f"Unknown Hypercolor binary message type: {message_type:#x}"
         raise RuntimeError(msg)
@@ -321,6 +328,9 @@ class HypercolorEventStream:
                 await _run_handler(handler, message)
         elif isinstance(message, SpectrumData):
             for handler in self._spectrum_handlers:
+                await _run_handler(handler, message)
+        elif isinstance(message, CanvasData):
+            for handler in self._canvas_handlers:
                 await _run_handler(handler, message)
 
     @staticmethod
@@ -370,7 +380,10 @@ class HypercolorEventStream:
         frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
         width, height = struct.unpack_from("<HH", payload, 9)
         format_byte = payload[13]
-        image_format = "rgba" if format_byte == 1 else "rgb"
+        image_format = CANVAS_FORMAT_TAGS.get(format_byte)
+        if image_format is None:
+            msg = f"Unknown Hypercolor canvas format: {format_byte:#x}"
+            raise RuntimeError(msg)
         pixels = payload[14:]
         return CanvasData(
             frame_number=frame_number,
@@ -379,6 +392,7 @@ class HypercolorEventStream:
             height=height,
             format=image_format,
             pixels=pixels,
+            channel=PREVIEW_CHANNEL_TAGS[payload[0]],
         )
 
 

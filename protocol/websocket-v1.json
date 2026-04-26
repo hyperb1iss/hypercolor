@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "protocol": "hypercolor.websocket",
+  "version": "1.0",
+  "subprotocol": "hypercolor-v1",
+  "default_subscriptions": ["events"],
+  "channels": [
+    {
+      "name": "frames",
+      "kind": "binary",
+      "default_fps": 30,
+      "description": "LED color data for subscribed zones."
+    },
+    {
+      "name": "spectrum",
+      "kind": "binary",
+      "default_fps": 30,
+      "description": "Audio FFT spectrum and beat data."
+    },
+    {
+      "name": "events",
+      "kind": "json",
+      "description": "Discrete daemon and render lifecycle events."
+    },
+    {
+      "name": "canvas",
+      "kind": "binary",
+      "default_fps": 15,
+      "description": "Composited preview canvas."
+    },
+    {
+      "name": "screen_canvas",
+      "kind": "binary",
+      "default_fps": 15,
+      "description": "Captured screen-source preview canvas."
+    },
+    {
+      "name": "web_viewport_canvas",
+      "kind": "binary",
+      "default_fps": 15,
+      "description": "Browser viewport effect preview canvas."
+    },
+    {
+      "name": "metrics",
+      "kind": "json",
+      "default_interval_ms": 1000,
+      "description": "Render pipeline performance metrics."
+    },
+    {
+      "name": "device_metrics",
+      "kind": "json",
+      "default_interval_ms": 1000,
+      "description": "Per-device output telemetry."
+    },
+    {
+      "name": "display_preview",
+      "kind": "binary",
+      "default_fps": 15,
+      "description": "Per-display JPEG preview frame stream."
+    }
+  ],
+  "capabilities": [
+    "frames",
+    "spectrum",
+    "events",
+    "canvas",
+    "screen_canvas",
+    "web_viewport_canvas",
+    "metrics",
+    "device_metrics",
+    "display_preview",
+    "commands",
+    "canvas_format_jpeg"
+  ],
+  "json_messages": {
+    "client": ["subscribe", "unsubscribe", "command"],
+    "server": [
+      "hello",
+      "subscribed",
+      "unsubscribed",
+      "event",
+      "metrics",
+      "device_metrics",
+      "backpressure",
+      "error",
+      "response"
+    ]
+  },
+  "binary_messages": [
+    {
+      "name": "led_frame",
+      "tag": 1,
+      "channel": "frames",
+      "layout": [
+        ["u8", "tag"],
+        ["u32_le", "frame_number"],
+        ["u32_le", "timestamp_ms"],
+        ["u8", "zone_count"],
+        ["repeated_zone", "zones"]
+      ]
+    },
+    {
+      "name": "spectrum",
+      "tag": 2,
+      "channel": "spectrum",
+      "layout": [
+        ["u8", "tag"],
+        ["u32_le", "timestamp_ms"],
+        ["u8", "bin_count"],
+        ["f32_le", "level"],
+        ["f32_le", "bass"],
+        ["f32_le", "mid"],
+        ["f32_le", "treble"],
+        ["u8", "beat"],
+        ["f32_le", "beat_confidence"],
+        ["repeated_f32_le", "bins"]
+      ]
+    },
+    {
+      "name": "canvas",
+      "tag": 3,
+      "channel": "canvas",
+      "layout": "preview_frame"
+    },
+    {
+      "name": "screen_canvas",
+      "tag": 5,
+      "channel": "screen_canvas",
+      "layout": "preview_frame"
+    },
+    {
+      "name": "web_viewport_canvas",
+      "tag": 6,
+      "channel": "web_viewport_canvas",
+      "layout": "preview_frame"
+    },
+    {
+      "name": "display_preview",
+      "tag": 7,
+      "channel": "display_preview",
+      "layout": "preview_frame"
+    }
+  ],
+  "preview_frame": {
+    "header_len": 14,
+    "layout": [
+      ["u8", "tag"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["u16_le", "width"],
+      ["u16_le", "height"],
+      ["u8", "format"],
+      ["bytes", "payload"]
+    ],
+    "formats": {
+      "rgb": 0,
+      "rgba": 1,
+      "jpeg": 2
+    }
+  },
+  "channel_config": {
+    "frames": {
+      "fps": { "min": 1, "max": 60, "default": 30 },
+      "format": { "values": ["binary", "json"], "default": "binary" },
+      "zones": { "default": ["all"] }
+    },
+    "spectrum": {
+      "fps": { "min": 1, "max": 60, "default": 30 },
+      "bins": { "values": [8, 16, 32, 64, 128], "default": 64 }
+    },
+    "canvas": {
+      "fps": { "min": 1, "max": 60, "default": 15 },
+      "format": { "values": ["rgb", "rgba", "jpeg"], "default": "rgb" },
+      "width": { "min": 0, "max": 4096, "default": 0 },
+      "height": { "min": 0, "max": 4096, "default": 0 }
+    },
+    "screen_canvas": {
+      "fps": { "min": 1, "max": 60, "default": 15 },
+      "format": { "values": ["rgb", "rgba", "jpeg"], "default": "rgb" },
+      "width": { "min": 0, "max": 4096, "default": 0 },
+      "height": { "min": 0, "max": 4096, "default": 0 }
+    },
+    "web_viewport_canvas": {
+      "fps": { "min": 1, "max": 60, "default": 15 },
+      "format": { "values": ["rgb", "rgba", "jpeg"], "default": "rgb" },
+      "width": { "min": 0, "max": 4096, "default": 0 },
+      "height": { "min": 0, "max": 4096, "default": 0 }
+    },
+    "metrics": {
+      "interval_ms": { "min": 100, "max": 10000, "default": 1000 }
+    },
+    "device_metrics": {
+      "interval_ms": { "min": 100, "max": 10000, "default": 1000 }
+    },
+    "display_preview": {
+      "device_id": { "nullable": true },
+      "fps": { "min": 1, "max": 30, "default": 15 }
+    }
+  }
+}
