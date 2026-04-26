@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_core::device::nanoleaf::{
     DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
@@ -16,11 +16,19 @@ use hypercolor_driver_api::support::{
 };
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFlowKind, TrackedDeviceCtx,
+    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
+    DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    TrackedDeviceCtx, ValidatedControlChanges,
+};
+use hypercolor_types::controls::{
+    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
+    ControlActionResult, ControlAvailabilityExpr, ControlChange, ControlFieldDescriptor,
+    ControlGroupDescriptor, ControlGroupKind, ControlOwner, ControlPersistence,
+    ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
+    ControlVisibility,
 };
 
 const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
@@ -31,6 +39,9 @@ const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
 
 pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("nanoleaf", "Nanoleaf", DriverTransport::Network, true, true);
+
+const FIELD_DEVICE_IPS: &str = "device_ips";
+const FIELD_TRANSITION_TIME: &str = "transition_time";
 
 #[derive(Clone)]
 pub struct NanoleafDriverFactory {
@@ -72,6 +83,10 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
 }
 
 #[async_trait]
@@ -99,6 +114,257 @@ impl DiscoveryCapability for NanoleafDriverFactory {
             .collect();
 
         Ok(DiscoveryResult { devices })
+    }
+}
+
+#[async_trait]
+impl DriverControlProvider for NanoleafDriverFactory {
+    async fn driver_surface(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        Ok(Some(nanoleaf_driver_control_surface(
+            &config.parse_settings::<NanoleafConfig>()?,
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _device: &TrackedDeviceCtx<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        _host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> Result<ValidatedControlChanges> {
+        validate_nanoleaf_driver_changes(target, changes)
+    }
+
+    async fn apply_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> Result<ApplyControlChangesResponse> {
+        let ControlApplyTarget::Driver { driver_id, config } = target else {
+            bail!("Nanoleaf controls cannot apply to device targets");
+        };
+        if *driver_id != DESCRIPTOR.id {
+            bail!("Nanoleaf controls cannot apply to driver '{driver_id}'");
+        }
+
+        let control_host = host
+            .control_host()
+            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+        let mut values = nanoleaf_config_values(&config.parse_settings::<NanoleafConfig>()?);
+        for change in &changes.changes {
+            values.insert(change.field_id.clone(), change.value.clone());
+        }
+        control_host
+            .driver_config_store()
+            .save_driver_values(DESCRIPTOR.id, values.clone())
+            .await?;
+
+        Ok(nanoleaf_apply_response(
+            format!("driver:{}", DESCRIPTOR.id),
+            changes,
+            values,
+        ))
+    }
+
+    async fn invoke_action(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        _input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        bail!("unknown Nanoleaf control action: {action_id}")
+    }
+}
+
+#[must_use]
+pub fn nanoleaf_driver_control_surface(config: &NanoleafConfig) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}", DESCRIPTOR.id),
+        ControlSurfaceScope::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.push(ControlGroupDescriptor {
+        id: "connection".to_owned(),
+        label: "Connection".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Connection,
+        ordering: 0,
+    });
+    document.groups.push(ControlGroupDescriptor {
+        id: "output".to_owned(),
+        label: "Output".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Output,
+        ordering: 10,
+    });
+    document.fields = nanoleaf_driver_control_fields();
+    document.values = nanoleaf_config_values(config);
+    document.revision = nanoleaf_control_revision(&document.values);
+    document
+}
+
+fn validate_nanoleaf_driver_changes(
+    target: &ControlApplyTarget<'_>,
+    changes: &[ControlChange],
+) -> Result<ValidatedControlChanges> {
+    let ControlApplyTarget::Driver { driver_id, .. } = target else {
+        bail!("Nanoleaf controls cannot validate device targets");
+    };
+    if *driver_id != DESCRIPTOR.id {
+        bail!("Nanoleaf controls cannot validate driver '{driver_id}'");
+    }
+
+    let fields = nanoleaf_driver_control_fields()
+        .into_iter()
+        .map(|field| (field.id.clone(), field))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut impacts = Vec::new();
+
+    for change in changes {
+        if !seen.insert(change.field_id.as_str()) {
+            bail!("duplicate Nanoleaf control field: {}", change.field_id);
+        }
+        let field = fields
+            .get(&change.field_id)
+            .ok_or_else(|| anyhow!("unknown Nanoleaf control field: {}", change.field_id))?;
+        field
+            .value_type
+            .validate_value(&change.value)
+            .with_context(|| format!("invalid Nanoleaf control field: {}", change.field_id))?;
+        push_unique_impact(&mut impacts, field.apply_impact.clone());
+    }
+
+    Ok(ValidatedControlChanges {
+        changes: changes.to_vec(),
+        impacts,
+    })
+}
+
+fn nanoleaf_driver_control_fields() -> Vec<ControlFieldDescriptor> {
+    vec![
+        nanoleaf_driver_field(
+            FIELD_DEVICE_IPS,
+            "Device IPs",
+            Some("connection"),
+            ControlValueType::List {
+                item_type: Box::new(ControlValueType::IpAddress),
+                min_items: None,
+                max_items: Some(64),
+            },
+            ApplyImpact::DiscoveryRescan,
+            0,
+        ),
+        nanoleaf_driver_field(
+            FIELD_TRANSITION_TIME,
+            "Transition Time",
+            Some("output"),
+            ControlValueType::Integer {
+                min: Some(0),
+                max: Some(i64::from(u16::MAX)),
+                step: Some(1),
+            },
+            ApplyImpact::BackendRebind,
+            10,
+        ),
+    ]
+}
+
+fn nanoleaf_driver_field(
+    id: &str,
+    label: &str,
+    group_id: Option<&str>,
+    value_type: ControlValueType,
+    apply_impact: ApplyImpact,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: group_id.map(str::to_owned),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadWrite,
+        persistence: ControlPersistence::DriverConfig,
+        apply_impact,
+        visibility: ControlVisibility::Standard,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
+fn nanoleaf_config_values(config: &NanoleafConfig) -> ControlValueMap {
+    ControlValueMap::from([
+        (
+            FIELD_DEVICE_IPS.to_owned(),
+            ControlValue::List(
+                config
+                    .device_ips
+                    .iter()
+                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .collect(),
+            ),
+        ),
+        (
+            FIELD_TRANSITION_TIME.to_owned(),
+            ControlValue::Integer(i64::from(config.transition_time)),
+        ),
+    ])
+}
+
+fn nanoleaf_apply_response(
+    surface_id: String,
+    changes: ValidatedControlChanges,
+    values: ControlValueMap,
+) -> ApplyControlChangesResponse {
+    ApplyControlChangesResponse {
+        surface_id,
+        previous_revision: 0,
+        revision: 0,
+        accepted: changes
+            .changes
+            .into_iter()
+            .map(|change| AppliedControlChange {
+                field_id: change.field_id,
+                value: change.value,
+            })
+            .collect(),
+        rejected: Vec::new(),
+        impacts: changes.impacts,
+        values,
+    }
+}
+
+fn nanoleaf_control_revision(values: &ControlValueMap) -> u64 {
+    values
+        .iter()
+        .flat_map(|(key, value)| [key.as_bytes(), format!("{value:?}").as_bytes()].concat())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
+    if !impacts.contains(&impact) {
+        impacts.push(impact);
     }
 }
 

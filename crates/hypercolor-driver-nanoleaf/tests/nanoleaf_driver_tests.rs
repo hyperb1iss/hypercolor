@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_driver_api::DriverTrackedDevice;
-use hypercolor_driver_nanoleaf::{NanoleafConfig, resolve_nanoleaf_probe_devices_from_sources};
+use hypercolor_driver_nanoleaf::{
+    NanoleafConfig, nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
+};
+use hypercolor_types::controls::{ApplyImpact, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
@@ -65,4 +68,34 @@ fn resolve_nanoleaf_probe_devices_merges_tracked_metadata() {
     assert_eq!(tracked.device_id, "nanoleaf-shapes");
     assert_eq!(tracked.name, "Shapes");
     assert_eq!(tracked.model, "NL42");
+}
+
+#[test]
+fn nanoleaf_driver_control_surface_exposes_typed_config_fields() {
+    let config = NanoleafConfig {
+        device_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 25))],
+        transition_time: 4,
+    };
+
+    let surface = nanoleaf_driver_control_surface(&config);
+
+    assert_eq!(surface.surface_id, "driver:nanoleaf");
+    let ControlValue::List(device_ips) = &surface.values["device_ips"] else {
+        panic!("device IPs should be a list");
+    };
+    assert_eq!(
+        device_ips,
+        &[ControlValue::IpAddress("10.0.0.25".to_owned())]
+    );
+    assert_eq!(surface.values["transition_time"], ControlValue::Integer(4));
+    assert!(surface.fields.iter().any(
+        |field| field.id == "device_ips" && field.apply_impact == ApplyImpact::DiscoveryRescan
+    ));
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "transition_time"
+                && field.apply_impact == ApplyImpact::BackendRebind)
+    );
 }
