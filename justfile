@@ -77,12 +77,20 @@ python-generate *args='':
 python-generate-check:
     cd python && uv run python scripts/generate_openapi_client.py --check
 
+# Generate Python WebSocket protocol constants
+python-ws-protocol-generate:
+    cd python && uv run python scripts/generate_ws_protocol.py
+
+# Verify Python WebSocket protocol constants are current
+python-ws-protocol-check:
+    cd python && uv run python scripts/generate_ws_protocol.py --check
+
 # Test the Python client
 python-test:
     cd python && uv run pytest
 
 # Run the full Python client verification suite
-python-verify: python-lint python-fmt-check python-typecheck python-test
+python-verify: python-lint python-fmt-check python-typecheck python-ws-protocol-check python-test
     @echo '✅ Python checks passed'
 
 # ─── Testing ──────────────────────────────────────────────

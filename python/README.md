@@ -13,6 +13,7 @@ uv sync
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
+uv run python scripts/generate_ws_protocol.py --check
 uv run pytest
 uv run python scripts/generate_openapi_client.py --check
 ```

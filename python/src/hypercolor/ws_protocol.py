@@ -1,4 +1,4 @@
-"""WebSocket protocol constants shared by client helpers."""
+"""Generated WebSocket protocol constants."""
 
 from __future__ import annotations
 
@@ -20,7 +20,19 @@ WS_CHANNELS: Final = (
     "device_metrics",
     "display_preview",
 )
-WS_CAPABILITIES: Final = (*WS_CHANNELS, "commands", "canvas_format_jpeg")
+WS_CAPABILITIES: Final = (
+    "frames",
+    "spectrum",
+    "events",
+    "canvas",
+    "screen_canvas",
+    "web_viewport_canvas",
+    "metrics",
+    "device_metrics",
+    "display_preview",
+    "commands",
+    "canvas_format_jpeg",
+)
 
 BINARY_MESSAGE_TAGS: Final = MappingProxyType(
     {

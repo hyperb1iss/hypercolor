@@ -39,10 +39,18 @@ generate *args='':
 generate-check:
     uv run python scripts/generate_openapi_client.py --check
 
+# Generate Python WebSocket protocol constants
+ws-protocol-generate:
+    uv run python scripts/generate_ws_protocol.py
+
+# Verify Python WebSocket protocol constants are current
+ws-protocol-check:
+    uv run python scripts/generate_ws_protocol.py --check
+
 # Run pytest
 test:
     uv run pytest
 
 # Run the full Python verification suite
-verify: lint fmt-check typecheck test
+verify: lint fmt-check typecheck ws-protocol-check test
     @echo '✅ Python checks passed'
