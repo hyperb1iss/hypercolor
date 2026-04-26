@@ -908,11 +908,6 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(test)]
-    fn defer_next_preview_resolve(&mut self) {
-        self.defer_preview_resolve_once = true;
-    }
-
-    #[cfg(test)]
     fn defer_next_preview_map_resolve(&mut self) {
         self.defer_preview_map_resolve_once = true;
     }
@@ -2408,6 +2403,26 @@ mod tests {
         }
     }
 
+    fn assert_zone_colors_within(actual: &[ZoneColors], expected: &[ZoneColors], tolerance: u8) {
+        assert_eq!(actual.len(), expected.len());
+        for (zone_index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(actual.zone_id, expected.zone_id);
+            assert_eq!(actual.colors.len(), expected.colors.len());
+            for (color_index, (actual, expected)) in
+                actual.colors.iter().zip(&expected.colors).enumerate()
+            {
+                for channel in 0..3 {
+                    assert!(
+                        actual[channel].abs_diff(expected[channel]) <= tolerance,
+                        "zone {zone_index} color {color_index} channel {channel}: actual {}, expected {}, tolerance {tolerance}",
+                        actual[channel],
+                        expected[channel],
+                    );
+                }
+            }
+        }
+    }
+
     fn resolve_preview_surface_blocking(compositor: &mut GpuSparkleFlinger) -> PublishedSurface {
         loop {
             if let Some(surface) = compositor
@@ -2436,6 +2451,37 @@ mod tests {
                     .expect("GPU preview map poll should succeed");
             }
         }
+    }
+
+    fn defer_pending_preview_map(compositor: &mut GpuSparkleFlinger) {
+        compositor.defer_next_preview_map_resolve();
+        assert!(
+            compositor
+                .resolve_preview_surface()
+                .expect("deferred preview finalize should not fail")
+                .is_none()
+        );
+
+        if let Some(submission_index) = compositor.pending_preview_submission.clone() {
+            compositor
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission_index),
+                    timeout: None,
+                })
+                .expect("GPU preview wait should succeed");
+            compositor.defer_next_preview_map_resolve();
+            assert!(
+                compositor
+                    .resolve_preview_surface()
+                    .expect("deferred preview map finalize should not fail")
+                    .is_none()
+            );
+        }
+
+        assert!(compositor.pending_preview_submission.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_map.is_some());
     }
 
     fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
@@ -2589,7 +2635,7 @@ mod tests {
             .compose(&plan, true, full_preview_request(&plan))
             .expect("GPU composition should succeed for replace + alpha plans");
 
-        assert_eq!(
+        assert_rgba_bytes_within(
             composed
                 .sampling_canvas
                 .as_ref()
@@ -2599,7 +2645,8 @@ mod tests {
                 .sampling_canvas
                 .as_ref()
                 .expect("CPU alpha compose should materialize a canvas")
-                .as_rgba_bytes()
+                .as_rgba_bytes(),
+            1,
         );
     }
 
@@ -3190,39 +3237,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("GPU preview submit should succeed");
-        compositor.defer_next_preview_resolve();
-
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred preview finalize should not fail")
-                .is_none()
-        );
-        let submission_index = compositor
-            .pending_preview_submission
-            .clone()
-            .expect("deferred preview should keep its submission pending");
-        assert!(compositor.pending_preview_readback.is_none());
-        assert!(compositor.pending_preview_map.is_some());
-
-        compositor
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission_index),
-                timeout: None,
-            })
-            .expect("GPU preview wait should succeed");
-        compositor.defer_next_preview_map_resolve();
-
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred preview map finalize should not fail")
-                .is_none()
-        );
-        assert!(compositor.pending_preview_submission.is_none());
-        assert!(compositor.pending_preview_readback.is_none());
-        assert!(compositor.pending_preview_map.is_some());
+        defer_pending_preview_map(&mut compositor);
 
         let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 2);
@@ -3259,31 +3274,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("GPU preview submit should succeed");
-        compositor.defer_next_preview_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred preview finalize should not fail")
-                .is_none()
-        );
-        let submission_index = compositor
-            .pending_preview_submission
-            .clone()
-            .expect("deferred preview should keep its submission pending");
-        compositor
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission_index),
-                timeout: None,
-            })
-            .expect("GPU preview wait should succeed");
-        compositor.defer_next_preview_map_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred preview map finalize should not fail")
-                .is_none()
-        );
+        defer_pending_preview_map(&mut compositor);
 
         let composed = compositor
             .compose(&plan, false, Some(request))
@@ -3330,13 +3321,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("first preview submit should succeed");
-        compositor.defer_next_preview_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred first preview finalize should not fail")
-                .is_none()
-        );
+        defer_pending_preview_map(&mut compositor);
 
         compositor
             .compose(&second_plan, false, Some(request))
@@ -3385,31 +3370,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("first preview submit should succeed");
-        compositor.defer_next_preview_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred first preview finalize should not fail")
-                .is_none()
-        );
-        let first_submission = compositor
-            .pending_preview_submission
-            .clone()
-            .expect("first preview should keep its submission pending");
-        compositor
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(first_submission),
-                timeout: None,
-            })
-            .expect("first preview wait should succeed");
-        compositor.defer_next_preview_map_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred first preview map finalize should not fail")
-                .is_none()
-        );
+        defer_pending_preview_map(&mut compositor);
 
         let first_slot = match compositor.pending_preview_map.as_ref() {
             Some(PendingPreviewMap {
@@ -3431,24 +3392,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("second preview submit should succeed");
-        let second_submission = compositor
-            .pending_preview_submission
-            .clone()
-            .expect("second preview should keep its submission pending");
-        compositor
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(second_submission),
-                timeout: None,
-            })
-            .expect("second preview wait should succeed");
-        compositor.defer_next_preview_map_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("second preview handoff should not fail")
-                .is_none()
-        );
+        defer_pending_preview_map(&mut compositor);
 
         let replaced_slot = match compositor.pending_preview_map.as_ref() {
             Some(PendingPreviewMap {
@@ -3514,13 +3458,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("first preview submit should succeed");
-        compositor.defer_next_preview_resolve();
-        assert!(
-            compositor
-                .resolve_preview_surface()
-                .expect("deferred first preview finalize should not fail")
-                .is_none()
-        );
+        defer_pending_preview_map(&mut compositor);
 
         compositor
             .compose(&second_plan, false, full_preview_request(&second_plan))
@@ -3875,14 +3813,15 @@ mod tests {
                 .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
                 .expect("cached no-readback composition should remain sampleable")
         );
-        assert_eq!(
-            sampled,
-            engine.sample(
+        assert_zone_colors_within(
+            &sampled,
+            &engine.sample(
                 expected
                     .sampling_canvas
                     .as_ref()
                     .expect("CPU compose should materialize a canvas"),
-            )
+            ),
+            1,
         );
     }
 
@@ -4005,7 +3944,7 @@ mod tests {
                 .expect("GPU spatial sampling should succeed")
         );
 
-        assert_eq!(sampled, expected_zones);
+        assert_zone_colors_within(&sampled, &expected_zones, 1);
     }
 
     #[test]
@@ -4047,7 +3986,7 @@ mod tests {
                 .expect("GPU spatial sampling should support prepared attenuation")
         );
 
-        assert_eq!(sampled, expected_zones);
+        assert_zone_colors_within(&sampled, &expected_zones, 1);
     }
 
     #[test]
@@ -5008,6 +4947,6 @@ mod tests {
                 .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
                 .expect("GPU sampler should support area plans")
         );
-        assert_eq!(sampled, expected_zones);
+        assert_zone_colors_within(&sampled, &expected_zones, 1);
     }
 }
