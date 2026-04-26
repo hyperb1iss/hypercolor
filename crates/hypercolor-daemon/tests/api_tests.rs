@@ -30,6 +30,7 @@ use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
+use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue as SurfaceControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -1909,6 +1910,97 @@ async fn patch_driver_control_surface_updates_config() {
 
     let backend_manager = state.backend_manager.lock().await;
     assert!(backend_manager.backend_ids().contains(&"wled"));
+}
+
+#[tokio::test]
+async fn patch_driver_control_surface_publishes_values_changed_event() {
+    let (state, _manager, _tmp) = test_state_with_temp_config_manager();
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let surface_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/wled/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(surface_response.status(), StatusCode::OK);
+    let surface_json = body_json(surface_response).await;
+    let revision = surface_json["data"]["revision"]
+        .as_u64()
+        .expect("revision should be an integer");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:wled/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:wled",
+                        "expected_revision": revision,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 11 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let updated_revision = json["data"]["revision"]
+        .as_u64()
+        .expect("updated revision should be an integer");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ControlSurfaceChanged(
+                        event @ ControlSurfaceEvent::ValuesChanged { .. },
+                    ) = timestamped.event
+                    {
+                        break event;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before control surface event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for control surface event");
+
+    match event {
+        ControlSurfaceEvent::ValuesChanged {
+            surface_id,
+            revision,
+            values,
+        } => {
+            assert_eq!(surface_id, "driver:wled");
+            assert_eq!(revision, updated_revision);
+            assert_eq!(
+                values.get("dedup_threshold"),
+                Some(&SurfaceControlValue::Integer(11))
+            );
+        }
+        _ => panic!("expected values_changed control surface event"),
+    }
 }
 
 #[tokio::test]
@@ -6145,6 +6237,101 @@ async fn patch_device_control_surface_updates_user_settings() {
     assert_eq!(persisted_device["name"], "Desk Strip Controls");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.5));
+}
+
+#[tokio::test]
+async fn patch_device_control_surface_publishes_values_changed_event() {
+    let (state, _tmp) = test_state_with_temp_output_store();
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let surface_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/devices/{device_id}/controls"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(surface_response.status(), StatusCode::OK);
+    let surface_json = body_json(surface_response).await;
+    let revision = surface_json["data"]["revision"]
+        .as_u64()
+        .expect("revision should be an integer");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/values"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": format!("device:{device_id}"),
+                        "expected_revision": revision,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "brightness",
+                                "value": { "kind": "float", "value": 0.42 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let updated_revision = json["data"]["revision"]
+        .as_u64()
+        .expect("updated revision should be an integer");
+    let expected_surface_id = format!("device:{device_id}");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ControlSurfaceChanged(
+                        event @ ControlSurfaceEvent::ValuesChanged { .. },
+                    ) = timestamped.event
+                    {
+                        break event;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before control surface event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for control surface event");
+
+    match event {
+        ControlSurfaceEvent::ValuesChanged {
+            surface_id,
+            revision,
+            values,
+        } => {
+            assert_eq!(surface_id, expected_surface_id);
+            assert_eq!(revision, updated_revision);
+            let Some(SurfaceControlValue::Float(brightness)) = values.get("brightness") else {
+                panic!("brightness value should be a float");
+            };
+            assert!((brightness - 0.42).abs() < 1.0e-6);
+        }
+        _ => panic!("expected values_changed control surface event"),
+    }
 }
 
 #[tokio::test]

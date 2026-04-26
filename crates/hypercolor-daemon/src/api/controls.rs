@@ -13,9 +13,11 @@ use hypercolor_types::controls::{
     ControlAccess, ControlActionResult, ControlAvailability, ControlAvailabilityExpr,
     ControlAvailabilityState, ControlChange, ControlFieldDescriptor, ControlGroupDescriptor,
     ControlGroupKind, ControlOwner, ControlPersistence, ControlSurfaceDocument,
-    ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType, ControlVisibility,
+    ControlSurfaceEvent, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
+    ControlVisibility,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
+use hypercolor_types::event::HypercolorEvent;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -272,7 +274,7 @@ pub async fn apply_control_surface_values(
     };
     let document = device_control_surface(&tracked.info, &tracked.user_settings, revision);
 
-    ApiResponse::ok(ApplyControlChangesResponse {
+    let response = ApplyControlChangesResponse {
         surface_id,
         previous_revision,
         revision,
@@ -287,7 +289,11 @@ pub async fn apply_control_surface_values(
         rejected: Vec::new(),
         impacts: normalized.impacts,
         values: document.values,
-    })
+    };
+    if !body.dry_run {
+        publish_values_changed(state.as_ref(), &response);
+    }
+    ApiResponse::ok(response)
 }
 
 /// `POST /api/v1/control-surfaces/:surface_id/actions/:action_id` - Invoke a
@@ -335,12 +341,16 @@ async fn invoke_driver_control_action(
         .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
         .await
     {
-        Ok(result) => ApiResponse::ok(normalize_action_result(
-            result,
-            surface_id,
-            action_id,
-            driver_control_revision(&driver_config_entry_for_state(state, &driver_id)),
-        )),
+        Ok(result) => {
+            let result = normalize_action_result(
+                result,
+                surface_id,
+                action_id,
+                driver_control_revision(&driver_config_entry_for_state(state, &driver_id)),
+            );
+            publish_action_progress(state, &result);
+            ApiResponse::ok(result)
+        }
         Err(error) => ApiError::validation(format!("Control action failed: {error}")),
     }
 }
@@ -380,12 +390,11 @@ async fn invoke_device_control_action(
         .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
         .await
     {
-        Ok(result) => ApiResponse::ok(normalize_action_result(
-            result,
-            surface_id,
-            action_id,
-            tracked.revision,
-        )),
+        Ok(result) => {
+            let result = normalize_action_result(result, surface_id, action_id, tracked.revision);
+            publish_action_progress(state, &result);
+            ApiResponse::ok(result)
+        }
         Err(error) => ApiError::validation(format!("Control action failed: {error}")),
     }
 }
@@ -400,6 +409,31 @@ fn normalize_action_result(
     result.action_id = action_id;
     result.revision = revision;
     result
+}
+
+fn publish_values_changed(state: &AppState, response: &ApplyControlChangesResponse) {
+    state
+        .event_bus
+        .publish(HypercolorEvent::ControlSurfaceChanged(
+            ControlSurfaceEvent::ValuesChanged {
+                surface_id: response.surface_id.clone(),
+                revision: response.revision,
+                values: response.values.clone(),
+            },
+        ));
+}
+
+fn publish_action_progress(state: &AppState, result: &ControlActionResult) {
+    state
+        .event_bus
+        .publish(HypercolorEvent::ControlSurfaceChanged(
+            ControlSurfaceEvent::ActionProgress {
+                surface_id: result.surface_id.clone(),
+                action_id: result.action_id.clone(),
+                status: result.status,
+                progress: None,
+            },
+        ));
 }
 
 async fn apply_driver_control_surface_values(
@@ -484,6 +518,7 @@ async fn apply_driver_control_surface_values(
     response.previous_revision = previous_revision;
     response.revision = driver_control_revision(&updated_entry);
     response.values = driver_surface_values(provider, state, &driver_id, &updated_entry).await;
+    publish_values_changed(state, &response);
     ApiResponse::ok(response)
 }
 
