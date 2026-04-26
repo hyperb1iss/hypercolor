@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -26,6 +27,7 @@ struct GoveeDeviceState {
     profile: SkuProfile,
     address: SocketAddr,
     last_sent: Option<Vec<[u8; 3]>>,
+    last_write_at: Option<Instant>,
     razer_enabled: bool,
 }
 
@@ -40,6 +42,10 @@ impl GoveeBackend {
     }
 
     pub fn remember_device(&mut self, device: GoveeLanDevice) {
+        self.remember_device_at(device.clone(), SocketAddr::new(device.ip, DEVICE_PORT));
+    }
+
+    pub fn remember_device_at(&mut self, device: GoveeLanDevice, address: SocketAddr) {
         let info = build_device_info(&device);
         let profile = profile_for_sku(&device.sku).unwrap_or_else(|| fallback_profile(&device.sku));
         self.devices.insert(
@@ -47,8 +53,9 @@ impl GoveeBackend {
             GoveeDeviceState {
                 info,
                 profile,
-                address: SocketAddr::new(device.ip, DEVICE_PORT),
+                address,
                 last_sent: None,
+                last_write_at: None,
                 razer_enabled: false,
             },
         );
@@ -81,6 +88,20 @@ impl GoveeBackend {
             .await
             .with_context(|| format!("failed to send Govee LAN command to {address}"))?;
         Ok(())
+    }
+
+    fn frame_interval(&self, device: &GoveeDeviceState) -> Duration {
+        let fps = if device
+            .profile
+            .capabilities
+            .contains(GoveeCapabilities::RAZER_STREAMING)
+        {
+            self.config.razer_fps
+        } else {
+            self.config.lan_state_fps
+        }
+        .max(1);
+        Duration::from_millis(1000 / u64::from(fps))
     }
 }
 
@@ -191,32 +212,57 @@ impl DeviceBackend for GoveeBackend {
         if colors.is_empty() {
             return Ok(());
         }
+        let (command, sent_frame) = {
+            let Some(device) = self.devices.get(id) else {
+                bail!("Govee device {id} is not connected");
+            };
+            if device
+                .profile
+                .capabilities
+                .contains(GoveeCapabilities::RAZER_STREAMING)
+                && device
+                    .profile
+                    .razer_led_count
+                    .is_some_and(|count| usize::from(count) == colors.len())
+                && let Some(pt) = encode_razer_frame_base64(colors)
+            {
+                (LanCommand::Razer { pt }, colors.to_vec())
+            } else {
+                let [red, green, blue] = mean_color(colors);
+                (
+                    LanCommand::ColorWc { red, green, blue },
+                    vec![[red, green, blue]],
+                )
+            }
+        };
+
         let Some(device) = self.devices.get(id) else {
             bail!("Govee device {id} is not connected");
         };
-
+        if device.last_sent.as_deref() == Some(sent_frame.as_slice()) {
+            return Ok(());
+        }
         if device
-            .profile
-            .capabilities
-            .contains(GoveeCapabilities::RAZER_STREAMING)
-            && device
-                .profile
-                .razer_led_count
-                .is_some_and(|count| usize::from(count) == colors.len())
-            && let Some(pt) = encode_razer_frame_base64(colors)
+            .last_write_at
+            .is_some_and(|last_write| last_write.elapsed() < self.frame_interval(device))
         {
-            self.send_command(id, LanCommand::Razer { pt }).await?;
-            if let Some(device) = self.devices.get_mut(id) {
-                device.last_sent = Some(colors.to_vec());
-            }
             return Ok(());
         }
 
-        let [red, green, blue] = mean_color(colors);
-        self.send_command(id, LanCommand::ColorWc { red, green, blue })
-            .await?;
+        match command {
+            LanCommand::Razer { pt } => {
+                self.send_command(id, LanCommand::Razer { pt }).await?;
+            }
+            LanCommand::ColorWc { red, green, blue } => {
+                self.send_command(id, LanCommand::ColorWc { red, green, blue })
+                    .await?;
+            }
+            _ => unreachable!("Govee write_colors only emits color frame commands"),
+        }
+
         if let Some(device) = self.devices.get_mut(id) {
-            device.last_sent = Some(vec![[red, green, blue]]);
+            device.last_sent = Some(sent_frame);
+            device.last_write_at = Some(Instant::now());
         }
         Ok(())
     }
