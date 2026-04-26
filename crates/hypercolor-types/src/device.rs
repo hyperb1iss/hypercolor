@@ -310,6 +310,225 @@ pub enum ConnectionType {
     Bridge,
 }
 
+// ── Driver Metadata ──────────────────────────────────────────────────────
+
+/// High-level module category used for driver registry introspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverModuleKind {
+    /// Driver owns network discovery, pairing, and output.
+    Network,
+
+    /// Driver contributes hardware protocol descriptors to a shared transport.
+    Hal,
+
+    /// Driver is provided by the host process.
+    Host,
+
+    /// Driver exposes virtual or synthetic devices.
+    Virtual,
+}
+
+/// API-facing transport category for a driver module.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverTransportKind {
+    /// IP network transport.
+    Network,
+
+    /// USB HID, bulk, serial-over-USB, or vendor USB transport.
+    Usb,
+
+    /// Local I2C/SMBus transport.
+    Smbus,
+
+    /// MIDI transport.
+    Midi,
+
+    /// Host serial transport.
+    Serial,
+
+    /// In-process or synthetic transport.
+    Virtual,
+
+    /// Driver-defined transport category.
+    Custom(String),
+}
+
+/// Capability flags exposed by a driver module.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverCapabilitySet {
+    /// Exposes driver-scoped configuration.
+    pub config: bool,
+
+    /// Discovers devices.
+    pub discovery: bool,
+
+    /// Supports pairing or authorization flows.
+    pub pairing: bool,
+
+    /// Builds an output backend.
+    pub backend_factory: bool,
+
+    /// Contributes protocols to a shared backend.
+    pub protocol_catalog: bool,
+
+    /// Keeps runtime cache state.
+    pub runtime_cache: bool,
+
+    /// Stores credentials or authorization material.
+    pub credentials: bool,
+
+    /// Provides presentation metadata.
+    pub presentation: bool,
+}
+
+impl DriverCapabilitySet {
+    /// Return an empty capability set.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            config: false,
+            discovery: false,
+            pairing: false,
+            backend_factory: false,
+            protocol_catalog: false,
+            runtime_cache: false,
+            credentials: false,
+            presentation: false,
+        }
+    }
+}
+
+/// Presentation hint for devices owned by a driver module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceClassHint {
+    /// Keyboard-like device.
+    Keyboard,
+
+    /// Mouse-like device.
+    Mouse,
+
+    /// Hub or bridge device.
+    Hub,
+
+    /// LED controller.
+    Controller,
+
+    /// Light or luminaire.
+    Light,
+
+    /// Pixel display surface.
+    Display,
+
+    /// Audio-reactive or audio-adjacent device.
+    Audio,
+
+    /// Unclassified device.
+    Other,
+}
+
+/// API and UI presentation metadata for a driver module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverPresentation {
+    /// Human-readable driver label.
+    pub label: String,
+
+    /// Compact label for dense UI surfaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_label: Option<String>,
+
+    /// Primary RGB accent color.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent_rgb: Option<[u8; 3]>,
+
+    /// Secondary RGB accent color.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_rgb: Option<[u8; 3]>,
+
+    /// Stable icon identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+
+    /// Default device class for devices produced by this driver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_device_class: Option<DeviceClassHint>,
+}
+
+/// Stable module descriptor for native and future Wasm driver registries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverModuleDescriptor {
+    /// Stable driver identifier.
+    pub id: String,
+
+    /// Human-readable driver name.
+    pub display_name: String,
+
+    /// Optional vendor or organization name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_name: Option<String>,
+
+    /// High-level module category.
+    pub module_kind: DriverModuleKind,
+
+    /// Transport categories used by this driver.
+    pub transports: Vec<DriverTransportKind>,
+
+    /// Driver capabilities.
+    pub capabilities: DriverCapabilitySet,
+
+    /// Version of the driver-facing API schema.
+    pub api_schema_version: u32,
+
+    /// Version of this driver's config schema.
+    pub config_version: u32,
+
+    /// Whether this driver should be enabled by default.
+    pub default_enabled: bool,
+}
+
+/// Origin metadata that separates device ownership from output routing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceOrigin {
+    /// Driver module that owns discovery, semantics, and presentation.
+    pub driver_id: String,
+
+    /// Output backend responsible for writing frames.
+    pub backend_id: String,
+
+    /// Transport category used by this device.
+    pub transport: DriverTransportKind,
+
+    /// Optional protocol implementation selected by the driver/backend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_id: Option<String>,
+}
+
+impl DeviceOrigin {
+    /// Create origin metadata without a protocol selection.
+    #[must_use]
+    pub fn new(
+        driver_id: impl Into<String>,
+        backend_id: impl Into<String>,
+        transport: DriverTransportKind,
+    ) -> Self {
+        Self {
+            driver_id: driver_id.into(),
+            backend_id: backend_id.into(),
+            transport,
+            protocol_id: None,
+        }
+    }
+
+    /// Attach a protocol identifier to this origin.
+    #[must_use]
+    pub fn with_protocol_id(mut self, protocol_id: impl Into<String>) -> Self {
+        self.protocol_id = Some(protocol_id.into());
+        self
+    }
+}
+
 // ── DeviceFamily ──────────────────────────────────────────────────────────
 
 /// Device family classification for protocol selection and device database

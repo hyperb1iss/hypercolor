@@ -1,9 +1,11 @@
 //! Tests for device identity, capabilities, and state types.
 
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
-    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier,
-    DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceColorSpace,
+    DeviceError, DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId,
+    DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    DeviceUserSettings, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
+    DriverPresentation, DriverTransportKind, ZoneInfo,
 };
 use uuid::Uuid;
 
@@ -259,6 +261,94 @@ fn connection_type_serde_round_trip() {
         let back: ConnectionType = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, ct);
     }
+}
+
+// ── Driver Metadata ───────────────────────────────────────────────────────
+
+#[test]
+fn driver_capability_set_empty_has_no_capabilities() {
+    let capabilities = DriverCapabilitySet::empty();
+    assert_eq!(capabilities, DriverCapabilitySet::default());
+    assert!(!capabilities.config);
+    assert!(!capabilities.discovery);
+    assert!(!capabilities.pairing);
+    assert!(!capabilities.backend_factory);
+    assert!(!capabilities.protocol_catalog);
+    assert!(!capabilities.runtime_cache);
+    assert!(!capabilities.credentials);
+    assert!(!capabilities.presentation);
+}
+
+#[test]
+fn driver_transport_kind_round_trips_custom_transport() {
+    let transport = DriverTransportKind::Custom("openlinkhub".into());
+    let json = serde_json::to_string(&transport).expect("serialize");
+    let back: DriverTransportKind = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, transport);
+}
+
+#[test]
+fn device_origin_separates_driver_from_backend() {
+    let origin =
+        DeviceOrigin::new("nollie", "usb", DriverTransportKind::Usb).with_protocol_id("nollie32");
+
+    assert_eq!(origin.driver_id, "nollie");
+    assert_eq!(origin.backend_id, "usb");
+    assert_eq!(origin.protocol_id.as_deref(), Some("nollie32"));
+
+    let json = serde_json::to_string(&origin).expect("serialize");
+    let back: DeviceOrigin = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, origin);
+}
+
+#[test]
+fn device_origin_omits_absent_protocol_id() {
+    let origin = DeviceOrigin::new("wled", "wled", DriverTransportKind::Network);
+    let json = serde_json::to_string(&origin).expect("serialize");
+
+    assert!(!json.contains("protocol_id"));
+}
+
+#[test]
+fn driver_presentation_serializes_optional_metadata() {
+    let presentation = DriverPresentation {
+        label: "Nanoleaf".into(),
+        short_label: Some("Leaf".into()),
+        accent_rgb: Some([0x80, 0xff, 0xea]),
+        secondary_rgb: None,
+        icon: Some("panel-top".into()),
+        default_device_class: Some(DeviceClassHint::Light),
+    };
+
+    let json = serde_json::to_string(&presentation).expect("serialize");
+    assert!(!json.contains("secondary_rgb"));
+
+    let back: DriverPresentation = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, presentation);
+}
+
+#[test]
+fn driver_module_descriptor_round_trips_capabilities_and_transports() {
+    let descriptor = DriverModuleDescriptor {
+        id: "prismrgb".into(),
+        display_name: "PrismRGB".into(),
+        vendor_name: Some("PrismRGB".into()),
+        module_kind: DriverModuleKind::Hal,
+        transports: vec![DriverTransportKind::Usb],
+        capabilities: DriverCapabilitySet {
+            protocol_catalog: true,
+            presentation: true,
+            ..DriverCapabilitySet::empty()
+        },
+        api_schema_version: 1,
+        config_version: 1,
+        default_enabled: true,
+    };
+
+    let json = serde_json::to_string(&descriptor).expect("serialize");
+    let back: DriverModuleDescriptor = serde_json::from_str(&json).expect("deserialize");
+
+    assert_eq!(back, descriptor);
 }
 
 // ── DeviceFamily ──────────────────────────────────────────────────────────
