@@ -16,18 +16,6 @@ use hypercolor_driver_hue::HueDriverFactory;
 use hypercolor_driver_nanoleaf::NanoleafDriverFactory;
 use hypercolor_driver_wled::WledDriverFactory;
 
-#[cfg(feature = "hue")]
-pub use hypercolor_driver_hue::{
-    HueConfig, HueKnownBridge, resolve_hue_probe_bridges_from_sources,
-};
-#[cfg(feature = "nanoleaf")]
-pub use hypercolor_driver_nanoleaf::{
-    NanoleafConfig, NanoleafKnownDevice, resolve_nanoleaf_probe_devices_from_sources,
-};
-pub use hypercolor_driver_wled::{
-    WledConfig, resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
-};
-
 /// Build the compiled-in driver registry for this process.
 ///
 /// # Errors
