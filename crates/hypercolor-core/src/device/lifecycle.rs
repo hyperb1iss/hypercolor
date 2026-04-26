@@ -498,9 +498,7 @@ impl DeviceLifecycleManager {
     ) -> DeviceIdentifier {
         if let Some(fingerprint) = fingerprint {
             let value = fingerprint.0.clone();
-            if backend_id == "smbus"
-                && let Some(rest) = value.strip_prefix("smbus:")
-            {
+            if let Some(rest) = value.strip_prefix("smbus:") {
                 let (bus_path, address) = rest.rsplit_once(':').map_or((rest, 0), |(bus, raw)| {
                     let address = u16::from_str_radix(raw, 16).unwrap_or(0);
                     (bus, address)

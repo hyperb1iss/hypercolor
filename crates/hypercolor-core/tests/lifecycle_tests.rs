@@ -450,7 +450,7 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         device_id,
         &info,
-        "smbus",
+        "asus",
         Some(&DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned())),
     );
 
