@@ -163,6 +163,12 @@ impl DiscoveryBackend {
         }
     }
 
+    /// Whether a missed device should remain renderable after a clean scan.
+    #[must_use]
+    pub fn preserves_renderable_on_discovery_miss(&self) -> bool {
+        matches!(self, Self::SmBus)
+    }
+
     fn parse(raw: &str, registry: &DriverRegistry) -> Option<Self> {
         match raw {
             "usb" => Some(Self::Usb),
@@ -462,6 +468,14 @@ mod tests {
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("smbus must fail when ASUS HAL module is disabled");
         assert!(error.contains("drivers.asus.enabled=false"));
+    }
+
+    #[test]
+    fn discovery_backend_transient_miss_policy_is_backend_owned() {
+        assert!(DiscoveryBackend::SmBus.preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryBackend::Usb.preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryBackend::Blocks.preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryBackend::network("wled").preserves_renderable_on_discovery_miss());
     }
 
     #[test]

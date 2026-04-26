@@ -177,6 +177,11 @@ pub async fn execute_discovery_scan(
     };
     let backend_names = super::backend_names(&backends);
     let scanned_backend_ids = backend_names.iter().cloned().collect::<HashSet<_>>();
+    let transient_miss_backend_ids = backends
+        .iter()
+        .filter(|backend| backend.preserves_renderable_on_discovery_miss())
+        .map(|backend| backend.as_str().to_owned())
+        .collect::<HashSet<_>>();
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
 
     runtime
@@ -354,7 +359,8 @@ pub async fn execute_discovery_scan(
             vanished_ids.insert(id);
         }
     }
-    retain_transient_smbus_devices(&runtime, &scanned_backend_ids, &mut vanished_ids).await;
+    retain_transient_backend_devices(&runtime, &transient_miss_backend_ids, &mut vanished_ids)
+        .await;
 
     let mut vanished_ids: Vec<DeviceId> = vanished_ids.into_iter().collect();
     vanished_ids.sort_by_key(DeviceId::as_uuid);
@@ -427,12 +433,12 @@ pub async fn execute_discovery_scan(
     }
 }
 
-async fn retain_transient_smbus_devices(
+async fn retain_transient_backend_devices(
     runtime: &DiscoveryRuntime,
-    scanned_backend_ids: &HashSet<String>,
+    transient_miss_backend_ids: &HashSet<String>,
     vanished_ids: &mut HashSet<DeviceId>,
 ) {
-    if vanished_ids.is_empty() || !scanned_backend_ids.contains("smbus") {
+    if vanished_ids.is_empty() || transient_miss_backend_ids.is_empty() {
         return;
     }
 
@@ -446,7 +452,7 @@ async fn retain_transient_smbus_devices(
             continue;
         }
 
-        if tracked.info.backend_id() != "smbus" {
+        if !transient_miss_backend_ids.contains(tracked.info.backend_id()) {
             continue;
         }
 
@@ -465,7 +471,7 @@ async fn retain_transient_smbus_devices(
     debug!(
         preserved_count = preserved_labels.len(),
         devices = ?preserved_labels,
-        "preserving connected SMBus devices across transient discovery miss"
+        "preserving connected devices across transient discovery miss"
     );
 }
 
