@@ -199,12 +199,7 @@ impl PairingCapability for GoveeDriverFactory {
                 descriptor: None,
                 last_error: None,
             }),
-            Ok(None) => Some(DeviceAuthSummary {
-                state: DeviceAuthState::Open,
-                can_pair: true,
-                descriptor: Some(govee_pairing_descriptor()),
-                last_error: None,
-            }),
+            Ok(None) => Some(auth_summary_without_account_key(_device)),
             Err(error) => Some(DeviceAuthSummary {
                 state: DeviceAuthState::Error,
                 can_pair: true,
@@ -365,6 +360,34 @@ fn merge_known_device(existing: &mut GoveeKnownDevice, incoming: &GoveeKnownDevi
     if existing.mac.is_none() {
         existing.mac.clone_from(&incoming.mac);
     }
+}
+
+fn auth_summary_without_account_key(device: &TrackedDeviceCtx<'_>) -> DeviceAuthSummary {
+    let cloud_backed = metadata_has(device.metadata, "cloud_device_id");
+    let lan_reachable = metadata_has(device.metadata, "ip");
+    let cloud_optional = cloud_backed
+        || device
+            .info
+            .model
+            .as_deref()
+            .and_then(profile_for_sku)
+            .is_some_and(|profile| profile.capabilities.contains(GoveeCapabilities::CLOUD));
+    let can_pair = cloud_optional;
+
+    DeviceAuthSummary {
+        state: if cloud_backed && !lan_reachable {
+            DeviceAuthState::Required
+        } else {
+            DeviceAuthState::Open
+        },
+        can_pair,
+        descriptor: can_pair.then(govee_pairing_descriptor),
+        last_error: None,
+    }
+}
+
+fn metadata_has(metadata: Option<&HashMap<String, String>>, key: &str) -> bool {
+    metadata.is_some_and(|values| values.get(key).is_some_and(|value| !value.is_empty()))
 }
 
 pub fn merge_cloud_inventory(

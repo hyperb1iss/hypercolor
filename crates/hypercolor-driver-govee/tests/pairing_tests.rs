@@ -133,6 +133,60 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     );
 }
 
+#[tokio::test]
+async fn auth_summary_requires_pairing_for_cloud_only_inventory() {
+    let factory = GoveeDriverFactory::new(GoveeConfig::default());
+    let host = TestHost::default();
+    let info = test_device_info();
+    let state = DeviceState::Known;
+    let metadata = HashMap::from([
+        ("cloud_device_id".to_owned(), "AA:BB:CC:DD:EE:FF".to_owned()),
+        ("sku".to_owned(), "H6163".to_owned()),
+    ]);
+    let context = tracked_context_with_metadata(&info, &state, &metadata);
+
+    let summary = factory
+        .pairing()
+        .expect("Govee factory should expose pairing")
+        .auth_summary(&host, &context)
+        .await
+        .expect("Govee should report auth summary");
+
+    assert_eq!(summary.state, DeviceAuthState::Required);
+    assert!(summary.can_pair);
+    assert!(summary.descriptor.is_some());
+}
+
+#[tokio::test]
+async fn auth_summary_does_not_offer_pairing_for_lan_only_sku() {
+    let factory = GoveeDriverFactory::new(GoveeConfig::default());
+    let host = TestHost::default();
+    let info = build_device_info(&GoveeLanDevice {
+        ip: "127.0.0.1".parse().expect("valid test IP"),
+        sku: "H70B1".to_owned(),
+        mac: "001122334455".to_owned(),
+        name: "LAN-only Govee".to_owned(),
+        firmware_version: None,
+    });
+    let state = DeviceState::Known;
+    let metadata = HashMap::from([
+        ("ip".to_owned(), "127.0.0.1".to_owned()),
+        ("sku".to_owned(), "H70B1".to_owned()),
+    ]);
+    let context = tracked_context_with_metadata(&info, &state, &metadata);
+
+    let summary = factory
+        .pairing()
+        .expect("Govee factory should expose pairing")
+        .auth_summary(&host, &context)
+        .await
+        .expect("Govee should report auth summary");
+
+    assert_eq!(summary.state, DeviceAuthState::Open);
+    assert!(!summary.can_pair);
+    assert!(summary.descriptor.is_none());
+}
+
 fn tracked_context<'a>(
     info: &'a DeviceInfo,
     current_state: &'a DeviceState,
@@ -141,6 +195,19 @@ fn tracked_context<'a>(
         device_id: info.id,
         info,
         metadata: None,
+        current_state,
+    }
+}
+
+fn tracked_context_with_metadata<'a>(
+    info: &'a DeviceInfo,
+    current_state: &'a DeviceState,
+    metadata: &'a HashMap<String, String>,
+) -> TrackedDeviceCtx<'a> {
+    TrackedDeviceCtx {
+        device_id: info.id,
+        info,
+        metadata: Some(metadata),
         current_state,
     }
 }
