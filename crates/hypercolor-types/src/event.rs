@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::controls::ControlSurfaceEvent;
 use crate::scene::{RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode};
 use crate::session::SessionEvent;
 
@@ -693,6 +694,9 @@ pub enum HypercolorEvent {
     /// Session/power-awareness state changed.
     SessionChanged(SessionEvent),
 
+    /// A typed driver/device control surface changed.
+    ControlSurfaceChanged(ControlSurfaceEvent),
+
     /// A system-level error occurred.
     Error {
         code: String,
@@ -846,6 +850,7 @@ impl HypercolorEvent {
             | Self::Paused
             | Self::Resumed
             | Self::SessionChanged(..)
+            | Self::ControlSurfaceChanged(..)
             | Self::Error { .. } => EventCategory::System,
 
             Self::TriggerFired { .. }

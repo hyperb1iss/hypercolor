@@ -22,7 +22,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::event::DisconnectReason;
+use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use hypercolor_types::spatial::SpatialLayout;
 use serde_json::{Number, Value};
 use tokio::sync::{Mutex, RwLock};
@@ -362,7 +362,8 @@ impl DriverControlHost for DaemonDriverHost {
     }
 
     fn publish_control_event(&self, event: ControlSurfaceEvent) {
-        let _ = event;
+        self.event_bus
+            .publish(HypercolorEvent::ControlSurfaceChanged(event));
     }
 }
 

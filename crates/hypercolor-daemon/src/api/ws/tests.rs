@@ -9,6 +9,7 @@ use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
+use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
 use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
 
@@ -864,6 +865,22 @@ fn event_message_parts_defaults_to_empty_object_for_unit_events() {
     let (event_name, event_data) = event_message_parts(&HypercolorEvent::Resumed);
     assert_eq!(event_name, "resumed");
     assert_eq!(event_data, serde_json::json!({}));
+}
+
+#[test]
+fn event_message_parts_serializes_control_surface_changed() {
+    let event = HypercolorEvent::ControlSurfaceChanged(ControlSurfaceEvent::ValuesChanged {
+        surface_id: "driver:wled".to_owned(),
+        revision: 42,
+        values: ControlValueMap::from([("dedup_threshold".to_owned(), ControlValue::Integer(7))]),
+    });
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "control_surface_changed");
+    assert_eq!(event_data["kind"], "values_changed");
+    assert_eq!(event_data["surface_id"], "driver:wled");
+    assert_eq!(event_data["revision"], 42);
+    assert_eq!(event_data["values"]["dedup_threshold"]["value"], 7);
 }
 
 #[test]
