@@ -76,6 +76,7 @@ needless_continue = { level = "allow", priority = 36 }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+base64 = "0.22"
 
 # Error handling
 thiserror = "2.0"
@@ -118,6 +119,7 @@ hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default
 hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue" }
 hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf" }
 hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled" }
+hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee" }
 hypercolor-network = { path = "crates/hypercolor-network" }
 hypercolor-tui = { path = "crates/hypercolor-tui" }
 

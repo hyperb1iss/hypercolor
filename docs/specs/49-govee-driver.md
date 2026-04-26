@@ -323,7 +323,7 @@ offset       bytes                          meaning
 6+3*N        xor                            XOR of all prior bytes, u8
 ```
 
-Total packet size is `7 + 3*N` bytes before base64 encoding. The XOR byte sits at offset `6 + 3*N`, immediately after the last blue byte at offset `5 + 3*N`. An implementer sanity check: for N=1 with RGB `(0xFF, 0x00, 0x00)` the packet is `BB 00 05 B0 01 01 FF 00 00` followed by `XOR = 0xBB ^ 0x00 ^ 0x05 ^ 0xB0 ^ 0x01 ^ 0x01 ^ 0xFF ^ 0x00 ^ 0x00 = 0x00`, total 10 bytes.
+Total packet size is `7 + 3*N` bytes before base64 encoding. The XOR byte sits at offset `6 + 3*N`, immediately after the last blue byte at offset `5 + 3*N`. An implementer sanity check: for N=1 with RGB `(0xFF, 0x00, 0x00)` the packet is `BB 00 05 B0 01 01 FF 00 00` followed by `XOR = 0xBB ^ 0x00 ^ 0x05 ^ 0xB0 ^ 0x01 ^ 0x01 ^ 0xFF ^ 0x00 ^ 0x00 = 0xF1`, total 10 bytes.
 
 ### Razer enable/disable
 

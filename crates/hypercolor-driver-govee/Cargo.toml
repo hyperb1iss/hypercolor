@@ -1,0 +1,22 @@
+[package]
+name = "hypercolor-driver-govee"
+description = "Modular Govee network driver for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-core = { path = "../hypercolor-core", default-features = false }
+hypercolor-driver-api = { workspace = true }
+hypercolor-types = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
