@@ -311,7 +311,46 @@ pub async fn invoke_control_surface_action(
     let Some(device_id) = parse_device_surface_id(&surface_id) else {
         return ApiError::not_found(format!("Unknown control surface: {surface_id}"));
     };
+    if action_id == DEVICE_ACTION_IDENTIFY {
+        return invoke_host_device_control_action(state, surface_id, device_id, action_id, body)
+            .await;
+    }
     invoke_device_control_action(&state, surface_id, device_id, action_id, body).await
+}
+
+async fn invoke_host_device_control_action(
+    state: Arc<AppState>,
+    surface_id: String,
+    device_id: DeviceId,
+    action_id: String,
+    body: InvokeControlActionRequest,
+) -> Response {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device_id}"));
+    };
+    let request = match host_identify_request(body.input) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    let identify_response = devices::identify_device(
+        State(Arc::clone(&state)),
+        Path(device_id.to_string()),
+        Some(Json(request)),
+    )
+    .await;
+    if !identify_response.status().is_success() {
+        return identify_response;
+    }
+
+    let result = ControlActionResult {
+        surface_id,
+        action_id,
+        status: hypercolor_types::controls::ControlActionStatus::Accepted,
+        result: None,
+        revision: tracked.revision,
+    };
+    publish_action_progress(&state, &result);
+    ApiResponse::ok(result)
 }
 
 async fn invoke_driver_control_action(
@@ -435,6 +474,39 @@ fn publish_action_progress(state: &AppState, result: &ControlActionResult) {
                 progress: None,
             },
         ));
+}
+
+fn host_identify_request(input: ControlValueMap) -> ControlApiResult<devices::IdentifyRequest> {
+    let mut duration_ms = None;
+    let mut color = None;
+
+    for (field_id, value) in input {
+        match (field_id.as_str(), value) {
+            ("duration_ms", ControlValue::DurationMs(value)) => {
+                duration_ms = Some(value);
+            }
+            ("color", ControlValue::ColorRgb([red, green, blue])) => {
+                color = Some(format!("{red:02x}{green:02x}{blue:02x}"));
+            }
+            ("duration_ms", _) => {
+                return Err(Box::new(ApiError::validation(
+                    "identify duration_ms must be a duration_ms value",
+                )));
+            }
+            ("color", _) => {
+                return Err(Box::new(ApiError::validation(
+                    "identify color must be a color_rgb value",
+                )));
+            }
+            _ => {
+                return Err(Box::new(ApiError::validation(format!(
+                    "Unknown identify action input: {field_id}"
+                ))));
+            }
+        }
+    }
+
+    Ok(devices::IdentifyRequest { duration_ms, color })
 }
 
 async fn apply_driver_control_surface_values(

@@ -6564,6 +6564,79 @@ async fn patch_device_control_surface_publishes_values_changed_event() {
 }
 
 #[tokio::test]
+async fn invoke_host_device_control_surface_identify_action_returns_typed_result() {
+    let state = Arc::new(isolated_state());
+    register_noop_backend(&state, "wled", "WLED Test Backend").await;
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/actions/identify"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "input": {
+                            "duration_ms": { "kind": "duration_ms", "value": 1 },
+                            "color": { "kind": "color_rgb", "value": [128, 64, 255] }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], format!("device:{device_id}"));
+    assert_eq!(json["data"]["action_id"], "identify");
+    assert_eq!(json["data"]["status"], "accepted");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ControlSurfaceChanged(
+                        event @ ControlSurfaceEvent::ActionProgress { .. },
+                    ) = timestamped.event
+                    {
+                        break event;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before host action event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for host action event");
+
+    match event {
+        ControlSurfaceEvent::ActionProgress {
+            surface_id,
+            action_id,
+            status,
+            progress,
+        } => {
+            assert_eq!(surface_id, format!("device:{device_id}"));
+            assert_eq!(action_id, "identify");
+            assert_eq!(status, ControlActionStatus::Accepted);
+            assert_eq!(progress, None);
+        }
+        _ => panic!("expected action_progress control surface event"),
+    }
+}
+
+#[tokio::test]
 async fn patch_device_control_surface_dry_run_does_not_mutate_settings() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
