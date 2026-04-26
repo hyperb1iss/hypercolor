@@ -240,10 +240,7 @@ pub fn collect_unmapped_prefixed_layout_targets(
 }
 
 fn should_retry_unmapped_wled_targets(config: &HypercolorConfig) -> bool {
-    let wled_enabled = config
-        .drivers
-        .get("wled")
-        .map_or(true, |entry| entry.enabled);
+    let wled_enabled = config.drivers.get("wled").is_none_or(|entry| entry.enabled);
     let has_known_ips = config
         .drivers
         .get("wled")

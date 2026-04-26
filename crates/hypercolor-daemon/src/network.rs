@@ -60,7 +60,7 @@ pub fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
     config
         .drivers
         .get(driver_id)
-        .map_or(true, |entry| entry.enabled)
+        .is_none_or(|entry| entry.enabled)
 }
 
 /// Config key responsible for enabling a built-in network driver.
