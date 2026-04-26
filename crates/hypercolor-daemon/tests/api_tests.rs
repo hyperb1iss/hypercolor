@@ -682,6 +682,46 @@ async fn config_set_legacy_render_acceleration_key_updates_compositor_accelerati
 }
 
 #[tokio::test]
+async fn config_set_driver_registry_key_updates_driver_config() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"drivers.wled.known_ips","value":"[\"192.168.1.50\"]"}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "drivers.wled.known_ips");
+    assert_eq!(json["data"]["value"], serde_json::json!(["192.168.1.50"]));
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let config: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    assert_eq!(
+        config.drivers["wled"].settings["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+}
+
+#[tokio::test]
 async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");

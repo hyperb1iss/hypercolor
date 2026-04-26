@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-pub use hypercolor_core::device::nanoleaf::NanoleafKnownDevice;
 use hypercolor_core::device::nanoleaf::{
     DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
 };
+pub use hypercolor_core::device::nanoleaf::{NanoleafConfig, NanoleafKnownDevice};
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
@@ -22,7 +22,6 @@ use hypercolor_driver_api::{
     PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
     TrackedDeviceCtx,
 };
-use hypercolor_types::config::NanoleafConfig;
 
 const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Hold the Nanoleaf power button for 5-7 seconds.",

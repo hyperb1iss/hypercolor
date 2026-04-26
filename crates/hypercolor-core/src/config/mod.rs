@@ -14,9 +14,7 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info};
 
-use crate::types::config::{
-    HypercolorConfig, default_driver_configs, driver_entry_from_serializable,
-};
+use crate::types::config::{HypercolorConfig, default_driver_configs};
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
 
@@ -182,20 +180,6 @@ fn normalize_config(mut config: HypercolorConfig) -> HypercolorConfig {
 }
 
 fn normalize_driver_configs(config: &mut HypercolorConfig) {
-    config.drivers.entry("wled".to_owned()).or_insert_with(|| {
-        driver_entry_from_serializable(config.discovery.wled_scan, &config.wled)
-    });
-    config
-        .drivers
-        .entry("hue".to_owned())
-        .or_insert_with(|| driver_entry_from_serializable(config.discovery.hue_scan, &config.hue));
-    config
-        .drivers
-        .entry("nanoleaf".to_owned())
-        .or_insert_with(|| {
-            driver_entry_from_serializable(config.discovery.nanoleaf_scan, &config.nanoleaf)
-        });
-
     let defaults = default_driver_configs();
     for (driver_id, entry) in defaults {
         config.drivers.entry(driver_id).or_insert(entry);

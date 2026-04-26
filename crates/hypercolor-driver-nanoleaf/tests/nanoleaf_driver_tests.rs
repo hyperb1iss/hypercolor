@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_driver_api::DriverTrackedDevice;
-use hypercolor_driver_nanoleaf::resolve_nanoleaf_probe_devices_from_sources;
-use hypercolor_types::config::NanoleafConfig;
+use hypercolor_driver_nanoleaf::{NanoleafConfig, resolve_nanoleaf_probe_devices_from_sources};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,

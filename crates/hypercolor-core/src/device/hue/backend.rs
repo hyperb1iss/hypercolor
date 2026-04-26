@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use hypercolor_types::config::HueConfig;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::device::net::CredentialStore;
@@ -23,6 +23,36 @@ use super::types::{
 };
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Philips Hue backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HueConfig {
+    /// Preferred entertainment configuration name or ID.
+    #[serde(default)]
+    pub entertainment_config: Option<String>,
+
+    /// Manual bridge IPs for networks where mDNS discovery is unavailable.
+    #[serde(default)]
+    pub bridge_ips: Vec<IpAddr>,
+
+    /// Use CIE xy color conversion when streaming to Hue.
+    #[serde(default = "bool_true")]
+    pub use_cie_xy: bool,
+}
+
+impl Default for HueConfig {
+    fn default() -> Self {
+        Self {
+            entertainment_config: None,
+            bridge_ips: Vec::new(),
+            use_cie_xy: true,
+        }
+    }
+}
+
+const fn bool_true() -> bool {
+    true
+}
 
 /// Hue backend implementing `DeviceBackend`.
 pub struct HueBackend {

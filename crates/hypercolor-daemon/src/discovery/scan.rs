@@ -12,7 +12,7 @@ use hypercolor_driver_api::{
     DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, NetworkDriverFactory,
 };
 use hypercolor_network::DriverRegistry;
-use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, WledConfig};
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use serde::Serialize;
@@ -20,16 +20,17 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 #[cfg(feature = "hue")]
+use hypercolor_driver_hue::HueConfig;
+#[cfg(feature = "hue")]
 use hypercolor_driver_hue::HueKnownBridge;
 #[cfg(feature = "nanoleaf")]
-use hypercolor_driver_nanoleaf::NanoleafKnownDevice;
-#[cfg(feature = "hue")]
-use hypercolor_types::config::HueConfig;
+use hypercolor_driver_nanoleaf::NanoleafConfig;
 #[cfg(feature = "nanoleaf")]
-use hypercolor_types::config::NanoleafConfig;
+use hypercolor_driver_nanoleaf::NanoleafKnownDevice;
 
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_driver_api::DriverTrackedDevice;
+use hypercolor_driver_wled::WledConfig;
 
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{

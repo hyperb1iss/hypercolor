@@ -12,11 +12,61 @@ use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView, DriverDescriptor,
     DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
 };
-use hypercolor_types::config::{WledConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
+use serde::{Deserialize, Serialize};
 
 pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
+
+/// Default protocol for WLED realtime streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WledProtocolConfig {
+    /// Distributed Display Protocol.
+    #[default]
+    Ddp,
+    /// E1.31 / sACN output.
+    E131,
+}
+
+/// WLED driver configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WledConfig {
+    /// IPs that are always probed during WLED discovery.
+    #[serde(default)]
+    pub known_ips: Vec<IpAddr>,
+
+    /// Default realtime transport for newly connected WLED devices.
+    #[serde(default)]
+    pub default_protocol: WledProtocolConfig,
+
+    /// Whether startup/shutdown should toggle WLED realtime mode over HTTP.
+    #[serde(default = "bool_true")]
+    pub realtime_http_enabled: bool,
+
+    /// Fuzzy frame dedup threshold (0 disables deduplication).
+    #[serde(default = "default_dedup_threshold")]
+    pub dedup_threshold: u8,
+}
+
+impl Default for WledConfig {
+    fn default() -> Self {
+        Self {
+            known_ips: Vec::new(),
+            default_protocol: WledProtocolConfig::default(),
+            realtime_http_enabled: true,
+            dedup_threshold: default_dedup_threshold(),
+        }
+    }
+}
+
+const fn bool_true() -> bool {
+    true
+}
+
+const fn default_dedup_threshold() -> u8 {
+    2
+}
 
 #[derive(Clone)]
 pub struct WledDriverFactory {

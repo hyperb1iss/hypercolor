@@ -7,7 +7,7 @@ mod scanner;
 mod streaming;
 mod types;
 
-pub use backend::HueBackend;
+pub use backend::{HueBackend, HueConfig};
 pub use bridge::{DEFAULT_HUE_API_PORT, DEFAULT_HUE_STREAM_PORT, HueBridgeClient, HueNupnpBridge};
 pub use color::{CieXyb, ColorGamut, GAMUT_A, GAMUT_B, GAMUT_C, rgb_to_cie_xyb};
 pub use scanner::{HueKnownBridge, HueScanner};

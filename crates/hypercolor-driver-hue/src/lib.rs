@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-pub use hypercolor_core::device::hue::HueKnownBridge;
 use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient, HueScanner};
+pub use hypercolor_core::device::hue::{HueConfig, HueKnownBridge};
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
@@ -20,7 +20,6 @@ use hypercolor_driver_api::{
     PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
     TrackedDeviceCtx,
 };
-use hypercolor_types::config::HueConfig;
 
 const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Press the link button on the Hue Bridge.",

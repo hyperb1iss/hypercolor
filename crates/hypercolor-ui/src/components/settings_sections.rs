@@ -24,6 +24,14 @@ where
     config.with(|cfg| cfg.as_ref().map(selector).unwrap_or_default())
 }
 
+fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
+    config
+        .drivers
+        .get(driver_id)
+        .map(|driver| driver.enabled)
+        .unwrap_or(true)
+}
+
 fn sleep_behavior_value(behavior: SleepBehavior) -> String {
     match behavior {
         SleepBehavior::Off => "off",
@@ -538,8 +546,10 @@ pub fn DiscoverySection(
     let mdns = Signal::derive(move || read_config(config, |cfg| cfg.discovery.mdns_enabled));
     let scan_interval =
         Signal::derive(move || read_config(config, |cfg| cfg.discovery.scan_interval_secs as f64));
-    let wled = Signal::derive(move || read_config(config, |cfg| cfg.discovery.wled_scan));
-    let hue = Signal::derive(move || read_config(config, |cfg| cfg.discovery.hue_scan));
+    let wled = Signal::derive(move || read_config(config, |cfg| driver_enabled(cfg, "wled")));
+    let hue = Signal::derive(move || read_config(config, |cfg| driver_enabled(cfg, "hue")));
+    let nanoleaf =
+        Signal::derive(move || read_config(config, |cfg| driver_enabled(cfg, "nanoleaf")));
     view! {
         <section id="section-discovery" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
@@ -562,15 +572,22 @@ pub fn DiscoverySection(
             <SettingToggle
                 label="WLED Scan"
                 description="Discover WLED controllers on the network"
-                key="discovery.wled_scan"
+                key="drivers.wled.enabled"
                 value=wled
                 on_change=on_change
             />
             <SettingToggle
                 label="Hue Scan"
                 description="Discover Philips Hue bridges"
-                key="discovery.hue_scan"
+                key="drivers.hue.enabled"
                 value=hue
+                on_change=on_change
+            />
+            <SettingToggle
+                label="Nanoleaf Scan"
+                description="Discover Nanoleaf panels and lines"
+                key="drivers.nanoleaf.enabled"
+                value=nanoleaf
                 on_change=on_change
             />
             <SectionReset section_label="Discovery" on_reset=Callback::new(move |()| on_reset.run("discovery".to_string())) />

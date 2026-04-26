@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use hypercolor_types::config::NanoleafConfig;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::device::net::CredentialStore;
@@ -19,6 +19,31 @@ use super::types::{NanoleafDiscoveredDevice, build_device_info, panel_ids_from_l
 use super::{fetch_device_info, fetch_panel_layout};
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Nanoleaf backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NanoleafConfig {
+    /// Manual device IPs for networks where mDNS discovery is unavailable.
+    #[serde(default)]
+    pub device_ips: Vec<IpAddr>,
+
+    /// Transition time per frame in deciseconds (100ms units).
+    #[serde(default = "default_transition_time")]
+    pub transition_time: u16,
+}
+
+impl Default for NanoleafConfig {
+    fn default() -> Self {
+        Self {
+            device_ips: Vec::new(),
+            transition_time: default_transition_time(),
+        }
+    }
+}
+
+const fn default_transition_time() -> u16 {
+    1
+}
 
 /// Nanoleaf backend implementing [`DeviceBackend`].
 pub struct NanoleafBackend {

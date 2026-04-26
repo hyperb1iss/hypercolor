@@ -4,9 +4,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_driver_wled::{
-    resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
+    WledConfig, resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
 };
-use hypercolor_types::config::WledConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,

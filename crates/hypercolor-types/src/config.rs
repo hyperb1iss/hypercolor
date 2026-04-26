@@ -5,7 +5,6 @@
 //! zero config files boots the daemon entirely from compile-time defaults.
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -94,13 +93,6 @@ mod defaults {
     pub fn scan_interval() -> u64 {
         300
     }
-    pub fn wled_dedup_threshold() -> u8 {
-        2
-    }
-    pub fn nanoleaf_transition() -> u16 {
-        1
-    }
-
     // Network
     pub fn remote_access() -> bool {
         false
@@ -179,15 +171,6 @@ pub struct HypercolorConfig {
     pub drivers: DriverConfigs,
 
     #[serde(default)]
-    pub wled: WledConfig,
-
-    #[serde(default)]
-    pub hue: HueConfig,
-
-    #[serde(default)]
-    pub nanoleaf: NanoleafConfig,
-
-    #[serde(default)]
     pub dbus: DbusConfig,
 
     #[serde(default)]
@@ -217,9 +200,6 @@ impl Default for HypercolorConfig {
             discovery: DiscoveryConfig::default(),
             network: NetworkConfig::default(),
             drivers: default_driver_configs(),
-            wled: WledConfig::default(),
-            hue: HueConfig::default(),
-            nanoleaf: NanoleafConfig::default(),
             dbus: DbusConfig::default(),
             tui: TuiConfig::default(),
             session: SessionConfig::default(),
@@ -272,41 +252,20 @@ impl Default for DriverConfigEntry {
 
 #[must_use]
 pub fn default_driver_configs() -> DriverConfigs {
-    let discovery = DiscoveryConfig::default();
     let mut drivers = DriverConfigs::new();
     drivers.insert(
         "wled".to_owned(),
-        driver_entry_from_serializable(discovery.wled_scan, &WledConfig::default()),
+        DriverConfigEntry::enabled(BTreeMap::new()),
     );
     drivers.insert(
         "hue".to_owned(),
-        driver_entry_from_serializable(discovery.hue_scan, &HueConfig::default()),
+        DriverConfigEntry::enabled(BTreeMap::new()),
     );
     drivers.insert(
         "nanoleaf".to_owned(),
-        driver_entry_from_serializable(discovery.nanoleaf_scan, &NanoleafConfig::default()),
+        DriverConfigEntry::enabled(BTreeMap::new()),
     );
     drivers
-}
-
-#[must_use]
-pub fn driver_entry_from_serializable<T: Serialize>(
-    enabled: bool,
-    config: &T,
-) -> DriverConfigEntry {
-    let settings = serde_json::to_value(config)
-        .ok()
-        .and_then(|value| match value {
-            serde_json::Value::Object(map) => Some(
-                map.into_iter()
-                    .filter(|(_, value)| !value.is_null())
-                    .collect(),
-            ),
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    DriverConfigEntry { enabled, settings }
 }
 
 // ─── Daemon ──────────────────────────────────────────────────────────────────
@@ -619,16 +578,6 @@ pub struct DiscoveryConfig {
     #[serde(default = "defaults::scan_interval")]
     pub scan_interval_secs: u64,
 
-    #[serde(default = "defaults::bool_true")]
-    pub wled_scan: bool,
-
-    #[serde(default = "defaults::bool_true")]
-    pub hue_scan: bool,
-
-    /// Enable Nanoleaf device scanning (mDNS + manual IP probe).
-    #[serde(default = "defaults::bool_true")]
-    pub nanoleaf_scan: bool,
-
     /// Enable ROLI Blocks discovery via blocksd bridge.
     #[serde(default = "defaults::bool_true")]
     pub blocks_scan: bool,
@@ -643,9 +592,6 @@ impl Default for DiscoveryConfig {
         Self {
             mdns_enabled: defaults::bool_true(),
             scan_interval_secs: defaults::scan_interval(),
-            wled_scan: defaults::bool_true(),
-            hue_scan: defaults::bool_true(),
-            nanoleaf_scan: defaults::bool_true(),
             blocks_scan: defaults::bool_true(),
             blocks_socket_path: None,
         }
@@ -673,97 +619,6 @@ impl Default for NetworkConfig {
             mdns_publish: defaults::bool_true(),
             remote_access: defaults::remote_access(),
             instance_name: None,
-        }
-    }
-}
-
-// ─── WLED ───────────────────────────────────────────────────────────────────
-
-/// Default protocol for WLED realtime streaming.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum WledProtocolConfig {
-    /// Distributed Display Protocol (preferred).
-    #[default]
-    Ddp,
-    /// E1.31 / sACN output.
-    E131,
-}
-
-/// Global WLED backend settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WledConfig {
-    /// IPs that are always probed during WLED discovery.
-    #[serde(default)]
-    pub known_ips: Vec<IpAddr>,
-
-    /// Default realtime transport for newly connected WLED devices.
-    #[serde(default)]
-    pub default_protocol: WledProtocolConfig,
-
-    /// Whether startup/shutdown should toggle WLED realtime mode over HTTP.
-    #[serde(default = "defaults::bool_true")]
-    pub realtime_http_enabled: bool,
-
-    /// Fuzzy frame dedup threshold (0 disables deduplication).
-    #[serde(default = "defaults::wled_dedup_threshold")]
-    pub dedup_threshold: u8,
-}
-
-impl Default for WledConfig {
-    fn default() -> Self {
-        Self {
-            known_ips: Vec::new(),
-            default_protocol: WledProtocolConfig::default(),
-            realtime_http_enabled: defaults::bool_true(),
-            dedup_threshold: defaults::wled_dedup_threshold(),
-        }
-    }
-}
-
-/// Philips Hue backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HueConfig {
-    /// Preferred entertainment configuration name or ID.
-    #[serde(default)]
-    pub entertainment_config: Option<String>,
-
-    /// Manual bridge IPs for networks where mDNS discovery is unavailable.
-    #[serde(default)]
-    pub bridge_ips: Vec<IpAddr>,
-
-    /// Use CIE xy color conversion when streaming to Hue.
-    #[serde(default = "defaults::bool_true")]
-    pub use_cie_xy: bool,
-}
-
-impl Default for HueConfig {
-    fn default() -> Self {
-        Self {
-            entertainment_config: None,
-            bridge_ips: Vec::new(),
-            use_cie_xy: defaults::bool_true(),
-        }
-    }
-}
-
-/// Nanoleaf backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NanoleafConfig {
-    /// Manual device IPs for networks where mDNS discovery is unavailable.
-    #[serde(default)]
-    pub device_ips: Vec<IpAddr>,
-
-    /// Transition time per frame in deciseconds (100ms units).
-    #[serde(default = "defaults::nanoleaf_transition")]
-    pub transition_time: u16,
-}
-
-impl Default for NanoleafConfig {
-    fn default() -> Self {
-        Self {
-            device_ips: Vec::new(),
-            transition_time: defaults::nanoleaf_transition(),
         }
     }
 }

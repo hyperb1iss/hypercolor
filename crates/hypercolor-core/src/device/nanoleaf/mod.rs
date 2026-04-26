@@ -6,7 +6,7 @@ mod streaming;
 mod topology;
 mod types;
 
-pub use backend::NanoleafBackend;
+pub use backend::{NanoleafBackend, NanoleafConfig};
 pub use scanner::{NanoleafKnownDevice, NanoleafScanner};
 pub use streaming::{
     DEFAULT_NANOLEAF_API_PORT, DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession,

@@ -52,7 +52,7 @@ pub async fn get_config_value(
         Err(e) => return ApiError::internal(format!("Failed to serialize config: {e}")),
     };
 
-    let Some(found) = get_json_path(&value, key) else {
+    let Some(found) = get_json_path(&value, &key) else {
         return ApiError::not_found(format!("Unknown config key: {}", query.key));
     };
 
@@ -80,9 +80,9 @@ pub async fn set_config_value(
     let key = normalize_config_key(&body.key);
     let parsed_value = serde_json::from_str::<serde_json::Value>(&body.value)
         .unwrap_or_else(|_| serde_json::Value::String(body.value.clone()));
-    let parsed_value = canonicalize_config_value(key, parsed_value);
+    let parsed_value = canonicalize_config_value(&key, parsed_value);
 
-    if get_json_path(&root, key).is_some_and(|current| current == &parsed_value) {
+    if get_json_path(&root, &key).is_some_and(|current| current == &parsed_value) {
         info!(
             key,
             live_requested = body.live.unwrap_or(false),
@@ -96,7 +96,7 @@ pub async fn set_config_value(
         }));
     }
 
-    if !set_json_path(&mut root, key, parsed_value.clone()) {
+    if !set_json_path(&mut root, &key, parsed_value.clone()) {
         return ApiError::validation(format!("Invalid config key path: {}", body.key));
     }
 
@@ -123,7 +123,7 @@ pub async fn set_config_value(
             ));
         }
     };
-    let Some(effective_value) = get_json_path(&effective_root, key).cloned() else {
+    let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
         return ApiError::internal(format!(
             "Canonicalized config is missing expected key: {}",
             key
@@ -131,8 +131,8 @@ pub async fn set_config_value(
     };
 
     let audio_live_applied =
-        maybe_apply_audio_config_change(&state, Some(key), body.live.unwrap_or(false)).await;
-    let render_live_applied = maybe_apply_render_config_change(&state, Some(key)).await;
+        maybe_apply_audio_config_change(&state, Some(&key), body.live.unwrap_or(false)).await;
+    let render_live_applied = maybe_apply_render_config_change(&state, Some(&key)).await;
     let live_applied = audio_live_applied || render_live_applied;
 
     ApiResponse::ok(serde_json::json!({
@@ -172,7 +172,7 @@ pub async fn reset_config_value(
     };
 
     let normalized_key = body.key.as_deref().map(normalize_config_key);
-    if let Some(key) = normalized_key {
+    if let Some(key) = normalized_key.as_deref() {
         let Some(default_value) = get_json_path(&defaults, key) else {
             return ApiError::not_found(format!(
                 "Unknown config key: {}",
@@ -197,9 +197,14 @@ pub async fn reset_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
-    let audio_live_applied =
-        maybe_apply_audio_config_change(&state, normalized_key, body.live.unwrap_or(false)).await;
-    let render_live_applied = maybe_apply_render_config_change(&state, normalized_key).await;
+    let audio_live_applied = maybe_apply_audio_config_change(
+        &state,
+        normalized_key.as_deref(),
+        body.live.unwrap_or(false),
+    )
+    .await;
+    let render_live_applied =
+        maybe_apply_render_config_change(&state, normalized_key.as_deref()).await;
     let live_applied = audio_live_applied || render_live_applied;
 
     ApiResponse::ok(serde_json::json!({
@@ -219,10 +224,12 @@ fn config_snapshot(state: &AppState) -> HypercolorConfig {
     }
 }
 
-fn normalize_config_key(key: &str) -> &str {
+fn normalize_config_key(key: &str) -> String {
     match key {
-        "effect_engine.render_acceleration_mode" => "effect_engine.compositor_acceleration_mode",
-        _ => key,
+        "effect_engine.render_acceleration_mode" => {
+            "effect_engine.compositor_acceleration_mode".to_owned()
+        }
+        _ => key.to_owned(),
     }
 }
 

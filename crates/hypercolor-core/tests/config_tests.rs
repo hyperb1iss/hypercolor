@@ -72,8 +72,6 @@ fn load_full_toml_with_overrides() {
     assert!(config.features.wasm_plugins);
     assert!(config.features.midi_input);
     assert!(!config.features.hue_entertainment);
-    assert!(config.hue.use_cie_xy);
-    assert_eq!(config.nanoleaf.transition_time, 1);
     assert!(!config.drivers["openrgb"].enabled);
     assert_eq!(
         config.drivers["openrgb"].settings["socket"],

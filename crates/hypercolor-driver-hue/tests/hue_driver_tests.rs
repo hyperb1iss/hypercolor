@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_driver_api::DriverTrackedDevice;
-use hypercolor_driver_hue::resolve_hue_probe_bridges_from_sources;
-use hypercolor_types::config::HueConfig;
+use hypercolor_driver_hue::{HueConfig, resolve_hue_probe_bridges_from_sources};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,

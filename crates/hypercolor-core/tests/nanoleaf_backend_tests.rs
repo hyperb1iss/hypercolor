@@ -6,10 +6,9 @@ use std::time::Duration;
 use hypercolor_core::device::DeviceBackend;
 use hypercolor_core::device::DiscoveryConnectBehavior;
 use hypercolor_core::device::nanoleaf::{
-    NanoleafBackend, NanoleafDiscoveredDevice, build_device_info,
+    NanoleafBackend, NanoleafConfig, NanoleafDiscoveredDevice, build_device_info,
 };
 use hypercolor_core::device::net::{CredentialStore, Credentials};
-use hypercolor_types::config::NanoleafConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Mutex;

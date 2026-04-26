@@ -321,18 +321,15 @@ async fn config_loading_all_sub_configs_have_defaults() {
 
     // Discovery config defaults
     assert!(config.discovery.mdns_enabled);
-    assert!(config.discovery.wled_scan);
-    assert!(config.discovery.hue_scan);
-    assert!(config.discovery.nanoleaf_scan);
+    assert!(config.drivers["wled"].enabled);
+    assert!(config.drivers["hue"].enabled);
+    assert!(config.drivers["nanoleaf"].enabled);
 
     // Feature flags default to false
     assert!(!config.features.wasm_plugins);
     assert!(!config.features.hue_entertainment);
     assert!(!config.features.midi_input);
 
-    // Network backend config defaults
-    assert!(config.hue.use_cie_xy);
-    assert_eq!(config.nanoleaf.transition_time, 1);
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Cpu

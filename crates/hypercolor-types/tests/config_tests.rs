@@ -2,9 +2,8 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    EffectErrorFallbackPolicy, FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig,
-    NanoleafConfig, NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig,
-    WledConfig, WledProtocolConfig, default_driver_configs,
+    EffectErrorFallbackPolicy, FeatureFlags, HypercolorConfig, LogLevel, McpConfig, NetworkConfig,
+    RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -85,9 +84,7 @@ fn discovery_defaults_match_spec() {
     let d = DiscoveryConfig::default();
     assert!(d.mdns_enabled);
     assert_eq!(d.scan_interval_secs, 300);
-    assert!(d.wled_scan);
-    assert!(d.hue_scan);
-    assert!(d.nanoleaf_scan);
+    assert!(d.blocks_scan);
 }
 
 #[test]
@@ -104,34 +101,9 @@ fn driver_registry_defaults_include_builtin_drivers() {
     assert!(drivers["wled"].enabled);
     assert!(drivers["hue"].enabled);
     assert!(drivers["nanoleaf"].enabled);
-    assert_eq!(drivers["wled"].settings["default_protocol"], "ddp");
-    assert_eq!(drivers["wled"].settings["dedup_threshold"], 2);
-    assert_eq!(drivers["hue"].settings["use_cie_xy"], true);
-    assert_eq!(drivers["nanoleaf"].settings["transition_time"], 1);
-}
-
-#[test]
-fn wled_defaults_match_spec() {
-    let w = WledConfig::default();
-    assert!(w.known_ips.is_empty());
-    assert_eq!(w.default_protocol, WledProtocolConfig::Ddp);
-    assert!(w.realtime_http_enabled);
-    assert_eq!(w.dedup_threshold, 2);
-}
-
-#[test]
-fn hue_defaults_match_spec() {
-    let h = HueConfig::default();
-    assert_eq!(h.entertainment_config, None);
-    assert!(h.bridge_ips.is_empty());
-    assert!(h.use_cie_xy);
-}
-
-#[test]
-fn nanoleaf_defaults_match_spec() {
-    let n = NanoleafConfig::default();
-    assert!(n.device_ips.is_empty());
-    assert_eq!(n.transition_time, 1);
+    assert!(drivers["wled"].settings.is_empty());
+    assert!(drivers["hue"].settings.is_empty());
+    assert!(drivers["nanoleaf"].settings.is_empty());
 }
 
 #[test]
@@ -215,9 +187,6 @@ fn full_config_toml_roundtrip() {
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
         drivers: default_driver_configs(),
-        wled: WledConfig::default(),
-        hue: HueConfig::default(),
-        nanoleaf: NanoleafConfig::default(),
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
         features: FeatureFlags::default(),
@@ -241,9 +210,6 @@ fn full_config_toml_roundtrip() {
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
     assert!(restored.drivers["wled"].enabled);
-    assert_eq!(restored.drivers["wled"].settings["default_protocol"], "ddp");
-    assert!(restored.hue.use_cie_xy);
-    assert_eq!(restored.nanoleaf.transition_time, 1);
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
     assert!(!restored.features.wasm_plugins);
@@ -269,12 +235,7 @@ fn minimal_toml_fills_defaults() {
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
     assert!(config.drivers["wled"].enabled);
-    assert_eq!(config.drivers["wled"].settings["default_protocol"], "ddp");
-    assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
-    assert!(config.wled.realtime_http_enabled);
-    assert_eq!(config.wled.dedup_threshold, 2);
-    assert!(config.hue.use_cie_xy);
-    assert_eq!(config.nanoleaf.transition_time, 1);
+    assert!(config.drivers["wled"].settings.is_empty());
 }
 
 #[test]
@@ -353,7 +314,7 @@ some_future_field = "hello from the future"
 #[test]
 fn override_specific_defaults() {
     let partial = r#"
-schema_version = 2
+schema_version = 4
 
 [daemon]
 port = 8080
@@ -368,7 +329,7 @@ mdns_publish = false
 remote_access = true
 instance_name = "desk-pc"
 
-[wled]
+[drivers.wled]
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
 realtime_http_enabled = false
@@ -387,10 +348,16 @@ dedup_threshold = 0
     assert_eq!(config.network.instance_name.as_deref(), Some("desk-pc"));
     // Audio fields not overridden keep defaults
     assert!((config.audio.smoothing - 0.8).abs() < f32::EPSILON);
-    assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);
-    assert_eq!(config.wled.known_ips.len(), 1);
-    assert!(!config.wled.realtime_http_enabled);
-    assert_eq!(config.wled.dedup_threshold, 0);
+    assert_eq!(config.drivers["wled"].settings["default_protocol"], "e131");
+    assert_eq!(
+        config.drivers["wled"].settings["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+    assert_eq!(
+        config.drivers["wled"].settings["realtime_http_enabled"],
+        false
+    );
+    assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
 }
 
 // ─── Enum Serialization ─────────────────────────────────────────────────────

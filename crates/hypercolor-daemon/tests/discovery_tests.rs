@@ -29,7 +29,8 @@ use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_driver_hue::HueKnownBridge;
+use hypercolor_driver_hue::{HueConfig, HueKnownBridge};
+use hypercolor_driver_wled::WledConfig;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
@@ -436,7 +437,6 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
 
     let mut config = HypercolorConfig::default();
     config.discovery.mdns_enabled = false;
-    config.wled.known_ips.clear();
 
     let result = execute_discovery_scan(
         runtime.runtime.clone(),
@@ -533,8 +533,10 @@ async fn resolve_wled_probe_ips_merges_config_runtime_state_and_registry_metadat
     let configured_ip: IpAddr = "10.4.22.69".parse().expect("configured IP should parse");
     let cached_ip: IpAddr = "10.4.22.169".parse().expect("cached IP should parse");
 
-    let mut config = HypercolorConfig::default();
-    config.wled.known_ips = vec![configured_ip];
+    let config = WledConfig {
+        known_ips: vec![configured_ip],
+        ..WledConfig::default()
+    };
 
     let desk = wled_device_info("WLED Desk");
     let mut desk_metadata = HashMap::new();
@@ -595,7 +597,7 @@ async fn resolve_wled_probe_ips_merges_config_runtime_state_and_registry_metadat
     )
     .expect("runtime state should save");
 
-    let resolved = resolve_wled_probe_ips(&registry, &config.wled, &runtime_state_path).await;
+    let resolved = resolve_wled_probe_ips(&registry, &config, &runtime_state_path).await;
     assert_eq!(
         resolved,
         vec![
@@ -615,8 +617,10 @@ async fn resolve_wled_probe_targets_preserves_cached_identity_hints() {
     let configured_ip: IpAddr = "10.4.22.69".parse().expect("configured IP should parse");
     let cached_ip: IpAddr = "10.4.22.169".parse().expect("cached IP should parse");
 
-    let mut config = HypercolorConfig::default();
-    config.wled.known_ips = vec![configured_ip];
+    let config = WledConfig {
+        known_ips: vec![configured_ip],
+        ..WledConfig::default()
+    };
 
     let studio = wled_device_info("WLED Studio");
     let mut studio_metadata = HashMap::new();
@@ -650,7 +654,7 @@ async fn resolve_wled_probe_targets_preserves_cached_identity_hints() {
     )
     .expect("runtime state should save");
 
-    let resolved = resolve_wled_probe_targets(&registry, &config.wled, &runtime_state_path).await;
+    let resolved = resolve_wled_probe_targets(&registry, &config, &runtime_state_path).await;
     assert_eq!(resolved.len(), 2);
 
     let cached = resolved
@@ -679,8 +683,10 @@ async fn resolve_hue_probe_bridges_merges_config_and_registry_metadata() {
     let configured_ip: IpAddr = "10.9.0.10".parse().expect("configured IP should parse");
     let cached_ip: IpAddr = "10.9.0.20".parse().expect("cached IP should parse");
 
-    let mut config = HypercolorConfig::default();
-    config.hue.bridge_ips = vec![configured_ip];
+    let config = HueConfig {
+        bridge_ips: vec![configured_ip],
+        ..HueConfig::default()
+    };
 
     let mut hue_info = wled_device_info("Studio Bridge");
     hue_info.family = DeviceFamily::Hue;
@@ -701,7 +707,7 @@ async fn resolve_hue_probe_bridges_merges_config_and_registry_metadata() {
         )
         .await;
 
-    let resolved = resolve_hue_probe_bridges(&registry, &config.hue).await;
+    let resolved = resolve_hue_probe_bridges(&registry, &config).await;
     assert_eq!(
         resolved,
         vec![

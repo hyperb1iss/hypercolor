@@ -23,9 +23,7 @@ use hypercolor_daemon::startup::{
 };
 use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
-use hypercolor_types::config::{
-    EffectErrorFallbackPolicy, RenderAccelerationMode, WledProtocolConfig,
-};
+use hypercolor_types::config::{EffectErrorFallbackPolicy, RenderAccelerationMode};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
@@ -341,7 +339,7 @@ canvas_height = 400
 enabled = false
 fft_size = 2048
 
-[wled]
+[drivers.wled]
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
 realtime_http_enabled = false
@@ -357,10 +355,16 @@ wasm_plugins = true
     assert_eq!(config.daemon.canvas_height, 400);
     assert!(!config.audio.enabled);
     assert_eq!(config.audio.fft_size, 2048);
-    assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);
-    assert_eq!(config.wled.known_ips.len(), 1);
-    assert!(!config.wled.realtime_http_enabled);
-    assert_eq!(config.wled.dedup_threshold, 0);
+    assert_eq!(config.drivers["wled"].settings["default_protocol"], "e131");
+    assert_eq!(
+        config.drivers["wled"].settings["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+    assert_eq!(
+        config.drivers["wled"].settings["realtime_http_enabled"],
+        false
+    );
+    assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
     assert!(config.features.wasm_plugins);
 }
 
@@ -376,16 +380,14 @@ fn parse_config_toml_rejects_invalid_toml() {
 #[test]
 fn default_config_has_sane_values() {
     let config = default_config();
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, 4);
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
     assert_eq!(config.daemon.canvas_width, DEFAULT_CANVAS_WIDTH);
     assert_eq!(config.daemon.canvas_height, DEFAULT_CANVAS_HEIGHT);
-    assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
-    assert!(config.wled.realtime_http_enabled);
-    assert!(config.wled.known_ips.is_empty());
-    assert_eq!(config.wled.dedup_threshold, 2);
+    assert!(config.drivers["wled"].enabled);
+    assert!(config.drivers["wled"].settings.is_empty());
     assert!(config.include.is_empty());
 }
 

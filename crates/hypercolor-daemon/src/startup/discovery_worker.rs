@@ -240,5 +240,16 @@ pub fn collect_unmapped_prefixed_layout_targets(
 }
 
 fn should_retry_unmapped_wled_targets(config: &HypercolorConfig) -> bool {
-    config.discovery.wled_scan && config.discovery.mdns_enabled && config.wled.known_ips.is_empty()
+    let wled_enabled = config
+        .drivers
+        .get("wled")
+        .map_or(true, |entry| entry.enabled);
+    let has_known_ips = config
+        .drivers
+        .get("wled")
+        .and_then(|entry| entry.settings.get("known_ips"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|ips| !ips.is_empty());
+
+    wled_enabled && config.discovery.mdns_enabled && !has_known_ips
 }

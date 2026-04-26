@@ -4563,6 +4563,7 @@ dependencies = [
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-types",
+ "serde",
  "serde_json",
 ]
 

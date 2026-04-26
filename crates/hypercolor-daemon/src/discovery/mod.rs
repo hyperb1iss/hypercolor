@@ -381,7 +381,10 @@ mod tests {
     fn resolve_backends_rejects_disabled_wled() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
-        cfg.discovery.wled_scan = false;
+        cfg.drivers
+            .get_mut("wled")
+            .expect("wled config should exist")
+            .enabled = false;
         let requested = vec!["wled".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("wled must fail");
@@ -392,7 +395,10 @@ mod tests {
     fn resolve_backends_rejects_disabled_nanoleaf() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
-        cfg.discovery.nanoleaf_scan = false;
+        cfg.drivers
+            .get_mut("nanoleaf")
+            .expect("nanoleaf config should exist")
+            .enabled = false;
         let requested = vec!["nanoleaf".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("nanoleaf must fail");
@@ -403,7 +409,10 @@ mod tests {
     fn resolve_backends_rejects_disabled_hue() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
-        cfg.discovery.hue_scan = false;
+        cfg.drivers
+            .get_mut("hue")
+            .expect("hue config should exist")
+            .enabled = false;
         let requested = vec!["hue".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("hue must fail");

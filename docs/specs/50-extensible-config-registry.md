@@ -21,7 +21,7 @@
 5. [Target TOML Shape](#5-target-toml-shape)
 6. [Rust Types](#6-rust-types)
 7. [Driver Config Contract](#7-driver-config-contract)
-8. [Config Loading and Migration](#8-config-loading-and-migration)
+8. [Config Loading](#8-config-loading)
 9. [Daemon Integration](#9-daemon-integration)
 10. [API and UI Introspection](#10-api-and-ui-introspection)
 11. [Future Wasm Drivers](#11-future-wasm-drivers)
@@ -104,7 +104,8 @@ That creates three problems.
 - Move extension-owned settings under stable registries such as `drivers`.
 - Give each driver a narrow config slice instead of the full root config.
 - Replace per-driver discovery booleans with generic driver enablement.
-- Preserve legacy config files through migration and aliases.
+- Keep runtime loading canonical v4 only, with local config updated in place
+  during the transition.
 - Expose enough metadata for CLI/UI/API introspection.
 - Shape the contract so a Wasm driver can provide the same metadata later.
 
@@ -422,51 +423,36 @@ This is enough for API documentation, CLI display, and a future generic UI.
 
 ---
 
-## 8. Config Loading and Migration
+## 8. Config Loading
 
 ### 8.1 Schema Version
 
 Set `CURRENT_SCHEMA_VERSION` to `4`.
 
-Main config v4 changes:
+Main config v4 shape:
 
 - add `drivers`
-- move `[wled]` to `[drivers.wled]`
-- move `[hue]` to `[drivers.hue]`
-- move `[nanoleaf]` to `[drivers.nanoleaf]`
-- move `discovery.wled_scan` to `drivers.wled.enabled`
-- move `discovery.hue_scan` to `drivers.hue.enabled`
-- move `discovery.nanoleaf_scan` to `drivers.nanoleaf.enabled`
+- use `[drivers.wled]`, `[drivers.hue]`, and `[drivers.nanoleaf]`
+- use `drivers.<id>.enabled` for network driver discovery enablement
+- keep `[discovery]` for shared discovery behavior only
 
-### 8.2 Migration Behavior
+### 8.2 Legacy Config Handling
 
-Migrations must use `toml_edit::DocumentMut` once format-preserving migrations
-exist. If the first pass keeps the current `toml` deserialize flow, it must
-still preserve user intent through serde aliases and tests.
+The first implementation does not carry a runtime migration layer. Existing
+local config files are updated in place to the v4 shape, and core code rejects
+legacy top-level driver fields by omission from `HypercolorConfig`.
 
-Migration rules:
+Manual update rules:
 
-- Existing `[drivers.<id>]` values win over legacy values.
-- Legacy driver sections are copied only when the new section is absent.
-- Legacy discovery booleans set `enabled` only when `drivers.<id>.enabled` is
-  absent.
-- Unknown fields in legacy driver sections are preserved inside the new driver
-  section.
-- A warning is logged when legacy keys are loaded.
+- `[wled]` becomes `[drivers.wled]`
+- `[hue]` becomes `[drivers.hue]`
+- `[nanoleaf]` becomes `[drivers.nanoleaf]`
+- `discovery.wled_scan` becomes `drivers.wled.enabled`
+- `discovery.hue_scan` becomes `drivers.hue.enabled`
+- `discovery.nanoleaf_scan` becomes `drivers.nanoleaf.enabled`
+- `schema_version` becomes `4`
 
-### 8.3 Compatibility Window
-
-For one minor release:
-
-- reading legacy keys is supported
-- writing config persists only v4 shape
-- API `config/get` and `config/set` accept legacy key aliases
-- responses return canonical v4 keys
-
-After the compatibility window, legacy aliases can be removed with a schema
-migration note.
-
-### 8.4 Include Merging
+### 8.3 Include Merging
 
 `include` files deep-merge driver entries by driver ID. Included settings patch
 only the keys they specify:
@@ -556,22 +542,10 @@ The first pass does not need a live driver reconfigure trait.
 
 ## 10. API and UI Introspection
 
-### 10.1 Config API Aliases
+### 10.1 Config API Paths
 
-Legacy keys map to canonical keys:
-
-| Legacy Key                     | Canonical Key                  |
-| ------------------------------ | ------------------------------ |
-| `wled.known_ips`               | `drivers.wled.known_ips`       |
-| `wled.default_protocol`        | `drivers.wled.default_protocol` |
-| `hue.bridge_ips`               | `drivers.hue.bridge_ips`       |
-| `nanoleaf.device_ips`          | `drivers.nanoleaf.device_ips`  |
-| `discovery.wled_scan`          | `drivers.wled.enabled`         |
-| `discovery.hue_scan`           | `drivers.hue.enabled`          |
-| `discovery.nanoleaf_scan`      | `drivers.nanoleaf.enabled`     |
-
-`POST /api/v1/config/set` should accept the legacy key, apply the canonical
-path, and return the canonical key.
+The config API accepts canonical v4 keys only. Driver settings use
+`drivers.<id>.<key>` and driver enablement uses `drivers.<id>.enabled`.
 
 ### 10.2 Driver Listing
 
@@ -772,8 +746,8 @@ Files:
 Work:
 
 - update canonical config examples to v4 shape
-- mark legacy top-level driver sections as deprecated
-- document compatibility window
+- remove legacy top-level driver sections from current docs
+- document the local one-time config edit separately from runtime loading
 
 Verify:
 
@@ -785,14 +759,14 @@ Verify:
 
 Minimum acceptance checks:
 
-- v3 config with `[wled]`, `[hue]`, `[nanoleaf]`, and discovery booleans loads.
-- saving that config writes v4 `[drivers.<id>]` shape.
+- v4 config with `[drivers.wled]`, `[drivers.hue]`, and
+  `[drivers.nanoleaf]` loads.
 - unknown `[drivers.example]` entry survives load/save.
 - WLED known IPs still seed discovery and backend cache behavior.
 - Hue and Nanoleaf pairing/auth summaries still work.
 - explicit discovery request for disabled WLED returns an error naming
   `drivers.wled.enabled`.
-- config API legacy key aliases work and return canonical paths.
+- config API canonical driver registry keys update driver config.
 - `just verify` passes.
 
 Independent verification is required before completion because this crosses
