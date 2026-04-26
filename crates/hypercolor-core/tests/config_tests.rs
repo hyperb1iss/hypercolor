@@ -9,7 +9,7 @@ use hypercolor_core::config::ConfigManager;
 #[test]
 fn load_minimal_toml() {
     let toml = r"
-        schema_version = 3
+        schema_version = 4
     ";
 
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
@@ -17,7 +17,7 @@ fn load_minimal_toml() {
 
     let config = ConfigManager::load(tmp.path()).expect("minimal TOML should parse without error");
 
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, 4);
     // Sections should fall back to their serde defaults
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
@@ -28,7 +28,7 @@ fn load_minimal_toml() {
 #[test]
 fn load_full_toml_with_overrides() {
     let toml = r#"
-        schema_version = 3
+        schema_version = 4
         include = ["local.toml"]
 
         [daemon]
@@ -49,6 +49,10 @@ fn load_full_toml_with_overrides() {
         [features]
         wasm_plugins = true
         midi_input = true
+
+        [drivers.openrgb]
+        enabled = false
+        socket = "/run/openrgb.sock"
     "#;
 
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
@@ -70,13 +74,18 @@ fn load_full_toml_with_overrides() {
     assert!(!config.features.hue_entertainment);
     assert!(config.hue.use_cie_xy);
     assert_eq!(config.nanoleaf.transition_time, 1);
+    assert!(!config.drivers["openrgb"].enabled);
+    assert_eq!(
+        config.drivers["openrgb"].settings["socket"],
+        "/run/openrgb.sock"
+    );
     assert_eq!(config.include, vec!["local.toml"]);
 }
 
 #[test]
 fn load_canonicalizes_legacy_audio_device_ids() {
     let toml = r#"
-        schema_version = 3
+        schema_version = 4
 
         [audio]
         device = "mic"
@@ -116,7 +125,7 @@ fn new_with_missing_file_uses_defaults() {
         ConfigManager::new(path).expect("ConfigManager should fall back to defaults gracefully");
     let config = manager.get();
 
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, 4);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
@@ -129,7 +138,7 @@ fn new_with_valid_file_loads_it() {
     fs::write(
         &path,
         r"
-        schema_version = 3
+        schema_version = 4
 
         [daemon]
         port = 7777
@@ -178,7 +187,7 @@ fn reload_picks_up_file_changes() {
     fs::write(
         &path,
         r"
-        schema_version = 3
+        schema_version = 4
 
         [daemon]
         port = 9420
@@ -193,7 +202,7 @@ fn reload_picks_up_file_changes() {
     fs::write(
         &path,
         r"
-        schema_version = 3
+        schema_version = 4
 
         [daemon]
         port = 1234
@@ -213,7 +222,7 @@ fn reload_preserves_old_config_on_parse_error() {
     fs::write(
         &path,
         r"
-        schema_version = 3
+        schema_version = 4
 
         [daemon]
         port = 5555

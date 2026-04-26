@@ -4,7 +4,7 @@ use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
     EffectErrorFallbackPolicy, FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig,
     NanoleafConfig, NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig,
-    WledConfig, WledProtocolConfig,
+    WledConfig, WledProtocolConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -96,6 +96,18 @@ fn network_defaults_match_spec() {
     assert!(n.mdns_publish);
     assert!(!n.remote_access);
     assert_eq!(n.instance_name, None);
+}
+
+#[test]
+fn driver_registry_defaults_include_builtin_drivers() {
+    let drivers = default_driver_configs();
+    assert!(drivers["wled"].enabled);
+    assert!(drivers["hue"].enabled);
+    assert!(drivers["nanoleaf"].enabled);
+    assert_eq!(drivers["wled"].settings["default_protocol"], "ddp");
+    assert_eq!(drivers["wled"].settings["dedup_threshold"], 2);
+    assert_eq!(drivers["hue"].settings["use_cie_xy"], true);
+    assert_eq!(drivers["nanoleaf"].settings["transition_time"], 1);
 }
 
 #[test]
@@ -192,7 +204,7 @@ fn audio_config_toml_roundtrip() {
 #[test]
 fn full_config_toml_roundtrip() {
     let original = HypercolorConfig {
-        schema_version: 2,
+        schema_version: 4,
         include: vec!["local.toml".into()],
         daemon: DaemonConfig::default(),
         web: WebConfig::default(),
@@ -202,6 +214,7 @@ fn full_config_toml_roundtrip() {
         capture: CaptureConfig::default(),
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
+        drivers: default_driver_configs(),
         wled: WledConfig::default(),
         hue: HueConfig::default(),
         nanoleaf: NanoleafConfig::default(),
@@ -213,7 +226,7 @@ fn full_config_toml_roundtrip() {
     let toml_str = toml::to_string(&original).expect("serialize HypercolorConfig");
     let restored: HypercolorConfig =
         toml::from_str(&toml_str).expect("deserialize HypercolorConfig");
-    assert_eq!(restored.schema_version, 2);
+    assert_eq!(restored.schema_version, 4);
     assert_eq!(restored.include, vec!["local.toml"]);
     assert_eq!(restored.daemon.port, 9420);
     assert!(restored.web.enabled);
@@ -227,6 +240,8 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
+    assert!(restored.drivers["wled"].enabled);
+    assert_eq!(restored.drivers["wled"].settings["default_protocol"], "ddp");
     assert!(restored.hue.use_cie_xy);
     assert_eq!(restored.nanoleaf.transition_time, 1);
     assert!(restored.dbus.enabled);
@@ -238,9 +253,9 @@ fn full_config_toml_roundtrip() {
 
 #[test]
 fn minimal_toml_fills_defaults() {
-    let minimal = "schema_version = 2\n";
+    let minimal = "schema_version = 4\n";
     let config: HypercolorConfig = toml::from_str(minimal).expect("deserialize minimal config");
-    assert_eq!(config.schema_version, 2);
+    assert_eq!(config.schema_version, 4);
     assert_eq!(config.daemon.port, 9420);
     assert!(config.web.enabled);
     assert_eq!(config.mcp.base_path, "/mcp");
@@ -253,11 +268,36 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
+    assert!(config.drivers["wled"].enabled);
+    assert_eq!(config.drivers["wled"].settings["default_protocol"], "ddp");
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
     assert!(config.wled.realtime_http_enabled);
     assert_eq!(config.wled.dedup_threshold, 2);
     assert!(config.hue.use_cie_xy);
     assert_eq!(config.nanoleaf.transition_time, 1);
+}
+
+#[test]
+fn driver_registry_toml_deserializes_unknown_driver_settings() {
+    let config: HypercolorConfig = toml::from_str(
+        r#"
+schema_version = 4
+
+[drivers.openrgb]
+enabled = false
+socket = "/run/openrgb.sock"
+zones = ["keyboard", "mouse"]
+"#,
+    )
+    .expect("deserialize driver registry config");
+
+    let openrgb = &config.drivers["openrgb"];
+    assert!(!openrgb.enabled);
+    assert_eq!(openrgb.settings["socket"], "/run/openrgb.sock");
+    assert_eq!(
+        openrgb.settings["zones"],
+        serde_json::json!(["keyboard", "mouse"])
+    );
 }
 
 #[test]
@@ -298,7 +338,7 @@ render_acceleration_mode = "gpu"
 #[test]
 fn unknown_fields_ignored() {
     let toml_with_future_field = r#"
-schema_version = 3
+schema_version = 4
 
 [daemon]
 port = 9420
@@ -306,7 +346,7 @@ some_future_field = "hello from the future"
 "#;
     let config: HypercolorConfig =
         toml::from_str(toml_with_future_field).expect("deserialize with unknown fields");
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, 4);
     assert_eq!(config.daemon.port, 9420);
 }
 

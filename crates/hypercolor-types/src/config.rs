@@ -4,6 +4,7 @@
 //! every optional section for forward/backward compatibility. A fresh install with
 //! zero config files boots the daemon entirely from compile-time defaults.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -174,6 +175,9 @@ pub struct HypercolorConfig {
     #[serde(default)]
     pub network: NetworkConfig,
 
+    #[serde(default = "default_driver_configs")]
+    pub drivers: DriverConfigs,
+
     #[serde(default)]
     pub wled: WledConfig,
 
@@ -197,7 +201,7 @@ pub struct HypercolorConfig {
 }
 
 /// Current schema version for newly created configurations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 impl Default for HypercolorConfig {
     fn default() -> Self {
@@ -212,6 +216,7 @@ impl Default for HypercolorConfig {
             capture: CaptureConfig::default(),
             discovery: DiscoveryConfig::default(),
             network: NetworkConfig::default(),
+            drivers: default_driver_configs(),
             wled: WledConfig::default(),
             hue: HueConfig::default(),
             nanoleaf: NanoleafConfig::default(),
@@ -221,6 +226,87 @@ impl Default for HypercolorConfig {
             features: FeatureFlags::default(),
         }
     }
+}
+
+// ─── Driver Registry ────────────────────────────────────────────────────────
+
+/// Stable config map for all driver-owned settings.
+pub type DriverConfigs = BTreeMap<String, DriverConfigEntry>;
+
+/// Host-owned wrapper around one driver's settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DriverConfigEntry {
+    #[serde(default = "defaults::bool_true")]
+    pub enabled: bool,
+
+    #[serde(flatten)]
+    pub settings: BTreeMap<String, serde_json::Value>,
+}
+
+impl DriverConfigEntry {
+    #[must_use]
+    pub fn enabled(settings: BTreeMap<String, serde_json::Value>) -> Self {
+        Self {
+            enabled: true,
+            settings,
+        }
+    }
+
+    #[must_use]
+    pub fn disabled(settings: BTreeMap<String, serde_json::Value>) -> Self {
+        Self {
+            enabled: false,
+            settings,
+        }
+    }
+}
+
+impl Default for DriverConfigEntry {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::bool_true(),
+            settings: BTreeMap::new(),
+        }
+    }
+}
+
+#[must_use]
+pub fn default_driver_configs() -> DriverConfigs {
+    let discovery = DiscoveryConfig::default();
+    let mut drivers = DriverConfigs::new();
+    drivers.insert(
+        "wled".to_owned(),
+        driver_entry_from_serializable(discovery.wled_scan, &WledConfig::default()),
+    );
+    drivers.insert(
+        "hue".to_owned(),
+        driver_entry_from_serializable(discovery.hue_scan, &HueConfig::default()),
+    );
+    drivers.insert(
+        "nanoleaf".to_owned(),
+        driver_entry_from_serializable(discovery.nanoleaf_scan, &NanoleafConfig::default()),
+    );
+    drivers
+}
+
+#[must_use]
+pub fn driver_entry_from_serializable<T: Serialize>(
+    enabled: bool,
+    config: &T,
+) -> DriverConfigEntry {
+    let settings = serde_json::to_value(config)
+        .ok()
+        .and_then(|value| match value {
+            serde_json::Value::Object(map) => Some(
+                map.into_iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    DriverConfigEntry { enabled, settings }
 }
 
 // ─── Daemon ──────────────────────────────────────────────────────────────────
