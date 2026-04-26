@@ -83,7 +83,7 @@ impl DiscoveryCapability for NanoleafDriverFactory {
         config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
         let config = config.parse_settings::<NanoleafConfig>()?;
-        let tracked_devices = host.discovery_state().tracked_devices("nanoleaf").await;
+        let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
         let mut scanner = NanoleafScanner::with_options(
             known_devices,
@@ -144,7 +144,7 @@ impl PairingCapability for NanoleafDriverFactory {
                 host,
                 request.activate_after_pair,
                 device.device_id,
-                "nanoleaf",
+                DESCRIPTOR.id,
             )
             .await;
             let message = if activated {
@@ -177,7 +177,7 @@ impl PairingCapability for NanoleafDriverFactory {
                     host,
                     request.activate_after_pair,
                     device.device_id,
-                    "nanoleaf",
+                    DESCRIPTOR.id,
                 )
                 .await;
                 let message = if activated {
@@ -208,7 +208,7 @@ impl PairingCapability for NanoleafDriverFactory {
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
         clear_nanoleaf_credentials(host.credentials(), device.metadata).await?;
-        let disconnected = disconnect_after_unpair(host, device.device_id, "nanoleaf").await;
+        let disconnected = disconnect_after_unpair(host, device.device_id, DESCRIPTOR.id).await;
 
         Ok(ClearPairingOutcome {
             message: "Nanoleaf credentials removed.".to_owned(),

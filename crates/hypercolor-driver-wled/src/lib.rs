@@ -129,7 +129,7 @@ impl DiscoveryCapability for WledDriverFactory {
         config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
         let config = config.parse_settings::<WledConfig>()?;
-        let tracked_devices = host.discovery_state().tracked_devices("wled").await;
+        let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let cached_probe_ips = load_cached_probe_ips(host)?;
         let cached_targets = load_cached_probe_targets(host)?;
         let known_targets = resolve_wled_probe_targets_from_sources(
@@ -565,7 +565,7 @@ pub fn resolve_wled_probe_targets_from_sources(
 
 fn load_cached_probe_ips(host: &dyn DriverHost) -> Result<Vec<IpAddr>> {
     host.discovery_state()
-        .load_cached_json("wled", "probe_ips")?
+        .load_cached_json(DESCRIPTOR.id, "probe_ips")?
         .map(serde_json::from_value)
         .transpose()
         .context("failed to parse cached WLED probe IPs")
@@ -574,7 +574,7 @@ fn load_cached_probe_ips(host: &dyn DriverHost) -> Result<Vec<IpAddr>> {
 
 fn load_cached_probe_targets(host: &dyn DriverHost) -> Result<Vec<WledKnownTarget>> {
     host.discovery_state()
-        .load_cached_json("wled", "probe_targets")?
+        .load_cached_json(DESCRIPTOR.id, "probe_targets")?
         .map(serde_json::from_value)
         .transpose()
         .context("failed to parse cached WLED probe targets")

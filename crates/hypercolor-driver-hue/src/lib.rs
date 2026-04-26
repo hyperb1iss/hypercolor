@@ -81,7 +81,7 @@ impl DiscoveryCapability for HueDriverFactory {
         config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
         let config = config.parse_settings::<HueConfig>()?;
-        let tracked_devices = host.discovery_state().tracked_devices("hue").await;
+        let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_bridges = resolve_hue_probe_bridges_from_sources(&config, &tracked_devices);
         let mut scanner = HueScanner::with_options(
             known_bridges,
@@ -139,9 +139,13 @@ impl PairingCapability for HueDriverFactory {
             .await
             .unwrap_or_default()
         {
-            let activated =
-                activate_if_requested(host, request.activate_after_pair, device.device_id, "hue")
-                    .await;
+            let activated = activate_if_requested(
+                host,
+                request.activate_after_pair,
+                device.device_id,
+                DESCRIPTOR.id,
+            )
+            .await;
             let message = if activated {
                 "Hue bridge credentials are already configured and the device was activated."
             } else {
@@ -172,7 +176,7 @@ impl PairingCapability for HueDriverFactory {
                     host,
                     request.activate_after_pair,
                     device.device_id,
-                    "hue",
+                    DESCRIPTOR.id,
                 )
                 .await;
                 let message = if activated {
@@ -202,7 +206,7 @@ impl PairingCapability for HueDriverFactory {
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
         clear_hue_credentials(host.credentials(), device.metadata).await?;
-        let disconnected = disconnect_after_unpair(host, device.device_id, "hue").await;
+        let disconnected = disconnect_after_unpair(host, device.device_id, DESCRIPTOR.id).await;
 
         Ok(ClearPairingOutcome {
             message: "Hue bridge credentials removed.".to_owned(),
