@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient, HueScanner};
 pub use hypercolor_core::device::hue::{HueConfig, HueKnownBridge};
@@ -14,11 +14,19 @@ use hypercolor_driver_api::support::{
 };
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFlowKind, TrackedDeviceCtx,
+    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
+    DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    TrackedDeviceCtx, ValidatedControlChanges,
+};
+use hypercolor_types::controls::{
+    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
+    ControlActionResult, ControlAvailabilityExpr, ControlChange, ControlFieldDescriptor,
+    ControlGroupDescriptor, ControlGroupKind, ControlOwner, ControlPersistence,
+    ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
+    ControlVisibility,
 };
 
 const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
@@ -29,6 +37,9 @@ const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
 
 pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
+
+const FIELD_BRIDGE_IPS: &str = "bridge_ips";
+const FIELD_USE_CIE_XY: &str = "use_cie_xy";
 
 #[derive(Clone)]
 pub struct HueDriverFactory {
@@ -70,6 +81,10 @@ impl NetworkDriverFactory for HueDriverFactory {
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
 }
 
 #[async_trait]
@@ -98,6 +113,253 @@ impl DiscoveryCapability for HueDriverFactory {
             .collect();
 
         Ok(DiscoveryResult { devices })
+    }
+}
+
+#[async_trait]
+impl DriverControlProvider for HueDriverFactory {
+    async fn driver_surface(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        Ok(Some(hue_driver_control_surface(
+            &config.parse_settings::<HueConfig>()?,
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _device: &TrackedDeviceCtx<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        _host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> Result<ValidatedControlChanges> {
+        validate_hue_driver_changes(target, changes)
+    }
+
+    async fn apply_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> Result<ApplyControlChangesResponse> {
+        let ControlApplyTarget::Driver { driver_id, config } = target else {
+            bail!("Hue controls cannot apply to device targets");
+        };
+        if *driver_id != DESCRIPTOR.id {
+            bail!("Hue controls cannot apply to driver '{driver_id}'");
+        }
+
+        let control_host = host
+            .control_host()
+            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+        let mut values = hue_config_values(&config.parse_settings::<HueConfig>()?);
+        for change in &changes.changes {
+            values.insert(change.field_id.clone(), change.value.clone());
+        }
+        control_host
+            .driver_config_store()
+            .save_driver_values(DESCRIPTOR.id, values.clone())
+            .await?;
+
+        Ok(hue_apply_response(
+            format!("driver:{}", DESCRIPTOR.id),
+            changes,
+            values,
+        ))
+    }
+
+    async fn invoke_action(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        _input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        bail!("unknown Hue control action: {action_id}")
+    }
+}
+
+#[must_use]
+pub fn hue_driver_control_surface(config: &HueConfig) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}", DESCRIPTOR.id),
+        ControlSurfaceScope::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.push(ControlGroupDescriptor {
+        id: "connection".to_owned(),
+        label: "Connection".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Connection,
+        ordering: 0,
+    });
+    document.groups.push(ControlGroupDescriptor {
+        id: "output".to_owned(),
+        label: "Output".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Output,
+        ordering: 10,
+    });
+    document.fields = hue_driver_control_fields();
+    document.values = hue_config_values(config);
+    document.revision = hue_control_revision(&document.values);
+    document
+}
+
+fn validate_hue_driver_changes(
+    target: &ControlApplyTarget<'_>,
+    changes: &[ControlChange],
+) -> Result<ValidatedControlChanges> {
+    let ControlApplyTarget::Driver { driver_id, .. } = target else {
+        bail!("Hue controls cannot validate device targets");
+    };
+    if *driver_id != DESCRIPTOR.id {
+        bail!("Hue controls cannot validate driver '{driver_id}'");
+    }
+
+    let fields = hue_driver_control_fields()
+        .into_iter()
+        .map(|field| (field.id.clone(), field))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut impacts = Vec::new();
+
+    for change in changes {
+        if !seen.insert(change.field_id.as_str()) {
+            bail!("duplicate Hue control field: {}", change.field_id);
+        }
+        let field = fields
+            .get(&change.field_id)
+            .ok_or_else(|| anyhow!("unknown Hue control field: {}", change.field_id))?;
+        field
+            .value_type
+            .validate_value(&change.value)
+            .with_context(|| format!("invalid Hue control field: {}", change.field_id))?;
+        push_unique_impact(&mut impacts, field.apply_impact.clone());
+    }
+
+    Ok(ValidatedControlChanges {
+        changes: changes.to_vec(),
+        impacts,
+    })
+}
+
+fn hue_driver_control_fields() -> Vec<ControlFieldDescriptor> {
+    vec![
+        hue_driver_field(
+            FIELD_BRIDGE_IPS,
+            "Bridge IPs",
+            Some("connection"),
+            ControlValueType::List {
+                item_type: Box::new(ControlValueType::IpAddress),
+                min_items: None,
+                max_items: Some(32),
+            },
+            ApplyImpact::DiscoveryRescan,
+            0,
+        ),
+        hue_driver_field(
+            FIELD_USE_CIE_XY,
+            "CIE xy Streaming",
+            Some("output"),
+            ControlValueType::Bool,
+            ApplyImpact::BackendRebind,
+            10,
+        ),
+    ]
+}
+
+fn hue_driver_field(
+    id: &str,
+    label: &str,
+    group_id: Option<&str>,
+    value_type: ControlValueType,
+    apply_impact: ApplyImpact,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: group_id.map(str::to_owned),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadWrite,
+        persistence: ControlPersistence::DriverConfig,
+        apply_impact,
+        visibility: ControlVisibility::Standard,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
+fn hue_config_values(config: &HueConfig) -> ControlValueMap {
+    ControlValueMap::from([
+        (
+            FIELD_BRIDGE_IPS.to_owned(),
+            ControlValue::List(
+                config
+                    .bridge_ips
+                    .iter()
+                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .collect(),
+            ),
+        ),
+        (
+            FIELD_USE_CIE_XY.to_owned(),
+            ControlValue::Bool(config.use_cie_xy),
+        ),
+    ])
+}
+
+fn hue_apply_response(
+    surface_id: String,
+    changes: ValidatedControlChanges,
+    values: ControlValueMap,
+) -> ApplyControlChangesResponse {
+    ApplyControlChangesResponse {
+        surface_id,
+        previous_revision: 0,
+        revision: 0,
+        accepted: changes
+            .changes
+            .into_iter()
+            .map(|change| AppliedControlChange {
+                field_id: change.field_id,
+                value: change.value,
+            })
+            .collect(),
+        rejected: Vec::new(),
+        impacts: changes.impacts,
+        values,
+    }
+}
+
+fn hue_control_revision(values: &ControlValueMap) -> u64 {
+    values
+        .iter()
+        .flat_map(|(key, value)| [key.as_bytes(), format!("{value:?}").as_bytes()].concat())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
+    if !impacts.contains(&impact) {
+        impacts.push(impact);
     }
 }
 

@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_driver_api::DriverTrackedDevice;
-use hypercolor_driver_hue::{HueConfig, resolve_hue_probe_bridges_from_sources};
+use hypercolor_driver_hue::{
+    HueConfig, hue_driver_control_surface, resolve_hue_probe_bridges_from_sources,
+};
+use hypercolor_types::controls::{ApplyImpact, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
@@ -64,4 +67,35 @@ fn resolve_hue_probe_bridges_merges_tracked_metadata() {
     assert_eq!(tracked.bridge_id, "bridge-123");
     assert_eq!(tracked.name, "Studio Bridge");
     assert_eq!(tracked.model_id, "BSB002");
+}
+
+#[test]
+fn hue_driver_control_surface_exposes_typed_config_fields() {
+    let config = HueConfig {
+        bridge_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10))],
+        use_cie_xy: false,
+        ..HueConfig::default()
+    };
+
+    let surface = hue_driver_control_surface(&config);
+
+    assert_eq!(surface.surface_id, "driver:hue");
+    let ControlValue::List(bridge_ips) = &surface.values["bridge_ips"] else {
+        panic!("bridge IPs should be a list");
+    };
+    assert_eq!(
+        bridge_ips,
+        &[ControlValue::IpAddress("10.0.0.10".to_owned())]
+    );
+    assert_eq!(surface.values["use_cie_xy"], ControlValue::Bool(false));
+    assert!(surface.fields.iter().any(
+        |field| field.id == "bridge_ips" && field.apply_impact == ApplyImpact::DiscoveryRescan
+    ));
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "use_cie_xy"
+                && field.apply_impact == ApplyImpact::BackendRebind)
+    );
 }
