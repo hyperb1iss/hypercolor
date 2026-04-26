@@ -44,7 +44,7 @@ pub async fn get_device_control_surface(
     ApiResponse::ok(device_control_surface(
         &tracked.info,
         &tracked.user_settings,
-        state.device_registry.generation(),
+        tracked.revision,
     ))
 }
 
@@ -66,7 +66,11 @@ pub async fn apply_control_surface_values(
         return ApiError::not_found(format!("Unknown control surface: {surface_id}"));
     };
 
-    let previous_revision = state.device_registry.generation();
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {device_id}"));
+    };
+
+    let previous_revision = tracked.revision;
     if let Some(expected) = body.expected_revision
         && expected != previous_revision
     {
@@ -74,10 +78,6 @@ pub async fn apply_control_surface_values(
             "Control surface revision conflict: expected {expected}, current {previous_revision}"
         ));
     }
-
-    let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {device_id}"));
-    };
 
     let normalized = match normalize_device_control_changes(&body.changes) {
         Ok(changes) => changes,
@@ -101,7 +101,7 @@ pub async fn apply_control_surface_values(
     let revision = if body.dry_run {
         previous_revision
     } else {
-        state.device_registry.generation()
+        tracked.revision
     };
     let document = device_control_surface(&tracked.info, &tracked.user_settings, revision);
 

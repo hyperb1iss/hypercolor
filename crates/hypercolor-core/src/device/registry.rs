@@ -32,6 +32,9 @@ pub struct TrackedDevice {
 
     /// Persisted user-facing settings layered on top of discovered metadata.
     pub user_settings: DeviceUserSettings,
+
+    /// Monotonic mutation counter for this specific device.
+    pub revision: u64,
 }
 
 // ── DeviceRegistry ───────────────────────────────────────────────────────
@@ -151,6 +154,7 @@ impl DeviceRegistry {
                 );
                 entry.info = updated_info;
                 entry.connect_behavior = connect_behavior;
+                bump_device_revision(entry);
                 inner
                     .id_to_fingerprint
                     .insert(existing_id, fingerprint.clone());
@@ -187,6 +191,7 @@ impl DeviceRegistry {
             state: DeviceState::Known,
             connect_behavior,
             user_settings: DeviceUserSettings::default(),
+            revision: 0,
         };
 
         inner.fingerprints.insert(fingerprint.clone(), id);
@@ -260,6 +265,7 @@ impl DeviceRegistry {
                 "Device state transition"
             );
             entry.state = state;
+            bump_device_revision(entry);
             self.bump_generation();
             true
         } else {
@@ -278,6 +284,7 @@ impl DeviceRegistry {
         updated_info.id = *id;
         apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
         entry.info = updated_info;
+        bump_device_revision(entry);
         self.bump_generation();
 
         debug!(device_id = %id, "Updated device metadata in registry");
@@ -317,6 +324,7 @@ impl DeviceRegistry {
             entry.user_settings.brightness = brightness.clamp(0.0, 1.0);
         }
 
+        bump_device_revision(entry);
         self.bump_generation();
         Some(entry.clone())
     }
@@ -333,6 +341,7 @@ impl DeviceRegistry {
         entry.user_settings = settings;
         apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
 
+        bump_device_revision(entry);
         self.bump_generation();
         Some(entry.clone())
     }
@@ -426,6 +435,10 @@ fn apply_user_settings_to_info(info: &mut DeviceInfo, settings: &DeviceUserSetti
     if let Some(name) = settings.name.as_ref() {
         info.name.clone_from(name);
     }
+}
+
+fn bump_device_revision(entry: &mut TrackedDevice) {
+    entry.revision = entry.revision.saturating_add(1);
 }
 
 fn preserve_renderable_device_shape(

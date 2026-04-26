@@ -5887,6 +5887,109 @@ async fn patch_device_control_surface_updates_user_settings() {
 }
 
 #[tokio::test]
+async fn patch_device_control_surface_revision_is_device_local() {
+    let (state, _tmp) = test_state_with_temp_output_store();
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let unrelated_id = insert_test_device(&state, "Shelf Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let surface_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/devices/{device_id}/controls"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(surface_response.status(), StatusCode::OK);
+    let surface_json = body_json(surface_response).await;
+    let revision = surface_json["data"]["revision"]
+        .as_u64()
+        .expect("revision should be an integer");
+
+    state
+        .device_registry
+        .update_user_settings(&unrelated_id, Some("Shelf Renamed".to_owned()), None, None)
+        .await
+        .expect("unrelated device should update");
+
+    let body = serde_json::json!({
+        "surface_id": format!("device:{device_id}"),
+        "expected_revision": revision,
+        "dry_run": false,
+        "changes": [
+            {
+                "field_id": "brightness",
+                "value": { "kind": "float", "value": 0.25 }
+            }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/values"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["previous_revision"], revision);
+    assert_eq!(json["data"]["revision"], revision + 1);
+    assert_eq!(json["data"]["values"]["brightness"]["value"], 0.25);
+}
+
+#[tokio::test]
+async fn patch_missing_device_control_surface_returns_not_found_before_revision_conflict() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    state
+        .device_registry
+        .remove(&device_id)
+        .await
+        .expect("device should exist before removal");
+
+    let body = serde_json::json!({
+        "surface_id": format!("device:{device_id}"),
+        "expected_revision": 999,
+        "dry_run": false,
+        "changes": [
+            {
+                "field_id": "brightness",
+                "value": { "kind": "float", "value": 0.25 }
+            }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/values"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
