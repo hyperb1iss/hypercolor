@@ -1,7 +1,10 @@
 use hypercolor_types::attachment::{
     AttachmentBinding, AttachmentCategory, AttachmentSlot, DeviceAttachmentProfile,
 };
-use hypercolor_types::device::{DeviceFamily, DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
+
+const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
+const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
 
 #[must_use]
 pub fn effective_attachment_slots(
@@ -29,12 +32,7 @@ fn normalize_prism_s_slot_offsets(
     bindings: &[AttachmentBinding],
     slots: &mut [AttachmentSlot],
 ) {
-    if !is_protocol_device(
-        device,
-        "prismrgb/prism-s",
-        DeviceFamily::PrismRgb,
-        "prism_s",
-    ) {
+    if !has_protocol(device, PRISM_S_PROTOCOL_ID) {
         return;
     }
 
@@ -55,12 +53,7 @@ fn normalize_prism_s_slot_offsets(
 }
 
 fn append_nollie32_cable_slots(device: &DeviceInfo, slots: &mut Vec<AttachmentSlot>) {
-    if !is_protocol_device(
-        device,
-        "nollie/nollie-32",
-        DeviceFamily::Nollie,
-        "nollie_32",
-    ) {
+    if !has_protocol(device, NOLLIE32_PROTOCOL_ID) {
         return;
     }
 
@@ -109,12 +102,7 @@ fn normalize_nollie32_slot_offsets(
     bindings: &[AttachmentBinding],
     slots: &mut [AttachmentSlot],
 ) {
-    if !is_protocol_device(
-        device,
-        "nollie/nollie-32",
-        DeviceFamily::Nollie,
-        "nollie_32",
-    ) {
+    if !has_protocol(device, NOLLIE32_PROTOCOL_ID) {
         return;
     }
 
@@ -140,12 +128,6 @@ fn normalize_nollie32_slot_offsets(
     }
 }
 
-fn is_protocol_device(
-    device: &DeviceInfo,
-    protocol_id: &str,
-    family: DeviceFamily,
-    model: &str,
-) -> bool {
+fn has_protocol(device: &DeviceInfo, protocol_id: &str) -> bool {
     device.origin.protocol_id.as_deref() == Some(protocol_id)
-        || (device.family == family && device.model.as_deref() == Some(model))
 }

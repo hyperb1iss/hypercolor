@@ -25,9 +25,7 @@ use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::attachment::DeviceAttachmentProfile;
-use hypercolor_types::device::{
-    DeviceFamily, DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo,
-};
+use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -43,6 +41,8 @@ use crate::attachment::AttachmentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
+const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
+const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsbActorMetricsSnapshot {
@@ -327,12 +327,7 @@ fn prism_s_config_for_attachment_profile(
     profile: &DeviceAttachmentProfile,
     registry: &AttachmentRegistry,
 ) -> Option<PrismSConfig> {
-    if !is_protocol_device(
-        device,
-        "prismrgb/prism-s",
-        DeviceFamily::PrismRgb,
-        "prism_s",
-    ) {
+    if !has_protocol(device, PRISM_S_PROTOCOL_ID) {
         return None;
     }
 
@@ -372,12 +367,7 @@ fn nollie32_config_for_attachment_profile(
     profile: &DeviceAttachmentProfile,
     registry: &AttachmentRegistry,
 ) -> Option<Nollie32Config> {
-    if !is_protocol_device(
-        device,
-        "nollie/nollie-32",
-        DeviceFamily::Nollie,
-        "nollie_32",
-    ) {
+    if !has_protocol(device, NOLLIE32_PROTOCOL_ID) {
         return None;
     }
 
@@ -404,14 +394,8 @@ fn nollie32_config_for_attachment_profile(
     Some(config)
 }
 
-fn is_protocol_device(
-    device: &DeviceInfo,
-    protocol_id: &str,
-    family: DeviceFamily,
-    model: &str,
-) -> bool {
+fn has_protocol(device: &DeviceInfo, protocol_id: &str) -> bool {
     device.origin.protocol_id.as_deref() == Some(protocol_id)
-        || (device.family == family && device.model.as_deref() == Some(model))
 }
 
 /// Core USB backend for HAL-managed device families.
@@ -455,7 +439,7 @@ impl UsbBackend {
         pending: &PendingUsbDevice,
         device_id: DeviceId,
     ) -> Box<dyn Protocol> {
-        if pending.info_template.model.as_deref() == Some("prism_s")
+        if pending.descriptor.protocol.id == PRISM_S_PROTOCOL_ID
             && let Some(config) = self.protocol_configs.prism_s_config(device_id).await
         {
             return Box::new(
@@ -463,7 +447,7 @@ impl UsbBackend {
             );
         }
 
-        if pending.info_template.model.as_deref() == Some("nollie_32")
+        if pending.descriptor.protocol.id == NOLLIE32_PROTOCOL_ID
             && let Some(config) = self.protocol_configs.nollie32_config(device_id).await
         {
             return Box::new(
