@@ -325,8 +325,13 @@ impl DeviceControlStore for DaemonDriverHost {
 #[async_trait]
 impl DriverLifecycleActions for DaemonDriverHost {
     async fn reconnect_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
-        let _ = (device_id, backend_id);
-        Ok(false)
+        let runtime = self.discovery_runtime();
+        let disconnected =
+            discovery::disconnect_tracked_device(&runtime, device_id, DisconnectReason::User, true)
+                .await?;
+        let activated =
+            discovery::activate_pairable_device(&runtime, device_id, backend_id).await?;
+        Ok(disconnected || activated)
     }
 
     async fn rescan_driver(&self, driver_id: &str) -> Result<()> {

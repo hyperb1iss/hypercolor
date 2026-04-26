@@ -276,6 +276,12 @@ impl DriverControlProvider for WledDriverFactory {
                     .device_config_store()
                     .save_device_values(device.device_id, values.clone())
                     .await?;
+                if changes.impacts.contains(&ApplyImpact::DeviceReconnect) {
+                    control_host
+                        .lifecycle()
+                        .reconnect_device(device.device_id, device.info.backend_id())
+                        .await?;
+                }
 
                 Ok(wled_apply_response(
                     format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
@@ -692,7 +698,7 @@ fn wled_device_config_field(
         default_value: None,
         access: ControlAccess::ReadWrite,
         persistence: ControlPersistence::DeviceConfig,
-        apply_impact: ApplyImpact::Live,
+        apply_impact: ApplyImpact::DeviceReconnect,
         visibility: ControlVisibility::Standard,
         availability: ControlAvailabilityExpr::Always,
         ordering,

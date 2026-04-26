@@ -2021,6 +2021,10 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
     assert_eq!(json["data"]["surface_id"], surface_id);
     assert_eq!(json["data"]["values"]["protocol"]["value"], "e131");
     assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 6);
+    assert_eq!(
+        json["data"]["impacts"],
+        serde_json::json!(["device_reconnect"])
+    );
 
     let response = app
         .oneshot(
