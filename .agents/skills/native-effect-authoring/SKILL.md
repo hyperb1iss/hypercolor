@@ -50,22 +50,22 @@ pub struct FrameInput<'a> {
 
 Available every frame when audio input is active:
 
-| Field | Type | Range | Use For |
-|-------|------|-------|---------|
-| `rms_level` | f32 | 0.0-1.0 | Overall loudness |
-| `peak_level` | f32 | 0.0-1.0 | Transient detection |
-| `beat_detected` | bool | — | Impulse on beat onset |
-| `beat_confidence` | f32 | 0.0-1.0 | Beat reliability |
-| `beat_phase` | f32 | 0.0-1.0 | Position in beat cycle |
-| `beat_pulse` | f32 | 0.0-1.0 | Decaying impulse (1.0 on beat, exponential decay) |
-| `bpm` | f32 | — | Estimated BPM |
-| `spectrum` | Vec\<f32\> | 200 bins | Logarithmic 20Hz-20kHz |
-| `mel_bands` | Vec\<f32\> | 24 bands | Perceptual frequency bands |
-| `chromagram` | Vec\<f32\> | 12 classes | Pitch class energy (C, C#, D, ...) |
-| `spectral_centroid` | f32 | — | Brightness (high = treble-heavy) |
-| `spectral_flux` | f32 | — | Rate of spectral change |
-| `onset_detected` | bool | — | Onset (broader than beat) |
-| `onset_pulse` | f32 | 0.0-1.0 | Decaying onset impulse |
+| Field               | Type       | Range      | Use For                                           |
+| ------------------- | ---------- | ---------- | ------------------------------------------------- |
+| `rms_level`         | f32        | 0.0-1.0    | Overall loudness                                  |
+| `peak_level`        | f32        | 0.0-1.0    | Transient detection                               |
+| `beat_detected`     | bool       | —          | Impulse on beat onset                             |
+| `beat_confidence`   | f32        | 0.0-1.0    | Beat reliability                                  |
+| `beat_phase`        | f32        | 0.0-1.0    | Position in beat cycle                            |
+| `beat_pulse`        | f32        | 0.0-1.0    | Decaying impulse (1.0 on beat, exponential decay) |
+| `bpm`               | f32        | —          | Estimated BPM                                     |
+| `spectrum`          | Vec\<f32\> | 200 bins   | Logarithmic 20Hz-20kHz                            |
+| `mel_bands`         | Vec\<f32\> | 24 bands   | Perceptual frequency bands                        |
+| `chromagram`        | Vec\<f32\> | 12 classes | Pitch class energy (C, C#, D, ...)                |
+| `spectral_centroid` | f32        | —          | Brightness (high = treble-heavy)                  |
+| `spectral_flux`     | f32        | —          | Rate of spectral change                           |
+| `onset_detected`    | bool       | —          | Onset (broader than beat)                         |
+| `onset_pulse`       | f32        | 0.0-1.0    | Decaying onset impulse                            |
 
 ## Control Dispatch Pattern
 
@@ -100,12 +100,12 @@ Color controls arrive as `[f32; 4]` in **linear RGBA** (0.0-1.0). Convert to sRG
 
 ## Available Color Types
 
-| Type | Space | Use |
-|------|-------|-----|
-| `Rgba` / `Rgb` | sRGB u8 | Canvas pixels, final output |
-| `RgbaF32` | Linear f32 | Math, blending, lerp |
-| `Oklab` | Perceptual | Smooth gradients |
-| `Oklch` | Perceptual polar | Hue cycling, palette generation |
+| Type           | Space            | Use                             |
+| -------------- | ---------------- | ------------------------------- |
+| `Rgba` / `Rgb` | sRGB u8          | Canvas pixels, final output     |
+| `RgbaF32`      | Linear f32       | Math, blending, lerp            |
+| `Oklab`        | Perceptual       | Smooth gradients                |
+| `Oklch`        | Perceptual polar | Hue cycling, palette generation |
 
 The engine provides correct sRGB transfer functions and Oklab/Oklch conversions between all types.
 
@@ -136,14 +136,14 @@ Metadata for native effects uses `EffectSource::Native { path }`. Control defini
 
 ## Existing Builtins as Templates
 
-| Effect | File | Good Template For |
-|--------|------|-------------------|
-| `SolidColor` | `solid_color.rs` | Simplest possible effect |
-| `Breathing` | `breathing.rs` | Time-based animation |
-| `AudioPulse` | `audio_pulse.rs` | Audio reactivity + beat decay |
-| `ColorWave` | `color_wave.rs` | Spatial animation across canvas |
-| `Rainbow` | `rainbow.rs` | Hue cycling |
-| `Gradient` | `gradient.rs` | Multi-stop color interpolation |
+| Effect       | File             | Good Template For                           |
+| ------------ | ---------------- | ------------------------------------------- |
+| `SolidColor` | `solid_color.rs` | Simplest possible effect                    |
+| `Breathing`  | `breathing.rs`   | Time-based animation                        |
+| `AudioPulse` | `audio_pulse.rs` | Audio reactivity + beat decay               |
+| `ColorWave`  | `color_wave.rs`  | Spatial animation across canvas             |
+| `Rainbow`    | `rainbow.rs`     | Hue cycling                                 |
+| `Gradient`   | `gradient.rs`    | Multi-stop color interpolation              |
 | `ColorZones` | `color_zones.rs` | Multi-zone color grid with per-zone control |
 
 ## Testing

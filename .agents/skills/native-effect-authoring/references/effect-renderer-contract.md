@@ -108,15 +108,15 @@ Never interpolate gradients in sRGB — the midpoints desaturate. Oklch produces
 
 ## Control Value Type Reference
 
-| ControlValue Variant | Rust Type | Typical Use |
-|---------------------|-----------|-------------|
-| `Float(f32)` | f32 | Speed, sensitivity, frequency |
-| `Boolean(bool)` | bool | Toggle features on/off |
-| `Color([f32; 4])` | [f32; 4] | Linear RGBA, 0.0-1.0 |
-| `Gradient(Vec<GradientStop>)` | Vec | Multi-stop color ramp |
-| `Enum(String)` | String | Named options (palette, mode) |
-| `Integer(i32)` | i32 | Discrete counts |
-| `Text(String)` | String | Labels, names |
+| ControlValue Variant          | Rust Type | Typical Use                   |
+| ----------------------------- | --------- | ----------------------------- |
+| `Float(f32)`                  | f32       | Speed, sensitivity, frequency |
+| `Boolean(bool)`               | bool      | Toggle features on/off        |
+| `Color([f32; 4])`             | [f32; 4]  | Linear RGBA, 0.0-1.0          |
+| `Gradient(Vec<GradientStop>)` | Vec       | Multi-stop color ramp         |
+| `Enum(String)`                | String    | Named options (palette, mode) |
+| `Integer(i32)`                | i32       | Discrete counts               |
+| `Text(String)`                | String    | Labels, names                 |
 
 Use `value.as_f32()` for safe Float extraction. Match on the variant for everything else.
 

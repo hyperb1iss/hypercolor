@@ -9,6 +9,7 @@ Detailed LED color science covering saturation, hue quality, gamma correction, b
 RGB LEDs contain three dies. Colors are created through additive mixing — more channels active = brighter and less saturated. Mixing all three at full power produces white.
 
 **Channel luminance weights (sRGB/WCAG):**
+
 - Red: 21.3%
 - Green: 71.5%
 - Blue: 7.2%
@@ -21,12 +22,12 @@ Green appears ~6x brighter than blue at the same PWM. This asymmetry is the root
 
 ## Saturation Deep Dive
 
-| Range (HSV/HSL) | Result on LEDs | Use Case |
-|-----------------|----------------|----------|
-| 90-100% | Maximum vividness. Can look harsh in dark rooms at high brightness. | Accents, single-color washes, reactive effects |
-| 70-90% | Rich without being aggressive. The sweet spot for multi-color palettes. | Gradients, ambient effects |
-| 40-70% | Noticeably softer. Reads as "washed out" on RGB-only hardware. | Pastels (better with RGBW) |
-| 10-40% | Dim white/gray with slight color tint on RGB LEDs. | Subtle mood lighting only |
+| Range (HSV/HSL) | Result on LEDs                                                          | Use Case                                       |
+| --------------- | ----------------------------------------------------------------------- | ---------------------------------------------- |
+| 90-100%         | Maximum vividness. Can look harsh in dark rooms at high brightness.     | Accents, single-color washes, reactive effects |
+| 70-90%          | Rich without being aggressive. The sweet spot for multi-color palettes. | Gradients, ambient effects                     |
+| 40-70%          | Noticeably softer. Reads as "washed out" on RGB-only hardware.          | Pastels (better with RGBW)                     |
+| 10-40%          | Dim white/gray with slight color tint on RGB LEDs.                      | Subtle mood lighting only                      |
 
 **Community empirical data (210 effects):** 58.5% of HSL calls at S=100%, 31.2% at S=0%, only 5.9% between. Binary saturation is the learned best practice.
 
@@ -36,22 +37,22 @@ Green appears ~6x brighter than blue at the same PWM. This asymmetry is the root
 
 ### HSL Lightness Map
 
-| L Value | Result |
-|---------|--------|
-| 40-50% | Peak vividness |
-| 50-60% | Still vivid, slightly lighter |
-| 60-70% | Washing out — color diluted |
-| 75%+ | Pastel territory — mostly white |
-| 90%+ | Effectively white |
+| L Value | Result                          |
+| ------- | ------------------------------- |
+| 40-50%  | Peak vividness                  |
+| 50-60%  | Still vivid, slightly lighter   |
+| 60-70%  | Washing out — color diluted     |
+| 75%+    | Pastel territory — mostly white |
+| 90%+    | Effectively white               |
 
 ### HSV Value Map
 
-| V Value | Result |
-|---------|--------|
-| 100% (S=100%) | Maximum vividness |
-| 80% | Rich and deep — often best for ambient |
-| 60% | Moody, dark but saturated |
-| 40% | Dim but colored — useful for breathing lows |
+| V Value       | Result                                      |
+| ------------- | ------------------------------------------- |
+| 100% (S=100%) | Maximum vividness                           |
+| 80%           | Rich and deep — often best for ambient      |
+| 60%           | Moody, dark but saturated                   |
+| 40%           | Dim but colored — useful for breathing lows |
 
 ### How to Keep Colors Vivid
 
@@ -80,25 +81,27 @@ Green appears ~6x brighter than blue at the same PWM. This asymmetry is the root
 
 ### Recommended Warm Colors (Tuned)
 
-| Name | RGB | HSV | Notes |
-|------|-----|-----|-------|
-| Warm Red | 255, 30, 0 | 7, 100%, 100% | Deep warm red |
-| Orange | 255, 100, 0 | 24, 100%, 100% | Classic vivid |
-| Amber | 255, 140, 0 | 33, 100%, 100% | Eye-friendly |
-| Gold | 255, 190, 0 | 45, 100%, 100% | Richer than yellow |
-| Tuned Yellow | 255, 200, 10 | 47, 96%, 100% | Much better than 255,255,0 |
+| Name         | RGB          | HSV            | Notes                      |
+| ------------ | ------------ | -------------- | -------------------------- |
+| Warm Red     | 255, 30, 0   | 7, 100%, 100%  | Deep warm red              |
+| Orange       | 255, 100, 0  | 24, 100%, 100% | Classic vivid              |
+| Amber        | 255, 140, 0  | 33, 100%, 100% | Eye-friendly               |
+| Gold         | 255, 190, 0  | 45, 100%, 100% | Richer than yellow         |
+| Tuned Yellow | 255, 200, 10 | 47, 96%, 100%  | Much better than 255,255,0 |
 
 ---
 
 ## The Yellow/Brown Problem
 
 **Yellow (255, 255, 0):**
+
 - Double power draw (~40mA)
 - No true yellow wavelength — brain interprets separate R+G as yellow
 - Often reads as greenish-white on hardware
 - Fix: Shift to amber/gold (255, 140-190, 0). Never use equal R and G.
 
 **Brown:**
+
 - Perceptually "dark orange" but LEDs cannot make dark colors in isolation
 - RGB(128, 64, 0) looks like dim orange, not brown
 - Only works when surrounding LEDs are significantly brighter (relative context)
@@ -107,13 +110,13 @@ Green appears ~6x brighter than blue at the same PWM. This asymmetry is the root
 
 ## LED vs Screen Perception
 
-| Property | Screen | Physical LED |
-|----------|--------|-------------|
-| Viewing | Reflected/filtered through glass | Direct point-source emission |
-| Context | Surrounded by other lit pixels | Often dark environment |
-| Gamma | Display applies 2.2 curve | No built-in correction; PWM is linear |
-| Diffusion | Sub-pixel blending behind diffuser | Point sources separated by physical gaps |
-| Saturation | Medium saturation looks fine | Medium saturation looks washed out |
+| Property   | Screen                             | Physical LED                             |
+| ---------- | ---------------------------------- | ---------------------------------------- |
+| Viewing    | Reflected/filtered through glass   | Direct point-source emission             |
+| Context    | Surrounded by other lit pixels     | Often dark environment                   |
+| Gamma      | Display applies 2.2 curve          | No built-in correction; PWM is linear    |
+| Diffusion  | Sub-pixel blending behind diffuser | Point sources separated by physical gaps |
+| Saturation | Medium saturation looks fine       | Medium saturation looks washed out       |
 
 **Critical:** Colors designed on a monitor will not look the same on LEDs. Always test on hardware.
 
@@ -154,6 +157,7 @@ Performance: Optimized Oklab interpolation (LMS shortcut) adds only 1.3-1.4x ove
 ### Why Mandatory
 
 LEDs respond linearly to PWM. Human eyes perceive brightness non-linearly (~power curve). Without gamma:
+
 - Fades jump to bright immediately, then crawl
 - Dark values are indistinguishable
 - Midtones appear washed out
@@ -166,28 +170,29 @@ LEDs respond linearly to PWM. Human eyes perceive brightness non-linearly (~powe
 corrected = 255 * (input / 255) ^ gamma
 ```
 
-| Gamma | Use Case |
-|-------|----------|
-| 1.8 | Mild correction, dim rooms |
-| 2.2 | Standard — good general-purpose |
-| 2.8 | Aggressive, high-brightness environments |
+| Gamma | Use Case                                 |
+| ----- | ---------------------------------------- |
+| 1.8   | Mild correction, dim rooms               |
+| 2.2   | Standard — good general-purpose          |
+| 2.8   | Aggressive, high-brightness environments |
 
 ### Key LUT Values (Gamma 2.2)
 
-| Input | Output | Perception |
-|-------|--------|-----------|
-| 0 | 0 | Off |
-| 32 | 2 | Barely visible |
-| 64 | 10 | Very dim |
-| 128 | 55 | Perceptual midpoint |
-| 192 | 137 | Moderately bright |
-| 255 | 255 | Full brightness |
+| Input | Output | Perception          |
+| ----- | ------ | ------------------- |
+| 0     | 0      | Off                 |
+| 32    | 2      | Barely visible      |
+| 64    | 10     | Very dim            |
+| 128   | 55     | Perceptual midpoint |
+| 192   | 137    | Moderately bright   |
+| 255   | 255    | Full brightness     |
 
 **Perceptual 50% = PWM 21.6%, not 50%.**
 
 ### Per-Channel Tuning
 
 Different LED dies have different brightness curves:
+
 - Red: gamma ~2.0-2.2
 - Green: gamma ~2.2-2.4 (perceived brighter, may need more correction)
 - Blue: gamma ~2.2-2.6 (perceived dimmer)
@@ -204,22 +209,24 @@ Gamma correction is the **last step** — after all color math, blending, interp
 
 ### Palette Size Rules
 
-| Colors | Aesthetic | Best For |
-|--------|-----------|---------|
-| 1 | Elegant, professional | Ambient, workstation |
-| 2 | High impact, clear hierarchy | Most effects (80/20 rule) |
-| 3 | Vibrant but cohesive | Maximum for "tasteful" |
-| 4-5 | Needs careful balance | Structured gradients only |
-| 6+ | Festive/party | Rainbow effects |
+| Colors | Aesthetic                    | Best For                  |
+| ------ | ---------------------------- | ------------------------- |
+| 1      | Elegant, professional        | Ambient, workstation      |
+| 2      | High impact, clear hierarchy | Most effects (80/20 rule) |
+| 3      | Vibrant but cohesive         | Maximum for "tasteful"    |
+| 4-5    | Needs careful balance        | Structured gradients only |
+| 6+     | Festive/party                | Rainbow effects           |
 
 ### Quick Palette Picks
 
 **Complementary (high drama):**
+
 - Blue (240) + Orange (25)
 - Cyan (180) + Red (0)
 - Purple (270) + Gold (45)
 
 **Analogous (harmony):**
+
 - Blue (240) + Purple (270) + Magenta (300)
 - Cyan (180) + Green (120) + Spring Green (150)
 - Red (0) + Orange (25) + Amber (35)

@@ -67,26 +67,26 @@ The `HypercolorBus` itself only provides broadcast and watch channels. Render co
 
 Events are `HypercolorEvent` variants grouped by `EventCategory` with `EventPriority` levels.
 
-| Event | Category | Source |
-|-------|----------|--------|
-| `EffectStarted` | Effect | API handler, scene activation |
-| `EffectStopped` | Effect | Render thread, API stop |
-| `EffectControlChanged` | Effect | API handler |
-| `EffectRegistryUpdated` | Effect | Rescan |
-| `DeviceDiscovered` | Device | Discovery scan |
-| `DeviceConnected` | Device | Backend connection |
-| `DeviceDisconnected` | Device | Lifecycle manager |
-| `DeviceError` | Device | Backend driver |
-| `SceneActivated` | Scene | Scene manager |
-| `ProfileLoaded` | System | API handler |
-| `ConfigChanged` | System | Config API |
-| `FrameRendered` | System | Render thread |
-| `FpsChanged` | System | Adaptive FPS |
-| `BrightnessChanged` | System | Settings API |
-| `BeatDetected` | Audio | Audio processor |
-| `AudioLevelUpdate` | Audio | Audio processor |
-| `LayoutChanged` | Layout | Spatial engine |
-| `DaemonStarted` / `DaemonShutdown` | System | Daemon lifecycle |
+| Event                              | Category | Source                        |
+| ---------------------------------- | -------- | ----------------------------- |
+| `EffectStarted`                    | Effect   | API handler, scene activation |
+| `EffectStopped`                    | Effect   | Render thread, API stop       |
+| `EffectControlChanged`             | Effect   | API handler                   |
+| `EffectRegistryUpdated`            | Effect   | Rescan                        |
+| `DeviceDiscovered`                 | Device   | Discovery scan                |
+| `DeviceConnected`                  | Device   | Backend connection            |
+| `DeviceDisconnected`               | Device   | Lifecycle manager             |
+| `DeviceError`                      | Device   | Backend driver                |
+| `SceneActivated`                   | Scene    | Scene manager                 |
+| `ProfileLoaded`                    | System   | API handler                   |
+| `ConfigChanged`                    | System   | Config API                    |
+| `FrameRendered`                    | System   | Render thread                 |
+| `FpsChanged`                       | System   | Adaptive FPS                  |
+| `BrightnessChanged`                | System   | Settings API                  |
+| `BeatDetected`                     | Audio    | Audio processor               |
+| `AudioLevelUpdate`                 | Audio    | Audio processor               |
+| `LayoutChanged`                    | Layout   | Spatial engine                |
+| `DaemonStarted` / `DaemonShutdown` | System   | Daemon lifecycle              |
 
 Priority levels: `Critical` (shutdown, critical errors), `High` (device connect/disconnect), `Normal` (most events), `Low` (frame rendered, beats, webhooks).
 
@@ -107,6 +107,7 @@ The `mono_ms` field correlates events with frame timestamps (`FrameData.timestam
 ## Backpressure
 
 Broadcast channel capacity is 256. When a subscriber falls behind:
+
 - `RecvError::Lagged(n)` indicates `n` missed events
 - WebSocket handler logs the lag and catches up
 - No memory growth — old events are dropped from the ring buffer

@@ -56,6 +56,7 @@ Include: device identification, wire format diagrams, command vocabulary, timing
 ### Phase 4: Testing
 
 Write tests in `crates/hypercolor-hal/tests/` covering:
+
 - Packet count for various LED counts
 - Packet sizes match wire expectations
 - Color byte ordering
@@ -73,6 +74,7 @@ Write tests in `crates/hypercolor-hal/tests/` covering:
 ## Reference Patterns
 
 Read existing drivers before implementing:
+
 - Razer: `src/drivers/razer/` — multi-version protocol, CRC, matrix chunking
 - Lian Li: `src/drivers/lianli/` — multi-phase updates, R-B-G byte order, firmware predicates
 - ASUS: `src/drivers/asus/` — runtime topology discovery, interior mutability
@@ -81,5 +83,6 @@ Read existing drivers before implementing:
 ## Companion Skills
 
 Load these for detailed reference during implementation:
+
 - `hal-driver-development` — Protocol trait API, CommandBuffer, zerocopy patterns, transport guide, wire format gotchas
 - `protocol-research` — Research methodology, USB capture workflow, spec writing conventions

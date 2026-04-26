@@ -12,12 +12,14 @@ If you discover a security vulnerability, please report it responsibly.
 **Email:** stef@hyperbliss.tech
 
 **What to include:**
+
 - Description of the vulnerability
 - Steps to reproduce
 - Impact assessment (what can an attacker do?)
 - Suggested fix, if you have one
 
 **Response timeline:**
+
 - Acknowledgment within 48 hours
 - Initial assessment within 7 days
 - Fix or mitigation plan within 30 days for confirmed vulnerabilities

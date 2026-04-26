@@ -11,6 +11,7 @@ Detailed reference covering mathematical patterns, rendering pipeline, animation
 #### Simplex Noise (Preferred)
 
 Uses a simplicial grid (triangles in 2D) instead of squares. Benefits for LED effects:
+
 - Fewer directional artifacts than Perlin (no grid-aligned bias)
 - O(n^2) complexity vs O(2^n) for classic Perlin
 - Better isotropic (direction-independent) noise
@@ -25,6 +26,7 @@ Good for 1D and 2D but shows grid-aligned artifacts (horizontal/vertical bias) a
 #### Multi-Octave (Fractal) Noise
 
 Layer noise at different frequencies and amplitudes:
+
 ```
 value = noise(x) * 1.0          // base
       + noise(x*2) * 0.5        // detail
@@ -36,6 +38,7 @@ Each octave at 2x frequency, 0.5x amplitude. 2-3 octaves for LEDs.
 ### Voronoi (Worley Noise)
 
 Partition space into cells around random seed points. Each pixel colored by nearest seed distance. Produces:
+
 - Organic cell patterns (like soap bubbles or cracked mud)
 - Clean boundaries between color regions
 - Works well at low LED density because cells are naturally large
@@ -45,6 +48,7 @@ Partition space into cells around random seed points. Each pixel colored by near
 ### Metaballs
 
 Implicit surface technique where each "blob" has an influence field:
+
 ```
 field(x,y) = sum(radius_i^2 / distance(x,y, center_i)^2)
 ```
@@ -56,6 +60,7 @@ When `field > threshold`, the pixel is "inside." Creates smooth, organic merging
 ### Sine Plasma
 
 The simplest successful pattern. Layer sinusoidal functions:
+
 ```
 value = sin(x * freq1 + time)
       + sin(y * freq2 + time * 0.7)
@@ -68,6 +73,7 @@ Map the summed value to a color palette. Produces smooth, flowing, psychedelic p
 ### Expanding Rings / Ripples
 
 Concentric circles emanating from a point:
+
 ```
 distance = sqrt((x - cx)^2 + (y - cy)^2)
 value = sin(distance * frequency - time * speed)
@@ -78,6 +84,7 @@ Naturally low spatial frequency. Multiple overlapping ring sources create interf
 ### Particle Systems
 
 Discrete bright points moving through space with trails. The standard community approach:
+
 1. Array of particles with position, velocity, color, lifetime
 2. Each frame: update positions, draw particles, apply trail fade
 3. Trail via semi-transparent black overlay (see Animation section)
@@ -91,11 +98,13 @@ Particle effects work on LEDs because the bright particles are point sources —
 ### Bloom / Glow Post-Processing
 
 Traditional bloom convolves bright regions with a Gaussian blur. Fails because:
+
 1. LEDs are too sparse for blur kernels to produce visible softness
 2. No optical blending between physically separated LEDs
 3. Keycap bezels isolate each LED perceptually
 
 **What works instead:**
+
 - Radial falloff functions: `1.0 / (1.0 + distance^2)` per glow source
 - Additive blending of multiple falloff sources
 - Brightness boost at source (saturated white core, colored surround)
@@ -132,6 +141,7 @@ Maximum representable spatial frequency = `1 / (2 * LED_pitch)`. On a keyboard w
 ### Canvas 2D at the daemon's configured resolution
 
 The universal format across all 210 community effects:
+
 - Canvas 2D context (not WebGL)
 - Resolution is **whatever the daemon is configured for** — 640x480 by default
 - `requestAnimationFrame` for the render loop
@@ -141,6 +151,7 @@ The universal format across all 210 community effects:
   `scaleContext(ctx.canvas, { width: 320, height: 200 })` to translate design coords to live pixels
 
 Why Canvas 2D over WebGL:
+
 1. Simpler mental model — draw calls map to visual intent
 2. No shader compilation — instant effect loading
 3. Adequate performance — even 640x480 is trivial; USB transfer is the bottleneck
@@ -148,12 +159,12 @@ Why Canvas 2D over WebGL:
 
 ### Compositing Modes
 
-| Mode | Effect | Use Case |
-|------|--------|----------|
-| `source-over` | Normal layering | Default |
-| `lighter` | Additive blending | Overlapping lights, energy effects |
-| `screen` | Soft additive (never exceeds white) | Controlled glow |
-| `multiply` | Darken overlaps | Shadows, masking |
+| Mode          | Effect                              | Use Case                           |
+| ------------- | ----------------------------------- | ---------------------------------- |
+| `source-over` | Normal layering                     | Default                            |
+| `lighter`     | Additive blending                   | Overlapping lights, energy effects |
+| `screen`      | Soft additive (never exceeds white) | Controlled glow                    |
+| `multiply`    | Darken overlaps                     | Shadows, masking                   |
 
 **`lighter` is the key mode for LED effects** — simulates how real light combines.
 
@@ -164,22 +175,24 @@ Why Canvas 2D over WebGL:
 ### Trail/Fade Technique
 
 Each frame: overlay semi-transparent black, then draw new elements:
+
 ```javascript
-ctx.fillStyle = 'rgba(0, 0, 0, alpha)';
+ctx.fillStyle = "rgba(0, 0, 0, alpha)";
 ctx.fillRect(0, 0, canvas.width, canvas.height);
 ```
 
-| Alpha | Trail Length | Use |
-|-------|-------------|-----|
-| 0.02-0.05 | Very long | Slow comets, aurora |
-| 0.05-0.10 | Long | Flowing effects |
-| 0.10-0.20 | Medium | Standard (most effects) |
-| 0.20-0.40 | Short | Reactive, snappy |
-| 0.50-1.0 | None/minimal | Full redraw each frame |
+| Alpha     | Trail Length | Use                     |
+| --------- | ------------ | ----------------------- |
+| 0.02-0.05 | Very long    | Slow comets, aurora     |
+| 0.05-0.10 | Long         | Flowing effects         |
+| 0.10-0.20 | Medium       | Standard (most effects) |
+| 0.20-0.40 | Short        | Reactive, snappy        |
+| 0.50-1.0  | None/minimal | Full redraw each frame  |
 
 ### Delta-Time Animation
 
 Always base motion on elapsed time:
+
 ```javascript
 const now = performance.now();
 const dt = (now - lastTime) / 1000;
@@ -192,11 +205,13 @@ Never use frame count — `requestAnimationFrame` rate varies.
 ### Easing Functions
 
 **Sinusoidal** for organic motion (breathing, pulsing):
+
 ```javascript
 brightness = (Math.sin(time * speed) + 1) / 2;
 ```
 
 **Fast attack / slow decay** for reactive effects:
+
 - Instant jump to peak on trigger
 - Exponential decay: `value *= 0.95` each frame
 - Or `value = peak * Math.exp(-decay * elapsed)`
@@ -204,7 +219,7 @@ brightness = (Math.sin(time * speed) + 1) / 2;
 ### Breathing Effect
 
 ```javascript
-const phase = (Math.sin(time * 2 * Math.PI / period) + 1) / 2;
+const phase = (Math.sin((time * 2 * Math.PI) / period) + 1) / 2;
 const brightness = minBright + phase * (maxBright - minBright);
 ```
 
@@ -234,10 +249,24 @@ Period of 2-4 seconds. Use HSV V for brightness control.
 ## Property System
 
 Effects expose user controls via HTML meta tags:
+
 ```html
-<meta property="speed" label="Speed" type="number" min="1" max="10" default="5">
-<meta property="color" label="Color" type="color" default="#ff0000">
-<meta property="mode" label="Mode" type="combobox" values="wave,pulse,chase" default="wave">
+<meta
+  property="speed"
+  label="Speed"
+  type="number"
+  min="1"
+  max="10"
+  default="5"
+/>
+<meta property="color" label="Color" type="color" default="#ff0000" />
+<meta
+  property="mode"
+  label="Mode"
+  type="combobox"
+  values="wave,pulse,chase"
+  default="wave"
+/>
 ```
 
 Available types: `number`, `color`, `boolean`, `combobox`, `string`.
@@ -297,6 +326,7 @@ Canvas (sRGB u8) -> zone_local_to_canvas -> sample -> polish_sampled_color -> fa
 ```
 
 **`polish_sampled_color()`** (Matrix topology zones only):
+
 1. sRGB -> linear -> Oklch
 2. Boost chroma and adjust lightness
 3. Oklch -> linear -> sRGB

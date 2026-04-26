@@ -13,6 +13,7 @@ just verify        # fmt + lint + test — run this after every change
 ```
 
 **Requirements:**
+
 - Rust 1.94+ (edition 2024)
 - [just](https://github.com/casey/just) command runner
 - [Bun](https://bun.sh/) for the effect SDK

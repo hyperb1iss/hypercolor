@@ -45,6 +45,7 @@ fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolComma
 ```
 
 Key observations:
+
 - `CommandBuffer::new(commands)` borrows the pre-existing vec — no allocation
 - Different phases use different `TransferType` values (HidReport for commands, Primary for data)
 - Color byte order is R-B-G — this is hardware-specific, not a bug
@@ -223,6 +224,7 @@ fn encode_frame_produces_correct_packet_count() {
 ```
 
 Always test:
+
 - Packet count for various LED counts
 - Packet sizes match wire expectations
 - Color byte ordering

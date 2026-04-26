@@ -69,12 +69,14 @@ You review RGB lighting effects for quality on physical LED hardware. Your job i
 ## Companion Skills
 
 For deeper reference during review:
+
 - `rgb-effect-design` — Full color science reference (references/color-science.md) and effect design patterns (references/effect-design.md)
 - `native-effect-authoring` — EffectRenderer trait contract, FrameInput fields, Canvas API, AudioData catalog
 
 ## Output Format
 
 For each issue found, report:
+
 1. **Severity**: Critical (will look bad) / Warning (could be better) / Note (style)
 2. **Location**: File and line
 3. **Issue**: What's wrong

@@ -35,15 +35,15 @@ A completed research phase produces a **spec document** in `docs/specs/` contain
 
 Community protocol documentation (wikis, blog posts, forum threads) and open-source RGB projects (liquidctl, openrazer, etc.) can provide additional context and save time, but always verify against captures. Write clean Hypercolor implementations using our own architecture — never copy code from other projects.
 
-| Source | Value | Notes |
-|--------|-------|-------|
-| **Vendor's Windows/macOS software** (USB capture) | Ground truth | Use Wireshark + USBPcap or usbmon |
-| **Community protocol docs** | Context | Wikis, blogs, forum RE threads |
-| **Open-source RGB ecosystem** | Reference | liquidctl, openrazer, and others document protocol details |
-| **Reddit/Discord** | Firmware tables | Community-maintained compatibility lists |
-| **FCC filings** | Hardware identification | VID/PID, chipset info |
-| **Vendor firmware changelogs** | Protocol changes | "Fixed LED control" = protocol change |
-| **Existing Hypercolor drivers** | Best starting point | If a similar device family already has a driver, start from our code |
+| Source                                            | Value                   | Notes                                                                |
+| ------------------------------------------------- | ----------------------- | -------------------------------------------------------------------- |
+| **Vendor's Windows/macOS software** (USB capture) | Ground truth            | Use Wireshark + USBPcap or usbmon                                    |
+| **Community protocol docs**                       | Context                 | Wikis, blogs, forum RE threads                                       |
+| **Open-source RGB ecosystem**                     | Reference               | liquidctl, openrazer, and others document protocol details           |
+| **Reddit/Discord**                                | Firmware tables         | Community-maintained compatibility lists                             |
+| **FCC filings**                                   | Hardware identification | VID/PID, chipset info                                                |
+| **Vendor firmware changelogs**                    | Protocol changes        | "Fixed LED control" = protocol change                                |
+| **Existing Hypercolor drivers**                   | Best starting point     | If a similar device family already has a driver, start from our code |
 
 ## USB Traffic Capture Workflow
 
@@ -59,25 +59,25 @@ When studying any protocol implementation, note that a single transport call map
 - **`TransportType`** (registry.rs) — device-level transport binding, set once in `DeviceDescriptor`. Determines how the backend opens and talks to the device (e.g., `UsbControl`, `UsbHidApi`, `UsbHidRaw`, `UsbBulk`, `I2cSmBus`).
 - **`TransferType`** (protocol.rs) — per-command path hint on `ProtocolCommand`. Allows a single protocol to mix transfer paths within one device session (e.g., HID feature reports for init, bulk for frame data). Variants: `Primary`, `Bulk`, `HidReport`.
 
-| Protocol Pattern | Hypercolor Equivalent |
-|-----------------|----------------------|
-| Fixed-size byte buffer with manual offsets | Zerocopy struct with `report_id: u8` field |
-| HID feature report send | `TransportType::UsbHidApi` or `UsbHidRaw` + `TransferType::HidReport` |
-| USB control transfer | `TransportType::UsbControl` + `TransferType::Primary` |
-| HID interrupt write | `TransportType::UsbHid` + `TransferType::Primary` |
-| Per-LED color loop with count mismatch | `normalize_colors() -> Cow<'a, [[u8; 3]]>` |
-| Sleep/delay between commands | `post_delay: Duration::from_millis(N)` |
-| Read response after command | `expects_response: true` + `parse_response()` |
+| Protocol Pattern                           | Hypercolor Equivalent                                                 |
+| ------------------------------------------ | --------------------------------------------------------------------- |
+| Fixed-size byte buffer with manual offsets | Zerocopy struct with `report_id: u8` field                            |
+| HID feature report send                    | `TransportType::UsbHidApi` or `UsbHidRaw` + `TransferType::HidReport` |
+| USB control transfer                       | `TransportType::UsbControl` + `TransferType::Primary`                 |
+| HID interrupt write                        | `TransportType::UsbHid` + `TransferType::Primary`                     |
+| Per-LED color loop with count mismatch     | `normalize_colors() -> Cow<'a, [[u8; 3]]>`                            |
+| Sleep/delay between commands               | `post_delay: Duration::from_millis(N)`                                |
+| Read response after command                | `expects_response: true` + `parse_response()`                         |
 
 ## Spec Document Format
 
 Follow the conventions and required sections defined in **`references/spec-conventions.md`**. Use existing specs as templates:
 
-| Spec | Best Template For |
-|------|-------------------|
-| `17-razer-protocol-driver.md` | Multi-version protocols, CRC algorithms |
-| `19-lian-li-uni-hub-driver.md` | Multi-variant devices, dual transport types, firmware disambiguation |
-| `24-asus-aura-protocol-driver.md` | Runtime topology discovery, large device databases |
+| Spec                              | Best Template For                                                    |
+| --------------------------------- | -------------------------------------------------------------------- |
+| `17-razer-protocol-driver.md`     | Multi-version protocols, CRC algorithms                              |
+| `19-lian-li-uni-hub-driver.md`    | Multi-variant devices, dual transport types, firmware disambiguation |
+| `24-asus-aura-protocol-driver.md` | Runtime topology discovery, large device databases                   |
 
 ## Firmware Disambiguation
 
@@ -93,6 +93,7 @@ Some devices share a PID but use different protocols based on firmware version. 
 ## Topology Documentation
 
 For each device variant, document:
+
 - Total LED count per zone
 - Zone addressing scheme (linear, matrix, ring)
 - Physical layout (fan ring inner/outer, strip segments, matrix rows/cols)

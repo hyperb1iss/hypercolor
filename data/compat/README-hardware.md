@@ -2,37 +2,37 @@
 
 Hypercolor tracks **332 devices** across **30 vendors** in `data/drivers/vendors/`. **122** ship with a working driver today across **10 driver families**. **208 more** are researched or known, awaiting implementation or hardware to test.
 
-| Vendor | Supported | In progress | Researched | Blocked | Drivers |
-|---|--:|--:|--:|--:|---|
-| [Ableton](docs/content/hardware/compatibility.md#ableton) | 1 | — | — | — | `push2` |
-| [Alienware](docs/content/hardware/compatibility.md#alienware) | — | — | 3 | — | — |
-| [Aqua Computer](docs/content/hardware/compatibility.md#aquacomputer) | — | — | 4 | — | — |
-| [ASRock](docs/content/hardware/compatibility.md#asrock) | — | — | 4 | — | — |
-| [ASUS](docs/content/hardware/compatibility.md#asus) | 10 | — | 10 | — | `asus` |
-| [Cooler Master](docs/content/hardware/compatibility.md#coolermaster) | — | — | 20 | — | — |
-| [Corsair](docs/content/hardware/compatibility.md#corsair) | 14 | — | 9 | — | `corsair` |
-| [Dygma](docs/content/hardware/compatibility.md#dygma) | — | — | — | 2 | `dygma` |
-| [EVGA](docs/content/hardware/compatibility.md#evga) | — | — | 7 | — | — |
-| [Fnatic](docs/content/hardware/compatibility.md#fnatic) | — | — | 3 | — | — |
-| [Gigabyte](docs/content/hardware/compatibility.md#gigabyte) | — | — | 8 | — | — |
-| [Glorious](docs/content/hardware/compatibility.md#glorious) | 1 | — | 4 | — | `qmk` |
-| [HyperX](docs/content/hardware/compatibility.md#hyperx) | — | — | 16 | — | — |
-| [HYTE](docs/content/hardware/compatibility.md#hyte) | — | — | 2 | — | — |
-| [Lian Li](docs/content/hardware/compatibility.md#lianli) | 9 | — | 2 | — | `lianli` |
-| [Logitech](docs/content/hardware/compatibility.md#logitech) | — | — | 9 | — | — |
-| [Mountain](docs/content/hardware/compatibility.md#mountain) | — | — | 4 | — | — |
-| [MSI](docs/content/hardware/compatibility.md#msi) | — | — | 11 | — | — |
-| [Nanoleaf](docs/content/hardware/compatibility.md#nanoleaf) | 1 | — | — | — | `nanoleaf` |
-| [NZXT](docs/content/hardware/compatibility.md#nzxt) | — | — | 17 | — | — |
-| [Philips](docs/content/hardware/compatibility.md#philips) | 1 | — | — | — | `hue` |
-| [PrismRGB](docs/content/hardware/compatibility.md#prismrgb) | 4 | — | — | — | `prismrgb` |
-| [QMK](docs/content/hardware/compatibility.md#qmk) | 10 | — | — | — | `qmk` |
-| [Razer](docs/content/hardware/compatibility.md#razer) | 70 | — | 38 | — | `razer` |
-| [Roccat](docs/content/hardware/compatibility.md#roccat) | — | — | 14 | — | — |
-| [Sony](docs/content/hardware/compatibility.md#sony) | — | — | 3 | — | — |
-| [SteelSeries](docs/content/hardware/compatibility.md#steelseries) | — | — | 6 | — | — |
-| [Thermaltake](docs/content/hardware/compatibility.md#thermaltake) | — | — | 10 | — | — |
-| [WLED](docs/content/hardware/compatibility.md#wled) | 1 | — | — | — | `wled` |
-| [Wooting](docs/content/hardware/compatibility.md#wooting) | — | — | 4 | — | — |
+| Vendor                                                               | Supported | In progress | Researched | Blocked | Drivers    |
+| -------------------------------------------------------------------- | --------: | ----------: | ---------: | ------: | ---------- |
+| [Ableton](docs/content/hardware/compatibility.md#ableton)            |         1 |           — |          — |       — | `push2`    |
+| [Alienware](docs/content/hardware/compatibility.md#alienware)        |         — |           — |          3 |       — | —          |
+| [Aqua Computer](docs/content/hardware/compatibility.md#aquacomputer) |         — |           — |          4 |       — | —          |
+| [ASRock](docs/content/hardware/compatibility.md#asrock)              |         — |           — |          4 |       — | —          |
+| [ASUS](docs/content/hardware/compatibility.md#asus)                  |        10 |           — |         10 |       — | `asus`     |
+| [Cooler Master](docs/content/hardware/compatibility.md#coolermaster) |         — |           — |         20 |       — | —          |
+| [Corsair](docs/content/hardware/compatibility.md#corsair)            |        14 |           — |          9 |       — | `corsair`  |
+| [Dygma](docs/content/hardware/compatibility.md#dygma)                |         — |           — |          — |       2 | `dygma`    |
+| [EVGA](docs/content/hardware/compatibility.md#evga)                  |         — |           — |          7 |       — | —          |
+| [Fnatic](docs/content/hardware/compatibility.md#fnatic)              |         — |           — |          3 |       — | —          |
+| [Gigabyte](docs/content/hardware/compatibility.md#gigabyte)          |         — |           — |          8 |       — | —          |
+| [Glorious](docs/content/hardware/compatibility.md#glorious)          |         1 |           — |          4 |       — | `qmk`      |
+| [HyperX](docs/content/hardware/compatibility.md#hyperx)              |         — |           — |         16 |       — | —          |
+| [HYTE](docs/content/hardware/compatibility.md#hyte)                  |         — |           — |          2 |       — | —          |
+| [Lian Li](docs/content/hardware/compatibility.md#lianli)             |         9 |           — |          2 |       — | `lianli`   |
+| [Logitech](docs/content/hardware/compatibility.md#logitech)          |         — |           — |          9 |       — | —          |
+| [Mountain](docs/content/hardware/compatibility.md#mountain)          |         — |           — |          4 |       — | —          |
+| [MSI](docs/content/hardware/compatibility.md#msi)                    |         — |           — |         11 |       — | —          |
+| [Nanoleaf](docs/content/hardware/compatibility.md#nanoleaf)          |         1 |           — |          — |       — | `nanoleaf` |
+| [NZXT](docs/content/hardware/compatibility.md#nzxt)                  |         — |           — |         17 |       — | —          |
+| [Philips](docs/content/hardware/compatibility.md#philips)            |         1 |           — |          — |       — | `hue`      |
+| [PrismRGB](docs/content/hardware/compatibility.md#prismrgb)          |         4 |           — |          — |       — | `prismrgb` |
+| [QMK](docs/content/hardware/compatibility.md#qmk)                    |        10 |           — |          — |       — | `qmk`      |
+| [Razer](docs/content/hardware/compatibility.md#razer)                |        70 |           — |         38 |       — | `razer`    |
+| [Roccat](docs/content/hardware/compatibility.md#roccat)              |         — |           — |         14 |       — | —          |
+| [Sony](docs/content/hardware/compatibility.md#sony)                  |         — |           — |          3 |       — | —          |
+| [SteelSeries](docs/content/hardware/compatibility.md#steelseries)    |         — |           — |          6 |       — | —          |
+| [Thermaltake](docs/content/hardware/compatibility.md#thermaltake)    |         — |           — |         10 |       — | —          |
+| [WLED](docs/content/hardware/compatibility.md#wled)                  |         1 |           — |          — |       — | `wled`     |
+| [Wooting](docs/content/hardware/compatibility.md#wooting)            |         — |           — |          4 |       — | —          |
 
 New drivers land often. Full matrix: [docs/content/hardware/compatibility.md](docs/content/hardware/compatibility.md). If you own hardware Hypercolor doesn't support yet, see [CONTRIBUTING.md](CONTRIBUTING.md).

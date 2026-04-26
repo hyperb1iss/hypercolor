@@ -175,11 +175,11 @@ Make changes in `sdk/src/effects/` and regenerate.
 
 ## Build Profiles
 
-| Profile | Command | Use For |
-|---------|---------|---------|
-| `dev` | `just build` | Edit-compile loops. Hypercolor crates at opt-level 1, deps at 2, Servo/mozjs at 3. |
+| Profile   | Command              | Use For                                                                                         |
+| --------- | -------------------- | ----------------------------------------------------------------------------------------------- |
+| `dev`     | `just build`         | Edit-compile loops. Hypercolor crates at opt-level 1, deps at 2, Servo/mozjs at 3.              |
 | `preview` | `just build-preview` | Local testing. Like dev but disables debug-assertions and overflow-checks in Hypercolor crates. |
-| `release` | `just release` | Distribution. LTO, codegen-units=1, panic=abort, stripped. |
+| `release` | `just release`       | Distribution. LTO, codegen-units=1, panic=abort, stripped.                                      |
 
 The daemon defaults to `preview` profile (`just daemon`) for responsive local iteration
 without the runtime cliffs of unoptimized Servo.

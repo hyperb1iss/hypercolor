@@ -13,8 +13,8 @@ The daemon WebSocket endpoint at `/api/v1/ws` streams real-time data to the UI.
 
 Canvas frames arrive as binary `ArrayBuffer` messages. Header byte identifies the type:
 
-| Header | Type | Content |
-|--------|------|---------|
+| Header | Type         | Content                       |
+| ------ | ------------ | ----------------------------- |
 | `0x03` | Canvas frame | Frame metadata + pixel buffer |
 
 ### Canvas Frame Layout
@@ -77,15 +77,15 @@ The UI receives `BackpressureNotice` messages suggesting a lower FPS. Canvas pre
 
 ## Event Types That Trigger UI Updates
 
-| Event Type | UI Reaction |
-|------------|-------------|
-| `effect_applied` | Update active effect ID, reload controls |
-| `effect_stopped` | Clear active state |
-| `device_connected` | Refetch device list (if device not already known) |
-| `device_disconnected` | Refetch device list (if device was known) |
-| `device_discovered` | Refetch device list |
-| `config_changed` | Reload config resources |
-| `profile_activated` | Update active profile, reload state |
+| Event Type            | UI Reaction                                       |
+| --------------------- | ------------------------------------------------- |
+| `effect_applied`      | Update active effect ID, reload controls          |
+| `effect_stopped`      | Clear active state                                |
+| `device_connected`    | Refetch device list (if device not already known) |
+| `device_disconnected` | Refetch device list (if device was known)         |
+| `device_discovered`   | Refetch device list                               |
+| `config_changed`      | Reload config resources                           |
+| `profile_activated`   | Update active profile, reload state               |
 
 ## Closure Lifetime Management
 

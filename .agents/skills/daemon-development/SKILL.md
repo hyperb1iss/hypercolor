@@ -55,41 +55,42 @@ Errors use a separate `ApiErrorResponse` with `error: ErrorBody` containing `cod
 
 Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 
-| Prefix | Purpose |
-|--------|---------|
-| `/effects` | List, detail, apply, stop, rescan |
-| `/effects/active` | Current effect state |
-| `/effects/current/controls` | Live control PATCH + reset |
-| `/effects/{id}/apply` | Apply an effect by ID |
-| `/devices` | Connected devices, discover, identify, pair, attachments |
-| `/devices/{id}/logical-devices` | Per-device logical segmentation |
-| `/logical-devices` | Global logical device CRUD |
-| `/attachments/templates` | Attachment template CRUD + categories/vendors |
-| `/scenes` | Scene CRUD + `{id}/activate` |
-| `/library/favorites` | Favorites CRUD |
-| `/library/presets` | User preset management + `{id}/apply` |
-| `/library/playlists` | Playlist CRUD + activate/stop |
-| `/layouts` | Spatial layout CRUD + active + preview + `{id}/apply` |
-| `/profiles` | Profile save/load + `{id}/apply` |
-| `/config` | Show/get/set/reset system config values |
-| `/settings/brightness` | Global brightness get/set |
-| `/status` | Daemon status (aliased as `/state`) |
-| `/server` | Server identity |
-| `/diagnose` | System diagnostics |
+| Prefix                          | Purpose                                                  |
+| ------------------------------- | -------------------------------------------------------- |
+| `/effects`                      | List, detail, apply, stop, rescan                        |
+| `/effects/active`               | Current effect state                                     |
+| `/effects/current/controls`     | Live control PATCH + reset                               |
+| `/effects/{id}/apply`           | Apply an effect by ID                                    |
+| `/devices`                      | Connected devices, discover, identify, pair, attachments |
+| `/devices/{id}/logical-devices` | Per-device logical segmentation                          |
+| `/logical-devices`              | Global logical device CRUD                               |
+| `/attachments/templates`        | Attachment template CRUD + categories/vendors            |
+| `/scenes`                       | Scene CRUD + `{id}/activate`                             |
+| `/library/favorites`            | Favorites CRUD                                           |
+| `/library/presets`              | User preset management + `{id}/apply`                    |
+| `/library/playlists`            | Playlist CRUD + activate/stop                            |
+| `/layouts`                      | Spatial layout CRUD + active + preview + `{id}/apply`    |
+| `/profiles`                     | Profile save/load + `{id}/apply`                         |
+| `/config`                       | Show/get/set/reset system config values                  |
+| `/settings/brightness`          | Global brightness get/set                                |
+| `/status`                       | Daemon status (aliased as `/state`)                      |
+| `/server`                       | Server identity                                          |
+| `/diagnose`                     | System diagnostics                                       |
 
 ## WebSocket Protocol
 
 Single endpoint at `/api/v1/ws`. Five channel types:
 
-| Channel | Data | Format |
-|---------|------|--------|
-| `events` | State changes (effect applied, device connected) | JSON |
-| `frames` | LED color output per device | Binary |
-| `canvas` | Render canvas pixels (default 640x480, configurable) | Binary (header `0x03`) |
-| `spectrum` | Audio analysis (FFT, beats) | JSON |
-| `metrics` | Performance telemetry (FPS, frame times) | JSON |
+| Channel    | Data                                                 | Format                 |
+| ---------- | ---------------------------------------------------- | ---------------------- |
+| `events`   | State changes (effect applied, device connected)     | JSON                   |
+| `frames`   | LED color output per device                          | Binary                 |
+| `canvas`   | Render canvas pixels (default 640x480, configurable) | Binary (header `0x03`) |
+| `spectrum` | Audio analysis (FFT, beats)                          | JSON                   |
+| `metrics`  | Performance telemetry (FPS, frame times)             | JSON                   |
 
 **Subscribe on connect:**
+
 ```json
 { "type": "subscribe", "channels": ["events", "metrics"] }
 ```
@@ -100,10 +101,10 @@ Single endpoint at `/api/v1/ws`. Five channel types:
 
 Two communication patterns on the bus, all lock-free:
 
-| Pattern | Channel | Use |
-|---------|---------|-----|
-| `broadcast` (256 capacity) | `tokio::sync::broadcast` | Discrete state changes (`HypercolorEvent` variants) |
-| `watch` (latest-value) | `tokio::sync::watch` | Frame data, spectrum, canvas (consumers see latest only) |
+| Pattern                    | Channel                  | Use                                                      |
+| -------------------------- | ------------------------ | -------------------------------------------------------- |
+| `broadcast` (256 capacity) | `tokio::sync::broadcast` | Discrete state changes (`HypercolorEvent` variants)      |
+| `watch` (latest-value)     | `tokio::sync::watch`     | Frame data, spectrum, canvas (consumers see latest only) |
 
 Events are wrapped in `TimestampedEvent` with ISO 8601 `timestamp` and `mono_ms` (monotonic millis since bus creation) for frame correlation. The bus is `Send + Sync` and shared via `Arc<HypercolorBus>`.
 
@@ -111,13 +112,13 @@ Events are wrapped in `TimestampedEvent` with ISO 8601 `timestamp` and `mono_ms`
 
 Runs on a **dedicated OS thread** with its own Tokio runtime (isolated from API thread pool):
 
-| Stage | Budget | What Happens |
-|-------|--------|-------------|
-| Input Sampling | 1.0ms | Audio DSP + screen capture |
-| Effect Render | 8.0ms | `EffectEngine::tick()` → Canvas |
-| Spatial Sample | 0.5ms | Canvas pixels → LED colors via zone positions |
-| Device Push | 2.0ms | Route colors to `BackendManager` → USB/network |
-| Bus Publish | 0.1ms | Broadcast state events + watch updates |
+| Stage          | Budget | What Happens                                   |
+| -------------- | ------ | ---------------------------------------------- |
+| Input Sampling | 1.0ms  | Audio DSP + screen capture                     |
+| Effect Render  | 8.0ms  | `EffectEngine::tick()` → Canvas                |
+| Spatial Sample | 0.5ms  | Canvas pixels → LED colors via zone positions  |
+| Device Push    | 2.0ms  | Route colors to `BackendManager` → USB/network |
+| Bus Publish    | 0.1ms  | Broadcast state events + watch updates         |
 
 **Adaptive FPS**: Tiers at 10/20/30/45/60. On 2 consecutive budget misses → downshift. On sustained headroom → upshift. Prevents frame drops from cascading.
 
@@ -150,22 +151,22 @@ Hot-plug: USB device events trigger state transitions. The lifecycle manager dec
 
 14 tools exposed via Model Context Protocol for AI control:
 
-| Tool | Purpose |
-|------|---------|
-| `set_effect` | Apply effect by name/query (fuzzy match) with optional controls and transition |
-| `list_effects` | Browse effect catalog with category/audio_reactive filters |
-| `stop_effect` | Stop the active effect |
-| `set_color` | Apply a solid color effect |
-| `get_devices` | List connected devices |
-| `set_brightness` | Set global brightness (0-255) |
-| `get_status` | Current daemon state snapshot |
-| `activate_scene` | Activate a scene by name/ID |
-| `list_scenes` | List all scenes |
-| `create_scene` | Create a new scene |
-| `get_audio_state` | Audio analysis snapshot |
-| `set_profile` | Apply a lighting profile |
-| `get_layout` | Get the active spatial layout |
-| `diagnose` | System diagnostics |
+| Tool              | Purpose                                                                        |
+| ----------------- | ------------------------------------------------------------------------------ |
+| `set_effect`      | Apply effect by name/query (fuzzy match) with optional controls and transition |
+| `list_effects`    | Browse effect catalog with category/audio_reactive filters                     |
+| `stop_effect`     | Stop the active effect                                                         |
+| `set_color`       | Apply a solid color effect                                                     |
+| `get_devices`     | List connected devices                                                         |
+| `set_brightness`  | Set global brightness (0-255)                                                  |
+| `get_status`      | Current daemon state snapshot                                                  |
+| `activate_scene`  | Activate a scene by name/ID                                                    |
+| `list_scenes`     | List all scenes                                                                |
+| `create_scene`    | Create a new scene                                                             |
+| `get_audio_state` | Audio analysis snapshot                                                        |
+| `set_profile`     | Apply a lighting profile                                                       |
+| `get_layout`      | Get the active spatial layout                                                  |
+| `diagnose`        | System diagnostics                                                             |
 
 5 resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`, `hypercolor://profiles`, `hypercolor://audio`. The MCP server uses fuzzy matching for effect/profile names.
 

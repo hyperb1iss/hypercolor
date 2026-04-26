@@ -53,7 +53,7 @@ ProtocolCommand {
 }
 ```
 
-`transfer_type` tells the transport *how* to send — some devices mix HID feature reports for commands with bulk transfers for color data (Corsair LINK), or feature reports for commands with output reports for colors (Lian Li).
+`transfer_type` tells the transport _how_ to send — some devices mix HID feature reports for commands with bulk transfers for color data (Corsair LINK), or feature reports for commands with output reports for colors (Lian Li).
 
 ## CommandBuffer API
 
@@ -94,6 +94,7 @@ const _: () = assert!(
 ```
 
 Rules:
+
 - `#[repr(C)]` is **required** — without it, Rust reorders fields
 - Compile-time size assertion is **mandatory** for every packet struct
 - `FromZeros + IntoBytes` for write-only packets (most frame encoding)
@@ -144,19 +145,19 @@ pub fn descriptors() -> &'static [DeviceDescriptor] {
 
 ## Known Wire Format Gotchas
 
-| Device Family | Gotcha |
-|--------------|--------|
-| Lian Li | Color byte order is **R-B-G**, not RGB |
-| Lian Li AL | Dual-ring addressing: `port = group * 2 + ring` (inner fan vs outer edge) |
-| Lian Li V2 | Output report sizes differ: SL V2/AL V2 = 353 bytes, others = 146 or 98 |
-| Razer | XOR checksum covers bytes `[2..88)` (bytes 2 through 87 inclusive, 86 bytes) |
-| Razer | 6 protocol versions — transaction_id byte selects version (0xFF/0x3F/0x1F/0x9F) |
-| Razer | 4 custom effect activation styles across device generations |
-| ASUS | Runtime topology discovery via `RwLock` interior mutability in `parse_response()` |
-| ASUS | Board-specific firmware overrides for 18+ known boards |
-| Corsair LN | Components sent separately (R, then G, then B) — 50 LEDs per packet |
-| Corsair LINK | 16-bit LE length-prefixed framing (513-byte packets) |
-| Report IDs | Some platforms include report ID in buffer, others strip it — always check |
+| Device Family | Gotcha                                                                            |
+| ------------- | --------------------------------------------------------------------------------- |
+| Lian Li       | Color byte order is **R-B-G**, not RGB                                            |
+| Lian Li AL    | Dual-ring addressing: `port = group * 2 + ring` (inner fan vs outer edge)         |
+| Lian Li V2    | Output report sizes differ: SL V2/AL V2 = 353 bytes, others = 146 or 98           |
+| Razer         | XOR checksum covers bytes `[2..88)` (bytes 2 through 87 inclusive, 86 bytes)      |
+| Razer         | 6 protocol versions — transaction_id byte selects version (0xFF/0x3F/0x1F/0x9F)   |
+| Razer         | 4 custom effect activation styles across device generations                       |
+| ASUS          | Runtime topology discovery via `RwLock` interior mutability in `parse_response()` |
+| ASUS          | Board-specific firmware overrides for 18+ known boards                            |
+| Corsair LN    | Components sent separately (R, then G, then B) — 50 LEDs per packet               |
+| Corsair LINK  | 16-bit LE length-prefixed framing (513-byte packets)                              |
+| Report IDs    | Some platforms include report ID in buffer, others strip it — always check        |
 
 ## Multi-Phase Update Patterns
 
@@ -169,17 +170,17 @@ Some devices require sequenced commands per frame:
 
 ## Transport Selection Guide
 
-| Transport | Associated Data | When to Use | File |
-|-----------|----------------|-------------|------|
-| `UsbControl` | `{ interface, report_id }` | HID feature reports via control transfers (Razer) | `transport/control.rs` |
-| `UsbHid` | `{ interface }` | HID interrupt endpoints (QMK, PrismRGB) | `transport/hid.rs` |
-| `UsbHidApi` | `{ interface?, report_id, report_mode, usage_page?, usage? }` | Cross-platform `hidapi` access for live input devices (mice, keyboards) | `transport/hidapi.rs` |
-| `UsbHidRaw` | `{ interface, report_id, report_mode, usage_page?, usage? }` | Linux `/dev/hidraw*` direct access (Lian Li) | `transport/hidraw.rs` |
-| `UsbBulk` | `{ interface, report_id }` | Bulk endpoints + HID feature sideband (Corsair LINK) | `transport/bulk.rs` |
-| `UsbMidi` | `{ midi_interface, display_interface, display_endpoint }` | MIDI control + bulk display (Ableton Push 2) | `transport/midi.rs` |
-| `I2cSmBus` | `{ address }` | I2C/SMBus on motherboard (ASUS ENE) | `transport/smbus.rs` |
-| `UsbVendor` | (none) | Vendor-specific control transfers (Lian Li legacy) | `transport/vendor.rs` |
-| `UsbSerial` | `{ baud_rate }` | USB CDC-ACM serial (Dygma) | `transport/serial.rs` |
+| Transport    | Associated Data                                               | When to Use                                                             | File                   |
+| ------------ | ------------------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------- |
+| `UsbControl` | `{ interface, report_id }`                                    | HID feature reports via control transfers (Razer)                       | `transport/control.rs` |
+| `UsbHid`     | `{ interface }`                                               | HID interrupt endpoints (QMK, PrismRGB)                                 | `transport/hid.rs`     |
+| `UsbHidApi`  | `{ interface?, report_id, report_mode, usage_page?, usage? }` | Cross-platform `hidapi` access for live input devices (mice, keyboards) | `transport/hidapi.rs`  |
+| `UsbHidRaw`  | `{ interface, report_id, report_mode, usage_page?, usage? }`  | Linux `/dev/hidraw*` direct access (Lian Li)                            | `transport/hidraw.rs`  |
+| `UsbBulk`    | `{ interface, report_id }`                                    | Bulk endpoints + HID feature sideband (Corsair LINK)                    | `transport/bulk.rs`    |
+| `UsbMidi`    | `{ midi_interface, display_interface, display_endpoint }`     | MIDI control + bulk display (Ableton Push 2)                            | `transport/midi.rs`    |
+| `I2cSmBus`   | `{ address }`                                                 | I2C/SMBus on motherboard (ASUS ENE)                                     | `transport/smbus.rs`   |
+| `UsbVendor`  | (none)                                                        | Vendor-specific control transfers (Lian Li legacy)                      | `transport/vendor.rs`  |
+| `UsbSerial`  | `{ baud_rate }`                                               | USB CDC-ACM serial (Dygma)                                              | `transport/serial.rs`  |
 
 ## New Protocol Checklist
 

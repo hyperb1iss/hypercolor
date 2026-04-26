@@ -40,26 +40,26 @@ When studying open-source protocol implementations (in any language), these patt
 - **`TransportType`** (registry.rs) — device-level transport binding, set once in `DeviceDescriptor`. Determines how the backend opens and talks to the device (e.g., `UsbControl`, `UsbHidApi`, `UsbHidRaw`, `UsbBulk`, `I2cSmBus`).
 - **`TransferType`** (protocol.rs) — per-command path hint on `ProtocolCommand`. Allows a single protocol to mix transfer paths within one device session (e.g., HID feature reports for init, bulk for frame data). Variants: `Primary`, `Bulk`, `HidReport`.
 
-| Source Pattern | Hypercolor Equivalent |
-|----------------|----------------------|
-| Fixed-size byte buffer with manual offsets | Zerocopy struct with `report_id: u8` field |
-| HID feature report send | `TransportType::UsbHidApi` or `UsbHidRaw` + `TransferType::HidReport` |
-| USB control transfer | `TransportType::UsbControl` + `TransferType::Primary` |
-| HID interrupt write | `TransportType::UsbHid` + `TransferType::Primary` |
-| Per-LED color loop with count mismatch | `normalize_colors() -> Cow<'a, [[u8; 3]]>` — borrow when LED count matches, allocate only when padding |
-| Sleep/delay between commands | `post_delay: Duration::from_millis(N)` |
-| Read response after command | `expects_response: true` + `parse_response()` |
+| Source Pattern                             | Hypercolor Equivalent                                                                                  |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Fixed-size byte buffer with manual offsets | Zerocopy struct with `report_id: u8` field                                                             |
+| HID feature report send                    | `TransportType::UsbHidApi` or `UsbHidRaw` + `TransferType::HidReport`                                  |
+| USB control transfer                       | `TransportType::UsbControl` + `TransferType::Primary`                                                  |
+| HID interrupt write                        | `TransportType::UsbHid` + `TransferType::Primary`                                                      |
+| Per-LED color loop with count mismatch     | `normalize_colors() -> Cow<'a, [[u8; 3]]>` — borrow when LED count matches, allocate only when padding |
+| Sleep/delay between commands               | `post_delay: Duration::from_millis(N)`                                                                 |
+| Read response after command                | `expects_response: true` + `parse_response()`                                                          |
 
 ## Common Pitfalls
 
-| Pattern | Pitfall | Correct Hypercolor Translation |
-|---------|---------|-------------------------------|
-| `RGBGetRValue(color)` | Assumes RGB ordering | Check actual byte positions — may be RBG or BGR |
-| HID write with `len+1` | +1 includes report ID | Include report ID in zerocopy struct |
-| `usleep(1000)` | Units are microseconds | `Duration::from_micros(1000)` (= 1ms) |
-| HID get feature report | Blocks until response | `expects_response: true` on preceding command |
-| `sizeof(buf)` | Includes report ID byte | Compile-time assertion must match total wire size |
-| Magic numbers at byte offsets | Undocumented, easy to mismap | Define named constants for every offset |
+| Pattern                       | Pitfall                      | Correct Hypercolor Translation                    |
+| ----------------------------- | ---------------------------- | ------------------------------------------------- |
+| `RGBGetRValue(color)`         | Assumes RGB ordering         | Check actual byte positions — may be RBG or BGR   |
+| HID write with `len+1`        | +1 includes report ID        | Include report ID in zerocopy struct              |
+| `usleep(1000)`                | Units are microseconds       | `Duration::from_micros(1000)` (= 1ms)             |
+| HID get feature report        | Blocks until response        | `expects_response: true` on preceding command     |
+| `sizeof(buf)`                 | Includes report ID byte      | Compile-time assertion must match total wire size |
+| Magic numbers at byte offsets | Undocumented, easy to mismap | Define named constants for every offset           |
 
 ## Verifying Your Understanding
 

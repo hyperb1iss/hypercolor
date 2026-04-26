@@ -40,12 +40,12 @@ whiteness_ratio = min(R, G, B) / max(R, G, B)
 
 ### Hue Quality
 
-| Tier | Hues | Notes |
-|------|------|-------|
-| **1 (best)** | Red(0), Green(120), Blue(240), Cyan(180), Magenta(300) | Single die or clean mix |
-| **2** | Orange(25), Purple(270), Rose(330), Azure(210), Amber(35) | Excellent with tuning |
-| **3** | Yellow(60), Warm White, Pastels | Tend to wash out |
-| **4** | Brown, Gray | Impossible in isolation |
+| Tier         | Hues                                                      | Notes                   |
+| ------------ | --------------------------------------------------------- | ----------------------- |
+| **1 (best)** | Red(0), Green(120), Blue(240), Cyan(180), Magenta(300)    | Single die or clean mix |
+| **2**        | Orange(25), Purple(270), Rose(330), Azure(210), Amber(35) | Excellent with tuning   |
+| **3**        | Yellow(60), Warm White, Pastels                           | Tend to wash out        |
+| **4**        | Brown, Gray                                               | Impossible in isolation |
 
 **Safe vivid range: 180-330** (cyan through magenta). **Danger zone: 30-90** (orange through yellow-green).
 
@@ -55,13 +55,13 @@ Never use pure yellow (255,255,0) — shift to gold (255,190,0) or amber (255,14
 
 ## Color Spaces
 
-| Task | Use | Why |
-|------|-----|-----|
-| Hue cycling / rainbow | HSV | Increment H; fast and clean |
-| Gradients between colors | Oklab | No muddy midpoints |
-| Palette generation | OKLCH | Equal perceptual weight across hues |
-| Brightness control | HSV (V channel) | Maps to LED PWM |
-| Internal blending | Linear RGB or Oklab | Never blend in sRGB |
+| Task                     | Use                 | Why                                 |
+| ------------------------ | ------------------- | ----------------------------------- |
+| Hue cycling / rainbow    | HSV                 | Increment H; fast and clean         |
+| Gradients between colors | Oklab               | No muddy midpoints                  |
+| Palette generation       | OKLCH               | Equal perceptual weight across hues |
+| Brightness control       | HSV (V channel)     | Maps to LED PWM                     |
+| Internal blending        | Linear RGB or Oklab | Never blend in sRGB                 |
 
 Do not use HSL for LED work. Its lightness model causes yellow to appear 6x brighter than blue at equal L values.
 
@@ -76,7 +76,7 @@ Do not use HSL for LED work. Its lightness model causes yellow to appear 6x brig
 ### Trail/Fade (The Universal Technique)
 
 ```javascript
-ctx.fillStyle = 'rgba(0, 0, 0, 0.15)'; // alpha controls trail length
+ctx.fillStyle = "rgba(0, 0, 0, 0.15)"; // alpha controls trail length
 ctx.fillRect(0, 0, canvas.width, canvas.height);
 ```
 
@@ -132,11 +132,13 @@ Effect Canvas (sRGB u8) -> Spatial Sampling -> polish_sampled_color() -> fade_to
 ## Quick Checklist
 
 Before starting:
+
 - Pick 1-3 colors from Tier 1/2 hues
 - Saturation 85-100%, HSL lightness 40-55%
 - Choose a low-spatial-frequency pattern
 
 While building:
+
 - Trail/fade overlay for motion
 - Delta-time animation
 - Oklab interpolation for gradients
@@ -144,6 +146,7 @@ While building:
 - Design darkness into the composition
 
 Testing:
+
 - Whiteness ratio < 0.3 for vivid areas?
 - Any hues in 30-90 danger zone? Test on hardware
 - Transitions > 200ms?
@@ -152,6 +155,7 @@ Testing:
 ## Detailed References
 
 For deeper information, consult:
+
 - **`references/color-science.md`** — Full LED color science: saturation ranges, hue tiers, gamma correction, blowout prevention, yellow/brown problem, gradient transitions, per-channel calibration
 - **`references/effect-design.md`** — Complete effect design theory: noise functions, Voronoi, metaballs, temporal patterns, palette design, shader porting, rendering pipeline details
 - **`docs/content/effects/color-science.md`** — The shipping guide: hue tiers, saturation strategy, whiteness ratio test, gamma, composite modes, community patterns

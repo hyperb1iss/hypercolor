@@ -4,11 +4,11 @@ Detailed patterns for defining protocol packet structs in Hypercolor.
 
 ## Derive Combinations
 
-| Scenario | Derives | Notes |
-|----------|---------|-------|
-| Write-only packet (frame encoding) | `FromZeros, IntoBytes, KnownLayout, Immutable` | Most common |
+| Scenario                               | Derives                                        | Notes                                               |
+| -------------------------------------- | ---------------------------------------------- | --------------------------------------------------- |
+| Write-only packet (frame encoding)     | `FromZeros, IntoBytes, KnownLayout, Immutable` | Most common                                         |
 | Read+write packet (command + response) | `FromBytes, IntoBytes, KnownLayout, Immutable` | `FromBytes` implies `FromZeros` — never derive both |
-| Nested struct inside packet | Same as parent | All fields must be zerocopy-compatible |
+| Nested struct inside packet            | Same as parent                                 | All fields must be zerocopy-compatible              |
 
 ## Multi-Byte Wire Fields
 
@@ -27,6 +27,7 @@ struct MyPacket {
 ```
 
 Set values with `.set()`:
+
 ```rust
 packet.length.set(payload_len as u16);
 ```
@@ -46,12 +47,12 @@ Why: HID transports often return buffers larger than the struct (extra report ID
 
 Platform behavior varies:
 
-| Platform | Report ID Behavior |
-|----------|--------------------|
-| Linux hidraw | Includes report ID as first byte on read |
-| Linux hidapi | Strips report ID on read |
-| macOS hidapi | Strips report ID on read |
-| Windows hidapi | Includes report ID as first byte |
+| Platform       | Report ID Behavior                       |
+| -------------- | ---------------------------------------- |
+| Linux hidraw   | Includes report ID as first byte on read |
+| Linux hidapi   | Strips report ID on read                 |
+| macOS hidapi   | Strips report ID on read                 |
+| Windows hidapi | Includes report ID as first byte         |
 
 For writing: always include report ID in the struct as the first field. The transport layer handles stripping if needed.
 
@@ -70,15 +71,15 @@ const _: () = assert!(
 
 Common packet sizes across Hypercolor drivers:
 
-| Device Family | Packet Size | Why |
-|--------------|-------------|-----|
-| Razer | 90 bytes | HID feature report |
-| Lian Li ENE | 65 bytes (cmd) / 146-353 bytes (color) | HID feature + output report |
-| Lian Li TL | 64 bytes | HID interrupt |
-| Corsair LN | 65 bytes | HID feature report |
-| Corsair LINK | 513 bytes | USB bulk (16-bit length prefix + 511 payload) |
-| ASUS USB | 65 bytes | HID feature report |
-| QMK | 32 or 64 bytes | HID interrupt (device-dependent) |
+| Device Family | Packet Size                            | Why                                           |
+| ------------- | -------------------------------------- | --------------------------------------------- |
+| Razer         | 90 bytes                               | HID feature report                            |
+| Lian Li ENE   | 65 bytes (cmd) / 146-353 bytes (color) | HID feature + output report                   |
+| Lian Li TL    | 64 bytes                               | HID interrupt                                 |
+| Corsair LN    | 65 bytes                               | HID feature report                            |
+| Corsair LINK  | 513 bytes                              | USB bulk (16-bit length prefix + 511 payload) |
+| ASUS USB      | 65 bytes                               | HID feature report                            |
+| QMK           | 32 or 64 bytes                         | HID interrupt (device-dependent)              |
 
 ## Color Array Fields
 

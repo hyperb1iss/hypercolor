@@ -29,13 +29,13 @@ Trunk pre-build hook runs Tailwind CSS compilation. Config in `Trunk.toml` — p
 
 Five context structs provided at app root, accessed via `expect_context::<T>()`:
 
-| Context | Provides | Key Signals |
-|---------|----------|-------------|
-| `WsContext` | WebSocket state | `canvas_frame`, `connection_state`, `preview_fps`, `preview_target_fps`, `set_preview_cap`, `set_preview_consumers`, `metrics`, `backpressure_notice`, `active_effect`, `last_device_event`, `audio_level`, `audio_enabled`, `set_audio_enabled` |
-| `EffectsContext` | Effect library + active state | `effects_index` (Memo), `active_effect_id`, `active_effect_name`, `active_effect_category`, `active_controls`, `active_control_values`, `active_preset_id`, `favorite_ids` (each with read/write pair) |
-| `DevicesContext` | Device + layout resources | `devices_resource`, `layouts_resource` (both LocalResource with refetch) |
-| `ThemeContext` | Theme state | `is_dark` (Memo<bool>), `toggle` (Callback<()>) |
-| `PaletteContext` | Command palette trigger | `open` (Callback<()>) |
+| Context          | Provides                      | Key Signals                                                                                                                                                                                                                                      |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WsContext`      | WebSocket state               | `canvas_frame`, `connection_state`, `preview_fps`, `preview_target_fps`, `set_preview_cap`, `set_preview_consumers`, `metrics`, `backpressure_notice`, `active_effect`, `last_device_event`, `audio_level`, `audio_enabled`, `set_audio_enabled` |
+| `EffectsContext` | Effect library + active state | `effects_index` (Memo), `active_effect_id`, `active_effect_name`, `active_effect_category`, `active_controls`, `active_control_values`, `active_preset_id`, `favorite_ids` (each with read/write pair)                                           |
+| `DevicesContext` | Device + layout resources     | `devices_resource`, `layouts_resource` (both LocalResource with refetch)                                                                                                                                                                         |
+| `ThemeContext`   | Theme state                   | `is_dark` (Memo<bool>), `toggle` (Callback<()>)                                                                                                                                                                                                  |
+| `PaletteContext` | Command palette trigger       | `open` (Callback<()>)                                                                                                                                                                                                                            |
 
 ## WebSocket Binary Protocol
 
@@ -77,7 +77,7 @@ Effect::new(move |_| {
 });
 ```
 
-Only refetch when state *actually changed* — not on every event.
+Only refetch when state _actually changed_ — not on every event.
 
 ## Critical Pattern: Optimistic Update with Rollback
 
@@ -128,7 +128,7 @@ Two-tier CSS custom properties in `tokens/`:
 
 **Dynamic ambient glow**: Components set `--ambient-hue` from live canvas frame pixel data. CSS uses it for reactive glow effects.
 
-**Theme switching**: Stored in localStorage as `hc-theme`. Restored *before first paint* (in `index.html` script) to prevent flash.
+**Theme switching**: Stored in localStorage as `hc-theme`. Restored _before first paint_ (in `index.html` script) to prevent flash.
 
 ## API Client Pattern
 
@@ -162,18 +162,18 @@ Tab hidden → reduce preview FPS to 6 via `document.visibilitychange` listener.
 
 ## Key File Locations
 
-| Purpose | Path |
-|---------|------|
-| App root + contexts | `src/app.rs` |
-| WebSocket manager | `src/ws.rs` |
-| API modules | `src/api/{effects,devices,layouts,library,config,system}.rs` |
-| Canvas preview | `src/components/canvas_preview.rs` |
-| Effect controls | `src/components/control_panel.rs` |
-| Layout builder | `src/components/layout_builder.rs` |
-| Style utilities | `src/style_utils.rs` |
-| Design tokens | `tokens/{primitives,semantic}.css` |
-| Trunk config | `Trunk.toml` |
-| Tests (unit only) | `tests/` |
+| Purpose             | Path                                                         |
+| ------------------- | ------------------------------------------------------------ |
+| App root + contexts | `src/app.rs`                                                 |
+| WebSocket manager   | `src/ws.rs`                                                  |
+| API modules         | `src/api/{effects,devices,layouts,library,config,system}.rs` |
+| Canvas preview      | `src/components/canvas_preview.rs`                           |
+| Effect controls     | `src/components/control_panel.rs`                            |
+| Layout builder      | `src/components/layout_builder.rs`                           |
+| Style utilities     | `src/style_utils.rs`                                         |
+| Design tokens       | `tokens/{primitives,semantic}.css`                           |
+| Trunk config        | `Trunk.toml`                                                 |
+| Tests (unit only)   | `tests/`                                                     |
 
 ## Detailed References
 
