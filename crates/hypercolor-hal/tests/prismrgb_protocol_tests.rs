@@ -106,6 +106,25 @@ fn prism_mini_frame_uses_numbered_packets_and_marker() {
 }
 
 #[test]
+fn prism_mini_compressed_frame_packs_two_leds_per_triplet() {
+    let protocol = PrismRgbProtocol::new(PrismRgbModel::PrismMini).with_compression_enabled(true);
+    let mut colors = vec![[1, 2, 3]; 41];
+    colors[0] = [0xAB, 0xCD, 0xEF];
+    colors[1] = [0x12, 0x34, 0x56];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 4);
+    assert_eq!(commands[0].data[1], 1);
+    assert_eq!(commands[0].data[2], 4);
+    assert_eq!(commands[0].data[4], 0xAA);
+
+    let first = apply_low_power_saver(0xAB, 0xCD, 0xEF);
+    let second = apply_low_power_saver(0x12, 0x34, 0x56);
+    let expected = compress_color_pair(first, second);
+    assert_eq!(&commands[0].data[5..8], expected.as_slice());
+}
+
+#[test]
 fn prism_mini_low_power_saver_caps_rgb_sum() {
     let (r, g, b) = apply_low_power_saver(255, 255, 255);
     assert!(u16::from(r) + u16::from(g) + u16::from(b) <= LOW_POWER_THRESHOLD);

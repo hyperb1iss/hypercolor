@@ -29,6 +29,8 @@ const PRISM_S_GPU_CHUNK_IDS: [u8; 8] = [6, 7, 8, 9, 10, 11, 12, 13];
 
 const PRISM_MINI_MAX_LEDS: usize = 128;
 const PRISM_MINI_LEDS_PER_PACKET: usize = 20;
+const PRISM_MINI_COMPRESSED_LEDS_PER_PACKET: usize = PRISM_MINI_LEDS_PER_PACKET * 2;
+const PRISM_MINI_PACKET_DATA_LEN: usize = 60;
 
 /// Fixed-size `PrismRGB` HID report size.
 pub const HID_REPORT_SIZE: usize = 65;
@@ -56,7 +58,7 @@ struct PrismMiniDataPacket {
     /// Data marker (always 0xAA).
     data_marker: u8,
     /// Color data payload (up to 60 bytes).
-    data: [u8; 60],
+    data: [u8; PRISM_MINI_PACKET_DATA_LEN],
 }
 
 /// Maximum sum of `R + G + B` in Prism Mini low-power mode.
@@ -351,36 +353,33 @@ impl PrismRgbProtocol {
     ) {
         let normalized = self.normalize_colors(colors);
         let normalized = normalized.as_ref();
-        let encoded_bytes = if self.compression_enabled {
-            encode_prism_mini_compressed(normalized)
+        let leds_per_packet = if self.compression_enabled {
+            PRISM_MINI_COMPRESSED_LEDS_PER_PACKET
         } else {
-            normalized
-                .iter()
-                .flat_map(|color| {
-                    let [r, g, b] = if self.low_power_mode {
-                        let (r, g, b) = apply_low_power_saver(color[0], color[1], color[2]);
-                        [r, g, b]
-                    } else {
-                        *color
-                    };
-                    [r, g, b]
-                })
-                .collect::<Vec<_>>()
+            PRISM_MINI_LEDS_PER_PACKET
         };
-
-        let total_packets = if self.compression_enabled {
-            encoded_bytes.len().div_ceil(60)
-        } else {
-            normalized.len().div_ceil(PRISM_MINI_LEDS_PER_PACKET)
-        };
+        let total_packets = normalized.len().div_ceil(leds_per_packet);
 
         let mut command_buffer = CommandBuffer::new(commands);
-        for (index, chunk) in encoded_bytes.chunks(60).enumerate() {
+        for index in 0..total_packets {
             let mut packet = PrismMiniDataPacket::new_zeroed();
             packet.packet_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
             packet.total_packets = u8::try_from(total_packets).unwrap_or(u8::MAX);
             packet.data_marker = 0xAA;
-            packet.data[..chunk.len()].copy_from_slice(chunk);
+            let led_offset = index * leds_per_packet;
+            let led_end = min(led_offset + leds_per_packet, normalized.len());
+            if self.compression_enabled {
+                encode_prism_mini_compressed_packet(
+                    &normalized[led_offset..led_end],
+                    &mut packet.data,
+                );
+            } else {
+                encode_prism_mini_rgb_packet(
+                    &normalized[led_offset..led_end],
+                    self.low_power_mode,
+                    &mut packet.data,
+                );
+            }
             command_buffer.push_struct(
                 &packet,
                 false,
@@ -526,16 +525,29 @@ pub fn compress_color_pair(led1: (u8, u8, u8), led2: (u8, u8, u8)) -> [u8; 3] {
     ]
 }
 
-fn encode_prism_mini_compressed(colors: &[[u8; 3]]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(colors.len().div_ceil(2) * 3);
-    let mut iter = colors.iter().copied();
-    while let Some(first) = iter.next() {
-        let second = iter.next().unwrap_or([0, 0, 0]);
+fn encode_prism_mini_compressed_packet(colors: &[[u8; 3]], packet: &mut [u8]) {
+    for (pair_index, pair) in colors.chunks(2).enumerate() {
+        let first = pair[0];
+        let second = pair.get(1).copied().unwrap_or([0, 0, 0]);
         let (r1, g1, b1) = apply_low_power_saver(first[0], first[1], first[2]);
         let (r2, g2, b2) = apply_low_power_saver(second[0], second[1], second[2]);
-        bytes.extend_from_slice(&compress_color_pair((r1, g1, b1), (r2, g2, b2)));
+        let offset = pair_index * 3;
+        packet[offset..offset + 3]
+            .copy_from_slice(&compress_color_pair((r1, g1, b1), (r2, g2, b2)));
     }
-    bytes
+}
+
+fn encode_prism_mini_rgb_packet(colors: &[[u8; 3]], low_power_mode: bool, packet: &mut [u8]) {
+    for (index, color) in colors.iter().enumerate() {
+        let [r, g, b] = if low_power_mode {
+            let (r, g, b) = apply_low_power_saver(color[0], color[1], color[2]);
+            [r, g, b]
+        } else {
+            *color
+        };
+        let offset = index * 3;
+        packet[offset..offset + 3].copy_from_slice(&[r, g, b]);
+    }
 }
 
 fn flatten_colors(colors: &[[u8; 3]], scale: f32, format: DeviceColorFormat) -> Vec<u8> {
