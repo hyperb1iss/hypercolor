@@ -6,6 +6,7 @@ pub mod attachment;
 pub mod audio;
 pub mod canvas;
 pub mod config;
+pub mod controls;
 pub mod device;
 pub mod effect;
 pub mod event;
