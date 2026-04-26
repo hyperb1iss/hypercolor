@@ -422,8 +422,8 @@ pub trait DriverRuntimeActions: Send + Sync {
 /// Discovery-oriented host state exposed to drivers.
 #[async_trait]
 pub trait DriverDiscoveryState: Send + Sync {
-    /// Return tracked devices previously seen for one backend.
-    async fn tracked_devices(&self, backend_id: &str) -> Vec<DriverTrackedDevice>;
+    /// Return tracked devices previously seen for one driver module.
+    async fn tracked_devices(&self, driver_id: &str) -> Vec<DriverTrackedDevice>;
 
     /// Load a driver-scoped cached JSON payload, if available.
     ///

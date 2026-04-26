@@ -158,9 +158,9 @@ struct NullDiscoveryState;
 impl DriverDiscoveryState for NullDiscoveryState {
     async fn tracked_devices(
         &self,
-        backend_id: &str,
+        driver_id: &str,
     ) -> Vec<hypercolor_driver_api::DriverTrackedDevice> {
-        let _ = backend_id;
+        let _ = driver_id;
         Vec::new()
     }
 

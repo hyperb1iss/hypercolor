@@ -210,7 +210,7 @@ impl DriverRuntimeActions for DaemonDriverHost {
 
 #[async_trait]
 impl DriverDiscoveryState for DaemonDriverHost {
-    async fn tracked_devices(&self, backend_id: &str) -> Vec<DriverTrackedDevice> {
+    async fn tracked_devices(&self, driver_id: &str) -> Vec<DriverTrackedDevice> {
         let mut tracked_devices = Vec::new();
 
         for tracked in self.device_registry.list().await {
@@ -219,7 +219,7 @@ impl DriverDiscoveryState for DaemonDriverHost {
                 .metadata_for_id(&tracked.info.id)
                 .await
                 .unwrap_or_default();
-            if tracked.info.backend_id() != backend_id {
+            if tracked.info.origin.driver_id != driver_id {
                 continue;
             }
             let fingerprint = self

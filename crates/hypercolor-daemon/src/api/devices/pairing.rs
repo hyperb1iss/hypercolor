@@ -80,8 +80,8 @@ pub(super) async fn build_device_auth_summary(
     device_state: &DeviceState,
     metadata: Option<&HashMap<String, String>>,
 ) -> Option<DeviceAuthSummary> {
-    let backend_id = info.backend_id();
-    let driver = state.driver_registry.get(&backend_id)?;
+    let driver_id = info.origin.driver_id.as_str();
+    let driver = state.driver_registry.get(driver_id)?;
     let pairing = driver.pairing()?;
     let device = TrackedDeviceCtx {
         device_id: info.id,
@@ -139,15 +139,15 @@ async fn pair_device_for_ui(
         )));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let backend_id = tracked.info.backend_id();
-    let Some(driver) = state.driver_registry.get(&backend_id) else {
+    let driver_id = tracked.info.origin.driver_id.as_str();
+    let Some(driver) = state.driver_registry.get(driver_id) else {
         return Err(ApiError::validation(format!(
-            "Pairing is not supported for backend '{backend_id}'"
+            "Pairing is not supported for driver '{driver_id}'"
         )));
     };
     let Some(pairing) = driver.pairing() else {
         return Err(ApiError::validation(format!(
-            "Pairing is not supported for backend '{backend_id}'"
+            "Pairing is not supported for driver '{driver_id}'"
         )));
     };
     let device = TrackedDeviceCtx {
@@ -163,7 +163,7 @@ async fn pair_device_for_ui(
             warn!(
                 error = %error,
                 device_id = %device_id,
-                backend_id = %backend_id,
+                driver_id = %driver_id,
                 "device pairing request failed"
             );
             ApiError::internal(format!(
@@ -201,15 +201,15 @@ async fn delete_device_pairing(
         )));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let backend_id = tracked.info.backend_id();
-    let Some(driver) = state.driver_registry.get(&backend_id) else {
+    let driver_id = tracked.info.origin.driver_id.as_str();
+    let Some(driver) = state.driver_registry.get(driver_id) else {
         return Err(ApiError::validation(format!(
-            "Pairing is not supported for backend '{backend_id}'"
+            "Pairing is not supported for driver '{driver_id}'"
         )));
     };
     let Some(pairing) = driver.pairing() else {
         return Err(ApiError::validation(format!(
-            "Pairing is not supported for backend '{backend_id}'"
+            "Pairing is not supported for driver '{driver_id}'"
         )));
     };
     let device = TrackedDeviceCtx {
@@ -225,7 +225,7 @@ async fn delete_device_pairing(
             warn!(
                 error = %error,
                 device_id = %device_id,
-                backend_id = %backend_id,
+                driver_id = %driver_id,
                 "failed to clear pairing credentials"
             );
             ApiError::internal(format!(
