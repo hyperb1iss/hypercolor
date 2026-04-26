@@ -17,12 +17,13 @@ use hypercolor_driver_api::support::{
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
     DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
     PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
     ControlActionResult, ControlAvailabilityExpr, ControlChange, ControlFieldDescriptor,
@@ -84,6 +85,10 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
         Some(self)
     }
 
+    fn config(&self) -> Option<&dyn DriverConfigProvider> {
+        Some(self)
+    }
+
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(self)
     }
@@ -114,6 +119,24 @@ impl DiscoveryCapability for NanoleafDriverFactory {
             .collect();
 
         Ok(DiscoveryResult { devices })
+    }
+}
+
+impl DriverConfigProvider for NanoleafDriverFactory {
+    fn default_config(&self) -> DriverConfigEntry {
+        DriverConfigEntry::enabled(BTreeMap::from([
+            (FIELD_DEVICE_IPS.to_owned(), serde_json::json!([])),
+            (FIELD_TRANSITION_TIME.to_owned(), serde_json::json!(1)),
+        ]))
+    }
+
+    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+        DriverConfigView {
+            driver_id: DESCRIPTOR.id,
+            entry: config,
+        }
+        .parse_settings::<NanoleafConfig>()
+        .map(|_| ())
     }
 }
 

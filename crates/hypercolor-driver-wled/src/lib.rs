@@ -9,11 +9,12 @@ use hypercolor_core::device::wled::{
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
-    TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
+    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor,
+    DriverDiscoveredDevice, DriverHost, DriverRuntimeCacheProvider, DriverTrackedDevice,
+    DriverTransport, NetworkDriverFactory, TrackedDeviceCtx, ValidatedControlChanges,
 };
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
     ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
@@ -123,6 +124,10 @@ impl NetworkDriverFactory for WledDriverFactory {
         Some(self)
     }
 
+    fn config(&self) -> Option<&dyn DriverConfigProvider> {
+        Some(self)
+    }
+
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(self)
     }
@@ -160,6 +165,32 @@ impl DiscoveryCapability for WledDriverFactory {
             .collect();
 
         Ok(DiscoveryResult { devices })
+    }
+}
+
+impl DriverConfigProvider for WledDriverFactory {
+    fn default_config(&self) -> DriverConfigEntry {
+        DriverConfigEntry::enabled(BTreeMap::from([
+            (FIELD_KNOWN_IPS.to_owned(), serde_json::json!([])),
+            (FIELD_DEFAULT_PROTOCOL.to_owned(), serde_json::json!("ddp")),
+            (
+                FIELD_REALTIME_HTTP_ENABLED.to_owned(),
+                serde_json::json!(true),
+            ),
+            (
+                FIELD_DEDUP_THRESHOLD.to_owned(),
+                serde_json::json!(default_dedup_threshold()),
+            ),
+        ]))
+    }
+
+    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+        DriverConfigView {
+            driver_id: DESCRIPTOR.id,
+            entry: config,
+        }
+        .parse_settings::<WledConfig>()
+        .map(|_| ())
     }
 }
 

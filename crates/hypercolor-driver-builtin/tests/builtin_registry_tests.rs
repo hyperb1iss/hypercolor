@@ -23,6 +23,24 @@ fn build_driver_registry_registers_compiled_in_drivers() {
     assert!(ids.contains(&"hue".to_owned()));
     #[cfg(feature = "nanoleaf")]
     assert!(ids.contains(&"nanoleaf".to_owned()));
+
+    for id in ids {
+        let driver = registry.get(&id).expect("registered driver should resolve");
+        let descriptor = driver.module_descriptor();
+        assert!(
+            descriptor.capabilities.config,
+            "{id} should expose driver config capability"
+        );
+        assert!(
+            descriptor.capabilities.controls,
+            "{id} should expose driver controls capability"
+        );
+        driver
+            .config()
+            .expect("config provider should be present")
+            .validate_config(&driver.config().expect("config provider").default_config())
+            .expect("default config should validate");
+    }
 }
 
 #[test]
