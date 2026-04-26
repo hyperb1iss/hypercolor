@@ -36,6 +36,7 @@ The plugin architecture is defined as three progressive phases, evolving from mo
 **When:** Day one (current state).
 
 **Mechanism:**
+
 - Bevy-style `Plugin` trait
 - All backends compiled into the binary
 - Gated by Cargo feature flags
@@ -49,12 +50,14 @@ The plugin architecture is defined as three progressive phases, evolving from mo
 **When:** When first external contributor wants to write a plugin without forking the repo.
 
 **Mechanism:**
+
 - Wasmtime runtime with WIT (WebAssembly Interface Types) contracts
 - Plugins compile to `wasm32-wasip2` and run sandboxed inside the daemon process
 - Host grants capabilities (network, timers) through WIT interfaces
 - Per-plugin manifest (`plugin.toml`) declares permissions and metadata
 
 **Plugin Layout:**
+
 ```
 ~/.config/hypercolor/plugins/
 ├── govee-wifi/
@@ -68,6 +71,7 @@ The plugin architecture is defined as three progressive phases, evolving from mo
 ```
 
 **Manifest Format (`plugin.toml`):**
+
 ```toml
 [plugin]
 id = "govee-wifi"
@@ -99,6 +103,7 @@ settings_panel = "ui/settings.js"
 **When:** Needed from Day 1 for OpenRGB (GPL isolation). Escape hatch for non-Wasm languages or native USB requirements.
 
 **Mechanism:**
+
 - Plugins run as separate processes over Unix domain sockets using gRPC
 - Same WIT-derived interfaces, serialized over protobuf
 - Separate binary lifecycle management with health checks and restart logic
@@ -122,17 +127,20 @@ This is the **critical concern** that drives the architecture decision to keep e
 **Extension Point:** Device backends, input sources, integrations, color transforms can all be Phase 2 Wasm. **Effect rendering cannot** (in the current design).
 
 **Reasoning:**
+
 - Effects render at 60fps (hot path, <16.67ms per frame)
 - Wasm adds per-frame IPC overhead and memory marshaling
 - Some formats (static images, screen capture) are timing-critical
 - Other formats (slow ambient effects) could tolerate Wasm latency
 
 **Quote from `docs/design/02-effect-system.md` (estimated line 94):**
+
 > "Best mechanism: Compile-time (these are performance-critical and deeply integrated)."
 
 ### The Nuance
 
 The phrase "acceptable for some formats, not others" implies:
+
 - **Not acceptable:** Native shaders (wgpu), screen capture, performance-critical effects
 - **Possibly acceptable:** Web-based effects (HTML/Canvas via Servo), slow ambient effects, file-based effects
 
@@ -184,6 +192,7 @@ pub trait EffectRenderer: Send {
 ### Lifecycle
 
 **State Machine:**
+
 ```
 Loading
   ↓
@@ -245,6 +254,7 @@ pub struct FrameInput<'a> {
 ### Minimum Viable Payload
 
 A WASM effect loader **must serialize or share** these per frame:
+
 - `time_secs: f32` — essential for animation
 - `delta_secs: f32` — for framerate-independent motion
 - `frame_number: u64` — for seeding randomness, periodic actions
@@ -252,6 +262,7 @@ A WASM effect loader **must serialize or share** these per frame:
 - `canvas_width, canvas_height: u32` — canvas dimensions
 
 **Optional, high-cost:**
+
 - `interaction: &InteractionData` — keyboard/mouse state (large struct, add per-frame overhead)
 - `screen: Option<&ScreenData>` — screen capture pixels (texture data, expensive to share)
 - `sensors: &SystemSnapshot` — system telemetry
@@ -259,6 +270,7 @@ A WASM effect loader **must serialize or share** these per frame:
 ### AudioData Type
 
 Defined in `hypercolor-types::audio`, passed by reference. Contains:
+
 - Bass, mid, treble levels (0.0–1.0)
 - Overall RMS level
 - Beat detection pulse
@@ -270,6 +282,7 @@ Defined in `hypercolor-types::audio`, passed by reference. Contains:
 ### Serialization Strategy
 
 For WASM boundaries:
+
 - **By value:** `time_secs, delta_secs, frame_number, canvas_width, canvas_height` (copy cost negligible)
 - **By reference (shared buffer):** Audio spectrum, screen pixels (too large to copy per frame)
 - **Optional:** Interaction, sensors (add them only if effect declares dependency)
@@ -366,18 +379,18 @@ fn to_js_literal(&self) -> String {
 
 Located in `crates/hypercolor-core/src/effect/builtin/`. Each implements `EffectRenderer`.
 
-| Effect | File | Pattern | Complexity |
-|--------|------|---------|------------|
-| **Solid Color** | `solid_color.rs` | Stateless canvas fill | 1/5 |
-| **Breathing** | `breathing.rs` | Pulsing brightness | 2/5 |
-| **Rainbow** | `rainbow.rs` | Hue sweep loop | 2/5 |
-| **Gradient** | `gradient.rs` | Spatial color gradient | 2/5 |
-| **Color Wave** | `color_wave.rs` | Sinusoidal color animation | 3/5 |
-| **Color Zones** | `color_zones.rs` | Per-zone control | 3/5 |
-| **Audio Pulse** | `audio_pulse.rs` | Audio-reactive burst | 4/5 |
-| **Screen Cast** | `screen_cast.rs` | Screen capture sampler | 4/5 |
-| **Calibration** | `calibration.rs` | Diagnostic patterns | 2/5 |
-| **Web Viewport** | `web_viewport.rs` | Servo HTML renderer | 5/5 |
+| Effect           | File              | Pattern                    | Complexity |
+| ---------------- | ----------------- | -------------------------- | ---------- |
+| **Solid Color**  | `solid_color.rs`  | Stateless canvas fill      | 1/5        |
+| **Breathing**    | `breathing.rs`    | Pulsing brightness         | 2/5        |
+| **Rainbow**      | `rainbow.rs`      | Hue sweep loop             | 2/5        |
+| **Gradient**     | `gradient.rs`     | Spatial color gradient     | 2/5        |
+| **Color Wave**   | `color_wave.rs`   | Sinusoidal color animation | 3/5        |
+| **Color Zones**  | `color_zones.rs`  | Per-zone control           | 3/5        |
+| **Audio Pulse**  | `audio_pulse.rs`  | Audio-reactive burst       | 4/5        |
+| **Screen Cast**  | `screen_cast.rs`  | Screen capture sampler     | 4/5        |
+| **Calibration**  | `calibration.rs`  | Diagnostic patterns        | 2/5        |
+| **Web Viewport** | `web_viewport.rs` | Servo HTML renderer        | 5/5        |
 
 ### Solid Color Renderer (Reference)
 
@@ -409,7 +422,7 @@ impl EffectRenderer for SolidColorRenderer {
 
     fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> Result<()> {
         prepare_target_canvas(target, input.canvas_width, input.canvas_height);
-        
+
         for y in 0..input.canvas_height {
             for x in 0..input.canvas_width {
                 let nx = x as f32 / input.canvas_width as f32;
@@ -470,48 +483,54 @@ impl Canvas {
 **Simplest shader effect (9 lines):**
 
 ```typescript
-import { effect } from '@hypercolor/sdk'
-import shader from './fragment.glsl'
+import { effect } from "@hypercolor/sdk";
+import shader from "./fragment.glsl";
 
-export default effect('Meteor Storm', shader, {
-    speed:       [1, 10, 5],        // [min, max, default] → slider
-    density:     [10, 100, 50],
-    trailLength: [10, 100, 60],
-    glow:        [10, 100, 65],
-    palette:     ['SilkCircuit', 'Fire', 'Ice', 'Aurora', 'Cyberpunk'],  // string[] → combobox
-})
+export default effect("Meteor Storm", shader, {
+  speed: [1, 10, 5], // [min, max, default] → slider
+  density: [10, 100, 50],
+  trailLength: [10, 100, 60],
+  glow: [10, 100, 65],
+  palette: ["SilkCircuit", "Fire", "Ice", "Aurora", "Cyberpunk"], // string[] → combobox
+});
 ```
 
 **Canvas effect (stateless draw function):**
 
 ```typescript
-import { canvas } from '@hypercolor/sdk'
+import { canvas } from "@hypercolor/sdk";
 
-export default canvas('Particles', {
+export default canvas(
+  "Particles",
+  {
     speed: [1, 10, 5],
     count: [10, 500, 100],
-    palette: ['SilkCircuit', 'Fire', 'Aurora'],
-}, (ctx, time, { speed, count, palette }) => {
-    ctx.clearRect(0, 0, 320, 200)
+    palette: ["SilkCircuit", "Fire", "Aurora"],
+  },
+  (ctx, time, { speed, count, palette }) => {
+    ctx.clearRect(0, 0, 320, 200);
     for (let i = 0; i < count; i++) {
-        const x = Math.sin(time * speed + i * 0.7) * 140 + 160
-        const y = Math.cos(time * speed * 0.8 + i * 1.1) * 80 + 100
-        ctx.fillStyle = palette(i / count)  // Palette is a function in canvas context
-        ctx.arc(x, y, 2, 0, Math.PI * 2)
-        ctx.fill()
+      const x = Math.sin(time * speed + i * 0.7) * 140 + 160;
+      const y = Math.cos(time * speed * 0.8 + i * 1.1) * 80 + 100;
+      ctx.fillStyle = palette(i / count); // Palette is a function in canvas context
+      ctx.arc(x, y, 2, 0, Math.PI * 2);
+      ctx.fill();
     }
-})
+  },
+);
 ```
 
 ### Control System
 
 **Shape-based type inference:**
+
 - `[min, max, default]` → number slider
 - `['Option1', 'Option2']` → dropdown (combobox)
 - `true/false` → toggle
 - `'#ff6ac1'` → color picker
 
 **Magic names:**
+
 - `speed` → auto-applies `normalizeSpeed()` exponential curve
 - `palette` → in shaders: index; in canvas: color function
 
@@ -527,14 +546,28 @@ All effects compile to identical HTML structure:
     <meta name="hypercolor-version" content="1" />
     <title>Effect Name</title>
     <!-- Controls encoded as meta tags -->
-    <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" />
-    <meta property="palette" label="Palette" type="combobox" default="SilkCircuit"
-          values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk" />
+    <meta
+      property="speed"
+      label="Speed"
+      type="number"
+      min="1"
+      max="10"
+      default="5"
+    />
+    <meta
+      property="palette"
+      label="Palette"
+      type="combobox"
+      default="SilkCircuit"
+      values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk"
+    />
     <!-- More meta tags... -->
   </head>
   <body>
     <canvas id="exCanvas" width="320" height="200"></canvas>
-    <script>/* Bundled effect code */</script>
+    <script>
+      /* Bundled effect code */
+    </script>
   </body>
 </html>
 ```
@@ -564,12 +597,14 @@ window.engine = {
 **Source:** `crates/hypercolor-core/src/effect/servo/renderer.rs`
 
 The `ServoRenderer` struct:
+
 1. Loads HTML from `EffectMetadata.source.Html { path }`
 2. Creates a `ServoSessionHandle` (shared Servo worker)
 3. Injects `window.engine` globals and control values
 4. Per frame: enqueues JavaScript to push new frame data, polls for rendered canvas
 
 **Lifecycle:**
+
 ```
 init(metadata)
   → resolve HTML path
@@ -634,6 +669,7 @@ destroy()
 ### Unresolved in Design Doc 02
 
 **Effect system gaps:**
+
 - Native wgpu shader format details (WGSL vs. GLSL, vertex shader contract)
 - Render pipeline slots for custom geometry or multi-pass effects
 - Per-device effect scaling (e.g., 100 LEDs vs. 1000 LEDs)
@@ -796,6 +832,7 @@ let render_result = WasmRenderOutput {
 If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 
 **Options:**
+
 1. **WIT-based (like plugins):** Effects are full WIT modules; host provides effect-specific interfaces
    - Pro: Consistent with plugin architecture
    - Con: Overhead; effects are simpler than backends
@@ -813,10 +850,12 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 ### Per-Pixel vs. Per-Canvas Rendering
 
 **Unknown:**
+
 - Does WASM effect render per-pixel (iterate over LEDs)?
 - Or does it render to an off-screen canvas buffer then sampler maps to LEDs?
 
 **Current assumption (from SDK):**
+
 - Effects render to 320x200 canvas
 - Spatial sampler maps canvas colors → LED colors based on device layout
 - This is how Servo effects work
@@ -826,6 +865,7 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 ### Hot Reload Semantics
 
 **Not documented:**
+
 - If a WASM effect is updated on disk during playback, what happens?
 - Does daemon reload the .wasm and re-init?
 - Or does it finish the current playback and reload on next effect activation?
@@ -835,6 +875,7 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 ### SDK Shape for WASM Effects
 
 **Unresolved:**
+
 - Do WASM effects use the same TypeScript SDK (compiled to WASM)?
 - Or do they use different SDKs (Rust, Go, C, etc.)?
 
@@ -843,10 +884,12 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 ### Control Schema Format for WASM
 
 **Unknown:**
+
 - Do WASM effects declare controls in the same `ControlDefinition` format?
 - Or a simpler, more serializable format (JSON schema)?
 
 **Current assumption:**
+
 - Controls are declared in metadata
 - Metadata is serialized as JSON or embedded in WASM custom sections
 - Unclear how WASM effect author declares, validates, serializes controls
@@ -966,4 +1009,3 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 ---
 
 **Synthesis complete. This document is ready for design session input.**
-

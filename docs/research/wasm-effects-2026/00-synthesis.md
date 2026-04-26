@@ -52,11 +52,11 @@ The arithmetic changes too. A naive per-pixel kernel on 640×480 runs in ~150 µ
 
 The `09-plugin-ecosystem.md` hint that WASM is "acceptable for some formats" becomes a formal tier:
 
-| Tier | Renderer        | Use for                                             | Budget target |
-|------|-----------------|-----------------------------------------------------|---------------|
-| 0    | `WgpuRenderer`  | Native GPU shaders for the hottest 5-10 effects     | <100 µs       |
-| 1    | `WasmEffectRenderer` | Everything else authored today in Rust/TS + new effects | <5 ms     |
-| 2    | `ServoRenderer` | HTML/WebGL effects with full DOM surface            | <15 ms        |
+| Tier | Renderer             | Use for                                                 | Budget target |
+| ---- | -------------------- | ------------------------------------------------------- | ------------- |
+| 0    | `WgpuRenderer`       | Native GPU shaders for the hottest 5-10 effects         | <100 µs       |
+| 1    | `WasmEffectRenderer` | Everything else authored today in Rust/TS + new effects | <5 ms         |
+| 2    | `ServoRenderer`      | HTML/WebGL effects with full DOM surface                | <15 ms        |
 
 Tier 1 is the new default. Tier 0 stays for performance-critical natives. Tier 2 stays because Servo is already the path for effects that want real HTML (canvas 2D, webgl, full CSS).
 
@@ -134,8 +134,8 @@ import { Frame, Canvas } from "@hypercolor/effect-sdk";
 
 export const META = { name: "Aurora Drift", category: "ambient" };
 export const CONTROLS = [
-    { name: "speed", min: 0.1, max: 4.0, default: 1.0 },
-    { name: "audio_modulation", default: 0.35 }
+  { name: "speed", min: 0.1, max: 4.0, default: 1.0 },
+  { name: "audio_modulation", default: 0.35 },
 ];
 
 let phase: f32 = 0.0;
@@ -143,15 +143,15 @@ let speed: f32 = 1.0;
 let audio_mod: f32 = 0.35;
 
 export function set_control(idx: i32, value: f32): void {
-    if (idx == 0) speed = value;
-    if (idx == 1) audio_mod = value;
+  if (idx == 0) speed = value;
+  if (idx == 1) audio_mod = value;
 }
 
 export function render(frame_ptr: usize, canvas_ptr: usize): void {
-    const frame = Frame.at(frame_ptr);
-    const canvas = Canvas.at(canvas_ptr);
-    phase += frame.delta * speed * (1.0 + audio_mod * frame.audio_loudness);
-    // ... pixel loop
+  const frame = Frame.at(frame_ptr);
+  const canvas = Canvas.at(canvas_ptr);
+  phase += frame.delta * speed * (1.0 + audio_mod * frame.audio_loudness);
+  // ... pixel loop
 }
 ```
 

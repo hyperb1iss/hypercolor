@@ -12,17 +12,17 @@ The `zerocopy` crate (Google, 0.8.x) provides safe, zero-cost type punning via d
 
 ### Prior Art
 
-- **uchroma** (`~/dev/uchroma`) uses a `RazerReport` wrapper struct with method-based field access, but still indexes into a raw `[u8; 90]` internally. This plan goes one step further — the struct *is* the packet.
+- **uchroma** (`~/dev/uchroma`) uses a `RazerReport` wrapper struct with method-based field access, but still indexes into a raw `[u8; 90]` internally. This plan goes one step further — the struct _is_ the packet.
 
 ### What zerocopy replaces
 
-| Before | After |
-|--------|-------|
-| `packet[STATUS_OFFSET]` | `report.status` |
-| `packet[DATA_SIZE_OFFSET] = len as u8` | `report.data_size = len as u8` |
-| `packet[ARGS_OFFSET..ARGS_OFFSET + n].copy_from_slice(args)` | `report.args[..n].copy_from_slice(args)` |
-| `razer_crc(&packet)` (takes `&[u8; 90]`) | `razer_crc(&report)` (takes `&RazerReport`) |
-| Manual `.to_le_bytes()` for multi-byte fields | `U16<LittleEndian>` at the type level |
+| Before                                                       | After                                       |
+| ------------------------------------------------------------ | ------------------------------------------- |
+| `packet[STATUS_OFFSET]`                                      | `report.status`                             |
+| `packet[DATA_SIZE_OFFSET] = len as u8`                       | `report.data_size = len as u8`              |
+| `packet[ARGS_OFFSET..ARGS_OFFSET + n].copy_from_slice(args)` | `report.args[..n].copy_from_slice(args)`    |
+| `razer_crc(&packet)` (takes `&[u8; 90]`)                     | `razer_crc(&report)` (takes `&RazerReport`) |
+| Manual `.to_le_bytes()` for multi-byte fields                | `U16<LittleEndian>` at the type level       |
 
 ### What zerocopy does NOT replace
 
@@ -94,6 +94,7 @@ Use `.as_bytes()` to get `&[u8]` view, XOR bytes `[2..88]` as before. Add a new 
 **Depends on:** Task 3
 
 Replace:
+
 ```rust
 let mut packet = [0_u8; RAZER_REPORT_LEN];
 packet[1] = transaction_id;
@@ -102,6 +103,7 @@ packet[DATA_SIZE_OFFSET] = data_size;
 ```
 
 With:
+
 ```rust
 let mut report = RazerReport::new_zeroed();
 report.transaction_id = transaction_id;
@@ -122,6 +124,7 @@ report.crc = razer_crc(&report);
 **Parallel with:** Task 4
 
 Replace `data[STATUS_OFFSET]` indexing with:
+
 ```rust
 // Use read_from_prefix — NOT read_from_bytes — because HID transport can
 // return >90 byte buffers (report ID still attached from decode fallback).
@@ -202,6 +205,7 @@ Standard and extended scalar args. Already goes through `build_packet_with_optio
 **Depends on:** Wave 2 complete (pattern proven)
 
 65-byte Direct packet has a clean fixed layout:
+
 ```rust
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -245,13 +249,13 @@ uchroma uses u64-width XOR accumulation with horizontal fold — faster for the 
 
 ## Summary
 
-| Wave | Tasks | Parallelism | Theme |
-|------|-------|-------------|-------|
-| 1 | 1, 2, 3 | Sequential | Foundation: dep + struct + CRC |
-| 2 | 4, 5, 6 | 4 ∥ 5, then 6 | Core: build + parse migration |
-| 3 | 7, 8, 9 | All parallel | Frame encoders (verification pass) |
-| 4 | 10 | Single task | Corsair Lighting Node (stretch) |
-| 5 | 11, 12 | Parallel | Optimization polish |
+| Wave | Tasks   | Parallelism   | Theme                              |
+| ---- | ------- | ------------- | ---------------------------------- |
+| 1    | 1, 2, 3 | Sequential    | Foundation: dep + struct + CRC     |
+| 2    | 4, 5, 6 | 4 ∥ 5, then 6 | Core: build + parse migration      |
+| 3    | 7, 8, 9 | All parallel  | Frame encoders (verification pass) |
+| 4    | 10      | Single task   | Corsair Lighting Node (stretch)    |
+| 5    | 11, 12  | Parallel      | Optimization polish                |
 
 **Core value:** Waves 1–3 (6 tasks, ~1 session)
 **Stretch:** Wave 4 (Lighting Node only — LINK/LCD out of scope)

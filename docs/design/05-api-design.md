@@ -41,14 +41,14 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 
 **Base configuration:**
 
-| Surface | Default Binding | Protocol |
-|---------|----------------|----------|
-| REST API | `127.0.0.1:9420` | HTTP/1.1 + HTTP/2 |
-| WebSocket | `ws://127.0.0.1:9420/api/v1/ws` | WebSocket (RFC 6455) |
-| Web UI | `http://127.0.0.1:9420/` | Embedded SvelteKit |
-| Unix socket | `/run/hypercolor/hypercolor.sock` | Custom JSON-RPC |
-| D-Bus | `tech.hyperbliss.Hypercolor1` | D-Bus session bus |
-| MCP | stdio (default) or SSE transport | MCP SDK |
+| Surface     | Default Binding                   | Protocol             |
+| ----------- | --------------------------------- | -------------------- |
+| REST API    | `127.0.0.1:9420`                  | HTTP/1.1 + HTTP/2    |
+| WebSocket   | `ws://127.0.0.1:9420/api/v1/ws`   | WebSocket (RFC 6455) |
+| Web UI      | `http://127.0.0.1:9420/`          | Embedded SvelteKit   |
+| Unix socket | `/run/hypercolor/hypercolor.sock` | Custom JSON-RPC      |
+| D-Bus       | `tech.hyperbliss.Hypercolor1`     | D-Bus session bus    |
+| MCP         | stdio (default) or SSE transport  | MCP SDK              |
 
 ---
 
@@ -92,17 +92,17 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 
 **Standard error codes:**
 
-| HTTP Status | Code | Meaning |
-|------------|------|---------|
-| 400 | `bad_request` | Malformed request body or invalid parameters |
-| 401 | `unauthorized` | Missing or invalid API key (network access only) |
-| 403 | `forbidden` | Insufficient permissions for this operation |
-| 404 | `not_found` | Resource does not exist |
-| 409 | `conflict` | State conflict (e.g., device already connected) |
-| 422 | `validation_error` | Request body fails schema validation |
-| 429 | `rate_limited` | Too many requests (network access only) |
-| 500 | `internal_error` | Unexpected daemon error |
-| 503 | `unavailable` | Daemon is starting up or shutting down |
+| HTTP Status | Code               | Meaning                                          |
+| ----------- | ------------------ | ------------------------------------------------ |
+| 400         | `bad_request`      | Malformed request body or invalid parameters     |
+| 401         | `unauthorized`     | Missing or invalid API key (network access only) |
+| 403         | `forbidden`        | Insufficient permissions for this operation      |
+| 404         | `not_found`        | Resource does not exist                          |
+| 409         | `conflict`         | State conflict (e.g., device already connected)  |
+| 422         | `validation_error` | Request body fails schema validation             |
+| 429         | `rate_limited`     | Too many requests (network access only)          |
+| 500         | `internal_error`   | Unexpected daemon error                          |
+| 503         | `unavailable`      | Daemon is starting up or shutting down           |
 
 **Pagination** (for list endpoints):
 
@@ -469,13 +469,13 @@ PATCH  /api/v1/scenes/:id/enabled           # Enable/disable scene
 
 **Trigger types:**
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `schedule` | `cron` or `solar` | Time-based (cron expression or solar events) |
-| `webhook` | `secret` | External HTTP trigger |
-| `event` | `event_type`, `filter` | React to internal events |
-| `device` | `device_id`, `state` | Device connect/disconnect |
-| `input` | `source`, `threshold` | Audio level, beat detection |
+| Type       | Fields                 | Description                                  |
+| ---------- | ---------------------- | -------------------------------------------- |
+| `schedule` | `cron` or `solar`      | Time-based (cron expression or solar events) |
+| `webhook`  | `secret`               | External HTTP trigger                        |
+| `event`    | `event_type`, `filter` | React to internal events                     |
+| `device`   | `device_id`, `state`   | Device connect/disconnect                    |
+| `input`    | `source`, `threshold`  | Audio level, beat detection                  |
 
 #### Input Sources
 
@@ -664,13 +664,13 @@ async fn get_device(Path(id): Path<String>, State(state): State<AppState>) -> im
 
 Rate limiting applies only to network-accessible API (when `bind_address` is not `127.0.0.1`).
 
-| Tier | Limit | Scope |
-|------|-------|-------|
-| Read operations | 120 req/min | Per IP |
-| Write operations | 60 req/min | Per IP |
-| Frame data (WebSocket) | Unlimited | N/A |
-| Bulk operations | 10 req/min | Per IP |
-| Discovery scans | 2 req/min | Global |
+| Tier                   | Limit       | Scope  |
+| ---------------------- | ----------- | ------ |
+| Read operations        | 120 req/min | Per IP |
+| Write operations       | 60 req/min  | Per IP |
+| Frame data (WebSocket) | Unlimited   | N/A    |
+| Bulk operations        | 10 req/min  | Per IP |
+| Discovery scans        | 2 req/min   | Global |
 
 Implemented via `tower::limit::RateLimitLayer` or `governor` crate. Localhost (`127.0.0.1`, `::1`, Unix socket) is always unlimited.
 
@@ -741,13 +741,13 @@ Clients subscribe to specific channels to control bandwidth. By default, only `e
 
 **Available channels:**
 
-| Channel | Data Type | Default FPS | Description |
-|---------|-----------|-------------|-------------|
-| `frames` | Binary | 30 | LED color data for all zones |
-| `spectrum` | Binary | 30 | Audio FFT spectrum data |
-| `events` | JSON | N/A (push) | System events (device, effect, profile changes) |
-| `canvas` | Binary | 15 | Raw 320x200 canvas pixels (for UI preview) |
-| `metrics` | JSON | 1 | Performance metrics (FPS, latency, memory) |
+| Channel    | Data Type | Default FPS | Description                                     |
+| ---------- | --------- | ----------- | ----------------------------------------------- |
+| `frames`   | Binary    | 30          | LED color data for all zones                    |
+| `spectrum` | Binary    | 30          | Audio FFT spectrum data                         |
+| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes) |
+| `canvas`   | Binary    | 15          | Raw 320x200 canvas pixels (for UI preview)      |
+| `metrics`  | JSON      | 1           | Performance metrics (FPS, latency, memory)      |
 
 Unsubscribe:
 
@@ -954,7 +954,15 @@ Lighting is a perfect MCP domain:
     "properties": {
       "category": {
         "type": "string",
-        "enum": ["ambient", "reactive", "visualizer", "pattern", "nature", "gaming", "holiday"],
+        "enum": [
+          "ambient",
+          "reactive",
+          "visualizer",
+          "pattern",
+          "nature",
+          "gaming",
+          "holiday"
+        ],
         "description": "Filter by effect category"
       },
       "audio_reactive": {
@@ -1121,7 +1129,13 @@ Lighting is a perfect MCP domain:
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["schedule", "sunset", "sunrise", "device_connect", "audio_beat"]
+            "enum": [
+              "schedule",
+              "sunset",
+              "sunrise",
+              "device_connect",
+              "audio_beat"
+            ]
           },
           "cron": { "type": "string" },
           "offset_minutes": { "type": "integer" }
@@ -1266,6 +1280,7 @@ Prompts provide pre-built interaction patterns.
 ```
 
 Prompt template:
+
 ```
 You are helping configure Hypercolor RGB lighting. The user wants: {{mood}}
 
@@ -1381,11 +1396,11 @@ async fn apply_effect(&self, query: String, controls: Option<HashMap<String, Val
 
 ### 4.7 Transport Modes
 
-| Mode | Use Case | Configuration |
-|------|----------|---------------|
-| **stdio** | Claude Code, local AI tools | Default. Daemon spawns MCP as subprocess |
-| **SSE** | Remote AI access, web-based agents | `--mcp-transport sse --mcp-port 9421` |
-| **Streamable HTTP** | Modern MCP clients | `--mcp-transport http --mcp-port 9421` |
+| Mode                | Use Case                           | Configuration                            |
+| ------------------- | ---------------------------------- | ---------------------------------------- |
+| **stdio**           | Claude Code, local AI tools        | Default. Daemon spawns MCP as subprocess |
+| **SSE**             | Remote AI access, web-based agents | `--mcp-transport sse --mcp-port 9421`    |
+| **Streamable HTTP** | Modern MCP clients                 | `--mcp-transport http --mcp-port 9421`   |
 
 ---
 
@@ -1408,25 +1423,25 @@ Core daemon control and state queries.
 
 **Methods:**
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `GetState` | `() -> a{sv}` | Returns daemon state as a variant dict |
-| `Pause` | `()` | Pause rendering |
-| `Resume` | `()` | Resume rendering |
-| `SetBrightness` | `(u)` | Set global brightness (0-100) |
-| `GetBrightness` | `() -> u` | Get current brightness |
+| Method          | Signature     | Description                            |
+| --------------- | ------------- | -------------------------------------- |
+| `GetState`      | `() -> a{sv}` | Returns daemon state as a variant dict |
+| `Pause`         | `()`          | Pause rendering                        |
+| `Resume`        | `()`          | Resume rendering                       |
+| `SetBrightness` | `(u)`         | Set global brightness (0-100)          |
+| `GetBrightness` | `() -> u`     | Get current brightness                 |
 
 **Properties (readable, some writable):**
 
-| Property | Type | Access | Description |
-|----------|------|--------|-------------|
-| `Running` | `b` | R | Whether the daemon is running |
-| `Paused` | `b` | R | Whether rendering is paused |
-| `Brightness` | `u` | RW | Global brightness (0-100) |
-| `Fps` | `d` | R | Current actual FPS |
-| `TargetFps` | `u` | RW | Target FPS |
-| `Version` | `s` | R | Daemon version string |
-| `Uptime` | `t` | R | Uptime in seconds |
+| Property     | Type | Access | Description                   |
+| ------------ | ---- | ------ | ----------------------------- |
+| `Running`    | `b`  | R      | Whether the daemon is running |
+| `Paused`     | `b`  | R      | Whether rendering is paused   |
+| `Brightness` | `u`  | RW     | Global brightness (0-100)     |
+| `Fps`        | `d`  | R      | Current actual FPS            |
+| `TargetFps`  | `u`  | RW     | Target FPS                    |
+| `Version`    | `s`  | R      | Daemon version string         |
+| `Uptime`     | `t`  | R      | Uptime in seconds             |
 
 #### `tech.hyperbliss.Hypercolor1.Effects`
 
@@ -1434,24 +1449,24 @@ Effect management.
 
 **Methods:**
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `ListEffects` | `() -> a(ss)` | Returns array of (id, name) tuples |
-| `GetCurrentEffect` | `() -> a{sv}` | Current effect info |
-| `ApplyEffect` | `(s)` | Apply effect by ID |
-| `ApplyEffectWithControls` | `(sa{sv})` | Apply effect with control overrides |
-| `SetControl` | `(sv)` | Set a single control value on active effect |
-| `NextEffect` | `()` | Next effect in history |
-| `PreviousEffect` | `()` | Previous effect in history |
-| `ShuffleEffect` | `()` | Apply random effect |
+| Method                    | Signature     | Description                                 |
+| ------------------------- | ------------- | ------------------------------------------- |
+| `ListEffects`             | `() -> a(ss)` | Returns array of (id, name) tuples          |
+| `GetCurrentEffect`        | `() -> a{sv}` | Current effect info                         |
+| `ApplyEffect`             | `(s)`         | Apply effect by ID                          |
+| `ApplyEffectWithControls` | `(sa{sv})`    | Apply effect with control overrides         |
+| `SetControl`              | `(sv)`        | Set a single control value on active effect |
+| `NextEffect`              | `()`          | Next effect in history                      |
+| `PreviousEffect`          | `()`          | Previous effect in history                  |
+| `ShuffleEffect`           | `()`          | Apply random effect                         |
 
 **Properties:**
 
-| Property | Type | Access | Description |
-|----------|------|--------|-------------|
-| `CurrentEffectId` | `s` | R | Active effect ID |
-| `CurrentEffectName` | `s` | R | Active effect display name |
-| `EffectCount` | `u` | R | Total number of available effects |
+| Property            | Type | Access | Description                       |
+| ------------------- | ---- | ------ | --------------------------------- |
+| `CurrentEffectId`   | `s`  | R      | Active effect ID                  |
+| `CurrentEffectName` | `s`  | R      | Active effect display name        |
+| `EffectCount`       | `u`  | R      | Total number of available effects |
 
 #### `tech.hyperbliss.Hypercolor1.Devices`
 
@@ -1459,21 +1474,21 @@ Device management.
 
 **Methods:**
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `ListDevices` | `() -> a(sssub)` | Returns (id, name, backend, led_count, connected) |
-| `GetDevice` | `(s) -> a{sv}` | Full device details by ID |
-| `Discover` | `()` | Trigger device discovery scan |
-| `EnableDevice` | `(s)` | Enable a device by ID |
-| `DisableDevice` | `(s)` | Disable a device by ID |
+| Method          | Signature        | Description                                       |
+| --------------- | ---------------- | ------------------------------------------------- |
+| `ListDevices`   | `() -> a(sssub)` | Returns (id, name, backend, led_count, connected) |
+| `GetDevice`     | `(s) -> a{sv}`   | Full device details by ID                         |
+| `Discover`      | `()`             | Trigger device discovery scan                     |
+| `EnableDevice`  | `(s)`            | Enable a device by ID                             |
+| `DisableDevice` | `(s)`            | Disable a device by ID                            |
 
 **Properties:**
 
-| Property | Type | Access | Description |
-|----------|------|--------|-------------|
-| `DeviceCount` | `u` | R | Number of known devices |
-| `ConnectedCount` | `u` | R | Number of currently connected devices |
-| `TotalLeds` | `u` | R | Sum of all connected device LEDs |
+| Property         | Type | Access | Description                           |
+| ---------------- | ---- | ------ | ------------------------------------- |
+| `DeviceCount`    | `u`  | R      | Number of known devices               |
+| `ConnectedCount` | `u`  | R      | Number of currently connected devices |
+| `TotalLeds`      | `u`  | R      | Sum of all connected device LEDs      |
 
 #### `tech.hyperbliss.Hypercolor1.Profiles`
 
@@ -1481,26 +1496,26 @@ Profile and scene management.
 
 **Methods:**
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `ListProfiles` | `() -> a(ss)` | Returns (id, name) tuples |
-| `ApplyProfile` | `(s)` | Apply profile by ID |
-| `SaveProfile` | `(ss)` | Save current state as profile (name, description) |
+| Method         | Signature     | Description                                       |
+| -------------- | ------------- | ------------------------------------------------- |
+| `ListProfiles` | `() -> a(ss)` | Returns (id, name) tuples                         |
+| `ApplyProfile` | `(s)`         | Apply profile by ID                               |
+| `SaveProfile`  | `(ss)`        | Save current state as profile (name, description) |
 
 ### 5.3 Signals
 
 All interfaces emit signals for state changes:
 
-| Signal | Interface | Signature | Description |
-|--------|-----------|-----------|-------------|
-| `EffectChanged` | Effects | `(ss)` | (effect_id, effect_name) |
-| `ControlChanged` | Effects | `(sv)` | (control_id, new_value) |
-| `DeviceConnected` | Devices | `(ssu)` | (device_id, device_name, led_count) |
-| `DeviceDisconnected` | Devices | `(s)` | (device_id) |
-| `ProfileApplied` | Profiles | `(ss)` | (profile_id, profile_name) |
-| `BrightnessChanged` | Daemon | `(u)` | (new_brightness) |
-| `PausedChanged` | Daemon | `(b)` | (is_paused) |
-| `Error` | Daemon | `(ss)` | (error_code, message) |
+| Signal               | Interface | Signature | Description                         |
+| -------------------- | --------- | --------- | ----------------------------------- |
+| `EffectChanged`      | Effects   | `(ss)`    | (effect_id, effect_name)            |
+| `ControlChanged`     | Effects   | `(sv)`    | (control_id, new_value)             |
+| `DeviceConnected`    | Devices   | `(ssu)`   | (device_id, device_name, led_count) |
+| `DeviceDisconnected` | Devices   | `(s)`     | (device_id)                         |
+| `ProfileApplied`     | Profiles  | `(ss)`    | (profile_id, profile_name)          |
+| `BrightnessChanged`  | Daemon    | `(u)`     | (new_brightness)                    |
+| `PausedChanged`      | Daemon    | `(b)`     | (is_paused)                         |
+| `Error`              | Daemon    | `(ss)`    | (error_code, message)               |
 
 ### 5.4 Implementation
 
@@ -1540,21 +1555,25 @@ impl HypercolorDbus {
 ### 5.5 Desktop Integration Points
 
 **GNOME Extension:**
+
 - Read `CurrentEffectName` and `Brightness` for panel indicator
 - Popup with effect list (from `ListEffects`) and brightness slider
 - Subscribe to `EffectChanged` signal for live updates
 - Keyboard shortcut → `ApplyProfile("gaming")` or `ShuffleEffect()`
 
 **KDE Plasma Widget:**
+
 - Same D-Bus methods, different UI framework
 - KDE's system settings → Hypercolor panel with effect browser
 
 **systemd service:**
+
 - `hypercolor.service` — the daemon
 - D-Bus activation: daemon starts on first D-Bus method call
 - `busctl --user call tech.hyperbliss.Hypercolor1 /tech/hyperbliss/Hypercolor1 tech.hyperbliss.Hypercolor1.Effects ApplyEffect s aurora`
 
 **Hotkey integration:**
+
 ```bash
 # ~/.config/sway/config
 bindsym $mod+F5 exec busctl --user call tech.hyperbliss.Hypercolor1 \
@@ -1634,34 +1653,34 @@ The Unix socket uses a simple framed JSON-RPC 2.0 protocol with length-prefixed 
 
 ### 6.3 RPC Method Catalog
 
-| Method | Params | Description |
-|--------|--------|-------------|
-| `state.get` | `{}` | Full daemon state |
-| `state.health` | `{}` | Health check |
-| `state.set_brightness` | `{ brightness: u8 }` | Set global brightness |
-| `state.set_fps` | `{ fps: u32 }` | Set target FPS |
-| `state.pause` | `{}` | Pause rendering |
-| `state.resume` | `{}` | Resume rendering |
-| `effects.list` | `{ query?, category?, audio_reactive?, offset?, limit? }` | List effects |
-| `effects.get` | `{ effect_id }` | Effect details |
-| `effects.apply` | `{ effect_id, controls?, transition_ms? }` | Apply effect |
-| `effects.current` | `{}` | Current effect |
-| `effects.set_controls` | `{ controls }` | Update active controls |
-| `effects.next` | `{}` | Next in history |
-| `effects.previous` | `{}` | Previous in history |
-| `effects.shuffle` | `{}` | Random effect |
-| `devices.list` | `{ status? }` | List devices |
-| `devices.get` | `{ device_id }` | Device details |
-| `devices.discover` | `{}` | Trigger discovery |
-| `devices.enable` | `{ device_id }` | Enable device |
-| `devices.disable` | `{ device_id }` | Disable device |
-| `profiles.list` | `{}` | List profiles |
-| `profiles.apply` | `{ profile_id }` | Apply profile |
-| `profiles.save` | `{ name, description? }` | Save current state |
-| `layouts.list` | `{}` | List layouts |
-| `layouts.apply` | `{ layout_id }` | Apply layout |
-| `inputs.list` | `{}` | List input sources |
-| `inputs.audio_config` | `{ config? }` | Get/set audio config |
+| Method                 | Params                                                    | Description            |
+| ---------------------- | --------------------------------------------------------- | ---------------------- |
+| `state.get`            | `{}`                                                      | Full daemon state      |
+| `state.health`         | `{}`                                                      | Health check           |
+| `state.set_brightness` | `{ brightness: u8 }`                                      | Set global brightness  |
+| `state.set_fps`        | `{ fps: u32 }`                                            | Set target FPS         |
+| `state.pause`          | `{}`                                                      | Pause rendering        |
+| `state.resume`         | `{}`                                                      | Resume rendering       |
+| `effects.list`         | `{ query?, category?, audio_reactive?, offset?, limit? }` | List effects           |
+| `effects.get`          | `{ effect_id }`                                           | Effect details         |
+| `effects.apply`        | `{ effect_id, controls?, transition_ms? }`                | Apply effect           |
+| `effects.current`      | `{}`                                                      | Current effect         |
+| `effects.set_controls` | `{ controls }`                                            | Update active controls |
+| `effects.next`         | `{}`                                                      | Next in history        |
+| `effects.previous`     | `{}`                                                      | Previous in history    |
+| `effects.shuffle`      | `{}`                                                      | Random effect          |
+| `devices.list`         | `{ status? }`                                             | List devices           |
+| `devices.get`          | `{ device_id }`                                           | Device details         |
+| `devices.discover`     | `{}`                                                      | Trigger discovery      |
+| `devices.enable`       | `{ device_id }`                                           | Enable device          |
+| `devices.disable`      | `{ device_id }`                                           | Disable device         |
+| `profiles.list`        | `{}`                                                      | List profiles          |
+| `profiles.apply`       | `{ profile_id }`                                          | Apply profile          |
+| `profiles.save`        | `{ name, description? }`                                  | Save current state     |
+| `layouts.list`         | `{}`                                                      | List layouts           |
+| `layouts.apply`        | `{ layout_id }`                                           | Apply layout           |
+| `inputs.list`          | `{}`                                                      | List input sources     |
+| `inputs.audio_config`  | `{ config? }`                                             | Get/set audio config   |
 
 ### 6.4 Streaming (Watch Mode)
 
@@ -1723,7 +1742,10 @@ Response:
   "result": {
     "completions": [
       { "value": "aurora", "description": "Northern Lights effect" },
-      { "value": "aurora-borealis", "description": "Realistic aurora with color cycling" }
+      {
+        "value": "aurora-borealis",
+        "description": "Realistic aurora with color cycling"
+      }
     ]
   }
 }
@@ -1765,19 +1787,20 @@ A custom Home Assistant integration (`hypercolor-homeassistant`) that wraps the 
 
 **Entities exposed:**
 
-| Entity Type | Entity ID | Attributes |
-|------------|-----------|------------|
-| `light` | `light.hypercolor` | `brightness`, `effect`, `effect_list` |
-| `select` | `select.hypercolor_profile` | Profile list from `/api/v1/profiles` |
-| `select` | `select.hypercolor_layout` | Layout list from `/api/v1/layouts` |
-| `button` | `button.hypercolor_next` | Next effect |
-| `button` | `button.hypercolor_previous` | Previous effect |
-| `button` | `button.hypercolor_shuffle` | Random effect |
-| `sensor` | `sensor.hypercolor_fps` | Current FPS |
-| `sensor` | `sensor.hypercolor_device_count` | Connected device count |
-| `binary_sensor` | `binary_sensor.hypercolor_audio` | Audio input active |
+| Entity Type     | Entity ID                        | Attributes                            |
+| --------------- | -------------------------------- | ------------------------------------- |
+| `light`         | `light.hypercolor`               | `brightness`, `effect`, `effect_list` |
+| `select`        | `select.hypercolor_profile`      | Profile list from `/api/v1/profiles`  |
+| `select`        | `select.hypercolor_layout`       | Layout list from `/api/v1/layouts`    |
+| `button`        | `button.hypercolor_next`         | Next effect                           |
+| `button`        | `button.hypercolor_previous`     | Previous effect                       |
+| `button`        | `button.hypercolor_shuffle`      | Random effect                         |
+| `sensor`        | `sensor.hypercolor_fps`          | Current FPS                           |
+| `sensor`        | `sensor.hypercolor_device_count` | Connected device count                |
+| `binary_sensor` | `binary_sensor.hypercolor_audio` | Audio input active                    |
 
 The `light` entity maps naturally to HA's light platform:
+
 - `turn_on` / `turn_off` → `POST /state/resume` / `POST /state/pause`
 - `set_brightness` → `PATCH /state/brightness`
 - `set_effect` → `POST /effects/{id}/apply`
@@ -1910,14 +1933,14 @@ Elgato Stream Deck buttons map to Hypercolor actions via the Stream Deck SDK or 
 
 **Stream Deck plugin actions:**
 
-| Action ID | Title | Description |
-|-----------|-------|-------------|
-| `tech.hyperbliss.hypercolor.set-effect` | Set Effect | Apply a specific effect (configurable) |
-| `tech.hyperbliss.hypercolor.set-profile` | Set Profile | Apply a lighting profile |
-| `tech.hyperbliss.hypercolor.toggle-pause` | Toggle Pause | Pause/resume rendering |
-| `tech.hyperbliss.hypercolor.brightness` | Brightness | Dial to adjust brightness |
-| `tech.hyperbliss.hypercolor.next-effect` | Next Effect | Cycle to next effect |
-| `tech.hyperbliss.hypercolor.shuffle` | Shuffle | Random effect |
+| Action ID                                 | Title        | Description                            |
+| ----------------------------------------- | ------------ | -------------------------------------- |
+| `tech.hyperbliss.hypercolor.set-effect`   | Set Effect   | Apply a specific effect (configurable) |
+| `tech.hyperbliss.hypercolor.set-profile`  | Set Profile  | Apply a lighting profile               |
+| `tech.hyperbliss.hypercolor.toggle-pause` | Toggle Pause | Pause/resume rendering                 |
+| `tech.hyperbliss.hypercolor.brightness`   | Brightness   | Dial to adjust brightness              |
+| `tech.hyperbliss.hypercolor.next-effect`  | Next Effect  | Cycle to next effect                   |
+| `tech.hyperbliss.hypercolor.shuffle`      | Shuffle      | Random effect                          |
 
 Each action calls the REST API. The plugin uses the WebSocket connection for state feedback — when the effect changes (from any source), the Stream Deck button updates its icon/title.
 
@@ -2114,12 +2137,12 @@ pub enum HypercolorEvent {
 
 Events are delivered in causal order within a single category. Cross-category ordering is best-effort.
 
-| Priority | Events | Delivery |
-|----------|--------|----------|
-| **Critical** | `DaemonShutdown`, `Error(critical)` | Guaranteed delivery, sent before shutdown |
-| **High** | `DeviceConnected`, `DeviceDisconnected`, `DeviceError` | Delivered within 1ms |
-| **Normal** | `EffectChanged`, `ProfileApplied`, `BrightnessChanged` | Delivered within 5ms |
-| **Low** | `AudioBeat`, `DeviceDiscoveryCompleted`, `LayoutUpdated` | Best-effort, may be coalesced |
+| Priority     | Events                                                   | Delivery                                  |
+| ------------ | -------------------------------------------------------- | ----------------------------------------- |
+| **Critical** | `DaemonShutdown`, `Error(critical)`                      | Guaranteed delivery, sent before shutdown |
+| **High**     | `DeviceConnected`, `DeviceDisconnected`, `DeviceError`   | Delivered within 1ms                      |
+| **Normal**   | `EffectChanged`, `ProfileApplied`, `BrightnessChanged`   | Delivered within 5ms                      |
+| **Low**      | `AudioBeat`, `DeviceDiscoveryCompleted`, `LayoutUpdated` | Best-effort, may be coalesced             |
 
 The `tokio::broadcast` channel has a buffer of 256 events. If a slow subscriber falls behind, it receives a `Lagged(n)` error and can request a state snapshot to recover.
 
@@ -2167,14 +2190,14 @@ For audit/debug purposes, the daemon can optionally log events to a ring buffer 
 
 Hypercolor controls lights. It cannot brick hardware, exfiltrate data, or compromise system security. The primary concerns are:
 
-| Threat | Severity | Mitigation |
-|--------|----------|------------|
-| Unauthorized effect changes | Low | Annoying, not dangerous |
-| Excessive API calls (DoS) | Medium | Rate limiting |
-| Reading device info | Low | No sensitive data exposed |
-| Firmware manipulation | High | Not exposed via API at all |
-| Daemon crash via malformed input | Medium | Input validation, fuzzing |
-| Network-exposed daemon hijacked | Medium | API keys for non-local access |
+| Threat                           | Severity | Mitigation                    |
+| -------------------------------- | -------- | ----------------------------- |
+| Unauthorized effect changes      | Low      | Annoying, not dangerous       |
+| Excessive API calls (DoS)        | Medium   | Rate limiting                 |
+| Reading device info              | Low      | No sensitive data exposed     |
+| Firmware manipulation            | High     | Not exposed via API at all    |
+| Daemon crash via malformed input | Medium   | Input validation, fuzzing     |
+| Network-exposed daemon hijacked  | Medium   | API keys for non-local access |
 
 ### 9.2 Local Access (No Auth)
 
@@ -2221,10 +2244,10 @@ ws://192.168.1.100:9420/api/v1/ws?token=hc_ak_x7k2m9p4q1w8...
 
 Two tiers, kept simple because this is a lighting daemon, not a bank.
 
-| Tier | Capabilities | Who |
-|------|-------------|-----|
-| **Read** | Query state, list resources, subscribe to events, receive frames | Monitoring dashboards, status widgets |
-| **Control** | All read + apply effects, profiles, scenes, change brightness, device config | CLI, Web UI, integrations, scripts |
+| Tier        | Capabilities                                                                 | Who                                   |
+| ----------- | ---------------------------------------------------------------------------- | ------------------------------------- |
+| **Read**    | Query state, list resources, subscribe to events, receive frames             | Monitoring dashboards, status widgets |
+| **Control** | All read + apply effects, profiles, scenes, change brightness, device config | CLI, Web UI, integrations, scripts    |
 
 Admin operations (firmware updates, factory resets) are not exposed via the API. They require direct daemon access or D-Bus with `polkit` escalation.
 
@@ -2466,12 +2489,12 @@ Stream Deck button 3: "Lights Off"
 
 Only the REST API is versioned in the URL. Other surfaces version differently:
 
-| Surface | Versioning Method |
-|---------|------------------|
-| REST | URL prefix (`/api/v1/`) |
-| WebSocket | Protocol header (`hypercolor-v1`) |
-| D-Bus | Bus name suffix (`Hypercolor1`) |
-| MCP | Capability negotiation in `hello` |
+| Surface     | Versioning Method                                              |
+| ----------- | -------------------------------------------------------------- |
+| REST        | URL prefix (`/api/v1/`)                                        |
+| WebSocket   | Protocol header (`hypercolor-v1`)                              |
+| D-Bus       | Bus name suffix (`Hypercolor1`)                                |
+| MCP         | Capability negotiation in `hello`                              |
 | Unix socket | JSON-RPC method names (add new methods, don't change old ones) |
 
 ### 11.2 Compatibility Rules
@@ -2495,6 +2518,7 @@ Only the REST API is versioned in the URL. Other surfaces version differently:
 ### 11.3 Deprecation Process
 
 1. **Announce** — Add `Deprecation` header to affected endpoints:
+
    ```
    Deprecation: true
    Sunset: Sat, 01 Sep 2027 00:00:00 GMT
@@ -2504,6 +2528,7 @@ Only the REST API is versioned in the URL. Other surfaces version differently:
 2. **Dual-run** — Both versions active for at least 6 months
 
 3. **Warn** — Deprecated endpoints log warnings in the daemon:
+
    ```
    WARN  Deprecated endpoint called: GET /api/v1/effects (use /api/v2/effects)
          Client: Home-Assistant/2026.5 (192.168.1.50)
@@ -2546,87 +2571,87 @@ The spec includes a `x-sunset-date` extension on deprecated operations.
 
 ### REST Endpoint Summary
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/state` | Full daemon state |
-| `GET` | `/state/health` | Health check |
-| `GET` | `/state/metrics` | Prometheus metrics |
-| `PATCH` | `/state/brightness` | Set brightness |
-| `PATCH` | `/state/fps` | Set target FPS |
-| `POST` | `/state/pause` | Pause rendering |
-| `POST` | `/state/resume` | Resume rendering |
-| `GET` | `/devices` | List devices |
-| `GET` | `/devices/:id` | Device details |
-| `PATCH` | `/devices/:id` | Update device |
-| `DELETE` | `/devices/:id` | Remove device |
-| `POST` | `/devices/discover` | Scan for devices |
-| `GET` | `/devices/:id/zones` | List zones |
-| `GET` | `/effects` | List effects |
-| `GET` | `/effects/:id` | Effect details |
-| `POST` | `/effects/:id/apply` | Apply effect |
-| `GET` | `/effects/current` | Current effect |
-| `PATCH` | `/effects/current/controls` | Update controls |
-| `GET` | `/effects/:id/presets` | List presets |
-| `POST` | `/effects/:id/presets` | Save preset |
-| `POST` | `/effects/:id/presets/:name/apply` | Apply preset |
-| `POST` | `/effects/next` | Next effect |
-| `POST` | `/effects/previous` | Previous effect |
-| `POST` | `/effects/shuffle` | Random effect |
-| `GET` | `/profiles` | List profiles |
-| `GET` | `/profiles/:id` | Profile details |
-| `POST` | `/profiles` | Create profile |
-| `PUT` | `/profiles/:id` | Update profile |
-| `DELETE` | `/profiles/:id` | Delete profile |
-| `POST` | `/profiles/:id/apply` | Apply profile |
-| `GET` | `/layouts` | List layouts |
-| `GET` | `/layouts/:id` | Layout details |
-| `POST` | `/layouts` | Create layout |
-| `PUT` | `/layouts/:id` | Update layout |
-| `DELETE` | `/layouts/:id` | Delete layout |
-| `POST` | `/layouts/:id/apply` | Apply layout |
-| `GET` | `/scenes` | List scenes |
-| `POST` | `/scenes` | Create scene |
-| `PUT` | `/scenes/:id` | Update scene |
-| `DELETE` | `/scenes/:id` | Delete scene |
-| `POST` | `/scenes/:id/activate` | Trigger scene |
-| `GET` | `/inputs` | List inputs |
-| `PATCH` | `/inputs/:id` | Configure input |
-| `POST` | `/inputs/:id/enable` | Enable input |
-| `POST` | `/inputs/:id/disable` | Disable input |
-| `POST` | `/bulk` | Bulk operations |
-| `POST` | `/webhooks` | Register webhook |
-| `POST` | `/webhooks/trigger` | Fire webhook |
+| Method   | Path                               | Description        |
+| -------- | ---------------------------------- | ------------------ |
+| `GET`    | `/state`                           | Full daemon state  |
+| `GET`    | `/state/health`                    | Health check       |
+| `GET`    | `/state/metrics`                   | Prometheus metrics |
+| `PATCH`  | `/state/brightness`                | Set brightness     |
+| `PATCH`  | `/state/fps`                       | Set target FPS     |
+| `POST`   | `/state/pause`                     | Pause rendering    |
+| `POST`   | `/state/resume`                    | Resume rendering   |
+| `GET`    | `/devices`                         | List devices       |
+| `GET`    | `/devices/:id`                     | Device details     |
+| `PATCH`  | `/devices/:id`                     | Update device      |
+| `DELETE` | `/devices/:id`                     | Remove device      |
+| `POST`   | `/devices/discover`                | Scan for devices   |
+| `GET`    | `/devices/:id/zones`               | List zones         |
+| `GET`    | `/effects`                         | List effects       |
+| `GET`    | `/effects/:id`                     | Effect details     |
+| `POST`   | `/effects/:id/apply`               | Apply effect       |
+| `GET`    | `/effects/current`                 | Current effect     |
+| `PATCH`  | `/effects/current/controls`        | Update controls    |
+| `GET`    | `/effects/:id/presets`             | List presets       |
+| `POST`   | `/effects/:id/presets`             | Save preset        |
+| `POST`   | `/effects/:id/presets/:name/apply` | Apply preset       |
+| `POST`   | `/effects/next`                    | Next effect        |
+| `POST`   | `/effects/previous`                | Previous effect    |
+| `POST`   | `/effects/shuffle`                 | Random effect      |
+| `GET`    | `/profiles`                        | List profiles      |
+| `GET`    | `/profiles/:id`                    | Profile details    |
+| `POST`   | `/profiles`                        | Create profile     |
+| `PUT`    | `/profiles/:id`                    | Update profile     |
+| `DELETE` | `/profiles/:id`                    | Delete profile     |
+| `POST`   | `/profiles/:id/apply`              | Apply profile      |
+| `GET`    | `/layouts`                         | List layouts       |
+| `GET`    | `/layouts/:id`                     | Layout details     |
+| `POST`   | `/layouts`                         | Create layout      |
+| `PUT`    | `/layouts/:id`                     | Update layout      |
+| `DELETE` | `/layouts/:id`                     | Delete layout      |
+| `POST`   | `/layouts/:id/apply`               | Apply layout       |
+| `GET`    | `/scenes`                          | List scenes        |
+| `POST`   | `/scenes`                          | Create scene       |
+| `PUT`    | `/scenes/:id`                      | Update scene       |
+| `DELETE` | `/scenes/:id`                      | Delete scene       |
+| `POST`   | `/scenes/:id/activate`             | Trigger scene      |
+| `GET`    | `/inputs`                          | List inputs        |
+| `PATCH`  | `/inputs/:id`                      | Configure input    |
+| `POST`   | `/inputs/:id/enable`               | Enable input       |
+| `POST`   | `/inputs/:id/disable`              | Disable input      |
+| `POST`   | `/bulk`                            | Bulk operations    |
+| `POST`   | `/webhooks`                        | Register webhook   |
+| `POST`   | `/webhooks/trigger`                | Fire webhook       |
 
 ### WebSocket Message Types
 
-| Direction | Type | Format | Description |
-|-----------|------|--------|-------------|
-| S→C | `hello` | JSON | Initial state on connect |
-| C→S | `subscribe` | JSON | Subscribe to channels |
-| C→S | `unsubscribe` | JSON | Unsubscribe from channels |
-| S→C | `0x01` | Binary | LED frame data |
-| S→C | `0x02` | Binary | Audio spectrum data |
-| S→C | `0x03` | Binary | Canvas pixel data |
-| S→C | `event` | JSON | System event notification |
-| S→C | `metrics` | JSON | Performance metrics |
-| C→S | `command` | JSON | REST-equivalent command |
-| S→C | `response` | JSON | Command response |
+| Direction | Type          | Format | Description               |
+| --------- | ------------- | ------ | ------------------------- |
+| S→C       | `hello`       | JSON   | Initial state on connect  |
+| C→S       | `subscribe`   | JSON   | Subscribe to channels     |
+| C→S       | `unsubscribe` | JSON   | Unsubscribe from channels |
+| S→C       | `0x01`        | Binary | LED frame data            |
+| S→C       | `0x02`        | Binary | Audio spectrum data       |
+| S→C       | `0x03`        | Binary | Canvas pixel data         |
+| S→C       | `event`       | JSON   | System event notification |
+| S→C       | `metrics`     | JSON   | Performance metrics       |
+| C→S       | `command`     | JSON   | REST-equivalent command   |
+| S→C       | `response`    | JSON   | Command response          |
 
 ### MCP Tool Summary
 
-| Tool | Description |
-|------|-------------|
-| `apply_effect` | Apply effect by name or description |
-| `set_controls` | Adjust active effect parameters |
-| `list_effects` | Browse effect catalog |
-| `list_effect_controls` | See effect control schema |
-| `list_devices` | Show connected devices |
-| `configure_device` | Enable/disable/rename devices |
-| `discover_devices` | Scan for new hardware |
-| `apply_profile` | Load a saved profile |
-| `create_profile` | Save current state |
-| `create_scene` | Set up automated triggers |
-| `set_brightness` | Global brightness control |
-| `get_state` | Current system state |
-| `pause_resume` | Pause/resume rendering |
-| `suggest_effect` | AI-powered effect recommendation |
+| Tool                   | Description                         |
+| ---------------------- | ----------------------------------- |
+| `apply_effect`         | Apply effect by name or description |
+| `set_controls`         | Adjust active effect parameters     |
+| `list_effects`         | Browse effect catalog               |
+| `list_effect_controls` | See effect control schema           |
+| `list_devices`         | Show connected devices              |
+| `configure_device`     | Enable/disable/rename devices       |
+| `discover_devices`     | Scan for new hardware               |
+| `apply_profile`        | Load a saved profile                |
+| `create_profile`       | Save current state                  |
+| `create_scene`         | Set up automated triggers           |
+| `set_brightness`       | Global brightness control           |
+| `get_state`            | Current system state                |
+| `pause_resume`         | Pause/resume rendering              |
+| `suggest_effect`       | AI-powered effect recommendation    |

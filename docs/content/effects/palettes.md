@@ -11,51 +11,51 @@ Palettes are curated color ramps with an id, name, stops, and a cosine-palette a
 
 These are the palettes that ship with every workspace. Each one is curated for LED hardware, which means high saturation, dark floors, and avoidance of the orange-yellow washout zone.
 
-| Palette | Mood |
-|---|---|
-| `SilkCircuit` | Electric, dark, vibrant (the house palette) |
-| `Cyberpunk` | Dark, neon, futuristic |
-| `Vaporwave` | Retro, dreamy, pastel-neon |
-| `Synthwave` | Retro, warm, 80s |
-| `Neon Flux` | Energetic, vibrant |
-| `Matrix` | Dark, digital, monochrome green |
-| `Aurora` | Cool, ethereal, northern |
-| `Ocean` | Calm, deep, aquatic |
-| `Forest` | Earthy, organic, lush |
-| `Sunset` | Warm, romantic, dusk |
-| `Cherry Blossom` | Gentle, spring, delicate |
-| `Fire` | Hot, aggressive |
-| `Lava` | Molten, deep orange/red |
-| `Ember` | Smoldering, orange/amber |
-| `Solar` | Bright, yellow/white heat |
-| `Ice` | Cool, crystalline |
-| `Deep Sea` | Dark blue, bioluminescent |
-| `Midnight` | Dark purple/blue |
-| `Frost` | Cool, soft |
-| `Viridis` | Scientific, green-to-purple |
-| `Inferno` | Scientific, black-to-orange-to-yellow |
-| `Plasma` | Scientific, purple-to-pink-to-yellow |
-| `Magma` | Scientific, black-to-red-to-white |
-| `Candy` | Pastel, playful |
-| `Pastel` | Soft, low-saturation |
-| `Cotton Candy` | Pink/blue pastel |
-| `Mono` | Grayscale |
-| `Phosphor` | Amber CRT |
+| Palette          | Mood                                        |
+| ---------------- | ------------------------------------------- |
+| `SilkCircuit`    | Electric, dark, vibrant (the house palette) |
+| `Cyberpunk`      | Dark, neon, futuristic                      |
+| `Vaporwave`      | Retro, dreamy, pastel-neon                  |
+| `Synthwave`      | Retro, warm, 80s                            |
+| `Neon Flux`      | Energetic, vibrant                          |
+| `Matrix`         | Dark, digital, monochrome green             |
+| `Aurora`         | Cool, ethereal, northern                    |
+| `Ocean`          | Calm, deep, aquatic                         |
+| `Forest`         | Earthy, organic, lush                       |
+| `Sunset`         | Warm, romantic, dusk                        |
+| `Cherry Blossom` | Gentle, spring, delicate                    |
+| `Fire`           | Hot, aggressive                             |
+| `Lava`           | Molten, deep orange/red                     |
+| `Ember`          | Smoldering, orange/amber                    |
+| `Solar`          | Bright, yellow/white heat                   |
+| `Ice`            | Cool, crystalline                           |
+| `Deep Sea`       | Dark blue, bioluminescent                   |
+| `Midnight`       | Dark purple/blue                            |
+| `Frost`          | Cool, soft                                  |
+| `Viridis`        | Scientific, green-to-purple                 |
+| `Inferno`        | Scientific, black-to-orange-to-yellow       |
+| `Plasma`         | Scientific, purple-to-pink-to-yellow        |
+| `Magma`          | Scientific, black-to-red-to-white           |
+| `Candy`          | Pastel, playful                             |
+| `Pastel`         | Soft, low-saturation                        |
+| `Cotton Candy`   | Pink/blue pastel                            |
+| `Mono`           | Grayscale                                   |
+| `Phosphor`       | Amber CRT                                   |
 
 Fetch the full list at runtime with `paletteNames()`:
 
 ```typescript
-import { paletteNames } from '@hypercolor/sdk'
-console.log(paletteNames())
+import { paletteNames } from "@hypercolor/sdk";
+console.log(paletteNames());
 ```
 
 Inspect a single palette's metadata (mood, stops, accent, background) with `getPalette()`:
 
 ```typescript
-import { getPalette } from '@hypercolor/sdk'
-const p = getPalette('SilkCircuit')
-console.log(p?.stops)       // ['#e135ff', '#80ffea', '#ff6ac1', '#f1fa8c', '#50fa7b']
-console.log(p?.background)  // '#0d0221'
+import { getPalette } from "@hypercolor/sdk";
+const p = getPalette("SilkCircuit");
+console.log(p?.stops); // ['#e135ff', '#80ffea', '#ff6ac1', '#f1fa8c', '#50fa7b']
+console.log(p?.background); // '#0d0221'
 ```
 
 ## Using palettes in canvas effects
@@ -68,14 +68,14 @@ Use the key `palette` with a string array and the SDK automatically replaces the
 
 ```typescript
 export default canvas(
-    'Ribbon',
-    { palette: ['SilkCircuit', 'Aurora', 'Synthwave'] },
-    (ctx, time, controls) => {
-        const pal = controls.palette as (t: number, alpha?: number) => string
-        ctx.fillStyle = pal(0.25)
-        ctx.fillStyle = pal(0.7, 0.4) // with alpha
-    },
-)
+  "Ribbon",
+  { palette: ["SilkCircuit", "Aurora", "Synthwave"] },
+  (ctx, time, controls) => {
+    const pal = controls.palette as (t: number, alpha?: number) => string;
+    ctx.fillStyle = pal(0.25);
+    ctx.fillStyle = pal(0.7, 0.4); // with alpha
+  },
+);
 ```
 
 `pal(t)` takes `t ∈ [0, 1]` and returns `rgb(...)`. `pal(t, alpha)` returns `rgba(...)` with the given alpha.
@@ -85,27 +85,29 @@ export default canvas(
 When you need a tooltip, a group, or a non-first default, use `combo()`, but you lose the auto-function. The resolved value stays a string.
 
 ```typescript
-import { canvas, combo, createPaletteFn } from '@hypercolor/sdk'
-import type { PaletteFn } from '@hypercolor/sdk'
+import { canvas, combo, createPaletteFn } from "@hypercolor/sdk";
+import type { PaletteFn } from "@hypercolor/sdk";
 
 export default canvas.stateful(
-    'Ribbon',
-    {
-        palette: combo('Palette', ['SilkCircuit', 'Aurora', 'Synthwave'], { group: 'Color' }),
-    },
-    () => {
-        let name = ''
-        let pal: PaletteFn = createPaletteFn('SilkCircuit')
-        return (ctx, time, controls) => {
-            const next = controls.palette as string
-            if (next !== name) {
-                name = next
-                pal = createPaletteFn(name)
-            }
-            ctx.fillStyle = pal(0.25)
-        }
-    },
-)
+  "Ribbon",
+  {
+    palette: combo("Palette", ["SilkCircuit", "Aurora", "Synthwave"], {
+      group: "Color",
+    }),
+  },
+  () => {
+    let name = "";
+    let pal: PaletteFn = createPaletteFn("SilkCircuit");
+    return (ctx, time, controls) => {
+      const next = controls.palette as string;
+      if (next !== name) {
+        name = next;
+        pal = createPaletteFn(name);
+      }
+      ctx.fillStyle = pal(0.25);
+    };
+  },
+);
 ```
 
 `createPaletteFn(name)` returns a `PaletteFn` bound to a specific palette. Building it inside the draw function every frame is cheap because the underlying LUT is module-level cached; rebuilding only happens on the first call per palette name.
@@ -124,9 +126,9 @@ Use `createPaletteFn` inside the draw when you need one of those.
 Shaders don't receive the palette function directly because GLSL can't hold a JavaScript closure. Instead, the `palette` shorthand becomes an integer uniform whose value is the selected index:
 
 ```typescript
-export default effect('My Shader', shader, {
-    palette: ['Aurora', 'Fire', 'Ocean'],
-})
+export default effect("My Shader", shader, {
+  palette: ["Aurora", "Fire", "Ocean"],
+});
 ```
 
 ```glsl
@@ -163,10 +165,10 @@ The trade-off is cost on first use: converting stops and building a 256-entry LU
 For direct access without a function wrapper:
 
 ```typescript
-import { samplePalette, samplePaletteCSS } from '@hypercolor/sdk'
+import { samplePalette, samplePaletteCSS } from "@hypercolor/sdk";
 
-const [r, g, b] = samplePalette('SilkCircuit', 0.5) // each in 0..1
-const css = samplePaletteCSS('SilkCircuit', 0.5, 0.4) // 'rgba(...)'
+const [r, g, b] = samplePalette("SilkCircuit", 0.5); // each in 0..1
+const css = samplePaletteCSS("SilkCircuit", 0.5, 0.4); // 'rgba(...)'
 ```
 
 ## Palette design
@@ -184,18 +186,18 @@ A common idiom is to sample a dark palette position for the background and a bri
 
 ```typescript
 export default canvas.stateful(
-    'Glow',
-    { palette: ['SilkCircuit', 'Aurora', 'Ember'] },
-    () => {
-        return (ctx, time, controls) => {
-            const pal = controls.palette as (t: number, alpha?: number) => string
-            ctx.fillStyle = pal(0.05) // dark end of the palette
-            ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
-            ctx.fillStyle = pal(0.8, 0.9) // bright end with alpha
-            drawForeground(ctx)
-        }
-    },
-)
+  "Glow",
+  { palette: ["SilkCircuit", "Aurora", "Ember"] },
+  () => {
+    return (ctx, time, controls) => {
+      const pal = controls.palette as (t: number, alpha?: number) => string;
+      ctx.fillStyle = pal(0.05); // dark end of the palette
+      ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.fillStyle = pal(0.8, 0.9); // bright end with alpha
+      drawForeground(ctx);
+    };
+  },
+);
 ```
 
 This keeps the whole effect visually coherent: everything lives inside the chosen palette and your effect inherits its mood automatically.

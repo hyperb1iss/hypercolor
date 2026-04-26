@@ -26,7 +26,7 @@
 
 ## 1. SpatialLayout Struct
 
-*Synthesized from: ARCHITECTURE.md (SpatialLayout data model), design/03 section 1 (mapping problem), design/03 section 9 (persistence), design/18 section 2 (coordinate systems)*
+_Synthesized from: ARCHITECTURE.md (SpatialLayout data model), design/03 section 1 (mapping problem), design/03 section 9 (persistence), design/18 section 2 (coordinate systems)_
 
 The top-level container for spatial mapping. One `SpatialLayout` exists per active configuration. It holds the canvas definition, every device zone, and optional multi-room metadata. The layout is the single source of truth for "where does every LED sample the canvas."
 
@@ -195,7 +195,7 @@ pub enum Wall {
 
 ## 2. DeviceZone Struct
 
-*Synthesized from: ARCHITECTURE.md (DeviceZone), design/03 sections 3-4 (shape library, per-effect layouts), design/18 sections 3-5 (topology, room editor, ambient/accent separation)*
+_Synthesized from: ARCHITECTURE.md (DeviceZone), design/03 sections 3-4 (shape library, per-effect layouts), design/18 sections 3-5 (topology, room editor, ambient/accent separation)_
 
 A zone binds a physical device (or device segment) to a rectangular region of the canvas. It defines where the device lives on the canvas, how its LEDs are geometrically arranged within the zone, and which sampling algorithm reads colors from the canvas.
 
@@ -341,7 +341,7 @@ The `led_positions` field stores the result of step 1. The canvas-space coordina
 
 ## 3. LedTopology Types
 
-*Synthesized from: ARCHITECTURE.md (LedTopology enum), design/03 sections 3 and 7 (shape library, topology management), design/18 section 3 (topology primitives and challenges)*
+_Synthesized from: ARCHITECTURE.md (LedTopology enum), design/03 sections 3 and 7 (shape library, topology management), design/18 section 3 (topology primitives and challenges)_
 
 Topologies define the geometric arrangement of LEDs within a zone's bounding rectangle. Each topology type computes a set of zone-local normalized positions from its parameters.
 
@@ -482,15 +482,15 @@ pub struct RingDef {
 
 ### LED Count Rules
 
-| Topology | LED Count | Formula |
-|---|---|---|
-| `Strip` | `count` | Direct parameter |
-| `Matrix` | `width * height` | Grid dimensions |
-| `Ring` | `count` | Direct parameter |
-| `ConcentricRings` | `sum(rings[i].count)` | Sum across all rings |
-| `PerimeterLoop` | `top + right + bottom + left` | Sum of all edges |
-| `Point` | `1` | Always single LED |
-| `Custom` | `positions.len()` | Length of position array |
+| Topology          | LED Count                     | Formula                  |
+| ----------------- | ----------------------------- | ------------------------ |
+| `Strip`           | `count`                       | Direct parameter         |
+| `Matrix`          | `width * height`              | Grid dimensions          |
+| `Ring`            | `count`                       | Direct parameter         |
+| `ConcentricRings` | `sum(rings[i].count)`         | Sum across all rings     |
+| `PerimeterLoop`   | `top + right + bottom + left` | Sum of all edges         |
+| `Point`           | `1`                           | Always single LED        |
+| `Custom`          | `positions.len()`             | Length of position array |
 
 ### Position Computation
 
@@ -649,7 +649,7 @@ No computation -- positions are stored directly.
 
 ## 4. NormalizedPosition
 
-*Synthesized from: ARCHITECTURE.md (zone position/size fields), design/03 section 7 (position computation), design/18 section 2 (coordinate systems)*
+_Synthesized from: ARCHITECTURE.md (zone position/size fields), design/03 section 7 (position computation), design/18 section 2 (coordinate systems)_
 
 All spatial coordinates within the layout use a normalized `[0.0, 1.0]` coordinate system. The `NormalizedPosition` type encodes a point in this space and provides conversions to and from pixel coordinates.
 
@@ -760,11 +760,11 @@ impl NormalizedPosition {
 
 ### Coordinate Space Conventions
 
-| Space | Range | Origin | Used For |
-|---|---|---|---|
-| Normalized canvas | `[0.0, 1.0]` | Top-left `(0,0)` | Zone placement, LED positions |
-| Pixel | `[0, W-1] x [0, H-1]` | Top-left `(0,0)` | Sampling the canvas buffer |
-| Zone-local | `[0.0, 1.0]` | Top-left of zone bounding box | LED positions within a zone |
+| Space             | Range                 | Origin                        | Used For                      |
+| ----------------- | --------------------- | ----------------------------- | ----------------------------- |
+| Normalized canvas | `[0.0, 1.0]`          | Top-left `(0,0)`              | Zone placement, LED positions |
+| Pixel             | `[0, W-1] x [0, H-1]` | Top-left `(0,0)`              | Sampling the canvas buffer    |
+| Zone-local        | `[0.0, 1.0]`          | Top-left of zone bounding box | LED positions within a zone   |
 
 **Why normalized?** Effects don't care about absolute pixel counts. A strip placed at `x=0.5` is centered horizontally regardless of whether the canvas is 320 or 640 pixels wide. Normalized coordinates make layouts resolution-independent.
 
@@ -786,7 +786,7 @@ graph TD
 
 ## 5. Sampling Algorithms
 
-*Synthesized from: design/03 section 8 (sampling algorithms, performance budget, SAT optimization), design/18 section 5 (ambient/accent separation, role-based sampling), ARCHITECTURE.md (SpatialSampler)*
+_Synthesized from: design/03 section 8 (sampling algorithms, performance budget, SAT optimization), design/18 section 5 (ambient/accent separation, role-based sampling), ARCHITECTURE.md (SpatialSampler)_
 
 Four sampling algorithms are provided, each trading off between speed, quality, and appropriateness for different device types. The sampling mode is selectable per-zone, with a layout-wide default.
 
@@ -816,12 +816,12 @@ pub fn sample_nearest(canvas: &Canvas, x: f32, y: f32) -> Rgb {
 
 **Characteristics:**
 
-| Property | Value |
-|---|---|
-| Complexity | O(1) per LED |
-| Pixel reads | 1 |
-| Quality | Low (visible stepping between adjacent LEDs) |
-| Best for | Low-density strips (30 LED/m), prototyping, performance-critical paths |
+| Property    | Value                                                                  |
+| ----------- | ---------------------------------------------------------------------- |
+| Complexity  | O(1) per LED                                                           |
+| Pixel reads | 1                                                                      |
+| Quality     | Low (visible stepping between adjacent LEDs)                           |
+| Best for    | Low-density strips (30 LED/m), prototyping, performance-critical paths |
 
 ### 5.2 Bilinear Interpolation
 
@@ -897,17 +897,17 @@ pub fn sample_bilinear(canvas: &Canvas, x: f32, y: f32) -> Rgb {
 
 **Characteristics:**
 
-| Property | Value |
-|---|---|
-| Complexity | O(1) per LED |
-| Pixel reads | 4 |
-| Arithmetic ops | 3 lerps (12 multiply-adds) |
-| Quality | Good (smooth gradients, no stepping) |
-| Best for | Most devices -- strips, matrices, fan rings, keyboards |
+| Property       | Value                                                  |
+| -------------- | ------------------------------------------------------ |
+| Complexity     | O(1) per LED                                           |
+| Pixel reads    | 4                                                      |
+| Arithmetic ops | 3 lerps (12 multiply-adds)                             |
+| Quality        | Good (smooth gradients, no stepping)                   |
+| Best for       | Most devices -- strips, matrices, fan rings, keyboards |
 
 ### 5.3 Area Average
 
-For devices that represent a large physical area (Hue bulbs, ceiling wash lights). Returns the flat arithmetic mean of all pixels in a rectangular canvas region. The LED's color reflects the *mood* of its area, not any specific pixel.
+For devices that represent a large physical area (Hue bulbs, ceiling wash lights). Returns the flat arithmetic mean of all pixels in a rectangular canvas region. The LED's color reflects the _mood_ of its area, not any specific pixel.
 
 **Math:**
 
@@ -974,12 +974,12 @@ pub fn sample_area_average(
 
 **Characteristics:**
 
-| Property | Value |
-|---|---|
-| Complexity (naive) | O(area) per LED |
-| Complexity (SAT) | O(1) per LED (after O(W*H) precomputation) |
-| Quality | Excellent for ambient/mood lighting |
-| Best for | Hue bulbs, single-color smart lights, room wash zones |
+| Property           | Value                                                 |
+| ------------------ | ----------------------------------------------------- |
+| Complexity (naive) | O(area) per LED                                       |
+| Complexity (SAT)   | O(1) per LED (after O(W\*H) precomputation)           |
+| Quality            | Excellent for ambient/mood lighting                   |
+| Best for           | Hue bulbs, single-color smart lights, room wash zones |
 
 ### 5.4 Gaussian-Weighted Average
 
@@ -1090,25 +1090,25 @@ pub fn sample_gaussian(
 
 **Characteristics:**
 
-| Property | Value |
-|---|---|
-| Complexity | O(kernel_area) per LED |
-| Example: radius=8 | 17x17 = 289 multiply-accumulates per LED |
-| Quality | Excellent (natural smooth falloff, no box artifacts) |
-| Best for | Premium ambient lighting, Hue bulbs, room accents |
+| Property          | Value                                                |
+| ----------------- | ---------------------------------------------------- |
+| Complexity        | O(kernel_area) per LED                               |
+| Example: radius=8 | 17x17 = 289 multiply-accumulates per LED             |
+| Quality           | Excellent (natural smooth falloff, no box artifacts) |
+| Best for          | Premium ambient lighting, Hue bulbs, room accents    |
 
 ### 5.5 Sampling Mode Recommendations
 
-| Device Type | Recommended Mode | Rationale |
-|---|---|---|
-| High-density strip (60+ LED/m) | Bilinear | Full spatial detail, smooth gradients |
-| Low-density strip (30 LED/m) | Bilinear or Nearest | Nearest is fine for widely spaced LEDs |
-| LED matrix (Strimer, panel) | Bilinear | Natural match for pixel-grid nature |
-| Fan ring | Bilinear | Smooth circular gradient sampling |
-| Hue / smart bulb | GaussianArea | Represents a room area, not a point |
-| Large wash zone | AreaAverage | Fast aggregate of wide region |
-| Monitor backlight | Bilinear | Per-LED positional precision |
-| Keyboard per-key | Bilinear | Standard sub-pixel accuracy |
+| Device Type                    | Recommended Mode    | Rationale                              |
+| ------------------------------ | ------------------- | -------------------------------------- |
+| High-density strip (60+ LED/m) | Bilinear            | Full spatial detail, smooth gradients  |
+| Low-density strip (30 LED/m)   | Bilinear or Nearest | Nearest is fine for widely spaced LEDs |
+| LED matrix (Strimer, panel)    | Bilinear            | Natural match for pixel-grid nature    |
+| Fan ring                       | Bilinear            | Smooth circular gradient sampling      |
+| Hue / smart bulb               | GaussianArea        | Represents a room area, not a point    |
+| Large wash zone                | AreaAverage         | Fast aggregate of wide region          |
+| Monitor backlight              | Bilinear            | Per-LED positional precision           |
+| Keyboard per-key               | Bilinear            | Standard sub-pixel accuracy            |
 
 ### 5.6 Edge Behavior
 
@@ -1158,7 +1158,7 @@ fn apply_edge(normalized: f32, dimension: f32, edge: EdgeBehavior) -> f32 {
 
 ## 6. Precomputed Lookup Tables
 
-*Synthesized from: design/03 section 8 (precomputed sampler, performance budget), ARCHITECTURE.md (SpatialSampler sample method)*
+_Synthesized from: design/03 section 8 (precomputed sampler, performance budget), ARCHITECTURE.md (SpatialSampler sample method)_
 
 The layout changes rarely (user drags a zone in the editor). The canvas changes every frame (60fps effect rendering). The sampler exploits this asymmetry by precomputing all per-LED data at layout-change time and reusing it every frame.
 
@@ -1346,17 +1346,17 @@ impl SamplingLut {
 
 The LUT is invalidated (marked dirty) by any of the following events:
 
-| Event | Invalidation Scope | Cost |
-|---|---|---|
-| Zone added/removed | Full rebuild | O(total_leds) |
-| Zone moved (position change) | Full rebuild | O(total_leds) |
-| Zone resized (size change) | Full rebuild | O(total_leds) |
-| Zone rotated | Full rebuild | O(total_leds) |
-| Zone sampling mode changed | Full rebuild | O(total_leds) |
-| Canvas resolution changed | Full rebuild | O(total_leds) |
-| Zone topology changed (LED count) | Full rebuild | O(total_leds) |
-| Effect changed (no layout change) | No invalidation | 0 |
-| Control value changed | No invalidation | 0 |
+| Event                             | Invalidation Scope | Cost          |
+| --------------------------------- | ------------------ | ------------- |
+| Zone added/removed                | Full rebuild       | O(total_leds) |
+| Zone moved (position change)      | Full rebuild       | O(total_leds) |
+| Zone resized (size change)        | Full rebuild       | O(total_leds) |
+| Zone rotated                      | Full rebuild       | O(total_leds) |
+| Zone sampling mode changed        | Full rebuild       | O(total_leds) |
+| Canvas resolution changed         | Full rebuild       | O(total_leds) |
+| Zone topology changed (LED count) | Full rebuild       | O(total_leds) |
+| Effect changed (no layout change) | No invalidation    | 0             |
+| Control value changed             | No invalidation    | 0             |
 
 **Why always full rebuild?** The LUT is a flat contiguous array. Partial rebuilds would require tracking zone offsets and potentially shifting subsequent zones' data. At ~10 us per 1000 LEDs, a full rebuild for a 10,000-LED setup costs ~100 us -- well within interactive latency. The simplicity of "always rebuild everything" outweighs the marginal performance gain of incremental updates.
 
@@ -1368,7 +1368,7 @@ The LUT is invalidated (marked dirty) by any of the following events:
 4. On the next frame, the sampler checks `dirty` and calls `rebuild()` before sampling.
 5. The sampler increments `generation` and clears `dirty`.
 
-The SAT (Summed Area Table) is rebuilt every frame from the canvas buffer, NOT on layout change. The SAT depends on canvas *content* (which changes every frame), while the LUT depends on layout *geometry* (which changes rarely).
+The SAT (Summed Area Table) is rebuilt every frame from the canvas buffer, NOT on layout change. The SAT depends on canvas _content_ (which changes every frame), while the LUT depends on layout _geometry_ (which changes rarely).
 
 ### Frame Sampling
 
@@ -1442,14 +1442,14 @@ impl SamplingLut {
 
 Target: entire spatial sampling phase completes within 1ms at 60fps.
 
-| Total LEDs | Bilinear (~50ns/LED) | Budget Used (of 1ms) |
-|---|---|---|
-| 100 | ~5 us | 0.5% |
-| 500 | ~25 us | 2.5% |
-| 1,000 | ~50 us | 5% |
-| 5,000 | ~250 us | 25% |
-| 10,000 | ~500 us | 50% |
-| 50,000 | ~2.5 ms | Over budget -- requires SIMD |
+| Total LEDs | Bilinear (~50ns/LED) | Budget Used (of 1ms)         |
+| ---------- | -------------------- | ---------------------------- |
+| 100        | ~5 us                | 0.5%                         |
+| 500        | ~25 us               | 2.5%                         |
+| 1,000      | ~50 us               | 5%                           |
+| 5,000      | ~250 us              | 25%                          |
+| 10,000     | ~500 us              | 50%                          |
+| 50,000     | ~2.5 ms              | Over budget -- requires SIMD |
 
 **The sampler is NOT the bottleneck.** Effect rendering (especially the Servo HTML path) and device I/O dominate frame time. The sampler's O(N) linear scan with cache-friendly memory access is trivially fast for typical setups.
 
@@ -1459,13 +1459,13 @@ Target: entire spatial sampling phase completes within 1ms at 60fps.
 
 ## 7. Coordinate Transforms
 
-*Synthesized from: design/03 section 7 (position computation, rotation transform), design/18 section 2 (four coordinate spaces, transformation chain)*
+_Synthesized from: design/03 section 7 (position computation, rotation transform), design/18 section 2 (four coordinate spaces, transformation chain)_
 
 Three coordinate spaces are connected by a two-step transform chain. Every LED position traverses this chain exactly once during the LUT rebuild.
 
 ### 7.1 The Three Spaces
 
-```
+````
 Zone-Local Space              Normalized Canvas Space       Pixel Space
 (0.0 -- 1.0)                 (0.0 -- 1.0)                  (fractional pixel coords)
 
@@ -1477,7 +1477,7 @@ Zone-Local Space              Normalized Canvas Space       Pixel Space
 graph LR
     ZL[Zone-Local Space] -->|"zone_local_to_canvas()<br/>(scale, rotate, translate)"| NC[Normalized Canvas Space]
     NC -->|"normalized_to_pixel()<br/>(multiply by dimensions)"| PX[Pixel Space]
-```
+````
 
 ### 7.2 Transform 1: Zone-Local to Normalized Canvas
 
@@ -1697,7 +1697,7 @@ This chain is optional and only used when the user has defined physical room dim
 
 ## 8. Summed Area Table
 
-*Synthesized from: design/03 section 8 (SAT optimization for area average sampling)*
+_Synthesized from: design/03 section 8 (SAT optimization for area average sampling)_
 
 The Summed Area Table (SAT), also known as an integral image, enables O(1) rectangle-sum queries over the canvas. It is the critical optimization that makes area-average sampling practical for ambient lighting zones with large influence radii.
 
@@ -1855,15 +1855,15 @@ impl SummedAreaTable {
 
 ### Integration with Area Average Sampling
 
-The SAT is rebuilt every frame (it depends on canvas content, which changes every frame). The cost is O(W * H) = O(64,000) for a 320x200 canvas, approximately 20-40 microseconds.
+The SAT is rebuilt every frame (it depends on canvas content, which changes every frame). The cost is O(W \* H) = O(64,000) for a 320x200 canvas, approximately 20-40 microseconds.
 
 After SAT construction, every area-average query is O(1) regardless of the query rectangle's size. For a setup with 20 ambient lights, each with a large sampling radius:
 
-| Operation | Cost | Notes |
-|---|---|---|
-| SAT construction | ~30 us (once per frame) | O(W * H) |
-| 20 area-average queries | ~1 us (total) | O(1) each |
-| Total | ~31 us | Negligible at 60fps |
+| Operation               | Cost                    | Notes               |
+| ----------------------- | ----------------------- | ------------------- |
+| SAT construction        | ~30 us (once per frame) | O(W \* H)           |
+| 20 area-average queries | ~1 us (total)           | O(1) each           |
+| Total                   | ~31 us                  | Negligible at 60fps |
 
 **When the SAT is NOT built:** If no zone uses `AreaAverage` sampling, the SAT construction is skipped entirely (checked via `needs_sat()`). This avoids the ~30 us cost for setups that only use bilinear sampling.
 
@@ -1871,7 +1871,7 @@ After SAT construction, every area-average query is O(1) regardless of the query
 
 ## 9. Layout Serialization
 
-*Synthesized from: design/03 section 9 (layout persistence, file format, import/export, schema versioning)*
+_Synthesized from: design/03 section 9 (layout persistence, file format, import/export, schema versioning)_
 
 Layouts are serialized as TOML files for human readability and consistency with the Hypercolor configuration system. The schema is versioned for forward-compatible evolution.
 
@@ -1983,6 +1983,7 @@ arrangement = "centered"
 Each topology type uses different fields within the `[zones.topology]` table:
 
 **Strip:**
+
 ```toml
 [zones.topology]
 type = "strip"
@@ -1991,6 +1992,7 @@ direction = "left_to_right"   # or "right_to_left", "top_to_bottom", "bottom_to_
 ```
 
 **Matrix:**
+
 ```toml
 [zones.topology]
 type = "matrix"
@@ -2001,6 +2003,7 @@ start_corner = "top_left"
 ```
 
 **Ring:**
+
 ```toml
 [zones.topology]
 type = "ring"
@@ -2010,6 +2013,7 @@ winding = "cw"
 ```
 
 **Concentric Rings:**
+
 ```toml
 [zones.topology]
 type = "concentric_rings"
@@ -2028,6 +2032,7 @@ winding = "cw"
 ```
 
 **Perimeter Loop:**
+
 ```toml
 [zones.topology]
 type = "perimeter_loop"
@@ -2040,12 +2045,14 @@ winding = "cw"
 ```
 
 **Point:**
+
 ```toml
 [zones.topology]
 type = "point"
 ```
 
 **Custom:**
+
 ```toml
 [zones.topology]
 type = "custom"
@@ -2185,7 +2192,7 @@ pub fn migrate_layout(raw: toml::Value) -> Result<SpatialLayout, MigrationError>
 
 ## 10. Per-Effect Layout Overrides
 
-*Synthesized from: design/03 section 4 (per-effect layouts, layout overrides, effect-declared hints)*
+_Synthesized from: design/03 section 4 (per-effect layouts, layout overrides, effect-declared hints)_
 
 Not every effect looks good with the same zone placement. A sweeping horizontal gradient works with a horizontal strip; a radial pulse effect needs centered zones; an audio spectrum visualizer wants all zones stacked vertically. Per-effect layout overrides solve this without requiring the user to maintain multiple independent layouts.
 
@@ -2461,11 +2468,13 @@ fn apply_canvas_transform(layout: &mut SpatialLayout, transform: &CanvasTransfor
 Effects can declare their preferred layout in metadata:
 
 **HTML meta tags (LightScript compatibility):**
+
 ```html
 <meta property="layout_hint" content="vertical_stack" />
 ```
 
 **Rust native effect:**
+
 ```rust
 pub fn metadata() -> EffectMetadata {
     EffectMetadata {
@@ -2575,14 +2584,14 @@ pub enum SamplingMode {
 
 ## Appendix C: Performance Characteristics
 
-| Operation | Complexity | Time @ 320x200 | Notes |
-|---|---|---|---|
-| Sampler LUT rebuild | O(total LEDs) | ~10 us / 1000 LEDs | On layout change only |
-| SAT construction | O(W * H) | ~30 us | Once per frame, only if area sampling used |
-| Nearest sample | O(1) per LED | ~20 ns | 1 pixel read |
-| Bilinear sample | O(1) per LED | ~50 ns | 4 pixel reads + 3 lerps |
-| Area average (SAT) | O(1) per LED | ~30 ns | After SAT construction |
-| Gaussian sample | O(kernel area) per LED | ~300 ns (r=8) | Precomputed kernel weights |
-| Full frame (1,000 LEDs, bilinear) | O(N) | ~50 us | Well within 1ms budget |
-| Full frame (10,000 LEDs, bilinear) | O(N) | ~500 us | Still under 1ms |
-| Full frame (50,000 LEDs, bilinear) | O(N) | ~2.5 ms | Requires SIMD optimization |
+| Operation                          | Complexity             | Time @ 320x200     | Notes                                      |
+| ---------------------------------- | ---------------------- | ------------------ | ------------------------------------------ |
+| Sampler LUT rebuild                | O(total LEDs)          | ~10 us / 1000 LEDs | On layout change only                      |
+| SAT construction                   | O(W \* H)              | ~30 us             | Once per frame, only if area sampling used |
+| Nearest sample                     | O(1) per LED           | ~20 ns             | 1 pixel read                               |
+| Bilinear sample                    | O(1) per LED           | ~50 ns             | 4 pixel reads + 3 lerps                    |
+| Area average (SAT)                 | O(1) per LED           | ~30 ns             | After SAT construction                     |
+| Gaussian sample                    | O(kernel area) per LED | ~300 ns (r=8)      | Precomputed kernel weights                 |
+| Full frame (1,000 LEDs, bilinear)  | O(N)                   | ~50 us             | Well within 1ms budget                     |
+| Full frame (10,000 LEDs, bilinear) | O(N)                   | ~500 us            | Still under 1ms                            |
+| Full frame (50,000 LEDs, bilinear) | O(N)                   | ~2.5 ms            | Requires SIMD optimization                 |

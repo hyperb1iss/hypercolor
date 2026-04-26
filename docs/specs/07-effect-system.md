@@ -30,9 +30,9 @@
 The effect system renders visual content to an RGBA canvas whose dimensions are loaded from
 `daemon.canvas_width` / `daemon.canvas_height` (defaults: 640x480). Everything downstream -- spatial sampling, device color output, UI preview -- consumes that canvas. Two rendering paths coexist:
 
-| Path | Renderer | Input Format | Use Case |
-|---|---|---|---|
-| **Fast path** | `WgpuRenderer` | `.wgsl` / `.glsl` shaders | Native effects, maximum throughput |
+| Path            | Renderer        | Input Format                | Use Case                            |
+| --------------- | --------------- | --------------------------- | ----------------------------------- |
+| **Fast path**   | `WgpuRenderer`  | `.wgsl` / `.glsl` shaders   | Native effects, maximum throughput  |
 | **Compat path** | `ServoRenderer` | `.html` (Canvas 2D / WebGL) | Community HTML effects, Lightscript |
 
 Both paths produce the same output: a `Canvas` struct containing an RGBA pixel buffer sized
@@ -179,11 +179,11 @@ tooltip = "Rotate the color palette"
 
 ### 2.3 Derivation Rules
 
-| Source Format | Metadata Source | `id` derivation |
-|---|---|---|
-| `.wgsl` + `.toml` | Parsed from `.toml` sidecar | `"native/{stem}"` |
-| `.glsl` + `.toml` | Parsed from `.toml` sidecar | `"native/{stem}"` |
-| `.html` | Extracted from `<meta>` tags | `"{parent_dir}/{stem}"` |
+| Source Format     | Metadata Source              | `id` derivation         |
+| ----------------- | ---------------------------- | ----------------------- |
+| `.wgsl` + `.toml` | Parsed from `.toml` sidecar  | `"native/{stem}"`       |
+| `.glsl` + `.toml` | Parsed from `.toml` sidecar  | `"native/{stem}"`       |
+| `.html`           | Extracted from `<meta>` tags | `"{parent_dir}/{stem}"` |
 
 The `id` field is **never** stored in metadata files -- it is computed at discovery time from the filesystem path. This prevents conflicts when effects are moved or renamed.
 
@@ -392,9 +392,10 @@ The engine maintains a `HashMap<String, ControlValue>` for the active effect. On
 **wgpu path:** Control values are written into the uniform buffer at offsets derived from the shader's struct layout. The engine builds a byte-level mapping at pipeline creation time by reflecting on the WGSL module (via `naga`).
 
 **Servo path:** Control values are injected as JavaScript window globals:
+
 ```javascript
-window['speed'] = 5.0;
-window['palette'] = "Aurora";
+window["speed"] = 5.0;
+window["palette"] = "Aurora";
 window.update?.();
 ```
 
@@ -1187,18 +1188,18 @@ Parses `<meta>` tags from HTML effect files into `ControlDefinition` values. Thi
 
 The parser recognizes these `<meta>` tag patterns in the HTML `<head>`:
 
-| Tag | Maps To |
-|---|---|
-| `<title>text</title>` | `EffectMetadata.name` |
-| `<meta description="text" />` | `EffectMetadata.description` |
-| `<meta publisher="text" />` | `EffectMetadata.author` |
-| `<meta property="categories" content="a,b" />` | `EffectMetadata.tags` |
-| `<meta property="id" label="L" type="number" min="0" max="100" default="50" />` | `ControlDefinition` with `ControlType::Number` |
-| `<meta property="id" label="L" type="boolean" default="0" />` | `ControlDefinition` with `ControlType::Boolean` |
-| `<meta property="id" label="L" type="combobox" values="A,B,C" default="A" />` | `ControlDefinition` with `ControlType::Combobox` |
-| `<meta property="id" label="L" type="color" default="#ff0000" />` | `ControlDefinition` with `ControlType::Color` |
-| `<meta property="id" label="L" type="hue" min="0" max="360" default="180" />` | `ControlDefinition` with `ControlType::Hue` |
-| `<meta property="id" label="L" type="textfield" default="" />` | `ControlDefinition` with `ControlType::TextField` |
+| Tag                                                                             | Maps To                                           |
+| ------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `<title>text</title>`                                                           | `EffectMetadata.name`                             |
+| `<meta description="text" />`                                                   | `EffectMetadata.description`                      |
+| `<meta publisher="text" />`                                                     | `EffectMetadata.author`                           |
+| `<meta property="categories" content="a,b" />`                                  | `EffectMetadata.tags`                             |
+| `<meta property="id" label="L" type="number" min="0" max="100" default="50" />` | `ControlDefinition` with `ControlType::Number`    |
+| `<meta property="id" label="L" type="boolean" default="0" />`                   | `ControlDefinition` with `ControlType::Boolean`   |
+| `<meta property="id" label="L" type="combobox" values="A,B,C" default="A" />`   | `ControlDefinition` with `ControlType::Combobox`  |
+| `<meta property="id" label="L" type="color" default="#ff0000" />`               | `ControlDefinition` with `ControlType::Color`     |
+| `<meta property="id" label="L" type="hue" min="0" max="360" default="180" />`   | `ControlDefinition` with `ControlType::Hue`       |
+| `<meta property="id" label="L" type="textfield" default="" />`                  | `ControlDefinition` with `ControlType::TextField` |
 
 ### 7.2 Parser Implementation
 
@@ -1351,16 +1352,16 @@ fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
 
 The parser must handle these patterns found in the 100+ community effects:
 
-| Pattern | Example | Handling |
-|---|---|---|
-| Missing `type` attribute | `<meta property="x" label="X" />` | Skip (not a control) |
+| Pattern                         | Example                                         | Handling                                         |
+| ------------------------------- | ----------------------------------------------- | ------------------------------------------------ |
+| Missing `type` attribute        | `<meta property="x" label="X" />`               | Skip (not a control)                             |
 | `type="color"` with `min`/`max` | `<meta ... type="color" min="0" max="360" ...>` | Ignore `min`/`max` (artifact from older engines) |
-| Multi-line meta tags | See `fire.html` | Regex matches across whitespace |
-| No `label` attribute | `<meta property="x" type="number" ...>` | Use `property` value as label |
-| `default="0"` for boolean | Common in community effects | Parse as `false` |
-| `default="1"` for boolean | Common in community effects | Parse as `true` |
-| Combobox with spaces | `values="Color Shift,Sparkle"` | Split on `,`, trim whitespace |
-| Duplicate `property` ids | Rare, but exists | Last definition wins |
+| Multi-line meta tags            | See `fire.html`                                 | Regex matches across whitespace                  |
+| No `label` attribute            | `<meta property="x" type="number" ...>`         | Use `property` value as label                    |
+| `default="0"` for boolean       | Common in community effects                     | Parse as `false`                                 |
+| `default="1"` for boolean       | Common in community effects                     | Parse as `true`                                  |
+| Combobox with spaces            | `values="Color Shift,Sparkle"`                  | Split on `,`, trim whitespace                    |
+| Duplicate `property` ids        | Rare, but exists                                | Last definition wins                             |
 
 ---
 
@@ -1407,19 +1408,19 @@ Additional texture bindings for audio data:
 
 For Three.js and raw WebGL effects running in Servo. These match the Shadertoy/LightScript convention:
 
-| Uniform | GLSL Type | Description |
-|---|---|---|
-| `iTime` | `float` | Elapsed seconds since effect start |
-| `iResolution` | `vec2` | Canvas size (320.0, 200.0) |
-| `iMouse` | `vec2` | Mouse position (normalized 0-1) |
-| `iFrame` | `int` | Frame counter |
-| `iAudioLevel` | `float` | Overall audio level (0-1) |
-| `iAudioBass` | `float` | Bass band energy (0-1) |
-| `iAudioMid` | `float` | Mid band energy (0-1) |
-| `iAudioTreble` | `float` | Treble band energy (0-1) |
-| `iAudioSpectrum` | `sampler2D` | 200-bin FFT as 200x1 texture |
-| `iAudioBeat` | `float` | Beat pulse (0-1, spikes on beat) |
-| `iAudioBeatPhase` | `float` | Phase within current beat (0-1) |
+| Uniform           | GLSL Type   | Description                        |
+| ----------------- | ----------- | ---------------------------------- |
+| `iTime`           | `float`     | Elapsed seconds since effect start |
+| `iResolution`     | `vec2`      | Canvas size (320.0, 200.0)         |
+| `iMouse`          | `vec2`      | Mouse position (normalized 0-1)    |
+| `iFrame`          | `int`       | Frame counter                      |
+| `iAudioLevel`     | `float`     | Overall audio level (0-1)          |
+| `iAudioBass`      | `float`     | Bass band energy (0-1)             |
+| `iAudioMid`       | `float`     | Mid band energy (0-1)              |
+| `iAudioTreble`    | `float`     | Treble band energy (0-1)           |
+| `iAudioSpectrum`  | `sampler2D` | 200-bin FFT as 200x1 texture       |
+| `iAudioBeat`      | `float`     | Beat pulse (0-1, spikes on beat)   |
+| `iAudioBeatPhase` | `float`     | Phase within current beat (0-1)    |
 
 These are injected by the Lightscript SDK's `WebGLEffect` base class. Raw HTML effects access audio via `window.engine.audio` instead.
 
@@ -1429,25 +1430,27 @@ For raw HTML/Canvas 2D effects (the LightScript-compatible path):
 
 ```javascript
 // Control values -- one global per <meta property="..."> tag
-window['speed'] = 50;
-window['palette'] = "Aurora";
-window['frontColor'] = "#ff00ff";
+window["speed"] = 50;
+window["palette"] = "Aurora";
+window["frontColor"] = "#ff00ff";
 
 // Audio data -- injected every frame when audio_reactive = true
 window.engine.audio = {
-    level: 0.0,           // Overall RMS level
-    bass: 0.0,            // Bass band (0-1)
-    mid: 0.0,             // Mid band (0-1)
-    treble: 0.0,          // Treble band (0-1)
-    freq: Uint8Array(200), // Log-scaled FFT (0-255)
-    beat: false,          // True on beat onset
-    beatPulse: 0.0,       // Decaying beat pulse
-    beatPhase: 0.0,       // Phase within beat
-    // ... full Lightscript audio API surface
+  level: 0.0, // Overall RMS level
+  bass: 0.0, // Bass band (0-1)
+  mid: 0.0, // Mid band (0-1)
+  treble: 0.0, // Treble band (0-1)
+  freq: Uint8Array(200), // Log-scaled FFT (0-255)
+  beat: false, // True on beat onset
+  beatPulse: 0.0, // Decaying beat pulse
+  beatPhase: 0.0, // Phase within beat
+  // ... full Lightscript audio API surface
 };
 
 // Optional callback -- called when controls change
-window.update = function() { /* ... */ };
+window.update = function () {
+  /* ... */
+};
 ```
 
 ---
@@ -1627,13 +1630,13 @@ This is deliberately simple -- no module system, no namespacing. Includes are in
 
 ### 9.4 Standard Library
 
-| Module | Contents |
-|---|---|
-| `lib/noise.wgsl` | Simplex 2D/3D/4D, value noise, Worley/cellular, FBM, curl noise, domain warping |
-| `lib/color.wgsl` | HSV/HSL/Oklab conversion, palette interpolation, gamma correction, named palettes |
-| `lib/audio.wgsl` | Spectrum sampling helpers, beat-reactive easing, frequency band extraction |
-| `lib/math.wgsl` | Rotation matrices, SDF primitives, smooth min/max, polar coordinates, remapping |
-| `lib/pattern.wgsl` | Voronoi, checkerboard, hexagonal grid, truchet tiles |
+| Module             | Contents                                                                          |
+| ------------------ | --------------------------------------------------------------------------------- |
+| `lib/noise.wgsl`   | Simplex 2D/3D/4D, value noise, Worley/cellular, FBM, curl noise, domain warping   |
+| `lib/color.wgsl`   | HSV/HSL/Oklab conversion, palette interpolation, gamma correction, named palettes |
+| `lib/audio.wgsl`   | Spectrum sampling helpers, beat-reactive easing, frequency band extraction        |
+| `lib/math.wgsl`    | Rotation matrices, SDF primitives, smooth min/max, polar coordinates, remapping   |
+| `lib/pattern.wgsl` | Voronoi, checkerboard, hexagonal grid, truchet tiles                              |
 
 ---
 
@@ -1692,16 +1695,16 @@ pub enum EffectState {
 
 ### 10.3 Transition Behavior
 
-| Transition | What Happens |
-|---|---|
+| Transition             | What Happens                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `Discovered -> Loaded` | **wgpu:** Compile shader, create pipeline, allocate buffers. **Servo:** Initialize Servo, load HTML, wait for page ready. |
-| `Loaded -> Active` | Start rendering frames. Inject default control values. Begin audio injection if `audio_reactive`. |
-| `Active -> Paused` | Stop rendering but keep resources alive. Used during transitions. |
-| `Paused -> Active` | Resume rendering. Re-inject current control values. |
-| `Active -> Unloaded` | Stop rendering. **wgpu:** Drop pipeline, free GPU buffers. **Servo:** Drop WebView, release Servo. |
-| `Paused -> Unloaded` | Same as Active -> Unloaded. |
-| `* -> Error` | Log error, emit `HypercolorEvent::Error`. Retain metadata for UI display. |
-| `Error -> Discovered` | Clear error state. Ready for another load attempt. |
+| `Loaded -> Active`     | Start rendering frames. Inject default control values. Begin audio injection if `audio_reactive`.                         |
+| `Active -> Paused`     | Stop rendering but keep resources alive. Used during transitions.                                                         |
+| `Paused -> Active`     | Resume rendering. Re-inject current control values.                                                                       |
+| `Active -> Unloaded`   | Stop rendering. **wgpu:** Drop pipeline, free GPU buffers. **Servo:** Drop WebView, release Servo.                        |
+| `Paused -> Unloaded`   | Same as Active -> Unloaded.                                                                                               |
+| `* -> Error`           | Log error, emit `HypercolorEvent::Error`. Retain metadata for UI display.                                                 |
+| `Error -> Discovered`  | Clear error state. Ready for another load attempt.                                                                        |
 
 ### 10.4 Resource Budget
 
@@ -1934,15 +1937,15 @@ During a transition, both outgoing and incoming effects render simultaneously. T
 
 ### 12.1 Error Categories
 
-| Category | Source | Recovery |
-|---|---|---|
-| **Shader compilation** | Invalid WGSL/GLSL syntax | Show error overlay, keep previous shader running |
-| **HTML load failure** | Servo can't parse HTML, missing file | Show error in UI, fall back to solid color |
-| **GPU readback failure** | wgpu buffer mapping fails | Retry once, then fall back to previous frame |
-| **Control validation** | Invalid value type or out-of-range | Clamp to valid range, log warning |
-| **Registry I/O** | Filesystem permission error | Skip file, continue scanning, log warning |
-| **Include resolution** | Missing `#include` file | Shader compilation error with clear path |
-| **GLSL transpilation** | naga can't convert GLSL to WGSL | Report as shader compilation error |
+| Category                 | Source                               | Recovery                                         |
+| ------------------------ | ------------------------------------ | ------------------------------------------------ |
+| **Shader compilation**   | Invalid WGSL/GLSL syntax             | Show error overlay, keep previous shader running |
+| **HTML load failure**    | Servo can't parse HTML, missing file | Show error in UI, fall back to solid color       |
+| **GPU readback failure** | wgpu buffer mapping fails            | Retry once, then fall back to previous frame     |
+| **Control validation**   | Invalid value type or out-of-range   | Clamp to valid range, log warning                |
+| **Registry I/O**         | Filesystem permission error          | Skip file, continue scanning, log warning        |
+| **Include resolution**   | Missing `#include` file              | Shader compilation error with clear path         |
+| **GLSL transpilation**   | naga can't convert GLSL to WGSL      | Report as shader compilation error               |
 
 ### 12.2 Graceful Degradation
 
@@ -1958,12 +1961,12 @@ The effect system never crashes the daemon. The degradation chain:
 
 ## 13. Open Questions
 
-| # | Question | Context |
-|---|---|---|
-| 1 | **Compute shader state buffer sizing.** Should the state buffer size be declared in the TOML sidecar, or should the engine infer it from the WGSL `@group/@binding`? | Compute shaders for cellular automata and fluid sims need persistent state. |
-| 2 | **GLSL multi-pass shaders.** Should we support Shadertoy's Buffer A/B/C/D pattern, or require manual conversion to compute passes? | Multi-pass covers ~30% of Shadertoy effects. |
-| 3 | **Effect sandboxing boundaries.** Should Servo effects be process-isolated (separate child process), or is in-process Servo sufficient? | Process isolation adds latency but prevents effect crashes from affecting the daemon. |
-| 4 | **Uniform buffer reflection.** Use naga's module reflection to auto-build the uniform layout, or require an explicit layout declaration in the TOML? | Auto-reflection is elegant but fragile if the shader struct layout doesn't match expectations. |
-| 5 | **Hot-reload state preservation.** When a WGSL shader is recompiled, should the compute state buffer be preserved or reset? | Preserving state makes iteration faster; resetting prevents stale-state bugs. |
-| 6 | **Color control representation.** Should `Color` controls carry alpha? Some effects want translucent colors. | Current spec: RGB only `[u8; 3]`. RGBA would be `[u8; 4]`. |
-| 7 | **Composition performance.** At how many simultaneous layers does CPU compositing become a bottleneck? Should the wgpu compute compositor be the default? | At 320x200, even 8 layers is fast on CPU. GPU compositor adds complexity for minimal gain at this resolution. |
+| #   | Question                                                                                                                                                             | Context                                                                                                       |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 1   | **Compute shader state buffer sizing.** Should the state buffer size be declared in the TOML sidecar, or should the engine infer it from the WGSL `@group/@binding`? | Compute shaders for cellular automata and fluid sims need persistent state.                                   |
+| 2   | **GLSL multi-pass shaders.** Should we support Shadertoy's Buffer A/B/C/D pattern, or require manual conversion to compute passes?                                   | Multi-pass covers ~30% of Shadertoy effects.                                                                  |
+| 3   | **Effect sandboxing boundaries.** Should Servo effects be process-isolated (separate child process), or is in-process Servo sufficient?                              | Process isolation adds latency but prevents effect crashes from affecting the daemon.                         |
+| 4   | **Uniform buffer reflection.** Use naga's module reflection to auto-build the uniform layout, or require an explicit layout declaration in the TOML?                 | Auto-reflection is elegant but fragile if the shader struct layout doesn't match expectations.                |
+| 5   | **Hot-reload state preservation.** When a WGSL shader is recompiled, should the compute state buffer be preserved or reset?                                          | Preserving state makes iteration faster; resetting prevents stale-state bugs.                                 |
+| 6   | **Color control representation.** Should `Color` controls carry alpha? Some effects want translucent colors.                                                         | Current spec: RGB only `[u8; 3]`. RGBA would be `[u8; 4]`.                                                    |
+| 7   | **Composition performance.** At how many simultaneous layers does CPU compositing become a bottleneck? Should the wgpu compute compositor be the default?            | At 320x200, even 8 layers is fast on CPU. GPU compositor adds complexity for minimal gain at this resolution. |

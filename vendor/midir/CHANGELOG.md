@@ -3,21 +3,26 @@
 All major changes to this project will be documented in this file.
 
 ## [0.10.3] 2025-10-27
+
 - Fix UB in WinMM backend ([#137](https://github.com/Boddlnagg/midir/issues/137) - thanks @barafael)
 - Fix file descriptor leak in ALSA backend ([#175](https://github.com/Boddlnagg/midir/pull/175) - thanks @abique)
 
 ## [0.10.2] 2025-08-07
+
 - Support iOS by disabling timestamping there ([#170](https://github.com/Boddlnagg/midir/pull/170) - thanks @joe-noel-dev)
 
 ## [0.10.1] 2024-11-20
+
 - Add `id()` and `find_port_by_id()` to `MidiInputPort` and `MidiOutputPort` ([#157](https://github.com/Boddlnagg/midir/pull/157) - thanks @oscartbeaumont)
 
 ## [0.10.0] 2024-04-21
+
 - Upgrade to 2021 edition
 - Upgrade `alsa`, `coremidi` and `windows` dependencies
 - [winmm] Fix hanging when closing MIDI input ([#151](https://github.com/Boddlnagg/midir/pull/151) - thanks, @j-n-f)
 
 ## [0.9.1] - 2023-01-27
+
 - Fix Jack build on ARM and bump jack-sys version ([#127](https://github.com/Boddlnagg/midir/pull/127))
 
 ## [0.9.0] - 2023-01-08

@@ -83,12 +83,12 @@ becomes simply an effect in a RenderGroup that targets a display device.
 
 The retired native widget proposal would have produced utilitarian output:
 
-| Renderer | Output | Limitation |
-|----------|--------|------------|
-| ClockRenderer | Digital text, analog circle+hands | No gradients, glow, animation, or custom fonts in UI |
-| SensorRenderer | Numeric text, arc gauge, bar fill | Single lerped color, basic arc segments, no transitions |
-| TextRenderer | cosmic_text layout, horizontal scroll | Single color, no outlines/shadows/gradients |
-| ImageRenderer | Static + GIF, 4 fit modes | No blend effects, no tinting |
+| Renderer       | Output                                | Limitation                                              |
+| -------------- | ------------------------------------- | ------------------------------------------------------- |
+| ClockRenderer  | Digital text, analog circle+hands     | No gradients, glow, animation, or custom fonts in UI    |
+| SensorRenderer | Numeric text, arc gauge, bar fill     | Single lerped color, basic arc segments, no transitions |
+| TextRenderer   | cosmic_text layout, horizontal scroll | Single color, no outlines/shadows/gradients             |
+| ImageRenderer  | Static + GIF, 4 fit modes             | No blend effects, no tinting                            |
 
 Meanwhile, a 30-line HTML face achieves richer visuals through CSS
 animations, canvas 2D drawing, SVG, web fonts, and the full browser
@@ -190,14 +190,14 @@ SignalRGB's `LCDFaces/` system demonstrates the target model:
 
 **Hypercolor already has equivalent infrastructure:**
 
-| SignalRGB | Hypercolor | Status |
-|-----------|------------|--------|
-| `engine.getSensorValue()` | `window.engine.getSensorValue()` | Shipped |
-| `engine.sensors` | `window.engine.sensors` | Shipped |
-| `<meta property=... type="sensor">` | `<meta property=... type="sensor">` | Shipped |
-| `<meta property=... type="color">` | `<meta property=... type="color">` | Shipped |
-| `on<Prop>Changed()` | Control update via LightScript runtime | Shipped |
-| Auto-discovery from directory | `register_html_effects()` recursive scan | Shipped |
+| SignalRGB                           | Hypercolor                               | Status  |
+| ----------------------------------- | ---------------------------------------- | ------- |
+| `engine.getSensorValue()`           | `window.engine.getSensorValue()`         | Shipped |
+| `engine.sensors`                    | `window.engine.sensors`                  | Shipped |
+| `<meta property=... type="sensor">` | `<meta property=... type="sensor">`      | Shipped |
+| `<meta property=... type="color">`  | `<meta property=... type="color">`       | Shipped |
+| `on<Prop>Changed()`                 | Control update via LightScript runtime   | Shipped |
+| Auto-discovery from directory       | `register_html_effects()` recursive scan | Shipped |
 
 The only gap is concurrent rendering: SignalRGB presumably runs each face
 in its own browser/webview instance. Hypercolor's Servo worker currently
@@ -472,13 +472,13 @@ session IDs. The worker multiplexes rendering across them.
 
 Per-session failure handling, not worker-global:
 
-| Failure Type | Scope | Action |
-|-------------|-------|--------|
-| JS evaluation error | Session | Transient: backoff via circuit breaker |
-| Page load timeout | Session | Destroy session, report to EffectPool |
-| Render timeout | Session | Destroy session, poison session only |
-| Command channel disconnect | Worker | Poison entire worker (unrecoverable) |
-| Servo crash | Worker | Poison entire worker |
+| Failure Type               | Scope   | Action                                 |
+| -------------------------- | ------- | -------------------------------------- |
+| JS evaluation error        | Session | Transient: backoff via circuit breaker |
+| Page load timeout          | Session | Destroy session, report to EffectPool  |
+| Render timeout             | Session | Destroy session, poison session only   |
+| Command channel disconnect | Worker  | Poison entire worker (unrecoverable)   |
+| Servo crash                | Worker  | Poison entire worker                   |
 
 A face crashing does not kill the LED effect. A LED effect crashing does
 not kill the face. Only worker-level failures (channel disconnect, Servo
@@ -486,12 +486,12 @@ itself) are globally fatal.
 
 ### 6.7 Resource Budget
 
-| Resource | Per Session | 2 Sessions | Notes |
-|----------|------------|------------|-------|
-| RGBA framebuffer | 480×480×4 = 900 KB | 1.8 MB | Proportional to display resolution |
-| JS heap (SpiderMonkey) | ~5–15 MB | ~10–30 MB | Depends on face complexity |
-| GL context (software) | ~2 MB | ~4 MB | osmesa/swrast overhead |
-| Render time budget | ~16 ms @ 30 fps | 33 ms total | Sequential on worker thread |
+| Resource               | Per Session        | 2 Sessions  | Notes                              |
+| ---------------------- | ------------------ | ----------- | ---------------------------------- |
+| RGBA framebuffer       | 480×480×4 = 900 KB | 1.8 MB      | Proportional to display resolution |
+| JS heap (SpiderMonkey) | ~5–15 MB           | ~10–30 MB   | Depends on face complexity         |
+| GL context (software)  | ~2 MB              | ~4 MB       | osmesa/swrast overhead             |
+| Render time budget     | ~16 ms @ 30 fps    | 33 ms total | Sequential on worker thread        |
 
 `trimmed_servo_preferences()` already minimizes per-session footprint
 (disabled JIT, disabled WebXR/WebGPU/WebAudio, single layout thread).
@@ -527,37 +527,50 @@ Faces are standard LightScript HTML effects with `category="display"`:
 ```html
 <!DOCTYPE html>
 <html>
-<head>
+  <head>
     <title>System Monitor</title>
     <meta description="CPU/GPU/RAM dashboard with animated gauges" />
     <meta publisher="Hypercolor" />
     <meta category="display" />
 
-    <meta property="targetCpuSensor" label="CPU Sensor" type="sensor"
-          default="cpu_temp" />
-    <meta property="targetGpuSensor" label="GPU Sensor" type="sensor"
-          default="gpu_temp" />
-    <meta property="accentColor" label="Accent" type="color"
-          default="#80ffea" />
-    <meta property="showDate" label="Show Date" type="boolean"
-          default="true" />
+    <meta
+      property="targetCpuSensor"
+      label="CPU Sensor"
+      type="sensor"
+      default="cpu_temp"
+    />
+    <meta
+      property="targetGpuSensor"
+      label="GPU Sensor"
+      type="sensor"
+      default="gpu_temp"
+    />
+    <meta
+      property="accentColor"
+      label="Accent"
+      type="color"
+      default="#80ffea"
+    />
+    <meta property="showDate" label="Show Date" type="boolean" default="true" />
 
-    <meta preset="SilkCircuit Dark"
-          preset-description="Neon cyan on dark background"
-          preset-controls='{"accentColor":"#80ffea"}' />
-</head>
-<body>
+    <meta
+      preset="SilkCircuit Dark"
+      preset-description="Neon cyan on dark background"
+      preset-controls='{"accentColor":"#80ffea"}'
+    />
+  </head>
+  <body>
     <!-- Full CSS/canvas/SVG rendering -->
     <script>
-    function onReady() {
+      function onReady() {
         setInterval(() => {
-            const cpu = engine.getSensorValue(targetCpuSensor);
-            const gpu = engine.getSensorValue(targetGpuSensor);
-            // Update DOM elements with sensor values
+          const cpu = engine.getSensorValue(targetCpuSensor);
+          const gpu = engine.getSensorValue(targetGpuSensor);
+          // Update DOM elements with sensor values
         }, 1000);
-    }
+      }
     </script>
-</body>
+  </body>
 </html>
 ```
 
@@ -587,12 +600,12 @@ API queries and UI display.
 
 Ship with a small set of bundled faces demonstrating the pattern:
 
-| Face | Description | Meters Used |
-|------|-------------|-------------|
-| `simple-clock.html` | Digital clock + date, SilkCircuit palette | None |
-| `system-monitor.html` | CPU/GPU temp, load, RAM with animated arcs | cpu_temp, gpu_temp, cpu_load, ram_used |
-| `minimal-sensor.html` | Single large sensor readout, configurable | User-selected sensor |
-| `sensor-dashboard.html` | Multi-sensor grid with sparklines | All available sensors |
+| Face                    | Description                                | Meters Used                            |
+| ----------------------- | ------------------------------------------ | -------------------------------------- |
+| `simple-clock.html`     | Digital clock + date, SilkCircuit palette  | None                                   |
+| `system-monitor.html`   | CPU/GPU temp, load, RAM with animated arcs | cpu_temp, gpu_temp, cpu_load, ram_used |
+| `minimal-sensor.html`   | Single large sensor readout, configurable  | User-selected sensor                   |
+| `sensor-dashboard.html` | Multi-sensor grid with sparklines          | All available sensors                  |
 
 ---
 
@@ -852,13 +865,13 @@ Add a `set_display_face` tool:
 
 ```json
 {
-    "name": "set_display_face",
-    "description": "Assign an HTML face effect to a display device",
-    "inputSchema": {
-        "device": "string (device ID or name)",
-        "effect_id": "string (effect UUID or name)",
-        "controls": "object (optional control overrides)"
-    }
+  "name": "set_display_face",
+  "description": "Assign an HTML face effect to a display device",
+  "inputSchema": {
+    "device": "string (device ID or name)",
+    "effect_id": "string (effect UUID or name)",
+    "controls": "object (optional control overrides)"
+  }
 }
 ```
 
@@ -915,6 +928,7 @@ runtime overlap with display faces.
 sessions. The core enabling change.
 
 **Files:**
+
 - `crates/hypercolor-core/src/effect/servo/worker_client.rs`
 - `crates/hypercolor-core/src/effect/servo/worker.rs`
 - `crates/hypercolor-core/src/effect/servo/renderer.rs`
@@ -934,6 +948,7 @@ Existing single-effect path works identically (session ID 0).
 inference.
 
 **Files:**
+
 - `crates/hypercolor-types/src/effect.rs`
 - `crates/hypercolor-core/src/effect/meta_parser.rs` (optional inference)
 - `effects/hypercolor/faces/*.html` (starter faces)
@@ -948,6 +963,7 @@ it in Servo.
 subscribe to their group's channel.
 
 **Files:**
+
 - `crates/hypercolor-core/src/bus/mod.rs`
 - `crates/hypercolor-daemon/src/render_thread/render_groups.rs`
 - `crates/hypercolor-daemon/src/render_thread/frame_io.rs`
@@ -964,6 +980,7 @@ preview.
 convenience API endpoints, MCP tool.
 
 **Files:**
+
 - `crates/hypercolor-types/src/scene.rs`
 - `crates/hypercolor-daemon/src/render_thread/render_groups.rs`
 - `crates/hypercolor-daemon/src/api/displays.rs`
@@ -979,6 +996,7 @@ separate effect.
 scene editor display target visualization.
 
 **Files:**
+
 - `crates/hypercolor-ui/src/pages/displays.rs`
 - `crates/hypercolor-ui/src/pages/effects.rs`
 - `crates/hypercolor-ui/src/components/` (face picker component)

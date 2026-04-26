@@ -11,9 +11,9 @@
 
 ## Naming Convention
 
-| Context | Term | Notes |
-|---------|------|-------|
-| **User-facing** (UI, API, CLI, docs) | **Zone** | "Add a zone", "Desk zone", "drag devices into a zone" |
+| Context                                | Term            | Notes                                                       |
+| -------------------------------------- | --------------- | ----------------------------------------------------------- |
+| **User-facing** (UI, API, CLI, docs)   | **Zone**        | "Add a zone", "Desk zone", "drag devices into a zone"       |
 | **Internal** (Rust types, engine code) | **RenderGroup** | Avoids collision with existing `DeviceZone` (spatial layer) |
 
 Users never see "RenderGroup." The API uses `/zones`. The UI says "Zone." The Rust
@@ -65,11 +65,11 @@ enabling simultaneous multi-effect rendering with clean device isolation.
 
 A **Zone** is the atomic unit of the multi-effect pipeline. It binds three things:
 
-| Component | What it is | Why it's per-zone |
-|-----------|------------|-------------------|
-| **Effect** | Which effect to render | Different zones run different effects |
-| **Layout** | A `SpatialLayout` defining device positions on the canvas | Device positions are effect-relative — a keyboard "centered" on the screen-mirror canvas is positioned differently than "centered" on a plasma canvas |
-| **Controls** | Effect parameter overrides | Same effect can run with different settings per zone |
+| Component    | What it is                                                | Why it's per-zone                                                                                                                                     |
+| ------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Effect**   | Which effect to render                                    | Different zones run different effects                                                                                                                 |
+| **Layout**   | A `SpatialLayout` defining device positions on the canvas | Device positions are effect-relative — a keyboard "centered" on the screen-mirror canvas is positioned differently than "centered" on a plasma canvas |
+| **Controls** | Effect parameter overrides                                | Same effect can run with different settings per zone                                                                                                  |
 
 Each zone produces its own full-resolution `Canvas` (sized from the daemon's configured
 canvas dimensions — 640×480 by default). The spatial sampler runs independently per zone,
@@ -217,6 +217,7 @@ pub struct Scene {
 ```
 
 **Removed fields:**
+
 - `scope: SceneScope` — replaced by the union of all group layouts. Scope is now implicit:
   the scene covers whichever devices appear in its groups.
 - `zone_assignments: Vec<ZoneAssignment>` — replaced by `groups: Vec<RenderGroup>`.
@@ -360,14 +361,14 @@ impl EffectPool {
 The `EffectPool` reconciles its slot map against the active scene's groups each frame.
 This is a diff operation, not a rebuild:
 
-| Situation | Action |
-|-----------|--------|
-| New group appears | Spawn renderer, load effect |
-| Group removed | Destroy renderer, free canvas |
-| Group effect changed | Hot-swap effect in existing slot |
-| Group controls changed | Update control values (no respawn) |
-| Group disabled | Pause renderer (keep state, skip tick) |
-| Group re-enabled | Resume renderer |
+| Situation              | Action                                 |
+| ---------------------- | -------------------------------------- |
+| New group appears      | Spawn renderer, load effect            |
+| Group removed          | Destroy renderer, free canvas          |
+| Group effect changed   | Hot-swap effect in existing slot       |
+| Group controls changed | Update control values (no respawn)     |
+| Group disabled         | Pause renderer (keep state, skip tick) |
+| Group re-enabled       | Resume renderer                        |
 
 Renderer creation is async (especially Servo). During spawn, the group's canvas shows the
 last frame from the previous effect (or black if new).

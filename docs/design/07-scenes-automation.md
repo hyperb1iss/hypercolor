@@ -6,7 +6,7 @@
 
 ## Overview
 
-Scenes and automation are the layer where Hypercolor stops being a toy and starts being infrastructure. A scene captures a complete lighting state across every device. Automation decides *when* and *why* scenes change. Together, they make your lighting respond to your life without you touching a single button.
+Scenes and automation are the layer where Hypercolor stops being a toy and starts being infrastructure. A scene captures a complete lighting state across every device. Automation decides _when_ and _why_ scenes change. Together, they make your lighting respond to your life without you touching a single button.
 
 This document defines the data model, transition system, scheduling engine, trigger framework, automation rule language, smart home integration, and contextual awareness system. Everything flows through the existing event bus (`HypercolorBus`) and is controllable via REST API, D-Bus, CLI, TUI, and web UI.
 
@@ -174,11 +174,11 @@ hypercolor scene compose "Cozy + Music" \
 
 Sub-scenes are just scenes with a non-`Full` scope. They only touch the devices they claim:
 
-| Type | Scope | Use Case |
-|---|---|---|
-| **Full scene** | `Full` | Complete lighting state, every device |
-| **PC scene** | `PcOnly` | Case, peripherals, strimers only |
-| **Room scene** | `RoomOnly` | WLED strips, Hue bulbs only |
+| Type           | Scope        | Use Case                               |
+| -------------- | ------------ | -------------------------------------- |
+| **Full scene** | `Full`       | Complete lighting state, every device  |
+| **PC scene**   | `PcOnly`     | Case, peripherals, strimers only       |
+| **Room scene** | `RoomOnly`   | WLED strips, Hue bulbs only            |
 | **Zone scene** | `Zones(...)` | Just the keyboard, just the desk strip |
 
 Applying a sub-scene leaves unaddressed zones unchanged. This is essential for independence: you can switch your PC lighting for gaming without disturbing the room's relaxed vibe.
@@ -383,16 +383,16 @@ Each LED's blend factor is calculated from its normalized X position (for horizo
 
 Common transitions available out of the box:
 
-| Name | Type | Duration | Notes |
-|---|---|---|---|
-| `instant` | Cut | 0ms | No animation |
-| `smooth` | Crossfade | 1000ms | Default for most scene switches |
-| `slow-fade` | Crossfade | 3000ms | For circadian/time-based changes |
-| `dramatic` | Blackout (500ms hold) | 2000ms | Scene reveals |
-| `flash-white` | Flash (#fff, 200ms) | 800ms | Alert / notification |
-| `sweep-right` | Wipe Right (0.4 soft) | 1500ms | Directional drama |
-| `sunrise` | Crossfade | 30000ms | 30-second warm fade-in |
-| `sleep` | Crossfade | 60000ms | 60-second fade to off |
+| Name          | Type                  | Duration | Notes                            |
+| ------------- | --------------------- | -------- | -------------------------------- |
+| `instant`     | Cut                   | 0ms      | No animation                     |
+| `smooth`      | Crossfade             | 1000ms   | Default for most scene switches  |
+| `slow-fade`   | Crossfade             | 3000ms   | For circadian/time-based changes |
+| `dramatic`    | Blackout (500ms hold) | 2000ms   | Scene reveals                    |
+| `flash-white` | Flash (#fff, 200ms)   | 800ms    | Alert / notification             |
+| `sweep-right` | Wipe Right (0.4 soft) | 1500ms   | Directional drama                |
+| `sunrise`     | Crossfade             | 30000ms  | 30-second warm fade-in           |
+| `sleep`       | Crossfade             | 60000ms  | 60-second fade to off            |
 
 ---
 
@@ -781,15 +781,15 @@ pub enum AppDetection {
 
 **Pre-configured app signatures:**
 
-| App Category | Detection | Trigger |
-|---|---|---|
-| Games (Steam) | `steam_app_*` process | `app.launched { category: "game" }` |
-| Games (Lutris) | `lutris-wrapper` | `app.launched { category: "game" }` |
-| IDE/Editor | `code`, `nvim`, `idea` | `app.launched { category: "ide" }` |
-| Media Player | `vlc`, `mpv`, `celluloid` | `app.launched { category: "media" }` |
-| Video Call | `zoom`, `teams`, `discord` w/ screen share | `app.launched { category: "call" }` |
-| Streaming | `obs`, `obs-studio` | `app.launched { category: "streaming" }` |
-| Browser | `firefox`, `chromium` | `app.focused { category: "browser" }` |
+| App Category   | Detection                                  | Trigger                                  |
+| -------------- | ------------------------------------------ | ---------------------------------------- |
+| Games (Steam)  | `steam_app_*` process                      | `app.launched { category: "game" }`      |
+| Games (Lutris) | `lutris-wrapper`                           | `app.launched { category: "game" }`      |
+| IDE/Editor     | `code`, `nvim`, `idea`                     | `app.launched { category: "ide" }`       |
+| Media Player   | `vlc`, `mpv`, `celluloid`                  | `app.launched { category: "media" }`     |
+| Video Call     | `zoom`, `teams`, `discord` w/ screen share | `app.launched { category: "call" }`      |
+| Streaming      | `obs`, `obs-studio`                        | `app.launched { category: "streaming" }` |
+| Browser        | `firefox`, `chromium`                      | `app.focused { category: "browser" }`    |
 
 ### System Triggers
 
@@ -1233,15 +1233,15 @@ hypercolor rules template install home-office
 hypercolor rules template install circadian
 ```
 
-| Template | Rules Included |
-|---|---|
-| `gaming` | Game launch/exit, fullscreen toggle, achievement flash |
-| `streaming` | Stream start/end, sub/donation/raid reactions, scene switching |
-| `home-office` | Work hours focus, meeting detection, break reminders |
-| `circadian` | Full-day color temp schedule, sunrise/sunset triggers |
-| `media` | Music start/stop, video player, audio-reactive overlays |
-| `security` | Motion sensor lights, door alerts, vacation mode |
-| `party` | Audio-reactive everything, guest mode, DJ transitions |
+| Template      | Rules Included                                                 |
+| ------------- | -------------------------------------------------------------- |
+| `gaming`      | Game launch/exit, fullscreen toggle, achievement flash         |
+| `streaming`   | Stream start/end, sub/donation/raid reactions, scene switching |
+| `home-office` | Work hours focus, meeting detection, break reminders           |
+| `circadian`   | Full-day color temp schedule, sunrise/sunset triggers          |
+| `media`       | Music start/stop, video player, audio-reactive overlays        |
+| `security`    | Motion sensor lights, door alerts, vacation mode               |
+| `party`       | Audio-reactive everything, guest mode, DJ transitions          |
 
 ### Rule Testing & Simulation
 
@@ -1296,18 +1296,18 @@ homeassistant/
 
 **Entity mapping:**
 
-| HA Entity | Hypercolor Concept | Capabilities |
-|---|---|---|
-| `light.hypercolor_case_fans` | Device zone | On/off, brightness, color, effect |
-| `light.hypercolor_desk_strip` | Device zone (WLED) | On/off, brightness, color, effect |
-| `select.hypercolor_active_scene` | Current scene | Scene list dropdown |
-| `select.hypercolor_effect_case_fans` | Zone effect | Effect list dropdown |
-| `switch.hypercolor_gaming_rule` | Automation rule | Enable/disable |
-| `switch.hypercolor_circadian` | Circadian mode | Enable/disable |
-| `sensor.hypercolor_fps` | Render loop FPS | Diagnostic |
-| `sensor.hypercolor_active_scene` | Current scene name | State |
-| `number.hypercolor_brightness` | Global brightness | 0-100 slider |
-| `button.hypercolor_next_scene` | Cycle scenes | Press to advance |
+| HA Entity                            | Hypercolor Concept | Capabilities                      |
+| ------------------------------------ | ------------------ | --------------------------------- |
+| `light.hypercolor_case_fans`         | Device zone        | On/off, brightness, color, effect |
+| `light.hypercolor_desk_strip`        | Device zone (WLED) | On/off, brightness, color, effect |
+| `select.hypercolor_active_scene`     | Current scene      | Scene list dropdown               |
+| `select.hypercolor_effect_case_fans` | Zone effect        | Effect list dropdown              |
+| `switch.hypercolor_gaming_rule`      | Automation rule    | Enable/disable                    |
+| `switch.hypercolor_circadian`        | Circadian mode     | Enable/disable                    |
+| `sensor.hypercolor_fps`              | Render loop FPS    | Diagnostic                        |
+| `sensor.hypercolor_active_scene`     | Current scene name | State                             |
+| `number.hypercolor_brightness`       | Global brightness  | 0-100 slider                      |
+| `button.hypercolor_next_scene`       | Cycle scenes       | Press to advance                  |
 
 ### Bidirectional Communication
 
@@ -1503,7 +1503,7 @@ graph LR
 
 ## 7. Contextual Awareness
 
-Beyond simple triggers, Hypercolor can infer *what you're doing* from system signals and adapt accordingly. This layer sits above individual triggers and maintains a state machine of "modes."
+Beyond simple triggers, Hypercolor can infer _what you're doing_ from system signals and adapt accordingly. This layer sits above individual triggers and maintains a state machine of "modes."
 
 ### Context Engine
 
@@ -2087,6 +2087,7 @@ impl SafetyLimiter {
 ```
 
 **Photosensitive mode** (user-configurable):
+
 - All flash transitions become crossfades
 - Strobe effects capped at 3Hz
 - Maximum brightness change rate reduced by 50%
@@ -2118,12 +2119,12 @@ pub enum CrashRecoveryStrategy {
 
 **Per-backend behavior:**
 
-| Backend | Crash Behavior | Recovery |
-|---|---|---|
-| **PrismRGB** | Hardware effect activates (set during init) | Devices show static color set by `0xFE 0x02` command |
-| **OpenRGB** | LEDs hold last frame indefinitely | OpenRGB daemon manages its own fallback |
-| **WLED** | Devices revert to their saved state after timeout | WLED firmware handles this natively |
-| **Hue** | Bulbs hold last state | Hue bridge manages its own state |
+| Backend      | Crash Behavior                                    | Recovery                                             |
+| ------------ | ------------------------------------------------- | ---------------------------------------------------- |
+| **PrismRGB** | Hardware effect activates (set during init)       | Devices show static color set by `0xFE 0x02` command |
+| **OpenRGB**  | LEDs hold last frame indefinitely                 | OpenRGB daemon manages its own fallback              |
+| **WLED**     | Devices revert to their saved state after timeout | WLED firmware handles this natively                  |
+| **Hue**      | Bulbs hold last state                             | Hue bridge manages its own state                     |
 
 **Startup recovery:**
 
@@ -2206,6 +2207,7 @@ impl NetworkDeviceState {
 ```
 
 **Behavior during network partition:**
+
 - PC-attached devices continue rendering normally
 - Network device frames are dropped (not queued — stale frames are useless)
 - Event bus emits `DeviceDisconnected` events
@@ -2216,6 +2218,7 @@ impl NetworkDeviceState {
 ### Power Outage Recovery
 
 After a power outage, everything restarts:
+
 1. systemd starts Hypercolor daemon
 2. Daemon reads last-known state (marked as crash since no clean exit)
 3. Applies the schedule-appropriate scene for the current time
@@ -2512,6 +2515,7 @@ hypercolor transition preview <type> [--duration 2s] [--from <scene> --to <scene
 This system is large. It ships incrementally, aligned with the roadmap in ARCHITECTURE.md:
 
 ### Phase 3A: Scenes & Transitions (MVP)
+
 - Scene data model and TOML storage
 - Scene save/load/activate via CLI and REST API
 - Crossfade and cut transitions (Oklab interpolation)
@@ -2520,6 +2524,7 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 - Basic priority stack (manual > schedule > default)
 
 ### Phase 3B: Scheduling
+
 - Cron-style schedule rules
 - Time-of-day scene switching
 - Day-of-week filtering
@@ -2527,6 +2532,7 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 - Web UI: schedule editor
 
 ### Phase 3C: Triggers & Rules
+
 - Desktop trigger source (screen lock, idle, workspace)
 - Application trigger source (game/media detection)
 - Rule engine with conditions and priority
@@ -2534,12 +2540,14 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 - Rule testing/simulation mode
 
 ### Phase 3D: Context Engine
+
 - Work/gaming/media/idle detection
 - Context-to-scene mapping
 - Focus duration tracking
 - AFK progressive dimming
 
 ### Phase 4A: Smart Home Integration
+
 - MQTT client (publish state, subscribe to triggers)
 - MQTT discovery for HA auto-detection
 - Home Assistant custom component (light + select + sensor entities)
@@ -2547,6 +2555,7 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 - Bidirectional HA communication
 
 ### Phase 4B: Advanced Features
+
 - Circadian rhythm engine
 - Solar time calculations
 - Wipe and flash transitions
@@ -2556,6 +2565,7 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 - Vacation mode
 
 ### Phase 4C: Community
+
 - Device-agnostic scene format
 - Zone role mapping
 - Scene pack format and CLI
@@ -2565,16 +2575,16 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 
 ## Appendix: Crate Dependencies (New)
 
-| Crate | Purpose | License |
-|---|---|---|
-| `cron` | Cron expression parsing | MIT/Apache |
-| `sun` | Sunrise/sunset calculation | MIT |
-| `chrono-tz` | Timezone handling | MIT/Apache |
-| `rumqttc` | MQTT client (async) | Apache-2.0 |
-| `oklab` | Perceptual color interpolation | MIT |
-| `uuid` | Scene IDs (v7 time-sorted) | MIT/Apache |
-| `serde_json` | Trigger payloads, HA API | MIT/Apache |
+| Crate        | Purpose                        | License    |
+| ------------ | ------------------------------ | ---------- |
+| `cron`       | Cron expression parsing        | MIT/Apache |
+| `sun`        | Sunrise/sunset calculation     | MIT        |
+| `chrono-tz`  | Timezone handling              | MIT/Apache |
+| `rumqttc`    | MQTT client (async)            | Apache-2.0 |
+| `oklab`      | Perceptual color interpolation | MIT        |
+| `uuid`       | Scene IDs (v7 time-sorted)     | MIT/Apache |
+| `serde_json` | Trigger payloads, HA API       | MIT/Apache |
 
 ---
 
-*This document is part of the Hypercolor design series. See also: [ARCHITECTURE.md](../../ARCHITECTURE.md), [DRIVERS.md](../../DRIVERS.md), [WEB_ENGINES.md](../../WEB_ENGINES.md).*
+_This document is part of the Hypercolor design series. See also: [ARCHITECTURE.md](../../ARCHITECTURE.md), [DRIVERS.md](../../DRIVERS.md), [WEB_ENGINES.md](../../WEB_ENGINES.md)._

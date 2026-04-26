@@ -44,16 +44,16 @@ implementation.
 
 ### Protocol comparison
 
-| Dimension | WLED | Hue | Nanoleaf |
-|-----------|------|-----|----------|
-| Discovery | mDNS `_wled._tcp` | mDNS `_hue._tcp` + N-UPnP | mDNS `_nanoleafapi._tcp` |
-| Auth | None | Bridge link-button → API key + DTLS PSK | Power-button → auth token |
-| Streaming | UDP DDP/E1.31 | DTLS 1.2 over UDP | UDP |
-| Port | 4048 / 5568 | 2100 | 60222 |
-| Color space | RGB/RGBW 8-bit | CIE xy + brightness (16-bit) | RGB 8-bit |
-| Effective FPS | 60 Hz | 25 Hz (Zigbee) | 10 Hz |
-| Addressing | IP → segments | Bridge → entertainment → channels | IP → panel IDs |
-| Max per group | Unlimited | 20 channels | Device panels |
+| Dimension     | WLED              | Hue                                     | Nanoleaf                  |
+| ------------- | ----------------- | --------------------------------------- | ------------------------- |
+| Discovery     | mDNS `_wled._tcp` | mDNS `_hue._tcp` + N-UPnP               | mDNS `_nanoleafapi._tcp`  |
+| Auth          | None              | Bridge link-button → API key + DTLS PSK | Power-button → auth token |
+| Streaming     | UDP DDP/E1.31     | DTLS 1.2 over UDP                       | UDP                       |
+| Port          | 4048 / 5568       | 2100                                    | 60222                     |
+| Color space   | RGB/RGBW 8-bit    | CIE xy + brightness (16-bit)            | RGB 8-bit                 |
+| Effective FPS | 60 Hz             | 25 Hz (Zigbee)                          | 10 Hz                     |
+| Addressing    | IP → segments     | Bridge → entertainment → channels       | IP → panel IDs            |
+| Max per group | Unlimited         | 20 channels                             | Device panels             |
 
 ---
 
@@ -178,6 +178,7 @@ impl CredentialStore {
 ```
 
 **Credential key format:**
+
 - Hue: `"hue:{bridge_id}"` (e.g., `"hue:001788FFFE123456"`)
 - Nanoleaf: `"nanoleaf:{device_id}"` (e.g., `"nanoleaf:AB:CD:EF:12:34:56"`)
 
@@ -444,6 +445,7 @@ Offset  Size   Field
 ```
 
 Per-channel (7 bytes):
+
 ```
 Byte 0:     Channel ID (0x00-0x13)
 Bytes 1-2:  CIE x (u16 BE, 0x0000-0xFFFF → 0.0-1.0)
@@ -512,7 +514,7 @@ fn clamp_to_gamut(x: f64, y: f64, gamut: &ColorGamut) -> (f64, f64);
 ```
 
 **Performance:** The conversion runs per-channel (max 20 channels), not per-LED.
-At 20 channels * 50fps = 1000 conversions/sec. No need for SIMD or lookup tables.
+At 20 channels \* 50fps = 1000 conversions/sec. No need for SIMD or lookup tables.
 
 ### 4.5 Backend (`hue/backend.rs`)
 
@@ -774,7 +776,7 @@ Per panel (8 bytes):
 ```
 
 **Buffer reuse:** Packet buffer allocated once at connect. At 10Hz with ~20
-panels, that is 2 + (20 * 8) = 162 bytes per frame. Zero allocations in hot path.
+panels, that is 2 + (20 \* 8) = 162 bytes per frame. Zero allocations in hot path.
 
 ### 5.4 Backend (`nanoleaf/backend.rs`)
 
@@ -999,10 +1001,12 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 1: Add `Nanoleaf` to `DeviceFamily` and `DeviceColorSpace` to capabilities
 
 **Files:**
+
 - `crates/hypercolor-types/src/device.rs`
 - `crates/hypercolor-types/tests/device_tests.rs`
 
 **Implementation:**
+
 - Add `Nanoleaf` variant to `DeviceFamily` with `vendor_name`, `id`, `backend_id`
 - Add `DeviceColorSpace` enum (Rgb, CieXy) with `Default` → `Rgb`
 - Add `color_space: DeviceColorSpace` field to `DeviceCapabilities` with `#[serde(default)]`
@@ -1013,10 +1017,12 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 2: Add Hue and Nanoleaf config types
 
 **Files:**
+
 - `crates/hypercolor-types/src/config.rs`
 - `crates/hypercolor-types/tests/config_tests.rs`
 
 **Implementation:**
+
 - Add `HueConfig` struct with `entertainment_config`, `bridge_ips`, `use_cie_xy`
 - Add `NanoleafConfig` struct with `device_ips`, `transition_time`
 - Add `nanoleaf_scan: bool` to `DiscoveryConfig`
@@ -1030,6 +1036,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 3: Credential store (`net/credentials.rs`)
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/net/mod.rs` (new)
 - `crates/hypercolor-core/src/device/net/credentials.rs` (new)
 - `crates/hypercolor-core/src/device/mod.rs` (add `pub mod net`)
@@ -1037,6 +1044,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - `crates/hypercolor-core/tests/credential_store_tests.rs` (new)
 
 **Implementation:**
+
 - `CredentialStore` with `open`, `get`, `store`, `remove`, `keys`
 - AES-256-GCM encryption with machine-local seed file
 - JSON serialization of credential entries
@@ -1049,10 +1057,12 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 4: Shared mDNS browser (`net/mdns.rs`)
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/net/mdns.rs` (new)
 - `crates/hypercolor-core/src/device/net/mod.rs` (add re-export)
 
 **Implementation:**
+
 - `MdnsBrowser` wrapping `mdns-sd::ServiceDaemon`
 - `browse(service_type, timeout)` → `Vec<MdnsService>`
 - IPv4 preference logic (extracted from WLED scanner)
@@ -1069,12 +1079,14 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 5: Nanoleaf types and topology
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/nanoleaf/mod.rs` (new)
 - `crates/hypercolor-core/src/device/nanoleaf/types.rs` (new)
 - `crates/hypercolor-core/src/device/nanoleaf/topology.rs` (new)
 - `crates/hypercolor-core/tests/nanoleaf_topology_tests.rs` (new)
 
 **Implementation:**
+
 - `NanoleafShapeType` enum with all shape variants
 - `has_leds()`, `side_length()`, `to_topology_hint()` methods
 - `NanoleafDeviceInfo`, `NanoleafPanelLayout` response types
@@ -1087,9 +1099,11 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 6: Nanoleaf scanner
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/nanoleaf/scanner.rs` (new)
 
 **Implementation:**
+
 - `NanoleafScanner` implementing `TransportScanner`
 - mDNS browse for `_nanoleafapi._tcp`
 - HTTP probe for device info and panel layout
@@ -1103,10 +1117,12 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 7: Nanoleaf UDP streaming
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/nanoleaf/streaming.rs` (new)
 - `crates/hypercolor-core/tests/nanoleaf_streaming_tests.rs` (new)
 
 **Implementation:**
+
 - `NanoleafStreamSession` with connect, send_frame, close
 - v2 packet builder (2-byte nPanels + 8 bytes/panel)
 - External control activation via REST PUT
@@ -1120,10 +1136,12 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 8: Nanoleaf `DeviceBackend` implementation
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/nanoleaf/backend.rs` (new)
 - `crates/hypercolor-core/src/device/mod.rs` (add `pub mod nanoleaf`)
 
 **Implementation:**
+
 - `NanoleafBackend` implementing `DeviceBackend`
 - `discover()`, `connect()`, `disconnect()`, `write_colors()`
 - Credential loading from `CredentialStore`
@@ -1140,11 +1158,13 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 9: Hue CIE xy color conversion
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/hue/mod.rs` (new)
 - `crates/hypercolor-core/src/device/hue/color.rs` (new)
 - `crates/hypercolor-core/tests/hue_color_tests.rs` (new)
 
 **Implementation:**
+
 - `rgb_to_cie_xyb()` conversion
 - `point_in_gamut()`, `clamp_to_gamut()` geometry helpers
 - Gamut constants (A, B, C)
@@ -1158,11 +1178,13 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 10: Hue types and bridge client
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/hue/types.rs` (new)
 - `crates/hypercolor-core/src/device/hue/bridge.rs` (new)
 - `crates/hypercolor-core/tests/hue_types_tests.rs` (new)
 
 **Implementation:**
+
 - `HueBridgeClient` with `pair()`, `lights()`, `entertainment_configs()`,
   `start_streaming()`, `stop_streaming()`
 - CLIP v2 response types with serde derives
@@ -1176,11 +1198,13 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 11: Hue DTLS streaming
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/hue/streaming.rs` (new)
 - `crates/hypercolor-core/Cargo.toml` (add `webrtc-dtls`, `webrtc-util`)
 - `crates/hypercolor-core/tests/hue_streaming_tests.rs` (new)
 
 **Implementation:**
+
 - `HueStreamSession` with DTLS connect, send_frame, close
 - `webrtc-dtls` PSK config with `TLS_PSK_WITH_AES_128_GCM_SHA256`
 - UDP `Conn` trait adapter for tokio `UdpSocket`
@@ -1195,9 +1219,11 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 12: Hue scanner
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/hue/scanner.rs` (new)
 
 **Implementation:**
+
 - `HueScanner` implementing `TransportScanner`
 - mDNS browse for `_hue._tcp` + N-UPnP fallback
 - Bridge probe with credential check
@@ -1211,10 +1237,12 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 13: Hue `DeviceBackend` implementation
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/hue/backend.rs` (new)
 - `crates/hypercolor-core/src/device/mod.rs` (add `pub mod hue`)
 
 **Implementation:**
+
 - `HueBackend` implementing `DeviceBackend`
 - Full lifecycle: discover → connect (DTLS) → write_colors (CIE xy) → disconnect
 - Entertainment config activation/deactivation
@@ -1232,11 +1260,13 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 14: Daemon registration and feature flags
 
 **Files:**
+
 - `crates/hypercolor-core/Cargo.toml` (feature flag wiring)
 - `crates/hypercolor-daemon/src/startup.rs` (backend registration)
 - `crates/hypercolor-daemon/Cargo.toml` (forward feature flags)
 
 **Implementation:**
+
 - Wire `hue` and `nanoleaf` feature flags through workspace
 - Add conditional backend registration in daemon startup
 - Pass credential store to both backends
@@ -1249,9 +1279,11 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 15: Pairing API endpoints
 
 **Files:**
+
 - `crates/hypercolor-daemon/src/api/devices.rs` (or new `pairing.rs`)
 
 **Implementation:**
+
 - `POST /api/v1/devices/pair/hue` — initiate Hue bridge pairing
   - Request: `{ "bridge_ip": "192.168.1.x" }`
   - Response: `{ "status": "press_button" }` or `{ "status": "paired" }`
@@ -1267,9 +1299,11 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 16: CLI pairing commands
 
 **Files:**
+
 - `crates/hypercolor-cli/src/commands/devices.rs` (extend existing)
 
 **Implementation:**
+
 - `hypercolor devices pair hue [--bridge-ip <IP>]` — interactive Hue pairing
 - `hypercolor devices pair nanoleaf [--device-ip <IP>]` — interactive Nanoleaf pairing
 - Progress spinner while waiting for button press
@@ -1286,11 +1320,13 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 17: Integration tests
 
 **Files:**
+
 - `crates/hypercolor-core/tests/hue_backend_tests.rs` (new)
 - `crates/hypercolor-core/tests/nanoleaf_backend_tests.rs` (new)
 - `crates/hypercolor-daemon/tests/network_backend_tests.rs` (new)
 
 **Implementation:**
+
 - Mock-based backend lifecycle tests (discover → connect → write → disconnect)
 - Packet format validation against known-good byte sequences
 - Credential store round-trip tests
@@ -1301,9 +1337,11 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 #### Task 18: WLED scanner refactor to use shared mDNS
 
 **Files:**
+
 - `crates/hypercolor-core/src/device/wled/scanner.rs` (modify)
 
 **Implementation:**
+
 - Replace inline `mdns-sd` usage with `MdnsBrowser` from `net/mdns.rs`
 - Preserve all existing behavior (IPv4 preference, caching, timeouts)
 - Remove duplicated mDNS boilerplate

@@ -57,7 +57,7 @@ This spec closes all three gaps in a single coordinated initiative:
   `\x1b[38;2;...` literals.
 - **Remote polish.** Connection profiles live in a new TOML config file, so
   `hypercolor --profile home status` replaces `hypercolor --host 192.168.1.42 --port
-  9420 --api-key $SECRET status`. A WebSocket streaming client powers
+9420 --api-key $SECRET status`. A WebSocket streaming client powers
   subscription commands like `hypercolor status --watch`, `hypercolor effects watch`,
   `hypercolor stream frames`, and `hypercolor stream events`.
 
@@ -78,16 +78,16 @@ zero CLI exposure:
 - **Attachments.** Full CRUD for `GET/POST/PUT/DELETE /attachments/templates`,
   plus `GET /attachments/categories` and `GET /attachments/vendors`. The
   per-device routes (`PUT/DELETE /devices/{id}/attachments`, `POST
-  /devices/{id}/attachments/preview`, `POST
-  /devices/{id}/attachments/{slot_id}/identify`) are also absent.
+/devices/{id}/attachments/preview`, `POST
+/devices/{id}/attachments/{slot_id}/identify`) are also absent.
 - **Logical devices.** Global CRUD
   (`GET/POST/PUT/DELETE /logical-devices{,/{id}}`) and per-device views (`GET
-  /devices/{id}/logical-devices`, `POST /devices/{id}/logical-devices`) have
+/devices/{id}/logical-devices`, `POST /devices/{id}/logical-devices`) have
   no CLI equivalents.
 - **Effect layout associations.** `GET/PUT/DELETE /effects/{id}/layout` —
   linking a specific effect to a preferred layout — is entirely absent.
 - **Live control patching.** `PATCH /effects/current/controls` and `POST
-  /effects/current/reset`. Today the only way to change controls is
+/effects/current/reset`. Today the only way to change controls is
   `hypercolor effects activate <name> --param ...`, which re-applies the whole
   effect rather than patching the running instance.
 - **Effect rescan.** `POST /effects/rescan` — triggers a reload of the effect
@@ -353,25 +353,25 @@ marked **(existing, extended)** with a note about what changes.
 
 ### 6.1 Top-Level Subcommands
 
-| Subcommand | Status | Purpose |
-|------------|--------|---------|
-| `status` | existing, extended | System overview (extended with streaming `--watch`) |
-| `devices` | existing, extended | Device discovery, info, mutation (extended with attachments and logical subtrees) |
-| `effects` | existing, extended | Effect list, activate, stop, info (extended with `patch`, `reset`, `rescan`, `layout`, `watch`) |
-| `scenes` | existing | Scene CRUD and activation |
-| `profiles` | existing | Profile CRUD and application (daemon-side profiles) |
-| `library` | existing, extended | Favorites, presets, playlists (extended with update subcommands) |
-| `layouts` | existing, extended | Layout CRUD (extended with `active` and `preview`) |
-| `attachments` | **new** | Attachment templates, categories, vendors |
-| `brightness` | **new** | Global output brightness |
-| `audio` | **new** | Audio input device listing |
-| `server` | **new** | Daemon identity, version, capabilities |
-| `stream` | **new** | Raw WebSocket channel dumps (frames, events, metrics, spectrum) |
-| `config` | existing | CLI configuration (existing) plus daemon config (existing, same subcommand tree) |
-| `service` | existing | Daemon service lifecycle (systemd, launchd, SC) |
-| `diagnose` | existing | Health checks and reports |
-| `servers` | existing, extended | mDNS discovery (extended with `adopt` to write the selected server to `cli.toml`) |
-| `completions` | existing | Shell completion generation |
+| Subcommand    | Status             | Purpose                                                                                         |
+| ------------- | ------------------ | ----------------------------------------------------------------------------------------------- |
+| `status`      | existing, extended | System overview (extended with streaming `--watch`)                                             |
+| `devices`     | existing, extended | Device discovery, info, mutation (extended with attachments and logical subtrees)               |
+| `effects`     | existing, extended | Effect list, activate, stop, info (extended with `patch`, `reset`, `rescan`, `layout`, `watch`) |
+| `scenes`      | existing           | Scene CRUD and activation                                                                       |
+| `profiles`    | existing           | Profile CRUD and application (daemon-side profiles)                                             |
+| `library`     | existing, extended | Favorites, presets, playlists (extended with update subcommands)                                |
+| `layouts`     | existing, extended | Layout CRUD (extended with `active` and `preview`)                                              |
+| `attachments` | **new**            | Attachment templates, categories, vendors                                                       |
+| `brightness`  | **new**            | Global output brightness                                                                        |
+| `audio`       | **new**            | Audio input device listing                                                                      |
+| `server`      | **new**            | Daemon identity, version, capabilities                                                          |
+| `stream`      | **new**            | Raw WebSocket channel dumps (frames, events, metrics, spectrum)                                 |
+| `config`      | existing           | CLI configuration (existing) plus daemon config (existing, same subcommand tree)                |
+| `service`     | existing           | Daemon service lifecycle (systemd, launchd, SC)                                                 |
+| `diagnose`    | existing           | Health checks and reports                                                                       |
+| `servers`     | existing, extended | mDNS discovery (extended with `adopt` to write the selected server to `cli.toml`)               |
+| `completions` | existing           | Shell completion generation                                                                     |
 
 ### 6.2 Extended Subcommand: `effects`
 
@@ -570,48 +570,48 @@ more events arrive, to keep the terminal readable.
 
 ### 7.1 Before Spec 37
 
-| Domain | REST endpoints | CLI coverage |
-|--------|---------------:|-------------:|
-| Devices (core) | 18 | 9 |
-| Logical devices | 8 | 0 |
-| Attachments | 9 | 0 |
-| Effects | 11 | 4 |
-| Scenes | 6 | 6 |
-| Profiles | 6 | 6 |
-| Library (favorites) | 3 | 3 |
-| Library (presets) | 6 | 5 |
-| Library (playlists) | 8 | 7 |
-| Layouts | 8 | 3 |
-| Status / server | 4 | 1 |
-| Settings | 3 | 0 |
-| Config | 4 | 4 |
-| Diagnose | 1 | 1 |
-| WebSocket channels | 6 | 0 |
-| **Total** | **101** | **49 (~49%)** |
+| Domain              | REST endpoints |  CLI coverage |
+| ------------------- | -------------: | ------------: |
+| Devices (core)      |             18 |             9 |
+| Logical devices     |              8 |             0 |
+| Attachments         |              9 |             0 |
+| Effects             |             11 |             4 |
+| Scenes              |              6 |             6 |
+| Profiles            |              6 |             6 |
+| Library (favorites) |              3 |             3 |
+| Library (presets)   |              6 |             5 |
+| Library (playlists) |              8 |             7 |
+| Layouts             |              8 |             3 |
+| Status / server     |              4 |             1 |
+| Settings            |              3 |             0 |
+| Config              |              4 |             4 |
+| Diagnose            |              1 |             1 |
+| WebSocket channels  |              6 |             0 |
+| **Total**           |        **101** | **49 (~49%)** |
 
 (The ~70% figure from the audit counted "partially covered" domains as
 covered; this matrix uses strict endpoint-level coverage.)
 
 ### 7.2 After Spec 37
 
-| Domain | REST endpoints | CLI coverage |
-|--------|---------------:|-------------:|
-| Devices (core) | 18 | 18 |
-| Logical devices | 8 | 8 |
-| Attachments | 9 | 9 |
-| Effects | 11 | 11 |
-| Scenes | 6 | 6 |
-| Profiles | 6 | 6 |
-| Library (favorites) | 3 | 3 |
-| Library (presets) | 6 | 6 |
-| Library (playlists) | 8 | 8 |
-| Layouts | 8 | 8 |
-| Status / server | 4 | 4 |
-| Settings | 3 | 3 |
-| Config | 4 | 4 |
-| Diagnose | 1 | 1 |
-| WebSocket channels | 6 | 5 |
-| **Total** | **101** | **100 (~99%)** |
+| Domain              | REST endpoints |   CLI coverage |
+| ------------------- | -------------: | -------------: |
+| Devices (core)      |             18 |             18 |
+| Logical devices     |              8 |              8 |
+| Attachments         |              9 |              9 |
+| Effects             |             11 |             11 |
+| Scenes              |              6 |              6 |
+| Profiles            |              6 |              6 |
+| Library (favorites) |              3 |              3 |
+| Library (presets)   |              6 |              6 |
+| Library (playlists) |              8 |              8 |
+| Layouts             |              8 |              8 |
+| Status / server     |              4 |              4 |
+| Settings            |              3 |              3 |
+| Config              |              4 |              4 |
+| Diagnose            |              1 |              1 |
+| WebSocket channels  |              6 |              5 |
+| **Total**           |        **101** | **100 (~99%)** |
 
 The one WebSocket channel without first-class CLI coverage is
 `screen_canvas`, which is nearly identical to `canvas` and is best served by
@@ -827,16 +827,16 @@ The tokens the painter uses are a strict subset of what opaline's
 `silkcircuit-neon` theme already ships, so no custom token registration is
 needed at CLI startup:
 
-| Painter helper | Token |
-|----------------|-------|
-| `name` | `accent.secondary` (neon cyan) |
-| `keyword` | `accent.primary` (electric purple) |
-| `number` | `code.number` (coral) |
-| `id`, `mac`-style | `text.dim` |
-| `muted` | `text.muted` |
-| `success` | `success` (neon green) |
-| `error` | `error` (red) |
-| `warning` | `warning` (yellow) |
+| Painter helper    | Token                              |
+| ----------------- | ---------------------------------- |
+| `name`            | `accent.secondary` (neon cyan)     |
+| `keyword`         | `accent.primary` (electric purple) |
+| `number`          | `code.number` (coral)              |
+| `id`, `mac`-style | `text.dim`                         |
+| `muted`           | `text.muted`                       |
+| `success`         | `success` (neon green)             |
+| `error`           | `error` (red)                      |
+| `warning`         | `warning` (yellow)                 |
 
 If future themes want to override these, they do so in the theme TOML file,
 not in the CLI source.
@@ -1006,16 +1006,16 @@ by other crates; no version changes needed.
 
 ### 11.3 Exit Code Table
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | Generic command failure (also: HTTP 4xx/5xx response) |
-| `2` | Configuration error (missing profile, bad `cli.toml`, unreachable daemon) |
-| `3` | Authentication failure (HTTP 401) |
-| `4` | Not found (HTTP 404, e.g. effect/device/profile id) |
-| `5` | Streaming error (WebSocket closed unexpectedly) |
-| `64` | Clap argument parse error (default clap value) |
-| `130` | Interrupted (SIGINT, e.g. during `stream` or `status --watch`) |
+| Code  | Meaning                                                                   |
+| ----- | ------------------------------------------------------------------------- |
+| `0`   | Success                                                                   |
+| `1`   | Generic command failure (also: HTTP 4xx/5xx response)                     |
+| `2`   | Configuration error (missing profile, bad `cli.toml`, unreachable daemon) |
+| `3`   | Authentication failure (HTTP 401)                                         |
+| `4`   | Not found (HTTP 404, e.g. effect/device/profile id)                       |
+| `5`   | Streaming error (WebSocket closed unexpectedly)                           |
+| `64`  | Clap argument parse error (default clap value)                            |
+| `130` | Interrupted (SIGINT, e.g. during `stream` or `status --watch`)            |
 
 These codes are stable and are part of the CLI's public contract. Scripts
 built against any post-Spec-37 `hypercolor` can rely on them.
@@ -1286,7 +1286,7 @@ shape.
    assumes table-mode `stream canvas` prints metadata only.
 3. **Does `hypercolor audio set <device>` belong as a proper subcommand?**
    The spec routes audio device selection through `hypercolor config set
-   audio.device ...` on the grounds that it is CLI config, not an API
+audio.device ...` on the grounds that it is CLI config, not an API
    call. If the daemon grows a dedicated `PUT /audio/device` endpoint,
    we add a subcommand then.
 4. **Should `hypercolor effects patch` support `--json-patch` for complex

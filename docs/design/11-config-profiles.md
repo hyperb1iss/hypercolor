@@ -533,12 +533,12 @@ impl ConfigManager {
 
 **Last-write-wins with revision gating.** The daemon never merges — it accepts or rejects wholesale:
 
-| Scenario | Behavior |
-|---|---|
-| Web UI edits brightness while TUI is open | TUI receives `ConfigChanged`, updates its slider |
-| CLI applies a profile while Web UI is showing controls | Web UI receives `ProfileChanged`, refreshes the panel |
-| Vim saves `hypercolor.toml` while Web UI has unsaved changes | Daemon reloads from disk, broadcasts `ConfigChanged` with `source: FileSystem`. Web UI shows "Config updated externally" toast and refreshes |
-| Two frontends submit conflicting changes at the same revision | First one wins (revision increments). Second gets 409 Conflict |
+| Scenario                                                      | Behavior                                                                                                                                     |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web UI edits brightness while TUI is open                     | TUI receives `ConfigChanged`, updates its slider                                                                                             |
+| CLI applies a profile while Web UI is showing controls        | Web UI receives `ProfileChanged`, refreshes the panel                                                                                        |
+| Vim saves `hypercolor.toml` while Web UI has unsaved changes  | Daemon reloads from disk, broadcasts `ConfigChanged` with `source: FileSystem`. Web UI shows "Config updated externally" toast and refreshes |
+| Two frontends submit conflicting changes at the same revision | First one wins (revision increments). Second gets 409 Conflict                                                                               |
 
 **Why not CRDT / OT?** Config is small, changes are infrequent (not a collaborative text editor), and the mental model of "reload from daemon" is simple for users. Optimistic concurrency with revision checking is the right complexity level.
 
@@ -1004,12 +1004,12 @@ hypercolor import --lightscript /mnt/windows/Users/Stefanie/AppData/Local/VortxE
 
 **What it reads:**
 
-| Source | Hypercolor Target |
-|---|---|
-| `Effects/*.html` | `$XDG_DATA_HOME/hypercolor/effects/community/` |
+| Source                           | Hypercolor Target                                        |
+| -------------------------------- | -------------------------------------------------------- |
+| `Effects/*.html`                 | `$XDG_DATA_HOME/hypercolor/effects/community/`           |
 | `settings.json` (device layouts) | `~/.config/hypercolor/layouts/imported-lightscript.toml` |
-| `profiles/` | `~/.config/hypercolor/profiles/imported-*.toml` |
-| Device → effect mappings | Best-effort zone assignments in profile |
+| `profiles/`                      | `~/.config/hypercolor/profiles/imported-*.toml`          |
+| Device → effect mappings         | Best-effort zone assignments in profile                  |
 
 **What it translates:**
 
@@ -1135,13 +1135,13 @@ impl Migration for ProfileV1ToV2 {
 
 ### Backward Compatibility Guarantees
 
-| Guarantee | Policy |
-|---|---|
-| **Config files from older versions** | Always auto-migrated on daemon start |
-| **Config files from newer versions** | Rejected with clear error ("this config requires Hypercolor >= 0.5.0") |
-| **Removed settings** | Preserved as `[deprecated]` section for one major version, then stripped |
-| **Renamed settings** | Migration renames them; old name works for one major version with deprecation warning |
-| **Breaking schema changes** | Only in major versions (0.x → 1.0, 1.x → 2.0). Always accompanied by auto-migration |
+| Guarantee                            | Policy                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------- |
+| **Config files from older versions** | Always auto-migrated on daemon start                                                  |
+| **Config files from newer versions** | Rejected with clear error ("this config requires Hypercolor >= 0.5.0")                |
+| **Removed settings**                 | Preserved as `[deprecated]` section for one major version, then stripped              |
+| **Renamed settings**                 | Migration renames them; old name works for one major version with deprecation warning |
+| **Breaking schema changes**          | Only in major versions (0.x → 1.0, 1.x → 2.0). Always accompanied by auto-migration   |
 
 ### Version Compatibility Header
 
@@ -1356,13 +1356,13 @@ hypercolor reset --layouts            # Delete spatial layouts
 
 ### What Needs Secrets
 
-| Secret | Source | Used For |
-|---|---|---|
-| Hue bridge API token | Bridge link-button pairing | Hue REST/Entertainment API |
-| WLED auth token | WLED web UI (if auth enabled) | Authenticated API access |
-| Web UI password | User-configured | Remote access to Hypercolor web UI |
-| Future: HA long-lived token | Home Assistant settings | HA REST API integration |
-| Future: MQTT credentials | MQTT broker | Pub/sub integration |
+| Secret                      | Source                        | Used For                           |
+| --------------------------- | ----------------------------- | ---------------------------------- |
+| Hue bridge API token        | Bridge link-button pairing    | Hue REST/Entertainment API         |
+| WLED auth token             | WLED web UI (if auth enabled) | Authenticated API access           |
+| Web UI password             | User-configured               | Remote access to Hypercolor web UI |
+| Future: HA long-lived token | Home Assistant settings       | HA REST API integration            |
+| Future: MQTT credentials    | MQTT broker                   | Pub/sub integration                |
 
 ### Storage Strategy
 

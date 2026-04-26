@@ -12,18 +12,18 @@ Hypercolor's audio pipeline runs FFT, beat detection, spectral analysis, mel-ban
 Canvas effects pull with `audio()`:
 
 ```typescript
-import { audio, canvas } from '@hypercolor/sdk'
+import { audio, canvas } from "@hypercolor/sdk";
 
 export default canvas(
-    'Pulse',
-    controls,
-    (ctx, time, controls) => {
-        const a = audio()
-        const intensity = Math.max(a.beatPulse, a.bassEnv * 0.6)
-        // ...
-    },
-    { audio: true },
-)
+  "Pulse",
+  controls,
+  (ctx, time, controls) => {
+    const a = audio();
+    const intensity = Math.max(a.beatPulse, a.bassEnv * 0.6);
+    // ...
+  },
+  { audio: true },
+);
 ```
 
 Shader effects get audio through auto-registered uniforms when `audio: true` is set:
@@ -41,58 +41,58 @@ The shader uniform surface is a subset of the canvas surface. See [GLSL Effects]
 
 ```typescript
 interface AudioData {
-    // Levels
-    level: number              // 0-1 overall RMS
-    levelRaw: number           // raw dB, -100 to 0
-    levelShort: number         // short-window envelope
-    levelLong: number          // long-window envelope
-    density: number            // spectral flatness (0-1)
-    width: number              // stereo width (0-1)
+  // Levels
+  level: number; // 0-1 overall RMS
+  levelRaw: number; // raw dB, -100 to 0
+  levelShort: number; // short-window envelope
+  levelLong: number; // long-window envelope
+  density: number; // spectral flatness (0-1)
+  width: number; // stereo width (0-1)
 
-    // Bands
-    bass: number               // 0-1
-    mid: number                // 0-1
-    treble: number             // 0-1
-    bassEnv: number            // attack envelope
-    midEnv: number
-    trebleEnv: number
+  // Bands
+  bass: number; // 0-1
+  mid: number; // 0-1
+  treble: number; // 0-1
+  bassEnv: number; // attack envelope
+  midEnv: number;
+  trebleEnv: number;
 
-    // Beats
-    beat: number               // 1 on beat frame
-    beatPulse: number          // decaying pulse after beat (1 → 0)
-    beatPhase: number          // phase within current beat (0-1)
-    beatConfidence: number     // 0-1
-    tempo: number              // estimated BPM
-    momentum: number           // level derivative (-1..1)
-    swell: number              // positive momentum (0-1)
+  // Beats
+  beat: number; // 1 on beat frame
+  beatPulse: number; // decaying pulse after beat (1 → 0)
+  beatPhase: number; // phase within current beat (0-1)
+  beatConfidence: number; // 0-1
+  tempo: number; // estimated BPM
+  momentum: number; // level derivative (-1..1)
+  swell: number; // positive momentum (0-1)
 
-    // Raw FFT
-    frequency: Float32Array    // 200 bins, 0-1
-    frequencyRaw: Int8Array    // 200 raw dB values
-    frequencyWeighted: Float32Array  // A-weighted
+  // Raw FFT
+  frequency: Float32Array; // 200 bins, 0-1
+  frequencyRaw: Int8Array; // 200 raw dB values
+  frequencyWeighted: Float32Array; // A-weighted
 
-    // Perceptual frequency
-    melBands: Float32Array            // 24 bands
-    melBandsNormalized: Float32Array  // 24 bands with rolling AGC
+  // Perceptual frequency
+  melBands: Float32Array; // 24 bands
+  melBandsNormalized: Float32Array; // 24 bands with rolling AGC
 
-    // Onsets
-    spectralFlux: number               // overall flux
-    spectralFluxBands: Float32Array    // per-band [bass, mid, treble]
-    onset: number                      // 1 on onset frame
-    onsetPulse: number                 // decaying onset
+  // Onsets
+  spectralFlux: number; // overall flux
+  spectralFluxBands: Float32Array; // per-band [bass, mid, treble]
+  onset: number; // 1 on onset frame
+  onsetPulse: number; // decaying onset
 
-    // Harmony
-    chromagram: Float32Array           // 12 pitch classes (C..B)
-    dominantPitch: number              // 0-11
-    dominantPitchConfidence: number    // 0-1
-    harmonicHue: number                // 0-360, Circle of Fifths
-    chordMood: number                  // -1 minor..+1 major
+  // Harmony
+  chromagram: Float32Array; // 12 pitch classes (C..B)
+  dominantPitch: number; // 0-11
+  dominantPitchConfidence: number; // 0-1
+  harmonicHue: number; // 0-360, Circle of Fifths
+  chordMood: number; // -1 minor..+1 major
 
-    // Timbre
-    brightness: number         // spectral centroid
-    spread: number             // spectral spread
-    rolloff: number            // high-frequency rolloff
-    roughness: number          // dissonance
+  // Timbre
+  brightness: number; // spectral centroid
+  spread: number; // spectral spread
+  rolloff: number; // high-frequency rolloff
+  roughness: number; // dissonance
 }
 ```
 
@@ -105,8 +105,8 @@ That's a lot. The guidance below pairs mood and motion to the right field.
 `beatPulse` is the go-to for "kick hit feels like a drum." It decays over a handful of frames, so multiplying by a size or brightness gives a nice punch without flickering.
 
 ```typescript
-const punch = a.beatPulse
-const radius = base + punch * minDim * 0.2
+const punch = a.beatPulse;
+const radius = base + punch * minDim * 0.2;
 ```
 
 `onsetPulse` catches transients that aren't metrical beats: snare rolls, fills, non-drum onsets. Use it when you want a reaction that isn't tied to a metronome.
@@ -126,15 +126,15 @@ const radius = base + punch * minDim * 0.2
 `chordMood` is the minor-to-major axis. Negative leans minor; positive leans major. Shift warm/cool palettes, curl petals inward, tilt angles, any gesture that reads as "sad" vs "bright."
 
 ```typescript
-const warmth = Math.max(a.chordMood, 0)
-const minorness = Math.max(-a.chordMood, 0)
+const warmth = Math.max(a.chordMood, 0);
+const minorness = Math.max(-a.chordMood, 0);
 ```
 
 `harmonicHue` is the Circle of Fifths mapped to a hue wheel. Rotate palette sampling by this value so harmonic movement in the music becomes color movement on the hardware.
 
 ```typescript
-const hueOffset = a.harmonicHue / 360
-ctx.fillStyle = pal((t + hueOffset) % 1)
+const hueOffset = a.harmonicHue / 360;
+ctx.fillStyle = pal((t + hueOffset) % 1);
 ```
 
 ### For pitch-class detail
@@ -143,8 +143,8 @@ ctx.fillStyle = pal((t + hueOffset) % 1)
 
 ```typescript
 for (let i = 0; i < 12; i++) {
-    const energy = a.chromagram[i]
-    drawPetalAtAngle(i / 12 * Math.PI * 2, energy)
+  const energy = a.chromagram[i];
+  drawPetalAtAngle((i / 12) * Math.PI * 2, energy);
 }
 ```
 
@@ -152,7 +152,7 @@ for (let i = 0; i < 12; i++) {
 
 ```typescript
 if (a.dominantPitchConfidence > 0.6) {
-    highlightPetal(a.dominantPitch)
+  highlightPetal(a.dominantPitch);
 }
 ```
 
@@ -173,14 +173,14 @@ if (a.dominantPitchConfidence > 0.6) {
 With no audio, every audio field is zero or a sensible idle value. Don't gate behavior on strict equality with zero; clamp to a floor so the effect stays alive in a quiet room:
 
 ```typescript
-const level = Math.max(a.levelShort, 0.04)
+const level = Math.max(a.levelShort, 0.04);
 ```
 
 A breathing baseline derived from `time` is a good companion for idle:
 
 ```typescript
-const breath = 0.5 + 0.5 * Math.sin(time * 0.6)
-const alive = level + breath * 0.3
+const breath = 0.5 + 0.5 * Math.sin(time * 0.6);
+const alive = level + breath * 0.3;
 ```
 
 ## Anti-patterns
@@ -194,7 +194,7 @@ const alive = level + breath * 0.3
 **Ignoring `beatConfidence`.** On non-rhythmic music, the beat detector still fires but with low confidence. Multiply your beat response by `beatConfidence` to stay graceful:
 
 ```typescript
-const beatGate = a.beatPulse * a.beatConfidence
+const beatGate = a.beatPulse * a.beatConfidence;
 ```
 
 ## Audio helpers
@@ -203,18 +203,18 @@ The SDK ships a handful of utilities for common audio transforms:
 
 ```typescript
 import {
-    getBassLevel,
-    getMidLevel,
-    getTrebleLevel,
-    getFrequencyRange,
-    getMelRange,
-    getPitchClassName,
-    pitchClassToHue,
-    isOnBeat,
-    normalizeAudioLevel,
-    normalizeFrequencyBin,
-    smoothValue,
-} from '@hypercolor/sdk'
+  getBassLevel,
+  getMidLevel,
+  getTrebleLevel,
+  getFrequencyRange,
+  getMelRange,
+  getPitchClassName,
+  pitchClassToHue,
+  isOnBeat,
+  normalizeAudioLevel,
+  normalizeFrequencyBin,
+  smoothValue,
+} from "@hypercolor/sdk";
 ```
 
 `getFrequencyRange(audio, lowHz, highHz)` averages FFT bins across a custom band if the default three bands aren't what you need. `smoothValue(current, target, rate, deltaTime)` is a useful exponential smoother when you want to damp a jittery field.

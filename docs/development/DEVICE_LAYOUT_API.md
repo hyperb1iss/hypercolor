@@ -15,15 +15,15 @@ All responses use the standard Hypercolor envelope (`data` + `meta`, or
 
 ### Endpoint map
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/devices` | List devices (with filters + pagination) |
-| `GET` | `/devices/{id_or_name}` | Fetch one device |
-| `PUT` | `/devices/{id_or_name}` | Update user settings (`name`, `enabled`) |
-| `DELETE` | `/devices/{id_or_name}` | Remove a tracked device |
-| `POST` | `/devices/discover` | Start discovery scan |
-| `POST` | `/devices/{id_or_name}/identify` | Trigger identify pattern |
-| `GET` | `/devices/debug/queues` | Inspect backend output queue diagnostics |
+| Method   | Path                             | Purpose                                  |
+| -------- | -------------------------------- | ---------------------------------------- |
+| `GET`    | `/devices`                       | List devices (with filters + pagination) |
+| `GET`    | `/devices/{id_or_name}`          | Fetch one device                         |
+| `PUT`    | `/devices/{id_or_name}`          | Update user settings (`name`, `enabled`) |
+| `DELETE` | `/devices/{id_or_name}`          | Remove a tracked device                  |
+| `POST`   | `/devices/discover`              | Start discovery scan                     |
+| `POST`   | `/devices/{id_or_name}/identify` | Trigger identify pattern                 |
+| `GET`    | `/devices/debug/queues`          | Inspect backend output queue diagnostics |
 
 ### List query params
 
@@ -83,15 +83,15 @@ Validation:
 
 ### Endpoint map
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/layouts` | List saved layouts |
-| `POST` | `/layouts` | Create layout |
-| `GET` | `/layouts/active` | Get currently active layout from spatial engine |
-| `GET` | `/layouts/{id_or_name}` | Fetch one layout (full `SpatialLayout`) |
-| `PUT` | `/layouts/{id_or_name}` | Update layout metadata/canvas size |
-| `POST` | `/layouts/{id_or_name}/apply` | Apply saved layout to spatial engine |
-| `DELETE` | `/layouts/{id_or_name}` | Delete saved layout |
+| Method   | Path                          | Purpose                                         |
+| -------- | ----------------------------- | ----------------------------------------------- |
+| `GET`    | `/layouts`                    | List saved layouts                              |
+| `POST`   | `/layouts`                    | Create layout                                   |
+| `GET`    | `/layouts/active`             | Get currently active layout from spatial engine |
+| `GET`    | `/layouts/{id_or_name}`       | Fetch one layout (full `SpatialLayout`)         |
+| `PUT`    | `/layouts/{id_or_name}`       | Update layout metadata/canvas size              |
+| `POST`   | `/layouts/{id_or_name}/apply` | Apply saved layout to spatial engine            |
+| `DELETE` | `/layouts/{id_or_name}`       | Delete saved layout                             |
 
 ### List query params
 
@@ -174,14 +174,14 @@ LED range. Layout zones should target these logical IDs.
 
 ### Endpoint map
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/logical-devices` | List all logical devices |
-| `GET` | `/logical-devices/{id}` | Fetch one logical device |
-| `PUT` | `/logical-devices/{id}` | Update logical device fields |
-| `DELETE` | `/logical-devices/{id}` | Delete a user-defined segment |
-| `GET` | `/devices/{id_or_name}/logical-devices` | List logical devices for one physical device |
-| `POST` | `/devices/{id_or_name}/logical-devices` | Create a new logical segment on a physical device |
+| Method   | Path                                    | Purpose                                           |
+| -------- | --------------------------------------- | ------------------------------------------------- |
+| `GET`    | `/logical-devices`                      | List all logical devices                          |
+| `GET`    | `/logical-devices/{id}`                 | Fetch one logical device                          |
+| `PUT`    | `/logical-devices/{id}`                 | Update logical device fields                      |
+| `DELETE` | `/logical-devices/{id}`                 | Delete a user-defined segment                     |
+| `GET`    | `/devices/{id_or_name}/logical-devices` | List logical devices for one physical device      |
+| `POST`   | `/devices/{id_or_name}/logical-devices` | Create a new logical segment on a physical device |
 
 ### Create payload
 
@@ -233,11 +233,11 @@ specific spatial layout.
 
 ### Endpoint map
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/effects/{id_or_name}/layout` | Get the associated layout for an effect |
-| `PUT` | `/effects/{id_or_name}/layout` | Associate an effect with a layout |
-| `DELETE` | `/effects/{id_or_name}/layout` | Remove an effect/layout association |
+| Method   | Path                           | Purpose                                 |
+| -------- | ------------------------------ | --------------------------------------- |
+| `GET`    | `/effects/{id_or_name}/layout` | Get the associated layout for an effect |
+| `PUT`    | `/effects/{id_or_name}/layout` | Associate an effect with a layout       |
+| `DELETE` | `/effects/{id_or_name}/layout` | Remove an effect/layout association     |
 
 ### Set payload
 

@@ -59,13 +59,13 @@ Idea → Discussion → Issue → Fork → Branch → PR → Review → Merge
 
 **GitHub Discussions** serve as the front door:
 
-| Category | Purpose |
-|---|---|
-| **Ideas** | Feature proposals, brainstorming, "wouldn't it be cool if..." |
-| **Q&A** | Setup help, troubleshooting, "how do I..." |
-| **Show & Tell** | Screenshots, setups, effect demos, community creations |
-| **Effects** | Effect development questions, sharing WIP effects |
-| **Plugins** | Plugin development, backend requests, integration ideas |
+| Category        | Purpose                                                       |
+| --------------- | ------------------------------------------------------------- |
+| **Ideas**       | Feature proposals, brainstorming, "wouldn't it be cool if..." |
+| **Q&A**         | Setup help, troubleshooting, "how do I..."                    |
+| **Show & Tell** | Screenshots, setups, effect demos, community creations        |
+| **Effects**     | Effect development questions, sharing WIP effects             |
+| **Plugins**     | Plugin development, backend requests, integration ideas       |
 
 **Issue Templates:**
 
@@ -101,15 +101,15 @@ Bliss (hyperb1iss) is the project founder, architect, and sole decision-maker. T
 
 As the project grows, delegate subsystem ownership:
 
-| Subsystem | Maintainer Role |
-|---|---|
-| **Core engine** (render loop, event bus) | Project lead (Bliss) |
-| **Device backends** | Backend maintainer(s) -- one per major backend family |
-| **Effect system** (wgpu + Servo) | Effect engine maintainer |
-| **Web UI** (SvelteKit) | Frontend maintainer |
-| **TUI/CLI** | CLI/TUI maintainer |
-| **Documentation** | Docs maintainer |
-| **Community effects** | Effect curator(s) |
+| Subsystem                                | Maintainer Role                                       |
+| ---------------------------------------- | ----------------------------------------------------- |
+| **Core engine** (render loop, event bus) | Project lead (Bliss)                                  |
+| **Device backends**                      | Backend maintainer(s) -- one per major backend family |
+| **Effect system** (wgpu + Servo)         | Effect engine maintainer                              |
+| **Web UI** (SvelteKit)                   | Frontend maintainer                                   |
+| **TUI/CLI**                              | CLI/TUI maintainer                                    |
+| **Documentation**                        | Docs maintainer                                       |
+| **Community effects**                    | Effect curator(s)                                     |
 
 Maintainers get merge rights for their subsystem. Cross-cutting changes still go through Bliss.
 
@@ -129,6 +129,7 @@ If Hypercolor reaches critical mass (50+ regular contributors, multiple corporat
 Major changes require an **RFC (Request for Comments)** before implementation:
 
 **What requires an RFC:**
+
 - New device backend architecture
 - Effect API changes that break existing effects
 - New IPC protocol or API surface
@@ -137,6 +138,7 @@ Major changes require an **RFC (Request for Comments)** before implementation:
 - New hard dependencies
 
 **What does NOT require an RFC:**
+
 - Bug fixes
 - New effects (just submit them)
 - Documentation improvements
@@ -149,21 +151,27 @@ Major changes require an **RFC (Request for Comments)** before implementation:
 # RFC: [Title]
 
 ## Summary
+
 One paragraph.
 
 ## Motivation
+
 Why is this change needed? What problem does it solve?
 
 ## Design
+
 Technical details. Code examples. Architecture diagrams.
 
 ## Alternatives Considered
+
 What else was evaluated? Why was it rejected?
 
 ## Migration Path
+
 How do existing users/effects/plugins adapt?
 
 ## Unresolved Questions
+
 What needs further discussion?
 ```
 
@@ -174,6 +182,7 @@ RFCs live in `docs/rfcs/` and are numbered sequentially. Discussion happens on t
 Adopt the **Contributor Covenant v2.1** -- the de facto standard for open source projects. It's well-understood, legally reviewed, and signals that Hypercolor is a welcoming space.
 
 **Enforcement ladder:**
+
 1. Private warning with specific explanation
 2. Temporary interaction ban (1-30 days)
 3. Permanent ban
@@ -190,24 +199,24 @@ Adopt the **Contributor Covenant v2.1** -- the de facto standard for open source
 
 **Primary targets (high overlap with Hypercolor's value prop):**
 
-| Community | Size | Why They Care | Entry Strategy |
-|---|---|---|---|
-| **r/linux_gaming** | 600K+ | RGB on Linux is a known pain point | "Open-source RGB lighting for Linux" post |
-| **r/pcmasterrace** | 7M+ | RGB enthusiasts, setup showcases | Demo videos of effects running on Linux |
-| **r/homeassistant** | 500K+ | Smart home + RGB integration | HA integration announcement |
-| **r/WLED** | 30K+ | LED strip enthusiasts, already open source | Native WLED DDP support |
-| **r/OpenRGB** | 10K+ | Existing Linux RGB users | Backend compatibility, effect engine |
-| **r/unixporn** | 400K+ | Aesthetic Linux setups | TUI screenshots, SilkCircuit theming |
+| Community           | Size  | Why They Care                              | Entry Strategy                            |
+| ------------------- | ----- | ------------------------------------------ | ----------------------------------------- |
+| **r/linux_gaming**  | 600K+ | RGB on Linux is a known pain point         | "Open-source RGB lighting for Linux" post |
+| **r/pcmasterrace**  | 7M+   | RGB enthusiasts, setup showcases           | Demo videos of effects running on Linux   |
+| **r/homeassistant** | 500K+ | Smart home + RGB integration               | HA integration announcement               |
+| **r/WLED**          | 30K+  | LED strip enthusiasts, already open source | Native WLED DDP support                   |
+| **r/OpenRGB**       | 10K+  | Existing Linux RGB users                   | Backend compatibility, effect engine      |
+| **r/unixporn**      | 400K+ | Aesthetic Linux setups                     | TUI screenshots, SilkCircuit theming      |
 
 **Secondary targets:**
 
-| Community | Entry Strategy |
-|---|---|
-| **r/MechanicalKeyboards** | Per-key RGB control, OpenRGB keyboard support |
-| **r/battlestations** | Full-setup effect sync demos |
-| **r/selfhosted** | Daemon architecture, REST API, headless mode |
-| **Lemmy (linux communities)** | Cross-post for Fediverse reach |
-| **Hacker News** | Architecture post ("HTML effects engine in Rust") |
+| Community                     | Entry Strategy                                    |
+| ----------------------------- | ------------------------------------------------- |
+| **r/MechanicalKeyboards**     | Per-key RGB control, OpenRGB keyboard support     |
+| **r/battlestations**          | Full-setup effect sync demos                      |
+| **r/selfhosted**              | Daemon architecture, REST API, headless mode      |
+| **Lemmy (linux communities)** | Cross-post for Fediverse reach                    |
+| **Hacker News**               | Architecture post ("HTML effects engine in Rust") |
 
 **Discord / Matrix communities to engage:**
 
@@ -254,6 +263,7 @@ HYPERCOLOR
 ```
 
 **Roles:**
+
 - `@Contributor` -- has merged a PR
 - `@Effect Author` -- has published an effect
 - `@Backend Dev` -- works on device backends
@@ -278,12 +288,14 @@ Every PR that changes behavior must update documentation. This is enforced by CI
 **"Good First Issue" program:**
 
 Maintain a curated list of issues tagged `good-first-issue` that are:
+
 - Well-scoped (completable in 1-3 hours)
 - Well-described (clear acceptance criteria, relevant code pointers)
 - Not blocking anything critical (no pressure)
 - Spread across the codebase (core, CLI, effects, docs, tests)
 
 **Examples of good first issues:**
+
 - "Add shell completions for fish"
 - "Write a builtin static-color effect"
 - "Add device name to TUI status bar"
@@ -291,6 +303,7 @@ Maintain a curated list of issues tagged `good-first-issue` that are:
 - "Add color temperature control to Hue backend"
 
 **First PR experience checklist:**
+
 1. `CONTRIBUTING.md` explains setup in < 5 minutes
 2. `cargo build` works on a clean clone (no hidden dependencies)
 3. CI gives clear, actionable feedback (not cryptic failures)
@@ -319,16 +332,17 @@ Each level comes with explicit expectations and explicit recognition.
 
 **Release schedule:**
 
-| Track | Cadence | Purpose |
-|---|---|---|
-| **Nightly** | Daily (automated) | Latest `dev` branch, for testing |
-| **Beta** | Every 2 weeks | Pre-release, feedback window |
-| **Stable** | Every 6 weeks | Production release |
-| **LTS** | Every 6 months | Long-term support for distro packagers |
+| Track       | Cadence           | Purpose                                |
+| ----------- | ----------------- | -------------------------------------- |
+| **Nightly** | Daily (automated) | Latest `dev` branch, for testing       |
+| **Beta**    | Every 2 weeks     | Pre-release, feedback window           |
+| **Stable**  | Every 6 weeks     | Production release                     |
+| **LTS**     | Every 6 months    | Long-term support for distro packagers |
 
 **Release naming:** Semantic versioning (`0.x.y` pre-1.0, `x.y.z` post-1.0). No cute names until 1.0 -- let the software earn its personality.
 
 **Release process:**
+
 1. Feature freeze on `dev` (1 week before release)
 2. Beta cut → community testing
 3. Bug fixes only during beta
@@ -430,12 +444,12 @@ mirror = { type = "boolean", label = "Mirror Mode", default = false }
 
 **Quality tiers:**
 
-| Tier | Badge | Criteria |
-|---|---|---|
-| **Community** | -- | Passes automated checks, merged by maintainer |
-| **Reviewed** | Checkmark | Human-reviewed for quality and performance |
-| **Featured** | Star | Curated by the effect team for exceptional quality |
-| **Builtin** | Ship icon | Ships with Hypercolor by default |
+| Tier          | Badge     | Criteria                                           |
+| ------------- | --------- | -------------------------------------------------- |
+| **Community** | --        | Passes automated checks, merged by maintainer      |
+| **Reviewed**  | Checkmark | Human-reviewed for quality and performance         |
+| **Featured**  | Star      | Curated by the effect team for exceptional quality |
+| **Builtin**   | Ship icon | Ships with Hypercolor by default                   |
 
 ### 3.3 Featured Effects Program
 
@@ -458,6 +472,7 @@ Each release highlights **3-5 featured effects** in the release notes and on the
 - **"One Shader"** -- Create the most impressive effect in a single wgsl/glsl file
 
 **Structure:**
+
 1. Theme announced 2 weeks before
 2. 48-hour creation window (weekend jam)
 3. Submissions via PR to `hypercolor/effects` with `[JAM]` tag
@@ -487,6 +502,7 @@ original_url = "https://..."
 ### 3.6 Porting HTML Effects: Legal Considerations
 
 **The landscape:**
+
 - LightScript effects are HTML files. Many are authored by community members.
 - Community effects often have no explicit license. This is legally ambiguous.
 - WhirlwindFX's built-in effects are proprietary.
@@ -509,11 +525,11 @@ original_url = "https://..."
 
 The architecture doc defines three phases of extensibility:
 
-| Phase | Mechanism | When | For Whom |
-|---|---|---|---|
-| **Phase 1** | Compile-time traits + feature flags | v0.1+ | Core team, known backends |
-| **Phase 2** | Wasm plugins (Wasmtime + WIT) | v0.5+ | Community developers |
-| **Phase 3** | gRPC process bridge | v0.3+ (for OpenRGB) | GPL isolation, polyglot plugins |
+| Phase       | Mechanism                           | When                | For Whom                        |
+| ----------- | ----------------------------------- | ------------------- | ------------------------------- |
+| **Phase 1** | Compile-time traits + feature flags | v0.1+               | Core team, known backends       |
+| **Phase 2** | Wasm plugins (Wasmtime + WIT)       | v0.5+               | Community developers            |
+| **Phase 3** | gRPC process bridge                 | v0.3+ (for OpenRGB) | GPL isolation, polyglot plugins |
 
 ### 4.2 Plugin Registry
 
@@ -566,31 +582,31 @@ usb = false                     # Needs USB HID access
 
 **Device Backends (highest demand):**
 
-| Category | Examples | Difficulty |
-|---|---|---|
-| **Network LED controllers** | Nanoleaf, Govee, Yeelight, LIFX | Medium |
-| **USB peripherals** | SteelSeries, Logitech, HyperX | Medium-Hard |
-| **Smart home bridges** | Hue (additional features), Zigbee, Z-Wave | Medium |
-| **Display devices** | Govee Dreamview, Ambilight | Medium |
-| **Custom hardware** | Arduino, ESP32 (non-WLED), Teensy | Easy-Medium |
+| Category                    | Examples                                  | Difficulty  |
+| --------------------------- | ----------------------------------------- | ----------- |
+| **Network LED controllers** | Nanoleaf, Govee, Yeelight, LIFX           | Medium      |
+| **USB peripherals**         | SteelSeries, Logitech, HyperX             | Medium-Hard |
+| **Smart home bridges**      | Hue (additional features), Zigbee, Z-Wave | Medium      |
+| **Display devices**         | Govee Dreamview, Ambilight                | Medium      |
+| **Custom hardware**         | Arduino, ESP32 (non-WLED), Teensy         | Easy-Medium |
 
 **Input Sources:**
 
-| Plugin | Purpose |
-|---|---|
-| **MIDI input** | Map MIDI controllers to effect parameters |
-| **Game integration** | Game state → effect triggers (via D-Bus or file watches) |
-| **Sensor input** | Temperature, weather, system metrics → color data |
-| **Network audio** | Receive audio from remote sources (Snapcast, PulseAudio network) |
+| Plugin               | Purpose                                                          |
+| -------------------- | ---------------------------------------------------------------- |
+| **MIDI input**       | Map MIDI controllers to effect parameters                        |
+| **Game integration** | Game state → effect triggers (via D-Bus or file watches)         |
+| **Sensor input**     | Temperature, weather, system metrics → color data                |
+| **Network audio**    | Receive audio from remote sources (Snapcast, PulseAudio network) |
 
 **Integrations:**
 
-| Plugin | Purpose |
-|---|---|
+| Plugin             | Purpose                                                  |
+| ------------------ | -------------------------------------------------------- |
 | **Home Assistant** | Two-way HA integration (scenes, automations, state sync) |
-| **MQTT** | Generic IoT integration |
-| **OBS** | Scene change → effect change |
-| **Spotify/MPD** | Now-playing → effect palette |
+| **MQTT**           | Generic IoT integration                                  |
+| **OBS**            | Scene change → effect change                             |
+| **Spotify/MPD**    | Now-playing → effect palette                             |
 
 ### 4.4 Developer Documentation Quality
 
@@ -608,12 +624,12 @@ Plugin developers need:
 
 **Levels:**
 
-| Level | Meaning | Badge |
-|---|---|---|
-| **Unverified** | Community submission, use at your own risk | -- |
-| **Tested** | Passes automated test suite on CI | Checkmark |
-| **Verified** | Human-reviewed by maintainer, security audit | Shield |
-| **Official** | Maintained by Hypercolor core team | Star |
+| Level          | Meaning                                      | Badge     |
+| -------------- | -------------------------------------------- | --------- |
+| **Unverified** | Community submission, use at your own risk   | --        |
+| **Tested**     | Passes automated test suite on CI            | Checkmark |
+| **Verified**   | Human-reviewed by maintainer, security audit | Shield    |
+| **Official**   | Maintained by Hypercolor core team           | Star      |
 
 **Wasm sandboxing** provides baseline safety -- plugins can't access the filesystem, network, or USB without explicit capability grants defined in `plugin.toml`. This is a significant advantage over native plugin systems.
 
@@ -651,43 +667,45 @@ Tier 3: "Hypercolor Certified" (Active)
 
 **High Priority (already open-source-friendly or Linux-aware):**
 
-| Manufacturer | Product Line | Approach |
-|---|---|---|
-| **WLED community** | ESP32 LED controllers | Already open source. Ensure DDP support is flawless. Contribute upstream if needed. Cross-promote. |
+| Manufacturer           | Product Line                      | Approach                                                                                                                                                                 |
+| ---------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **WLED community**     | ESP32 LED controllers             | Already open source. Ensure DDP support is flawless. Contribute upstream if needed. Cross-promote.                                                                       |
 | **Lian Li / PrismRGB** | Strimer cables, Prism 8, Nollie 8 | We've already reverse-engineered their protocols. Offer them a reference Linux driver. Propose Tier 2 partnership -- they gain Linux support with zero engineering cost. |
-| **Corsair** | iCUE LINK ecosystem | Engage via OpenLinkHub project. Corsair has historically been hostile to open source, but iCUE LINK is gaining community support. |
-| **Razer** | Keyboards, mice, accessories | OpenRazer exists and is well-supported. Coordinate with OpenRazer maintainers for Hypercolor integration. |
+| **Corsair**            | iCUE LINK ecosystem               | Engage via OpenLinkHub project. Corsair has historically been hostile to open source, but iCUE LINK is gaining community support.                                        |
+| **Razer**              | Keyboards, mice, accessories      | OpenRazer exists and is well-supported. Coordinate with OpenRazer maintainers for Hypercolor integration.                                                                |
 
 **Medium Priority (large user base, closed ecosystems):**
 
-| Manufacturer | Strategy |
-|---|---|
-| **ASUS (AURA)** | OpenRGB already supports most ASUS hardware. Focus on ensuring Hypercolor works seamlessly with OpenRGB's ASUS backend. |
-| **MSI (Mystic Light)** | Same as ASUS -- lean on OpenRGB. |
-| **Gigabyte (RGB Fusion)** | Same approach. |
-| **Nanoleaf** | Local API is documented. Community plugin opportunity. |
-| **Govee** | LAN API exists (unofficial). Community plugin opportunity. |
-| **Philips Hue** | Official API, well-documented. First-party backend in roadmap. |
+| Manufacturer              | Strategy                                                                                                                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **ASUS (AURA)**           | OpenRGB already supports most ASUS hardware. Focus on ensuring Hypercolor works seamlessly with OpenRGB's ASUS backend. |
+| **MSI (Mystic Light)**    | Same as ASUS -- lean on OpenRGB.                                                                                        |
+| **Gigabyte (RGB Fusion)** | Same approach.                                                                                                          |
+| **Nanoleaf**              | Local API is documented. Community plugin opportunity.                                                                  |
+| **Govee**                 | LAN API exists (unofficial). Community plugin opportunity.                                                              |
+| **Philips Hue**           | Official API, well-documented. First-party backend in roadmap.                                                          |
 
 **Strategic (moonshot):**
 
-| Manufacturer | Why |
-|---|---|
-| **Valve** | SteamOS is Linux. If Hypercolor works on Steam Deck, Valve might promote it. |
-| **System76** | Linux hardware company. Natural partner for "RGB that just works on Linux." |
-| **Framework** | Linux-first laptop. LED module integration? |
+| Manufacturer  | Why                                                                          |
+| ------------- | ---------------------------------------------------------------------------- |
+| **Valve**     | SteamOS is Linux. If Hypercolor works on Steam Deck, Valve might promote it. |
+| **System76**  | Linux hardware company. Natural partner for "RGB that just works on Linux."  |
+| **Framework** | Linux-first laptop. LED module integration?                                  |
 
 ### 5.3 Engaging PrismRGB / Lian Li
 
 This is the most strategic early partnership. Bliss has already reverse-engineered the Prism S, Prism 8, and Prism Mini protocols. The pitch:
 
 **What we offer Lian Li:**
+
 - First-ever Linux support for PrismRGB controllers
 - Open-source driver code (MIT/Apache-2.0) they can reference or bundle
 - Testing and bug reports from a dedicated community
 - Marketing: "PrismRGB now works on Linux" is a headline
 
 **What we ask:**
+
 - Protocol documentation (to validate our reverse engineering)
 - Test hardware for new products (before launch if possible)
 - Permission to use "PrismRGB" and "Strimer" trademarks in compatibility claims
@@ -702,6 +720,7 @@ This is the most strategic early partnership. Bliss has already reverse-engineer
 > I'm the developer of Hypercolor, an open-source RGB lighting engine for Linux. I've reverse-engineered the USB HID protocols for Prism S, Prism 8, Prism Mini, and Nollie 8, and I have working Linux drivers for all four devices.
 >
 > PrismRGB currently has zero Linux support. I'd love to collaborate to make this official. I'm offering:
+>
 > - MIT/Apache-2.0 licensed driver code you can reference freely
 > - Community testing across Linux distributions
 > - "PrismRGB Certified" status in our compatibility list
@@ -715,12 +734,14 @@ This is the most strategic early partnership. Bliss has already reverse-engineer
 WLED is the most natural ally. It's already open source, already has a massive community, and already speaks DDP/E1.31.
 
 **Integration points:**
+
 - Hypercolor's WLED backend uses DDP (480 pixels/packet, no universe management)
 - mDNS auto-discovery finds WLED devices on the network
 - WLED's JSON API for configuration (segment management, preset activation)
 - Hypercolor can act as a "WLED orchestrator" -- sync multiple WLED devices to a single effect
 
 **Community actions:**
+
 - Submit DDP improvements upstream to WLED if we find protocol edge cases
 - Write a "Hypercolor + WLED" setup guide
 - Create WLED-optimized effects (long strips, matrix panels)
@@ -785,17 +806,17 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 > "Everything proprietary tools do, but open source, Linux-native, and yours to keep."
 
-| Dimension | Closed-Source Alternative | Hypercolor |
-|---|---|---|
-| **Platform** | Windows only | Linux-first (future: cross-platform) |
-| **License** | Proprietary | MIT/Apache-2.0 |
-| **Effect compatibility** | Native | ~90% via Servo compatibility layer |
-| **Effect format** | HTML/Canvas (proprietary) | HTML/Canvas + native wgpu shaders |
-| **Performance** | 60fps (proprietary renderer) | 60fps (Servo) + 1000s fps (wgpu) |
-| **Customization** | Limited (closed source) | Infinite (modify anything) |
-| **Price** | Free tier + subscription | Free forever |
-| **Community effects** | Curated store | Open marketplace (GitHub) |
-| **Smart home** | None | Home Assistant integration |
+| Dimension                | Closed-Source Alternative    | Hypercolor                           |
+| ------------------------ | ---------------------------- | ------------------------------------ |
+| **Platform**             | Windows only                 | Linux-first (future: cross-platform) |
+| **License**              | Proprietary                  | MIT/Apache-2.0                       |
+| **Effect compatibility** | Native                       | ~90% via Servo compatibility layer   |
+| **Effect format**        | HTML/Canvas (proprietary)    | HTML/Canvas + native wgpu shaders    |
+| **Performance**          | 60fps (proprietary renderer) | 60fps (Servo) + 1000s fps (wgpu)     |
+| **Customization**        | Limited (closed source)      | Infinite (modify anything)           |
+| **Price**                | Free tier + subscription     | Free forever                         |
+| **Community effects**    | Curated store                | Open marketplace (GitHub)            |
+| **Smart home**           | None                         | Home Assistant integration           |
 
 **Key narrative:** Hypercolor doesn't need to beat closed-source tools on Windows. It needs to be **so good on Linux** that Windows users consider switching. The existence of a compelling open-source alternative creates pressure regardless.
 
@@ -809,15 +830,15 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 > "OpenRGB handles the hardware. Hypercolor handles the art."
 
-| Dimension | OpenRGB | Hypercolor |
-|---|---|---|
-| **Focus** | Hardware control | Effect rendering + orchestration |
-| **Effect system** | Basic (50 effects, C++ plugin) | Advanced (HTML/WebGL/wgpu, unlimited) |
-| **Architecture** | Monolithic C++/Qt | Modular Rust + Web |
-| **UI** | Qt desktop app | Web UI + TUI + CLI |
-| **Hardware support** | 1000+ devices | Uses OpenRGB as a backend! |
-| **Smart home** | None | Home Assistant integration |
-| **Audio** | Basic (effects plugin) | Full Lightscript audio API |
+| Dimension            | OpenRGB                        | Hypercolor                            |
+| -------------------- | ------------------------------ | ------------------------------------- |
+| **Focus**            | Hardware control               | Effect rendering + orchestration      |
+| **Effect system**    | Basic (50 effects, C++ plugin) | Advanced (HTML/WebGL/wgpu, unlimited) |
+| **Architecture**     | Monolithic C++/Qt              | Modular Rust + Web                    |
+| **UI**               | Qt desktop app                 | Web UI + TUI + CLI                    |
+| **Hardware support** | 1000+ devices                  | Uses OpenRGB as a backend!            |
+| **Smart home**       | None                           | Home Assistant integration            |
+| **Audio**            | Basic (effects plugin)         | Full Lightscript audio API            |
 
 **Strategy:** Position Hypercolor as the effect engine that sits ON TOP of OpenRGB. OpenRGB handles device enumeration and protocol translation. Hypercolor handles effect rendering, spatial mapping, and multi-device orchestration. The gRPC bridge makes this relationship explicit.
 
@@ -833,14 +854,14 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 > "Artemis tried to bring Windows RGB to Linux. Hypercolor was born here."
 
-| Dimension | Artemis | Hypercolor |
-|---|---|---|
-| **Language** | C# (.NET) | Rust |
-| **Performance** | Good (Skia) | Superior (wgpu native) |
-| **Architecture** | Desktop app | Daemon + Web UI + TUI |
-| **Effect format** | C# plugins, Lua scripts | HTML/WebGL + wgpu shaders |
-| **Linux integration** | Ported from Windows | Native (systemd, D-Bus, PipeWire) |
-| **Smart home** | None | Home Assistant integration |
+| Dimension             | Artemis                 | Hypercolor                        |
+| --------------------- | ----------------------- | --------------------------------- |
+| **Language**          | C# (.NET)               | Rust                              |
+| **Performance**       | Good (Skia)             | Superior (wgpu native)            |
+| **Architecture**      | Desktop app             | Daemon + Web UI + TUI             |
+| **Effect format**     | C# plugins, Lua scripts | HTML/WebGL + wgpu shaders         |
+| **Linux integration** | Ported from Windows     | Native (systemd, D-Bus, PipeWire) |
+| **Smart home**        | None                    | Home Assistant integration        |
 
 ### 6.5 vs. LedFx
 
@@ -852,13 +873,13 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 > "LedFx perfected audio-reactive effects. Hypercolor does audio-reactive AND everything else."
 
-| Dimension | LedFx | Hypercolor |
-|---|---|---|
-| **Scope** | Audio-reactive LEDs | All RGB use cases |
-| **Performance** | Python (adequate) | Rust (no ceiling) |
-| **Effects** | Audio-reactive only | Audio, static, screen capture, scripted |
-| **Hardware** | WLED, some others | OpenRGB + WLED + HID + Hue + plugins |
-| **UI** | React web app | SvelteKit web + Ratatui TUI + CLI |
+| Dimension       | LedFx               | Hypercolor                              |
+| --------------- | ------------------- | --------------------------------------- |
+| **Scope**       | Audio-reactive LEDs | All RGB use cases                       |
+| **Performance** | Python (adequate)   | Rust (no ceiling)                       |
+| **Effects**     | Audio-reactive only | Audio, static, screen capture, scripted |
+| **Hardware**    | WLED, some others   | OpenRGB + WLED + HID + Hue + plugins    |
+| **UI**          | React web app       | SvelteKit web + Ratatui TUI + CLI       |
 
 ### 6.6 Hypercolor's Unique Value Propositions
 
@@ -960,6 +981,7 @@ docs.hypercolor.dev (mdBook)
 **Tool:** [mdBook](https://github.com/rust-lang/mdBook) -- the same tool used by the Rust Book, the wgpu guide, and dozens of Rust projects. It's the ecosystem standard.
 
 **Why mdBook:**
+
 - Rust-native (dogfood the ecosystem)
 - Markdown source (easy to contribute)
 - Built-in search
@@ -972,6 +994,7 @@ docs.hypercolor.dev (mdBook)
 ### 7.3 Documentation Quality Bar
 
 **Every feature must have:**
+
 1. **Conceptual docs** -- What is it? Why does it exist?
 2. **Tutorial** -- Step-by-step guide to using it
 3. **Reference** -- Complete API/configuration documentation
@@ -985,15 +1008,15 @@ docs.hypercolor.dev (mdBook)
 
 **Content calendar (post-launch):**
 
-| Month | Video | Purpose |
-|---|---|---|
-| Launch | "Hypercolor: Open-Source RGB for Linux" (5 min) | Project introduction, demo reel |
-| +1 | "Setting Up Hypercolor with WLED" (10 min) | Most common use case |
-| +2 | "Create Your First Effect" (15 min) | Effect authoring tutorial |
-| +3 | "Hypercolor + OpenRGB: Full Setup" (10 min) | Complete desktop RGB |
-| +4 | "Audio-Reactive Effects Deep Dive" (15 min) | Showcase audio system |
-| +5 | "Building a Device Plugin" (20 min) | Plugin development |
-| +6 | "6 Months of Hypercolor" (10 min) | Progress update, community showcase |
+| Month  | Video                                           | Purpose                             |
+| ------ | ----------------------------------------------- | ----------------------------------- |
+| Launch | "Hypercolor: Open-Source RGB for Linux" (5 min) | Project introduction, demo reel     |
+| +1     | "Setting Up Hypercolor with WLED" (10 min)      | Most common use case                |
+| +2     | "Create Your First Effect" (15 min)             | Effect authoring tutorial           |
+| +3     | "Hypercolor + OpenRGB: Full Setup" (10 min)     | Complete desktop RGB                |
+| +4     | "Audio-Reactive Effects Deep Dive" (15 min)     | Showcase audio system               |
+| +5     | "Building a Device Plugin" (20 min)             | Plugin development                  |
+| +6     | "6 Months of Hypercolor" (10 min)               | Progress update, community showcase |
 
 **Demo GIFs:** Every effect, every feature, every device should have a demo GIF in the docs. RGB is visual -- show, don't tell.
 
@@ -1028,6 +1051,7 @@ The README is the most important marketing asset. It should:
 8. **Community links.** Discord, Discussions, contributing guide.
 
 **README anti-patterns to avoid:**
+
 - Wall of text with no visuals
 - Badges overload (keep to 5-6 max)
 - "Under construction" warnings (ship when ready)
@@ -1036,6 +1060,7 @@ The README is the most important marketing asset. It should:
 ### 8.2 Launch Strategy
 
 **Pre-launch (1-2 months before):**
+
 - Teaser posts on r/linux_gaming, r/rust: "Building an RGB engine in Rust"
 - Development blog posts on dev.to / personal blog
 - Early access Discord for testers
@@ -1043,18 +1068,19 @@ The README is the most important marketing asset. It should:
 
 **Launch day:**
 
-| Platform | Content |
-|---|---|
-| **Reddit (r/linux)** | "I built an open-source RGB lighting engine for Linux" (demo GIF + story) |
-| **Reddit (r/rust)** | "Hypercolor: wgpu + Servo for real-time RGB LED control" (technical focus) |
-| **Reddit (r/pcmasterrace)** | "RGB on Linux that doesn't suck" (visual focus, demo video) |
-| **Hacker News** | "Show HN: Hypercolor -- HTML effects engine for RGB LEDs, written in Rust" |
-| **Lobsters** | Technical announcement |
-| **Twitter/X** | Thread: problem → solution → demo → link |
-| **Mastodon** | Same thread, cross-posted to Fediverse |
-| **YouTube** | 5-minute demo video |
+| Platform                    | Content                                                                    |
+| --------------------------- | -------------------------------------------------------------------------- |
+| **Reddit (r/linux)**        | "I built an open-source RGB lighting engine for Linux" (demo GIF + story)  |
+| **Reddit (r/rust)**         | "Hypercolor: wgpu + Servo for real-time RGB LED control" (technical focus) |
+| **Reddit (r/pcmasterrace)** | "RGB on Linux that doesn't suck" (visual focus, demo video)                |
+| **Hacker News**             | "Show HN: Hypercolor -- HTML effects engine for RGB LEDs, written in Rust" |
+| **Lobsters**                | Technical announcement                                                     |
+| **Twitter/X**               | Thread: problem → solution → demo → link                                   |
+| **Mastodon**                | Same thread, cross-posted to Fediverse                                     |
+| **YouTube**                 | 5-minute demo video                                                        |
 
 **Post-launch (first month):**
+
 - Respond to EVERY GitHub issue and discussion
 - Daily presence in Discord
 - Follow-up posts on r/homeassistant, r/WLED, r/OpenRGB
@@ -1064,16 +1090,17 @@ The README is the most important marketing asset. It should:
 
 **Target conferences:**
 
-| Conference | When | Talk Angle |
-|---|---|---|
-| **FOSDEM** | February | "RGB Lighting as a Linux-First Problem" -- embedded systems devroom |
-| **Linux Plumbers Conference** | September | "USB HID RGB Device Support in Linux" -- kernel/userspace devroom |
-| **SCALE** | March | "Open Source RGB: From Reverse Engineering to Community" |
-| **RustConf** | September | "Embedding Servo for Real-Time LED Control" -- Rust ecosystem talk |
-| **FOSDEM Rust devroom** | February | "wgpu + Servo: A Dual-Path Render Engine for IoT" |
-| **All Things Open** | October | "Building Sustainable Open Source Hardware Projects" |
+| Conference                    | When      | Talk Angle                                                          |
+| ----------------------------- | --------- | ------------------------------------------------------------------- |
+| **FOSDEM**                    | February  | "RGB Lighting as a Linux-First Problem" -- embedded systems devroom |
+| **Linux Plumbers Conference** | September | "USB HID RGB Device Support in Linux" -- kernel/userspace devroom   |
+| **SCALE**                     | March     | "Open Source RGB: From Reverse Engineering to Community"            |
+| **RustConf**                  | September | "Embedding Servo for Real-Time LED Control" -- Rust ecosystem talk  |
+| **FOSDEM Rust devroom**       | February  | "wgpu + Servo: A Dual-Path Render Engine for IoT"                   |
+| **All Things Open**           | October   | "Building Sustainable Open Source Hardware Projects"                |
 
 **Talk formats:**
+
 - 25-minute technical talk with live demo (effects running on stage hardware)
 - Lightning talk (5 min) at local Rust meetups
 - Workshop (2 hours): "Build an RGB Effect in HTML" at maker events
@@ -1082,17 +1109,18 @@ The README is the most important marketing asset. It should:
 
 **Hypercolor Blog** (hosted on GitHub Pages or dev.to):
 
-| Cadence | Content Type | Example |
-|---|---|---|
-| Weekly | Development update | "This Week in Hypercolor: Prism S support lands" |
-| Bi-weekly | Technical deep dive | "How Servo Renders HTML Effects at 60fps" |
-| Monthly | Community spotlight | "Effect of the Month: Aurora Wave by neonartist42" |
-| Quarterly | Roadmap update | "Q3 2027: Where Hypercolor is Heading" |
-| As needed | Device guides | "Setting Up Your Corsair iCUE LINK with Hypercolor" |
+| Cadence   | Content Type        | Example                                             |
+| --------- | ------------------- | --------------------------------------------------- |
+| Weekly    | Development update  | "This Week in Hypercolor: Prism S support lands"    |
+| Bi-weekly | Technical deep dive | "How Servo Renders HTML Effects at 60fps"           |
+| Monthly   | Community spotlight | "Effect of the Month: Aurora Wave by neonartist42"  |
+| Quarterly | Roadmap update      | "Q3 2027: Where Hypercolor is Heading"              |
+| As needed | Device guides       | "Setting Up Your Corsair iCUE LINK with Hypercolor" |
 
 ### 8.5 Social Media Presence
 
 **Channels:**
+
 - **GitHub** (primary) -- All development, all discussions, all releases
 - **Discord** -- Community hub, real-time chat
 - **YouTube** -- Demo videos, tutorials, conference talks
@@ -1110,26 +1138,31 @@ A curated `awesome-hypercolor` repository:
 # Awesome Hypercolor
 
 ## Effects
+
 - [Aurora Wave](link) - Northern lights simulation with audio reactivity
 - [Neon Grid](link) - Retrowave grid effect with beat detection
 - ...
 
 ## Plugins
+
 - [Nanoleaf Backend](link) - Control Nanoleaf panels
 - [MIDI Input](link) - Use MIDI controllers for effect parameters
 - ...
 
 ## Setups
+
 - [Full Tower + WLED Strips](link) - u/gamer42's battlestation with Hypercolor
 - [Server Rack Ambient](link) - Headless Hypercolor on a homelab
 - ...
 
 ## Guides & Tutorials
+
 - [Hypercolor + Home Assistant](link) - Room-wide RGB automation
 - [Writing WebGL Effects with Three.js](link) - Advanced effect tutorial
 - ...
 
 ## Tools
+
 - [Effect Preview Tool](link) - Browser-based effect previewer
 - [Layout Exporter](link) - Export spatial layouts to JSON
 - ...
@@ -1147,30 +1180,31 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 
 **Year 2: Community Funding**
 
-| Source | Platform | Target |
-|---|---|---|
+| Source                  | Platform        | Target        |
+| ----------------------- | --------------- | ------------- |
 | **Individual sponsors** | GitHub Sponsors | $500-2K/month |
-| **Community fund** | Open Collective | $200-1K/month |
+| **Community fund**      | Open Collective | $200-1K/month |
 
 **Sponsor tiers (GitHub Sponsors):**
 
-| Tier | Amount | Perks |
-|---|---|---|
-| **Pixel** | $2/mo | Name in SPONSORS.md, sponsor badge on Discord |
-| **LED** | $5/mo | Above + early access to beta releases |
-| **Strip** | $15/mo | Above + vote on feature priorities |
-| **Controller** | $50/mo | Above + monthly 1:1 with maintainer (15 min) |
-| **Rig** | $200/mo | Logo in README, priority support, dedicated Discord channel |
+| Tier           | Amount  | Perks                                                       |
+| -------------- | ------- | ----------------------------------------------------------- |
+| **Pixel**      | $2/mo   | Name in SPONSORS.md, sponsor badge on Discord               |
+| **LED**        | $5/mo   | Above + early access to beta releases                       |
+| **Strip**      | $15/mo  | Above + vote on feature priorities                          |
+| **Controller** | $50/mo  | Above + monthly 1:1 with maintainer (15 min)                |
+| **Rig**        | $200/mo | Logo in README, priority support, dedicated Discord channel |
 
 **Year 3+: Corporate Sponsors**
 
-| Sponsor Type | What They Get | What They Pay |
-|---|---|---|
-| **Hardware manufacturers** | "Works with Hypercolor" testing, logo placement | Hardware donations + $500-5K/mo |
-| **Linux distros** | Package maintenance priority, integration testing | In-kind (packaging, CI infrastructure) |
-| **Cloud/infra companies** | Logo in README, conference sponsorship credit | CI infrastructure + $1-5K/mo |
+| Sponsor Type               | What They Get                                     | What They Pay                          |
+| -------------------------- | ------------------------------------------------- | -------------------------------------- |
+| **Hardware manufacturers** | "Works with Hypercolor" testing, logo placement   | Hardware donations + $500-5K/mo        |
+| **Linux distros**          | Package maintenance priority, integration testing | In-kind (packaging, CI infrastructure) |
+| **Cloud/infra companies**  | Logo in README, conference sponsorship credit     | CI infrastructure + $1-5K/mo           |
 
 **What funding pays for:**
+
 - CI infrastructure (build times for Servo are significant)
 - Test hardware acquisition (devices for compatibility testing)
 - Conference travel
@@ -1190,6 +1224,7 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 5. **Say no.** Not every feature request is valid. Not every issue is a bug. "Won't fix" is a complete sentence (with a brief explanation).
 
 **Burnout early warning signs:**
+
 - Dreading GitHub notifications
 - Snapping at contributors
 - PRs sitting unreviewed for > 2 weeks
@@ -1204,19 +1239,20 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 
 **Mitigation strategies:**
 
-| Action | Timeline |
-|---|---|
-| Architecture docs are comprehensive and current | Day 1 (already done) |
-| Build system works on a clean clone with `cargo build` | Day 1 |
-| CI produces release artifacts automatically | Month 1 |
-| Second person has admin access to GitHub org | Month 3 |
-| Two people can cut a release | Month 6 |
-| Three people can review and merge PRs | Year 1 |
-| Succession plan documented | Year 1 |
+| Action                                                 | Timeline             |
+| ------------------------------------------------------ | -------------------- |
+| Architecture docs are comprehensive and current        | Day 1 (already done) |
+| Build system works on a clean clone with `cargo build` | Day 1                |
+| CI produces release artifacts automatically            | Month 1              |
+| Second person has admin access to GitHub org           | Month 3              |
+| Two people can cut a release                           | Month 6              |
+| Three people can review and merge PRs                  | Year 1               |
+| Succession plan documented                             | Year 1               |
 
 **Succession plan template:**
 
 > If hyperb1iss becomes permanently unavailable, the project transitions to:
+>
 > 1. [Co-maintainer] assumes lead maintainer role
 > 2. GitHub org ownership transfers via GitHub's dormant account policy
 > 3. The project continues under the same license and governance model
@@ -1225,12 +1261,14 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 ### 9.4 Versioning & LTS Strategy
 
 **Pre-1.0 (`0.x.y`):**
+
 - Breaking changes allowed between minor versions
 - No LTS promises
 - Move fast, learn, iterate
 - Clearly communicate: "This is pre-1.0 software. APIs will change."
 
 **Post-1.0 (`x.y.z`):**
+
 - Semantic versioning strictly enforced
 - Major version = breaking changes (effect API, plugin WIT, config format)
 - Minor version = new features, backward compatible
@@ -1238,11 +1276,11 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 
 **LTS policy (post-1.0):**
 
-| Track | Support Window | Purpose |
-|---|---|---|
-| **Current** | 6 weeks | Latest features |
-| **LTS** | 12 months | Distro packagers, stable deployments |
-| **Security** | 24 months | Critical security fixes only |
+| Track        | Support Window | Purpose                              |
+| ------------ | -------------- | ------------------------------------ |
+| **Current**  | 6 weeks        | Latest features                      |
+| **LTS**      | 12 months      | Distro packagers, stable deployments |
+| **Security** | 24 months      | Critical security fixes only         |
 
 **Target: reach 1.0 within 18 months of first public release.** The effect API, plugin WIT interface, and configuration format should be stable by then.
 
@@ -1256,54 +1294,54 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 
 ### 10.2 Growth Metrics
 
-| Metric | Year 1 Target | Year 3 Target | Year 5 Target |
-|---|---|---|---|
-| **GitHub stars** | 2,000 | 10,000 | 25,000 |
-| **Contributors** (all-time) | 30 | 150 | 500 |
-| **Monthly active contributors** | 5-10 | 20-40 | 50-100 |
-| **Package downloads** (monthly) | 500 | 5,000 | 20,000 |
-| **Discord/Matrix members** | 500 | 3,000 | 10,000 |
+| Metric                          | Year 1 Target | Year 3 Target | Year 5 Target |
+| ------------------------------- | ------------- | ------------- | ------------- |
+| **GitHub stars**                | 2,000         | 10,000        | 25,000        |
+| **Contributors** (all-time)     | 30            | 150           | 500           |
+| **Monthly active contributors** | 5-10          | 20-40         | 50-100        |
+| **Package downloads** (monthly) | 500           | 5,000         | 20,000        |
+| **Discord/Matrix members**      | 500           | 3,000         | 10,000        |
 
 ### 10.3 Ecosystem Metrics
 
-| Metric | Year 1 Target | Year 3 Target | Year 5 Target |
-|---|---|---|---|
-| **Marketplace effects** | 30 | 200 | 1,000 |
-| **Community plugins** | 0 (Phase 2 not started) | 15 | 50 |
-| **Supported devices** (unique models) | 20 | 100 | 300 |
-| **Device backends** | 4 (WLED, HID, OpenRGB, Hue) | 8 | 15 |
+| Metric                                | Year 1 Target               | Year 3 Target | Year 5 Target |
+| ------------------------------------- | --------------------------- | ------------- | ------------- |
+| **Marketplace effects**               | 30                          | 200           | 1,000         |
+| **Community plugins**                 | 0 (Phase 2 not started)     | 15            | 50            |
+| **Supported devices** (unique models) | 20                          | 100           | 300           |
+| **Device backends**                   | 4 (WLED, HID, OpenRGB, Hue) | 8             | 15            |
 
 ### 10.4 Quality Metrics
 
-| Metric | Target | How to Measure |
-|---|---|---|
-| **First PR review time** | < 48 hours | GitHub metrics |
-| **Issue response time** | < 1 week | GitHub metrics |
-| **CI pass rate** | > 95% | GitHub Actions dashboard |
-| **Release cadence adherence** | No missed stable releases | Calendar |
-| **Documentation coverage** | 100% of public APIs | Doc coverage tooling |
+| Metric                        | Target                    | How to Measure           |
+| ----------------------------- | ------------------------- | ------------------------ |
+| **First PR review time**      | < 48 hours                | GitHub metrics           |
+| **Issue response time**       | < 1 week                  | GitHub metrics           |
+| **CI pass rate**              | > 95%                     | GitHub Actions dashboard |
+| **Release cadence adherence** | No missed stable releases | Calendar                 |
+| **Documentation coverage**    | 100% of public APIs       | Doc coverage tooling     |
 
 ### 10.5 Community Health Metrics
 
-| Metric | Target | Red Flag |
-|---|---|---|
-| **New contributor retention** | 30% make a second PR | < 10% = onboarding problem |
-| **Issue close rate** | 70% of issues closed within 30 days | < 50% = overwhelmed |
-| **Discussion engagement** | 5+ replies per discussion (avg) | < 2 = dead community |
-| **Discord daily active users** | 10% of total members | < 5% = ghost town |
-| **Contributor diversity** | 20%+ non-male contributors | Track but don't publicize |
+| Metric                         | Target                              | Red Flag                   |
+| ------------------------------ | ----------------------------------- | -------------------------- |
+| **New contributor retention**  | 30% make a second PR                | < 10% = onboarding problem |
+| **Issue close rate**           | 70% of issues closed within 30 days | < 50% = overwhelmed        |
+| **Discussion engagement**      | 5+ replies per discussion (avg)     | < 2 = dead community       |
+| **Discord daily active users** | 10% of total members                | < 5% = ghost town          |
+| **Contributor diversity**      | 20%+ non-male contributors          | Track but don't publicize  |
 
 ### 10.6 Competitive Position Metrics
 
-| Milestone | When | Significance |
-|---|---|---|
-| **"Mentioned in OpenRGB discussions"** | Month 3 | Awareness in target community |
-| **"Included in distro repos"** (AUR, Nix) | Month 6 | Package ecosystem presence |
-| **"Recommended on r/linux_gaming"** | Year 1 | Community endorsement |
-| **"More GitHub stars than Artemis"** | Year 2 | Overtaking closest competitor |
-| **"Hardware manufacturer acknowledges us"** | Year 2 | Industry recognition |
-| **"Default RGB recommendation for Linux"** | Year 3 | Category leadership |
-| **"Windows RGB users cite us as reason to try Linux"** | Year 5 | Platform-shifting influence |
+| Milestone                                              | When    | Significance                  |
+| ------------------------------------------------------ | ------- | ----------------------------- |
+| **"Mentioned in OpenRGB discussions"**                 | Month 3 | Awareness in target community |
+| **"Included in distro repos"** (AUR, Nix)              | Month 6 | Package ecosystem presence    |
+| **"Recommended on r/linux_gaming"**                    | Year 1  | Community endorsement         |
+| **"More GitHub stars than Artemis"**                   | Year 2  | Overtaking closest competitor |
+| **"Hardware manufacturer acknowledges us"**            | Year 2  | Industry recognition          |
+| **"Default RGB recommendation for Linux"**             | Year 3  | Category leadership           |
+| **"Windows RGB users cite us as reason to try Linux"** | Year 5  | Platform-shifting influence   |
 
 ---
 
@@ -1396,6 +1434,7 @@ Hypercolor succeeds when the question "How do I control RGB on Linux?" has one a
 Not because it's the only option, but because it's the obvious one. The way Home Assistant is the obvious answer for open-source home automation. The way VS Code became the obvious editor. The way Blender became the obvious 3D tool.
 
 The path:
+
 1. **Solve the pain** (RGB on Linux sucks → Hypercolor fixes it)
 2. **Build the community** (contributors, effect authors, plugin developers)
 3. **Win the ecosystem** (hardware partnerships, distro integration, smart home)
@@ -1405,4 +1444,4 @@ Hypercolor isn't just software. It's the argument that open source can do creati
 
 ---
 
-*Design document authored for the Hypercolor project, March 2026.*
+_Design document authored for the Hypercolor project, March 2026._

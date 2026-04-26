@@ -62,17 +62,17 @@ The rest of this document shows the work.
 Rust has three WASM targets that matter. Picking the right one is the first
 decision effect authors will make.
 
-| Target | Tier | Stdlib | Use Case |
-|---|---|---|---|
+| Target                   | Tier                   | Stdlib                                  | Use Case                                               |
+| ------------------------ | ---------------------- | --------------------------------------- | ------------------------------------------------------ |
 | `wasm32-unknown-unknown` | Tier 2 with host tools | Partial (many functions panic or no-op) | Browser-style raw-export modules, Extism-style plugins |
-| `wasm32-wasip1` | Tier 2 with host tools | Full (WASI preview 1 syscalls) | Legacy WASI host integration |
-| `wasm32-wasip2` | Tier 2 | Full (WASI preview 2, Component Model) | 2026 default for components |
-| `wasm32v1-none` | Tier 2 | `core` + `alloc` only | Embedded-style, stable `no_std`, smallest binaries |
+| `wasm32-wasip1`          | Tier 2 with host tools | Full (WASI preview 1 syscalls)          | Legacy WASI host integration                           |
+| `wasm32-wasip2`          | Tier 2                 | Full (WASI preview 2, Component Model)  | 2026 default for components                            |
+| `wasm32v1-none`          | Tier 2                 | `core` + `alloc` only                   | Embedded-style, stable `no_std`, smallest binaries     |
 
 Rust 1.82 made `wasm32-wasip2` a native rustc target, meaning plain `cargo
 build --target wasm32-wasip2` emits a Component Model component. You no
 longer need `cargo-component` unless you have custom (non-WASI) WIT
-interfaces, which Hypercolor does. For Hypercolor effects we *do* have a
+interfaces, which Hypercolor does. For Hypercolor effects we _do_ have a
 custom WIT world (our `effect` interface), so `cargo-component` or the
 `wit-bindgen::generate!` macro is still the right entry point.
 
@@ -270,7 +270,7 @@ There are three credible toolchains. The choice is unambiguous for us:
 - **`wasi-sdk`** (clang + LLVM, maintained by the Bytecode Alliance). The
   right answer for server / daemon-hosted wasm. Produces a standalone
   `.wasm` with no JS glue. Latest wasi-sdk releases target the `wasm32-
-  wasip2` triple and support reactor-mode components via
+wasip2` triple and support reactor-mode components via
   `-mexec-model=reactor`. This is what Hypercolor should document.
 - **Emscripten** is focused on the browser + Node case. Emits JS glue.
   Wrong tool for our host.
@@ -336,7 +336,7 @@ and Rust raw-export authors use.
 
 AssemblyScript is healthy: ~50k weekly npm installs, 29k GitHub projects
 use it, and the compiler continues to ship updates under active
-maintenance. What it is *not* is part of the Bytecode Alliance standards
+maintenance. What it is _not_ is part of the Bytecode Alliance standards
 track. Starting in v0.21 the project removed first-party WASI support from
 its stdlib and published a standards-objections document explaining why it
 views WASI and the Component Model as problematic for open standards. The
@@ -398,27 +398,38 @@ const H: u32 = 200;
 const BYTES: u32 = W * H * 4;
 const canvas = new Uint8Array(BYTES);
 
-export function canvasPtr(): usize { return changetype<usize>(canvas.buffer); }
-export function canvasLen(): u32 { return BYTES; }
-
-export function render(timeMs: u32, audioRms: f32): void {
-    const t: f32 = <f32>timeMs / 1000.0;
-    for (let y: u32 = 0; y < H; y++) {
-        for (let x: u32 = 0; x < W; x++) {
-            const hue: f32 = ((<f32>x / <f32>W) + t * 0.25) % 1.0;
-            const v: f32 = 0.5 + 0.5 * audioRms * Mathf.sin(Mathf.PI * 2 * <f32>y / <f32>H);
-            const rgb = hsvToRgb(hue, 1.0, v);
-            const i = (y * W + x) * 4;
-            canvas[i + 0] = rgb.r;
-            canvas[i + 1] = rgb.g;
-            canvas[i + 2] = rgb.b;
-            canvas[i + 3] = 255;
-        }
-    }
+export function canvasPtr(): usize {
+  return changetype<usize>(canvas.buffer);
+}
+export function canvasLen(): u32 {
+  return BYTES;
 }
 
-class RGB { r: u8 = 0; g: u8 = 0; b: u8 = 0; }
-function hsvToRgb(h: f32, s: f32, v: f32): RGB { /* ... */ return new RGB(); }
+export function render(timeMs: u32, audioRms: f32): void {
+  const t: f32 = <f32>timeMs / 1000.0;
+  for (let y: u32 = 0; y < H; y++) {
+    for (let x: u32 = 0; x < W; x++) {
+      const hue: f32 = (<f32>x / <f32>W + t * 0.25) % 1.0;
+      const v: f32 =
+        0.5 + 0.5 * audioRms * Mathf.sin((Mathf.PI * 2 * <f32>y) / <f32>H);
+      const rgb = hsvToRgb(hue, 1.0, v);
+      const i = (y * W + x) * 4;
+      canvas[i + 0] = rgb.r;
+      canvas[i + 1] = rgb.g;
+      canvas[i + 2] = rgb.b;
+      canvas[i + 3] = 255;
+    }
+  }
+}
+
+class RGB {
+  r: u8 = 0;
+  g: u8 = 0;
+  b: u8 = 0;
+}
+function hsvToRgb(h: f32, s: f32, v: f32): RGB {
+  /* ... */ return new RGB();
+}
 ```
 
 Notice this is "TypeScript you squinted at": types are stricter (`u32`,
@@ -530,7 +541,7 @@ A "hello world that adds two numbers" is ~8 MB. This is not a
 "JavaScript is slow" problem; it is a "we bundled a full JS engine into
 each effect" problem. The Bytecode Alliance roadmap explicitly plans to
 let components share a single SpiderMonkey embedding so that N effects
-cost 8 MB plus N * (user code), but that is not shipped today.
+cost 8 MB plus N \* (user code), but that is not shipped today.
 
 For Hypercolor, which wants ~100-500 effects in a library, this would
 mean ~0.8-4 GB of redundant JS engine binaries. Not viable.
@@ -546,21 +557,25 @@ the tradeoff would be fine; at scale it is not.
 
 ```javascript
 // componentize-js componentize effect.js -w wit/effect.wit -o effect.wasm
-const W = 320, H = 200;
+const W = 320,
+  H = 200;
 const canvas = new Uint8Array(W * H * 4);
 
 export function render(timeMs, audioRms) {
-    const t = timeMs / 1000;
-    for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++) {
-            const hue = ((x / W) + t * 0.25) % 1;
-            const v = 0.5 + 0.5 * audioRms * Math.sin(2 * Math.PI * y / H);
-            const [r, g, b] = hsvToRgb(hue, 1, v);
-            const i = (y * W + x) * 4;
-            canvas[i] = r; canvas[i+1] = g; canvas[i+2] = b; canvas[i+3] = 255;
-        }
+  const t = timeMs / 1000;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const hue = (x / W + t * 0.25) % 1;
+      const v = 0.5 + 0.5 * audioRms * Math.sin((2 * Math.PI * y) / H);
+      const [r, g, b] = hsvToRgb(hue, 1, v);
+      const i = (y * W + x) * 4;
+      canvas[i] = r;
+      canvas[i + 1] = g;
+      canvas[i + 2] = b;
+      canvas[i + 3] = 255;
     }
-    return canvas;
+  }
+  return canvas;
 }
 ```
 
@@ -646,7 +661,7 @@ That is it. The whole file.
   defaulting to 320x200)
 - `hypercolor_canvas_ptr()` / `hypercolor_canvas_len()` exports
 - `hypercolor_render(time_ms: u32, audio_ptr: *const u8, audio_len: u32,
-  ...)` that decodes the `FrameInput` struct from linear memory, calls
+...)` that decodes the `FrameInput` struct from linear memory, calls
   the user's `render`, and returns
 - A `#[panic_handler]` that logs via a host import and traps
 - A `wasm_bindgen`-style extern block for the 2-3 host functions we
@@ -661,7 +676,7 @@ That is it. The whole file.
 - `Color`, `hsv()`, `oklab()`, gradient helpers (we want perceptual color
   available by default, LEDs look awful with naive sRGB)
 - `FrameInput` mirroring the daemon's struct, with `.audio.rms`, `.audio.
-  spectrum(band)`, `.interaction.pointer`, etc.
+spectrum(band)`, `.interaction.pointer`, etc.
 - `#[effect(controls(speed(0.0..=1.0), palette("rainbow")))]` for declaring
   user-tweakable controls; the macro emits both runtime accessors and
   manifest metadata
@@ -679,8 +694,8 @@ do to make Rust-authored effects pleasant.
 ### Parallel for other languages
 
 - AssemblyScript: publish `@hypercolor/effect-sdk` on npm, a `.d.ts`
-  + tiny runtime mirror of the same API. `import { effect, hsv } from
-  '@hypercolor/effect-sdk'` with the same shape.
+  - tiny runtime mirror of the same API. `import { effect, hsv } from
+'@hypercolor/effect-sdk'` with the same shape.
 - Zig: a `hypercolor_effect.zig` that can be `@import`ed; provides
   `Canvas`, `hsv`, export macros via Zig comptime.
 - C: a `hypercolor_effect.h` single-header. Old-school but inevitable.
@@ -743,16 +758,16 @@ loaded module implements.
 
 ### Edit-save-reload loop speed
 
-| Language | Cold build | Incremental | Notes |
-|---|---|---|---|
-| AssemblyScript | ~2 s | **~200 ms** | Fastest by a large margin |
-| Zig | ~1-3 s | ~500 ms | LLVM-based but small input |
-| C (wasi-sdk) | ~1-2 s | ~300 ms | Clang is fast on small files |
-| Rust (debug) | ~8-15 s | ~2-4 s | LLVM + generics + monomorphization |
-| Rust (release) | ~20-40 s | ~5-10 s | LTO and `opt-z` cost time |
-| TinyGo | ~5-15 s | ~3-8 s | Full link every time |
-| ComponentizeJS | ~5 s | ~2 s | Wizer snapshot dominates |
-| componentize-py | ~10-20 s | ~5-10 s | Bundling CPython is slow |
+| Language        | Cold build | Incremental | Notes                              |
+| --------------- | ---------- | ----------- | ---------------------------------- |
+| AssemblyScript  | ~2 s       | **~200 ms** | Fastest by a large margin          |
+| Zig             | ~1-3 s     | ~500 ms     | LLVM-based but small input         |
+| C (wasi-sdk)    | ~1-2 s     | ~300 ms     | Clang is fast on small files       |
+| Rust (debug)    | ~8-15 s    | ~2-4 s      | LLVM + generics + monomorphization |
+| Rust (release)  | ~20-40 s   | ~5-10 s     | LTO and `opt-z` cost time          |
+| TinyGo          | ~5-15 s    | ~3-8 s      | Full link every time               |
+| ComponentizeJS  | ~5 s       | ~2 s        | Wizer snapshot dominates           |
+| componentize-py | ~10-20 s   | ~5-10 s     | Bundling CPython is slow           |
 
 For "save and see LEDs respond instantly" the daemon needs to watch the
 effect `.wasm` directory, re-instantiate on change, and swap atomically.
@@ -796,16 +811,16 @@ significant DX win.
 Realistic sizes for a ~200 LOC effect with color math, no external
 dependencies, compiled release + optimized:
 
-| Language | Typical .wasm | With `wasm-opt -Oz` | Verdict |
-|---|---|---|---|
-| Zig (`ReleaseSmall`) | 1-3 KB | 1-2 KB | Champion |
-| AssemblyScript (`release`, `minimal` runtime) | 3-10 KB | 3-7 KB | Excellent |
-| C (`wasi-sdk`, `-O2`) | 10-30 KB | 6-20 KB | Excellent |
-| Rust (`opt-z`, LTO, `panic=abort`) | 30-80 KB | 20-60 KB | Good |
-| Rust (component with WASI adapter) | 90-180 KB | 70-140 KB | Acceptable |
-| TinyGo (`-opt=z`, `-no-debug`) | 100-400 KB | 80-300 KB | Tolerable |
-| ComponentizeJS | ~8 MB | ~8 MB | Unacceptable for a library |
-| componentize-py | ~35 MB | ~35 MB | Unacceptable |
+| Language                                      | Typical .wasm | With `wasm-opt -Oz` | Verdict                    |
+| --------------------------------------------- | ------------- | ------------------- | -------------------------- |
+| Zig (`ReleaseSmall`)                          | 1-3 KB        | 1-2 KB              | Champion                   |
+| AssemblyScript (`release`, `minimal` runtime) | 3-10 KB       | 3-7 KB              | Excellent                  |
+| C (`wasi-sdk`, `-O2`)                         | 10-30 KB      | 6-20 KB             | Excellent                  |
+| Rust (`opt-z`, LTO, `panic=abort`)            | 30-80 KB      | 20-60 KB            | Good                       |
+| Rust (component with WASI adapter)            | 90-180 KB     | 70-140 KB           | Acceptable                 |
+| TinyGo (`-opt=z`, `-no-debug`)                | 100-400 KB    | 80-300 KB           | Tolerable                  |
+| ComponentizeJS                                | ~8 MB         | ~8 MB               | Unacceptable for a library |
+| componentize-py                               | ~35 MB        | ~35 MB              | Unacceptable               |
 
 A **target effect size ceiling of 500 KB** covers everything except
 Python and JavaScript and reflects what distribution looks like if we

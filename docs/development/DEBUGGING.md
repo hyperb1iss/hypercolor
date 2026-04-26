@@ -38,12 +38,12 @@ hypercolor diagnose [OPTIONS]
 
 ### Flags
 
-| Flag | Type | Description |
-|------|------|-------------|
+| Flag              | Type       | Description                                                                                         |
+| ----------------- | ---------- | --------------------------------------------------------------------------------------------------- |
 | `--check <CHECK>` | repeatable | Run specific check(s) only. Values: `daemon`, `devices`, `audio`, `render`, `config`, `permissions` |
-| `--report <PATH>` | path | Write full diagnostic JSON to a file (for bug reports) |
-| `--system` | bool | Include verbose system info (GPU, kernel, audio version) |
-| `--format <FMT>` | enum | Output format: `table` (default), `plain`, `json` |
+| `--report <PATH>` | path       | Write full diagnostic JSON to a file (for bug reports)                                              |
+| `--system`        | bool       | Include verbose system info (GPU, kernel, audio version)                                            |
+| `--format <FMT>`  | enum       | Output format: `table` (default), `plain`, `json`                                                   |
 
 ### Examples
 
@@ -80,11 +80,11 @@ Table mode uses SilkCircuit-colored status icons:
   Summary: 4 passed, 0 warnings, 0 failed
 ```
 
-| Icon | Color | Meaning |
-|------|-------|---------|
-| ✓ | `#50fa7b` (Success Green) | Pass |
-| ! | `#f1fa8c` (Electric Yellow) | Warning |
-| ✗ | `#ff6363` (Error Red) | Fail |
+| Icon | Color                       | Meaning |
+| ---- | --------------------------- | ------- |
+| ✓    | `#50fa7b` (Success Green)   | Pass    |
+| !    | `#f1fa8c` (Electric Yellow) | Warning |
+| ✗    | `#ff6363` (Error Red)       | Fail    |
 
 ---
 
@@ -106,14 +106,14 @@ cargo run -p hypercolor-daemon --bin hypercolor-debug -- <COMMAND> [OPTIONS]
 
 Continuously scans for devices and reacts to USB hotplug events.
 
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--backends <LIST>` | comma-separated | `usb,smbus` | Backends to scan: `usb`, `smbus`, `wled` |
-| `--interval-secs <N>` | u64 | `5` | Periodic scan interval |
-| `--duration-secs <N>` | u64 | ∞ | Auto-stop after N seconds |
-| `--no-hotplug` | bool | `false` | Disable USB hotplug-triggered rescans |
-| `--timeout-ms <N>` | u64 | `10000` | Network scanner timeout (WLED) |
-| `--log-level <LVL>` | string | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
+| Flag                  | Type            | Default     | Description                                          |
+| --------------------- | --------------- | ----------- | ---------------------------------------------------- |
+| `--backends <LIST>`   | comma-separated | `usb,smbus` | Backends to scan: `usb`, `smbus`, `wled`             |
+| `--interval-secs <N>` | u64             | `5`         | Periodic scan interval                               |
+| `--duration-secs <N>` | u64             | ∞           | Auto-stop after N seconds                            |
+| `--no-hotplug`        | bool            | `false`     | Disable USB hotplug-triggered rescans                |
+| `--timeout-ms <N>`    | u64             | `10000`     | Network scanner timeout (WLED)                       |
+| `--log-level <LVL>`   | string          | `info`      | Log level: `trace`, `debug`, `info`, `warn`, `error` |
 
 ### Examples
 
@@ -230,12 +230,12 @@ Setting `system: true` adds uptime information.
 
 #### Available Checks
 
-| Check | Category | What It Tests |
-|-------|----------|---------------|
-| `daemon` | system | Daemon version and running status |
-| `render` | render | Render loop state and performance tier |
-| `devices` | devices | Device registry count |
-| `config` | config | Config manager availability (vs default/test state) |
+| Check     | Category | What It Tests                                       |
+| --------- | -------- | --------------------------------------------------- |
+| `daemon`  | system   | Daemon version and running status                   |
+| `render`  | render   | Render loop state and performance tier              |
+| `devices` | devices  | Device registry count                               |
+| `config`  | config   | Config manager availability (vs default/test state) |
 
 #### Status Values
 
@@ -300,11 +300,11 @@ curl -s -X POST http://localhost:9420/api/v1/devices/abc123/identify \
 
 ### Other Useful Device Endpoints
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/v1/devices` | GET | List all connected devices with state, zones, LED count |
-| `/api/v1/devices/{id}` | GET | Single device detail |
-| `/api/v1/devices/discover` | POST | Trigger a discovery scan |
+| Endpoint                   | Method | Purpose                                                 |
+| -------------------------- | ------ | ------------------------------------------------------- |
+| `/api/v1/devices`          | GET    | List all connected devices with state, zones, LED count |
+| `/api/v1/devices/{id}`     | GET    | Single device detail                                    |
+| `/api/v1/devices/discover` | POST   | Trigger a discovery scan                                |
 
 ---
 
@@ -319,13 +319,13 @@ performance metrics, and REST-equivalent command execution.
 
 ### Channels
 
-| Channel | Default | Description | Config Options |
-|---------|---------|-------------|----------------|
-| `events` | subscribed | System events and state changes | — |
-| `frames` | unsubscribed | Per-zone LED color frames | `fps` (1-60), `format` (binary/json), `zones` |
-| `spectrum` | unsubscribed | Audio spectrum data | `fps` (1-60), `bins` (8/16/32/64/128) |
-| `canvas` | unsubscribed | Rendered effect canvas pixels | `fps` (1-60), `format` (rgb/rgba) |
-| `metrics` | unsubscribed | Performance metrics snapshots | `interval_ms` (100-10000) |
+| Channel    | Default      | Description                     | Config Options                                |
+| ---------- | ------------ | ------------------------------- | --------------------------------------------- |
+| `events`   | subscribed   | System events and state changes | —                                             |
+| `frames`   | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `format` (binary/json), `zones` |
+| `spectrum` | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
+| `canvas`   | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
+| `metrics`  | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)                     |
 
 ### Client → Server Messages
 
@@ -382,7 +382,14 @@ performance metrics, and REST-equivalent command execution.
     "device_count": 5,
     "total_leds": 1200
   },
-  "capabilities": ["frames", "spectrum", "events", "canvas", "metrics", "commands"],
+  "capabilities": [
+    "frames",
+    "spectrum",
+    "events",
+    "canvas",
+    "metrics",
+    "commands"
+  ],
   "subscriptions": ["events"]
 }
 ```
@@ -406,7 +413,12 @@ performance metrics, and REST-equivalent command execution.
   "timestamp": "2026-03-08T10:30:45.123Z",
   "data": {
     "fps": { "target": 60, "actual": 59.8, "dropped": 0 },
-    "frame_time": { "avg_ms": 16.8, "p95_ms": 18.2, "p99_ms": 19.1, "max_ms": 22.3 },
+    "frame_time": {
+      "avg_ms": 16.8,
+      "p95_ms": 18.2,
+      "p99_ms": 19.1,
+      "max_ms": 22.3
+    },
     "stages": {
       "input_sampling_ms": 2.1,
       "effect_rendering_ms": 5.3,
@@ -414,7 +426,11 @@ performance metrics, and REST-equivalent command execution.
       "device_output_ms": 8.2,
       "event_bus_ms": 0.1
     },
-    "memory": { "daemon_rss_mb": 45.2, "servo_rss_mb": 128.5, "canvas_buffer_kb": 512 },
+    "memory": {
+      "daemon_rss_mb": 45.2,
+      "servo_rss_mb": 128.5,
+      "canvas_buffer_kb": 512
+    },
     "devices": { "connected": 5, "total_leds": 1200, "output_errors": 0 },
     "websocket": { "client_count": 2, "bytes_sent_per_sec": 1024.5 }
   }
@@ -458,11 +474,11 @@ performance metrics, and REST-equivalent command execution.
 
 ### Connection Parameters
 
-| Parameter | Value |
-|-----------|-------|
-| Buffer size | 64 events per client |
-| Ping interval | 30 seconds |
-| Pong timeout | 10 seconds |
+| Parameter         | Value                                             |
+| ----------------- | ------------------------------------------------- |
+| Buffer size       | 64 events per client                              |
+| Ping interval     | 30 seconds                                        |
+| Pong timeout      | 10 seconds                                        |
 | Overflow behavior | Binary frames dropped (backpressure warning sent) |
 
 ### Quick Test with websocat
@@ -487,22 +503,22 @@ programmatic control over the lighting system.
 
 ### Tool Inventory
 
-| Tool | Read-Only | Description |
-|------|-----------|-------------|
-| `set_effect` | no | Apply a lighting effect (supports fuzzy/natural language matching) |
-| `list_effects` | yes | Browse the effect library with category/audio filters |
-| `stop_effect` | no | Stop the current effect |
-| `set_color` | no | Set a static color on devices |
-| `get_devices` | yes | List connected devices |
-| `set_brightness` | no | Set brightness (0-100) |
-| `get_status` | yes | Current daemon state snapshot |
-| `activate_scene` | no | Activate a saved scene |
-| `list_scenes` | yes | List available scenes |
-| `create_scene` | no | Create a new scene from current state |
-| `get_audio_state` | yes | Audio input and spectrum data |
-| `set_profile` | no | Switch device profile |
-| `get_layout` | yes | Current layout mapping |
-| **`diagnose`** | **yes** | **System/device diagnostics** |
+| Tool              | Read-Only | Description                                                        |
+| ----------------- | --------- | ------------------------------------------------------------------ |
+| `set_effect`      | no        | Apply a lighting effect (supports fuzzy/natural language matching) |
+| `list_effects`    | yes       | Browse the effect library with category/audio filters              |
+| `stop_effect`     | no        | Stop the current effect                                            |
+| `set_color`       | no        | Set a static color on devices                                      |
+| `get_devices`     | yes       | List connected devices                                             |
+| `set_brightness`  | no        | Set brightness (0-100)                                             |
+| `get_status`      | yes       | Current daemon state snapshot                                      |
+| `activate_scene`  | no        | Activate a saved scene                                             |
+| `list_scenes`     | yes       | List available scenes                                              |
+| `create_scene`    | no        | Create a new scene from current state                              |
+| `get_audio_state` | yes       | Audio input and spectrum data                                      |
+| `set_profile`     | no        | Switch device profile                                              |
+| `get_layout`      | yes       | Current layout mapping                                             |
+| **`diagnose`**    | **yes**   | **System/device diagnostics**                                      |
 
 ### `diagnose` Tool (Detail)
 
@@ -514,7 +530,14 @@ or a specific device.
 ```json
 {
   "device_id": "optional-device-id",
-  "checks": ["connectivity", "latency", "frame_delivery", "color_accuracy", "protocol", "all"]
+  "checks": [
+    "connectivity",
+    "latency",
+    "frame_delivery",
+    "color_accuracy",
+    "protocol",
+    "all"
+  ]
 }
 ```
 
@@ -558,13 +581,13 @@ library code.
 
 ### Log Levels
 
-| Level | When to Use |
-|-------|-------------|
-| `trace` | Extremely verbose: every packet, every frame, every internal state transition |
+| Level   | When to Use                                                                          |
+| ------- | ------------------------------------------------------------------------------------ |
+| `trace` | Extremely verbose: every packet, every frame, every internal state transition        |
 | `debug` | Detailed diagnostics: protocol packets with hex previews, timing data, state changes |
-| `info` | General operations: connections, discovery results, effect changes |
-| `warn` | Recoverable issues: performance degradation, retries, fallback behavior |
-| `error` | Failures: device errors, protocol violations, unrecoverable states |
+| `info`  | General operations: connections, discovery results, effect changes                   |
+| `warn`  | Recoverable issues: performance degradation, retries, fallback behavior              |
+| `error` | Failures: device errors, protocol violations, unrecoverable states                   |
 
 ### Configuration Priority
 
@@ -606,17 +629,20 @@ RUST_LOG=hypercolor_hal=trace,hypercolor_core::device=debug,hypercolor_daemon::a
 ### What Gets Logged at Each Level
 
 **`trace` in HAL transports:**
+
 - Every send/receive with full hex preview (first 32 bytes)
 - Transport open/close events
 - Timeout values and retry attempts
 
 **`debug` in USB backend:**
+
 - Command index within multi-command sequences
 - Response parsing results
 - CRC validation outcomes
 - Connection diagnostics results
 
 **`info` in core:**
+
 - Device discovery results
 - Backend connect/disconnect
 - Effect start/stop
@@ -644,30 +670,33 @@ len=90 bytes=00 1F 00 00 00 03 0F 00 01 00 00 00 00 00 00 0E 01 00 FF 00 00 FF 0
 
 ### Where Packet Logging Happens
 
-| Transport | File | Preview Size |
-|-----------|------|-------------|
-| USB Control | `hypercolor-hal/src/transport/control.rs` | 32 bytes |
-| USB HID (interrupt) | `hypercolor-hal/src/transport/hid.rs` | 32 bytes |
-| USB HIDRAW | `hypercolor-hal/src/transport/hidraw.rs` | 32 bytes |
-| USB Bulk | `hypercolor-hal/src/transport/bulk.rs` | 32 bytes |
-| USB Backend (core) | `hypercolor-core/src/device/usb_backend.rs` | 32 bytes |
-| SMBus Backend (core) | `hypercolor-core/src/device/smbus_backend.rs` | 24 bytes |
+| Transport            | File                                          | Preview Size |
+| -------------------- | --------------------------------------------- | ------------ |
+| USB Control          | `hypercolor-hal/src/transport/control.rs`     | 32 bytes     |
+| USB HID (interrupt)  | `hypercolor-hal/src/transport/hid.rs`         | 32 bytes     |
+| USB HIDRAW           | `hypercolor-hal/src/transport/hidraw.rs`      | 32 bytes     |
+| USB Bulk             | `hypercolor-hal/src/transport/bulk.rs`        | 32 bytes     |
+| USB Backend (core)   | `hypercolor-core/src/device/usb_backend.rs`   | 32 bytes     |
+| SMBus Backend (core) | `hypercolor-core/src/device/smbus_backend.rs` | 24 bytes     |
 
 ### What Gets Logged
 
 **Sends:**
+
 ```
 DEBUG hypercolor_hal::transport::control: sending control transfer
   packet_hex="00 1F 00 00 00 03 0F 00 01 ..."
 ```
 
 **Receives:**
+
 ```
 DEBUG hypercolor_hal::transport::control: received control response
   response_hex="02 1F 00 00 00 03 0F 00 02 ..."
 ```
 
 **USB command sequences (multi-packet):**
+
 ```
 DEBUG hypercolor_core::device::usb_backend: usb command bytes
   transport="UsbControl" command_index=0 total_commands=3
@@ -675,6 +704,7 @@ DEBUG hypercolor_core::device::usb_backend: usb command bytes
 ```
 
 **Parsed protocol responses:**
+
 ```
 DEBUG hypercolor_core::device::usb_backend: parsed protocol response
   parsed_data="02 00 03 0F 00 02 00 00 ..."
@@ -896,11 +926,11 @@ just loc
 
 ### Build Profiles
 
-| Profile | Command | Use Case |
-|---------|---------|----------|
-| debug | `just build` | Fast iteration, full debug info |
-| preview | `just daemon` | Runtime-optimized, debug info preserved |
-| release | `just daemon-release` | Full optimization |
+| Profile | Command               | Use Case                                |
+| ------- | --------------------- | --------------------------------------- |
+| debug   | `just build`          | Fast iteration, full debug info         |
+| preview | `just daemon`         | Runtime-optimized, debug info preserved |
+| release | `just daemon-release` | Full optimization                       |
 
 ---
 

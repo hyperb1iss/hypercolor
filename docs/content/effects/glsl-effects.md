@@ -10,19 +10,19 @@ Shader effects run a WebGL2 fragment shader for every canvas pixel on every fram
 An effect is a TypeScript module that imports a GLSL string and hands it to `effect()`:
 
 ```typescript
-import { effect, num } from '@hypercolor/sdk'
-import shader from './fragment.glsl'
+import { effect, num } from "@hypercolor/sdk";
+import shader from "./fragment.glsl";
 
 export default effect(
-    'Borealis',
-    shader,
-    {
-        intensity: num('Intensity', [0, 100], 82),
-        palette: ['Aurora', 'SilkCircuit', 'Frost'],
-        speed: num('Speed', [1, 10], 5),
-    },
-    { description: 'Aurora curtains with layered shader motion' },
-)
+  "Borealis",
+  shader,
+  {
+    intensity: num("Intensity", [0, 100], 82),
+    palette: ["Aurora", "SilkCircuit", "Frost"],
+    speed: num("Speed", [1, 10], 5),
+  },
+  { description: "Aurora curtains with layered shader motion" },
+);
 ```
 
 Everything else is GLSL.
@@ -33,12 +33,12 @@ Everything else is GLSL.
 effect(name, shader, controls?, options?)
 ```
 
-| Parameter | Type | Purpose |
-|---|---|---|
-| `name` | `string` | Display name |
-| `shader` | `string` | GLSL fragment shader source, usually imported from `.glsl` |
-| `controls` | `ControlMap` | Controls that become GLSL uniforms |
-| `options` | `EffectFnOptions` | Metadata + `audio`, `preserveDrawingBuffer`, `setup`, `vertexShader` |
+| Parameter  | Type              | Purpose                                                              |
+| ---------- | ----------------- | -------------------------------------------------------------------- |
+| `name`     | `string`          | Display name                                                         |
+| `shader`   | `string`          | GLSL fragment shader source, usually imported from `.glsl`           |
+| `controls` | `ControlMap`      | Controls that become GLSL uniforms                                   |
+| `options`  | `EffectFnOptions` | Metadata + `audio`, `preserveDrawingBuffer`, `setup`, `vertexShader` |
 
 Shader source is imported as a string. Scaffolded workspaces declare `.glsl` as a text import in `bunfig.toml`, so `import shader from './fragment.glsl'` just works in `bun run build`.
 
@@ -64,13 +64,13 @@ The daemon canvas can change mid-session, so shaders should never assume a fixed
 
 Every control you declare gets a GLSL uniform named with an `i` prefix and the original key PascalCased:
 
-| Control key | Uniform |
-|---|---|
-| `speed` | `uniform float iSpeed;` |
-| `trailLength` | `uniform float iTrailLength;` |
-| `palette` | `uniform int iPalette;` |
-| `mirror` | `uniform int iMirror;` (booleans become ints) |
-| `tintColor` | `uniform vec3 iTintColor;` (color picker) |
+| Control key   | Uniform                                       |
+| ------------- | --------------------------------------------- |
+| `speed`       | `uniform float iSpeed;`                       |
+| `trailLength` | `uniform float iTrailLength;`                 |
+| `palette`     | `uniform int iPalette;`                       |
+| `mirror`      | `uniform int iMirror;` (booleans become ints) |
+| `tintColor`   | `uniform vec3 iTintColor;` (color picker)     |
 
 Write the uniform declaration at the top of your shader; the SDK writes the value before every draw.
 
@@ -89,7 +89,7 @@ void main() {
 You can override the uniform name per control with the `uniform` option on any factory:
 
 ```typescript
-speed: num('Speed', [1, 10], 5, { uniform: 'uSpeed' })
+speed: num("Speed", [1, 10], 5, { uniform: "uSpeed" });
 ```
 
 but the convention is to let the defaults stand.
@@ -186,19 +186,19 @@ void main() {
 Paired with the TypeScript stub:
 
 ```typescript
-import { effect } from '@hypercolor/sdk'
-import shader from './fragment.glsl'
+import { effect } from "@hypercolor/sdk";
+import shader from "./fragment.glsl";
 
 export default effect(
-    'Swirl',
-    shader,
-    {
-        intensity: [0, 100, 70],
-        palette: ['Aurora', 'Fire', 'Ocean'],
-        speed: [1, 10, 5],
-    },
-    { audio: true, description: 'A layered audio-reactive swirl' },
-)
+  "Swirl",
+  shader,
+  {
+    intensity: [0, 100, 70],
+    palette: ["Aurora", "Fire", "Ocean"],
+    speed: [1, 10, 5],
+  },
+  { audio: true, description: "A layered audio-reactive swirl" },
+);
 ```
 
 ## GLSL patterns for LED work

@@ -44,25 +44,25 @@ Errors use:
 
 ## Endpoint Map
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/library/favorites` | List favorites |
-| `POST` | `/library/favorites` | Add or refresh a favorite |
-| `DELETE` | `/library/favorites/{effect}` | Remove favorite by effect id or name |
-| `GET` | `/library/presets` | List presets |
-| `POST` | `/library/presets` | Create preset |
-| `GET` | `/library/presets/{id_or_name}` | Fetch preset |
-| `PUT` | `/library/presets/{id_or_name}` | Update preset |
-| `DELETE` | `/library/presets/{id_or_name}` | Delete preset |
-| `POST` | `/library/presets/{id_or_name}/apply` | Activate preset effect + controls |
-| `GET` | `/library/playlists` | List playlists |
-| `POST` | `/library/playlists` | Create playlist |
-| `GET` | `/library/playlists/{id_or_name}` | Fetch playlist |
-| `PUT` | `/library/playlists/{id_or_name}` | Update playlist |
-| `DELETE` | `/library/playlists/{id_or_name}` | Delete playlist |
-| `POST` | `/library/playlists/{id_or_name}/activate` | Start playlist runtime |
-| `GET` | `/library/playlists/active` | Inspect active playlist runtime |
-| `POST` | `/library/playlists/stop` | Stop active playlist runtime |
+| Method   | Path                                       | Purpose                              |
+| -------- | ------------------------------------------ | ------------------------------------ |
+| `GET`    | `/library/favorites`                       | List favorites                       |
+| `POST`   | `/library/favorites`                       | Add or refresh a favorite            |
+| `DELETE` | `/library/favorites/{effect}`              | Remove favorite by effect id or name |
+| `GET`    | `/library/presets`                         | List presets                         |
+| `POST`   | `/library/presets`                         | Create preset                        |
+| `GET`    | `/library/presets/{id_or_name}`            | Fetch preset                         |
+| `PUT`    | `/library/presets/{id_or_name}`            | Update preset                        |
+| `DELETE` | `/library/presets/{id_or_name}`            | Delete preset                        |
+| `POST`   | `/library/presets/{id_or_name}/apply`      | Activate preset effect + controls    |
+| `GET`    | `/library/playlists`                       | List playlists                       |
+| `POST`   | `/library/playlists`                       | Create playlist                      |
+| `GET`    | `/library/playlists/{id_or_name}`          | Fetch playlist                       |
+| `PUT`    | `/library/playlists/{id_or_name}`          | Update playlist                      |
+| `DELETE` | `/library/playlists/{id_or_name}`          | Delete playlist                      |
+| `POST`   | `/library/playlists/{id_or_name}/activate` | Start playlist runtime               |
+| `GET`    | `/library/playlists/active`                | Inspect active playlist runtime      |
+| `POST`   | `/library/playlists/stop`                  | Stop active playlist runtime         |
 
 ## ID vs Name Resolution
 

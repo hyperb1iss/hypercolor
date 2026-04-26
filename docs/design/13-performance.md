@@ -35,14 +35,14 @@ gantt
 
 ### Stage Budgets
 
-| Stage | Target | Hard Limit | Notes |
-|---|---|---|---|
-| **Input sampling** | 1.0ms | 2.0ms | Audio FFT read, screen capture read, keyboard poll |
-| **Effect rendering** | 8.0ms | 12.0ms | wgpu: <1ms typical. Servo: 5-10ms. This is the variable stage |
-| **Spatial sampling** | 0.5ms | 1.0ms | Bilinear interpolation over ~2000 LEDs on a 256KB buffer |
-| **Device output** | 2.0ms | 4.0ms | Async dispatch to all backends (USB, UDP, TCP) |
-| **Event bus publish** | 0.1ms | 0.5ms | `watch::Sender::send_replace` — single atomic swap |
-| **Slack/headroom** | 5.0ms | — | Absorbs variance, GC pauses (Servo/SpiderMonkey), OS scheduling |
+| Stage                 | Target | Hard Limit | Notes                                                           |
+| --------------------- | ------ | ---------- | --------------------------------------------------------------- |
+| **Input sampling**    | 1.0ms  | 2.0ms      | Audio FFT read, screen capture read, keyboard poll              |
+| **Effect rendering**  | 8.0ms  | 12.0ms     | wgpu: <1ms typical. Servo: 5-10ms. This is the variable stage   |
+| **Spatial sampling**  | 0.5ms  | 1.0ms      | Bilinear interpolation over ~2000 LEDs on a 256KB buffer        |
+| **Device output**     | 2.0ms  | 4.0ms      | Async dispatch to all backends (USB, UDP, TCP)                  |
+| **Event bus publish** | 0.1ms  | 0.5ms      | `watch::Sender::send_replace` — single atomic swap              |
+| **Slack/headroom**    | 5.0ms  | —          | Absorbs variance, GC pauses (Servo/SpiderMonkey), OS scheduling |
 
 ### Why 5ms of Slack?
 
@@ -156,13 +156,13 @@ model is:
 
 ### Core Requirements
 
-| Configuration | Active Threads | Minimum Cores | Recommended Cores |
-|---|---|---|---|
-| **wgpu only, no audio** | 4-5 (render, tokio×2, wgpu poll, web) | 2 | 4 |
-| **wgpu + audio** | 5-6 | 2 | 4 |
-| **wgpu + audio + screen** | 6-7 | 4 | 4 |
-| **Servo + audio + screen** | 8-12 | 4 | 6 |
-| **Full stack during gaming** | 8-12 | 4 | 6+ |
+| Configuration                | Active Threads                        | Minimum Cores | Recommended Cores |
+| ---------------------------- | ------------------------------------- | ------------- | ----------------- |
+| **wgpu only, no audio**      | 4-5 (render, tokio×2, wgpu poll, web) | 2             | 4                 |
+| **wgpu + audio**             | 5-6                                   | 2             | 4                 |
+| **wgpu + audio + screen**    | 6-7                                   | 4             | 4                 |
+| **Servo + audio + screen**   | 8-12                                  | 4             | 6                 |
+| **Full stack during gaming** | 8-12                                  | 4             | 6+                |
 
 On a modern 8-core/16-thread gaming CPU (like the i7-14700K in the reference system), Hypercolor needs at most 2-3 performance cores even in the heaviest configuration. The render loop and audio thread should be pinned to efficiency cores when available, leaving performance cores free for the game.
 
@@ -209,13 +209,13 @@ for subsystems that are intentionally not `Sync` (`InputManager`,
 "zero locks anywhere"; it is "no long-lived contention and no blocking I/O in
 the frame-critical path."
 
-| Channel | Type | Direction | Semantics |
-|---|---|---|---|
-| Frame data | `tokio::sync::watch` | render → consumers | Latest-value, async |
-| Scene canvas | `tokio::sync::watch` | render → display/UI consumers | Canonical full-scene surface |
-| Direct group canvases | per-group `tokio::sync::watch` | render → display workers | Latest-value direct display surfaces |
-| Events | `tokio::sync::broadcast` | any → subscribers | Fan-out, bounded |
-| Metrics | shared snapshots + event bus | render/runtime → observers | Latest-value + discrete events |
+| Channel               | Type                           | Direction                     | Semantics                            |
+| --------------------- | ------------------------------ | ----------------------------- | ------------------------------------ |
+| Frame data            | `tokio::sync::watch`           | render → consumers            | Latest-value, async                  |
+| Scene canvas          | `tokio::sync::watch`           | render → display/UI consumers | Canonical full-scene surface         |
+| Direct group canvases | per-group `tokio::sync::watch` | render → display workers      | Latest-value direct display surfaces |
+| Events                | `tokio::sync::broadcast`       | any → subscribers             | Fan-out, bounded                     |
+| Metrics               | shared snapshots + event bus   | render/runtime → observers    | Latest-value + discrete events       |
 
 Audio and screen capture still behave like latest-value producers, but they are
 now best understood as render-thread sampled inputs rather than standalone
@@ -227,53 +227,53 @@ lock-free transport contracts.
 
 ### Target Memory Envelope
 
-| State | Target | Hard Limit |
-|---|---|---|
-| **Idle** (daemon running, no effect active) | 30MB | 50MB |
-| **wgpu effect active** | 50MB | 80MB |
-| **Servo effect active** | 150MB | 300MB |
-| **Servo + screen capture + audio** | 200MB | 350MB |
+| State                                       | Target | Hard Limit |
+| ------------------------------------------- | ------ | ---------- |
+| **Idle** (daemon running, no effect active) | 30MB   | 50MB       |
+| **wgpu effect active**                      | 50MB   | 80MB       |
+| **Servo effect active**                     | 150MB  | 300MB      |
+| **Servo + screen capture + audio**          | 200MB  | 350MB      |
 
 ### Per-Component Memory Breakdown
 
 #### Core Buffers
 
-| Component | Size | Count | Total | Notes |
-|---|---|---|---|---|
-| Canvas buffer (320x200 RGBA) | 256 KB | 2 (double-buffered) | 512 KB | Render output |
-| LED color buffer (2000 LEDs x RGB) | 6 KB | 2 | 12 KB | Output + staging |
-| Audio FFT bins | 800 B | 3 (triple-buffered) | 2.4 KB | 200 bins x f32 |
-| Audio sample ring buffer | 64 KB | 1 | 64 KB | 16384 samples x f32 |
-| Screen capture frame | 8 MB | 3 (triple-buffered) | 24 MB | 1920x1080 RGBA downsample src |
-| Screen capture downsampled | 256 KB | 2 | 512 KB | 320x200 for effect input |
-| Event bus buffers | ~64 KB | — | 64 KB | broadcast(256) + watch channels |
-| Spatial layout data | ~20 KB | 1 | 20 KB | 2000 LEDs with transforms |
-| **Core subtotal** | | | **~25 MB** | |
+| Component                          | Size   | Count               | Total      | Notes                           |
+| ---------------------------------- | ------ | ------------------- | ---------- | ------------------------------- |
+| Canvas buffer (320x200 RGBA)       | 256 KB | 2 (double-buffered) | 512 KB     | Render output                   |
+| LED color buffer (2000 LEDs x RGB) | 6 KB   | 2                   | 12 KB      | Output + staging                |
+| Audio FFT bins                     | 800 B  | 3 (triple-buffered) | 2.4 KB     | 200 bins x f32                  |
+| Audio sample ring buffer           | 64 KB  | 1                   | 64 KB      | 16384 samples x f32             |
+| Screen capture frame               | 8 MB   | 3 (triple-buffered) | 24 MB      | 1920x1080 RGBA downsample src   |
+| Screen capture downsampled         | 256 KB | 2                   | 512 KB     | 320x200 for effect input        |
+| Event bus buffers                  | ~64 KB | —                   | 64 KB      | broadcast(256) + watch channels |
+| Spatial layout data                | ~20 KB | 1                   | 20 KB      | 2000 LEDs with transforms       |
+| **Core subtotal**                  |        |                     | **~25 MB** |                                 |
 
 #### wgpu Resources
 
-| Component | Size | Notes |
-|---|---|---|
-| Device + queue state | ~5 MB | Vulkan/OpenGL driver overhead |
-| Render pipeline (320x200) | ~1 MB | Compiled shaders, descriptor sets |
-| Output texture (320x200 RGBA) | 256 KB | GPU-side render target |
-| Staging buffer (MAP_READ) | 256 KB | CPU-readable pixel readback |
-| Uniform buffers | ~4 KB | Time, resolution, audio uniforms |
-| Shader cache | ~2 MB | Compiled SPIR-V / driver cache |
-| **wgpu subtotal** | **~9 MB** | |
+| Component                     | Size      | Notes                             |
+| ----------------------------- | --------- | --------------------------------- |
+| Device + queue state          | ~5 MB     | Vulkan/OpenGL driver overhead     |
+| Render pipeline (320x200)     | ~1 MB     | Compiled shaders, descriptor sets |
+| Output texture (320x200 RGBA) | 256 KB    | GPU-side render target            |
+| Staging buffer (MAP_READ)     | 256 KB    | CPU-readable pixel readback       |
+| Uniform buffers               | ~4 KB     | Time, resolution, audio uniforms  |
+| Shader cache                  | ~2 MB     | Compiled SPIR-V / driver cache    |
+| **wgpu subtotal**             | **~9 MB** |                                   |
 
 #### Servo Resources
 
-| Component | Size | Notes |
-|---|---|---|
-| SpiderMonkey heap (default) | 32-64 MB | Configurable via `SetGCParameter(JSGC_MAX_BYTES)` |
-| DOM + style system | 5-20 MB | Depends on effect complexity |
-| Canvas 2D backing store | 256 KB | 320x200 — trivial |
-| WebGL context (if used) | 5-15 MB | GPU state, texture cache |
-| Network/resource loading | 2-5 MB | Servo's resource cache |
-| Layout engine | 5-10 MB | Style trees, box trees |
-| Font cache | 5-10 MB | Rasterized glyph atlas |
-| **Servo subtotal** | **54-124 MB** | |
+| Component                   | Size          | Notes                                             |
+| --------------------------- | ------------- | ------------------------------------------------- |
+| SpiderMonkey heap (default) | 32-64 MB      | Configurable via `SetGCParameter(JSGC_MAX_BYTES)` |
+| DOM + style system          | 5-20 MB       | Depends on effect complexity                      |
+| Canvas 2D backing store     | 256 KB        | 320x200 — trivial                                 |
+| WebGL context (if used)     | 5-15 MB       | GPU state, texture cache                          |
+| Network/resource loading    | 2-5 MB        | Servo's resource cache                            |
+| Layout engine               | 5-10 MB       | Style trees, box trees                            |
+| Font cache                  | 5-10 MB       | Rasterized glyph atlas                            |
+| **Servo subtotal**          | **54-124 MB** |                                                   |
 
 #### Optimization: SpiderMonkey GC Tuning
 
@@ -336,7 +336,7 @@ impl MemoryMonitor {
 
 Hypercolor renders on the same GPU that games use. The key insight: **our workload is negligible, but we must not cause contention.**
 
-A 320x200 render is approximately 64,000 pixels. A 4K game renders 8,294,400 pixels. Hypercolor's GPU work is 0.77% of a single 4K frame — effectively invisible to the GPU scheduler, *as long as we don't block on synchronization or starve the game of submission bandwidth.*
+A 320x200 render is approximately 64,000 pixels. A 4K game renders 8,294,400 pixels. Hypercolor's GPU work is 0.77% of a single 4K frame — effectively invisible to the GPU scheduler, _as long as we don't block on synchronization or starve the game of submission bandwidth._
 
 ### wgpu Path: Zero-Contention Strategy
 
@@ -357,12 +357,14 @@ pub struct GpuResourcePolicy {
 ```
 
 **Vulkan queue management:**
+
 - Request a separate compute queue with `VK_QUEUE_GLOBAL_PRIORITY_LOW` for Hypercolor's work
 - If the driver doesn't support priority queues (common on NVIDIA), use the same queue but submit only one command buffer per frame
 - Never use `vkQueueWaitIdle` — always use timeline semaphores or polling fences
 - Command buffer recording happens on the render thread; submission and fence polling on the wgpu device thread
 
 **GPU memory allocation:**
+
 - Total GPU memory for Hypercolor: <5MB (one 320x200 texture + staging buffer + uniform buffers)
 - Use `wgpu::MemoryHints::MemoryBudget(budget)` to advertise our tiny footprint
 - Never allocate GPU memory in the render loop — all resources created at pipeline setup
@@ -371,10 +373,10 @@ pub struct GpuResourcePolicy {
 
 Servo can render via two paths:
 
-| Path | Implementation | GPU Usage | CPU Usage | When to Use |
-|---|---|---|---|---|
-| **Software** | `SoftwareRenderingContext` (OSMesa) | None | Higher | Gaming active, GPU-constrained |
-| **Hardware** | surfman + EGL/GLX | Shared OpenGL context | Lower | Idle/desktop, GPU available |
+| Path         | Implementation                      | GPU Usage             | CPU Usage | When to Use                    |
+| ------------ | ----------------------------------- | --------------------- | --------- | ------------------------------ |
+| **Software** | `SoftwareRenderingContext` (OSMesa) | None                  | Higher    | Gaming active, GPU-constrained |
+| **Hardware** | surfman + EGL/GLX                   | Shared OpenGL context | Lower     | Idle/desktop, GPU available    |
 
 **Decision logic:**
 
@@ -397,13 +399,13 @@ The software path for Servo at 320x200 is cheap: Canvas 2D operations at this re
 
 ### GPU Contention Mitigation
 
-| Technique | Implementation | Impact |
-|---|---|---|
-| **Low-priority queue** | Vulkan `VK_QUEUE_GLOBAL_PRIORITY_LOW` | GPU scheduler preempts us for game work |
-| **Micro-submissions** | Single 320x200 dispatch per frame | Completes in <100us GPU time |
-| **Async readback** | Map staging buffer from *previous* frame | Eliminates GPU pipeline stalls |
-| **Shared-nothing** | Separate `VkDevice` from game (via wgpu) | No implicit synchronization |
-| **Software fallback** | Servo software path, CPU compute shaders | Zero GPU usage when gaming |
+| Technique              | Implementation                           | Impact                                  |
+| ---------------------- | ---------------------------------------- | --------------------------------------- |
+| **Low-priority queue** | Vulkan `VK_QUEUE_GLOBAL_PRIORITY_LOW`    | GPU scheduler preempts us for game work |
+| **Micro-submissions**  | Single 320x200 dispatch per frame        | Completes in <100us GPU time            |
+| **Async readback**     | Map staging buffer from _previous_ frame | Eliminates GPU pipeline stalls          |
+| **Shared-nothing**     | Separate `VkDevice` from game (via wgpu) | No implicit synchronization             |
+| **Software fallback**  | Servo software path, CPU compute shaders | Zero GPU usage when gaming              |
 
 ### Async Readback Pipeline
 
@@ -472,15 +474,16 @@ impl AsyncReadback {
 
 **Constraint:** 65-byte packets over USB Interrupt transfers. USB 2.0 Full Speed allows one interrupt transfer per 1ms polling interval.
 
-| Device | LEDs | Bytes/Frame | Packets/Frame | Min Transfer Time |
-|---|---|---|---|---|
-| Prism 8 (8ch x 126) | 1008 | 3024 (GRB) | 48 + 1 latch = 49 | 49ms at 1ms polls |
-| Prism S (ATX+GPU) | 282 | 846 (RGB) | 14 | 14ms at 1ms polls |
-| Prism Mini | 128 | 384 (RGB) | 7 | 7ms at 1ms polls |
+| Device              | LEDs | Bytes/Frame | Packets/Frame     | Min Transfer Time |
+| ------------------- | ---- | ----------- | ----------------- | ----------------- |
+| Prism 8 (8ch x 126) | 1008 | 3024 (GRB)  | 48 + 1 latch = 49 | 49ms at 1ms polls |
+| Prism S (ATX+GPU)   | 282  | 846 (RGB)   | 14                | 14ms at 1ms polls |
+| Prism Mini          | 128  | 384 (RGB)   | 7                 | 7ms at 1ms polls  |
 
 **Problem:** A fully-loaded Prism 8 needs 49ms of USB transfer time per frame — that exceeds the 16.6ms frame budget at 60fps. This is a hardware limitation, not a software one.
 
 **Solutions:**
+
 1. **Reduce to 33fps for USB HID** — other engines default Prism 8 to 33fps (30ms budget, still tight for full 8-channel)
 2. **Async fire-and-forget** — The render loop dispatches USB writes to a dedicated I/O thread and moves on. The USB thread sends as fast as the bus allows. If a new frame arrives before the previous one finished transmitting, the old frame is dropped.
 3. **Partial updates** — If only channels 0-3 changed significantly, skip channels 4-7 this frame
@@ -506,12 +509,12 @@ impl UsbOutputQueue {
 
 **Constraint:** None, effectively. UDP is fire-and-forget. DDP supports 480 pixels per packet (1442 bytes).
 
-| Strip Length | Packets/Frame | Bytes/Frame | Network Impact |
-|---|---|---|---|
-| 300 LEDs | 1 | ~902 bytes | Negligible |
-| 600 LEDs | 2 | ~1804 bytes | Negligible |
-| 1200 LEDs | 3 | ~3606 bytes | Negligible |
-| 5000 LEDs (large install) | 11 | ~15010 bytes | Still negligible |
+| Strip Length              | Packets/Frame | Bytes/Frame  | Network Impact   |
+| ------------------------- | ------------- | ------------ | ---------------- |
+| 300 LEDs                  | 1             | ~902 bytes   | Negligible       |
+| 600 LEDs                  | 2             | ~1804 bytes  | Negligible       |
+| 1200 LEDs                 | 3             | ~3606 bytes  | Negligible       |
+| 5000 LEDs (large install) | 11            | ~15010 bytes | Still negligible |
 
 At 60fps with 5000 LEDs: 15KB x 60 = 900KB/s = 7.2 Mbps. Well within gigabit Ethernet or even WiFi capacity.
 
@@ -536,11 +539,11 @@ pub fn send_ddp_batch(socket: &UdpSocket, packets: &[DdpPacket]) -> io::Result<(
 
 **Constraint:** 170 RGB pixels per universe (512 DMX channels). Multiple universes for longer strips.
 
-| Strip Length | Universes | Packets/Frame | Notes |
-|---|---|---|---|
-| 170 LEDs | 1 | 1 | Single universe |
-| 300 LEDs | 2 | 2 | Typical WLED strip |
-| 600 LEDs | 4 | 4 | Multi-segment |
+| Strip Length | Universes | Packets/Frame | Notes              |
+| ------------ | --------- | ------------- | ------------------ |
+| 170 LEDs     | 1         | 1             | Single universe    |
+| 300 LEDs     | 2         | 2             | Typical WLED strip |
+| 600 LEDs     | 4         | 4             | Multi-segment      |
 
 E1.31 is less efficient than DDP (170 vs 480 pixels per packet) but more widely supported. Use DDP when the device supports it; fall back to E1.31 for legacy devices.
 
@@ -549,6 +552,7 @@ E1.31 is less efficient than DDP (170 vs 480 pixels per packet) but more widely 
 **Constraint:** TCP adds connection overhead and head-of-line blocking. The OpenRGB protocol sends per-controller color updates.
 
 **Optimization:**
+
 - Persistent TCP connection (no reconnect per frame)
 - Batch all controller updates into a single TCP write using Nagle-disabled socket (`TCP_NODELAY`)
 - If OpenRGB server is on localhost: Unix socket if supported, otherwise TCP loopback is <0.1ms RTT
@@ -558,6 +562,7 @@ E1.31 is less efficient than DDP (170 vs 480 pixels per packet) but more widely 
 **Constraint:** Hue Entertainment API supports max 25fps for groups of up to 20 lights. DTLS handshake is expensive (500ms+) but only happens once per session.
 
 **Optimization:**
+
 - Maintain DTLS session across effect changes (only reconnect on error)
 - Rate-limit Hue output to 25fps independently of the main render loop
 - Pre-encode XY color space conversion (Hue uses CIE 1931, not sRGB)
@@ -584,6 +589,7 @@ graph TD
 ```
 
 Each backend gets its own output queue:
+
 - **USB HID**: Dedicated thread with atomic latest-frame swap (see above)
 - **UDP protocols** (DDP, E1.31): Tokio tasks, `sendmmsg` batching
 - **TCP protocols** (OpenRGB): Tokio task, buffered writes with `TCP_NODELAY`
@@ -597,13 +603,13 @@ The render loop never blocks on output. It dispatches color data to queues and m
 
 ### FPS Tiers
 
-| Tier | FPS | Frame Budget | When |
-|---|---|---|---|
-| **Full** | 60 | 16.6ms | Desktop idle, light applications |
-| **Gaming** | 30 | 33.3ms | Game detected, moderate GPU/CPU usage |
-| **Economy** | 15 | 66.6ms | Heavy system load, laptop on battery |
-| **Standby** | 5 | 200ms | Screen off, system idle, slow breathing effect |
-| **Suspended** | 0 | — | System sleep, daemon backgrounded, no active devices |
+| Tier          | FPS | Frame Budget | When                                                 |
+| ------------- | --- | ------------ | ---------------------------------------------------- |
+| **Full**      | 60  | 16.6ms       | Desktop idle, light applications                     |
+| **Gaming**    | 30  | 33.3ms       | Game detected, moderate GPU/CPU usage                |
+| **Economy**   | 15  | 66.6ms       | Heavy system load, laptop on battery                 |
+| **Standby**   | 5   | 200ms        | Screen off, system idle, slow breathing effect       |
+| **Suspended** | 0   | —            | System sleep, daemon backgrounded, no active devices |
 
 ### Detection Signals
 
@@ -681,12 +687,12 @@ Gaming → Full:    10 seconds after GameMode deactivates or GPU usage drops bel
 
 When dropping to a lower FPS tier, the system can also reduce effect complexity:
 
-| Quality Level | Changes | Impact |
-|---|---|---|
-| **High** (60fps) | Full resolution, all post-processing | Baseline |
-| **Medium** (30fps) | Skip every other audio FFT frame | Minimal visual difference |
-| **Low** (15fps) | Reduce canvas to 160x100, simpler spatial interpolation | Visible but acceptable |
-| **Minimal** (5fps) | Solid color or last-frame hold | Breathing/static only |
+| Quality Level      | Changes                                                 | Impact                    |
+| ------------------ | ------------------------------------------------------- | ------------------------- |
+| **High** (60fps)   | Full resolution, all post-processing                    | Baseline                  |
+| **Medium** (30fps) | Skip every other audio FFT frame                        | Minimal visual difference |
+| **Low** (15fps)    | Reduce canvas to 160x100, simpler spatial interpolation | Visible but acceptable    |
+| **Minimal** (5fps) | Solid color or last-frame hold                          | Breathing/static only     |
 
 For Servo effects, quality scaling is more limited — we can't tell the JavaScript to "render simpler." The primary lever is reducing the canvas resolution by adjusting the WebView viewport size. Most effects scale gracefully since they use normalized coordinates.
 
@@ -707,10 +713,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) -> @location(0) vec4<f32> 
 When a frame exceeds the budget, the question is: which stage to skip?
 
 **Priority order (never skip):**
-1. Device output — must always send *something*, even if it's the previous frame's data
+
+1. Device output — must always send _something_, even if it's the previous frame's data
 2. Event bus — trivially cheap, never worth skipping
 
 **Skippable stages:**
+
 1. **Input sampling** — Reuse previous audio/screen data. 1 stale frame is imperceptible.
 2. **Effect rendering** — Reuse previous canvas buffer. This is the biggest time saver.
 3. **Spatial sampling** — Skip only if LED positions haven't changed (they rarely do).
@@ -841,19 +849,19 @@ fn record_frame_metrics(m: &FrameMetrics) {
 
 **Exported metrics (selection):**
 
-| Metric | Type | Labels | Description |
-|---|---|---|---|
-| `hypercolor_frame_time_seconds` | Histogram | `renderer` | Total frame processing time |
-| `hypercolor_render_time_seconds` | Histogram | `renderer` | Effect render stage time |
-| `hypercolor_fps` | Gauge | — | Current frames per second |
-| `hypercolor_fps_tier` | Gauge | — | Active performance tier (0-4) |
-| `hypercolor_rss_bytes` | Gauge | — | Resident set size |
-| `hypercolor_devices_active` | Gauge | — | Connected device count |
-| `hypercolor_device_errors_total` | Counter | `backend`, `device` | Per-device error count |
-| `hypercolor_packets_sent_total` | Counter | `backend` | Packets sent per backend |
-| `hypercolor_frames_missed_total` | Counter | — | Frames exceeding budget |
-| `hypercolor_audio_underruns_total` | Counter | — | Audio buffer underruns |
-| `hypercolor_servo_gc_pause_seconds` | Histogram | `gc_type` | SpiderMonkey GC pause duration |
+| Metric                              | Type      | Labels              | Description                    |
+| ----------------------------------- | --------- | ------------------- | ------------------------------ |
+| `hypercolor_frame_time_seconds`     | Histogram | `renderer`          | Total frame processing time    |
+| `hypercolor_render_time_seconds`    | Histogram | `renderer`          | Effect render stage time       |
+| `hypercolor_fps`                    | Gauge     | —                   | Current frames per second      |
+| `hypercolor_fps_tier`               | Gauge     | —                   | Active performance tier (0-4)  |
+| `hypercolor_rss_bytes`              | Gauge     | —                   | Resident set size              |
+| `hypercolor_devices_active`         | Gauge     | —                   | Connected device count         |
+| `hypercolor_device_errors_total`    | Counter   | `backend`, `device` | Per-device error count         |
+| `hypercolor_packets_sent_total`     | Counter   | `backend`           | Packets sent per backend       |
+| `hypercolor_frames_missed_total`    | Counter   | —                   | Frames exceeding budget        |
+| `hypercolor_audio_underruns_total`  | Counter   | —                   | Audio buffer underruns         |
+| `hypercolor_servo_gc_pause_seconds` | Histogram | `gc_type`           | SpiderMonkey GC pause duration |
 
 ### tracing Integration
 
@@ -883,6 +891,7 @@ async fn render_frame(&mut self, frame_num: u64) {
 ```
 
 **Debugging tools:**
+
 - `RUST_LOG=hypercolor=trace` for full span output
 - `tokio-console` for async task introspection (runtime state, waker counts, poll times)
 - `tracy` integration via `tracing-tracy` for frame-by-frame visual profiling during development
@@ -1022,12 +1031,14 @@ The spatial layout (LED positions, zone definitions) is part of the config and d
 A daemon running 24/7 at 60fps produces 5.2 million frames per day. Even a 1-byte leak per frame means 5MB/day — noticeable within a week. Strategies:
 
 **Compile-time prevention:**
+
 - No `Box::leak` outside of initialization code
 - All buffers are pre-allocated and reused (double/triple buffering)
 - `Arc<T>` cycles detected via `#[cfg(debug_assertions)]` weak-reference audits
 - Canvas and LED buffers are stack-allocated or pool-allocated — never fresh `Vec` per frame
 
 **Runtime detection:**
+
 - RSS monitoring every 5 seconds (see Memory Monitor in Section 3)
 - Trend detection: if RSS grows >1MB/hour with constant load, log a warning
 - SpiderMonkey heap size monitoring via GC stats
@@ -1067,17 +1078,17 @@ impl MemoryTrendDetector {
 
 At 60fps with multiple device backends, file descriptor hygiene is critical:
 
-| Resource | FDs Used | Lifecycle |
-|---|---|---|
-| USB HID devices | 1 per device | Held while connected |
-| UDP sockets (DDP, E1.31) | 1 per network target | Held while connected |
-| TCP connections (OpenRGB) | 1 per OpenRGB server | Reconnect on error |
-| DTLS sessions (Hue) | 1 per Hue bridge | Reconnect on timeout |
-| Unix socket (IPC) | 1 listener + 1 per client | Closed on disconnect |
-| TCP listener (Axum) | 1 + 1 per HTTP connection | HTTP keep-alive timeout |
-| PipeWire | 2-3 (screen capture) | Held while capturing |
-| cpal audio | 1-2 (ALSA/PipeWire) | Held while running |
-| inotify (config watch) | 1 | Held for daemon lifetime |
+| Resource                  | FDs Used                  | Lifecycle                |
+| ------------------------- | ------------------------- | ------------------------ |
+| USB HID devices           | 1 per device              | Held while connected     |
+| UDP sockets (DDP, E1.31)  | 1 per network target      | Held while connected     |
+| TCP connections (OpenRGB) | 1 per OpenRGB server      | Reconnect on error       |
+| DTLS sessions (Hue)       | 1 per Hue bridge          | Reconnect on timeout     |
+| Unix socket (IPC)         | 1 listener + 1 per client | Closed on disconnect     |
+| TCP listener (Axum)       | 1 + 1 per HTTP connection | HTTP keep-alive timeout  |
+| PipeWire                  | 2-3 (screen capture)      | Held while capturing     |
+| cpal audio                | 1-2 (ALSA/PipeWire)       | Held while running       |
+| inotify (config watch)    | 1                         | Held for daemon lifetime |
 
 **Typical total:** 15-30 FDs. Well within the default Linux limit of 1024.
 
@@ -1189,6 +1200,7 @@ impl Watchdog {
 ```
 
 The watchdog does **not** kill the process. It sends a restart signal to the main loop, which attempts a graceful recovery:
+
 1. Drop the current effect renderer
 2. Re-initialize wgpu device (GPU may have been lost)
 3. Re-enumerate USB devices
@@ -1279,13 +1291,13 @@ fn bench_servo_render_canvas2d(b: &mut Bencher) {
 
 **Targets:**
 
-| Benchmark | Target | Hard Limit |
-|---|---|---|
-| wgpu solid color render | <0.5ms | <1ms |
-| wgpu complex shader render | <2ms | <5ms |
-| wgpu pixel readback | <0.3ms | <1ms |
-| Servo Canvas 2D render | <5ms | <10ms |
-| Servo WebGL render | <8ms | <12ms |
+| Benchmark                  | Target | Hard Limit |
+| -------------------------- | ------ | ---------- |
+| wgpu solid color render    | <0.5ms | <1ms       |
+| wgpu complex shader render | <2ms   | <5ms       |
+| wgpu pixel readback        | <0.3ms | <1ms       |
+| Servo Canvas 2D render     | <5ms   | <10ms      |
+| Servo WebGL render         | <8ms   | <12ms      |
 
 #### Category 2: Spatial Sampling
 
@@ -1313,11 +1325,11 @@ fn bench_spatial_sample_2000_leds(b: &mut Bencher) {
 
 **Targets:**
 
-| LED Count | Target | Notes |
-|---|---|---|
-| 500 | <0.1ms | Typical setup |
-| 2000 | <0.3ms | Large setup |
-| 5000 | <0.8ms | Extreme setup |
+| LED Count | Target | Notes         |
+| --------- | ------ | ------------- |
+| 500       | <0.1ms | Typical setup |
+| 2000      | <0.3ms | Large setup   |
+| 5000      | <0.8ms | Extreme setup |
 
 #### Category 3: Device Output
 
@@ -1365,12 +1377,12 @@ fn bench_beat_detection(b: &mut Bencher) {
 
 **Targets:**
 
-| Benchmark | Target |
-|---|---|
-| FFT 1024 samples | <0.2ms |
-| FFT 4096 samples | <0.5ms |
-| Beat detection | <0.05ms |
-| Full audio pipeline | <0.5ms |
+| Benchmark           | Target  |
+| ------------------- | ------- |
+| FFT 1024 samples    | <0.2ms  |
+| FFT 4096 samples    | <0.5ms  |
+| Beat detection      | <0.05ms |
+| Full audio pipeline | <0.5ms  |
 
 #### Category 5: Memory Regression
 
@@ -1443,14 +1455,14 @@ name: Performance Gates
 on:
   pull_request:
     paths:
-      - 'crates/hypercolor-core/src/effect/**'
-      - 'crates/hypercolor-core/src/spatial/**'
-      - 'crates/hypercolor-core/src/device/**'
-      - 'crates/hypercolor-core/src/input/**'
+      - "crates/hypercolor-core/src/effect/**"
+      - "crates/hypercolor-core/src/spatial/**"
+      - "crates/hypercolor-core/src/device/**"
+      - "crates/hypercolor-core/src/input/**"
 
 jobs:
   benchmarks:
-    runs-on: ubuntu-latest  # Ideally self-hosted with GPU for wgpu benches
+    runs-on: ubuntu-latest # Ideally self-hosted with GPU for wgpu benches
     steps:
       - uses: actions/checkout@v4
 
@@ -1460,9 +1472,9 @@ jobs:
       - name: Compare against main
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          tool: 'cargo'
+          tool: "cargo"
           output-file-path: bench-output.txt
-          alert-threshold: '120%'        # Fail if 20% regression
+          alert-threshold: "120%" # Fail if 20% regression
           comment-on-alert: true
           fail-on-alert: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -1528,29 +1540,29 @@ The benchmark suite generates a report on every release:
 
 ## Appendix A: Key Crate Dependencies for Performance
 
-| Crate | Purpose | Why This One |
-|---|---|---|
-| `tikv-jemallocator` | Global allocator | malloc_stats, heap profiling, reduced fragmentation |
-| `triple_buffer` | Lock-free producer-consumer | Zero-copy, wait-free, perfect for audio/screen threads |
-| `metrics` + `metrics-exporter-prometheus` | Metrics framework | Prometheus-compatible, zero-cost disabled metrics |
-| `tracing` + `tracing-subscriber` | Structured logging + spans | Per-frame span timing, async-aware |
-| `tracing-tracy` | Tracy profiler integration | Visual frame profiling during development |
-| `tokio-console` | Async runtime debugger | Task introspection, poll timing |
-| `thread-priority` | OS thread priority control | RT priority for audio via rtkit |
-| `core_affinity` | CPU core pinning | Reduce render thread migration jitter |
-| `criterion` | Benchmarking framework | Statistical analysis, regression detection |
-| `sysinfo` | System metrics (CPU, RAM, GPU) | Cross-platform load detection |
+| Crate                                     | Purpose                        | Why This One                                           |
+| ----------------------------------------- | ------------------------------ | ------------------------------------------------------ |
+| `tikv-jemallocator`                       | Global allocator               | malloc_stats, heap profiling, reduced fragmentation    |
+| `triple_buffer`                           | Lock-free producer-consumer    | Zero-copy, wait-free, perfect for audio/screen threads |
+| `metrics` + `metrics-exporter-prometheus` | Metrics framework              | Prometheus-compatible, zero-cost disabled metrics      |
+| `tracing` + `tracing-subscriber`          | Structured logging + spans     | Per-frame span timing, async-aware                     |
+| `tracing-tracy`                           | Tracy profiler integration     | Visual frame profiling during development              |
+| `tokio-console`                           | Async runtime debugger         | Task introspection, poll timing                        |
+| `thread-priority`                         | OS thread priority control     | RT priority for audio via rtkit                        |
+| `core_affinity`                           | CPU core pinning               | Reduce render thread migration jitter                  |
+| `criterion`                               | Benchmarking framework         | Statistical analysis, regression detection             |
+| `sysinfo`                                 | System metrics (CPU, RAM, GPU) | Cross-platform load detection                          |
 
 ## Appendix B: Reference Hardware Performance Expectations
 
 Based on the reference system (i7-14700K, RTX 4070 SUPER, 64GB DDR5):
 
-| Scenario | Expected FPS | CPU Usage | GPU Usage | RAM |
-|---|---|---|---|---|
-| wgpu solid color, 1 WLED strip | 60 | <1% | <0.1% | 45MB |
-| wgpu complex shader, 5 devices | 60 | 2-3% | <0.5% | 50MB |
-| Servo Canvas 2D, 5 devices | 60 | 3-5% | <0.5% | 150MB |
-| Servo WebGL, 10 devices, audio | 60 | 5-8% | <1% | 180MB |
-| Above + screen capture | 60 | 8-12% | <1% | 200MB |
-| Above + game running (GPU@90%) | 30 (Gaming tier) | 5-8% | <0.5% (software) | 200MB |
-| System idle, breathing effect | 5 (Standby) | <0.5% | 0% | 40MB |
+| Scenario                       | Expected FPS     | CPU Usage | GPU Usage        | RAM   |
+| ------------------------------ | ---------------- | --------- | ---------------- | ----- |
+| wgpu solid color, 1 WLED strip | 60               | <1%       | <0.1%            | 45MB  |
+| wgpu complex shader, 5 devices | 60               | 2-3%      | <0.5%            | 50MB  |
+| Servo Canvas 2D, 5 devices     | 60               | 3-5%      | <0.5%            | 150MB |
+| Servo WebGL, 10 devices, audio | 60               | 5-8%      | <1%              | 180MB |
+| Above + screen capture         | 60               | 8-12%     | <1%              | 200MB |
+| Above + game running (GPU@90%) | 30 (Gaming tier) | 5-8%      | <0.5% (software) | 200MB |
+| System idle, breathing effect  | 5 (Standby)      | <0.5%     | 0%               | 40MB  |

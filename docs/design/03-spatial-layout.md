@@ -76,7 +76,7 @@ exact canvas pixel coordinate, then reads the color.
 ### Why This is Hard
 
 **Density mismatch.** A 20x6 Strimer matrix mapped to a 40x12 pixel region of the canvas means each
-LED covers a 2x2 area. A Hue bulb mapped to the same region should average the *entire* 40x12 area
+LED covers a 2x2 area. A Hue bulb mapped to the same region should average the _entire_ 40x12 area
 into one color. The sampler must handle both extremes.
 
 **Topology mismatch.** A fan ring is circular in physical space but must sample from a rectangular
@@ -311,14 +311,14 @@ Strip Shape:
 
 **Preset variants:**
 
-| Preset | LEDs | Typical Use |
-|--------|------|-------------|
-| `strip-30` | 30/m | Standard WS2812B |
-| `strip-60` | 60/m | High-density WS2812B |
-| `strip-144` | 144/m | Ultra-dense SK6812 |
-| `wled-1m` | 30 | 1m WLED segment |
-| `wled-2m` | 60 | 2m WLED segment |
-| `wled-5m` | 150 | 5m WLED strip |
+| Preset      | LEDs  | Typical Use          |
+| ----------- | ----- | -------------------- |
+| `strip-30`  | 30/m  | Standard WS2812B     |
+| `strip-60`  | 60/m  | High-density WS2812B |
+| `strip-144` | 144/m | Ultra-dense SK6812   |
+| `wled-1m`   | 30    | 1m WLED segment      |
+| `wled-2m`   | 60    | 2m WLED segment      |
+| `wled-5m`   | 150   | 5m WLED strip        |
 
 ### Fan Ring (Circular)
 
@@ -344,16 +344,16 @@ Fan Ring Shape (16 LEDs, 120mm):
 
 **Preset variants:**
 
-| Preset | LEDs | Size |
-|--------|------|------|
-| `fan-120mm-8` | 8 | 120mm |
-| `fan-120mm-12` | 12 | 120mm |
-| `fan-120mm-16` | 16 | 120mm |
-| `fan-120mm-18` | 18 | 120mm (Corsair QL) |
-| `fan-120mm-34` | 34 | 120mm (Corsair QL inner+outer) |
-| `fan-140mm-16` | 16 | 140mm |
-| `fan-140mm-18` | 18 | 140mm |
-| `fan-200mm-24` | 24 | 200mm |
+| Preset         | LEDs | Size                           |
+| -------------- | ---- | ------------------------------ |
+| `fan-120mm-8`  | 8    | 120mm                          |
+| `fan-120mm-12` | 12   | 120mm                          |
+| `fan-120mm-16` | 16   | 120mm                          |
+| `fan-120mm-18` | 18   | 120mm (Corsair QL)             |
+| `fan-120mm-34` | 34   | 120mm (Corsair QL inner+outer) |
+| `fan-140mm-16` | 16   | 140mm                          |
+| `fan-140mm-18` | 18   | 140mm                          |
+| `fan-200mm-24` | 24   | 200mm                          |
 
 For dual-ring fans (like Corsair QL120 with inner and outer rings), the shape is two concentric
 circles:
@@ -400,13 +400,13 @@ ASUS ROG STRIX Z790-A Preset:
 
 **Preset variants:**
 
-| Preset | Zones | LEDs |
-|--------|-------|------|
-| `mobo-asus-z790-strix` | 4 | ~30 |
-| `mobo-asus-z790-hero` | 6 | ~50 |
-| `mobo-msi-z790-edge` | 3 | ~24 |
-| `mobo-gigabyte-z790-master` | 4 | ~32 |
-| `mobo-generic` | 1 (edge strip) | configurable |
+| Preset                      | Zones          | LEDs         |
+| --------------------------- | -------------- | ------------ |
+| `mobo-asus-z790-strix`      | 4              | ~30          |
+| `mobo-asus-z790-hero`       | 6              | ~50          |
+| `mobo-msi-z790-edge`        | 3              | ~24          |
+| `mobo-gigabyte-z790-master` | 4              | ~32          |
+| `mobo-generic`              | 1 (edge strip) | configurable |
 
 ### Strimers (Matrix)
 
@@ -694,7 +694,7 @@ approach.
 This is what the user edits in the main layout editor.
 
 **Per-effect overrides** are optional. An effect can declare a layout preset (or the user can assign
-one). The override doesn't create a whole new layout from scratch -- it applies *transforms* to the
+one). The override doesn't create a whole new layout from scratch -- it applies _transforms_ to the
 global layout:
 
 ```rust
@@ -744,13 +744,13 @@ pub enum LayoutArrangement {
 
 ### Why Per-Effect Layouts?
 
-| Scenario | Global Layout | Better Override |
-|----------|---------------|-----------------|
+| Scenario                | Global Layout               | Better Override                                              |
+| ----------------------- | --------------------------- | ------------------------------------------------------------ |
 | **Audio spectrum bars** | Devices scattered naturally | Stack all zones vertically -- each zone = one frequency band |
-| **Screen ambience** | General PC case layout | Zones match physical monitor surround positions |
-| **Radial pulse** | Devices in a line | All zones centered, radiating outward |
-| **Left-right sweep** | Complex 3D layout | Flatten everything to a horizontal strip |
-| **Per-device solid** | Mixed layout | Each zone shrunk to a point (pure color per device) |
+| **Screen ambience**     | General PC case layout      | Zones match physical monitor surround positions              |
+| **Radial pulse**        | Devices in a line           | All zones centered, radiating outward                        |
+| **Left-right sweep**    | Complex 3D layout           | Flatten everything to a horizontal strip                     |
+| **Per-device solid**    | Mixed layout                | Each zone shrunk to a point (pure color per device)          |
 
 ### Quick Preset Switching
 
@@ -783,7 +783,10 @@ Effects can declare layout preferences in their metadata:
 
 <!-- Hypercolor native -->
 <meta name="hc:layout" content="centered" />
-<meta name="hc:layout_reason" content="Radial effect works best with centered zones" />
+<meta
+  name="hc:layout_reason"
+  content="Radial effect works best with centered zones"
+/>
 ```
 
 ```rust
@@ -1002,12 +1005,12 @@ the viewer's perspective.
 
 **When 3D matters:**
 
-| Scenario | Why 3D Helps | 2D Workaround |
-|----------|--------------|---------------|
-| Glass side panel PC | Viewer sees depth; front fans vs rear fans should differ | Offset zones slightly on the 2D canvas |
-| Room with ceiling strips | Ceiling and floor are at different z | Different canvas regions (top vs bottom) |
-| Wrap-around effects | Effect wraps around a 3D object | Multiple zones with rotation |
-| Physical modeling | Accurate distance-based falloff for Hue bulbs | Adjust sampling radius manually |
+| Scenario                 | Why 3D Helps                                             | 2D Workaround                            |
+| ------------------------ | -------------------------------------------------------- | ---------------------------------------- |
+| Glass side panel PC      | Viewer sees depth; front fans vs rear fans should differ | Offset zones slightly on the 2D canvas   |
+| Room with ceiling strips | Ceiling and floor are at different z                     | Different canvas regions (top vs bottom) |
+| Wrap-around effects      | Effect wraps around a 3D object                          | Multiple zones with rotation             |
+| Physical modeling        | Accurate distance-based falloff for Hue bulbs            | Adjust sampling radius manually          |
 
 ### The Hybrid Approach
 
@@ -1481,7 +1484,7 @@ Bilinear Interpolation:
 ### Area Average
 
 For devices that represent a large physical area (Hue bulbs illuminating a room section, large zone
-RGB), sampling a single point is wrong. The device should reflect the *average* color of its canvas
+RGB), sampling a single point is wrong. The device should reflect the _average_ color of its canvas
 region.
 
 ```rust
@@ -1574,7 +1577,7 @@ impl SummedAreaTable {
 }
 ```
 
-Building the summed area table is O(width * height) -- e.g. ~64K ops for 320x200 or ~307K for
+Building the summed area table is O(width \* height) -- e.g. ~64K ops for 320x200 or ~307K for
 640x480 -- still negligible at 60fps. After that, every area average query is O(1).
 
 ### Gaussian-Weighted Area Average
@@ -1787,8 +1790,8 @@ Layouts are stored as JSON for maximum portability and human readability.
                 "width": 20,
                 "height": 6
               },
-              "position": { "x": 0.35, "y": 0.40 },
-              "size": { "width": 0.30, "height": 0.15 },
+              "position": { "x": 0.35, "y": 0.4 },
+              "size": { "width": 0.3, "height": 0.15 },
               "rotation": 0,
               "sampling": "bilinear",
               "edge_behavior": "clamp"
@@ -1804,7 +1807,7 @@ Layouts are stored as JSON for maximum portability and human readability.
                 "count": 16,
                 "start_angle": 0
               },
-              "position": { "x": 0.05, "y": 0.70 },
+              "position": { "x": 0.05, "y": 0.7 },
               "size": { "width": 0.12, "height": 0.12 },
               "rotation": 0,
               "sampling": "bilinear"
@@ -1825,8 +1828,8 @@ Layouts are stored as JSON for maximum portability and human readability.
                 "count": 120,
                 "direction": "left_to_right"
               },
-              "position": { "x": 0.05, "y": 0.90 },
-              "size": { "width": 0.90, "height": 0.03 },
+              "position": { "x": 0.05, "y": 0.9 },
+              "size": { "width": 0.9, "height": 0.03 },
               "rotation": 0,
               "sampling": "bilinear"
             },
@@ -1836,7 +1839,7 @@ Layouts are stored as JSON for maximum portability and human readability.
               "device_id": "hue-bridge.lamp-1",
               "shape_preset": "point",
               "topology": { "type": "point" },
-              "position": { "x": 0.80, "y": 0.75 },
+              "position": { "x": 0.8, "y": 0.75 },
               "size": { "width": 0.08, "height": 0.08 },
               "sampling": {
                 "type": "area_average",
@@ -1995,7 +1998,7 @@ pub fn suggest_placement(
 }
 ```
 
-Auto-layout is a *suggestion*. The UI previews the suggested position with a ghost outline and the
+Auto-layout is a _suggestion_. The UI previews the suggested position with a ghost outline and the
 user confirms or adjusts.
 
 ### Schema Versioning
@@ -2082,6 +2085,7 @@ Bliss's Layout:
 ```
 
 **Bliss's pain points that Hypercolor solves:**
+
 - Traditional layout editors are clunky for 12 devices -- Hypercolor's snap/align makes it fast
 - Per-effect layouts in other engines require redoing the entire layout -- Hypercolor's override system
   applies transforms to the global layout
@@ -2121,6 +2125,7 @@ Jake's Layout:
 ```
 
 **Jake's workflow:**
+
 1. Hypercolor auto-discovers the motherboard via OpenRGB and the strip via WLED mDNS
 2. Auto-layout places the motherboard centered, strip below it
 3. Jake picks an effect from the browser. Done.
@@ -2173,6 +2178,7 @@ Alex's Layout (Unified Canvas, Multi-Room):
 ```
 
 **Alex's workflow:**
+
 1. Create 4 spaces with physical dimensions
 2. Hypercolor auto-maps them to canvas regions proportionally
 3. Within each space, drag WLED strips to their wall positions
@@ -2288,4 +2294,4 @@ production.
 
 ---
 
-*Spatial engine design by Nova. Pixels meet photons.*
+_Spatial engine design by Nova. Pixels meet photons._

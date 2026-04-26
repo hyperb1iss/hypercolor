@@ -70,7 +70,6 @@ That creates three concrete problems:
 1. **High fan-out for every new backend**
 
    Adding a network backend currently requires touching multiple modules to:
-
    - register the backend
    - extend discovery backend enums and parsing
    - add auth summary logic
@@ -174,12 +173,12 @@ credential semantics, and backend construction.
 
 ### 5.2 Ownership Split
 
-| Layer | Responsibility |
-|------|----------------|
-| `hypercolor-driver-api` | Stable host/driver boundary |
-| `hypercolor-network` | Registry, host adapters, generic routing |
-| driver crates | Protocol-specific implementation |
-| daemon | Runtime wiring, API surface, render loop lifecycle |
+| Layer                   | Responsibility                                     |
+| ----------------------- | -------------------------------------------------- |
+| `hypercolor-driver-api` | Stable host/driver boundary                        |
+| `hypercolor-network`    | Registry, host adapters, generic routing           |
+| driver crates           | Protocol-specific implementation                   |
+| daemon                  | Runtime wiring, API surface, render loop lifecycle |
 
 ---
 

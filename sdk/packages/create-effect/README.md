@@ -28,12 +28,12 @@ bun run build
 
 ## Templates
 
-| Template | What you get |
-|---|---|
+| Template | What you get                                    |
+| -------- | ----------------------------------------------- |
 | `canvas` | TypeScript effect with a Canvas2D draw function |
-| `shader` | TypeScript effect with a GLSL fragment shader |
-| `face` | A device-face layout for sensor dashboards |
-| `html` | A raw LightScript HTML effect, no TypeScript |
+| `shader` | TypeScript effect with a GLSL fragment shader   |
+| `face`   | A device-face layout for sensor dashboards      |
+| `html`   | A raw LightScript HTML effect, no TypeScript    |
 
 ## Options
 

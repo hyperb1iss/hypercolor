@@ -11,38 +11,38 @@ Hypercolor tracks **332 devices** across **30 vendors** in `data/drivers/vendors
 
 ## Summary
 
-| Vendor | Supported | In progress | Researched | Blocked | Drivers |
-|---|--:|--:|--:|--:|---|
-| [Ableton](#ableton) | 1 | — | — | — | `push2` |
-| [Alienware](#alienware) | — | — | 3 | — | — |
-| [Aqua Computer](#aquacomputer) | — | — | 4 | — | — |
-| [ASRock](#asrock) | — | — | 4 | — | — |
-| [ASUS](#asus) | 10 | — | 10 | — | `asus` |
-| [Cooler Master](#coolermaster) | — | — | 20 | — | — |
-| [Corsair](#corsair) | 14 | — | 9 | — | `corsair` |
-| [Dygma](#dygma) | — | — | — | 2 | `dygma` |
-| [EVGA](#evga) | — | — | 7 | — | — |
-| [Fnatic](#fnatic) | — | — | 3 | — | — |
-| [Gigabyte](#gigabyte) | — | — | 8 | — | — |
-| [Glorious](#glorious) | 1 | — | 4 | — | `qmk` |
-| [HyperX](#hyperx) | — | — | 16 | — | — |
-| [HYTE](#hyte) | — | — | 2 | — | — |
-| [Lian Li](#lianli) | 9 | — | 2 | — | `lianli` |
-| [Logitech](#logitech) | — | — | 9 | — | — |
-| [Mountain](#mountain) | — | — | 4 | — | — |
-| [MSI](#msi) | — | — | 11 | — | — |
-| [Nanoleaf](#nanoleaf) | 1 | — | — | — | `nanoleaf` |
-| [NZXT](#nzxt) | — | — | 17 | — | — |
-| [Philips](#philips) | 1 | — | — | — | `hue` |
-| [PrismRGB](#prismrgb) | 4 | — | — | — | `prismrgb` |
-| [QMK](#qmk) | 10 | — | — | — | `qmk` |
-| [Razer](#razer) | 70 | — | 38 | — | `razer` |
-| [Roccat](#roccat) | — | — | 14 | — | — |
-| [Sony](#sony) | — | — | 3 | — | — |
-| [SteelSeries](#steelseries) | — | — | 6 | — | — |
-| [Thermaltake](#thermaltake) | — | — | 10 | — | — |
-| [WLED](#wled) | 1 | — | — | — | `wled` |
-| [Wooting](#wooting) | — | — | 4 | — | — |
+| Vendor                         | Supported | In progress | Researched | Blocked | Drivers    |
+| ------------------------------ | --------: | ----------: | ---------: | ------: | ---------- |
+| [Ableton](#ableton)            |         1 |           — |          — |       — | `push2`    |
+| [Alienware](#alienware)        |         — |           — |          3 |       — | —          |
+| [Aqua Computer](#aquacomputer) |         — |           — |          4 |       — | —          |
+| [ASRock](#asrock)              |         — |           — |          4 |       — | —          |
+| [ASUS](#asus)                  |        10 |           — |         10 |       — | `asus`     |
+| [Cooler Master](#coolermaster) |         — |           — |         20 |       — | —          |
+| [Corsair](#corsair)            |        14 |           — |          9 |       — | `corsair`  |
+| [Dygma](#dygma)                |         — |           — |          — |       2 | `dygma`    |
+| [EVGA](#evga)                  |         — |           — |          7 |       — | —          |
+| [Fnatic](#fnatic)              |         — |           — |          3 |       — | —          |
+| [Gigabyte](#gigabyte)          |         — |           — |          8 |       — | —          |
+| [Glorious](#glorious)          |         1 |           — |          4 |       — | `qmk`      |
+| [HyperX](#hyperx)              |         — |           — |         16 |       — | —          |
+| [HYTE](#hyte)                  |         — |           — |          2 |       — | —          |
+| [Lian Li](#lianli)             |         9 |           — |          2 |       — | `lianli`   |
+| [Logitech](#logitech)          |         — |           — |          9 |       — | —          |
+| [Mountain](#mountain)          |         — |           — |          4 |       — | —          |
+| [MSI](#msi)                    |         — |           — |         11 |       — | —          |
+| [Nanoleaf](#nanoleaf)          |         1 |           — |          — |       — | `nanoleaf` |
+| [NZXT](#nzxt)                  |         — |           — |         17 |       — | —          |
+| [Philips](#philips)            |         1 |           — |          — |       — | `hue`      |
+| [PrismRGB](#prismrgb)          |         4 |           — |          — |       — | `prismrgb` |
+| [QMK](#qmk)                    |        10 |           — |          — |       — | `qmk`      |
+| [Razer](#razer)                |        70 |           — |         38 |       — | `razer`    |
+| [Roccat](#roccat)              |         — |           — |         14 |       — | —          |
+| [Sony](#sony)                  |         — |           — |          3 |       — | —          |
+| [SteelSeries](#steelseries)    |         — |           — |          6 |       — | —          |
+| [Thermaltake](#thermaltake)    |         — |           — |         10 |       — | —          |
+| [WLED](#wled)                  |         1 |           — |          — |       — | `wled`     |
+| [Wooting](#wooting)            |         — |           — |          4 |       — | —          |
 
 ## By Driver
 
@@ -59,359 +59,359 @@ Hypercolor tracks **332 devices** across **30 vendors** in `data/drivers/vendors
 
 ## Supported Devices
 
-| Vendor | Device | PID | Type | Driver | Transport | LEDs | Notes |
-|---|---|---|---|---|---|---|---|
-| Ableton | Push 2 | 0x1967 | Other | `push2` | USB MIDI | — | Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display. |
-| ASUS | Aura Addressable (Gen 1) | 0x1867 | ARGB controller | `asus` | USB HID (raw) | — | Up to 120 LEDs per ARGB channel |
-| ASUS | Aura Addressable (Gen 2) | 0x1872 | ARGB controller | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Addressable (Gen 3) | 0x18A3 | ARGB controller | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Addressable (Gen 4) | 0x18A5 | ARGB controller | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Motherboard (Gen 1) | 0x18F3 | Motherboard | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Motherboard (Gen 2) | 0x1939 | Motherboard | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Motherboard (Gen 3) | 0x19AF | Motherboard | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Motherboard (Gen 4) | 0x1AA6 | Motherboard | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Motherboard (Gen 5) | 0x1BED | Motherboard | `asus` | USB HID (raw) | — | — |
-| ASUS | Aura Terminal | 0x1889 | ARGB controller | `asus` | USB HID (raw) | — | — |
-| Corsair | 1000D Obsidian | 0x1D00 | ARGB controller | `corsair` | USB HID | — | 2 channels |
-| Corsair | Commander Pro | 0x0C10 | Fan controller | `corsair` | USB HID | — | 2 RGB channels + fan control |
-| Corsair | Elite Capellix LCD | 0x0C39 | LCD module | `corsair` | USB bulk transfer | — | 480x480 JPEG streaming, 30fps |
-| Corsair | Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module | `corsair` | USB bulk transfer | — | — |
-| Corsair | iCUE LINK LCD | 0x0C4E | LCD module | `corsair` | USB bulk transfer | — | — |
-| Corsair | iCUE LINK System Hub | 0x0C3F | Fan controller | `corsair` | USB HID | — | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
-| Corsair | Lighting Node Core | 0x0C1A | ARGB controller | `corsair` | USB HID | — | 1 channel, 204 LEDs max |
-| Corsair | Lighting Node Pro | 0x0C0B | ARGB controller | `corsair` | USB HID | — | 2 channels, 408 LEDs max |
-| Corsair | LS100 Starter Kit | 0x0C1E | LED strip | `corsair` | USB HID | — | 1 channel |
-| Corsair | LT100 Tower | 0x0C23 | LED strip | `corsair` | USB HID | — | 2 channels |
-| Corsair | Nautilus RS LCD | 0x0C55 | LCD module | `corsair` | USB bulk transfer | — | — |
-| Corsair | SPEC OMEGA RGB | 0x1D04 | ARGB controller | `corsair` | USB HID | — | 2 channels |
-| Corsair | XC7 RGB Elite LCD | 0x0C42 | LCD module | `corsair` | USB bulk transfer | 31 | 480x480 display + 31-LED ring, custom XC7 init sequence |
-| Corsair | XD6 Elite LCD | 0x0C43 | LCD module | `corsair` | USB bulk transfer | — | — |
-| Glorious | GMMK Pro | 0x5044 | Keyboard | `qmk` | USB HID | — | VID 0x320F, supported via QMK driver |
-| Lian Li | TL Fan Hub | 0x7372 | Fan controller | `lianli` | USB HID | 260 | VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported. |
-| Lian Li | Uni Hub - AL | 0xA101 | Fan controller | `lianli` | USB HID | — | Dual-ring fans (inner/outer), firmware-dependent: HID for v1.7+, Vendor for v1.0 (AL10) |
-| Lian Li | Uni Hub - AL V2 | 0xA104 | Fan controller | `lianli` | USB HID | — | Dual-ring, 144 bytes per port output |
-| Lian Li | Uni Hub - SL | 0xA100 | Fan controller | `lianli` | USB HID | — | ENE 6K77 protocol, single-ring fans |
-| Lian Li | Uni Hub - SL Infinity | 0xA102 | Fan controller | `lianli` | USB HID | — | 4 physical groups, 8 logical channels |
-| Lian Li | Uni Hub - SL Redragon | 0xA106 | Fan controller | `lianli` | USB HID | — | — |
-| Lian Li | Uni Hub - SL V2 | 0xA103 | Fan controller | `lianli` | USB HID | — | — |
-| Lian Li | Uni Hub - SL V2a | 0xA105 | Fan controller | `lianli` | USB HID | — | — |
-| Lian Li | Uni Hub (Original) | 0x7750 | Fan controller | `lianli` | USB vendor | — | Legacy USB vendor protocol |
-| Nanoleaf | Nanoleaf Panels (any) | — | LED strip | `nanoleaf` | HTTP | — | mDNS discovery + power button pairing. Supports all panel shapes and light strips. |
-| Philips | Hue Bridge (any) | — | ARGB controller | `hue` | HTTP | — | mDNS discovery + link button pairing. Controls all lights connected to bridge. |
-| PrismRGB | Nollie 8 v2 | 0x1F01 | ARGB controller | `prismrgb` | USB HID | — | VID 0x16D2, GRB byte order |
-| PrismRGB | Prism 8 | 0x1F01 | ARGB controller | `prismrgb` | USB HID | — | VID 0x16D5, 8 channels x 126 LEDs, GRB byte order |
-| PrismRGB | Prism Mini | 0x1407 | ARGB controller | `prismrgb` | USB HID | — | VID 0x16D0, 128 LEDs max, color pair compression |
-| PrismRGB | Prism S | 0x1294 | ARGB controller | `prismrgb` | USB HID | — | VID 0x16D0, RGB byte order, ATX + GPU cable variants |
-| QMK | Glorious GMMK Pro | 0x5044 | Keyboard | `qmk` | USB HID | — | VID 0x320F |
-| QMK | Keychron Q1 | 0x0110 | Keyboard | `qmk` | USB HID | — | VID 0x3434, QMK protocol rev D |
-| QMK | Keychron Q2 | 0x0120 | Keyboard | `qmk` | USB HID | — | VID 0x3434 |
-| QMK | Keychron Q3 | 0x0130 | Keyboard | `qmk` | USB HID | — | VID 0x3434 |
-| QMK | Keychron Q5 | 0x0150 | Keyboard | `qmk` | USB HID | — | VID 0x3434 |
-| QMK | Keychron Q6 | 0x0160 | Keyboard | `qmk` | USB HID | — | VID 0x3434 |
-| QMK | Keychron V1 | 0x0310 | Keyboard | `qmk` | USB HID | — | VID 0x3434 |
-| QMK | OLKB Planck | 0x6060 | Keyboard | `qmk` | USB HID | — | VID 0xFEED |
-| QMK | ZSA Moonlander | 0x1969 | Keyboard | `qmk` | USB HID | — | VID 0x3297 |
-| QMK | ZSA Voyager | 0x0791 | Keyboard | `qmk` | USB HID | — | VID 0x3297 |
-| Razer | Base Station V2 Chroma | 0x0F20 | Other | `razer` | USB HID | — | — |
-| Razer | Basilisk Ultimate | 0x0086 | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk Ultimate (Wireless) | 0x0088 | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 | 0x0099 | Mouse | `razer` | USB HID | 11 | Matrix 1x11, has scroll wheel LED |
-| Razer | Basilisk V3 35K | 0x00CB | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 Pro (Wired) | 0x00AA | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 Pro (Wireless) | 0x00AB | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 Pro 35K (Wired) | 0x00CC | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 Pro 35K (Wireless) | 0x00CD | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 Pro 35K Phantom Green (Wired) | 0x00D6 | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 Pro 35K Phantom Green (Wireless) | 0x00D7 | Mouse | `razer` | USB HID | — | — |
-| Razer | Basilisk V3 X HyperSpeed | 0x00B9 | Mouse | `razer` | USB HID | — | — |
-| Razer | BlackWidow V3 | 0x024E | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V3 Mini (Wired) | 0x0258 | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V3 Pro (Wired) | 0x025A | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V3 Pro (Wireless) | 0x025C | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V3 TKL | 0x0A24 | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V4 | 0x0287 | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V4 Pro | 0x028D | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V4 Pro 75% (Wired) | 0x02B3 | Keyboard | `razer` | USB HID | — | — |
-| Razer | BlackWidow V4 Pro 75% (Wireless) | 0x02B4 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Blade 14 (2021) | 0x0270 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Blade 14 (2023) | 0x029D | Keyboard | `razer` | USB HID | — | — |
-| Razer | Blade 15 (2022) | 0x028A | Keyboard | `razer` | USB HID | — | — |
-| Razer | Blade 15 (Late 2021 Advanced) | 0x0276 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Blade Pro (2016) | 0x0210 | Keyboard | `razer` | USB HID | — | Legacy protocol, matrix 6x25 |
-| Razer | Charging Pad Chroma | 0x0F26 | Mousepad | `razer` | USB HID | — | — |
-| Razer | Chroma HDK | 0x0F09 | ARGB controller | `razer` | USB HID | — | — |
-| Razer | Cobra | 0x00A3 | Mouse | `razer` | USB HID | — | — |
-| Razer | Cobra Pro (Wired) | 0x00AF | Mouse | `razer` | USB HID | — | — |
-| Razer | Cobra Pro (Wireless) | 0x00B0 | Mouse | `razer` | USB HID | — | — |
-| Razer | Cynosa Chroma | 0x022A | Keyboard | `razer` | USB HID | — | — |
-| Razer | DeathAdder Essential V2 | 0x0098 | Mouse | `razer` | USB HID | — | — |
-| Razer | DeathAdder V2 | 0x0084 | Mouse | `razer` | USB HID | — | — |
-| Razer | DeathAdder V2 Mini | 0x008C | Mouse | `razer` | USB HID | — | — |
-| Razer | DeathStalker V2 | 0x0295 | Keyboard | `razer` | USB HID | — | — |
-| Razer | DeathStalker V2 Pro TKL (Wired) | 0x0298 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Firefly V2 Pro | 0x0C08 | Mousepad | `razer` | USB HID | — | — |
-| Razer | Goliathus Chroma 3XL | 0x0C06 | Mousepad | `razer` | USB HID | — | — |
-| Razer | Huntsman | 0x0227 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman Elite | 0x0226 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman Mini | 0x0257 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman Mini Analog | 0x0282 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman Mini Wireless | 0x0256 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman Tournament Edition | 0x0243 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman V2 | 0x026C | Keyboard | `razer` | USB HID | 132 | Extended matrix 6x22 |
-| Razer | Huntsman V2 Analog | 0x0266 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman V2 TKL | 0x026B | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman V3 Pro | 0x02A6 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman V3 Pro TKL White | 0x02A7 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Huntsman V3 Pro Wireless | 0x02A0 | Keyboard | `razer` | USB HID | — | — |
-| Razer | Laptop Stand Chroma | 0x0F0D | Other | `razer` | USB HID | — | — |
-| Razer | Laptop Stand Chroma V2 | 0x0F2B | Other | `razer` | USB HID | — | — |
-| Razer | Leviathan V2 | 0x0532 | Speakers | `razer` | USB HID | — | — |
-| Razer | Lian Li O11 Dynamic - Razer Edition | 0x0F13 | Case | `razer` | USB HID | — | — |
-| Razer | Mamba Elite | 0x006C | Mouse | `razer` | USB HID | 20 | Extended matrix 1x20 |
-| Razer | Mouse Bungee V3 Chroma | 0x0F1D | Other | `razer` | USB HID | — | — |
-| Razer | Naga Classic | 0x0093 | Mouse | `razer` | USB HID | — | — |
-| Razer | Naga Left Handed | 0x008D | Mouse | `razer` | USB HID | — | — |
-| Razer | Naga Pro (Wired) | 0x008F | Mouse | `razer` | USB HID | — | — |
-| Razer | Naga Pro (Wireless) | 0x0090 | Mouse | `razer` | USB HID | — | — |
-| Razer | Naga Pro V2 (Wired) | 0x00A7 | Mouse | `razer` | USB HID | — | — |
-| Razer | Naga Pro V2 (Wireless) | 0x00A8 | Mouse | `razer` | USB HID | — | — |
-| Razer | Ornata Chroma | 0x021E | Keyboard | `razer` | USB HID | — | — |
-| Razer | Seiren Emote | 0x0F1B | Microphone | `razer` | USB HID | 64 | Matrix 4x16, LED display |
-| Razer | Seiren V3 Chroma | 0x056F | Microphone | `razer` | USB HID | — | — |
-| Razer | Tartarus Chroma | 0x0208 | Keyboard | `razer` | USB HID | — | Keypad, standard LED set |
-| Razer | Tartarus V2 | 0x022B | Keyboard | `razer` | USB HID | — | — |
-| Razer | Tiamat 7.1 V2 | 0x0F03 | Headset | `razer` | USB HID | — | — |
-| Razer | Viper 8kHz | 0x0091 | Mouse | `razer` | USB HID | — | — |
-| WLED | WLED Controller (any) | — | ARGB controller | `wled` | UDP | — | DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers. |
+| Vendor   | Device                                       | PID    | Type            | Driver     | Transport         | LEDs | Notes                                                                                   |
+| -------- | -------------------------------------------- | ------ | --------------- | ---------- | ----------------- | ---- | --------------------------------------------------------------------------------------- |
+| Ableton  | Push 2                                       | 0x1967 | Other           | `push2`    | USB MIDI          | —    | Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display.     |
+| ASUS     | Aura Addressable (Gen 1)                     | 0x1867 | ARGB controller | `asus`     | USB HID (raw)     | —    | Up to 120 LEDs per ARGB channel                                                         |
+| ASUS     | Aura Addressable (Gen 2)                     | 0x1872 | ARGB controller | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Addressable (Gen 3)                     | 0x18A3 | ARGB controller | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Addressable (Gen 4)                     | 0x18A5 | ARGB controller | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Motherboard (Gen 1)                     | 0x18F3 | Motherboard     | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Motherboard (Gen 2)                     | 0x1939 | Motherboard     | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Motherboard (Gen 3)                     | 0x19AF | Motherboard     | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Motherboard (Gen 4)                     | 0x1AA6 | Motherboard     | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Motherboard (Gen 5)                     | 0x1BED | Motherboard     | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| ASUS     | Aura Terminal                                | 0x1889 | ARGB controller | `asus`     | USB HID (raw)     | —    | —                                                                                       |
+| Corsair  | 1000D Obsidian                               | 0x1D00 | ARGB controller | `corsair`  | USB HID           | —    | 2 channels                                                                              |
+| Corsair  | Commander Pro                                | 0x0C10 | Fan controller  | `corsair`  | USB HID           | —    | 2 RGB channels + fan control                                                            |
+| Corsair  | Elite Capellix LCD                           | 0x0C39 | LCD module      | `corsair`  | USB bulk transfer | —    | 480x480 JPEG streaming, 30fps                                                           |
+| Corsair  | Elite Capellix LCD (Alt PID)                 | 0x0C33 | LCD module      | `corsair`  | USB bulk transfer | —    | —                                                                                       |
+| Corsair  | iCUE LINK LCD                                | 0x0C4E | LCD module      | `corsair`  | USB bulk transfer | —    | —                                                                                       |
+| Corsair  | iCUE LINK System Hub                         | 0x0C3F | Fan controller  | `corsair`  | USB HID           | —    | Hub-and-spoke daisy-chain protocol, dynamic device enumeration                          |
+| Corsair  | Lighting Node Core                           | 0x0C1A | ARGB controller | `corsair`  | USB HID           | —    | 1 channel, 204 LEDs max                                                                 |
+| Corsair  | Lighting Node Pro                            | 0x0C0B | ARGB controller | `corsair`  | USB HID           | —    | 2 channels, 408 LEDs max                                                                |
+| Corsair  | LS100 Starter Kit                            | 0x0C1E | LED strip       | `corsair`  | USB HID           | —    | 1 channel                                                                               |
+| Corsair  | LT100 Tower                                  | 0x0C23 | LED strip       | `corsair`  | USB HID           | —    | 2 channels                                                                              |
+| Corsair  | Nautilus RS LCD                              | 0x0C55 | LCD module      | `corsair`  | USB bulk transfer | —    | —                                                                                       |
+| Corsair  | SPEC OMEGA RGB                               | 0x1D04 | ARGB controller | `corsair`  | USB HID           | —    | 2 channels                                                                              |
+| Corsair  | XC7 RGB Elite LCD                            | 0x0C42 | LCD module      | `corsair`  | USB bulk transfer | 31   | 480x480 display + 31-LED ring, custom XC7 init sequence                                 |
+| Corsair  | XD6 Elite LCD                                | 0x0C43 | LCD module      | `corsair`  | USB bulk transfer | —    | —                                                                                       |
+| Glorious | GMMK Pro                                     | 0x5044 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x320F, supported via QMK driver                                                    |
+| Lian Li  | TL Fan Hub                                   | 0x7372 | Fan controller  | `lianli`   | USB HID           | 260  | VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported.   |
+| Lian Li  | Uni Hub - AL                                 | 0xA101 | Fan controller  | `lianli`   | USB HID           | —    | Dual-ring fans (inner/outer), firmware-dependent: HID for v1.7+, Vendor for v1.0 (AL10) |
+| Lian Li  | Uni Hub - AL V2                              | 0xA104 | Fan controller  | `lianli`   | USB HID           | —    | Dual-ring, 144 bytes per port output                                                    |
+| Lian Li  | Uni Hub - SL                                 | 0xA100 | Fan controller  | `lianli`   | USB HID           | —    | ENE 6K77 protocol, single-ring fans                                                     |
+| Lian Li  | Uni Hub - SL Infinity                        | 0xA102 | Fan controller  | `lianli`   | USB HID           | —    | 4 physical groups, 8 logical channels                                                   |
+| Lian Li  | Uni Hub - SL Redragon                        | 0xA106 | Fan controller  | `lianli`   | USB HID           | —    | —                                                                                       |
+| Lian Li  | Uni Hub - SL V2                              | 0xA103 | Fan controller  | `lianli`   | USB HID           | —    | —                                                                                       |
+| Lian Li  | Uni Hub - SL V2a                             | 0xA105 | Fan controller  | `lianli`   | USB HID           | —    | —                                                                                       |
+| Lian Li  | Uni Hub (Original)                           | 0x7750 | Fan controller  | `lianli`   | USB vendor        | —    | Legacy USB vendor protocol                                                              |
+| Nanoleaf | Nanoleaf Panels (any)                        | —      | LED strip       | `nanoleaf` | HTTP              | —    | mDNS discovery + power button pairing. Supports all panel shapes and light strips.      |
+| Philips  | Hue Bridge (any)                             | —      | ARGB controller | `hue`      | HTTP              | —    | mDNS discovery + link button pairing. Controls all lights connected to bridge.          |
+| PrismRGB | Nollie 8 v2                                  | 0x1F01 | ARGB controller | `prismrgb` | USB HID           | —    | VID 0x16D2, GRB byte order                                                              |
+| PrismRGB | Prism 8                                      | 0x1F01 | ARGB controller | `prismrgb` | USB HID           | —    | VID 0x16D5, 8 channels x 126 LEDs, GRB byte order                                       |
+| PrismRGB | Prism Mini                                   | 0x1407 | ARGB controller | `prismrgb` | USB HID           | —    | VID 0x16D0, 128 LEDs max, color pair compression                                        |
+| PrismRGB | Prism S                                      | 0x1294 | ARGB controller | `prismrgb` | USB HID           | —    | VID 0x16D0, RGB byte order, ATX + GPU cable variants                                    |
+| QMK      | Glorious GMMK Pro                            | 0x5044 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x320F                                                                              |
+| QMK      | Keychron Q1                                  | 0x0110 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3434, QMK protocol rev D                                                          |
+| QMK      | Keychron Q2                                  | 0x0120 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3434                                                                              |
+| QMK      | Keychron Q3                                  | 0x0130 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3434                                                                              |
+| QMK      | Keychron Q5                                  | 0x0150 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3434                                                                              |
+| QMK      | Keychron Q6                                  | 0x0160 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3434                                                                              |
+| QMK      | Keychron V1                                  | 0x0310 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3434                                                                              |
+| QMK      | OLKB Planck                                  | 0x6060 | Keyboard        | `qmk`      | USB HID           | —    | VID 0xFEED                                                                              |
+| QMK      | ZSA Moonlander                               | 0x1969 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3297                                                                              |
+| QMK      | ZSA Voyager                                  | 0x0791 | Keyboard        | `qmk`      | USB HID           | —    | VID 0x3297                                                                              |
+| Razer    | Base Station V2 Chroma                       | 0x0F20 | Other           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk Ultimate                            | 0x0086 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk Ultimate (Wireless)                 | 0x0088 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3                                  | 0x0099 | Mouse           | `razer`    | USB HID           | 11   | Matrix 1x11, has scroll wheel LED                                                       |
+| Razer    | Basilisk V3 35K                              | 0x00CB | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 Pro (Wired)                      | 0x00AA | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 Pro (Wireless)                   | 0x00AB | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 Pro 35K (Wired)                  | 0x00CC | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 Pro 35K (Wireless)               | 0x00CD | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 Pro 35K Phantom Green (Wired)    | 0x00D6 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 Pro 35K Phantom Green (Wireless) | 0x00D7 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Basilisk V3 X HyperSpeed                     | 0x00B9 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V3                                | 0x024E | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V3 Mini (Wired)                   | 0x0258 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V3 Pro (Wired)                    | 0x025A | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V3 Pro (Wireless)                 | 0x025C | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V3 TKL                            | 0x0A24 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V4                                | 0x0287 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V4 Pro                            | 0x028D | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V4 Pro 75% (Wired)                | 0x02B3 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | BlackWidow V4 Pro 75% (Wireless)             | 0x02B4 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Blade 14 (2021)                              | 0x0270 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Blade 14 (2023)                              | 0x029D | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Blade 15 (2022)                              | 0x028A | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Blade 15 (Late 2021 Advanced)                | 0x0276 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Blade Pro (2016)                             | 0x0210 | Keyboard        | `razer`    | USB HID           | —    | Legacy protocol, matrix 6x25                                                            |
+| Razer    | Charging Pad Chroma                          | 0x0F26 | Mousepad        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Chroma HDK                                   | 0x0F09 | ARGB controller | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Cobra                                        | 0x00A3 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Cobra Pro (Wired)                            | 0x00AF | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Cobra Pro (Wireless)                         | 0x00B0 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Cynosa Chroma                                | 0x022A | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | DeathAdder Essential V2                      | 0x0098 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | DeathAdder V2                                | 0x0084 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | DeathAdder V2 Mini                           | 0x008C | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | DeathStalker V2                              | 0x0295 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | DeathStalker V2 Pro TKL (Wired)              | 0x0298 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Firefly V2 Pro                               | 0x0C08 | Mousepad        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Goliathus Chroma 3XL                         | 0x0C06 | Mousepad        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman                                     | 0x0227 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman Elite                               | 0x0226 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman Mini                                | 0x0257 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman Mini Analog                         | 0x0282 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman Mini Wireless                       | 0x0256 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman Tournament Edition                  | 0x0243 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman V2                                  | 0x026C | Keyboard        | `razer`    | USB HID           | 132  | Extended matrix 6x22                                                                    |
+| Razer    | Huntsman V2 Analog                           | 0x0266 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman V2 TKL                              | 0x026B | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman V3 Pro                              | 0x02A6 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman V3 Pro TKL White                    | 0x02A7 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Huntsman V3 Pro Wireless                     | 0x02A0 | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Laptop Stand Chroma                          | 0x0F0D | Other           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Laptop Stand Chroma V2                       | 0x0F2B | Other           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Leviathan V2                                 | 0x0532 | Speakers        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Lian Li O11 Dynamic - Razer Edition          | 0x0F13 | Case            | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Mamba Elite                                  | 0x006C | Mouse           | `razer`    | USB HID           | 20   | Extended matrix 1x20                                                                    |
+| Razer    | Mouse Bungee V3 Chroma                       | 0x0F1D | Other           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Naga Classic                                 | 0x0093 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Naga Left Handed                             | 0x008D | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Naga Pro (Wired)                             | 0x008F | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Naga Pro (Wireless)                          | 0x0090 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Naga Pro V2 (Wired)                          | 0x00A7 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Naga Pro V2 (Wireless)                       | 0x00A8 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Ornata Chroma                                | 0x021E | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Seiren Emote                                 | 0x0F1B | Microphone      | `razer`    | USB HID           | 64   | Matrix 4x16, LED display                                                                |
+| Razer    | Seiren V3 Chroma                             | 0x056F | Microphone      | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Tartarus Chroma                              | 0x0208 | Keyboard        | `razer`    | USB HID           | —    | Keypad, standard LED set                                                                |
+| Razer    | Tartarus V2                                  | 0x022B | Keyboard        | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Tiamat 7.1 V2                                | 0x0F03 | Headset         | `razer`    | USB HID           | —    | —                                                                                       |
+| Razer    | Viper 8kHz                                   | 0x0091 | Mouse           | `razer`    | USB HID           | —    | —                                                                                       |
+| WLED     | WLED Controller (any)                        | —      | ARGB controller | `wled`     | UDP               | —    | DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers.   |
 
 ## Researched (Awaiting Implementation)
 
-| Vendor | Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|---|
-| ASUS | Aura GPU (SMBus) | — | GPU | — | Ampere/Lovelace GPUs via ENE SMBus. Hypercolor has SMBus transport support. |
-| Cooler Master | A-RGB LED Small Controller | 0x1000 | ARGB controller | — | — |
-| Cooler Master | ARGB Controller | 0x1011 | ARGB controller | — | — |
-| Cooler Master | Gen2 LED Controller A1 | 0x0173 | ARGB controller | — | Multiple PIDs: 0x0173, 0x01C9, 0x01CB |
-| Corsair | Commander Core | 0x0C12 | Fan controller | — | Lighting Commander Core protocol |
-| Corsair | Commander Core XT | 0x0C1C | Fan controller | — | — |
-| Corsair | Dominator RAM | 0x1B2E | RAM | — | SMBus protocol |
-| Corsair | Dominator Titanium RAM | 0x1B40 | RAM | — | — |
-| Corsair | HS80 RGB Wired | 0x0A4F | Headset | — | — |
-| Corsair | Nexus LCD Companion | 0x0A44 | LCD module | — | 5-inch touchscreen, different from AIO LCDs |
-| Corsair | Void Elite Wireless | 0x0A51 | Headset | — | — |
-| Corsair | Void Elite Wireless (White) | 0x0A55 | Headset | — | — |
-| Corsair | Void Pro Wireless | 0x0A58 | Headset | — | — |
-| Gigabyte | Gigabyte GPU (Gen 1-4) | — | GPU | — | 4 GPU generations. SMBus protocol, NVIDIA bus scanning. |
-| Gigabyte | RGB Fusion Motherboard Controller | 0x5702 | Motherboard | — | VID 0x048D, zone addresses 0x20-0x27, ARGB at 0x58-0x59, 240 LED max |
-| Gigabyte | RGB Fusion Motherboard Controller (Alt) | 0x8297 | Motherboard | — | VID 0x048D |
-| Gigabyte | RGB Fusion Motherboard Controller (Gen 2) | 0x5711 | Motherboard | — | VID 0x048D |
-| Lian Li | Galahad II LCD | 0x7395 | AIO cooler | — | VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering |
-| Lian Li | Strimer Controller | 0xA200 | LED strip | — | 24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order. |
-| MSI | B450 Gaming Pro Carbon AC | 0x7B85 | Motherboard | — | — |
-| MSI | MSI GPU (Lovelace) | — | GPU | — | SMBus protocol, base address from device list lookup |
-| MSI | Mystic Light Controller (162 Byte) | 0x1720 | Motherboard | — | 162-byte HID packet, zone-based offsets (10 bytes/zone) |
-| MSI | Mystic Light Controller (162 Byte) | 0x7B17 | Motherboard | — | — |
-| MSI | Mystic Light Controller (162 Byte) | 0x7B18 | Motherboard | — | — |
-| MSI | Mystic Light Controller (162 Byte) | 0xB926 | Motherboard | — | — |
-| MSI | Mystic Light Controller (185 Byte) | — | Motherboard | — | 185-byte HID, ARGB headers at 0x400-0x402. 120+ PIDs across many board revisions. |
-| NZXT | Kraken | 0x300E | AIO cooler | — | — |
-| NZXT | Kraken Elite | 0x300C | AIO cooler | — | — |
-| NZXT | Kraken Elite V2 | 0x3012 | AIO cooler | — | — |
-| NZXT | Kraken Z3 | 0x3008 | AIO cooler | — | — |
-| NZXT | RGB and Fan Controller | 0x2009 | Fan controller | — | Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 |
-| NZXT | Smart Device V2 (Hue 2) | 0x2001 | ARGB controller | — | Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F |
-| Razer | Addressable RGB Controller | 0x0F1F | ARGB controller | — | — |
-| Razer | Barracuda X Chroma | 0x0574 | Headset | — | — |
-| Razer | Base Station Chroma | 0x0F08 | Other | — | — |
-| Razer | BlackWidow 2019 | 0x0241 | Keyboard | — | — |
-| Razer | BlackWidow Chroma | 0x0203 | Keyboard | — | Legacy protocol |
-| Razer | BlackWidow Chroma Overwatch | 0x0211 | Keyboard | — | — |
-| Razer | BlackWidow Tournament Edition Chroma | 0x0209 | Keyboard | — | — |
-| Razer | BlackWidow Ultimate 2013/2014 | 0x011A | Keyboard | — | Very old model, low priority |
-| Razer | BlackWidow X Chroma | 0x0216 | Keyboard | — | — |
-| Razer | Chroma Light Strip Set | 0x0F2C | LED strip | — | — |
-| Razer | Chroma Lighting Kit | 0x0F0E | ARGB controller | — | — |
-| Razer | Cynosa Lite | 0x023F | Keyboard | — | — |
-| Razer | Cynosa V2 | 0x025E | Keyboard | — | — |
-| Razer | DeathAdder Essential (Alt) | 0x0071 | Mouse | — | — |
-| Razer | DeathAdder Essential (Legacy) | 0x006E | Mouse | — | — |
-| Razer | DeathStalker V2 Pro TKL (Wireless) | 0x0296 | Keyboard | — | — |
-| Razer | Diamondback Chroma | 0x004C | Mouse | — | Legacy mouse |
-| Razer | Hanbo AIO | 0x0F44 | AIO cooler | — | — |
-| Razer | Kraken 7.1 V2 | 0x0510 | Headset | — | — |
-| Razer | Kraken Headset | 0x0527 | Headset | — | Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560 |
-| Razer | Kraken Kitty Edition | 0x020F | Headset | — | — |
-| Razer | Laptop Cooling Pad | 0x0F43 | Other | — | — |
-| Razer | Leviathan V2 Soundbar | 0x0532 | Speakers | — | Multiple PIDs: 0x0532, 0x054A, 0x0548 |
-| Razer | Mouse Bungee V3 | 0x0F24 | Other | — | — |
-| Razer | Mouse Dock | 0x0F22 | Other | — | — |
-| Razer | Mouse Dock Pro | 0x0F23 | Other | — | — |
-| Razer | Mousepad Controller | 0x0C00 | Mousepad | — | Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05 |
-| Razer | Naga Hex V2 | 0x004E | Mouse | — | — |
-| Razer | Nari Headset | 0x051C | Headset | — | Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A |
-| Razer | Nommo Speakers | 0x0517 | Speakers | — | Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A |
-| Razer | Orbweaver Chroma | 0x0207 | Keyboard | — | Known to have protocol issues |
-| Razer | Ornata V3 TKL | 0x0265 | Keyboard | — | — |
-| Razer | Ornata V3 X | 0x0294 | Keyboard | — | — |
-| Razer | PWM Controller | 0x0F3C | Fan controller | — | — |
-| Razer | Raptor 27 Inch Monitor | 0x0F12 | Monitor | — | Multiple PIDs: 0x0F12, 0x0F28 |
-| Razer | Tartarus Pro | 0x022C | Keyboard | — | — |
-| Razer | Thunderbolt Dock | 0x0F21 | Other | — | — |
-| Razer | Tomahawk ATX Case | 0x0F05 | Case | — | — |
+| Vendor        | Device                                    | PID    | Type            | Transport | Notes                                                                                                   |
+| ------------- | ----------------------------------------- | ------ | --------------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| ASUS          | Aura GPU (SMBus)                          | —      | GPU             | —         | Ampere/Lovelace GPUs via ENE SMBus. Hypercolor has SMBus transport support.                             |
+| Cooler Master | A-RGB LED Small Controller                | 0x1000 | ARGB controller | —         | —                                                                                                       |
+| Cooler Master | ARGB Controller                           | 0x1011 | ARGB controller | —         | —                                                                                                       |
+| Cooler Master | Gen2 LED Controller A1                    | 0x0173 | ARGB controller | —         | Multiple PIDs: 0x0173, 0x01C9, 0x01CB                                                                   |
+| Corsair       | Commander Core                            | 0x0C12 | Fan controller  | —         | Lighting Commander Core protocol                                                                        |
+| Corsair       | Commander Core XT                         | 0x0C1C | Fan controller  | —         | —                                                                                                       |
+| Corsair       | Dominator RAM                             | 0x1B2E | RAM             | —         | SMBus protocol                                                                                          |
+| Corsair       | Dominator Titanium RAM                    | 0x1B40 | RAM             | —         | —                                                                                                       |
+| Corsair       | HS80 RGB Wired                            | 0x0A4F | Headset         | —         | —                                                                                                       |
+| Corsair       | Nexus LCD Companion                       | 0x0A44 | LCD module      | —         | 5-inch touchscreen, different from AIO LCDs                                                             |
+| Corsair       | Void Elite Wireless                       | 0x0A51 | Headset         | —         | —                                                                                                       |
+| Corsair       | Void Elite Wireless (White)               | 0x0A55 | Headset         | —         | —                                                                                                       |
+| Corsair       | Void Pro Wireless                         | 0x0A58 | Headset         | —         | —                                                                                                       |
+| Gigabyte      | Gigabyte GPU (Gen 1-4)                    | —      | GPU             | —         | 4 GPU generations. SMBus protocol, NVIDIA bus scanning.                                                 |
+| Gigabyte      | RGB Fusion Motherboard Controller         | 0x5702 | Motherboard     | —         | VID 0x048D, zone addresses 0x20-0x27, ARGB at 0x58-0x59, 240 LED max                                    |
+| Gigabyte      | RGB Fusion Motherboard Controller (Alt)   | 0x8297 | Motherboard     | —         | VID 0x048D                                                                                              |
+| Gigabyte      | RGB Fusion Motherboard Controller (Gen 2) | 0x5711 | Motherboard     | —         | VID 0x048D                                                                                              |
+| Lian Li       | Galahad II LCD                            | 0x7395 | AIO cooler      | —         | VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering                        |
+| Lian Li       | Strimer Controller                        | 0xA200 | LED strip       | —         | 24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order. |
+| MSI           | B450 Gaming Pro Carbon AC                 | 0x7B85 | Motherboard     | —         | —                                                                                                       |
+| MSI           | MSI GPU (Lovelace)                        | —      | GPU             | —         | SMBus protocol, base address from device list lookup                                                    |
+| MSI           | Mystic Light Controller (162 Byte)        | 0x1720 | Motherboard     | —         | 162-byte HID packet, zone-based offsets (10 bytes/zone)                                                 |
+| MSI           | Mystic Light Controller (162 Byte)        | 0x7B17 | Motherboard     | —         | —                                                                                                       |
+| MSI           | Mystic Light Controller (162 Byte)        | 0x7B18 | Motherboard     | —         | —                                                                                                       |
+| MSI           | Mystic Light Controller (162 Byte)        | 0xB926 | Motherboard     | —         | —                                                                                                       |
+| MSI           | Mystic Light Controller (185 Byte)        | —      | Motherboard     | —         | 185-byte HID, ARGB headers at 0x400-0x402. 120+ PIDs across many board revisions.                       |
+| NZXT          | Kraken                                    | 0x300E | AIO cooler      | —         | —                                                                                                       |
+| NZXT          | Kraken Elite                              | 0x300C | AIO cooler      | —         | —                                                                                                       |
+| NZXT          | Kraken Elite V2                           | 0x3012 | AIO cooler      | —         | —                                                                                                       |
+| NZXT          | Kraken Z3                                 | 0x3008 | AIO cooler      | —         | —                                                                                                       |
+| NZXT          | RGB and Fan Controller                    | 0x2009 | Fan controller  | —         | Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022                                     |
+| NZXT          | Smart Device V2 (Hue 2)                   | 0x2001 | ARGB controller | —         | Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F                                                   |
+| Razer         | Addressable RGB Controller                | 0x0F1F | ARGB controller | —         | —                                                                                                       |
+| Razer         | Barracuda X Chroma                        | 0x0574 | Headset         | —         | —                                                                                                       |
+| Razer         | Base Station Chroma                       | 0x0F08 | Other           | —         | —                                                                                                       |
+| Razer         | BlackWidow 2019                           | 0x0241 | Keyboard        | —         | —                                                                                                       |
+| Razer         | BlackWidow Chroma                         | 0x0203 | Keyboard        | —         | Legacy protocol                                                                                         |
+| Razer         | BlackWidow Chroma Overwatch               | 0x0211 | Keyboard        | —         | —                                                                                                       |
+| Razer         | BlackWidow Tournament Edition Chroma      | 0x0209 | Keyboard        | —         | —                                                                                                       |
+| Razer         | BlackWidow Ultimate 2013/2014             | 0x011A | Keyboard        | —         | Very old model, low priority                                                                            |
+| Razer         | BlackWidow X Chroma                       | 0x0216 | Keyboard        | —         | —                                                                                                       |
+| Razer         | Chroma Light Strip Set                    | 0x0F2C | LED strip       | —         | —                                                                                                       |
+| Razer         | Chroma Lighting Kit                       | 0x0F0E | ARGB controller | —         | —                                                                                                       |
+| Razer         | Cynosa Lite                               | 0x023F | Keyboard        | —         | —                                                                                                       |
+| Razer         | Cynosa V2                                 | 0x025E | Keyboard        | —         | —                                                                                                       |
+| Razer         | DeathAdder Essential (Alt)                | 0x0071 | Mouse           | —         | —                                                                                                       |
+| Razer         | DeathAdder Essential (Legacy)             | 0x006E | Mouse           | —         | —                                                                                                       |
+| Razer         | DeathStalker V2 Pro TKL (Wireless)        | 0x0296 | Keyboard        | —         | —                                                                                                       |
+| Razer         | Diamondback Chroma                        | 0x004C | Mouse           | —         | Legacy mouse                                                                                            |
+| Razer         | Hanbo AIO                                 | 0x0F44 | AIO cooler      | —         | —                                                                                                       |
+| Razer         | Kraken 7.1 V2                             | 0x0510 | Headset         | —         | —                                                                                                       |
+| Razer         | Kraken Headset                            | 0x0527 | Headset         | —         | Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560                                                   |
+| Razer         | Kraken Kitty Edition                      | 0x020F | Headset         | —         | —                                                                                                       |
+| Razer         | Laptop Cooling Pad                        | 0x0F43 | Other           | —         | —                                                                                                       |
+| Razer         | Leviathan V2 Soundbar                     | 0x0532 | Speakers        | —         | Multiple PIDs: 0x0532, 0x054A, 0x0548                                                                   |
+| Razer         | Mouse Bungee V3                           | 0x0F24 | Other           | —         | —                                                                                                       |
+| Razer         | Mouse Dock                                | 0x0F22 | Other           | —         | —                                                                                                       |
+| Razer         | Mouse Dock Pro                            | 0x0F23 | Other           | —         | —                                                                                                       |
+| Razer         | Mousepad Controller                       | 0x0C00 | Mousepad        | —         | Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05                                                   |
+| Razer         | Naga Hex V2                               | 0x004E | Mouse           | —         | —                                                                                                       |
+| Razer         | Nari Headset                              | 0x051C | Headset         | —         | Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A                                                           |
+| Razer         | Nommo Speakers                            | 0x0517 | Speakers        | —         | Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A                                                           |
+| Razer         | Orbweaver Chroma                          | 0x0207 | Keyboard        | —         | Known to have protocol issues                                                                           |
+| Razer         | Ornata V3 TKL                             | 0x0265 | Keyboard        | —         | —                                                                                                       |
+| Razer         | Ornata V3 X                               | 0x0294 | Keyboard        | —         | —                                                                                                       |
+| Razer         | PWM Controller                            | 0x0F3C | Fan controller  | —         | —                                                                                                       |
+| Razer         | Raptor 27 Inch Monitor                    | 0x0F12 | Monitor         | —         | Multiple PIDs: 0x0F12, 0x0F28                                                                           |
+| Razer         | Tartarus Pro                              | 0x022C | Keyboard        | —         | —                                                                                                       |
+| Razer         | Thunderbolt Dock                          | 0x0F21 | Other           | —         | —                                                                                                       |
+| Razer         | Tomahawk ATX Case                         | 0x0F05 | Case            | —         | —                                                                                                       |
 
 ## Blocked
 
 Hardware where an initial driver exists but the device itself cannot currently be controlled, typically pending a firmware or protocol change outside Hypercolor.
 
-| Vendor | Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|---|
-| Dygma | Defy (Wired) | 0x0010 | Keyboard | `dygma` | USB serial | Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware. |
-| Dygma | Defy (Wireless) | 0x0012 | Keyboard | `dygma` | USB serial | Same firmware limitation as wired variant. RGBW color support ready on our side. |
+| Vendor | Device          | PID    | Type     | Driver  | Transport  | Notes                                                                                                                                                                                          |
+| ------ | --------------- | ------ | -------- | ------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dygma  | Defy (Wired)    | 0x0010 | Keyboard | `dygma` | USB serial | Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware. |
+| Dygma  | Defy (Wireless) | 0x0012 | Keyboard | `dygma` | USB serial | Same firmware limitation as wired variant. RGBW color support ready on our side.                                                                                                               |
 
 ## Known (Protocol Research Pending)
 
 Devices present in the database but not yet researched. These are opportunities for contributors to capture USB traces and document protocols.
 
-| Vendor | Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|---|
-| Alienware | Alienware 15 R3 | 0x0530 | Keyboard | — | VID 0x187C |
-| Alienware | Alienware Monitor (Gen 1-3) | — | Monitor | — | — |
-| Alienware | AW558 Mouse | 0x00A5 | Mouse | — | VID 0x04CA |
-| Aqua Computer | D5 Next | 0xF00E | Other | — | Pump with RGB |
-| Aqua Computer | Farbwerk 360 | 0xF010 | ARGB controller | — | — |
-| Aqua Computer | Farbwerk Nano | 0xF00F | ARGB controller | — | — |
-| Aqua Computer | HighFlow Next | 0xF012 | Other | — | — |
-| ASRock | ASRock GPU (SMBus) | — | GPU | — | AMD GPU only, SubVendor 0x1849 |
-| ASRock | ASRock LCD | — | LCD module | — | — |
-| ASRock | Monitor Controller | 0x01C4 | Monitor | — | — |
-| ASRock | Polychrome Motherboard | 0x01A2 | Motherboard | — | — |
-| ASUS | Aura Core (Laptop) | 0x1854 | Keyboard | — | ROG laptop keyboard backlighting |
-| ASUS | ROG Balteus Qi | — | Mousepad | — | — |
-| ASUS | ROG Claymore II | — | Keyboard | — | — |
-| ASUS | ROG Spotlight | — | LED strip | — | — |
-| ASUS | ROG Strix LC AIO | — | AIO cooler | — | — |
-| ASUS | ROG Strix SCAR 17 | 0x1866 | Keyboard | — | — |
-| ASUS | ROG Throne Qi Stand | — | Other | — | — |
-| ASUS | Ryujin AIO | — | AIO cooler | — | — |
-| ASUS | TUF K1 | — | Keyboard | — | — |
-| Cooler Master | CK530 V2 | 0x0147 | Keyboard | — | — |
-| Cooler Master | CK550 V2 | 0x0145 | Keyboard | — | — |
-| Cooler Master | CK552 V2 | 0x007F | Keyboard | — | — |
-| Cooler Master | CK720 | 0x016B | Keyboard | — | — |
-| Cooler Master | CK721 | 0x016D | Keyboard | — | — |
-| Cooler Master | MK730 | 0x008F | Keyboard | — | — |
-| Cooler Master | MK750 | 0x0067 | Keyboard | — | — |
-| Cooler Master | MK850 | 0x0069 | Keyboard | — | — |
-| Cooler Master | MM711 | 0x0101 | Mouse | — | — |
-| Cooler Master | MP750L | 0x0107 | Mousepad | — | — |
-| Cooler Master | MP750M | 0x0105 | Mousepad | — | — |
-| Cooler Master | MP750XL | 0x0109 | Mousepad | — | — |
-| Cooler Master | MP860 | 0x006D | Mousepad | — | — |
-| Cooler Master | SK620/SK622 | 0x0087 | Keyboard | — | Multiple PIDs: 0x0087, 0x0159, 0x0149, 0x014B |
-| Cooler Master | SK650 | 0x008D | Keyboard | — | — |
-| Cooler Master | SK652 | 0x015D | Keyboard | — | — |
-| Cooler Master | SK653 | 0x01AB | Keyboard | — | — |
-| EVGA | EVGA GPU (Pascal/Turing/Ampere) | — | GPU | — | SMBus protocol, 3 generations |
-| EVGA | X15 Mouse | 0x2415 | Mouse | — | — |
-| EVGA | X17 Mouse | 0x240D | Mouse | — | — |
-| EVGA | Z15 Keyboard (ANSI) | 0x2608 | Keyboard | — | — |
-| EVGA | Z15 Keyboard (ISO) | 0x260E | Keyboard | — | — |
-| EVGA | Z20 Keyboard | 0x260A | Keyboard | — | — |
-| EVGA | Z20 Keyboard (ISO) | 0x2610 | Keyboard | — | — |
-| Fnatic | miniSTREAK Speed | 0x0103 | Keyboard | — | — |
-| Fnatic | STREAK | 0x0101 | Keyboard | — | — |
-| Fnatic | STREAK65 | 0x0105 | Keyboard | — | — |
-| Gigabyte | Aorus ATC800 | 0x7A42 | AIO cooler | — | VID 0x1044 |
-| Gigabyte | Aorus Liquid Cooler 360 | 0x7A46 | AIO cooler | — | VID 0x1044 |
-| Gigabyte | Aorus Waterforce X I | 0x7A4D | AIO cooler | — | VID 0x1044 |
-| Gigabyte | Aorus Waterforce X II | 0x7A5E | AIO cooler | — | VID 0x0414 |
-| Glorious | Model D Wireless | 0x2025 | Mouse | — | VID 0x258A |
-| Glorious | Model D Wireless (Wired) | 0x2014 | Mouse | — | VID 0x258A |
-| Glorious | Model O Wireless | 0x2022 | Mouse | — | VID 0x258A, multiple PIDs |
-| Glorious | Model O Wireless (Wired) | 0x2011 | Mouse | — | VID 0x258A |
-| HyperX | Alloy Elite 2 | 0x1711 | Keyboard | — | VID 0x0951 |
-| HyperX | Alloy Elite RGB | 0x16BE | Keyboard | — | VID 0x0951 |
-| HyperX | Alloy FPS RGB | 0x16DC | Keyboard | — | VID 0x0951 |
-| HyperX | Alloy Origins | 0x16E5 | Keyboard | — | VID 0x0951 |
-| HyperX | Alloy Origins 60 | 0x1734 | Keyboard | — | VID 0x0951 |
-| HyperX | Alloy Origins 65 | 0x038F | Keyboard | — | VID 0x03F0 (HP era) |
-| HyperX | Alloy Origins Core | 0x16E6 | Keyboard | — | VID 0x0951 |
-| HyperX | Cloud Flight | 0x16C4 | Headset | — | VID 0x0951 |
-| HyperX | Duocast | 0x098C | Microphone | — | VID 0x03F0 |
-| HyperX | Fury Ultra | 0x1705 | Mousepad | — | VID 0x0951 |
-| HyperX | PulseFire Core | 0x16DE | Mouse | — | VID 0x0951 |
-| HyperX | PulseFire Haste | 0x1727 | Mouse | — | VID 0x0951 |
-| HyperX | PulseFire Raid | 0x16E4 | Mouse | — | VID 0x0951 |
-| HyperX | PulseFire Surge | 0x16D3 | Mouse | — | VID 0x0951 |
-| HyperX | Quadcast 2 S | 0x02B5 | Microphone | — | VID 0x03F0 |
-| HyperX | Quadcast S | 0x171D | Microphone | — | VID 0x0951, multiple PIDs |
-| HYTE | CNVS | 0x0B00 | Mousepad | — | — |
-| HYTE | CNVS (Alt PID) | 0x0B01 | Mousepad | — | — |
-| Logitech | G13 Keyboard | — | Keyboard | — | — |
-| Logitech | G19 Keyboard | — | Keyboard | — | Has LCD display |
-| Logitech | G513 Keyboard | — | Keyboard | — | — |
-| Logitech | G560 Speakers | — | Speakers | — | — |
-| Logitech | G600 Mouse | — | Mouse | — | — |
-| Logitech | G810 Keyboard | — | Keyboard | — | Legacy 8080 protocol |
-| Logitech | G910 Keyboard | — | Keyboard | — | — |
-| Logitech | Logitech Modern Device (multi-PID) | — | Keyboard | — | Dynamic PID library. Covers G Pro, G915, G815, etc. |
-| Logitech | Wireless Dongle | — | Other | — | Unified receiver for wireless peripherals |
-| Mountain | Everest 60 | 0x0005 | Keyboard | — | — |
-| Mountain | Everest Max | 0x0001 | Keyboard | — | — |
-| Mountain | Macropad | 0x0008 | Keyboard | — | — |
-| Mountain | Makalu 67 | 0x0003 | Mouse | — | — |
-| MSI | GS63 Keyboard | 0xFF00 | Keyboard | — | VID 0x1770 |
-| MSI | MSI GPU (Blackwell) | — | GPU | — | — |
-| MSI | MSI Keyboard (Modern) | — | Keyboard | — | VID 0x0DB0, dynamic PID library |
-| MSI | MSI Monitor Controller | 0x3FA4 | Monitor | — | — |
-| NZXT | Function 2 Keyboard | 0x2130 | Keyboard | — | Multiple PIDs: 0x2130, 0x2131, 0x2136 |
-| NZXT | Function Keyboard | 0x2103 | Keyboard | — | Multiple PIDs: 0x2103-0x2108 (ANSI/ISO, Full/TKL/MiniTKL) |
-| NZXT | Kraken X2/M2 | 0x170E | AIO cooler | — | — |
-| NZXT | Kraken X3 | 0x2007 | AIO cooler | — | — |
-| NZXT | Lift Mouse | 0x2100 | Mouse | — | — |
-| NZXT | N7 B550 | 0x200B | Motherboard | — | — |
-| NZXT | N7 B650E | 0x201B | Motherboard | — | — |
-| NZXT | N7 Z390 | 0x2005 | Motherboard | — | — |
-| NZXT | N7 Z490 | 0x200A | Motherboard | — | — |
-| NZXT | N7 Z790 | 0x201D | Motherboard | — | — |
-| NZXT | Smart Device V1 | 0x1714 | ARGB controller | — | — |
-| Roccat | AIMO Pad | 0x343A | Mousepad | — | — |
-| Roccat | Burst Pro | 0x2DE1 | Mouse | — | — |
-| Roccat | Elo 7.1 USB | 0x3A34 | Headset | — | — |
-| Roccat | Kone | 0x2E27 | Mouse | — | — |
-| Roccat | Kone Pro | 0x2C88 | Mouse | — | — |
-| Roccat | Kone XP | 0x2C8B | Mouse | — | — |
-| Roccat | Magma | 0x3124 | Keyboard | — | — |
-| Roccat | Pyro | 0x314C | Keyboard | — | — |
-| Roccat | Torch | 0x3A56 | Microphone | — | — |
-| Roccat | Vulcan 100 | 0x307A | Keyboard | — | — |
-| Roccat | Vulcan II MAX | 0x2EE2 | Keyboard | — | — |
-| Roccat | Vulcan II Mini | 0x2F09 | Keyboard | — | — |
-| Roccat | Vulcan Pro | 0x30F7 | Keyboard | — | — |
-| Roccat | Vulcan TKL | 0x2FEE | Keyboard | — | — |
-| Sony | DualSense | 0x0CE6 | Lightbar | — | — |
-| Sony | DualShock 4 | 0x05C4 | Lightbar | — | — |
-| Sony | DualShock 4 V2 | 0x09CC | Lightbar | — | — |
-| SteelSeries | Aerox 3 | — | Mouse | — | — |
-| SteelSeries | Apex 7 TKL | — | Keyboard | — | — |
-| SteelSeries | Apex Pro TKL | — | Keyboard | — | — |
-| SteelSeries | Arctis Nova Pro | — | Headset | — | — |
-| SteelSeries | QcK Prism XL | — | Mousepad | — | — |
-| SteelSeries | Rival 600 | — | Mouse | — | — |
-| Thermaltake | Argent HS1 Headphone Stand | 0x8022 | Other | — | — |
-| Thermaltake | Argent Mouse Bungee | 0x8020 | Other | — | — |
-| Thermaltake | Argent MP1 Mousepad | 0x9011 | Mousepad | — | — |
-| Thermaltake | DPSG PSU | 0x2329 | Other | — | — |
-| Thermaltake | Floe Riing Controller | 0x1FA4 | Fan controller | — | Multiple PIDs: 0x1FA4-0x1FA7 |
-| Thermaltake | LedBox | 0x213C | ARGB controller | — | — |
-| Thermaltake | LedBox Pacific | 0x219A | ARGB controller | — | Multiple PIDs: 0x219A-0x219F |
-| Thermaltake | LedBox Standard | 0x2260 | ARGB controller | — | 17+ PIDs: 0x2260-0x2268, 0x226F, 0x232B-0x232E, 0x233A, etc. |
-| Thermaltake | Level 20 Desk | 0x07D1 | Desk accessory | — | — |
-| Thermaltake | Riing Controller | 0x2135 | Fan controller | — | Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144 |
-| Wooting | Wooting 60 HE | 0x1310 | Keyboard | — | VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320 |
-| Wooting | Wooting 80 HE | 0x1400 | Keyboard | — | VID 0x31E3, PIDs 0x1400, 0x1402 |
-| Wooting | Wooting One | 0xFF01 | Keyboard | — | VID 0x03EB, original analog keyboard |
-| Wooting | Wooting Two HE | 0x1220 | Keyboard | — | VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232 |
+| Vendor        | Device                             | PID    | Type            | Transport | Notes                                                                     |
+| ------------- | ---------------------------------- | ------ | --------------- | --------- | ------------------------------------------------------------------------- |
+| Alienware     | Alienware 15 R3                    | 0x0530 | Keyboard        | —         | VID 0x187C                                                                |
+| Alienware     | Alienware Monitor (Gen 1-3)        | —      | Monitor         | —         | —                                                                         |
+| Alienware     | AW558 Mouse                        | 0x00A5 | Mouse           | —         | VID 0x04CA                                                                |
+| Aqua Computer | D5 Next                            | 0xF00E | Other           | —         | Pump with RGB                                                             |
+| Aqua Computer | Farbwerk 360                       | 0xF010 | ARGB controller | —         | —                                                                         |
+| Aqua Computer | Farbwerk Nano                      | 0xF00F | ARGB controller | —         | —                                                                         |
+| Aqua Computer | HighFlow Next                      | 0xF012 | Other           | —         | —                                                                         |
+| ASRock        | ASRock GPU (SMBus)                 | —      | GPU             | —         | AMD GPU only, SubVendor 0x1849                                            |
+| ASRock        | ASRock LCD                         | —      | LCD module      | —         | —                                                                         |
+| ASRock        | Monitor Controller                 | 0x01C4 | Monitor         | —         | —                                                                         |
+| ASRock        | Polychrome Motherboard             | 0x01A2 | Motherboard     | —         | —                                                                         |
+| ASUS          | Aura Core (Laptop)                 | 0x1854 | Keyboard        | —         | ROG laptop keyboard backlighting                                          |
+| ASUS          | ROG Balteus Qi                     | —      | Mousepad        | —         | —                                                                         |
+| ASUS          | ROG Claymore II                    | —      | Keyboard        | —         | —                                                                         |
+| ASUS          | ROG Spotlight                      | —      | LED strip       | —         | —                                                                         |
+| ASUS          | ROG Strix LC AIO                   | —      | AIO cooler      | —         | —                                                                         |
+| ASUS          | ROG Strix SCAR 17                  | 0x1866 | Keyboard        | —         | —                                                                         |
+| ASUS          | ROG Throne Qi Stand                | —      | Other           | —         | —                                                                         |
+| ASUS          | Ryujin AIO                         | —      | AIO cooler      | —         | —                                                                         |
+| ASUS          | TUF K1                             | —      | Keyboard        | —         | —                                                                         |
+| Cooler Master | CK530 V2                           | 0x0147 | Keyboard        | —         | —                                                                         |
+| Cooler Master | CK550 V2                           | 0x0145 | Keyboard        | —         | —                                                                         |
+| Cooler Master | CK552 V2                           | 0x007F | Keyboard        | —         | —                                                                         |
+| Cooler Master | CK720                              | 0x016B | Keyboard        | —         | —                                                                         |
+| Cooler Master | CK721                              | 0x016D | Keyboard        | —         | —                                                                         |
+| Cooler Master | MK730                              | 0x008F | Keyboard        | —         | —                                                                         |
+| Cooler Master | MK750                              | 0x0067 | Keyboard        | —         | —                                                                         |
+| Cooler Master | MK850                              | 0x0069 | Keyboard        | —         | —                                                                         |
+| Cooler Master | MM711                              | 0x0101 | Mouse           | —         | —                                                                         |
+| Cooler Master | MP750L                             | 0x0107 | Mousepad        | —         | —                                                                         |
+| Cooler Master | MP750M                             | 0x0105 | Mousepad        | —         | —                                                                         |
+| Cooler Master | MP750XL                            | 0x0109 | Mousepad        | —         | —                                                                         |
+| Cooler Master | MP860                              | 0x006D | Mousepad        | —         | —                                                                         |
+| Cooler Master | SK620/SK622                        | 0x0087 | Keyboard        | —         | Multiple PIDs: 0x0087, 0x0159, 0x0149, 0x014B                             |
+| Cooler Master | SK650                              | 0x008D | Keyboard        | —         | —                                                                         |
+| Cooler Master | SK652                              | 0x015D | Keyboard        | —         | —                                                                         |
+| Cooler Master | SK653                              | 0x01AB | Keyboard        | —         | —                                                                         |
+| EVGA          | EVGA GPU (Pascal/Turing/Ampere)    | —      | GPU             | —         | SMBus protocol, 3 generations                                             |
+| EVGA          | X15 Mouse                          | 0x2415 | Mouse           | —         | —                                                                         |
+| EVGA          | X17 Mouse                          | 0x240D | Mouse           | —         | —                                                                         |
+| EVGA          | Z15 Keyboard (ANSI)                | 0x2608 | Keyboard        | —         | —                                                                         |
+| EVGA          | Z15 Keyboard (ISO)                 | 0x260E | Keyboard        | —         | —                                                                         |
+| EVGA          | Z20 Keyboard                       | 0x260A | Keyboard        | —         | —                                                                         |
+| EVGA          | Z20 Keyboard (ISO)                 | 0x2610 | Keyboard        | —         | —                                                                         |
+| Fnatic        | miniSTREAK Speed                   | 0x0103 | Keyboard        | —         | —                                                                         |
+| Fnatic        | STREAK                             | 0x0101 | Keyboard        | —         | —                                                                         |
+| Fnatic        | STREAK65                           | 0x0105 | Keyboard        | —         | —                                                                         |
+| Gigabyte      | Aorus ATC800                       | 0x7A42 | AIO cooler      | —         | VID 0x1044                                                                |
+| Gigabyte      | Aorus Liquid Cooler 360            | 0x7A46 | AIO cooler      | —         | VID 0x1044                                                                |
+| Gigabyte      | Aorus Waterforce X I               | 0x7A4D | AIO cooler      | —         | VID 0x1044                                                                |
+| Gigabyte      | Aorus Waterforce X II              | 0x7A5E | AIO cooler      | —         | VID 0x0414                                                                |
+| Glorious      | Model D Wireless                   | 0x2025 | Mouse           | —         | VID 0x258A                                                                |
+| Glorious      | Model D Wireless (Wired)           | 0x2014 | Mouse           | —         | VID 0x258A                                                                |
+| Glorious      | Model O Wireless                   | 0x2022 | Mouse           | —         | VID 0x258A, multiple PIDs                                                 |
+| Glorious      | Model O Wireless (Wired)           | 0x2011 | Mouse           | —         | VID 0x258A                                                                |
+| HyperX        | Alloy Elite 2                      | 0x1711 | Keyboard        | —         | VID 0x0951                                                                |
+| HyperX        | Alloy Elite RGB                    | 0x16BE | Keyboard        | —         | VID 0x0951                                                                |
+| HyperX        | Alloy FPS RGB                      | 0x16DC | Keyboard        | —         | VID 0x0951                                                                |
+| HyperX        | Alloy Origins                      | 0x16E5 | Keyboard        | —         | VID 0x0951                                                                |
+| HyperX        | Alloy Origins 60                   | 0x1734 | Keyboard        | —         | VID 0x0951                                                                |
+| HyperX        | Alloy Origins 65                   | 0x038F | Keyboard        | —         | VID 0x03F0 (HP era)                                                       |
+| HyperX        | Alloy Origins Core                 | 0x16E6 | Keyboard        | —         | VID 0x0951                                                                |
+| HyperX        | Cloud Flight                       | 0x16C4 | Headset         | —         | VID 0x0951                                                                |
+| HyperX        | Duocast                            | 0x098C | Microphone      | —         | VID 0x03F0                                                                |
+| HyperX        | Fury Ultra                         | 0x1705 | Mousepad        | —         | VID 0x0951                                                                |
+| HyperX        | PulseFire Core                     | 0x16DE | Mouse           | —         | VID 0x0951                                                                |
+| HyperX        | PulseFire Haste                    | 0x1727 | Mouse           | —         | VID 0x0951                                                                |
+| HyperX        | PulseFire Raid                     | 0x16E4 | Mouse           | —         | VID 0x0951                                                                |
+| HyperX        | PulseFire Surge                    | 0x16D3 | Mouse           | —         | VID 0x0951                                                                |
+| HyperX        | Quadcast 2 S                       | 0x02B5 | Microphone      | —         | VID 0x03F0                                                                |
+| HyperX        | Quadcast S                         | 0x171D | Microphone      | —         | VID 0x0951, multiple PIDs                                                 |
+| HYTE          | CNVS                               | 0x0B00 | Mousepad        | —         | —                                                                         |
+| HYTE          | CNVS (Alt PID)                     | 0x0B01 | Mousepad        | —         | —                                                                         |
+| Logitech      | G13 Keyboard                       | —      | Keyboard        | —         | —                                                                         |
+| Logitech      | G19 Keyboard                       | —      | Keyboard        | —         | Has LCD display                                                           |
+| Logitech      | G513 Keyboard                      | —      | Keyboard        | —         | —                                                                         |
+| Logitech      | G560 Speakers                      | —      | Speakers        | —         | —                                                                         |
+| Logitech      | G600 Mouse                         | —      | Mouse           | —         | —                                                                         |
+| Logitech      | G810 Keyboard                      | —      | Keyboard        | —         | Legacy 8080 protocol                                                      |
+| Logitech      | G910 Keyboard                      | —      | Keyboard        | —         | —                                                                         |
+| Logitech      | Logitech Modern Device (multi-PID) | —      | Keyboard        | —         | Dynamic PID library. Covers G Pro, G915, G815, etc.                       |
+| Logitech      | Wireless Dongle                    | —      | Other           | —         | Unified receiver for wireless peripherals                                 |
+| Mountain      | Everest 60                         | 0x0005 | Keyboard        | —         | —                                                                         |
+| Mountain      | Everest Max                        | 0x0001 | Keyboard        | —         | —                                                                         |
+| Mountain      | Macropad                           | 0x0008 | Keyboard        | —         | —                                                                         |
+| Mountain      | Makalu 67                          | 0x0003 | Mouse           | —         | —                                                                         |
+| MSI           | GS63 Keyboard                      | 0xFF00 | Keyboard        | —         | VID 0x1770                                                                |
+| MSI           | MSI GPU (Blackwell)                | —      | GPU             | —         | —                                                                         |
+| MSI           | MSI Keyboard (Modern)              | —      | Keyboard        | —         | VID 0x0DB0, dynamic PID library                                           |
+| MSI           | MSI Monitor Controller             | 0x3FA4 | Monitor         | —         | —                                                                         |
+| NZXT          | Function 2 Keyboard                | 0x2130 | Keyboard        | —         | Multiple PIDs: 0x2130, 0x2131, 0x2136                                     |
+| NZXT          | Function Keyboard                  | 0x2103 | Keyboard        | —         | Multiple PIDs: 0x2103-0x2108 (ANSI/ISO, Full/TKL/MiniTKL)                 |
+| NZXT          | Kraken X2/M2                       | 0x170E | AIO cooler      | —         | —                                                                         |
+| NZXT          | Kraken X3                          | 0x2007 | AIO cooler      | —         | —                                                                         |
+| NZXT          | Lift Mouse                         | 0x2100 | Mouse           | —         | —                                                                         |
+| NZXT          | N7 B550                            | 0x200B | Motherboard     | —         | —                                                                         |
+| NZXT          | N7 B650E                           | 0x201B | Motherboard     | —         | —                                                                         |
+| NZXT          | N7 Z390                            | 0x2005 | Motherboard     | —         | —                                                                         |
+| NZXT          | N7 Z490                            | 0x200A | Motherboard     | —         | —                                                                         |
+| NZXT          | N7 Z790                            | 0x201D | Motherboard     | —         | —                                                                         |
+| NZXT          | Smart Device V1                    | 0x1714 | ARGB controller | —         | —                                                                         |
+| Roccat        | AIMO Pad                           | 0x343A | Mousepad        | —         | —                                                                         |
+| Roccat        | Burst Pro                          | 0x2DE1 | Mouse           | —         | —                                                                         |
+| Roccat        | Elo 7.1 USB                        | 0x3A34 | Headset         | —         | —                                                                         |
+| Roccat        | Kone                               | 0x2E27 | Mouse           | —         | —                                                                         |
+| Roccat        | Kone Pro                           | 0x2C88 | Mouse           | —         | —                                                                         |
+| Roccat        | Kone XP                            | 0x2C8B | Mouse           | —         | —                                                                         |
+| Roccat        | Magma                              | 0x3124 | Keyboard        | —         | —                                                                         |
+| Roccat        | Pyro                               | 0x314C | Keyboard        | —         | —                                                                         |
+| Roccat        | Torch                              | 0x3A56 | Microphone      | —         | —                                                                         |
+| Roccat        | Vulcan 100                         | 0x307A | Keyboard        | —         | —                                                                         |
+| Roccat        | Vulcan II MAX                      | 0x2EE2 | Keyboard        | —         | —                                                                         |
+| Roccat        | Vulcan II Mini                     | 0x2F09 | Keyboard        | —         | —                                                                         |
+| Roccat        | Vulcan Pro                         | 0x30F7 | Keyboard        | —         | —                                                                         |
+| Roccat        | Vulcan TKL                         | 0x2FEE | Keyboard        | —         | —                                                                         |
+| Sony          | DualSense                          | 0x0CE6 | Lightbar        | —         | —                                                                         |
+| Sony          | DualShock 4                        | 0x05C4 | Lightbar        | —         | —                                                                         |
+| Sony          | DualShock 4 V2                     | 0x09CC | Lightbar        | —         | —                                                                         |
+| SteelSeries   | Aerox 3                            | —      | Mouse           | —         | —                                                                         |
+| SteelSeries   | Apex 7 TKL                         | —      | Keyboard        | —         | —                                                                         |
+| SteelSeries   | Apex Pro TKL                       | —      | Keyboard        | —         | —                                                                         |
+| SteelSeries   | Arctis Nova Pro                    | —      | Headset         | —         | —                                                                         |
+| SteelSeries   | QcK Prism XL                       | —      | Mousepad        | —         | —                                                                         |
+| SteelSeries   | Rival 600                          | —      | Mouse           | —         | —                                                                         |
+| Thermaltake   | Argent HS1 Headphone Stand         | 0x8022 | Other           | —         | —                                                                         |
+| Thermaltake   | Argent Mouse Bungee                | 0x8020 | Other           | —         | —                                                                         |
+| Thermaltake   | Argent MP1 Mousepad                | 0x9011 | Mousepad        | —         | —                                                                         |
+| Thermaltake   | DPSG PSU                           | 0x2329 | Other           | —         | —                                                                         |
+| Thermaltake   | Floe Riing Controller              | 0x1FA4 | Fan controller  | —         | Multiple PIDs: 0x1FA4-0x1FA7                                              |
+| Thermaltake   | LedBox                             | 0x213C | ARGB controller | —         | —                                                                         |
+| Thermaltake   | LedBox Pacific                     | 0x219A | ARGB controller | —         | Multiple PIDs: 0x219A-0x219F                                              |
+| Thermaltake   | LedBox Standard                    | 0x2260 | ARGB controller | —         | 17+ PIDs: 0x2260-0x2268, 0x226F, 0x232B-0x232E, 0x233A, etc.              |
+| Thermaltake   | Level 20 Desk                      | 0x07D1 | Desk accessory  | —         | —                                                                         |
+| Thermaltake   | Riing Controller                   | 0x2135 | Fan controller  | —         | Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144                               |
+| Wooting       | Wooting 60 HE                      | 0x1310 | Keyboard        | —         | VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320 |
+| Wooting       | Wooting 80 HE                      | 0x1400 | Keyboard        | —         | VID 0x31E3, PIDs 0x1400, 0x1402                                           |
+| Wooting       | Wooting One                        | 0xFF01 | Keyboard        | —         | VID 0x03EB, original analog keyboard                                      |
+| Wooting       | Wooting Two HE                     | 0x1220 | Keyboard        | —         | VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232                   |
 
 ## Per-Vendor Details
 
@@ -423,9 +423,9 @@ Devices present in the database but not yet researched. These are opportunities 
 
 #### Supported (1)
 
-| Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|
-| Push 2 | 0x1967 | Other | `push2` | USB MIDI | Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display. |
+| Device | PID    | Type  | Driver  | Transport | Notes                                                                               |
+| ------ | ------ | ----- | ------- | --------- | ----------------------------------------------------------------------------------- |
+| Push 2 | 0x1967 | Other | `push2` | USB MIDI  | Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display. |
 
 _Source: [`data/drivers/vendors/ableton.toml`](../../../data/drivers/vendors/ableton.toml)_
 
@@ -437,11 +437,11 @@ _Source: [`data/drivers/vendors/ableton.toml`](../../../data/drivers/vendors/abl
 
 #### Known (3)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Alienware 15 R3 | 0x0530 | Keyboard | — | VID 0x187C |
-| Alienware Monitor (Gen 1-3) | — | Monitor | — | — |
-| AW558 Mouse | 0x00A5 | Mouse | — | VID 0x04CA |
+| Device                      | PID    | Type     | Transport | Notes      |
+| --------------------------- | ------ | -------- | --------- | ---------- |
+| Alienware 15 R3             | 0x0530 | Keyboard | —         | VID 0x187C |
+| Alienware Monitor (Gen 1-3) | —      | Monitor  | —         | —          |
+| AW558 Mouse                 | 0x00A5 | Mouse    | —         | VID 0x04CA |
 
 _Source: [`data/drivers/vendors/alienware.toml`](../../../data/drivers/vendors/alienware.toml)_
 
@@ -453,12 +453,12 @@ _Source: [`data/drivers/vendors/alienware.toml`](../../../data/drivers/vendors/a
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| D5 Next | 0xF00E | Other | — | Pump with RGB |
-| Farbwerk 360 | 0xF010 | ARGB controller | — | — |
-| Farbwerk Nano | 0xF00F | ARGB controller | — | — |
-| HighFlow Next | 0xF012 | Other | — | — |
+| Device        | PID    | Type            | Transport | Notes         |
+| ------------- | ------ | --------------- | --------- | ------------- |
+| D5 Next       | 0xF00E | Other           | —         | Pump with RGB |
+| Farbwerk 360  | 0xF010 | ARGB controller | —         | —             |
+| Farbwerk Nano | 0xF00F | ARGB controller | —         | —             |
+| HighFlow Next | 0xF012 | Other           | —         | —             |
 
 _Source: [`data/drivers/vendors/aquacomputer.toml`](../../../data/drivers/vendors/aquacomputer.toml)_
 
@@ -470,12 +470,12 @@ _Source: [`data/drivers/vendors/aquacomputer.toml`](../../../data/drivers/vendor
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| ASRock GPU (SMBus) | — | GPU | — | AMD GPU only, SubVendor 0x1849 |
-| ASRock LCD | — | LCD module | — | — |
-| Monitor Controller | 0x01C4 | Monitor | — | — |
-| Polychrome Motherboard | 0x01A2 | Motherboard | — | — |
+| Device                 | PID    | Type        | Transport | Notes                          |
+| ---------------------- | ------ | ----------- | --------- | ------------------------------ |
+| ASRock GPU (SMBus)     | —      | GPU         | —         | AMD GPU only, SubVendor 0x1849 |
+| ASRock LCD             | —      | LCD module  | —         | —                              |
+| Monitor Controller     | 0x01C4 | Monitor     | —         | —                              |
+| Polychrome Motherboard | 0x01A2 | Motherboard | —         | —                              |
 
 _Source: [`data/drivers/vendors/asrock.toml`](../../../data/drivers/vendors/asrock.toml)_
 
@@ -487,38 +487,38 @@ _Source: [`data/drivers/vendors/asrock.toml`](../../../data/drivers/vendors/asro
 
 #### Supported (10)
 
-| Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|
+| Device                   | PID    | Type            | Driver | Transport     | Notes                           |
+| ------------------------ | ------ | --------------- | ------ | ------------- | ------------------------------- |
 | Aura Addressable (Gen 1) | 0x1867 | ARGB controller | `asus` | USB HID (raw) | Up to 120 LEDs per ARGB channel |
-| Aura Addressable (Gen 2) | 0x1872 | ARGB controller | `asus` | USB HID (raw) | — |
-| Aura Addressable (Gen 3) | 0x18A3 | ARGB controller | `asus` | USB HID (raw) | — |
-| Aura Addressable (Gen 4) | 0x18A5 | ARGB controller | `asus` | USB HID (raw) | — |
-| Aura Motherboard (Gen 1) | 0x18F3 | Motherboard | `asus` | USB HID (raw) | — |
-| Aura Motherboard (Gen 2) | 0x1939 | Motherboard | `asus` | USB HID (raw) | — |
-| Aura Motherboard (Gen 3) | 0x19AF | Motherboard | `asus` | USB HID (raw) | — |
-| Aura Motherboard (Gen 4) | 0x1AA6 | Motherboard | `asus` | USB HID (raw) | — |
-| Aura Motherboard (Gen 5) | 0x1BED | Motherboard | `asus` | USB HID (raw) | — |
-| Aura Terminal | 0x1889 | ARGB controller | `asus` | USB HID (raw) | — |
+| Aura Addressable (Gen 2) | 0x1872 | ARGB controller | `asus` | USB HID (raw) | —                               |
+| Aura Addressable (Gen 3) | 0x18A3 | ARGB controller | `asus` | USB HID (raw) | —                               |
+| Aura Addressable (Gen 4) | 0x18A5 | ARGB controller | `asus` | USB HID (raw) | —                               |
+| Aura Motherboard (Gen 1) | 0x18F3 | Motherboard     | `asus` | USB HID (raw) | —                               |
+| Aura Motherboard (Gen 2) | 0x1939 | Motherboard     | `asus` | USB HID (raw) | —                               |
+| Aura Motherboard (Gen 3) | 0x19AF | Motherboard     | `asus` | USB HID (raw) | —                               |
+| Aura Motherboard (Gen 4) | 0x1AA6 | Motherboard     | `asus` | USB HID (raw) | —                               |
+| Aura Motherboard (Gen 5) | 0x1BED | Motherboard     | `asus` | USB HID (raw) | —                               |
+| Aura Terminal            | 0x1889 | ARGB controller | `asus` | USB HID (raw) | —                               |
 
 #### Researched (1)
 
-| Device | Type | Transport | Notes |
-|---|---|---|---|
-| Aura GPU (SMBus) | GPU | — | Ampere/Lovelace GPUs via ENE SMBus. Hypercolor has SMBus transport support. |
+| Device           | Type | Transport | Notes                                                                       |
+| ---------------- | ---- | --------- | --------------------------------------------------------------------------- |
+| Aura GPU (SMBus) | GPU  | —         | Ampere/Lovelace GPUs via ENE SMBus. Hypercolor has SMBus transport support. |
 
 #### Known (9)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Aura Core (Laptop) | 0x1854 | Keyboard | — | ROG laptop keyboard backlighting |
-| ROG Balteus Qi | — | Mousepad | — | — |
-| ROG Claymore II | — | Keyboard | — | — |
-| ROG Spotlight | — | LED strip | — | — |
-| ROG Strix LC AIO | — | AIO cooler | — | — |
-| ROG Strix SCAR 17 | 0x1866 | Keyboard | — | — |
-| ROG Throne Qi Stand | — | Other | — | — |
-| Ryujin AIO | — | AIO cooler | — | — |
-| TUF K1 | — | Keyboard | — | — |
+| Device              | PID    | Type       | Transport | Notes                            |
+| ------------------- | ------ | ---------- | --------- | -------------------------------- |
+| Aura Core (Laptop)  | 0x1854 | Keyboard   | —         | ROG laptop keyboard backlighting |
+| ROG Balteus Qi      | —      | Mousepad   | —         | —                                |
+| ROG Claymore II     | —      | Keyboard   | —         | —                                |
+| ROG Spotlight       | —      | LED strip  | —         | —                                |
+| ROG Strix LC AIO    | —      | AIO cooler | —         | —                                |
+| ROG Strix SCAR 17   | 0x1866 | Keyboard   | —         | —                                |
+| ROG Throne Qi Stand | —      | Other      | —         | —                                |
+| Ryujin AIO          | —      | AIO cooler | —         | —                                |
+| TUF K1              | —      | Keyboard   | —         | —                                |
 
 _Source: [`data/drivers/vendors/asus.toml`](../../../data/drivers/vendors/asus.toml)_
 
@@ -530,33 +530,33 @@ _Source: [`data/drivers/vendors/asus.toml`](../../../data/drivers/vendors/asus.t
 
 #### Researched (3)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| A-RGB LED Small Controller | 0x1000 | ARGB controller | — | — |
-| ARGB Controller | 0x1011 | ARGB controller | — | — |
-| Gen2 LED Controller A1 | 0x0173 | ARGB controller | — | Multiple PIDs: 0x0173, 0x01C9, 0x01CB |
+| Device                     | PID    | Type            | Transport | Notes                                 |
+| -------------------------- | ------ | --------------- | --------- | ------------------------------------- |
+| A-RGB LED Small Controller | 0x1000 | ARGB controller | —         | —                                     |
+| ARGB Controller            | 0x1011 | ARGB controller | —         | —                                     |
+| Gen2 LED Controller A1     | 0x0173 | ARGB controller | —         | Multiple PIDs: 0x0173, 0x01C9, 0x01CB |
 
 #### Known (17)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| CK530 V2 | 0x0147 | Keyboard | — | — |
-| CK550 V2 | 0x0145 | Keyboard | — | — |
-| CK552 V2 | 0x007F | Keyboard | — | — |
-| CK720 | 0x016B | Keyboard | — | — |
-| CK721 | 0x016D | Keyboard | — | — |
-| MK730 | 0x008F | Keyboard | — | — |
-| MK750 | 0x0067 | Keyboard | — | — |
-| MK850 | 0x0069 | Keyboard | — | — |
-| MM711 | 0x0101 | Mouse | — | — |
-| MP750L | 0x0107 | Mousepad | — | — |
-| MP750M | 0x0105 | Mousepad | — | — |
-| MP750XL | 0x0109 | Mousepad | — | — |
-| MP860 | 0x006D | Mousepad | — | — |
-| SK620/SK622 | 0x0087 | Keyboard | — | Multiple PIDs: 0x0087, 0x0159, 0x0149, 0x014B |
-| SK650 | 0x008D | Keyboard | — | — |
-| SK652 | 0x015D | Keyboard | — | — |
-| SK653 | 0x01AB | Keyboard | — | — |
+| Device      | PID    | Type     | Transport | Notes                                         |
+| ----------- | ------ | -------- | --------- | --------------------------------------------- |
+| CK530 V2    | 0x0147 | Keyboard | —         | —                                             |
+| CK550 V2    | 0x0145 | Keyboard | —         | —                                             |
+| CK552 V2    | 0x007F | Keyboard | —         | —                                             |
+| CK720       | 0x016B | Keyboard | —         | —                                             |
+| CK721       | 0x016D | Keyboard | —         | —                                             |
+| MK730       | 0x008F | Keyboard | —         | —                                             |
+| MK750       | 0x0067 | Keyboard | —         | —                                             |
+| MK850       | 0x0069 | Keyboard | —         | —                                             |
+| MM711       | 0x0101 | Mouse    | —         | —                                             |
+| MP750L      | 0x0107 | Mousepad | —         | —                                             |
+| MP750M      | 0x0105 | Mousepad | —         | —                                             |
+| MP750XL     | 0x0109 | Mousepad | —         | —                                             |
+| MP860       | 0x006D | Mousepad | —         | —                                             |
+| SK620/SK622 | 0x0087 | Keyboard | —         | Multiple PIDs: 0x0087, 0x0159, 0x0149, 0x014B |
+| SK650       | 0x008D | Keyboard | —         | —                                             |
+| SK652       | 0x015D | Keyboard | —         | —                                             |
+| SK653       | 0x01AB | Keyboard | —         | —                                             |
 
 _Source: [`data/drivers/vendors/coolermaster.toml`](../../../data/drivers/vendors/coolermaster.toml)_
 
@@ -568,36 +568,36 @@ _Source: [`data/drivers/vendors/coolermaster.toml`](../../../data/drivers/vendor
 
 #### Supported (14)
 
-| Device | PID | Type | Driver | Transport | LEDs | Notes |
-|---|---|---|---|---|---|---|
-| 1000D Obsidian | 0x1D00 | ARGB controller | `corsair` | USB HID | — | 2 channels |
-| Commander Pro | 0x0C10 | Fan controller | `corsair` | USB HID | — | 2 RGB channels + fan control |
-| Elite Capellix LCD | 0x0C39 | LCD module | `corsair` | USB bulk transfer | — | 480x480 JPEG streaming, 30fps |
-| Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module | `corsair` | USB bulk transfer | — | — |
-| iCUE LINK LCD | 0x0C4E | LCD module | `corsair` | USB bulk transfer | — | — |
-| iCUE LINK System Hub | 0x0C3F | Fan controller | `corsair` | USB HID | — | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
-| Lighting Node Core | 0x0C1A | ARGB controller | `corsair` | USB HID | — | 1 channel, 204 LEDs max |
-| Lighting Node Pro | 0x0C0B | ARGB controller | `corsair` | USB HID | — | 2 channels, 408 LEDs max |
-| LS100 Starter Kit | 0x0C1E | LED strip | `corsair` | USB HID | — | 1 channel |
-| LT100 Tower | 0x0C23 | LED strip | `corsair` | USB HID | — | 2 channels |
-| Nautilus RS LCD | 0x0C55 | LCD module | `corsair` | USB bulk transfer | — | — |
-| SPEC OMEGA RGB | 0x1D04 | ARGB controller | `corsair` | USB HID | — | 2 channels |
-| XC7 RGB Elite LCD | 0x0C42 | LCD module | `corsair` | USB bulk transfer | 31 | 480x480 display + 31-LED ring, custom XC7 init sequence |
-| XD6 Elite LCD | 0x0C43 | LCD module | `corsair` | USB bulk transfer | — | — |
+| Device                       | PID    | Type            | Driver    | Transport         | LEDs | Notes                                                          |
+| ---------------------------- | ------ | --------------- | --------- | ----------------- | ---- | -------------------------------------------------------------- |
+| 1000D Obsidian               | 0x1D00 | ARGB controller | `corsair` | USB HID           | —    | 2 channels                                                     |
+| Commander Pro                | 0x0C10 | Fan controller  | `corsair` | USB HID           | —    | 2 RGB channels + fan control                                   |
+| Elite Capellix LCD           | 0x0C39 | LCD module      | `corsair` | USB bulk transfer | —    | 480x480 JPEG streaming, 30fps                                  |
+| Elite Capellix LCD (Alt PID) | 0x0C33 | LCD module      | `corsair` | USB bulk transfer | —    | —                                                              |
+| iCUE LINK LCD                | 0x0C4E | LCD module      | `corsair` | USB bulk transfer | —    | —                                                              |
+| iCUE LINK System Hub         | 0x0C3F | Fan controller  | `corsair` | USB HID           | —    | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
+| Lighting Node Core           | 0x0C1A | ARGB controller | `corsair` | USB HID           | —    | 1 channel, 204 LEDs max                                        |
+| Lighting Node Pro            | 0x0C0B | ARGB controller | `corsair` | USB HID           | —    | 2 channels, 408 LEDs max                                       |
+| LS100 Starter Kit            | 0x0C1E | LED strip       | `corsair` | USB HID           | —    | 1 channel                                                      |
+| LT100 Tower                  | 0x0C23 | LED strip       | `corsair` | USB HID           | —    | 2 channels                                                     |
+| Nautilus RS LCD              | 0x0C55 | LCD module      | `corsair` | USB bulk transfer | —    | —                                                              |
+| SPEC OMEGA RGB               | 0x1D04 | ARGB controller | `corsair` | USB HID           | —    | 2 channels                                                     |
+| XC7 RGB Elite LCD            | 0x0C42 | LCD module      | `corsair` | USB bulk transfer | 31   | 480x480 display + 31-LED ring, custom XC7 init sequence        |
+| XD6 Elite LCD                | 0x0C43 | LCD module      | `corsair` | USB bulk transfer | —    | —                                                              |
 
 #### Researched (9)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Commander Core | 0x0C12 | Fan controller | — | Lighting Commander Core protocol |
-| Commander Core XT | 0x0C1C | Fan controller | — | — |
-| Dominator RAM | 0x1B2E | RAM | — | SMBus protocol |
-| Dominator Titanium RAM | 0x1B40 | RAM | — | — |
-| HS80 RGB Wired | 0x0A4F | Headset | — | — |
-| Nexus LCD Companion | 0x0A44 | LCD module | — | 5-inch touchscreen, different from AIO LCDs |
-| Void Elite Wireless | 0x0A51 | Headset | — | — |
-| Void Elite Wireless (White) | 0x0A55 | Headset | — | — |
-| Void Pro Wireless | 0x0A58 | Headset | — | — |
+| Device                      | PID    | Type           | Transport | Notes                                       |
+| --------------------------- | ------ | -------------- | --------- | ------------------------------------------- |
+| Commander Core              | 0x0C12 | Fan controller | —         | Lighting Commander Core protocol            |
+| Commander Core XT           | 0x0C1C | Fan controller | —         | —                                           |
+| Dominator RAM               | 0x1B2E | RAM            | —         | SMBus protocol                              |
+| Dominator Titanium RAM      | 0x1B40 | RAM            | —         | —                                           |
+| HS80 RGB Wired              | 0x0A4F | Headset        | —         | —                                           |
+| Nexus LCD Companion         | 0x0A44 | LCD module     | —         | 5-inch touchscreen, different from AIO LCDs |
+| Void Elite Wireless         | 0x0A51 | Headset        | —         | —                                           |
+| Void Elite Wireless (White) | 0x0A55 | Headset        | —         | —                                           |
+| Void Pro Wireless           | 0x0A58 | Headset        | —         | —                                           |
 
 _Source: [`data/drivers/vendors/corsair.toml`](../../../data/drivers/vendors/corsair.toml)_
 
@@ -609,10 +609,10 @@ _Source: [`data/drivers/vendors/corsair.toml`](../../../data/drivers/vendors/cor
 
 #### Blocked (2)
 
-| Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|
-| Defy (Wired) | 0x0010 | Keyboard | `dygma` | USB serial | Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware. |
-| Defy (Wireless) | 0x0012 | Keyboard | `dygma` | USB serial | Same firmware limitation as wired variant. RGBW color support ready on our side. |
+| Device          | PID    | Type     | Driver  | Transport  | Notes                                                                                                                                                                                          |
+| --------------- | ------ | -------- | ------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Defy (Wired)    | 0x0010 | Keyboard | `dygma` | USB serial | Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware. |
+| Defy (Wireless) | 0x0012 | Keyboard | `dygma` | USB serial | Same firmware limitation as wired variant. RGBW color support ready on our side.                                                                                                               |
 
 _Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma.toml)_
 
@@ -624,15 +624,15 @@ _Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma
 
 #### Known (7)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| EVGA GPU (Pascal/Turing/Ampere) | — | GPU | — | SMBus protocol, 3 generations |
-| X15 Mouse | 0x2415 | Mouse | — | — |
-| X17 Mouse | 0x240D | Mouse | — | — |
-| Z15 Keyboard (ANSI) | 0x2608 | Keyboard | — | — |
-| Z15 Keyboard (ISO) | 0x260E | Keyboard | — | — |
-| Z20 Keyboard | 0x260A | Keyboard | — | — |
-| Z20 Keyboard (ISO) | 0x2610 | Keyboard | — | — |
+| Device                          | PID    | Type     | Transport | Notes                         |
+| ------------------------------- | ------ | -------- | --------- | ----------------------------- |
+| EVGA GPU (Pascal/Turing/Ampere) | —      | GPU      | —         | SMBus protocol, 3 generations |
+| X15 Mouse                       | 0x2415 | Mouse    | —         | —                             |
+| X17 Mouse                       | 0x240D | Mouse    | —         | —                             |
+| Z15 Keyboard (ANSI)             | 0x2608 | Keyboard | —         | —                             |
+| Z15 Keyboard (ISO)              | 0x260E | Keyboard | —         | —                             |
+| Z20 Keyboard                    | 0x260A | Keyboard | —         | —                             |
+| Z20 Keyboard (ISO)              | 0x2610 | Keyboard | —         | —                             |
 
 _Source: [`data/drivers/vendors/evga.toml`](../../../data/drivers/vendors/evga.toml)_
 
@@ -644,11 +644,11 @@ _Source: [`data/drivers/vendors/evga.toml`](../../../data/drivers/vendors/evga.t
 
 #### Known (3)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| miniSTREAK Speed | 0x0103 | Keyboard | — | — |
-| STREAK | 0x0101 | Keyboard | — | — |
-| STREAK65 | 0x0105 | Keyboard | — | — |
+| Device           | PID    | Type     | Transport | Notes |
+| ---------------- | ------ | -------- | --------- | ----- |
+| miniSTREAK Speed | 0x0103 | Keyboard | —         | —     |
+| STREAK           | 0x0101 | Keyboard | —         | —     |
+| STREAK65         | 0x0105 | Keyboard | —         | —     |
 
 _Source: [`data/drivers/vendors/fnatic.toml`](../../../data/drivers/vendors/fnatic.toml)_
 
@@ -660,21 +660,21 @@ _Source: [`data/drivers/vendors/fnatic.toml`](../../../data/drivers/vendors/fnat
 
 #### Researched (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Gigabyte GPU (Gen 1-4) | — | GPU | — | 4 GPU generations. SMBus protocol, NVIDIA bus scanning. |
-| RGB Fusion Motherboard Controller | 0x5702 | Motherboard | — | VID 0x048D, zone addresses 0x20-0x27, ARGB at 0x58-0x59, 240 LED max |
-| RGB Fusion Motherboard Controller (Alt) | 0x8297 | Motherboard | — | VID 0x048D |
-| RGB Fusion Motherboard Controller (Gen 2) | 0x5711 | Motherboard | — | VID 0x048D |
+| Device                                    | PID    | Type        | Transport | Notes                                                                |
+| ----------------------------------------- | ------ | ----------- | --------- | -------------------------------------------------------------------- |
+| Gigabyte GPU (Gen 1-4)                    | —      | GPU         | —         | 4 GPU generations. SMBus protocol, NVIDIA bus scanning.              |
+| RGB Fusion Motherboard Controller         | 0x5702 | Motherboard | —         | VID 0x048D, zone addresses 0x20-0x27, ARGB at 0x58-0x59, 240 LED max |
+| RGB Fusion Motherboard Controller (Alt)   | 0x8297 | Motherboard | —         | VID 0x048D                                                           |
+| RGB Fusion Motherboard Controller (Gen 2) | 0x5711 | Motherboard | —         | VID 0x048D                                                           |
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Aorus ATC800 | 0x7A42 | AIO cooler | — | VID 0x1044 |
-| Aorus Liquid Cooler 360 | 0x7A46 | AIO cooler | — | VID 0x1044 |
-| Aorus Waterforce X I | 0x7A4D | AIO cooler | — | VID 0x1044 |
-| Aorus Waterforce X II | 0x7A5E | AIO cooler | — | VID 0x0414 |
+| Device                  | PID    | Type       | Transport | Notes      |
+| ----------------------- | ------ | ---------- | --------- | ---------- |
+| Aorus ATC800            | 0x7A42 | AIO cooler | —         | VID 0x1044 |
+| Aorus Liquid Cooler 360 | 0x7A46 | AIO cooler | —         | VID 0x1044 |
+| Aorus Waterforce X I    | 0x7A4D | AIO cooler | —         | VID 0x1044 |
+| Aorus Waterforce X II   | 0x7A5E | AIO cooler | —         | VID 0x0414 |
 
 _Source: [`data/drivers/vendors/gigabyte.toml`](../../../data/drivers/vendors/gigabyte.toml)_
 
@@ -686,18 +686,18 @@ _Source: [`data/drivers/vendors/gigabyte.toml`](../../../data/drivers/vendors/gi
 
 #### Supported (1)
 
-| Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|
-| GMMK Pro | 0x5044 | Keyboard | `qmk` | USB HID | VID 0x320F, supported via QMK driver |
+| Device   | PID    | Type     | Driver | Transport | Notes                                |
+| -------- | ------ | -------- | ------ | --------- | ------------------------------------ |
+| GMMK Pro | 0x5044 | Keyboard | `qmk`  | USB HID   | VID 0x320F, supported via QMK driver |
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Model D Wireless | 0x2025 | Mouse | — | VID 0x258A |
-| Model D Wireless (Wired) | 0x2014 | Mouse | — | VID 0x258A |
-| Model O Wireless | 0x2022 | Mouse | — | VID 0x258A, multiple PIDs |
-| Model O Wireless (Wired) | 0x2011 | Mouse | — | VID 0x258A |
+| Device                   | PID    | Type  | Transport | Notes                     |
+| ------------------------ | ------ | ----- | --------- | ------------------------- |
+| Model D Wireless         | 0x2025 | Mouse | —         | VID 0x258A                |
+| Model D Wireless (Wired) | 0x2014 | Mouse | —         | VID 0x258A                |
+| Model O Wireless         | 0x2022 | Mouse | —         | VID 0x258A, multiple PIDs |
+| Model O Wireless (Wired) | 0x2011 | Mouse | —         | VID 0x258A                |
 
 _Source: [`data/drivers/vendors/glorious.toml`](../../../data/drivers/vendors/glorious.toml)_
 
@@ -711,24 +711,24 @@ _Source: [`data/drivers/vendors/glorious.toml`](../../../data/drivers/vendors/gl
 
 #### Known (16)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Alloy Elite 2 | 0x1711 | Keyboard | — | VID 0x0951 |
-| Alloy Elite RGB | 0x16BE | Keyboard | — | VID 0x0951 |
-| Alloy FPS RGB | 0x16DC | Keyboard | — | VID 0x0951 |
-| Alloy Origins | 0x16E5 | Keyboard | — | VID 0x0951 |
-| Alloy Origins 60 | 0x1734 | Keyboard | — | VID 0x0951 |
-| Alloy Origins 65 | 0x038F | Keyboard | — | VID 0x03F0 (HP era) |
-| Alloy Origins Core | 0x16E6 | Keyboard | — | VID 0x0951 |
-| Cloud Flight | 0x16C4 | Headset | — | VID 0x0951 |
-| Duocast | 0x098C | Microphone | — | VID 0x03F0 |
-| Fury Ultra | 0x1705 | Mousepad | — | VID 0x0951 |
-| PulseFire Core | 0x16DE | Mouse | — | VID 0x0951 |
-| PulseFire Haste | 0x1727 | Mouse | — | VID 0x0951 |
-| PulseFire Raid | 0x16E4 | Mouse | — | VID 0x0951 |
-| PulseFire Surge | 0x16D3 | Mouse | — | VID 0x0951 |
-| Quadcast 2 S | 0x02B5 | Microphone | — | VID 0x03F0 |
-| Quadcast S | 0x171D | Microphone | — | VID 0x0951, multiple PIDs |
+| Device             | PID    | Type       | Transport | Notes                     |
+| ------------------ | ------ | ---------- | --------- | ------------------------- |
+| Alloy Elite 2      | 0x1711 | Keyboard   | —         | VID 0x0951                |
+| Alloy Elite RGB    | 0x16BE | Keyboard   | —         | VID 0x0951                |
+| Alloy FPS RGB      | 0x16DC | Keyboard   | —         | VID 0x0951                |
+| Alloy Origins      | 0x16E5 | Keyboard   | —         | VID 0x0951                |
+| Alloy Origins 60   | 0x1734 | Keyboard   | —         | VID 0x0951                |
+| Alloy Origins 65   | 0x038F | Keyboard   | —         | VID 0x03F0 (HP era)       |
+| Alloy Origins Core | 0x16E6 | Keyboard   | —         | VID 0x0951                |
+| Cloud Flight       | 0x16C4 | Headset    | —         | VID 0x0951                |
+| Duocast            | 0x098C | Microphone | —         | VID 0x03F0                |
+| Fury Ultra         | 0x1705 | Mousepad   | —         | VID 0x0951                |
+| PulseFire Core     | 0x16DE | Mouse      | —         | VID 0x0951                |
+| PulseFire Haste    | 0x1727 | Mouse      | —         | VID 0x0951                |
+| PulseFire Raid     | 0x16E4 | Mouse      | —         | VID 0x0951                |
+| PulseFire Surge    | 0x16D3 | Mouse      | —         | VID 0x0951                |
+| Quadcast 2 S       | 0x02B5 | Microphone | —         | VID 0x03F0                |
+| Quadcast S         | 0x171D | Microphone | —         | VID 0x0951, multiple PIDs |
 
 _Source: [`data/drivers/vendors/hyperx.toml`](../../../data/drivers/vendors/hyperx.toml)_
 
@@ -740,10 +740,10 @@ _Source: [`data/drivers/vendors/hyperx.toml`](../../../data/drivers/vendors/hype
 
 #### Known (2)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| CNVS | 0x0B00 | Mousepad | — | — |
-| CNVS (Alt PID) | 0x0B01 | Mousepad | — | — |
+| Device         | PID    | Type     | Transport | Notes |
+| -------------- | ------ | -------- | --------- | ----- |
+| CNVS           | 0x0B00 | Mousepad | —         | —     |
+| CNVS (Alt PID) | 0x0B01 | Mousepad | —         | —     |
 
 _Source: [`data/drivers/vendors/hyte.toml`](../../../data/drivers/vendors/hyte.toml)_
 
@@ -755,24 +755,24 @@ _Source: [`data/drivers/vendors/hyte.toml`](../../../data/drivers/vendors/hyte.t
 
 #### Supported (9)
 
-| Device | PID | Type | Driver | Transport | LEDs | Notes |
-|---|---|---|---|---|---|---|
-| TL Fan Hub | 0x7372 | Fan controller | `lianli` | USB HID | 260 | VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported. |
-| Uni Hub - AL | 0xA101 | Fan controller | `lianli` | USB HID | — | Dual-ring fans (inner/outer), firmware-dependent: HID for v1.7+, Vendor for v1.0 (AL10) |
-| Uni Hub - AL V2 | 0xA104 | Fan controller | `lianli` | USB HID | — | Dual-ring, 144 bytes per port output |
-| Uni Hub - SL | 0xA100 | Fan controller | `lianli` | USB HID | — | ENE 6K77 protocol, single-ring fans |
-| Uni Hub - SL Infinity | 0xA102 | Fan controller | `lianli` | USB HID | — | 4 physical groups, 8 logical channels |
-| Uni Hub - SL Redragon | 0xA106 | Fan controller | `lianli` | USB HID | — | — |
-| Uni Hub - SL V2 | 0xA103 | Fan controller | `lianli` | USB HID | — | — |
-| Uni Hub - SL V2a | 0xA105 | Fan controller | `lianli` | USB HID | — | — |
-| Uni Hub (Original) | 0x7750 | Fan controller | `lianli` | USB vendor | — | Legacy USB vendor protocol |
+| Device                | PID    | Type           | Driver   | Transport  | LEDs | Notes                                                                                   |
+| --------------------- | ------ | -------------- | -------- | ---------- | ---- | --------------------------------------------------------------------------------------- |
+| TL Fan Hub            | 0x7372 | Fan controller | `lianli` | USB HID    | 260  | VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported.   |
+| Uni Hub - AL          | 0xA101 | Fan controller | `lianli` | USB HID    | —    | Dual-ring fans (inner/outer), firmware-dependent: HID for v1.7+, Vendor for v1.0 (AL10) |
+| Uni Hub - AL V2       | 0xA104 | Fan controller | `lianli` | USB HID    | —    | Dual-ring, 144 bytes per port output                                                    |
+| Uni Hub - SL          | 0xA100 | Fan controller | `lianli` | USB HID    | —    | ENE 6K77 protocol, single-ring fans                                                     |
+| Uni Hub - SL Infinity | 0xA102 | Fan controller | `lianli` | USB HID    | —    | 4 physical groups, 8 logical channels                                                   |
+| Uni Hub - SL Redragon | 0xA106 | Fan controller | `lianli` | USB HID    | —    | —                                                                                       |
+| Uni Hub - SL V2       | 0xA103 | Fan controller | `lianli` | USB HID    | —    | —                                                                                       |
+| Uni Hub - SL V2a      | 0xA105 | Fan controller | `lianli` | USB HID    | —    | —                                                                                       |
+| Uni Hub (Original)    | 0x7750 | Fan controller | `lianli` | USB vendor | —    | Legacy USB vendor protocol                                                              |
 
 #### Researched (2)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Galahad II LCD | 0x7395 | AIO cooler | — | VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering |
-| Strimer Controller | 0xA200 | LED strip | — | 24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order. |
+| Device             | PID    | Type       | Transport | Notes                                                                                                   |
+| ------------------ | ------ | ---------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| Galahad II LCD     | 0x7395 | AIO cooler | —         | VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering                        |
+| Strimer Controller | 0xA200 | LED strip  | —         | 24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order. |
 
 _Source: [`data/drivers/vendors/lianli.toml`](../../../data/drivers/vendors/lianli.toml)_
 
@@ -786,17 +786,17 @@ _Source: [`data/drivers/vendors/lianli.toml`](../../../data/drivers/vendors/lian
 
 #### Known (9)
 
-| Device | Type | Transport | Notes |
-|---|---|---|---|
-| G13 Keyboard | Keyboard | — | — |
-| G19 Keyboard | Keyboard | — | Has LCD display |
-| G513 Keyboard | Keyboard | — | — |
-| G560 Speakers | Speakers | — | — |
-| G600 Mouse | Mouse | — | — |
-| G810 Keyboard | Keyboard | — | Legacy 8080 protocol |
-| G910 Keyboard | Keyboard | — | — |
-| Logitech Modern Device (multi-PID) | Keyboard | — | Dynamic PID library. Covers G Pro, G915, G815, etc. |
-| Wireless Dongle | Other | — | Unified receiver for wireless peripherals |
+| Device                             | Type     | Transport | Notes                                               |
+| ---------------------------------- | -------- | --------- | --------------------------------------------------- |
+| G13 Keyboard                       | Keyboard | —         | —                                                   |
+| G19 Keyboard                       | Keyboard | —         | Has LCD display                                     |
+| G513 Keyboard                      | Keyboard | —         | —                                                   |
+| G560 Speakers                      | Speakers | —         | —                                                   |
+| G600 Mouse                         | Mouse    | —         | —                                                   |
+| G810 Keyboard                      | Keyboard | —         | Legacy 8080 protocol                                |
+| G910 Keyboard                      | Keyboard | —         | —                                                   |
+| Logitech Modern Device (multi-PID) | Keyboard | —         | Dynamic PID library. Covers G Pro, G915, G815, etc. |
+| Wireless Dongle                    | Other    | —         | Unified receiver for wireless peripherals           |
 
 _Source: [`data/drivers/vendors/logitech.toml`](../../../data/drivers/vendors/logitech.toml)_
 
@@ -808,12 +808,12 @@ _Source: [`data/drivers/vendors/logitech.toml`](../../../data/drivers/vendors/lo
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Everest 60 | 0x0005 | Keyboard | — | — |
-| Everest Max | 0x0001 | Keyboard | — | — |
-| Macropad | 0x0008 | Keyboard | — | — |
-| Makalu 67 | 0x0003 | Mouse | — | — |
+| Device      | PID    | Type     | Transport | Notes |
+| ----------- | ------ | -------- | --------- | ----- |
+| Everest 60  | 0x0005 | Keyboard | —         | —     |
+| Everest Max | 0x0001 | Keyboard | —         | —     |
+| Macropad    | 0x0008 | Keyboard | —         | —     |
+| Makalu 67   | 0x0003 | Mouse    | —         | —     |
 
 _Source: [`data/drivers/vendors/mountain.toml`](../../../data/drivers/vendors/mountain.toml)_
 
@@ -825,24 +825,24 @@ _Source: [`data/drivers/vendors/mountain.toml`](../../../data/drivers/vendors/mo
 
 #### Researched (7)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| B450 Gaming Pro Carbon AC | 0x7B85 | Motherboard | — | — |
-| MSI GPU (Lovelace) | — | GPU | — | SMBus protocol, base address from device list lookup |
-| Mystic Light Controller (162 Byte) | 0x1720 | Motherboard | — | 162-byte HID packet, zone-based offsets (10 bytes/zone) |
-| Mystic Light Controller (162 Byte) | 0x7B17 | Motherboard | — | — |
-| Mystic Light Controller (162 Byte) | 0x7B18 | Motherboard | — | — |
-| Mystic Light Controller (162 Byte) | 0xB926 | Motherboard | — | — |
-| Mystic Light Controller (185 Byte) | — | Motherboard | — | 185-byte HID, ARGB headers at 0x400-0x402. 120+ PIDs across many board revisions. |
+| Device                             | PID    | Type        | Transport | Notes                                                                             |
+| ---------------------------------- | ------ | ----------- | --------- | --------------------------------------------------------------------------------- |
+| B450 Gaming Pro Carbon AC          | 0x7B85 | Motherboard | —         | —                                                                                 |
+| MSI GPU (Lovelace)                 | —      | GPU         | —         | SMBus protocol, base address from device list lookup                              |
+| Mystic Light Controller (162 Byte) | 0x1720 | Motherboard | —         | 162-byte HID packet, zone-based offsets (10 bytes/zone)                           |
+| Mystic Light Controller (162 Byte) | 0x7B17 | Motherboard | —         | —                                                                                 |
+| Mystic Light Controller (162 Byte) | 0x7B18 | Motherboard | —         | —                                                                                 |
+| Mystic Light Controller (162 Byte) | 0xB926 | Motherboard | —         | —                                                                                 |
+| Mystic Light Controller (185 Byte) | —      | Motherboard | —         | 185-byte HID, ARGB headers at 0x400-0x402. 120+ PIDs across many board revisions. |
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| GS63 Keyboard | 0xFF00 | Keyboard | — | VID 0x1770 |
-| MSI GPU (Blackwell) | — | GPU | — | — |
-| MSI Keyboard (Modern) | — | Keyboard | — | VID 0x0DB0, dynamic PID library |
-| MSI Monitor Controller | 0x3FA4 | Monitor | — | — |
+| Device                 | PID    | Type     | Transport | Notes                           |
+| ---------------------- | ------ | -------- | --------- | ------------------------------- |
+| GS63 Keyboard          | 0xFF00 | Keyboard | —         | VID 0x1770                      |
+| MSI GPU (Blackwell)    | —      | GPU      | —         | —                               |
+| MSI Keyboard (Modern)  | —      | Keyboard | —         | VID 0x0DB0, dynamic PID library |
+| MSI Monitor Controller | 0x3FA4 | Monitor  | —         | —                               |
 
 _Source: [`data/drivers/vendors/msi.toml`](../../../data/drivers/vendors/msi.toml)_
 
@@ -854,9 +854,9 @@ _Source: [`data/drivers/vendors/msi.toml`](../../../data/drivers/vendors/msi.tom
 
 #### Supported (1)
 
-| Device | Type | Driver | Transport | Notes |
-|---|---|---|---|---|
-| Nanoleaf Panels (any) | LED strip | `nanoleaf` | HTTP | mDNS discovery + power button pairing. Supports all panel shapes and light strips. |
+| Device                | Type      | Driver     | Transport | Notes                                                                              |
+| --------------------- | --------- | ---------- | --------- | ---------------------------------------------------------------------------------- |
+| Nanoleaf Panels (any) | LED strip | `nanoleaf` | HTTP      | mDNS discovery + power button pairing. Supports all panel shapes and light strips. |
 
 _Source: [`data/drivers/vendors/nanoleaf.toml`](../../../data/drivers/vendors/nanoleaf.toml)_
 
@@ -868,30 +868,30 @@ _Source: [`data/drivers/vendors/nanoleaf.toml`](../../../data/drivers/vendors/na
 
 #### Researched (6)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Kraken | 0x300E | AIO cooler | — | — |
-| Kraken Elite | 0x300C | AIO cooler | — | — |
-| Kraken Elite V2 | 0x3012 | AIO cooler | — | — |
-| Kraken Z3 | 0x3008 | AIO cooler | — | — |
-| RGB and Fan Controller | 0x2009 | Fan controller | — | Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 |
-| Smart Device V2 (Hue 2) | 0x2001 | ARGB controller | — | Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F |
+| Device                  | PID    | Type            | Transport | Notes                                                               |
+| ----------------------- | ------ | --------------- | --------- | ------------------------------------------------------------------- |
+| Kraken                  | 0x300E | AIO cooler      | —         | —                                                                   |
+| Kraken Elite            | 0x300C | AIO cooler      | —         | —                                                                   |
+| Kraken Elite V2         | 0x3012 | AIO cooler      | —         | —                                                                   |
+| Kraken Z3               | 0x3008 | AIO cooler      | —         | —                                                                   |
+| RGB and Fan Controller  | 0x2009 | Fan controller  | —         | Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 |
+| Smart Device V2 (Hue 2) | 0x2001 | ARGB controller | —         | Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F               |
 
 #### Known (11)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Function 2 Keyboard | 0x2130 | Keyboard | — | Multiple PIDs: 0x2130, 0x2131, 0x2136 |
-| Function Keyboard | 0x2103 | Keyboard | — | Multiple PIDs: 0x2103-0x2108 (ANSI/ISO, Full/TKL/MiniTKL) |
-| Kraken X2/M2 | 0x170E | AIO cooler | — | — |
-| Kraken X3 | 0x2007 | AIO cooler | — | — |
-| Lift Mouse | 0x2100 | Mouse | — | — |
-| N7 B550 | 0x200B | Motherboard | — | — |
-| N7 B650E | 0x201B | Motherboard | — | — |
-| N7 Z390 | 0x2005 | Motherboard | — | — |
-| N7 Z490 | 0x200A | Motherboard | — | — |
-| N7 Z790 | 0x201D | Motherboard | — | — |
-| Smart Device V1 | 0x1714 | ARGB controller | — | — |
+| Device              | PID    | Type            | Transport | Notes                                                     |
+| ------------------- | ------ | --------------- | --------- | --------------------------------------------------------- |
+| Function 2 Keyboard | 0x2130 | Keyboard        | —         | Multiple PIDs: 0x2130, 0x2131, 0x2136                     |
+| Function Keyboard   | 0x2103 | Keyboard        | —         | Multiple PIDs: 0x2103-0x2108 (ANSI/ISO, Full/TKL/MiniTKL) |
+| Kraken X2/M2        | 0x170E | AIO cooler      | —         | —                                                         |
+| Kraken X3           | 0x2007 | AIO cooler      | —         | —                                                         |
+| Lift Mouse          | 0x2100 | Mouse           | —         | —                                                         |
+| N7 B550             | 0x200B | Motherboard     | —         | —                                                         |
+| N7 B650E            | 0x201B | Motherboard     | —         | —                                                         |
+| N7 Z390             | 0x2005 | Motherboard     | —         | —                                                         |
+| N7 Z490             | 0x200A | Motherboard     | —         | —                                                         |
+| N7 Z790             | 0x201D | Motherboard     | —         | —                                                         |
+| Smart Device V1     | 0x1714 | ARGB controller | —         | —                                                         |
 
 _Source: [`data/drivers/vendors/nzxt.toml`](../../../data/drivers/vendors/nzxt.toml)_
 
@@ -903,9 +903,9 @@ _Source: [`data/drivers/vendors/nzxt.toml`](../../../data/drivers/vendors/nzxt.t
 
 #### Supported (1)
 
-| Device | Type | Driver | Transport | Notes |
-|---|---|---|---|---|
-| Hue Bridge (any) | ARGB controller | `hue` | HTTP | mDNS discovery + link button pairing. Controls all lights connected to bridge. |
+| Device           | Type            | Driver | Transport | Notes                                                                          |
+| ---------------- | --------------- | ------ | --------- | ------------------------------------------------------------------------------ |
+| Hue Bridge (any) | ARGB controller | `hue`  | HTTP      | mDNS discovery + link button pairing. Controls all lights connected to bridge. |
 
 _Source: [`data/drivers/vendors/philips.toml`](../../../data/drivers/vendors/philips.toml)_
 
@@ -917,12 +917,12 @@ _Source: [`data/drivers/vendors/philips.toml`](../../../data/drivers/vendors/phi
 
 #### Supported (4)
 
-| Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|
-| Nollie 8 v2 | 0x1F01 | ARGB controller | `prismrgb` | USB HID | VID 0x16D2, GRB byte order |
-| Prism 8 | 0x1F01 | ARGB controller | `prismrgb` | USB HID | VID 0x16D5, 8 channels x 126 LEDs, GRB byte order |
-| Prism Mini | 0x1407 | ARGB controller | `prismrgb` | USB HID | VID 0x16D0, 128 LEDs max, color pair compression |
-| Prism S | 0x1294 | ARGB controller | `prismrgb` | USB HID | VID 0x16D0, RGB byte order, ATX + GPU cable variants |
+| Device      | PID    | Type            | Driver     | Transport | Notes                                                |
+| ----------- | ------ | --------------- | ---------- | --------- | ---------------------------------------------------- |
+| Nollie 8 v2 | 0x1F01 | ARGB controller | `prismrgb` | USB HID   | VID 0x16D2, GRB byte order                           |
+| Prism 8     | 0x1F01 | ARGB controller | `prismrgb` | USB HID   | VID 0x16D5, 8 channels x 126 LEDs, GRB byte order    |
+| Prism Mini  | 0x1407 | ARGB controller | `prismrgb` | USB HID   | VID 0x16D0, 128 LEDs max, color pair compression     |
+| Prism S     | 0x1294 | ARGB controller | `prismrgb` | USB HID   | VID 0x16D0, RGB byte order, ATX + GPU cable variants |
 
 _Source: [`data/drivers/vendors/prismrgb.toml`](../../../data/drivers/vendors/prismrgb.toml)_
 
@@ -934,18 +934,18 @@ _Source: [`data/drivers/vendors/prismrgb.toml`](../../../data/drivers/vendors/pr
 
 #### Supported (10)
 
-| Device | PID | Type | Driver | Transport | Notes |
-|---|---|---|---|---|---|
-| Glorious GMMK Pro | 0x5044 | Keyboard | `qmk` | USB HID | VID 0x320F |
-| Keychron Q1 | 0x0110 | Keyboard | `qmk` | USB HID | VID 0x3434, QMK protocol rev D |
-| Keychron Q2 | 0x0120 | Keyboard | `qmk` | USB HID | VID 0x3434 |
-| Keychron Q3 | 0x0130 | Keyboard | `qmk` | USB HID | VID 0x3434 |
-| Keychron Q5 | 0x0150 | Keyboard | `qmk` | USB HID | VID 0x3434 |
-| Keychron Q6 | 0x0160 | Keyboard | `qmk` | USB HID | VID 0x3434 |
-| Keychron V1 | 0x0310 | Keyboard | `qmk` | USB HID | VID 0x3434 |
-| OLKB Planck | 0x6060 | Keyboard | `qmk` | USB HID | VID 0xFEED |
-| ZSA Moonlander | 0x1969 | Keyboard | `qmk` | USB HID | VID 0x3297 |
-| ZSA Voyager | 0x0791 | Keyboard | `qmk` | USB HID | VID 0x3297 |
+| Device            | PID    | Type     | Driver | Transport | Notes                          |
+| ----------------- | ------ | -------- | ------ | --------- | ------------------------------ |
+| Glorious GMMK Pro | 0x5044 | Keyboard | `qmk`  | USB HID   | VID 0x320F                     |
+| Keychron Q1       | 0x0110 | Keyboard | `qmk`  | USB HID   | VID 0x3434, QMK protocol rev D |
+| Keychron Q2       | 0x0120 | Keyboard | `qmk`  | USB HID   | VID 0x3434                     |
+| Keychron Q3       | 0x0130 | Keyboard | `qmk`  | USB HID   | VID 0x3434                     |
+| Keychron Q5       | 0x0150 | Keyboard | `qmk`  | USB HID   | VID 0x3434                     |
+| Keychron Q6       | 0x0160 | Keyboard | `qmk`  | USB HID   | VID 0x3434                     |
+| Keychron V1       | 0x0310 | Keyboard | `qmk`  | USB HID   | VID 0x3434                     |
+| OLKB Planck       | 0x6060 | Keyboard | `qmk`  | USB HID   | VID 0xFEED                     |
+| ZSA Moonlander    | 0x1969 | Keyboard | `qmk`  | USB HID   | VID 0x3297                     |
+| ZSA Voyager       | 0x0791 | Keyboard | `qmk`  | USB HID   | VID 0x3297                     |
 
 _Source: [`data/drivers/vendors/qmk.toml`](../../../data/drivers/vendors/qmk.toml)_
 
@@ -957,121 +957,121 @@ _Source: [`data/drivers/vendors/qmk.toml`](../../../data/drivers/vendors/qmk.tom
 
 #### Supported (70)
 
-| Device | PID | Type | Driver | Transport | LEDs | Notes |
-|---|---|---|---|---|---|---|
-| Base Station V2 Chroma | 0x0F20 | Other | `razer` | USB HID | — | — |
-| Basilisk Ultimate | 0x0086 | Mouse | `razer` | USB HID | — | — |
-| Basilisk Ultimate (Wireless) | 0x0088 | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 | 0x0099 | Mouse | `razer` | USB HID | 11 | Matrix 1x11, has scroll wheel LED |
-| Basilisk V3 35K | 0x00CB | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 Pro (Wired) | 0x00AA | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 Pro (Wireless) | 0x00AB | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 Pro 35K (Wired) | 0x00CC | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 Pro 35K (Wireless) | 0x00CD | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 Pro 35K Phantom Green (Wired) | 0x00D6 | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 Pro 35K Phantom Green (Wireless) | 0x00D7 | Mouse | `razer` | USB HID | — | — |
-| Basilisk V3 X HyperSpeed | 0x00B9 | Mouse | `razer` | USB HID | — | — |
-| BlackWidow V3 | 0x024E | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V3 Mini (Wired) | 0x0258 | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V3 Pro (Wired) | 0x025A | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V3 Pro (Wireless) | 0x025C | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V3 TKL | 0x0A24 | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V4 | 0x0287 | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V4 Pro | 0x028D | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V4 Pro 75% (Wired) | 0x02B3 | Keyboard | `razer` | USB HID | — | — |
-| BlackWidow V4 Pro 75% (Wireless) | 0x02B4 | Keyboard | `razer` | USB HID | — | — |
-| Blade 14 (2021) | 0x0270 | Keyboard | `razer` | USB HID | — | — |
-| Blade 14 (2023) | 0x029D | Keyboard | `razer` | USB HID | — | — |
-| Blade 15 (2022) | 0x028A | Keyboard | `razer` | USB HID | — | — |
-| Blade 15 (Late 2021 Advanced) | 0x0276 | Keyboard | `razer` | USB HID | — | — |
-| Blade Pro (2016) | 0x0210 | Keyboard | `razer` | USB HID | — | Legacy protocol, matrix 6x25 |
-| Charging Pad Chroma | 0x0F26 | Mousepad | `razer` | USB HID | — | — |
-| Chroma HDK | 0x0F09 | ARGB controller | `razer` | USB HID | — | — |
-| Cobra | 0x00A3 | Mouse | `razer` | USB HID | — | — |
-| Cobra Pro (Wired) | 0x00AF | Mouse | `razer` | USB HID | — | — |
-| Cobra Pro (Wireless) | 0x00B0 | Mouse | `razer` | USB HID | — | — |
-| Cynosa Chroma | 0x022A | Keyboard | `razer` | USB HID | — | — |
-| DeathAdder Essential V2 | 0x0098 | Mouse | `razer` | USB HID | — | — |
-| DeathAdder V2 | 0x0084 | Mouse | `razer` | USB HID | — | — |
-| DeathAdder V2 Mini | 0x008C | Mouse | `razer` | USB HID | — | — |
-| DeathStalker V2 | 0x0295 | Keyboard | `razer` | USB HID | — | — |
-| DeathStalker V2 Pro TKL (Wired) | 0x0298 | Keyboard | `razer` | USB HID | — | — |
-| Firefly V2 Pro | 0x0C08 | Mousepad | `razer` | USB HID | — | — |
-| Goliathus Chroma 3XL | 0x0C06 | Mousepad | `razer` | USB HID | — | — |
-| Huntsman | 0x0227 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman Elite | 0x0226 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman Mini | 0x0257 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman Mini Analog | 0x0282 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman Mini Wireless | 0x0256 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman Tournament Edition | 0x0243 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman V2 | 0x026C | Keyboard | `razer` | USB HID | 132 | Extended matrix 6x22 |
-| Huntsman V2 Analog | 0x0266 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman V2 TKL | 0x026B | Keyboard | `razer` | USB HID | — | — |
-| Huntsman V3 Pro | 0x02A6 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman V3 Pro TKL White | 0x02A7 | Keyboard | `razer` | USB HID | — | — |
-| Huntsman V3 Pro Wireless | 0x02A0 | Keyboard | `razer` | USB HID | — | — |
-| Laptop Stand Chroma | 0x0F0D | Other | `razer` | USB HID | — | — |
-| Laptop Stand Chroma V2 | 0x0F2B | Other | `razer` | USB HID | — | — |
-| Leviathan V2 | 0x0532 | Speakers | `razer` | USB HID | — | — |
-| Lian Li O11 Dynamic - Razer Edition | 0x0F13 | Case | `razer` | USB HID | — | — |
-| Mamba Elite | 0x006C | Mouse | `razer` | USB HID | 20 | Extended matrix 1x20 |
-| Mouse Bungee V3 Chroma | 0x0F1D | Other | `razer` | USB HID | — | — |
-| Naga Classic | 0x0093 | Mouse | `razer` | USB HID | — | — |
-| Naga Left Handed | 0x008D | Mouse | `razer` | USB HID | — | — |
-| Naga Pro (Wired) | 0x008F | Mouse | `razer` | USB HID | — | — |
-| Naga Pro (Wireless) | 0x0090 | Mouse | `razer` | USB HID | — | — |
-| Naga Pro V2 (Wired) | 0x00A7 | Mouse | `razer` | USB HID | — | — |
-| Naga Pro V2 (Wireless) | 0x00A8 | Mouse | `razer` | USB HID | — | — |
-| Ornata Chroma | 0x021E | Keyboard | `razer` | USB HID | — | — |
-| Seiren Emote | 0x0F1B | Microphone | `razer` | USB HID | 64 | Matrix 4x16, LED display |
-| Seiren V3 Chroma | 0x056F | Microphone | `razer` | USB HID | — | — |
-| Tartarus Chroma | 0x0208 | Keyboard | `razer` | USB HID | — | Keypad, standard LED set |
-| Tartarus V2 | 0x022B | Keyboard | `razer` | USB HID | — | — |
-| Tiamat 7.1 V2 | 0x0F03 | Headset | `razer` | USB HID | — | — |
-| Viper 8kHz | 0x0091 | Mouse | `razer` | USB HID | — | — |
+| Device                                       | PID    | Type            | Driver  | Transport | LEDs | Notes                             |
+| -------------------------------------------- | ------ | --------------- | ------- | --------- | ---- | --------------------------------- |
+| Base Station V2 Chroma                       | 0x0F20 | Other           | `razer` | USB HID   | —    | —                                 |
+| Basilisk Ultimate                            | 0x0086 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk Ultimate (Wireless)                 | 0x0088 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3                                  | 0x0099 | Mouse           | `razer` | USB HID   | 11   | Matrix 1x11, has scroll wheel LED |
+| Basilisk V3 35K                              | 0x00CB | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 Pro (Wired)                      | 0x00AA | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 Pro (Wireless)                   | 0x00AB | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 Pro 35K (Wired)                  | 0x00CC | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 Pro 35K (Wireless)               | 0x00CD | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 Pro 35K Phantom Green (Wired)    | 0x00D6 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 Pro 35K Phantom Green (Wireless) | 0x00D7 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Basilisk V3 X HyperSpeed                     | 0x00B9 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V3                                | 0x024E | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V3 Mini (Wired)                   | 0x0258 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V3 Pro (Wired)                    | 0x025A | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V3 Pro (Wireless)                 | 0x025C | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V3 TKL                            | 0x0A24 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V4                                | 0x0287 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V4 Pro                            | 0x028D | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V4 Pro 75% (Wired)                | 0x02B3 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| BlackWidow V4 Pro 75% (Wireless)             | 0x02B4 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Blade 14 (2021)                              | 0x0270 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Blade 14 (2023)                              | 0x029D | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Blade 15 (2022)                              | 0x028A | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Blade 15 (Late 2021 Advanced)                | 0x0276 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Blade Pro (2016)                             | 0x0210 | Keyboard        | `razer` | USB HID   | —    | Legacy protocol, matrix 6x25      |
+| Charging Pad Chroma                          | 0x0F26 | Mousepad        | `razer` | USB HID   | —    | —                                 |
+| Chroma HDK                                   | 0x0F09 | ARGB controller | `razer` | USB HID   | —    | —                                 |
+| Cobra                                        | 0x00A3 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Cobra Pro (Wired)                            | 0x00AF | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Cobra Pro (Wireless)                         | 0x00B0 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Cynosa Chroma                                | 0x022A | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| DeathAdder Essential V2                      | 0x0098 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| DeathAdder V2                                | 0x0084 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| DeathAdder V2 Mini                           | 0x008C | Mouse           | `razer` | USB HID   | —    | —                                 |
+| DeathStalker V2                              | 0x0295 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| DeathStalker V2 Pro TKL (Wired)              | 0x0298 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Firefly V2 Pro                               | 0x0C08 | Mousepad        | `razer` | USB HID   | —    | —                                 |
+| Goliathus Chroma 3XL                         | 0x0C06 | Mousepad        | `razer` | USB HID   | —    | —                                 |
+| Huntsman                                     | 0x0227 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman Elite                               | 0x0226 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman Mini                                | 0x0257 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman Mini Analog                         | 0x0282 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman Mini Wireless                       | 0x0256 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman Tournament Edition                  | 0x0243 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman V2                                  | 0x026C | Keyboard        | `razer` | USB HID   | 132  | Extended matrix 6x22              |
+| Huntsman V2 Analog                           | 0x0266 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman V2 TKL                              | 0x026B | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman V3 Pro                              | 0x02A6 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman V3 Pro TKL White                    | 0x02A7 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Huntsman V3 Pro Wireless                     | 0x02A0 | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Laptop Stand Chroma                          | 0x0F0D | Other           | `razer` | USB HID   | —    | —                                 |
+| Laptop Stand Chroma V2                       | 0x0F2B | Other           | `razer` | USB HID   | —    | —                                 |
+| Leviathan V2                                 | 0x0532 | Speakers        | `razer` | USB HID   | —    | —                                 |
+| Lian Li O11 Dynamic - Razer Edition          | 0x0F13 | Case            | `razer` | USB HID   | —    | —                                 |
+| Mamba Elite                                  | 0x006C | Mouse           | `razer` | USB HID   | 20   | Extended matrix 1x20              |
+| Mouse Bungee V3 Chroma                       | 0x0F1D | Other           | `razer` | USB HID   | —    | —                                 |
+| Naga Classic                                 | 0x0093 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Naga Left Handed                             | 0x008D | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Naga Pro (Wired)                             | 0x008F | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Naga Pro (Wireless)                          | 0x0090 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Naga Pro V2 (Wired)                          | 0x00A7 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Naga Pro V2 (Wireless)                       | 0x00A8 | Mouse           | `razer` | USB HID   | —    | —                                 |
+| Ornata Chroma                                | 0x021E | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Seiren Emote                                 | 0x0F1B | Microphone      | `razer` | USB HID   | 64   | Matrix 4x16, LED display          |
+| Seiren V3 Chroma                             | 0x056F | Microphone      | `razer` | USB HID   | —    | —                                 |
+| Tartarus Chroma                              | 0x0208 | Keyboard        | `razer` | USB HID   | —    | Keypad, standard LED set          |
+| Tartarus V2                                  | 0x022B | Keyboard        | `razer` | USB HID   | —    | —                                 |
+| Tiamat 7.1 V2                                | 0x0F03 | Headset         | `razer` | USB HID   | —    | —                                 |
+| Viper 8kHz                                   | 0x0091 | Mouse           | `razer` | USB HID   | —    | —                                 |
 
 #### Researched (38)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Addressable RGB Controller | 0x0F1F | ARGB controller | — | — |
-| Barracuda X Chroma | 0x0574 | Headset | — | — |
-| Base Station Chroma | 0x0F08 | Other | — | — |
-| BlackWidow 2019 | 0x0241 | Keyboard | — | — |
-| BlackWidow Chroma | 0x0203 | Keyboard | — | Legacy protocol |
-| BlackWidow Chroma Overwatch | 0x0211 | Keyboard | — | — |
-| BlackWidow Tournament Edition Chroma | 0x0209 | Keyboard | — | — |
-| BlackWidow Ultimate 2013/2014 | 0x011A | Keyboard | — | Very old model, low priority |
-| BlackWidow X Chroma | 0x0216 | Keyboard | — | — |
-| Chroma Light Strip Set | 0x0F2C | LED strip | — | — |
-| Chroma Lighting Kit | 0x0F0E | ARGB controller | — | — |
-| Cynosa Lite | 0x023F | Keyboard | — | — |
-| Cynosa V2 | 0x025E | Keyboard | — | — |
-| DeathAdder Essential (Alt) | 0x0071 | Mouse | — | — |
-| DeathAdder Essential (Legacy) | 0x006E | Mouse | — | — |
-| DeathStalker V2 Pro TKL (Wireless) | 0x0296 | Keyboard | — | — |
-| Diamondback Chroma | 0x004C | Mouse | — | Legacy mouse |
-| Hanbo AIO | 0x0F44 | AIO cooler | — | — |
-| Kraken 7.1 V2 | 0x0510 | Headset | — | — |
-| Kraken Headset | 0x0527 | Headset | — | Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560 |
-| Kraken Kitty Edition | 0x020F | Headset | — | — |
-| Laptop Cooling Pad | 0x0F43 | Other | — | — |
-| Leviathan V2 Soundbar | 0x0532 | Speakers | — | Multiple PIDs: 0x0532, 0x054A, 0x0548 |
-| Mouse Bungee V3 | 0x0F24 | Other | — | — |
-| Mouse Dock | 0x0F22 | Other | — | — |
-| Mouse Dock Pro | 0x0F23 | Other | — | — |
-| Mousepad Controller | 0x0C00 | Mousepad | — | Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05 |
-| Naga Hex V2 | 0x004E | Mouse | — | — |
-| Nari Headset | 0x051C | Headset | — | Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A |
-| Nommo Speakers | 0x0517 | Speakers | — | Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A |
-| Orbweaver Chroma | 0x0207 | Keyboard | — | Known to have protocol issues |
-| Ornata V3 TKL | 0x0265 | Keyboard | — | — |
-| Ornata V3 X | 0x0294 | Keyboard | — | — |
-| PWM Controller | 0x0F3C | Fan controller | — | — |
-| Raptor 27 Inch Monitor | 0x0F12 | Monitor | — | Multiple PIDs: 0x0F12, 0x0F28 |
-| Tartarus Pro | 0x022C | Keyboard | — | — |
-| Thunderbolt Dock | 0x0F21 | Other | — | — |
-| Tomahawk ATX Case | 0x0F05 | Case | — | — |
+| Device                               | PID    | Type            | Transport | Notes                                                 |
+| ------------------------------------ | ------ | --------------- | --------- | ----------------------------------------------------- |
+| Addressable RGB Controller           | 0x0F1F | ARGB controller | —         | —                                                     |
+| Barracuda X Chroma                   | 0x0574 | Headset         | —         | —                                                     |
+| Base Station Chroma                  | 0x0F08 | Other           | —         | —                                                     |
+| BlackWidow 2019                      | 0x0241 | Keyboard        | —         | —                                                     |
+| BlackWidow Chroma                    | 0x0203 | Keyboard        | —         | Legacy protocol                                       |
+| BlackWidow Chroma Overwatch          | 0x0211 | Keyboard        | —         | —                                                     |
+| BlackWidow Tournament Edition Chroma | 0x0209 | Keyboard        | —         | —                                                     |
+| BlackWidow Ultimate 2013/2014        | 0x011A | Keyboard        | —         | Very old model, low priority                          |
+| BlackWidow X Chroma                  | 0x0216 | Keyboard        | —         | —                                                     |
+| Chroma Light Strip Set               | 0x0F2C | LED strip       | —         | —                                                     |
+| Chroma Lighting Kit                  | 0x0F0E | ARGB controller | —         | —                                                     |
+| Cynosa Lite                          | 0x023F | Keyboard        | —         | —                                                     |
+| Cynosa V2                            | 0x025E | Keyboard        | —         | —                                                     |
+| DeathAdder Essential (Alt)           | 0x0071 | Mouse           | —         | —                                                     |
+| DeathAdder Essential (Legacy)        | 0x006E | Mouse           | —         | —                                                     |
+| DeathStalker V2 Pro TKL (Wireless)   | 0x0296 | Keyboard        | —         | —                                                     |
+| Diamondback Chroma                   | 0x004C | Mouse           | —         | Legacy mouse                                          |
+| Hanbo AIO                            | 0x0F44 | AIO cooler      | —         | —                                                     |
+| Kraken 7.1 V2                        | 0x0510 | Headset         | —         | —                                                     |
+| Kraken Headset                       | 0x0527 | Headset         | —         | Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560 |
+| Kraken Kitty Edition                 | 0x020F | Headset         | —         | —                                                     |
+| Laptop Cooling Pad                   | 0x0F43 | Other           | —         | —                                                     |
+| Leviathan V2 Soundbar                | 0x0532 | Speakers        | —         | Multiple PIDs: 0x0532, 0x054A, 0x0548                 |
+| Mouse Bungee V3                      | 0x0F24 | Other           | —         | —                                                     |
+| Mouse Dock                           | 0x0F22 | Other           | —         | —                                                     |
+| Mouse Dock Pro                       | 0x0F23 | Other           | —         | —                                                     |
+| Mousepad Controller                  | 0x0C00 | Mousepad        | —         | Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05 |
+| Naga Hex V2                          | 0x004E | Mouse           | —         | —                                                     |
+| Nari Headset                         | 0x051C | Headset         | —         | Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A         |
+| Nommo Speakers                       | 0x0517 | Speakers        | —         | Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A         |
+| Orbweaver Chroma                     | 0x0207 | Keyboard        | —         | Known to have protocol issues                         |
+| Ornata V3 TKL                        | 0x0265 | Keyboard        | —         | —                                                     |
+| Ornata V3 X                          | 0x0294 | Keyboard        | —         | —                                                     |
+| PWM Controller                       | 0x0F3C | Fan controller  | —         | —                                                     |
+| Raptor 27 Inch Monitor               | 0x0F12 | Monitor         | —         | Multiple PIDs: 0x0F12, 0x0F28                         |
+| Tartarus Pro                         | 0x022C | Keyboard        | —         | —                                                     |
+| Thunderbolt Dock                     | 0x0F21 | Other           | —         | —                                                     |
+| Tomahawk ATX Case                    | 0x0F05 | Case            | —         | —                                                     |
 
 _Source: [`data/drivers/vendors/razer.toml`](../../../data/drivers/vendors/razer.toml)_
 
@@ -1085,22 +1085,22 @@ _Source: [`data/drivers/vendors/razer.toml`](../../../data/drivers/vendors/razer
 
 #### Known (14)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| AIMO Pad | 0x343A | Mousepad | — | — |
-| Burst Pro | 0x2DE1 | Mouse | — | — |
-| Elo 7.1 USB | 0x3A34 | Headset | — | — |
-| Kone | 0x2E27 | Mouse | — | — |
-| Kone Pro | 0x2C88 | Mouse | — | — |
-| Kone XP | 0x2C8B | Mouse | — | — |
-| Magma | 0x3124 | Keyboard | — | — |
-| Pyro | 0x314C | Keyboard | — | — |
-| Torch | 0x3A56 | Microphone | — | — |
-| Vulcan 100 | 0x307A | Keyboard | — | — |
-| Vulcan II MAX | 0x2EE2 | Keyboard | — | — |
-| Vulcan II Mini | 0x2F09 | Keyboard | — | — |
-| Vulcan Pro | 0x30F7 | Keyboard | — | — |
-| Vulcan TKL | 0x2FEE | Keyboard | — | — |
+| Device         | PID    | Type       | Transport | Notes |
+| -------------- | ------ | ---------- | --------- | ----- |
+| AIMO Pad       | 0x343A | Mousepad   | —         | —     |
+| Burst Pro      | 0x2DE1 | Mouse      | —         | —     |
+| Elo 7.1 USB    | 0x3A34 | Headset    | —         | —     |
+| Kone           | 0x2E27 | Mouse      | —         | —     |
+| Kone Pro       | 0x2C88 | Mouse      | —         | —     |
+| Kone XP        | 0x2C8B | Mouse      | —         | —     |
+| Magma          | 0x3124 | Keyboard   | —         | —     |
+| Pyro           | 0x314C | Keyboard   | —         | —     |
+| Torch          | 0x3A56 | Microphone | —         | —     |
+| Vulcan 100     | 0x307A | Keyboard   | —         | —     |
+| Vulcan II MAX  | 0x2EE2 | Keyboard   | —         | —     |
+| Vulcan II Mini | 0x2F09 | Keyboard   | —         | —     |
+| Vulcan Pro     | 0x30F7 | Keyboard   | —         | —     |
+| Vulcan TKL     | 0x2FEE | Keyboard   | —         | —     |
 
 _Source: [`data/drivers/vendors/roccat.toml`](../../../data/drivers/vendors/roccat.toml)_
 
@@ -1112,11 +1112,11 @@ _Source: [`data/drivers/vendors/roccat.toml`](../../../data/drivers/vendors/rocc
 
 #### Known (3)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| DualSense | 0x0CE6 | Lightbar | — | — |
-| DualShock 4 | 0x05C4 | Lightbar | — | — |
-| DualShock 4 V2 | 0x09CC | Lightbar | — | — |
+| Device         | PID    | Type     | Transport | Notes |
+| -------------- | ------ | -------- | --------- | ----- |
+| DualSense      | 0x0CE6 | Lightbar | —         | —     |
+| DualShock 4    | 0x05C4 | Lightbar | —         | —     |
+| DualShock 4 V2 | 0x09CC | Lightbar | —         | —     |
 
 _Source: [`data/drivers/vendors/sony.toml`](../../../data/drivers/vendors/sony.toml)_
 
@@ -1130,14 +1130,14 @@ _Source: [`data/drivers/vendors/sony.toml`](../../../data/drivers/vendors/sony.t
 
 #### Known (6)
 
-| Device | Type | Transport | Notes |
-|---|---|---|---|
-| Aerox 3 | Mouse | — | — |
-| Apex 7 TKL | Keyboard | — | — |
-| Apex Pro TKL | Keyboard | — | — |
-| Arctis Nova Pro | Headset | — | — |
-| QcK Prism XL | Mousepad | — | — |
-| Rival 600 | Mouse | — | — |
+| Device          | Type     | Transport | Notes |
+| --------------- | -------- | --------- | ----- |
+| Aerox 3         | Mouse    | —         | —     |
+| Apex 7 TKL      | Keyboard | —         | —     |
+| Apex Pro TKL    | Keyboard | —         | —     |
+| Arctis Nova Pro | Headset  | —         | —     |
+| QcK Prism XL    | Mousepad | —         | —     |
+| Rival 600       | Mouse    | —         | —     |
 
 _Source: [`data/drivers/vendors/steelseries.toml`](../../../data/drivers/vendors/steelseries.toml)_
 
@@ -1151,18 +1151,18 @@ _Source: [`data/drivers/vendors/steelseries.toml`](../../../data/drivers/vendors
 
 #### Known (10)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Argent HS1 Headphone Stand | 0x8022 | Other | — | — |
-| Argent Mouse Bungee | 0x8020 | Other | — | — |
-| Argent MP1 Mousepad | 0x9011 | Mousepad | — | — |
-| DPSG PSU | 0x2329 | Other | — | — |
-| Floe Riing Controller | 0x1FA4 | Fan controller | — | Multiple PIDs: 0x1FA4-0x1FA7 |
-| LedBox | 0x213C | ARGB controller | — | — |
-| LedBox Pacific | 0x219A | ARGB controller | — | Multiple PIDs: 0x219A-0x219F |
-| LedBox Standard | 0x2260 | ARGB controller | — | 17+ PIDs: 0x2260-0x2268, 0x226F, 0x232B-0x232E, 0x233A, etc. |
-| Level 20 Desk | 0x07D1 | Desk accessory | — | — |
-| Riing Controller | 0x2135 | Fan controller | — | Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144 |
+| Device                     | PID    | Type            | Transport | Notes                                                        |
+| -------------------------- | ------ | --------------- | --------- | ------------------------------------------------------------ |
+| Argent HS1 Headphone Stand | 0x8022 | Other           | —         | —                                                            |
+| Argent Mouse Bungee        | 0x8020 | Other           | —         | —                                                            |
+| Argent MP1 Mousepad        | 0x9011 | Mousepad        | —         | —                                                            |
+| DPSG PSU                   | 0x2329 | Other           | —         | —                                                            |
+| Floe Riing Controller      | 0x1FA4 | Fan controller  | —         | Multiple PIDs: 0x1FA4-0x1FA7                                 |
+| LedBox                     | 0x213C | ARGB controller | —         | —                                                            |
+| LedBox Pacific             | 0x219A | ARGB controller | —         | Multiple PIDs: 0x219A-0x219F                                 |
+| LedBox Standard            | 0x2260 | ARGB controller | —         | 17+ PIDs: 0x2260-0x2268, 0x226F, 0x232B-0x232E, 0x233A, etc. |
+| Level 20 Desk              | 0x07D1 | Desk accessory  | —         | —                                                            |
+| Riing Controller           | 0x2135 | Fan controller  | —         | Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144                  |
 
 _Source: [`data/drivers/vendors/thermaltake.toml`](../../../data/drivers/vendors/thermaltake.toml)_
 
@@ -1174,9 +1174,9 @@ _Source: [`data/drivers/vendors/thermaltake.toml`](../../../data/drivers/vendors
 
 #### Supported (1)
 
-| Device | Type | Driver | Transport | Notes |
-|---|---|---|---|---|
-| WLED Controller (any) | ARGB controller | `wled` | UDP | DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers. |
+| Device                | Type            | Driver | Transport | Notes                                                                                 |
+| --------------------- | --------------- | ------ | --------- | ------------------------------------------------------------------------------------- |
+| WLED Controller (any) | ARGB controller | `wled` | UDP       | DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers. |
 
 _Source: [`data/drivers/vendors/wled.toml`](../../../data/drivers/vendors/wled.toml)_
 
@@ -1188,11 +1188,11 @@ _Source: [`data/drivers/vendors/wled.toml`](../../../data/drivers/vendors/wled.t
 
 #### Known (4)
 
-| Device | PID | Type | Transport | Notes |
-|---|---|---|---|---|
-| Wooting 60 HE | 0x1310 | Keyboard | — | VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320 |
-| Wooting 80 HE | 0x1400 | Keyboard | — | VID 0x31E3, PIDs 0x1400, 0x1402 |
-| Wooting One | 0xFF01 | Keyboard | — | VID 0x03EB, original analog keyboard |
-| Wooting Two HE | 0x1220 | Keyboard | — | VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232 |
+| Device         | PID    | Type     | Transport | Notes                                                                     |
+| -------------- | ------ | -------- | --------- | ------------------------------------------------------------------------- |
+| Wooting 60 HE  | 0x1310 | Keyboard | —         | VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320 |
+| Wooting 80 HE  | 0x1400 | Keyboard | —         | VID 0x31E3, PIDs 0x1400, 0x1402                                           |
+| Wooting One    | 0xFF01 | Keyboard | —         | VID 0x03EB, original analog keyboard                                      |
+| Wooting Two HE | 0x1220 | Keyboard | —         | VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232                   |
 
 _Source: [`data/drivers/vendors/wooting.toml`](../../../data/drivers/vendors/wooting.toml)_

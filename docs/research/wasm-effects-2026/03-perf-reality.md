@@ -5,6 +5,7 @@ RGB effects onto a 320x200 to 640x480 RGBA canvas at 30-60 FPS without burning
 the per-frame budget?
 
 **Target workload:**
+
 - Canvas sizes: 64,000 to 307,200 pixels (256 KiB to 1.2 MiB RGBA per frame)
 - Frame rate: 30-60 FPS (16.67 to 33.3 ms budget per frame)
 - Operations: per-pixel color blends, gradients, noise, FFT-driven modulation
@@ -69,6 +70,7 @@ but "by no means outstripping other wasm interpreters." It's fine as a
 cold-path fallback, not a production render path.
 
 **Practical ratio to design against:**
+
 - AOT Cranelift, well-tuned code: **1.1-1.3x slowdown** vs native Rust
 - AOT Cranelift, adversarial/branch-heavy code: **1.5-2.0x**
 - AOT LLVM (Wasmer 6): **1.05-1.2x**
@@ -92,6 +94,7 @@ default; Wasmtime supports it. For pixel shaders this is the "I just
 want FMAs and don't care about bitwise reproducibility" escape hatch.
 
 **Concrete speedup numbers for 4-wide f32 pixel operations:**
+
 - OpenCV.js WASM SIMD blur (1280x720, 3x3 kernel): **1.36x** over scalar
 - OpenCV.js pyrDown (1920x1080, CV_32FC4): **3.09x** over scalar
 - Gaussian filter SIMD (generic): **10-20x** over naive scalar
@@ -178,6 +181,7 @@ once type conversion (string encoding, object wrapping) is included.
 That's the classic "death by a thousand small calls" failure mode.
 
 **Extism (concrete numbers, 2023-2024 benchmarks) on Wasmtime:**
+
 - One-way data transfer: **1.5-1.6 GiB/s**
 - Round-trip transfer: **911 MiB/s**
 - "Reflect" (full round-trip): **284.63 MiB/s**
@@ -206,6 +210,7 @@ directions can read and write it synchronously; the host just needs to
 translate Wasm pointers (offsets from memory base 0) into host addresses.
 
 **The zero-copy sweet spot for our workload:**
+
 1. Guest allocates the framebuffer inside its own linear memory at
    instantiate time.
 2. Guest exports its pointer (via a `canvas_ptr()` export or similar).
@@ -220,6 +225,7 @@ This is the documented Wasmtime pattern (`Memory::data_ptr` +
 single pointer dereference per frame.
 
 **What you cannot do (without threads/shared memory):**
+
 - Have host and guest both hold live mutable references to the same
   bytes concurrently. Guest mutates; host reads after guest returns.
   Fine for our frame-at-a-time rendering model.
@@ -358,7 +364,7 @@ JavaScript-in-WASM (Javy) runs roughly **3x slower than Rust-in-WASM**
 for their functions workload (per the Shopify Engineering blog).
 
 **Fastly Compute@Edge:** Wasmtime under the hood. Quoted "a few
-microseconds" instance startup. Fastly cares about *instance* latency
+microseconds" instance startup. Fastly cares about _instance_ latency
 (network-edge compute) more than sustained throughput, which aligns
 well with our use case.
 
@@ -374,7 +380,7 @@ measurable, it's fine for 99% of filter workloads. Our per-frame call
 model has the same shape.
 
 **Figma Plugins:** the cautionary tale. Figma runs plugin code in a
-JS-VM-compiled-to-WASM sandbox, which is an *interpreter* on WASM.
+JS-VM-compiled-to-WASM sandbox, which is an _interpreter_ on WASM.
 They note performance degrades on 200+ screen files - that's the
 interpreter-on-interpreter tax, not a problem that applies to
 Rust-compiled effect modules.
@@ -391,12 +397,14 @@ trust the numbers.
 Do the actual math. Canvas = 640x480 = **307,200 pixels**.
 
 **Frame budget:**
+
 - 60 FPS: **16.67 ms/frame**
 - 30 FPS: **33.3 ms/frame**
 - Leave 20-30% headroom for spatial sampling, backend writes, event bus
   publish - target **10-12 ms/frame actual render budget at 60 FPS**.
 
 **Native Rust baseline (what our wgpu/CPU effects already achieve):**
+
 - A simple per-pixel f32 color blend in native Rust with SIMD vectors
   is roughly **0.3-0.5 ns/pixel** on modern hardware (4 f32 ops in a
   fused vector lane = 1-2 ns for 4 pixels, so ~0.4 ns each).
@@ -404,16 +412,19 @@ Do the actual math. Canvas = 640x480 = **307,200 pixels**.
   60 FPS budget. We have ~80-100 such passes worth of headroom per frame.
 
 **WASM AOT Cranelift with SIMD (realistic case):**
+
 - Same kernel at 1.2x slowdown = **~0.48 ns/pixel** = ~148 µs per pass.
 - Still 0.9% of budget. **Effectively indistinguishable from native.**
 
 **WASM AOT Cranelift without SIMD (defensive case):**
+
 - ~1.5-2x native = ~0.8 ns/pixel = ~246 µs per pass = 1.5% of budget.
 - Still fine for one pass. An effect doing ~20 compound passes would
   use 5 ms, still under budget.
 
 **The pathological case - branch-heavy scatter/gather (e.g., Perlin
 noise with table lookups), no SIMD, cache-unfriendly:**
+
 - ~3-4 ns/pixel in WASM = ~1.2 ms per pass. 20 such passes is 24 ms,
   **blows the 60 FPS budget**, fine at 30 FPS.
 
@@ -425,6 +436,7 @@ at 74 MiB/s - sorry, per frame at 60 Hz is 74 MiB/s total) is well
 within memcpy bandwidth on any CPU.
 
 **Where it does get tight:**
+
 - **Multi-pass compositing:** 10+ passes over the full canvas with
   non-trivial per-pass work starts to matter at 60 FPS. Budget accordingly.
 - **FFT plus per-frequency-bin pixel modulation:** the FFT is cheap
@@ -434,6 +446,7 @@ within memcpy bandwidth on any CPU.
   canvas is the most likely effect to struggle. Expect 2-3 ms per pass.
 
 **Throughput sanity check (Extism numbers):**
+
 - Data out of guest at 300 MiB/s in their worst round-trip case. Our
   canvas is 1.2 MiB, but we don't do a round-trip copy - we read
   directly from linear memory. Zero-copy eliminates this bottleneck.
@@ -445,6 +458,7 @@ within memcpy bandwidth on any CPU.
 The cases where it falls short are bounded and identifiable:
 
 **Fast enough:**
+
 - Any single-pass per-pixel color kernel (blends, gradients, LUTs,
   color-space conversion, palette mapping)
 - FFT-driven modulation at our canvas sizes
@@ -452,6 +466,7 @@ The cases where it falls short are bounded and identifiable:
 - Anything an effect author would write without optimizing
 
 **Marginal, profile before shipping:**
+
 - Heavy multi-pass compositing (>15 passes)
 - Per-pixel simplex/perlin noise at full 640x480 canvas with
   multi-octave accumulation
@@ -459,6 +474,7 @@ The cases where it falls short are bounded and identifiable:
   defeats SIMD)
 
 **Needs a different tool:**
+
 - GPU-class effects (volumetric ray-marching, complex shading).
   Use native wgpu or wait for wasi-gfx phase 3.
 - Multi-core parallelism. Fan out at the host level or wait for
@@ -492,7 +508,7 @@ The cases where it falls short are bounded and identifiable:
 **The pivot we don't need:** "WASM for control logic only, native for
 render." The math doesn't support that retreat - WASM per-pixel is
 fast enough for our canvas sizes even at Cranelift quality. The
-pivots we *might* need are per-effect: specific heavy effects can
+pivots we _might_ need are per-effect: specific heavy effects can
 stay native indefinitely, while the long tail of simpler effects
 ships as WASM plugins. That's the architecture.
 
@@ -501,12 +517,14 @@ ships as WASM plugins. That's the architecture.
 ## Sources
 
 **Academic / peer-reviewed:**
+
 - [Jangda et al. 2019 - "Not So Fast: Analyzing the Performance of WebAssembly vs. Native Code" (USENIX ATC)](https://www.usenix.org/conference/atc19/presentation/jangda) ([ar5iv mirror](https://ar5iv.labs.arxiv.org/html/1901.09056))
 - [Marcelino et al. 2025 - "Lumos: Performance Characterization of WebAssembly as a Serverless Runtime" (IOT 2025)](https://arxiv.org/abs/2510.05118v1)
 - [Dierickx 2025 - "Comparative Study of the Performance of WebAssembly Runtimes"](https://www.opencloudification.com/wp-content/uploads/2025/07/comparative_study_WA_runtimes.pdf)
 - [ACM TACO 2025 - "Benchmarking WebAssembly for Embedded Systems"](https://dl.acm.org/doi/10.1145/3736169)
 
 **Runtime vendor announcements with benchmark data:**
+
 - [Bytecode Alliance - "Wasmtime 1.0: A Look at Performance" (400x instantiation speedup)](https://bytecodealliance.org/articles/wasmtime-10-performance)
 - [Bytecode Alliance - "Wasmtime and Cranelift in 2023" (10 ns host-guest calls)](https://bytecodealliance.org/articles/wasmtime-and-cranelift-in-2023)
 - [Wasmer 6.0 announcement - 95% of native on CoreMark](https://wasmer.io/posts/announcing-wasmer-6-closer-to-native-speeds)
@@ -516,6 +534,7 @@ ships as WASM plugins. That's the architecture.
 - [Pulley interpreter performance tracking](https://github.com/bytecodealliance/wasmtime/issues/10102)
 
 **Third-party benchmarks and analysis:**
+
 - [Frank Denis 2023 - "Performance of WebAssembly runtimes" (2.32x median slowdown)](https://00f.net/2023/01/04/webassembly-benchmark-2023/)
 - [wasmRuntime.com 2026 benchmarks](https://wasmruntime.com/en/benchmarks)
 - [Dylibso - "Back of the Napkin Wasm Performance: How Does Extism Work?" (4.75 ns/call, 278-298 MiB/s)](https://dylibso.com/blog/how-does-extism-work/)
@@ -524,6 +543,7 @@ ships as WASM plugins. That's the architecture.
 - [Hacker News Oct 2025 - faster wasm-bindgen 2.5x at boundary](https://news.ycombinator.com/item?id=45664341)
 
 **SIMD specifics:**
+
 - [V8 - "Fast, parallel applications with WebAssembly SIMD"](https://v8.dev/features/simd)
 - [OpenCV.js WASM SIMD PR benchmarks](https://github.com/opencv/opencv/pull/18068)
 - [MDPI 2024 - Fast Gaussian Filter Approximations on SIMD Platforms](https://www.mdpi.com/2076-3417/14/11/4664)
@@ -531,11 +551,13 @@ ships as WASM plugins. That's the architecture.
 - [Simon Willison - "x2 speed for WASM by optimizing SIMD" (llama.cpp)](https://simonwillison.net/2025/Jan/27/llamacpp-pr/)
 
 **Threading and graphics:**
+
 - [Bytecode Alliance - "Announcing wasi-threads"](https://bytecodealliance.org/articles/wasi-threads)
 - [Wasm I/O 2025 - "GPUs Unleashed! Make Your Games More Powerful With wasi-gfx"](https://2025.wasm.io/sessions/gpus-unleashed-make-your-games-more-powerful-with-wasi-gfx/)
 - [wasi-gfx GitHub organization](https://github.com/wasi-gfx)
 
 **Production embedders:**
+
 - [Shopify Engineering - "How Shopify Uses WebAssembly Outside of the Browser" (Lucet 35 µs)](https://shopify.engineering/shopify-webassembly)
 - [Shopify Engineering - "Bringing JavaScript to WebAssembly for Shopify Functions"](https://shopify.engineering/javascript-in-webassembly-for-shopify-functions)
 - [Fermyon - "Introducing Spin 2.0" (175.56 µs latency, sub-1ms cold start)](https://www.fermyon.com/blog/introducing-spin-v2)

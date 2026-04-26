@@ -191,6 +191,6 @@ echo "Found $EFFECT_COUNT effects"
 
 ## Environment Variables
 
-| Variable | Description |
-|---|---|
+| Variable             | Description                        |
+| -------------------- | ---------------------------------- |
 | `HYPERCOLOR_API_KEY` | API key for authenticated requests |

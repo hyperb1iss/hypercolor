@@ -6,7 +6,7 @@
 
 ## Overview
 
-Screen capture is an **input source** in Hypercolor's architecture — it feeds color data into the render pipeline just like audio FFT or keyboard state. But unlike those inputs, screen capture can also *replace* the effect engine entirely: instead of rendering a canvas effect and sampling it at LED positions, we sample the actual screen content and push those colors directly to hardware.
+Screen capture is an **input source** in Hypercolor's architecture — it feeds color data into the render pipeline just like audio FFT or keyboard state. But unlike those inputs, screen capture can also _replace_ the effect engine entirely: instead of rendering a canvas effect and sampling it at LED positions, we sample the actual screen content and push those colors directly to hardware.
 
 This document covers the full pipeline: capturing pixels from the display server, mapping screen regions to LED zones, processing raw colors into good LED output, and handling the edge cases that make or break the experience.
 
@@ -185,11 +185,11 @@ impl CaptureBackend {
 
 Three modes with distinct tradeoffs:
 
-| Mode | Description | Use Case |
-|---|---|---|
-| **Single monitor** | Capture one display, all LED zones map to it | Monitor backlight strip |
-| **All monitors, stitched** | Combine all displays into one virtual canvas | Multi-monitor desk setup |
-| **Per-monitor independent** | Each monitor drives its own LED zones | Different content per display |
+| Mode                        | Description                                  | Use Case                      |
+| --------------------------- | -------------------------------------------- | ----------------------------- |
+| **Single monitor**          | Capture one display, all LED zones map to it | Monitor backlight strip       |
+| **All monitors, stitched**  | Combine all displays into one virtual canvas | Multi-monitor desk setup      |
+| **Per-monitor independent** | Each monitor drives its own LED zones        | Different content per display |
 
 For stitched mode, the system queries monitor geometry (position + resolution) and assembles a virtual canvas:
 
@@ -206,13 +206,13 @@ The portal API's `SelectSources` method supports multi-monitor selection nativel
 
 ### 1.5 Headless / Remote Considerations
 
-| Scenario | Behavior |
-|---|---|
-| **Headless server** | Screen capture unavailable — gracefully disabled |
-| **SSH session** | If X11 forwarding is active, capture local X display; otherwise disabled |
-| **VNC/RDP** | Capture the local virtual framebuffer (VNC server's display) |
-| **Wayland + headless** | No portal available — fall back to X11/xcap or disable |
-| **Container** | Requires host PipeWire socket mount or X11 socket forwarding |
+| Scenario               | Behavior                                                                 |
+| ---------------------- | ------------------------------------------------------------------------ |
+| **Headless server**    | Screen capture unavailable — gracefully disabled                         |
+| **SSH session**        | If X11 forwarding is active, capture local X display; otherwise disabled |
+| **VNC/RDP**            | Capture the local virtual framebuffer (VNC server's display)             |
+| **Wayland + headless** | No portal available — fall back to X11/xcap or disable                   |
+| **Container**          | Requires host PipeWire socket mount or X11 socket forwarding             |
 
 ---
 
@@ -423,6 +423,7 @@ graph LR
 Two strategies for reducing a region of pixels to a single color:
 
 **Average color** (simple, fast):
+
 ```rust
 pub fn average_color(pixels: &[Rgb]) -> Rgb {
     let (r, g, b) = pixels.iter().fold((0u64, 0u64, 0u64), |(r, g, b), px| {
@@ -495,12 +496,12 @@ Default factor: **1.4** — perceptually noticeable boost without neon clown vib
 
 When screen content is dark (loading screens, dark movie scenes, letterbox bars), what should the LEDs do?
 
-| Strategy | Behavior | Best For |
-|---|---|---|
-| **Off** | LEDs turn off when region is below threshold | Pure cinema, no distraction |
-| **Dim ambient** | Hold a very dim warm white (2700K-ish) | Cozy movie watching |
-| **Last color fade** | Slowly fade from last non-black color to off | Smooth transitions |
-| **Bias lighting** | Static neutral color (D65 white at 5%) | Eye strain reduction |
+| Strategy            | Behavior                                     | Best For                    |
+| ------------------- | -------------------------------------------- | --------------------------- |
+| **Off**             | LEDs turn off when region is below threshold | Pure cinema, no distraction |
+| **Dim ambient**     | Hold a very dim warm white (2700K-ish)       | Cozy movie watching         |
+| **Last color fade** | Slowly fade from last non-black color to off | Smooth transitions          |
+| **Bias lighting**   | Static neutral color (D65 white at 5%)       | Eye strain reduction        |
 
 ```rust
 pub struct BlackLevelConfig {
@@ -664,10 +665,10 @@ When letterboxing is detected, edge sampling regions shift inward to sample actu
 
 Two approaches for gaming:
 
-| Approach | Method | Pros | Cons |
-|---|---|---|---|
-| **Desktop capture** | PipeWire/XShm as above | Universal, no game cooperation needed | Captures overlay, HUD, notification popups |
-| **Gamescope nested** | Capture Gamescope's PipeWire output | Clean game frames, no compositor overhead | Only works with Gamescope |
+| Approach             | Method                              | Pros                                      | Cons                                       |
+| -------------------- | ----------------------------------- | ----------------------------------------- | ------------------------------------------ |
+| **Desktop capture**  | PipeWire/XShm as above              | Universal, no game cooperation needed     | Captures overlay, HUD, notification popups |
+| **Gamescope nested** | Capture Gamescope's PipeWire output | Clean game frames, no compositor overhead | Only works with Gamescope                  |
 
 ### 4.2 Gamescope Integration
 
@@ -698,6 +699,7 @@ gamescope -W 2560 -H 1440 --expose-wayland -- %command%
 ```
 
 Steam's launch options could use this directly:
+
 ```
 hypercolor gamescope -- %command%
 ```
@@ -780,13 +782,13 @@ Exclusion zones are simple: during region sampling, any pixel that falls within 
 
 Screen capture during gaming must be nearly invisible. Performance budget:
 
-| Component | Budget | Strategy |
-|---|---|---|
-| **Frame capture** | <1ms | DMA-BUF zero-copy (PipeWire) — no CPU involvement |
-| **Downsampling** | <0.5ms | GPU compute shader: native → 64x36 grid |
-| **Color processing** | <0.2ms | CPU: process 2304 sectors |
-| **LED output** | <0.5ms | Async DDP/HID — doesn't block capture |
-| **Total** | <2.2ms | ~0.5% of a 16.6ms frame at 60fps |
+| Component            | Budget | Strategy                                          |
+| -------------------- | ------ | ------------------------------------------------- |
+| **Frame capture**    | <1ms   | DMA-BUF zero-copy (PipeWire) — no CPU involvement |
+| **Downsampling**     | <0.5ms | GPU compute shader: native → 64x36 grid           |
+| **Color processing** | <0.2ms | CPU: process 2304 sectors                         |
+| **LED output**       | <0.5ms | Async DDP/HID — doesn't block capture             |
+| **Total**            | <2.2ms | ~0.5% of a 16.6ms frame at 60fps                  |
 
 **Key optimization: capture at reduced resolution.** PipeWire's format negotiation lets us request frames at a lower resolution than native. Instead of capturing 2560x1440 and downsampling ourselves, we ask the compositor to deliver 640x360 frames. The compositor's GPU scaler does this work for free.
 
@@ -891,7 +893,7 @@ pub enum SubtitleFallback {
 
 ### 5.4 Content-Aware Color Extraction
 
-For cinematic content, the dominant color of the *scene* matters more than pixel-accurate sampling. A "mood extraction" mode that reads the overall scene tone:
+For cinematic content, the dominant color of the _scene_ matters more than pixel-accurate sampling. A "mood extraction" mode that reads the overall scene tone:
 
 ```rust
 pub enum ContentMode {
@@ -909,13 +911,13 @@ Mood mode is particularly effective for movies: instead of the left strip showin
 
 ### 5.5 Transition Speed Profiles
 
-| Profile | Smoothing Alpha | Best For |
-|---|---|---|
-| **Cinema** | 0.08 - 0.12 | Movies, slow transitions, zero flicker |
-| **TV** | 0.15 - 0.25 | TV shows, moderate responsiveness |
-| **Gaming** | 0.30 - 0.50 | Fast action, responsive to explosions |
-| **Reactive** | 0.60 - 0.80 | Music visualizer mode, maximum response |
-| **Instant** | 1.0 | Debug / testing, raw unfiltered output |
+| Profile      | Smoothing Alpha | Best For                                |
+| ------------ | --------------- | --------------------------------------- |
+| **Cinema**   | 0.08 - 0.12     | Movies, slow transitions, zero flicker  |
+| **TV**       | 0.15 - 0.25     | TV shows, moderate responsiveness       |
+| **Gaming**   | 0.30 - 0.50     | Fast action, responsive to explosions   |
+| **Reactive** | 0.60 - 0.80     | Music visualizer mode, maximum response |
+| **Instant**  | 1.0             | Debug / testing, raw unfiltered output  |
 
 ---
 
@@ -1051,10 +1053,10 @@ pub struct NotificationFlash {
 
 When the desktop switches between dark and light modes, shift the ambient lighting to match:
 
-| Desktop Mode | Ambient Shift |
-|---|---|
-| Dark mode | Warmer color temperature (3000K), lower brightness |
-| Light mode | Cooler color temperature (5000K), higher brightness |
+| Desktop Mode | Ambient Shift                                       |
+| ------------ | --------------------------------------------------- |
+| Dark mode    | Warmer color temperature (3000K), lower brightness  |
+| Light mode   | Cooler color temperature (5000K), higher brightness |
 
 ```rust
 pub fn watch_color_scheme() -> watch::Receiver<ColorScheme> {
@@ -1184,36 +1186,36 @@ content_mode = "mood"
 
 ### 9.1 Target Specifications
 
-| Metric | Target | Acceptable | Unacceptable |
-|---|---|---|---|
-| **CPU overhead (1080p, 30fps)** | <2% | <5% | >10% |
-| **CPU overhead (4K, 30fps)** | <3% | <7% | >15% |
-| **Capture latency** | <5ms | <10ms | >33ms |
-| **End-to-end latency** | <50ms | <100ms | >200ms |
-| **Memory usage** | <20MB | <50MB | >100MB |
-| **GPU overhead** | <1% | <3% | >5% |
+| Metric                          | Target | Acceptable | Unacceptable |
+| ------------------------------- | ------ | ---------- | ------------ |
+| **CPU overhead (1080p, 30fps)** | <2%    | <5%        | >10%         |
+| **CPU overhead (4K, 30fps)**    | <3%    | <7%        | >15%         |
+| **Capture latency**             | <5ms   | <10ms      | >33ms        |
+| **End-to-end latency**          | <50ms  | <100ms     | >200ms       |
+| **Memory usage**                | <20MB  | <50MB      | >100MB       |
+| **GPU overhead**                | <1%    | <3%        | >5%          |
 
 ### 9.2 Capture Cost Breakdown
 
 **Wayland (PipeWire, DMA-BUF zero-copy):**
 
-| Step | Time (1080p) | Time (4K) | CPU Cost |
-|---|---|---|---|
-| PipeWire frame delivery | ~0.1ms | ~0.1ms | Near zero (DMA-BUF) |
-| GPU downsample (compute shader) | ~0.2ms | ~0.3ms | Near zero (GPU) |
-| Color extraction (64x36 grid) | ~0.1ms | ~0.1ms | Minimal |
-| Color processing (smooth, boost) | ~0.05ms | ~0.05ms | Minimal |
-| **Total per frame** | **~0.45ms** | **~0.55ms** | **<1%** |
+| Step                             | Time (1080p) | Time (4K)   | CPU Cost            |
+| -------------------------------- | ------------ | ----------- | ------------------- |
+| PipeWire frame delivery          | ~0.1ms       | ~0.1ms      | Near zero (DMA-BUF) |
+| GPU downsample (compute shader)  | ~0.2ms       | ~0.3ms      | Near zero (GPU)     |
+| Color extraction (64x36 grid)    | ~0.1ms       | ~0.1ms      | Minimal             |
+| Color processing (smooth, boost) | ~0.05ms      | ~0.05ms     | Minimal             |
+| **Total per frame**              | **~0.45ms**  | **~0.55ms** | **<1%**             |
 
 **X11 (XShm):**
 
-| Step | Time (1080p) | Time (4K) | CPU Cost |
-|---|---|---|---|
-| XShmGetImage | ~2ms | ~8ms | Moderate (memcpy) |
-| CPU downsample | ~0.5ms | ~2ms | Moderate |
-| Color extraction | ~0.1ms | ~0.1ms | Minimal |
-| Color processing | ~0.05ms | ~0.05ms | Minimal |
-| **Total per frame** | **~2.65ms** | **~10.15ms** | **3-5%** |
+| Step                | Time (1080p) | Time (4K)    | CPU Cost          |
+| ------------------- | ------------ | ------------ | ----------------- |
+| XShmGetImage        | ~2ms         | ~8ms         | Moderate (memcpy) |
+| CPU downsample      | ~0.5ms       | ~2ms         | Moderate          |
+| Color extraction    | ~0.1ms       | ~0.1ms       | Minimal           |
+| Color processing    | ~0.05ms      | ~0.05ms      | Minimal           |
+| **Total per frame** | **~2.65ms**  | **~10.15ms** | **3-5%**          |
 
 The Wayland DMA-BUF path is roughly 5-20x faster than X11 because the GPU does the heavy lifting.
 
@@ -1285,12 +1287,12 @@ Quality steps: `640x360 → 320x180 → 160x90 → 80x45` and FPS: `60 → 30 �
 
 **Behavior by browser:**
 
-| Browser | DRM Content in Capture |
-|---|---|
-| Firefox (Wayland) | Black rectangle for DRM-protected video element |
-| Chrome (Wayland) | Black rectangle (hardware overlay path) |
-| Chrome (X11) | Visible (X11 has no per-window capture protection) |
-| Electron apps | Varies by app configuration |
+| Browser           | DRM Content in Capture                             |
+| ----------------- | -------------------------------------------------- |
+| Firefox (Wayland) | Black rectangle for DRM-protected video element    |
+| Chrome (Wayland)  | Black rectangle (hardware overlay path)            |
+| Chrome (X11)      | Visible (X11 has no per-window capture protection) |
+| Electron apps     | Varies by app configuration                        |
 
 **Mitigation:**
 
@@ -1302,6 +1304,7 @@ Quality steps: `640x360 → 320x180 → 160x90 → 80x45` and FPS: `60 → 30 �
 ### 10.2 VR Headset Connected
 
 When a VR headset is connected, the system may have displays that are:
+
 - The desktop monitor (capture this)
 - The VR headset's left/right eye displays (don't capture these)
 - A VR mirror window on the desktop (could capture this for ambient)
@@ -1319,13 +1322,13 @@ Covered in detail in section 5.2. Key points:
 
 ### 10.4 Screensaver / Lock Screen
 
-| State | Behavior |
-|---|---|
-| **Screen active** | Normal capture |
-| **Screensaver running** | Continue capture (screensavers can be pretty) |
-| **Screen locked** | **Stop capture** — no ambient. Optionally: static bias lighting |
-| **DPMS off (screen blanked)** | **Stop capture** — LEDs off or static dim |
-| **Idle timeout** | Fade to dim or off based on user preference |
+| State                         | Behavior                                                        |
+| ----------------------------- | --------------------------------------------------------------- |
+| **Screen active**             | Normal capture                                                  |
+| **Screensaver running**       | Continue capture (screensavers can be pretty)                   |
+| **Screen locked**             | **Stop capture** — no ambient. Optionally: static bias lighting |
+| **DPMS off (screen blanked)** | **Stop capture** — LEDs off or static dim                       |
+| **Idle timeout**              | Fade to dim or off based on user preference                     |
 
 **Detection:** Monitor `org.freedesktop.ScreenSaver` D-Bus for lock state. Monitor `org.freedesktop.login1.Session.IdleHint` for idle detection. Watch for DPMS state changes via PipeWire stream state (stream goes inactive when display blanks).
 
@@ -1338,12 +1341,12 @@ pub async fn watch_session_state(bus: &zbus::Connection) -> watch::Receiver<Sess
 
 ### 10.5 Remote Desktop
 
-| Scenario | Behavior |
-|---|---|
-| **Local machine, remote viewer** | Capture local display (the one with LEDs attached) |
-| **Remote machine, local viewer** | Don't capture — remote machine has no local LEDs |
-| **VNC server on local machine** | Capture the VNC server's virtual framebuffer if physical display unavailable |
-| **Wayland remote desktop** | PipeWire stream may come from remote desktop portal — capture it normally |
+| Scenario                         | Behavior                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| **Local machine, remote viewer** | Capture local display (the one with LEDs attached)                           |
+| **Remote machine, local viewer** | Don't capture — remote machine has no local LEDs                             |
+| **VNC server on local machine**  | Capture the VNC server's virtual framebuffer if physical display unavailable |
+| **Wayland remote desktop**       | PipeWire stream may come from remote desktop portal — capture it normally    |
 
 The key insight: Hypercolor captures the **local** display because that's where the LEDs are. If someone is viewing this machine remotely via VNC/RDP, the LED behavior should reflect what's on the physical screen, not what the remote viewer sees.
 
@@ -1362,14 +1365,14 @@ Monitors connect and disconnect. When a captured monitor is unplugged:
 
 ### 10.7 Compositor-Specific Quirks
 
-| Compositor | Notes |
-|---|---|
-| **GNOME/Mutter** | Full DMA-BUF support since GNOME 41. Portal dialog is clean. Restore tokens work. |
-| **KDE/KWin** | DMA-BUF since Plasma 5.27. Portal dialog supports window selection. |
+| Compositor       | Notes                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| **GNOME/Mutter** | Full DMA-BUF support since GNOME 41. Portal dialog is clean. Restore tokens work.   |
+| **KDE/KWin**     | DMA-BUF since Plasma 5.27. Portal dialog supports window selection.                 |
 | **Sway/wlroots** | DMA-BUF via `wlr-screencopy-unstable`. Portal support via `xdg-desktop-portal-wlr`. |
-| **Hyprland** | Uses `xdg-desktop-portal-hyprland`. Full PipeWire DMA-BUF support. |
-| **Gamescope** | Exposes PipeWire output node. Can be captured like any other PipeWire source. |
-| **X11 (any WM)** | XShm works universally. No permissions needed. No DMA-BUF. |
+| **Hyprland**     | Uses `xdg-desktop-portal-hyprland`. Full PipeWire DMA-BUF support.                  |
+| **Gamescope**    | Exposes PipeWire output node. Can be captured like any other PipeWire source.       |
+| **X11 (any WM)** | XShm works universally. No permissions needed. No DMA-BUF.                          |
 
 ---
 
@@ -1508,14 +1511,14 @@ game_profiles_dir = "~/.config/hypercolor/games/"
 
 ## Dependencies
 
-| Crate | Purpose | License | Feature Flag |
-|---|---|---|---|
-| `lamco-pipewire` | Wayland screen capture via PipeWire | MIT | `screen-pipewire` |
-| `lamco-portal` | XDG Desktop Portal for permissions | MIT | `screen-pipewire` |
-| `xcap` | X11 screen capture (XShm) + fallback | Apache-2.0 | `screen-x11` |
-| `zbus` | D-Bus for portal, notifications, session state | MIT | (already in core) |
-| `image` | Pixel buffer types, downsampling | MIT/Apache | (already in core) |
-| `wgpu` | GPU compute shader for downsampling | MIT/Apache | (already in core) |
+| Crate            | Purpose                                        | License    | Feature Flag      |
+| ---------------- | ---------------------------------------------- | ---------- | ----------------- |
+| `lamco-pipewire` | Wayland screen capture via PipeWire            | MIT        | `screen-pipewire` |
+| `lamco-portal`   | XDG Desktop Portal for permissions             | MIT        | `screen-pipewire` |
+| `xcap`           | X11 screen capture (XShm) + fallback           | Apache-2.0 | `screen-x11`      |
+| `zbus`           | D-Bus for portal, notifications, session state | MIT        | (already in core) |
+| `image`          | Pixel buffer types, downsampling               | MIT/Apache | (already in core) |
+| `wgpu`           | GPU compute shader for downsampling            | MIT/Apache | (already in core) |
 
 Feature flags keep the dependency tree lean. A headless server build without screen capture compiles without PipeWire or X11 dependencies.
 

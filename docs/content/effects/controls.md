@@ -13,12 +13,12 @@ All control factories return a `ControlSpec` that both `canvas()` and `effect()`
 
 For quick drafts, declare a control by value shape alone and let the SDK infer the type.
 
-| Value | Control type | Example |
-|---|---|---|
-| `[min, max, default]` | Number slider | `speed: [1, 10, 5]` |
-| `readonly string[]` | Combobox (first is default) | `palette: ['Fire', 'Ice']` |
-| `'#rrggbb'` | Color picker | `tint: '#80ffea'` |
-| `boolean` | Toggle | `mirror: false` |
+| Value                 | Control type                | Example                    |
+| --------------------- | --------------------------- | -------------------------- |
+| `[min, max, default]` | Number slider               | `speed: [1, 10, 5]`        |
+| `readonly string[]`   | Combobox (first is default) | `palette: ['Fire', 'Ice']` |
+| `'#rrggbb'`           | Color picker                | `tint: '#80ffea'`          |
+| `boolean`             | Toggle                      | `mirror: false`            |
 
 Inferred controls derive their label from the key with camelCase split into words: `trailLength` becomes `"Trail Length"`.
 
@@ -29,7 +29,17 @@ Shorthand is great for throwaway effects and quick prototypes. Upgrade to factor
 Import the factory from `@hypercolor/sdk`:
 
 ```typescript
-import { color, combo, font, hue, num, rect, sensor, text, toggle } from '@hypercolor/sdk'
+import {
+  color,
+  combo,
+  font,
+  hue,
+  num,
+  rect,
+  sensor,
+  text,
+  toggle,
+} from "@hypercolor/sdk";
 ```
 
 ### `num(label, [min, max], default, options?)`
@@ -37,11 +47,11 @@ import { color, combo, font, hue, num, rect, sensor, text, toggle } from '@hyper
 Number slider.
 
 ```typescript
-density: num('Particle Density', [10, 1000], 200, {
-    step: 10,
-    tooltip: 'How many particles live in the field',
-    group: 'Simulation',
-})
+density: num("Particle Density", [10, 1000], 200, {
+  step: 10,
+  tooltip: "How many particles live in the field",
+  group: "Simulation",
+});
 ```
 
 Options:
@@ -57,10 +67,10 @@ Options:
 Dropdown selector.
 
 ```typescript
-palette: combo('Palette', ['SilkCircuit', 'Ice', 'Aurora'], {
-    default: 'Ice',
-    group: 'Color',
-})
+palette: combo("Palette", ["SilkCircuit", "Ice", "Aurora"], {
+  default: "Ice",
+  group: "Color",
+});
 ```
 
 Options:
@@ -77,7 +87,7 @@ The shorthand `palette: ['A', 'B', 'C']` gives canvas effects a palette function
 Color picker, produces a hex string.
 
 ```typescript
-tint: color('Tint', '#80ffea', { group: 'Color' })
+tint: color("Tint", "#80ffea", { group: "Color" });
 ```
 
 The color picker returns `'#rrggbb'` strings to canvas effects and `vec3` uniforms (with 0-1 components) to shader effects.
@@ -87,9 +97,9 @@ The color picker returns `'#rrggbb'` strings to canvas effects and `vec3` unifor
 Boolean toggle.
 
 ```typescript
-mirror: toggle('Mirror Mode', false, {
-    tooltip: 'Reflect the effect horizontally',
-})
+mirror: toggle("Mirror Mode", false, {
+  tooltip: "Reflect the effect horizontally",
+});
 ```
 
 In shaders, booleans become integer uniforms (`0` or `1`).
@@ -99,7 +109,7 @@ In shaders, booleans become integer uniforms (`0` or `1`).
 Hue angle slider, typically `[0, 360]`. Semantically the same as `num`, but the UI uses a hue-gradient track.
 
 ```typescript
-baseHue: hue('Base Hue', [0, 360], 270, { group: 'Color' })
+baseHue: hue("Base Hue", [0, 360], 270, { group: "Color" });
 ```
 
 ### `text(label, default, options?)`
@@ -107,7 +117,7 @@ baseHue: hue('Base Hue', [0, 360], 270, { group: 'Color' })
 Single-line text input. Useful for faces, labels, and any effect that displays text.
 
 ```typescript
-message: text('Display Text', 'HYPERCOLOR', { group: 'Content' })
+message: text("Display Text", "HYPERCOLOR", { group: "Content" });
 ```
 
 ### `rect(label, default, options?)`
@@ -115,10 +125,14 @@ message: text('Display Text', 'HYPERCOLOR', { group: 'Content' })
 Interactive viewport rectangle. The user drags a rectangle on top of a live preview; the value is `{ x, y, width, height }` in normalized `[0, 1]` coordinates.
 
 ```typescript
-viewport: rect('Viewport', { x: 0.1, y: 0.1, width: 0.8, height: 0.8 }, {
+viewport: rect(
+  "Viewport",
+  { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+  {
     aspectLock: 16 / 9,
-    preview: 'screen',
-})
+    preview: "screen",
+  },
+);
 ```
 
 Options:
@@ -131,11 +145,11 @@ Options:
 Sensor picker for face effects. The user chooses from available system sensors (CPU temperature, GPU load, network throughput, etc.). The runtime value is the sensor label string; pass it to the engine's sensor API to get a live reading.
 
 ```typescript
-import { face, sensor } from '@hypercolor/sdk'
+import { face, sensor } from "@hypercolor/sdk";
 
-export default face('Temperature', {
-    target: sensor('Sensor', 'cpu_temp'),
-})
+export default face("Temperature", {
+  target: sensor("Sensor", "cpu_temp"),
+});
 ```
 
 ### `font(label, default, options?)`
@@ -143,7 +157,7 @@ export default face('Temperature', {
 Font family picker. Syntactic sugar over `combo()` with a curated list of LED-friendly font families. The face runtime loads the selected family before the first render.
 
 ```typescript
-family: font('Family', 'JetBrains Mono', { group: 'Typography' })
+family: font("Family", "JetBrains Mono", { group: "Typography" });
 ```
 
 Options:
@@ -174,9 +188,9 @@ Group names are arbitrary. Pick them from the domain of the effect, not generic 
 Controls reach your render function as a `Record<string, unknown>`. You cast to the expected type:
 
 ```typescript
-const speed = controls.speed as number
-const palette = controls.palette as string
-const mirror = controls.mirror as boolean
+const speed = controls.speed as number;
+const palette = controls.palette as string;
+const mirror = controls.mirror as boolean;
 ```
 
 The SDK applies normalization before your function sees the value when the key matches a magic name:
@@ -190,10 +204,10 @@ Every other control value arrives raw.
 
 Two control keys have special behavior across the whole SDK:
 
-| Key | Canvas behavior | Shader behavior |
-|---|---|---|
-| `speed` | Auto-normalized through `normalizeSpeed()` | Normalized, exposed as `uniform float iSpeed` |
-| `palette` (shorthand only) | Replaced with `PaletteFn` | Replaced with selected index, exposed as `uniform int iPalette` |
+| Key                        | Canvas behavior                            | Shader behavior                                                 |
+| -------------------------- | ------------------------------------------ | --------------------------------------------------------------- |
+| `speed`                    | Auto-normalized through `normalizeSpeed()` | Normalized, exposed as `uniform float iSpeed`                   |
+| `palette` (shorthand only) | Replaced with `PaletteFn`                  | Replaced with selected index, exposed as `uniform int iPalette` |
 
 If you'd rather keep your own naming, override it with the `uniform` option or use a different key (`tintPalette`, `speedMult`) and handle resolution yourself.
 
@@ -202,37 +216,32 @@ If you'd rather keep your own naming, override it with the `uniform` option or u
 Presets live in the options object, not the controls map:
 
 ```typescript
-export default canvas(
-    'Prism Choir',
-    controls,
-    draw,
+export default canvas("Prism Choir", controls, draw, {
+  presets: [
     {
-        presets: [
-            {
-                name: 'Rose Window',
-                description: 'Twelve petals, slow rotation, generous bloom',
-                controls: {
-                    bloom: 70,
-                    nucleus: 55,
-                    palette: 'SilkCircuit',
-                    petals: '12',
-                    rotation: 3,
-                },
-            },
-            {
-                name: 'Hex Choir',
-                description: 'Six-petal mode with a steady hexagonal pulse',
-                controls: {
-                    bloom: 55,
-                    nucleus: 60,
-                    palette: 'Aurora',
-                    petals: '6',
-                    rotation: 2,
-                },
-            },
-        ],
+      name: "Rose Window",
+      description: "Twelve petals, slow rotation, generous bloom",
+      controls: {
+        bloom: 70,
+        nucleus: 55,
+        palette: "SilkCircuit",
+        petals: "12",
+        rotation: 3,
+      },
     },
-)
+    {
+      name: "Hex Choir",
+      description: "Six-petal mode with a steady hexagonal pulse",
+      controls: {
+        bloom: 55,
+        nucleus: 60,
+        palette: "Aurora",
+        petals: "6",
+        rotation: 2,
+      },
+    },
+  ],
+});
 ```
 
 Every preset should set every control. Partial presets are allowed but discouraged because users expect a preset to fully reset the effect. Preset names show up as buttons in the studio and in the daemon UI.
@@ -242,9 +251,28 @@ Every preset should set every control. Partial presets are allowed but discourag
 On build, the SDK serializes every control declaration into HTML meta tags that the daemon reads directly. You never write these by hand, but seeing the output helps when debugging metadata issues:
 
 ```html
-<meta property="speed" label="Speed" type="number" min="1" max="10" default="5" group="Motion" />
-<meta property="palette" label="Palette" type="combobox" values="Aurora,Fire,Ocean" default="Aurora" group="Color" />
-<meta preset="Default" preset-description="Balanced" preset-controls='{"speed":5,"palette":"Aurora"}' />
+<meta
+  property="speed"
+  label="Speed"
+  type="number"
+  min="1"
+  max="10"
+  default="5"
+  group="Motion"
+/>
+<meta
+  property="palette"
+  label="Palette"
+  type="combobox"
+  values="Aurora,Fire,Ocean"
+  default="Aurora"
+  group="Color"
+/>
+<meta
+  preset="Default"
+  preset-description="Balanced"
+  preset-controls='{"speed":5,"palette":"Aurora"}'
+/>
 ```
 
 The validator (`bun run validate`) parses these and flags missing fields, malformed JSON, and unknown types before the daemon ever sees the artifact.

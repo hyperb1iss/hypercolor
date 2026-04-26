@@ -127,12 +127,12 @@ Hypercolor Web UI
 
 ### Navigation Depth Rules
 
-| Depth | Where | Example |
-|-------|-------|---------|
-| 0 | Top-level section | Dashboard, Effects, Layout, Devices, Scenes, Settings |
-| 1 | Section view | Effects → Browse, Effects → Active |
-| 2 | Detail / Editor | Effects → Active → Control Panel |
-| 3 | **Maximum** | Settings → Integrations → Home Assistant Config |
+| Depth | Where             | Example                                               |
+| ----- | ----------------- | ----------------------------------------------------- |
+| 0     | Top-level section | Dashboard, Effects, Layout, Devices, Scenes, Settings |
+| 1     | Section view      | Effects → Browse, Effects → Active                    |
+| 2     | Detail / Editor   | Effects → Active → Control Panel                      |
+| 3     | **Maximum**       | Settings → Integrations → Home Assistant Config       |
 
 **Hard rule: nothing is ever more than 3 clicks from the dashboard.** If we find ourselves nesting deeper, it means the IA is wrong and needs restructuring.
 
@@ -225,6 +225,7 @@ Tabs are static per section. They don't multiply, nest, or change order. Maximum
 ```
 
 The command palette:
+
 - Searches effects, devices, scenes, and actions simultaneously
 - Supports fuzzy matching ("rnbw" matches "Rainbow Wave")
 - Shows keyboard shortcuts next to actions
@@ -233,23 +234,23 @@ The command palette:
 
 ### Keyboard Shortcuts
 
-| Action | Shortcut | Context |
-|--------|----------|---------|
-| Command palette | `Ctrl+K` | Global |
-| Go to Dashboard | `Ctrl+1` | Global |
-| Go to Effects | `Ctrl+2` | Global |
-| Go to Layout | `Ctrl+3` | Global |
-| Go to Devices | `Ctrl+4` | Global |
-| Go to Scenes | `Ctrl+5` | Global |
-| Search effects | `/` | Effects section |
-| Next effect | `→` or `J` | Effect browser |
-| Previous effect | `←` or `K` | Effect browser |
-| Activate effect | `Enter` | Effect browser |
-| Toggle sidebar | `[` | Global |
-| Quick scene switch | `Ctrl+Shift+1-9` | Global |
-| Toggle audio reactive | `A` | Active effect |
-| Fullscreen preview | `F` | Active effect |
-| Undo (layout changes) | `Ctrl+Z` | Layout editor |
+| Action                | Shortcut         | Context         |
+| --------------------- | ---------------- | --------------- |
+| Command palette       | `Ctrl+K`         | Global          |
+| Go to Dashboard       | `Ctrl+1`         | Global          |
+| Go to Effects         | `Ctrl+2`         | Global          |
+| Go to Layout          | `Ctrl+3`         | Global          |
+| Go to Devices         | `Ctrl+4`         | Global          |
+| Go to Scenes          | `Ctrl+5`         | Global          |
+| Search effects        | `/`              | Effects section |
+| Next effect           | `→` or `J`       | Effect browser  |
+| Previous effect       | `←` or `K`       | Effect browser  |
+| Activate effect       | `Enter`          | Effect browser  |
+| Toggle sidebar        | `[`              | Global          |
+| Quick scene switch    | `Ctrl+Shift+1-9` | Global          |
+| Toggle audio reactive | `A`              | Active effect   |
+| Fullscreen preview    | `F`              | Active effect   |
+| Undo (layout changes) | `Ctrl+Z`         | Layout editor   |
 
 ### Breadcrumbs
 
@@ -269,14 +270,14 @@ The breadcrumb uses `>` separators, muted text, and clicking any segment navigat
 
 The core palette from the SilkCircuit design system, with semantic assignments specific to Hypercolor:
 
-| Color | Hex | Semantic Role |
-|-------|-----|---------------|
-| Electric Purple | `#e135ff` | Active state, selected items, primary actions, brand accent |
-| Neon Cyan | `#80ffea` | Interactive elements, links, hover states, device online |
-| Coral | `#ff6ac1` | Effect thumbnails border, audio visualization, secondary accent |
-| Electric Yellow | `#f1fa8c` | Warnings, attention badges, pending states |
-| Success Green | `#50fa7b` | Connected devices, success confirmations, healthy status |
-| Error Red | `#ff6363` | Disconnected devices, errors, critical alerts |
+| Color           | Hex       | Semantic Role                                                   |
+| --------------- | --------- | --------------------------------------------------------------- |
+| Electric Purple | `#e135ff` | Active state, selected items, primary actions, brand accent     |
+| Neon Cyan       | `#80ffea` | Interactive elements, links, hover states, device online        |
+| Coral           | `#ff6ac1` | Effect thumbnails border, audio visualization, secondary accent |
+| Electric Yellow | `#f1fa8c` | Warnings, attention badges, pending states                      |
+| Success Green   | `#50fa7b` | Connected devices, success confirmations, healthy status        |
+| Error Red       | `#ff6363` | Disconnected devices, errors, critical alerts                   |
 
 ### Surface System
 
@@ -342,6 +343,7 @@ The single hardest visual design challenge in a lighting control app: **the effe
 ```
 
 **Rules:**
+
 1. UI accent colors (purple, cyan) appear at **reduced opacity** (50-70%) except for the focused/active element
 2. The effect preview area has **no visible border** — it bleeds to the edge of its container, with a subtle 1px `#2d2d44` outline
 3. Control sliders use a thin track with a small accent-colored thumb, not thick gradient-filled bars
@@ -362,12 +364,14 @@ Used sparingly for overlays that sit on top of the preview:
 ```
 
 Where it's used:
+
 - Command palette overlay
 - Toast notifications
 - Tooltips
 - The control panel when overlaid on fullscreen preview mode
 
 Where it's NOT used:
+
 - Cards (too many glass surfaces = soup)
 - Sidebar (needs to be solid and reliable)
 - Modals (they dim the background; glass on dimmed content is pointless)
@@ -387,12 +391,12 @@ The UI breathes. But it doesn't hyperventilate.
 
 ### Breakpoints
 
-| Name | Width | Context | Layout |
-|------|-------|---------|--------|
-| `desktop-xl` | >= 1920px | Full setup, multi-monitor | 3-column: sidebar + main + inspector |
-| `desktop` | 1440-1919px | Standard desktop | 2-column: sidebar (collapsed) + main (stacked) |
-| `tablet` | 768-1439px | iPad, Surface, couch browsing | Bottom tab bar + full-width main |
-| `phone` | < 768px | Phone, quick switching | Bottom tab bar + card-based flow |
+| Name         | Width       | Context                       | Layout                                         |
+| ------------ | ----------- | ----------------------------- | ---------------------------------------------- |
+| `desktop-xl` | >= 1920px   | Full setup, multi-monitor     | 3-column: sidebar + main + inspector           |
+| `desktop`    | 1440-1919px | Standard desktop              | 2-column: sidebar (collapsed) + main (stacked) |
+| `tablet`     | 768-1439px  | iPad, Surface, couch browsing | Bottom tab bar + full-width main               |
+| `phone`      | < 768px     | Phone, quick switching        | Bottom tab bar + card-based flow               |
 
 ### Desktop XL (>= 1920px)
 
@@ -502,6 +506,7 @@ Controls open as a bottom sheet (drag up to expand). Swipe left/right to browse 
 ```
 
 Phone features:
+
 - View current effect + live preview
 - Switch effects (simplified grid, large touch targets)
 - Activate saved scenes (one-tap)
@@ -509,6 +514,7 @@ Phone features:
 - View device status
 
 Phone non-features (require tablet/desktop):
+
 - Spatial layout editing
 - Device configuration
 - Schedule creation
@@ -525,14 +531,14 @@ A dark UI with neon accents is a minefield. Electric purple on near-black techni
 
 ### Contrast Guarantees
 
-| Element | Foreground | Background | Min Ratio | WCAG |
-|---------|-----------|-----------|-----------|------|
-| Body text | `#e0e0e8` | `#12121a` | 13.2:1 | AAA |
-| Secondary text | `#8888a0` | `#12121a` | 5.1:1 | AA |
-| Interactive accent | `#e135ff` | `#12121a` | 5.2:1 | AA |
-| Link/hover | `#80ffea` | `#12121a` | 12.5:1 | AAA |
-| Error on card | `#ff6363` | `#1a1a26` | 5.4:1 | AA |
-| Warning text | `#f1fa8c` | `#12121a` | 14.6:1 | AAA |
+| Element            | Foreground | Background | Min Ratio | WCAG |
+| ------------------ | ---------- | ---------- | --------- | ---- |
+| Body text          | `#e0e0e8`  | `#12121a`  | 13.2:1    | AAA  |
+| Secondary text     | `#8888a0`  | `#12121a`  | 5.1:1     | AA   |
+| Interactive accent | `#e135ff`  | `#12121a`  | 5.2:1     | AA   |
+| Link/hover         | `#80ffea`  | `#12121a`  | 12.5:1    | AAA  |
+| Error on card      | `#ff6363`  | `#1a1a26`  | 5.4:1     | AA   |
+| Warning text       | `#f1fa8c`  | `#12121a`  | 14.6:1    | AAA  |
 
 **Rule:** No text element may fall below 4.5:1 contrast ratio against its immediate background. Interactive elements (buttons, links) must meet AA (4.5:1) minimum. All ratios validated with automated tooling in CI.
 
@@ -588,13 +594,13 @@ The spatial layout editor is the hardest to make accessible. We use an `aria-des
 
 Effect previews are inherently color-dependent — we can't change what the user's LEDs display. But the UI itself never relies on color alone to convey state:
 
-| State | Color | Also Uses |
-|-------|-------|-----------|
-| Connected | Green dot | "Connected" text + checkmark icon |
-| Disconnected | Red dot | "Disconnected" text + X icon |
-| Warning | Yellow badge | Triangle icon + descriptive text |
-| Active nav item | Purple bar | Bold text + filled icon (vs outline) |
-| Selected effect | Purple border | Checkmark overlay + "Active" badge |
+| State           | Color         | Also Uses                            |
+| --------------- | ------------- | ------------------------------------ |
+| Connected       | Green dot     | "Connected" text + checkmark icon    |
+| Disconnected    | Red dot       | "Disconnected" text + X icon         |
+| Warning         | Yellow badge  | Triangle icon + descriptive text     |
+| Active nav item | Purple bar    | Bold text + filled icon (vs outline) |
+| Selected effect | Purple border | Checkmark overlay + "Active" badge   |
 
 ---
 
@@ -651,6 +657,7 @@ One button. No login. No account. No terms. Let's go.
 ```
 
 What happens automatically:
+
 - mDNS scan for WLED devices
 - TCP probe for OpenRGB on localhost:6742
 - USB HID enumeration for PrismRGB / Nollie devices
@@ -758,6 +765,7 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 7. Creates a Scene called "Stream Setup" that combines her Twitch effect on peripherals, ambient glow on WLED strips, and static purple on case lighting. Binds it to `Ctrl+Shift+3`.
 
 **What makes Bliss happy:**
+
 - Command palette is the primary interface — she rarely touches the sidebar
 - Every action has a keyboard shortcut
 - CLI and web UI are interchangeable
@@ -781,6 +789,7 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 5. Never touches the Layout Editor again after initial setup. Never opens Settings. Never uses the keyboard shortcuts. And that's perfectly fine.
 
 **What makes Jake happy:**
+
 - Animated thumbnails — he can see what an effect does before activating it
 - One-click activation — no configuration needed for most effects
 - The "Audio Reactive" filter — he didn't know he wanted this until he saw it
@@ -807,6 +816,7 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 5. Post-stream: she creates a new effect in Hypercolor's effect browser — imports a custom HTML effect that matches her brand gradient (she got it from a viewer who made it for her). Drag, drop, it's in her library.
 
 **What makes Luna happy:**
+
 - OBS integration is a first-class feature, not a hack
 - Scene switching is instant (< 100ms perceptible transition)
 - The phone UI is a real remote control, not a shrunken desktop app
@@ -834,6 +844,7 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 5. His device backend has a bug — it's dropping every 3rd frame. The debug panel's frame timing graph shows the regular spikes. He fixes the buffer allocation in his Wasm code, the hot-reload picks it up, the graph smooths out.
 
 **What makes Dev happy:**
+
 - Debug mode is opt-in but comprehensive
 - The Wasm plugin lifecycle is drop-in, no restart required
 - API documentation is embedded in the app, not on a separate website
@@ -864,6 +875,7 @@ Total time: ~3 minutes. Total "reading": ~4 sentences. Total "holy shit" moments
 5. On her phone, she has an HA dashboard widget that shows the current Hypercolor scene and lets her switch between them. Hypercolor's own phone UI is her fallback.
 
 **What makes Alex happy:**
+
 - Home Assistant integration is bidirectional (HA can trigger Hypercolor AND read its state)
 - Schedules work independently of HA (defense in depth)
 - Hypercolor exposes its scenes as HA entities — she can use them in any automation
@@ -950,6 +962,7 @@ In the UI, the effect browser card gets a subtle `#e135ff` border pulse (200ms e
 ### Device Connect / Disconnect
 
 **Connect animation:**
+
 1. Device card appears in the Devices panel with 0 opacity, translates up 8px
 2. 200ms ease-out: fades in, slides to position
 3. Status dot starts as white, transitions to `#50fa7b` green over 400ms
@@ -957,6 +970,7 @@ In the UI, the effect browser card gets a subtle `#e135ff` border pulse (200ms e
 5. On the physical device: a quick white pulse (100ms on, 100ms off, 100ms on) as a "hello, I see you" confirmation
 
 **Disconnect animation:**
+
 1. Status dot transitions from green to `#ff6363` red over 200ms
 2. Device card gets a subtle desaturation (CSS filter: `saturate(0.3)`) over 300ms
 3. A small "Reconnecting..." label appears below the device name
@@ -1006,21 +1020,25 @@ Release:
 Errors are categorized by severity and presented accordingly:
 
 **Info** (e.g., "Effect uses audio but no audio source is configured"):
+
 - Inline yellow banner within the relevant panel
 - Includes a direct action: "Configure audio source →"
 - Auto-dismisses after 10 seconds or on action
 
 **Warning** (e.g., "OpenRGB bridge is not running"):
+
 - Amber indicator on the Dashboard's system overview
 - Persistent until resolved
 - Shows in the Devices section as a backend status card
 
 **Error** (e.g., "USB permission denied for PrismRGB"):
+
 - Red banner at the top of the relevant section
 - Includes diagnostic info and a fix: "Run: `sudo usermod -aG plugdev $USER`"
 - Does NOT block the rest of the app — you can still use other devices
 
 **Fatal** (e.g., "Daemon connection lost"):
+
 - Full-page overlay (glass morphism on dimmed background)
 - "Reconnecting..." with a progress indicator
 - Auto-reconnects every 2 seconds
@@ -1062,34 +1080,34 @@ The staggered device-by-device brightening creates a "cascade" feeling — like 
 
 Key SvelteKit components that implement this design:
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `Sidebar.svelte` | Global shell | Fixed 7-item navigation |
-| `CommandPalette.svelte` | Global overlay | Ctrl+K search/action |
-| `EffectGrid.svelte` | Effects > Browse | Animated thumbnail grid |
-| `EffectPreview.svelte` | Effects > Active | Full-width live canvas |
-| `ControlPanel.svelte` | Inspector | Auto-generated from metadata |
-| `SpatialEditor.svelte` | Layout | Three.js zone placement |
-| `DeviceCard.svelte` | Devices | Per-device status + preview |
-| `SceneCard.svelte` | Dashboard / Scenes | One-tap scene activation |
-| `Toast.svelte` | Global overlay | Non-blocking notifications |
-| `SetupWizard.svelte` | First-run | 5-step onboarding flow |
-| `DebugPanel.svelte` | Settings > Advanced | Event log, frame timing |
-| `AudioSpectrum.svelte` | Inputs / Dashboard | FFT visualizer |
-| `Slider.svelte` | Controls | Branded range input |
-| `MiniPreview.svelte` | Dashboard | Spatial map with live colors |
+| Component               | Location            | Purpose                      |
+| ----------------------- | ------------------- | ---------------------------- |
+| `Sidebar.svelte`        | Global shell        | Fixed 7-item navigation      |
+| `CommandPalette.svelte` | Global overlay      | Ctrl+K search/action         |
+| `EffectGrid.svelte`     | Effects > Browse    | Animated thumbnail grid      |
+| `EffectPreview.svelte`  | Effects > Active    | Full-width live canvas       |
+| `ControlPanel.svelte`   | Inspector           | Auto-generated from metadata |
+| `SpatialEditor.svelte`  | Layout              | Three.js zone placement      |
+| `DeviceCard.svelte`     | Devices             | Per-device status + preview  |
+| `SceneCard.svelte`      | Dashboard / Scenes  | One-tap scene activation     |
+| `Toast.svelte`          | Global overlay      | Non-blocking notifications   |
+| `SetupWizard.svelte`    | First-run           | 5-step onboarding flow       |
+| `DebugPanel.svelte`     | Settings > Advanced | Event log, frame timing      |
+| `AudioSpectrum.svelte`  | Inputs / Dashboard  | FFT visualizer               |
+| `Slider.svelte`         | Controls            | Branded range input          |
+| `MiniPreview.svelte`    | Dashboard           | Spatial map with live colors |
 
 ## Appendix B: Animation Timing Reference
 
 All animations follow a consistent timing language:
 
-| Duration | Use | Easing |
-|----------|-----|--------|
-| 100ms | Instant feedback (button press, toggle) | `ease-out` |
-| 200ms | UI state changes (hover, focus, nav highlight) | `ease-out` |
-| 300ms | Content transitions (panel slide, effect crossfade) | `cubic-bezier(0.4, 0, 0.2, 1)` |
-| 500ms | Entrance animations (card appear, wizard step) | `cubic-bezier(0.0, 0, 0.2, 1)` |
-| 1000ms+ | Decorative only (logo animation, ambient glow) | `linear` or custom |
+| Duration | Use                                                 | Easing                         |
+| -------- | --------------------------------------------------- | ------------------------------ |
+| 100ms    | Instant feedback (button press, toggle)             | `ease-out`                     |
+| 200ms    | UI state changes (hover, focus, nav highlight)      | `ease-out`                     |
+| 300ms    | Content transitions (panel slide, effect crossfade) | `cubic-bezier(0.4, 0, 0.2, 1)` |
+| 500ms    | Entrance animations (card appear, wizard step)      | `cubic-bezier(0.0, 0, 0.2, 1)` |
+| 1000ms+  | Decorative only (logo animation, ambient glow)      | `linear` or custom             |
 
 All durations halve when `prefers-reduced-motion` is detected. Decorative animations disable entirely.
 
@@ -1099,61 +1117,61 @@ All durations halve when `prefers-reduced-motion` is detected. Decorative animat
 /* SilkCircuit Neon — Hypercolor Application */
 :root {
   /* Brand */
-  --hc-purple:        #e135ff;
-  --hc-cyan:          #80ffea;
-  --hc-coral:         #ff6ac1;
-  --hc-yellow:        #f1fa8c;
-  --hc-green:         #50fa7b;
-  --hc-red:           #ff6363;
+  --hc-purple: #e135ff;
+  --hc-cyan: #80ffea;
+  --hc-coral: #ff6ac1;
+  --hc-yellow: #f1fa8c;
+  --hc-green: #50fa7b;
+  --hc-red: #ff6363;
 
   /* Surfaces */
-  --hc-bg-deep:       #0a0a0f;
-  --hc-bg-base:       #12121a;
-  --hc-bg-card:       #1a1a26;
-  --hc-bg-elevated:   #222233;
-  --hc-bg-float:      #2a2a3d;
+  --hc-bg-deep: #0a0a0f;
+  --hc-bg-base: #12121a;
+  --hc-bg-card: #1a1a26;
+  --hc-bg-elevated: #222233;
+  --hc-bg-float: #2a2a3d;
 
   /* Borders */
   --hc-border-subtle: #2d2d44;
   --hc-border-active: rgba(225, 53, 255, 0.2);
 
   /* Text */
-  --hc-text-primary:  #e0e0e8;
-  --hc-text-muted:    #8888a0;
-  --hc-text-active:   #80ffea;
+  --hc-text-primary: #e0e0e8;
+  --hc-text-muted: #8888a0;
+  --hc-text-active: #80ffea;
 
   /* Typography */
-  --hc-font-mono:     "JetBrains Mono", "Fira Code", "SF Mono", monospace;
-  --hc-font-sans:     "Inter", -apple-system, "Segoe UI", sans-serif;
+  --hc-font-mono: "JetBrains Mono", "Fira Code", "SF Mono", monospace;
+  --hc-font-sans: "Inter", -apple-system, "Segoe UI", sans-serif;
 
   /* Spacing */
-  --hc-space-xs:      4px;
-  --hc-space-sm:      8px;
-  --hc-space-md:      16px;
-  --hc-space-lg:      24px;
-  --hc-space-xl:      32px;
-  --hc-space-2xl:     48px;
+  --hc-space-xs: 4px;
+  --hc-space-sm: 8px;
+  --hc-space-md: 16px;
+  --hc-space-lg: 24px;
+  --hc-space-xl: 32px;
+  --hc-space-2xl: 48px;
 
   /* Radii */
-  --hc-radius-sm:     4px;
-  --hc-radius-md:     8px;
-  --hc-radius-lg:     12px;
-  --hc-radius-xl:     16px;
+  --hc-radius-sm: 4px;
+  --hc-radius-md: 8px;
+  --hc-radius-lg: 12px;
+  --hc-radius-xl: 16px;
 
   /* Shadows (glow-style for dark theme) */
-  --hc-glow-purple:   0 0 20px rgba(225, 53, 255, 0.15);
-  --hc-glow-cyan:     0 0 20px rgba(128, 255, 234, 0.15);
-  --hc-glow-soft:     0 4px 24px rgba(0, 0, 0, 0.4);
+  --hc-glow-purple: 0 0 20px rgba(225, 53, 255, 0.15);
+  --hc-glow-cyan: 0 0 20px rgba(128, 255, 234, 0.15);
+  --hc-glow-soft: 0 4px 24px rgba(0, 0, 0, 0.4);
 
   /* Glass */
-  --hc-glass-bg:      rgba(10, 10, 15, 0.72);
-  --hc-glass-border:  rgba(225, 53, 255, 0.08);
-  --hc-glass-blur:    blur(16px) saturate(120%);
+  --hc-glass-bg: rgba(10, 10, 15, 0.72);
+  --hc-glass-border: rgba(225, 53, 255, 0.08);
+  --hc-glass-blur: blur(16px) saturate(120%);
 
   /* Transitions */
-  --hc-ease-fast:     100ms ease-out;
-  --hc-ease-normal:   200ms ease-out;
-  --hc-ease-smooth:   300ms cubic-bezier(0.4, 0, 0.2, 1);
-  --hc-ease-enter:    500ms cubic-bezier(0.0, 0, 0.2, 1);
+  --hc-ease-fast: 100ms ease-out;
+  --hc-ease-normal: 200ms ease-out;
+  --hc-ease-smooth: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  --hc-ease-enter: 500ms cubic-bezier(0, 0, 0.2, 1);
 }
 ```

@@ -6,24 +6,24 @@ Hypercolor supports **~160 devices** across 11 driver families spanning USB and 
 
 ### USB Drivers (hypercolor-hal)
 
-| Driver | Devices | Protocol | Transport |
-|--------|---------|----------|-----------|
-| Razer | 111 | RazerProtocol (Modern/Extended/Extended3F), SeirenV3 | USB HID |
-| Corsair | 14 | CorsairLink, LightingNode, CorsairLcd | USB HID |
-| ASUS Aura | 10 | AuraUsb (5 controller generations) | USB HidRaw |
-| Lian Li | 10 | Ene6k77, TlFan, LegacyUniHub | USB HID |
-| QMK | 10 | QmkProtocol (standardized) | USB HID |
-| PrismRGB | 4 | PrismRgb | USB HID |
-| Dygma | 2 | Dygma (wired/wireless) | USB Serial |
-| Ableton Push 2 | 1 | Push2 (MIDI + display) | USB MIDI |
+| Driver         | Devices | Protocol                                             | Transport  |
+| -------------- | ------- | ---------------------------------------------------- | ---------- |
+| Razer          | 111     | RazerProtocol (Modern/Extended/Extended3F), SeirenV3 | USB HID    |
+| Corsair        | 14      | CorsairLink, LightingNode, CorsairLcd                | USB HID    |
+| ASUS Aura      | 10      | AuraUsb (5 controller generations)                   | USB HidRaw |
+| Lian Li        | 10      | Ene6k77, TlFan, LegacyUniHub                         | USB HID    |
+| QMK            | 10      | QmkProtocol (standardized)                           | USB HID    |
+| PrismRGB       | 4       | PrismRgb                                             | USB HID    |
+| Dygma          | 2       | Dygma (wired/wireless)                               | USB Serial |
+| Ableton Push 2 | 1       | Push2 (MIDI + display)                               | USB MIDI   |
 
-### Network Drivers (hypercolor-driver-*)
+### Network Drivers (hypercolor-driver-\*)
 
-| Driver | Protocol | Transport | Features |
-|--------|----------|-----------|----------|
-| WLED | DDP + E1.31 UDP | Network (HTTP + UDP) | mDNS discovery, segment management |
+| Driver      | Protocol                      | Transport             | Features                                                 |
+| ----------- | ----------------------------- | --------------------- | -------------------------------------------------------- |
+| WLED        | DDP + E1.31 UDP               | Network (HTTP + UDP)  | mDNS discovery, segment management                       |
 | Philips Hue | REST + DTLS Entertainment API | Network (HTTP + DTLS) | nUPnP/mDNS discovery, link button pairing, CIE XYb color |
-| Nanoleaf | REST + UDP External Control | Network (HTTP + UDP) | mDNS discovery, panel topology, power button pairing |
+| Nanoleaf    | REST + UDP External Control   | Network (HTTP + UDP)  | mDNS discovery, panel topology, power button pairing     |
 
 Plus the ROLI Blocks out-of-process bridge (Spec 30) and Corsair iCUE LINK Phase 2
 (native per-LED protocol, Spec 18) in progress.
@@ -196,13 +196,13 @@ real hardware risk. Approach with extreme caution.
 
 ## Protocol Complexity Matrix
 
-| Difficulty | Examples | Transport | Risk |
-|-----------|---------|-----------|------|
-| **Easy** | QMK, WLED, Nanoleaf, Wooting | USB HID (standard), HTTP/JSON | None |
-| **Medium** | NZXT, SteelSeries, Thermaltake, Cooler Master | USB HID (proprietary, well-RE'd) | Low |
-| **Medium-Hard** | Logitech, Corsair peripherals, iCUE LINK | USB HID (complex, generation-specific) | Low |
-| **Hard** | ASUS Aura mobo, Gigabyte, RAM RGB | SMBus/I2C (kernel deps, ACPI) | Medium |
-| **Dangerous** | MSI Mystic Light (some boards) | SMBus | **Bricking risk** |
+| Difficulty      | Examples                                      | Transport                              | Risk              |
+| --------------- | --------------------------------------------- | -------------------------------------- | ----------------- |
+| **Easy**        | QMK, WLED, Nanoleaf, Wooting                  | USB HID (standard), HTTP/JSON          | None              |
+| **Medium**      | NZXT, SteelSeries, Thermaltake, Cooler Master | USB HID (proprietary, well-RE'd)       | Low               |
+| **Medium-Hard** | Logitech, Corsair peripherals, iCUE LINK      | USB HID (complex, generation-specific) | Low               |
+| **Hard**        | ASUS Aura mobo, Gigabyte, RAM RGB             | SMBus/I2C (kernel deps, ACPI)          | Medium            |
+| **Dangerous**   | MSI Mystic Light (some boards)                | SMBus                                  | **Bricking risk** |
 
 ---
 
@@ -210,49 +210,53 @@ real hardware risk. Approach with extreme caution.
 
 Key open-source projects to mine for protocol knowledge:
 
-| Project | Language | Covers | Quality |
-|---------|----------|--------|---------|
-| [liquidctl](https://github.com/liquidctl/liquidctl) | Python | NZXT, Corsair, EVGA | Excellent — clean protocol docs |
-| [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB) | C++ | 800+ devices, all vendors | Good but monolithic, varying quality |
-| [steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs) | **Rust** | SteelSeries keyboards/mice | Good — direct Rust reference |
-| [g810-led](https://github.com/MatMoul/g810-led) | C++ | Logitech keyboards | Decent — covers common models |
-| [libcmmk](https://github.com/chmod222/libcmmk) | C | Cooler Master keyboards | Good — focused scope |
-| [linux_thermaltake_riing](https://github.com/chestm007/linux_thermaltake_riing) | Python | Thermaltake fans | Decent |
+| Project                                                                         | Language | Covers                     | Quality                              |
+| ------------------------------------------------------------------------------- | -------- | -------------------------- | ------------------------------------ |
+| [liquidctl](https://github.com/liquidctl/liquidctl)                             | Python   | NZXT, Corsair, EVGA        | Excellent — clean protocol docs      |
+| [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB)                           | C++      | 800+ devices, all vendors  | Good but monolithic, varying quality |
+| [steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs)                  | **Rust** | SteelSeries keyboards/mice | Good — direct Rust reference         |
+| [g810-led](https://github.com/MatMoul/g810-led)                                 | C++      | Logitech keyboards         | Decent — covers common models        |
+| [libcmmk](https://github.com/chmod222/libcmmk)                                  | C        | Cooler Master keyboards    | Good — focused scope                 |
+| [linux_thermaltake_riing](https://github.com/chestm007/linux_thermaltake_riing) | Python   | Thermaltake fans           | Decent                               |
 
 ---
 
 ## Recommended Phasing
 
 ### Now — Solidify Core
+
 - Expand Razer/Corsair/ASUS/Lian Li device tables as new hardware ships
 - Complete Corsair iCUE LINK Phase 2 (native per-LED protocol, Spec 18)
 - Accept community QMK device descriptor PRs
 - Harden network driver edge cases (WLED/Hue/Nanoleaf reconnection, discovery reliability)
 
 ### Next — High-Impact Wave
+
 - **NZXT** driver (port from liquidctl)
 - **SteelSeries** driver (port from steelseriesgg-rs)
 - **Logitech** driver (port from g810-led, start with keyboards)
 
 ### Later — Ecosystem Expansion
+
 - Cooler Master, Thermaltake, Wooting drivers
 - Corsair Commander Core/XT family
 - HyperX (after NGENUITY protocol stabilizes)
 - Govee LAN API
 
 ### Not Planned
+
 - MSI Mystic Light, Gigabyte RGB Fusion, RAM RGB, GPU RGB — too risky for native drivers
 
 ---
 
 ## Success Metrics
 
-| Milestone | Target |
-|-----------|--------|
-| Tier 1 solidified | Stable across all 11 driver families |
-| NZXT shipped | First AIO cooler support on Linux |
-| Tier 2 complete | ~250+ devices, covers 80% of enthusiast builds |
-| Tier 3 complete | ~350+ devices, competitive with OpenRGB coverage |
+| Milestone         | Target                                           |
+| ----------------- | ------------------------------------------------ |
+| Tier 1 solidified | Stable across all 11 driver families             |
+| NZXT shipped      | First AIO cooler support on Linux                |
+| Tier 2 complete   | ~250+ devices, covers 80% of enthusiast builds   |
+| Tier 3 complete   | ~350+ devices, competitive with OpenRGB coverage |
 
 ---
 
@@ -272,7 +276,7 @@ All USB drivers follow HAL patterns:
 
 See: Spec 16 (HAL design).
 
-### Network Drivers (hypercolor-driver-*)
+### Network Drivers (hypercolor-driver-\*)
 
 Network drivers use the modular architecture from Spec 35:
 

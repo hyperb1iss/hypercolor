@@ -48,33 +48,33 @@ Any MCP-compatible client can connect using the Streamable HTTP transport at `ht
 
 The MCP server exposes 14 tools for comprehensive lighting control:
 
-| Tool | Description | Read-Only |
-|---|---|---|
-| `get_status` | Get current system state (effect, devices, FPS, audio) | Yes |
-| `list_effects` | Browse available effects with search/filter | Yes |
-| `set_effect` | Apply an effect with optional control values | No |
-| `stop_effect` | Stop the currently running effect | No |
-| `set_color` | Set a static color on all devices | No |
-| `get_devices` | List connected devices and their status | Yes |
-| `set_brightness` | Adjust global brightness (0-100) | No |
-| `get_audio_state` | Get current audio analysis data | Yes |
-| `activate_scene` | Activate a lighting scene | No |
-| `list_scenes` | List available scenes | Yes |
-| `create_scene` | Create a new scene from current state | No |
-| `set_profile` | Switch to a saved profile | No |
-| `get_layout` | Get the current spatial layout | Yes |
-| `diagnose` | Run system diagnostics | Yes |
+| Tool              | Description                                            | Read-Only |
+| ----------------- | ------------------------------------------------------ | --------- |
+| `get_status`      | Get current system state (effect, devices, FPS, audio) | Yes       |
+| `list_effects`    | Browse available effects with search/filter            | Yes       |
+| `set_effect`      | Apply an effect with optional control values           | No        |
+| `stop_effect`     | Stop the currently running effect                      | No        |
+| `set_color`       | Set a static color on all devices                      | No        |
+| `get_devices`     | List connected devices and their status                | Yes       |
+| `set_brightness`  | Adjust global brightness (0-100)                       | No        |
+| `get_audio_state` | Get current audio analysis data                        | Yes       |
+| `activate_scene`  | Activate a lighting scene                              | No        |
+| `list_scenes`     | List available scenes                                  | Yes       |
+| `create_scene`    | Create a new scene from current state                  | No        |
+| `set_profile`     | Switch to a saved profile                              | No        |
+| `get_layout`      | Get the current spatial layout                         | Yes       |
+| `diagnose`        | Run system diagnostics                                 | Yes       |
 
 ## Available Resources
 
 Resources provide contextual data that AI assistants can read:
 
-| URI | Description |
-|---|---|
-| `hypercolor://state` | Full system state snapshot |
-| `hypercolor://effects` | Effect catalog with metadata |
-| `hypercolor://devices` | Connected device information |
-| `hypercolor://audio` | Current audio analysis data |
+| URI                     | Description                             |
+| ----------------------- | --------------------------------------- |
+| `hypercolor://state`    | Full system state snapshot              |
+| `hypercolor://effects`  | Effect catalog with metadata            |
+| `hypercolor://devices`  | Connected device information            |
+| `hypercolor://audio`    | Current audio analysis data             |
 | `hypercolor://profiles` | Saved profiles and their configurations |
 
 {% callout(type="tip", title="Start with state") %}
@@ -93,11 +93,11 @@ The MCP server includes prompt templates that guide AI assistants toward effecti
 
 Once configured, you can control your lighting through natural conversation:
 
-- *"Show me what effects are available for audio-reactive lighting"*
-- *"Apply the borealis effect with speed set to 7"*
-- *"Create a calm scene for late-night work with dim blue ambient lighting"*
-- *"What devices are connected? Is everything working?"*
-- *"Turn the brightness down to 40%"*
-- *"Stop the current effect"*
+- _"Show me what effects are available for audio-reactive lighting"_
+- _"Apply the borealis effect with speed set to 7"_
+- _"Create a calm scene for late-night work with dim blue ambient lighting"_
+- _"What devices are connected? Is everything working?"_
+- _"Turn the brightness down to 40%"_
+- _"Stop the current effect"_
 
 The AI assistant translates these requests into the appropriate MCP tool calls, handling parameter mapping and error handling automatically.

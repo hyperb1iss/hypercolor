@@ -46,15 +46,15 @@ first `ConnectionType::Bridge` backend in the system.
 
 ### Supported Hardware
 
-| Device | Serial Prefix | USB PID | LED Grid | Heap Size | Surface |
-|--------|--------------|---------|----------|-----------|---------|
-| Lightpad Block | LPB | `0x0900` | 15×15 | 7200 B | Pressure-sensitive XY pad |
-| Lightpad Block M | LPM | `0x0900` | 15×15 | 7200 B | Same as LPB |
-| LUMI Keys Block | LKB | `0x0E00` | 15×15 | 7200 B | 24-key mini keyboard |
-| Seaboard Block | SBB | `0x0700` | 15×15 | 7200 B | Continuous pitch surface |
-| Live Block | LIC | `0x0B00` | 15×15 | 3000 B | Button matrix |
-| Loop Block | LOC | `0x0C00` | 15×15 | 3000 B | Looper controls |
-| Touch Block | TCB | `0x0D00` | 15×15 | 3000 B | Blank touch surface |
+| Device           | Serial Prefix | USB PID  | LED Grid | Heap Size | Surface                   |
+| ---------------- | ------------- | -------- | -------- | --------- | ------------------------- |
+| Lightpad Block   | LPB           | `0x0900` | 15×15    | 7200 B    | Pressure-sensitive XY pad |
+| Lightpad Block M | LPM           | `0x0900` | 15×15    | 7200 B    | Same as LPB               |
+| LUMI Keys Block  | LKB           | `0x0E00` | 15×15    | 7200 B    | 24-key mini keyboard      |
+| Seaboard Block   | SBB           | `0x0700` | 15×15    | 7200 B    | Continuous pitch surface  |
+| Live Block       | LIC           | `0x0B00` | 15×15    | 3000 B    | Button matrix             |
+| Loop Block       | LOC           | `0x0C00` | 15×15    | 3000 B    | Looper controls           |
+| Touch Block      | TCB           | `0x0D00` | 15×15    | 3000 B    | Blank touch surface       |
 
 All devices share the same 15×15 LED grid and RGB565 color encoding. The ROLI USB vendor ID is
 `0x2AF4`.
@@ -79,11 +79,11 @@ All devices share the same 15×15 LED grid and RGB565 color encoding. The ROLI U
 
 ### 2.1 Integration Options Considered
 
-| Approach | Effort | Maintenance | Touch Input | Multi-device |
-|----------|--------|-------------|-------------|--------------|
-| **A. Native Rust driver** | ~6 weeks | Dual codebases | Rewrite parser | Rewrite topology |
-| **B. FFI to Python** | ~2 weeks | Fragile linking | Possible | Complex |
-| **C. IPC bridge to blocksd** | ~1 week | One source of truth | Free | Free |
+| Approach                     | Effort   | Maintenance         | Touch Input    | Multi-device     |
+| ---------------------------- | -------- | ------------------- | -------------- | ---------------- |
+| **A. Native Rust driver**    | ~6 weeks | Dual codebases      | Rewrite parser | Rewrite topology |
+| **B. FFI to Python**         | ~2 weeks | Fragile linking     | Possible       | Complex          |
+| **C. IPC bridge to blocksd** | ~1 week  | One source of truth | Free           | Free             |
 
 ### 2.2 Why Bridge Wins
 
@@ -376,16 +376,16 @@ After subscribing, the server pushes these events:
 }
 ```
 
-| Field | Type | Range | Description |
-|-------|------|-------|-------------|
-| `action` | string | `start`, `move`, `end` | Touch lifecycle phase |
-| `index` | u8 | 0–15 | Touch finger index (multitouch) |
-| `x` | f32 | 0.0–1.0 | Horizontal position (left to right) |
-| `y` | f32 | 0.0–1.0 | Vertical position (top to bottom) |
-| `z` | f32 | 0.0–1.0 | Pressure (0 = no contact, 1 = max) |
-| `vx` | f32 | -1.0–1.0 | Horizontal velocity |
-| `vy` | f32 | -1.0–1.0 | Vertical velocity |
-| `vz` | f32 | -1.0–1.0 | Pressure velocity |
+| Field    | Type   | Range                  | Description                         |
+| -------- | ------ | ---------------------- | ----------------------------------- |
+| `action` | string | `start`, `move`, `end` | Touch lifecycle phase               |
+| `index`  | u8     | 0–15                   | Touch finger index (multitouch)     |
+| `x`      | f32    | 0.0–1.0                | Horizontal position (left to right) |
+| `y`      | f32    | 0.0–1.0                | Vertical position (top to bottom)   |
+| `z`      | f32    | 0.0–1.0                | Pressure (0 = no contact, 1 = max)  |
+| `vx`     | f32    | -1.0–1.0               | Horizontal velocity                 |
+| `vy`     | f32    | -1.0–1.0               | Vertical velocity                   |
+| `vz`     | f32    | -1.0–1.0               | Pressure velocity                   |
 
 #### Button Events
 
@@ -502,12 +502,13 @@ graph LR
 ```
 
 Conversion:
-  r5 = (r8 >> 3) & 0x1F     // 256 levels → 32 levels  (±4 max error)
-  g6 = (g8 >> 2) & 0x3F     // 256 levels → 64 levels  (±2 max error)
-  b5 = (b8 >> 3) & 0x1F     // 256 levels → 32 levels  (±4 max error)
+r5 = (r8 >> 3) & 0x1F // 256 levels → 32 levels (±4 max error)
+g6 = (g8 >> 2) & 0x3F // 256 levels → 64 levels (±2 max error)
+b5 = (b8 >> 3) & 0x1F // 256 levels → 32 levels (±4 max error)
 
-  byte0 = r5 | (g6 & 0x07) << 5
-  byte1 = (g6 >> 3) | b5 << 3
+byte0 = r5 | (g6 & 0x07) << 5
+byte1 = (g6 >> 3) | b5 << 3
+
 ```
 
 This quantization is invisible to Hypercolor — it sends full RGB888 and blocksd handles the lossy
@@ -518,11 +519,13 @@ conversion. Effects should be designed knowing that the device has ~32K effectiv
 The 15×15 grid is addressed in **row-major order**, top-left origin:
 
 ```
-Index:  0   1   2   3  ...  14
-       15  16  17  18  ...  29
-       30  31  32  33  ...  44
-       ...
-      210 211 212 213  ... 224
+
+Index: 0 1 2 3 ... 14
+15 16 17 18 ... 29
+30 31 32 33 ... 44
+...
+210 211 212 213 ... 224
+
 ```
 
 In the RGB888 frame buffer:
@@ -534,12 +537,14 @@ In the RGB888 frame buffer:
 For reference — this is blocksd's internal concern, not Hypercolor's:
 
 ```
-Offset (bytes)   Content
-─────────────    ───────
-0 – 93           BitmapLEDProgram bytecode (94 bytes)
-94 – 543         LED pixel data (450 bytes, RGB565)
-544 – 7199       Unused heap space
-```
+
+Offset (bytes) Content
+───────────── ───────
+0 – 93 BitmapLEDProgram bytecode (94 bytes)
+94 – 543 LED pixel data (450 bytes, RGB565)
+544 – 7199 Unused heap space
+
+````
 
 The BitmapLEDProgram reads pixel data starting at offset 94 and repaints the grid at ~25 Hz. The
 program runs on the device's on-chip LittleFoot VM:
@@ -556,7 +561,7 @@ void repaint() {
                 x, y);
         }
 }
-```
+````
 
 ### 5.4 SysEx Transport (blocksd Internal)
 
@@ -757,12 +762,12 @@ graph TD
 The device repaints at ~25 Hz regardless of how fast the host sends data. Sending faster than 25 fps
 wastes bandwidth — the device will display the most recent complete frame at each repaint tick.
 
-| Layer | Rate | Governed By |
-|-------|------|-------------|
-| Effect engine | 60 fps | Hypercolor render loop |
-| Backend output | 25 fps | `target_fps()` return value |
+| Layer            | Rate    | Governed By                         |
+| ---------------- | ------- | ----------------------------------- |
+| Effect engine    | 60 fps  | Hypercolor render loop              |
+| Backend output   | 25 fps  | `target_fps()` return value         |
 | blocksd → device | ~25 fps | ACK backpressure + diff compression |
-| Device repaint | ~25 Hz | On-chip LittleFoot VM timer |
+| Device repaint   | ~25 Hz  | On-chip LittleFoot VM timer         |
 
 `BlocksBackend::target_fps()` returns `Some(25)` for all ROLI devices. The `BackendManager` uses
 this to throttle frame dispatch — it drops intermediate frames and sends only the latest at 25 fps.
@@ -794,13 +799,13 @@ impl FrameCoalescer {
 The RGB565 quantization means some colors render differently on ROLI blocks than on WLED strips or
 Razer keyboards:
 
-| Color | RGB888 | After RGB565 Roundtrip | Visible? |
-|-------|--------|----------------------|----------|
-| Pure white | (255,255,255) | (248,252,248) | Barely |
-| Deep purple | (128,0,128) | (128,0,128) | No |
-| Subtle gray | (40,40,40) | (40,40,40) | No |
-| Pastel pink | (255,200,210) | (248,200,208) | Barely |
-| Orange-red | (255,69,0) | (248,68,0) | Barely |
+| Color       | RGB888        | After RGB565 Roundtrip | Visible? |
+| ----------- | ------------- | ---------------------- | -------- |
+| Pure white  | (255,255,255) | (248,252,248)          | Barely   |
+| Deep purple | (128,0,128)   | (128,0,128)            | No       |
+| Subtle gray | (40,40,40)    | (40,40,40)             | No       |
+| Pastel pink | (255,200,210) | (248,200,208)          | Barely   |
+| Orange-red  | (255,69,0)    | (248,68,0)             | Barely   |
 
 The quantization error is ≤7 per channel — generally imperceptible on LED hardware. Effects don't
 need special handling for ROLI devices.
@@ -1192,16 +1197,16 @@ if config.backends.blocks.enabled {
 
 ### 12.1 Failure Modes
 
-| Failure | Detection | Recovery |
-|---------|-----------|----------|
-| blocksd not installed | Socket path doesn't exist | Return empty device list; log nothing |
-| blocksd not running | `connect()` ECONNREFUSED | Exponential backoff reconnect |
-| blocksd crashes mid-session | Socket EOF / broken pipe | Mark devices disconnected, reconnect |
-| Device disconnected | `device_removed` event | Remove from device map, notify registry |
-| Frame rejected | Binary response `0x00` | Retry on next render tick; treat as unavailable device or invalid payload |
-| Socket write timeout | 1s write deadline | Treat as disconnect, reconnect |
-| Malformed JSON from blocksd | `serde_json` parse error | Log warning, skip message, continue |
-| Version mismatch | `pong` version check | Treat as failed handshake and retry with backoff |
+| Failure                     | Detection                 | Recovery                                                                  |
+| --------------------------- | ------------------------- | ------------------------------------------------------------------------- |
+| blocksd not installed       | Socket path doesn't exist | Return empty device list; log nothing                                     |
+| blocksd not running         | `connect()` ECONNREFUSED  | Exponential backoff reconnect                                             |
+| blocksd crashes mid-session | Socket EOF / broken pipe  | Mark devices disconnected, reconnect                                      |
+| Device disconnected         | `device_removed` event    | Remove from device map, notify registry                                   |
+| Frame rejected              | Binary response `0x00`    | Retry on next render tick; treat as unavailable device or invalid payload |
+| Socket write timeout        | 1s write deadline         | Treat as disconnect, reconnect                                            |
+| Malformed JSON from blocksd | `serde_json` parse error  | Log warning, skip message, continue                                       |
+| Version mismatch            | `pong` version check      | Treat as failed handshake and retry with backoff                          |
 
 ### 12.2 Graceful Degradation
 
@@ -1250,11 +1255,11 @@ Total end-to-end:                   2-45 ms (dominated by USB + device timer)
 
 ### 13.2 Bandwidth
 
-| Path | Data Size | Rate | Throughput |
-|------|-----------|------|-----------|
-| Hypercolor → blocksd | 681 B/frame | 25 fps | 17 KB/s |
-| blocksd → device | ~100-450 B/frame (diff) | 25 fps | 2.5-11 KB/s |
-| MIDI USB bandwidth | 31.25 KB/s nominal | — | Shared with touch events |
+| Path                 | Data Size               | Rate   | Throughput               |
+| -------------------- | ----------------------- | ------ | ------------------------ |
+| Hypercolor → blocksd | 681 B/frame             | 25 fps | 17 KB/s                  |
+| blocksd → device     | ~100-450 B/frame (diff) | 25 fps | 2.5-11 KB/s              |
+| MIDI USB bandwidth   | 31.25 KB/s nominal      | —      | Shared with touch events |
 
 The diff compression in blocksd is critical: a full 450-byte RGB565 frame at 25 fps would consume
 ~11 KB/s of the ~31 KB/s MIDI bandwidth, leaving little room for touch events and control messages.
@@ -1393,6 +1398,7 @@ The blocksd API server needs its own test suite (Python, pytest):
 5. **Integration into `daemon.py`** — start API server alongside topology manager, wire up callbacks
 
 **Key decisions:**
+
 - Server starts on daemon boot, binds socket, accepts multiple concurrent clients
 - Frame writes are non-blocking — accepted into a per-device buffer, applied on next tick
 - Touch events are broadcast to all subscribed clients (fan-out)
@@ -1412,6 +1418,7 @@ The blocksd API server needs its own test suite (Python, pytest):
 6. **Registration in `hypercolor-daemon`** — add to `startup.rs` backend list
 
 **Key decisions:**
+
 - `ConnectionType::Bridge` — new semantics: out-of-process, may be unavailable
 - `DeviceFamily::Roli` — new variant in `hypercolor-types`
 - Binary frame path for `write_colors` — 681 bytes, no JSON overhead in hot path
@@ -1436,46 +1443,46 @@ This phase is independent of Phases 1–2 and can be deferred.
 
 ### Request Messages
 
-| Type | Fields | Response Type |
-|------|--------|---------------|
-| `ping` | `id` | `pong` |
-| `discover` | `id` | `discover_response` |
-| `frame` | `uid`, `pixels` (base64) | `frame_ack` |
-| `brightness` | `uid`, `value` (0–255) | `brightness_ack` |
-| `subscribe` | `events` (string array) | `subscribed` |
+| Type         | Fields                   | Response Type       |
+| ------------ | ------------------------ | ------------------- |
+| `ping`       | `id`                     | `pong`              |
+| `discover`   | `id`                     | `discover_response` |
+| `frame`      | `uid`, `pixels` (base64) | `frame_ack`         |
+| `brightness` | `uid`, `value` (0–255)   | `brightness_ack`    |
+| `subscribe`  | `events` (string array)  | `subscribed`        |
 
 ### Binary Messages
 
-| Magic | Type | Payload | Response |
-|-------|------|---------|----------|
+| Magic  | Type   | Payload                     | Response         |
+| ------ | ------ | --------------------------- | ---------------- |
 | `0xBD` | `0x01` | UID (8B LE) + RGB888 (675B) | `0x01` or `0x00` |
 
 ### Server-Sent Events
 
-| Type | Fields | Trigger |
-|------|--------|---------|
-| `device_added` | `device` object | USB hot-plug or DNA snap |
-| `device_removed` | `uid`, `reason` | Timeout or USB disconnect |
-| `touch` | `uid`, `action`, `index`, `x`, `y`, `z`, `vx`, `vy`, `vz` | Touch surface interaction |
-| `button` | `uid`, `action` | Mode button press/release |
+| Type             | Fields                                                    | Trigger                   |
+| ---------------- | --------------------------------------------------------- | ------------------------- |
+| `device_added`   | `device` object                                           | USB hot-plug or DNA snap  |
+| `device_removed` | `uid`, `reason`                                           | Timeout or USB disconnect |
+| `touch`          | `uid`, `action`, `index`, `x`, `y`, `z`, `vx`, `vy`, `vz` | Touch surface interaction |
+| `button`         | `uid`, `action`                                           | Mode button press/release |
 
 ## Appendix B: ROLI Protocol Quick Reference
 
 For implementors working on blocksd's API server — key protocol constants:
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| ROLI VID | `0x2AF4` | USB vendor ID |
-| SysEx Header | `F0 00 21 10 77` | All ROLI messages |
-| Heap LED Offset | 94 bytes | After BitmapLEDProgram |
-| Frame Size (RGB565) | 450 bytes | 225 pixels × 2 bytes |
-| Frame Size (RGB888) | 675 bytes | 225 pixels × 3 bytes |
-| Max In-Flight | 200 bytes | ACK backpressure limit |
-| Retransmit Timeout | 250 ms | ACK wait before resend |
-| Device Repaint Rate | ~25 Hz | LittleFoot VM timer |
-| Master Ping Interval | 400 ms | Keepalive for master block |
-| DNA Ping Interval | 1666 ms | Keepalive for connected blocks |
-| Ping Timeout | 5000 ms | Disconnect threshold |
+| Constant             | Value            | Usage                          |
+| -------------------- | ---------------- | ------------------------------ |
+| ROLI VID             | `0x2AF4`         | USB vendor ID                  |
+| SysEx Header         | `F0 00 21 10 77` | All ROLI messages              |
+| Heap LED Offset      | 94 bytes         | After BitmapLEDProgram         |
+| Frame Size (RGB565)  | 450 bytes        | 225 pixels × 2 bytes           |
+| Frame Size (RGB888)  | 675 bytes        | 225 pixels × 3 bytes           |
+| Max In-Flight        | 200 bytes        | ACK backpressure limit         |
+| Retransmit Timeout   | 250 ms           | ACK wait before resend         |
+| Device Repaint Rate  | ~25 Hz           | LittleFoot VM timer            |
+| Master Ping Interval | 400 ms           | Keepalive for master block     |
+| DNA Ping Interval    | 1666 ms          | Keepalive for connected blocks |
+| Ping Timeout         | 5000 ms          | Disconnect threshold           |
 
 ## Appendix C: LUMI Keys Key-to-Pixel Mapping
 

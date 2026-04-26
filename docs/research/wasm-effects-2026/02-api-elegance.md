@@ -12,7 +12,7 @@ for runtime selection; this doc is strictly about the guest-facing API shape).
 > same field-driven schema NIH-plug popularized) plus a single
 > `fn render(&mut self, ctx: &Frame, canvas: &mut Canvas)` method. No JSON
 > alongside the binary. No per-pixel callback. No function-pointer table.
-> Parameters *are* struct fields; the schema is derived; the host introspects
+> Parameters _are_ struct fields; the schema is derived; the host introspects
 > the compiled component for controls, presets, and persistence. One file,
 > ~30 lines for a striking effect, zero ceremony. Full defense in §12.
 
@@ -22,7 +22,7 @@ for runtime selection; this doc is strictly about the guest-facing API shape).
 
 Shadertoy's `void mainImage(out vec4 fragColor, in vec2 fragCoord)` is the
 canonical elegant effect API. The appeal has three real sources. First, the
-coordinate-in-color-out contract fits what most visual effects actually *are*
+coordinate-in-color-out contract fits what most visual effects actually _are_
 mathematically, so the surface area of the API equals the surface area of the
 problem. Second, ergonomic uniforms (`iTime`, `iTimeDelta`, `iFrame`,
 `iResolution`, `iMouse`, `iDate`, `iChannel0..3`, `iSampleRate`) are
@@ -72,10 +72,10 @@ easily, but a WASM host↔guest boundary crossing is ~10 ns on Wasmtime (per the
 [Bytecode Alliance Cranelift 2023 update](https://bytecodealliance.org/articles/wasmtime-and-cranelift-in-2023)),
 so calling a guest-exported per-pixel callback at 18.4 M/sec would burn
 ~184 ms/sec on the boundary alone — **three frames entirely lost just to call
-overhead**, before any pixel math runs. This is why *every CPU LED engine that
-thinks it wants a per-pixel API actually wants a per-frame API*. See §10.
+overhead**, before any pixel math runs. This is why _every CPU LED engine that
+thinks it wants a per-pixel API actually wants a per-frame API_. See §10.
 
-The per-pixel *conceptual* model is still worth preserving. Rust's iterator
+The per-pixel _conceptual_ model is still worth preserving. Rust's iterator
 chain over `canvas.pixels_mut()` keeps the authorial feel of Shadertoy while
 collapsing to one WASM-host roundtrip per frame.
 
@@ -89,7 +89,7 @@ which receives a `ProcessData` struct bundling `numInputs`, `numOutputs`,
 `numSamples`. Parameter changes arrive as an `IParameterChanges` queue where
 each `IParamValueQueue` holds a sequence of `(sampleOffset, normalizedValue)`
 points — sample-accurate automation baked into the frame. The `IEditController`
-is a *separate component* from the `IAudioProcessor`, with its own parameter
+is a _separate component_ from the `IAudioProcessor`, with its own parameter
 representation; the bridge between them is the `ParamID` integer. Parameter
 flags include `kCanAutomate`, `kIsReadOnly`, `kIsList`, `kIsProgramChange`,
 `kIsBypass`, and `kIsHidden`. (Sources:
@@ -114,7 +114,7 @@ header, one ABI, every feature is a named extension. (Sources:
 [Sweetwater CLAP overview](https://www.sweetwater.com/insync/clap-the-new-clever-audio-plug-in-format/).)
 
 **NIH-plug** (Rust) is where this story crystallizes into real elegance. Look
-at a *gain plugin* top-to-bottom:
+at a _gain plugin_ top-to-bottom:
 
 ```rust
 #[derive(Params)]
@@ -156,6 +156,7 @@ impl Plugin for MyGain {
 [nih-plug README](https://github.com/robbert-vdh/nih-plug).)
 
 Things to steal:
+
 - **Parameters are struct fields.** `#[derive(Params)]` reads the types and
   `#[id = "..."]` attrs and emits the entire CLAP/VST3 metadata story. The
   author never writes JSON or matches on control names by string.
@@ -164,13 +165,13 @@ Things to steal:
   pop-click problems in one line.
 - **Units, display, formatters are fluent.** `.with_unit(" dB")`,
   `.with_value_to_string(...)`, `.with_string_to_value(...)` are
-  *behavior on the parameter*, not duplicated state in the GUI.
+  _behavior on the parameter_, not duplicated state in the GUI.
 - **`process()` is one callback with one `ProcessStatus` return.** No
   separate "have params changed" check — smoothers pull the queue.
 
 What's still painful: VST3/CLAP both inherit from audio where buffers are
 always `&mut [f32]` and the "canvas" is 1D time. For a 2D RGBA canvas the
-shape is different, but the *declarative parameter pattern* is directly
+shape is different, but the _declarative parameter pattern_ is directly
 portable.
 
 ---
@@ -181,7 +182,7 @@ FFGL is a C++ plugin API with two moving parts: the parameter system managed
 by `CFreeFrameGLPlugin::AddParam(Param::Create("Opacity"))` (plus typed
 variants `ParamColor::Create`, `ParamOption::Create` for enums, etc.), and
 a `ProcessOpenGL(ProcessOpenGLStruct*)` render callback that receives bound
-input textures and writes to a bound output FBO. Parameter names *must match*
+input textures and writes to a bound output FBO. Parameter names _must match_
 fragment shader uniform names; `SendParams(shader)` copies the current values
 to all declared uniforms in one call. Host-side features include parameter
 groups via `SetParamGroup` and per-frame uniforms `resolution`, `time`,
@@ -206,7 +207,7 @@ FFResult Add::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
 
 The lesson here is subtle: **parameter-to-uniform naming by convention** is a
 lot of ergonomic mileage. The author writes `Opacity` once as a parameter name
-*and* once as a shader uniform name; the host reconciles. No manual wiring
+_and_ once as a shader uniform name; the host reconciles. No manual wiring
 code. This is the pattern ISF codifies declaratively.
 
 The downside: FFGL is render-per-frame with no state accessor — persistent
@@ -224,7 +225,7 @@ that declare UI controls and effect metadata; the `<body>` has a
 (typically via `requestAnimationFrame`). The engine exposes globals:
 `engine.audio.level` (−100..0 dB), `engine.audio.density` (0..1 tonal
 roughness), and `engine.audio.freq[]` (200-element FFT). Per-LED sampling is
-handled *by the engine*, not the effect: the engine reads pixel colors off
+handled _by the engine_, not the effect: the engine reads pixel colors off
 your `<canvas>` at the device's LED positions and forwards them to the
 hardware. The effect author's mental model is "paint a 320×200 canvas; the
 lighting happens to someone else." (Sources:
@@ -235,14 +236,20 @@ lighting happens to someone else." (Sources:
 
 ```html
 <meta description="Audio Rainbow" publisher="Me" />
-<meta property="slider" name="Speed" type="number"
-      default="1.0" min="0.1" max="4.0" />
+<meta
+  property="slider"
+  name="Speed"
+  type="number"
+  default="1.0"
+  min="0.1"
+  max="4.0"
+/>
 <canvas id="c" width="320" height="200"></canvas>
 <script>
-  const ctx = document.getElementById('c').getContext('2d');
+  const ctx = document.getElementById("c").getContext("2d");
   function render() {
     const bass = Math.abs(engine.audio.freq[5]) / 100;
-    const hue  = (performance.now() * 0.05) % 360;
+    const hue = (performance.now() * 0.05) % 360;
     ctx.fillStyle = `hsl(${hue}, 100%, ${30 + bass * 50}%)`;
     ctx.fillRect(0, 0, 320, 200);
     requestAnimationFrame(render);
@@ -261,7 +268,7 @@ which means control types are stringly-typed and opaque to tooling. Per-LED
 spatial awareness requires reading back from the canvas — an implicit
 contract that the engine never actually tells the effect "here are your 144
 LEDs at these positions." The effect paints and hopes. This is fine for
-ambient stuff, terrible for anything wanting to know *where* a keyboard key
+ambient stuff, terrible for anything wanting to know _where_ a keyboard key
 is in the layout. (Hypercolor already dodges this problem by generating a
 logical 320×200 canvas and letting the spatial sampler map pixels to LEDs.
 The SignalRGB model is, in essence, already how the daemon thinks.)
@@ -314,6 +321,7 @@ texture. (Sources:
 [Operator families](https://docs.derivative.ca/Operator).)
 
 Each operator declares:
+
 - a `setupParameters(OP_ParameterManager*)` that registers typed parameters
   (numeric, menu, pulse, toggle) — these auto-generate the inspector UI;
 - `getInputInfo(...)` describing input channel layout;
@@ -324,7 +332,7 @@ input, and the Python scripting layer can rebind parameters at runtime. The
 clunkiness is cognitive load — a beginner meets the entire operator
 taxonomy before producing a visible pixel.
 
-For Hypercolor this is overkill. We have *one* output target (the canvas)
+For Hypercolor this is overkill. We have _one_ output target (the canvas)
 and we already have post-processing (spatial sampler, brightness, color
 correction). A full node graph is a separate product. But the lesson — a
 single op's internal API should look the same whether you're a novice or
@@ -345,6 +353,7 @@ implemented as Qt widgets that draw into per-device color buffers via the
 [OpenRGB on GitLab](https://gitlab.com/CalcProgrammer1/OpenRGB).)
 
 What this produces in practice:
+
 - **Plugin ABI breaks every minor release** because Qt symbols are not
   stable across C++ compiler/stdlib combinations.
 - **No sandboxing.** Plugin crashes take the daemon with them.
@@ -354,7 +363,7 @@ What this produces in practice:
   manifests, no sane deny-by-default permissions.
 
 Hypercolor already solved most of these structurally: the UI is Leptos
-over REST/WebSocket, effects are data-driven, and plugins *will* run in
+over REST/WebSocket, effects are data-driven, and plugins _will_ run in
 WASM. The single biggest lesson from OpenRGB: **never make "compiled
 against exact host version" the plugin distribution story.** WASM's
 stable-by-construction ABI is a gift we should protect fiercely; the
@@ -388,7 +397,7 @@ impl Material2d for CoolMaterial {
 The bind-group derive is the same pattern NIH-plug's `Params` derive uses:
 the compiler reads field attrs, emits the schema and the wire code. The
 author writes types, the framework emits infrastructure. Bevy's
-`#[uniform(0)]`/`#[texture(1)]` is *more magical* than NIH-plug's
+`#[uniform(0)]`/`#[texture(1)]` is _more magical_ than NIH-plug's
 `#[id = "foo"]` because binding slot numbers are a shader concern, but the
 underlying philosophy is identical: **the struct is the schema.**
 
@@ -440,15 +449,15 @@ lives in a separate `.json` sidecar. (Source:
 What Hyperion gets right: **the effect is a loop, not a frame callback.**
 The author writes imperative code with `while not abort(): ... sleep(dt)`,
 which mirrors how beginners actually think about animation. The effect
-*owns* its timing. What it gets wrong: sidecar JSON, no type safety, Python
+_owns_ its timing. What it gets wrong: sidecar JSON, no type safety, Python
 runtime cost, and immediate-mode drawing API that mixes coordinate math
 with color data (bytes interleaved `r,g,b,a`).
 
-**AuroraRGB** (antonpup/Aurora) takes a different shape: effects are *layers*
+**AuroraRGB** (antonpup/Aurora) takes a different shape: effects are _layers_
 in a stack, and each layer is either a built-in effect type or a "Scripted
 Layer" that hosts C# or Python scripts implementing an `Update()` method
 against a `Canvas` object. The layer system is an implicit compositor — the
-*stack* composes. (Sources:
+_stack_ composes. (Sources:
 [Aurora GitHub](https://github.com/antonpup/Aurora),
 [Aurora Script Layer docs](https://www.project-aurora.com/Docs/reference-layers/script/).)
 
@@ -462,23 +471,23 @@ beautiful.
 
 ## 10 · Core axes for evaluating any effect API
 
-| Axis | Options | Hypercolor's need |
-|------|---------|-------------------|
-| Granularity | per-pixel · per-canvas · per-LED | per-canvas (spatial sampler already maps canvas→LEDs) |
-| State | stateless (Shadertoy) · stateful (VST) | stateful (framebuffer feedback, particles, beat smoothers) |
-| Schema discovery | runtime JSON · compile-time derive · sidecar file | compile-time derive (no drift, no parsing) |
-| Hot reload | file-watch rebuild · swap binary · in-place | swap WASM module on file change |
-| Input injection | push (engine writes into input struct) · pull (effect asks) | push — keeps effect-side code branchless |
-| Composition | single effect · effect chain · node graph | single effect now, chain later |
-| Failure model | crash host · sandbox + restart · skip frame | sandbox + skip frame, then restart on repeat |
-| Audio model | raw buffer · FFT bins · semantic (beat, bpm, onsets) | semantic, already provided by `AudioData` |
-| Timing | host pushes `dt` · guest calls `now()` · sample-accurate | host pushes `dt` (WASM has no monotonic clock guarantee) |
+| Axis             | Options                                                     | Hypercolor's need                                          |
+| ---------------- | ----------------------------------------------------------- | ---------------------------------------------------------- |
+| Granularity      | per-pixel · per-canvas · per-LED                            | per-canvas (spatial sampler already maps canvas→LEDs)      |
+| State            | stateless (Shadertoy) · stateful (VST)                      | stateful (framebuffer feedback, particles, beat smoothers) |
+| Schema discovery | runtime JSON · compile-time derive · sidecar file           | compile-time derive (no drift, no parsing)                 |
+| Hot reload       | file-watch rebuild · swap binary · in-place                 | swap WASM module on file change                            |
+| Input injection  | push (engine writes into input struct) · pull (effect asks) | push — keeps effect-side code branchless                   |
+| Composition      | single effect · effect chain · node graph                   | single effect now, chain later                             |
+| Failure model    | crash host · sandbox + restart · skip frame                 | sandbox + skip frame, then restart on repeat               |
+| Audio model      | raw buffer · FFT bins · semantic (beat, bpm, onsets)        | semantic, already provided by `AudioData`                  |
+| Timing           | host pushes `dt` · guest calls `now()` · sample-accurate    | host pushes `dt` (WASM has no monotonic clock guarantee)   |
 
 **Key observation about granularity.** Per-pixel on CPU is a 10 ns×N=ms tax
 per frame at WASM boundary rates — unworkable. Per-LED is what hardware
-*cares* about but resolution-dependent — a 144-LED strip and a 54-key keyboard
+_cares_ about but resolution-dependent — a 144-LED strip and a 54-key keyboard
 need different code. **Per-canvas at normalized resolution is the only one
-that scales.** The per-pixel *feel* is recoverable with iterator-style APIs
+that scales.** The per-pixel _feel_ is recoverable with iterator-style APIs
 (`canvas.par_pixels_mut(|(x, y), px| { ... })`) that loop entirely inside the
 guest.
 
@@ -486,7 +495,7 @@ guest.
 `<meta>`, WLED fxdata strings) forces a parallel maintenance burden: shader
 variables must match JSON names must match the UI. Compile-time derive
 (NIH-plug, Bevy) collapses all three into struct fields. For Rust guests
-with proc-macros, derive wins on every axis; the *only* reason to prefer
+with proc-macros, derive wins on every axis; the _only_ reason to prefer
 JSON is if you don't control the compiler, which for WASM we do.
 
 **Key observation about composition.** Bevy, TouchDesigner, Resolume all
@@ -506,7 +515,7 @@ against a WIT-generated guest binding assuming standard types
 
 ### Shape A — "derive-the-contract" (Rust-first, recommended)
 
-The effect *is* a Rust struct. A `#[derive(Effect)]` macro reads the struct
+The effect _is_ a Rust struct. A `#[derive(Effect)]` macro reads the struct
 and generates the WIT-exported component entry points, the parameter schema,
 the persistence shape, and a default `new()` built from parameter defaults.
 The author writes a single `render` fn that iterates the canvas inline.
@@ -561,7 +570,7 @@ exports, state persistence — all compiler-emitted from attrs. No JSON. No
 separate registration table. Audio is a typed struct with semantic
 helpers. Spatial indices are normalized `[0,1]` floats, resolution-free.
 
-**Elegance.** Highest. The *only* things on the page are (a) what this
+**Elegance.** Highest. The _only_ things on the page are (a) what this
 effect is (attrs), (b) what it exposes (param fields), (c) what it does
 (`render`). Idiomatic Rust: derive macros everywhere, strong types, enum
 params, `fill_with` closure maps to the Shadertoy feeling without the
@@ -732,7 +741,7 @@ machines (sparkle bursts, keyboard ripples with manual delay loops).
 
 **Trade-off.** Architectural impedance mismatch. Hypercolor's render loop
 is host-driven (see `crates/hypercolor-core/src/effect/traits.rs`:
-`render_into` is called *to* the effect, not *from* it). Supporting
+`render_into` is called _to_ the effect, not _from_ it). Supporting
 `run()` would require a fiber/coroutine harness for every effect. Not
 worth it for the 5% of effects that want it — those effects can implement
 the same pattern inside Shape A with a state machine field.
@@ -766,13 +775,13 @@ specifically because every design pressure points at it:
   surfaces those as-is, with the SDK adding ergonomic helpers. No
   competitor's API ships this rich an audio model — ISF gives you raw
   FFT bins, SignalRGB gives you three numbers. Ours is closer to what
-  authors *want*.
+  authors _want_.
 - **The author-facing line count target is met.** The Shape A example
   above is 30 lines including the enum, imports, and export macro. A
   sparser effect (`Solid Color` with one slider) is 10 lines.
 - **Strong typing catches the common mistakes.** Wrong range on a slider
   is a compile error, not a silent runtime clamp. Parameter rename
-  breaks the build in the host *and* the guest with useful spans. An
+  breaks the build in the host _and_ the guest with useful spans. An
   enum control with a typo in a preset doesn't match any variant and
   the compiler yells.
 
@@ -781,7 +790,7 @@ specifically because every design pressure points at it:
 1. **Rust-only ergonomics.** AssemblyScript or Zig guests can implement
    the same WIT world, but they'd do it by hand and the code would look
    more like Shape B. Acceptable: the proc-macro is polish, not ABI.
-   We should ship Shape B as the *stable underlying target* of Shape A's
+   We should ship Shape B as the _stable underlying target_ of Shape A's
    macro expansion, so non-Rust guests have a clean story.
 2. **Proc-macro maintenance burden.** The macro has to understand param
    attrs, enum `Param` derives, and emit WIT-compatible exports. That's
@@ -822,7 +831,7 @@ specifically because every design pressure points at it:
    example. If a reader can't go from `cargo new` to a working WASM
    effect in ten minutes, the story isn't done.
 
-The full plan for *how* to load, sandbox, and watch these WASM modules
+The full plan for _how_ to load, sandbox, and watch these WASM modules
 belongs in sibling research docs; this doc is only about the shape of the
 code an author writes. That shape is Shape A.
 
@@ -831,6 +840,7 @@ code an author writes. That shape is Shape A.
 ## Sources
 
 ### Shadertoy / ISF
+
 - [Shadertoy how-to](https://www.shadertoy.com/howto) — fragCoord semantics, uniform conventions.
 - [WebGL Fundamentals: Shadertoy](https://webglfundamentals.org/webgl/lessons/webgl-shadertoy.html) — why mainImage is elegant.
 - [Book of Shaders: uniforms](https://thebookofshaders.com/03/) — uniform-first authoring.
@@ -838,6 +848,7 @@ code an author writes. That shape is Shape A.
 - [ISF Spec README](https://github.com/mrRay/ISF_Spec/blob/master/README.md) — end-to-end format spec.
 
 ### CLAP / VST3 / NIH-plug
+
 - [free-audio/clap repository](https://github.com/free-audio/clap) — CLAP headers and template.
 - [clap/ext/params.h](https://github.com/free-audio/clap/blob/main/include/clap/ext/params.h) — `clap_param_info` struct.
 - [u-he on CLAP](https://u-he.com/community/clap/) — KISS design philosophy.
@@ -849,6 +860,7 @@ code an author writes. That shape is Shape A.
 - [nih-plug Params trait docs](https://nih-plug.robbertvanderhelm.nl/nih_plug/params/trait.Params.html).
 
 ### Resolume / FFGL / SignalRGB
+
 - [resolume/ffgl repository](https://github.com/resolume/ffgl).
 - [FFGL framework wiki](https://github.com/resolume/ffgl/wiki/3.-Get-to-know-the-framework-better).
 - [FFGL Add.cpp example](https://github.com/resolume/ffgl/blob/master/source/plugins/Add/Add.cpp).
@@ -858,6 +870,7 @@ code an author writes. That shape is Shape A.
 - [SignalRGB device functions](https://docs.signalrgb.com/developer/plugins/device-functions/).
 
 ### OBS / TouchDesigner / Bevy / OpenRGB
+
 - [OBS Rendering Graphics docs](https://docs.obsproject.com/graphics).
 - [OBS source API reference](https://docs.obsproject.com/reference-sources).
 - [exeldro/obs-shaderfilter](https://github.com/exeldro/obs-shaderfilter).
@@ -871,6 +884,7 @@ code an author writes. That shape is Shape A.
 - [OpenRGB on GitLab](https://gitlab.com/CalcProgrammer1/OpenRGB).
 
 ### WLED / Hyperion / AuroraRGB
+
 - [WLED Custom Features](https://kno.wled.ge/advanced/custom-features/).
 - [WLED JSON API](https://kno.wled.ge/interfaces/json-api/).
 - [WLED usermod system](https://deepwiki.com/wled/WLED/6-usermod-system).
@@ -880,6 +894,7 @@ code an author writes. That shape is Shape A.
 - [Aurora Script Layer docs](https://www.project-aurora.com/Docs/reference-layers/script/).
 
 ### WASM runtime / Component Model
+
 - [Wasmtime 1.0 performance](https://bytecodealliance.org/articles/wasmtime-10-performance).
 - [Wasmtime and Cranelift in 2023](https://bytecodealliance.org/articles/wasmtime-and-cranelift-in-2023) — ~10 ns host-call overhead figure.
 - [wasmtime::component Rust docs](https://docs.wasmtime.dev/api/wasmtime/component/index.html).

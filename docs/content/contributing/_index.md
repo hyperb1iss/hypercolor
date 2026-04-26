@@ -26,19 +26,19 @@ just verify
 
 ## Build Commands
 
-| Command | Description |
-|---|---|
-| `just build` | Debug build |
-| `just release` | Full release bundle in `dist/` |
-| `just release-bin` | Release binaries only |
-| `just check` | Type-check without building |
-| `just test` | Run all tests |
-| `just lint` | Clippy with `-D warnings` |
-| `just fmt` | Format all code |
-| `just verify` | Format check + lint + test (run before committing) |
-| `just daemon` | Run daemon in preview mode |
-| `just ui-dev` | Leptos UI dev server |
-| `just sdk-dev` | SDK dev server with HMR |
+| Command            | Description                                        |
+| ------------------ | -------------------------------------------------- |
+| `just build`       | Debug build                                        |
+| `just release`     | Full release bundle in `dist/`                     |
+| `just release-bin` | Release binaries only                              |
+| `just check`       | Type-check without building                        |
+| `just test`        | Run all tests                                      |
+| `just lint`        | Clippy with `-D warnings`                          |
+| `just fmt`         | Format all code                                    |
+| `just verify`      | Format check + lint + test (run before committing) |
+| `just daemon`      | Run daemon in preview mode                         |
+| `just ui-dev`      | Leptos UI dev server                               |
+| `just sdk-dev`     | SDK dev server with HMR                            |
 
 ## Code Style
 

@@ -35,12 +35,12 @@ Native USB driver for the Ableton Push 2 controller via the `hypercolor-hal` abs
 
 Push 2 has **four distinct LED subsystems** orchestrated through a single palette-indexed color model:
 
-| Subsystem | Count | Type | Addressing |
-|-----------|-------|------|-----------|
-| Pads | 64 | RGB | MIDI Note On (notes 36–99) |
-| RGB Buttons | ~26 | RGB | MIDI CC |
-| White Buttons | ~12 | White-only | MIDI CC |
-| Touch Strip | 31 | White (8-level) | SysEx command |
+| Subsystem     | Count | Type            | Addressing                 |
+| ------------- | ----- | --------------- | -------------------------- |
+| Pads          | 64    | RGB             | MIDI Note On (notes 36–99) |
+| RGB Buttons   | ~26   | RGB             | MIDI CC                    |
+| White Buttons | ~12   | White-only      | MIDI CC                    |
+| Touch Strip   | 31    | White (8-level) | SysEx command              |
 
 Plus a **960×160 RGB565 display** over USB bulk — a secondary "zone" rendered through the existing `write_display_frame` path (accepting JPEG input, decoded to RGB565 inside the protocol).
 
@@ -70,26 +70,26 @@ Plus a **960×160 RGB565 display** over USB bulk — a secondary "zone" rendered
 
 ### 2.1 USB Identifiers
 
-| Field | Value |
-|-------|-------|
-| Vendor ID | `0x2982` (Ableton AG) |
-| Product ID | `0x1967` |
-| USB Class | Composite (MIDI + Vendor-specific) |
-| Power | 500mA max, external PSU optional |
+| Field      | Value                              |
+| ---------- | ---------------------------------- |
+| Vendor ID  | `0x2982` (Ableton AG)              |
+| Product ID | `0x1967`                           |
+| USB Class  | Composite (MIDI + Vendor-specific) |
+| Power      | 500mA max, external PSU optional   |
 
 ### 2.2 USB Interfaces
 
-| Interface | Class | Purpose | Transport |
-|-----------|-------|---------|-----------|
-| 0 | Vendor-specific | Display (bulk) | libusb bulk OUT, endpoint `0x01` |
-| 1 | USB Audio / MIDI Streaming | MIDI port 1 (Live) | ALSA sequencer / CoreMIDI |
-| 2 | USB Audio / MIDI Streaming | MIDI port 2 (User) | ALSA sequencer / CoreMIDI |
+| Interface | Class                      | Purpose            | Transport                        |
+| --------- | -------------------------- | ------------------ | -------------------------------- |
+| 0         | Vendor-specific            | Display (bulk)     | libusb bulk OUT, endpoint `0x01` |
+| 1         | USB Audio / MIDI Streaming | MIDI port 1 (Live) | ALSA sequencer / CoreMIDI        |
+| 2         | USB Audio / MIDI Streaming | MIDI port 2 (User) | ALSA sequencer / CoreMIDI        |
 
 ### 2.3 MIDI Port Names by OS
 
-| OS | Live Port (Port 1) | User Port (Port 2) |
-|----|--------------------|--------------------|
-| Linux | `Ableton Push 2 nn:0` | `Ableton Push 2 nn:1` |
+| OS    | Live Port (Port 1)         | User Port (Port 2)         |
+| ----- | -------------------------- | -------------------------- |
+| Linux | `Ableton Push 2 nn:0`      | `Ableton Push 2 nn:1`      |
 | macOS | `Ableton Push 2 Live Port` | `Ableton Push 2 User Port` |
 
 ### 2.4 Protocol Database Registration
@@ -118,6 +118,7 @@ pub const PUSH2: DeviceDescriptor = DeviceDescriptor {
 > **New transport variant required.** `TransportType::UsbMidi` is a new variant — see [§3](#3-transport-usb-midi).
 >
 > **Files requiring changes:**
+>
 > - `crates/hypercolor-hal/src/registry.rs` — add `UsbMidi` variant to `TransportType` enum
 > - `crates/hypercolor-core/src/device/usb_backend.rs` — add `UsbMidi` match arm in transport construction
 > - `crates/hypercolor-hal/src/transport/` — add `midi.rs` transport implementation
@@ -144,10 +145,10 @@ UsbMidi {
 
 The MIDI transport wraps platform MIDI APIs:
 
-| Platform | MIDI Backend | Display Backend |
-|----------|-------------|----------------|
-| Linux | ALSA sequencer (`alsa-rawmidi` or `midir`) | `nusb` bulk transfer |
-| macOS | CoreMIDI (`midir`) | `nusb` bulk transfer |
+| Platform | MIDI Backend                               | Display Backend      |
+| -------- | ------------------------------------------ | -------------------- |
+| Linux    | ALSA sequencer (`alsa-rawmidi` or `midir`) | `nusb` bulk transfer |
+| macOS    | CoreMIDI (`midir`)                         | `nusb` bulk transfer |
 
 The transport must open **two independent I/O paths** simultaneously:
 
@@ -264,6 +265,7 @@ LED ← velocity/value (0–127) → Palette[index] → {R, G, B, W}
 ```
 
 Each palette entry has four channels:
+
 - **R, G, B** — used by RGB LEDs (pads, colored buttons)
 - **W** — used by white-only LEDs
 
@@ -279,11 +281,11 @@ To display arbitrary Hypercolor RGB colors on Push 2, the driver must **reprogra
 
 **Palette slot allocation:**
 
-| Slots | Purpose |
-|-------|---------|
-| 0 | Reserved: OFF (black) |
-| 1–90 | Dynamic: mapped per-frame to current Hypercolor colors |
-| 91–127 | Available for animation endpoints or future use |
+| Slots  | Purpose                                                |
+| ------ | ------------------------------------------------------ |
+| 0      | Reserved: OFF (black)                                  |
+| 1–90   | Dynamic: mapped per-frame to current Hypercolor colors |
+| 91–127 | Available for animation endpoints or future use        |
 
 ### 4.3 Set LED Color Palette Entry (SysEx 0x03)
 
@@ -292,6 +294,7 @@ F0 00 21 1D 01 01 03 <index> <r_LSB> <r_MSB> <g_LSB> <g_MSB> <b_LSB> <b_MSB> <w_
 ```
 
 8-bit values are encoded as two 7-bit SysEx bytes:
+
 - `LSB` = bits [6:0]
 - `MSB` = bit [7]
 - Reconstruction: `value = (MSB << 7) | LSB`
@@ -381,8 +384,8 @@ Addressed via MIDI Control Change. Velocity/value = palette index (0–127).
 
 **Display Buttons (above display):**
 
-| CC | Button |
-|----|--------|
+| CC  | Button  |
+| --- | ------- |
 | 102 | Track 1 |
 | 103 | Track 2 |
 | 104 | Track 3 |
@@ -394,38 +397,38 @@ Addressed via MIDI Control Change. Velocity/value = palette index (0–127).
 
 **Display Buttons (below display):**
 
-| CC | Button |
-|----|--------|
-| 20 | Select 1 |
-| 21 | Select 2 |
-| 22 | Select 3 |
-| 23 | Select 4 |
-| 24 | Select 5 |
-| 25 | Select 6 |
-| 26 | Select 7 |
-| 27 | Select 8 |
+| CC  | Button   |
+| --- | -------- |
+| 20  | Select 1 |
+| 21  | Select 2 |
+| 22  | Select 3 |
+| 23  | Select 4 |
+| 24  | Select 5 |
+| 25  | Select 6 |
+| 26  | Select 7 |
+| 27  | Select 8 |
 
 **Scene Launch Buttons (right side, vertical):**
 
-| CC | Scene |
-|----|-------|
-| 43 | Scene 1 (top) |
-| 42 | Scene 2 |
-| 41 | Scene 3 |
-| 40 | Scene 4 |
-| 39 | Scene 5 |
-| 38 | Scene 6 |
-| 37 | Scene 7 |
-| 36 | Scene 8 (bottom) |
+| CC  | Scene            |
+| --- | ---------------- |
+| 43  | Scene 1 (top)    |
+| 42  | Scene 2          |
+| 41  | Scene 3          |
+| 40  | Scene 4          |
+| 39  | Scene 5          |
+| 38  | Scene 6          |
+| 37  | Scene 7          |
+| 36  | Scene 8 (bottom) |
 
 **Transport & Navigation (RGB subset):**
 
-| CC | Button |
-|----|--------|
-| 85 | Play |
-| 86 | Record |
-| 3 | Tap Tempo |
-| 9 | Metronome |
+| CC  | Button    |
+| --- | --------- |
+| 85  | Play      |
+| 86  | Record    |
+| 3   | Tap Tempo |
+| 9   | Metronome |
 
 **MIDI message:** `0xB0 <cc> <palette_index>` (CC, channel 0)
 
@@ -433,27 +436,27 @@ Addressed via MIDI Control Change. Velocity/value = palette index (0–127).
 
 Same CC addressing, but only the **W** channel of the palette entry is used. These buttons have a single white LED — they cannot display color. Because `set_palette_entry` now derives W from luminance (§4.3), white buttons respond automatically to any palette index with appropriate brightness.
 
-| CC | Button | CC | Button |
-|----|--------|----|--------|
-| 28 | Master | 62 | Page Left |
-| 29 | Stop Clip | 63 | Page Right |
-| 30 | Setup | 87 | New |
-| 31 | Layout | 88 | Duplicate |
-| 35 | Convert | 89 | Automate |
-| 44 | Arrow Left | 90 | Fixed Length |
-| 45 | Arrow Right | 110 | Device |
-| 46 | Arrow Up | 111 | Browse |
-| 47 | Arrow Down | 112 | Mix |
-| 48 | Select | 113 | Clip |
-| 49 | Shift | 116 | Quantize |
-| 50 | Note | 117 | Double Loop |
-| 51 | Session | 118 | Delete |
-| 52 | Add Device | 119 | Undo |
-| 53 | Add Track | 56 | Repeat |
-| 54 | Octave Down | 57 | Accent |
-| 55 | Octave Up | 58 | Scale |
-| 59 | User | 60 | Mute |
-| 61 | Solo | | |
+| CC  | Button      | CC  | Button       |
+| --- | ----------- | --- | ------------ |
+| 28  | Master      | 62  | Page Left    |
+| 29  | Stop Clip   | 63  | Page Right   |
+| 30  | Setup       | 87  | New          |
+| 31  | Layout      | 88  | Duplicate    |
+| 35  | Convert     | 89  | Automate     |
+| 44  | Arrow Left  | 90  | Fixed Length |
+| 45  | Arrow Right | 110 | Device       |
+| 46  | Arrow Up    | 111 | Browse       |
+| 47  | Arrow Down  | 112 | Mix          |
+| 48  | Select      | 113 | Clip         |
+| 49  | Shift       | 116 | Quantize     |
+| 50  | Note        | 117 | Double Loop  |
+| 51  | Session     | 118 | Delete       |
+| 52  | Add Device  | 119 | Undo         |
+| 53  | Add Track   | 56  | Repeat       |
+| 54  | Octave Down | 57  | Accent       |
+| 55  | Octave Up   | 58  | Scale        |
+| 59  | User        | 60  | Mute         |
+| 61  | Solo        |     |              |
 
 **Driver scope note:** The initial implementation controls only the RGB zones (pads + RGB buttons + touch strip). White buttons are **left at their default palette values** — their LEDs will remain in whatever state the device firmware initializes. A future enhancement can add white buttons as an optional zone if reactive white-button effects are desired.
 
@@ -461,15 +464,15 @@ Same CC addressing, but only the **W** channel of the palette entry is used. The
 
 The engine sees Push 2 as a multi-zone device:
 
-| Zone | LEDs | Topology | Color Format |
-|------|------|----------|-------------|
-| `Pads` | 64 | `Matrix { rows: 8, cols: 8 }` | RGB |
-| `Buttons Above` | 8 | `Strip` | RGB |
-| `Buttons Below` | 8 | `Strip` | RGB |
-| `Scene Launch` | 8 | `Strip` | RGB |
-| `Transport` | 4 | `Custom` | RGB |
-| `Touch Strip` | 31 | `Strip` | White (8-level, quantized from RGB) |
-| `Display` | 0 | `Display { width: 960, height: 160, circular: false }` | JPEG (decoded to RGB565 internally) |
+| Zone            | LEDs | Topology                                               | Color Format                        |
+| --------------- | ---- | ------------------------------------------------------ | ----------------------------------- |
+| `Pads`          | 64   | `Matrix { rows: 8, cols: 8 }`                          | RGB                                 |
+| `Buttons Above` | 8    | `Strip`                                                | RGB                                 |
+| `Buttons Below` | 8    | `Strip`                                                | RGB                                 |
+| `Scene Launch`  | 8    | `Strip`                                                | RGB                                 |
+| `Transport`     | 4    | `Custom`                                               | RGB                                 |
+| `Touch Strip`   | 31   | `Strip`                                                | White (8-level, quantized from RGB) |
+| `Display`       | 0    | `Display { width: 960, height: 160, circular: false }` | JPEG (decoded to RGB565 internally) |
 
 **Total addressable LEDs:** 123 (64 pads + 28 RGB buttons + 31 touch strip)
 **Display:** 960×160 pixels (separate zone, not counted as LEDs)
@@ -493,34 +496,34 @@ The LED will transition between the two palette colors using the animation type 
 
 ### 6.3 Animation Channel Table
 
-| Channel | Type | Duration |
-|---------|------|----------|
-| 0 | Static (no animation) | — |
-| 1 | One-shot fade | 1/24th note |
-| 2 | One-shot fade | 1/16th note |
-| 3 | One-shot fade | 1/8th note |
-| 4 | One-shot fade | 1/4 note |
-| 5 | One-shot fade | 1/2 note |
-| 6 | Pulsing (continuous) | 1/24th note |
-| 7 | Pulsing | 1/16th note |
-| 8 | Pulsing | 1/8th note |
-| 9 | Pulsing | 1/4 note |
-| 10 | Pulsing | 1/2 note |
-| 11 | Blinking (on/off) | 1/24th note |
-| 12 | Blinking | 1/16th note |
-| 13 | Blinking | 1/8th note |
-| 14 | Blinking | 1/4 note |
-| 15 | Blinking | 1/2 note |
+| Channel | Type                  | Duration    |
+| ------- | --------------------- | ----------- |
+| 0       | Static (no animation) | —           |
+| 1       | One-shot fade         | 1/24th note |
+| 2       | One-shot fade         | 1/16th note |
+| 3       | One-shot fade         | 1/8th note  |
+| 4       | One-shot fade         | 1/4 note    |
+| 5       | One-shot fade         | 1/2 note    |
+| 6       | Pulsing (continuous)  | 1/24th note |
+| 7       | Pulsing               | 1/16th note |
+| 8       | Pulsing               | 1/8th note  |
+| 9       | Pulsing               | 1/4 note    |
+| 10      | Pulsing               | 1/2 note    |
+| 11      | Blinking (on/off)     | 1/24th note |
+| 12      | Blinking              | 1/16th note |
+| 13      | Blinking              | 1/8th note  |
+| 14      | Blinking              | 1/4 note    |
+| 15      | Blinking              | 1/2 note    |
 
 ### 6.4 MIDI Clock & Transport for Animations
 
 Animations require three MIDI System Real-Time messages from the host:
 
-| Message | Byte | Purpose |
-|---------|------|---------|
-| Start | `0xFA` | Begin animation playback (resets phase) |
-| Clock | `0xF8` | Advance animation timing (24 ppqn) |
-| Stop | `0xFC` | Halt animations (LEDs hold current state) |
+| Message | Byte   | Purpose                                   |
+| ------- | ------ | ----------------------------------------- |
+| Start   | `0xFA` | Begin animation playback (resets phase)   |
+| Clock   | `0xF8` | Advance animation timing (24 ppqn)        |
+| Stop    | `0xFC` | Halt animations (LEDs hold current state) |
 
 The animation clock runs at 24 PPQN (pulses per quarter note). At 120 BPM, that's 48 clock messages/second. The driver must send Start before the first Clock, and Stop to halt.
 
@@ -551,6 +554,7 @@ F0 00 21 1D 01 01 17 6B F7
 ```
 
 Configuration byte `0x6B` = `0b1101011`:
+
 - Bit 0 = 1: LEDs controlled by host
 - Bit 1 = 1: Host sends SysEx (required for `0x19` LED control)
 - Bit 2 = 0: Values as pitch bend (for touch position output)
@@ -583,15 +587,15 @@ b15: 0|000|0|LED30[2:0]           (LED 30 only)
 ### 7.4 Brightness Palette (3-bit)
 
 | Index | Brightness |
-|-------|-----------|
-| 0 | Off |
-| 1 | 2 |
-| 2 | 4 |
-| 3 | 8 |
-| 4 | 16 |
-| 5 | 32 |
-| 6 | 64 |
-| 7 | 127 (full) |
+| ----- | ---------- |
+| 0     | Off        |
+| 1     | 2          |
+| 2     | 4          |
+| 3     | 8          |
+| 4     | 16         |
+| 5     | 32         |
+| 6     | 64         |
+| 7     | 127 (full) |
 
 ### 7.5 Encoding Helper
 
@@ -615,14 +619,14 @@ fn encode_touch_strip(levels: &[u8; 31]) -> [u8; 16] {
 
 ### 8.1 Specifications
 
-| Parameter | Value |
-|-----------|-------|
-| Resolution | 960 × 160 pixels |
-| Color depth | 16-bit RGB565, little-endian |
-| Frame rate | 60 FPS max |
-| Buffering | Double-buffered (displays on frame completion) |
-| Blanking | Screen goes black after 2s with no frame data |
-| USB endpoint | Bulk OUT `0x01`, interface 0 |
+| Parameter    | Value                                          |
+| ------------ | ---------------------------------------------- |
+| Resolution   | 960 × 160 pixels                               |
+| Color depth  | 16-bit RGB565, little-endian                   |
+| Frame rate   | 60 FPS max                                     |
+| Buffering    | Double-buffered (displays on frame completion) |
+| Blanking     | Screen goes black after 2s with no frame data  |
+| USB endpoint | Bulk OUT `0x01`, interface 0                   |
 
 ### 8.2 Pixel Format (RGB565)
 
@@ -713,37 +717,37 @@ All Push 2 SysEx commands follow this structure:
 F0 00 21 1D 01 01 <CMD> [ARGS...] F7
 ```
 
-| Byte(s) | Value | Meaning |
-|---------|-------|---------|
-| `F0` | — | Start of Exclusive |
-| `00 21 1D` | — | Ableton manufacturer ID |
-| `01` | — | Device ID |
-| `01` | — | Model ID (Push 2) |
-| `CMD` | 7-bit | Command ID |
-| `ARGS` | 7-bit × N | Up to 17 seven-bit values |
-| `F7` | — | End of Exclusive |
+| Byte(s)    | Value     | Meaning                   |
+| ---------- | --------- | ------------------------- |
+| `F0`       | —         | Start of Exclusive        |
+| `00 21 1D` | —         | Ableton manufacturer ID   |
+| `01`       | —         | Device ID                 |
+| `01`       | —         | Model ID (Push 2)         |
+| `CMD`      | 7-bit     | Command ID                |
+| `ARGS`     | 7-bit × N | Up to 17 seven-bit values |
+| `F7`       | —         | End of Exclusive          |
 
 ### 9.1 Full Command Table
 
-| ID | Command | Has Reply | Used By Driver |
-|----|---------|-----------|---------------|
-| `0x03` | Set LED Color Palette Entry | No | ✓ Hot path |
-| `0x04` | Get LED Color Palette Entry | Yes | Init (read defaults) |
-| `0x05` | Reapply Color Palette | No | ✓ Hot path |
-| `0x06` | Set LED Brightness | No | ✓ Brightness control |
-| `0x07` | Get LED Brightness | Yes | Init |
-| `0x08` | Set Display Brightness | No | ✓ Brightness control |
-| `0x09` | Get Display Brightness | Yes | Init |
-| `0x0A` | Set MIDI Mode | Yes (both ports) | ✓ Init (switch to User) |
-| `0x0B` | Set LED PWM Frequency | No | Optional tuning |
-| `0x14` | Set LED White Balance | No | Optional calibration |
-| `0x15` | Get LED White Balance | Yes | Init (read calibration) |
-| `0x17` | Set Touch Strip Config | No | ✓ Init (host LED control) |
-| `0x18` | Get Touch Strip Config | Yes | Init |
-| `0x19` | Set Touch Strip LEDs | No | ✓ Frame encoding |
-| `0x1A` | Request Statistics | Yes | Diagnostics |
-| `0x1E` | Set Aftertouch Mode | No | — (input, not LED) |
-| `0x1F` | Get Aftertouch Mode | Yes | — |
+| ID     | Command                     | Has Reply        | Used By Driver            |
+| ------ | --------------------------- | ---------------- | ------------------------- |
+| `0x03` | Set LED Color Palette Entry | No               | ✓ Hot path                |
+| `0x04` | Get LED Color Palette Entry | Yes              | Init (read defaults)      |
+| `0x05` | Reapply Color Palette       | No               | ✓ Hot path                |
+| `0x06` | Set LED Brightness          | No               | ✓ Brightness control      |
+| `0x07` | Get LED Brightness          | Yes              | Init                      |
+| `0x08` | Set Display Brightness      | No               | ✓ Brightness control      |
+| `0x09` | Get Display Brightness      | Yes              | Init                      |
+| `0x0A` | Set MIDI Mode               | Yes (both ports) | ✓ Init (switch to User)   |
+| `0x0B` | Set LED PWM Frequency       | No               | Optional tuning           |
+| `0x14` | Set LED White Balance       | No               | Optional calibration      |
+| `0x15` | Get LED White Balance       | Yes              | Init (read calibration)   |
+| `0x17` | Set Touch Strip Config      | No               | ✓ Init (host LED control) |
+| `0x18` | Get Touch Strip Config      | Yes              | Init                      |
+| `0x19` | Set Touch Strip LEDs        | No               | ✓ Frame encoding          |
+| `0x1A` | Request Statistics          | Yes              | Diagnostics               |
+| `0x1E` | Set Aftertouch Mode         | No               | — (input, not LED)        |
+| `0x1F` | Get Aftertouch Mode         | Yes              | —                         |
 
 ### 9.2 Device Identity Request
 
@@ -751,6 +755,7 @@ Standard MIDI Identity Request:
 
 **Request:** `F0 7E 01 06 01 F7`
 **Reply:**
+
 ```
 F0 7E 01 06 02 00 21 1D 67 32 02 00
 <major> <minor> <build_LSB> <build_MSB>
@@ -980,15 +985,15 @@ impl Protocol for Push2Protocol {
 
 ### 11.3 Capabilities
 
-| Capability | Supported |
-|-----------|-----------|
-| Direct RGB | ✓ (via palette reprogramming) |
-| Brightness | ✓ (global LED brightness 0–127) |
-| Display | ✓ (960×160 RGB565) |
-| Display brightness | ✓ (0–255) |
-| Animations | Future (requires MIDI clock) |
-| Input events | Future (pad pressure, encoders) |
-| Keepalive | Not needed (no timeout) |
+| Capability         | Supported                       |
+| ------------------ | ------------------------------- |
+| Direct RGB         | ✓ (via palette reprogramming)   |
+| Brightness         | ✓ (global LED brightness 0–127) |
+| Display            | ✓ (960×160 RGB565)              |
+| Display brightness | ✓ (0–255)                       |
+| Animations         | Future (requires MIDI clock)    |
+| Input events       | Future (pad pressure, encoders) |
+| Keepalive          | Not needed (no timeout)         |
 
 ---
 
@@ -1007,7 +1012,8 @@ graph TD
 
     Input --> Dedup --> Diff --> SysEx --> MIDI --> Strip
 ```
-```
+
+````
 
 ### 12.2 encode_frame_into Implementation
 
@@ -1103,7 +1109,7 @@ fn encode_frame_into(
 
     encoder.finish();
 }
-```
+````
 
 ### 12.3 Pad Note Map
 
@@ -1158,12 +1164,12 @@ fn quantize_touch_strip(colors: &[[u8; 3]]) -> [u8; 31] {
 
 ### 12.6 Performance Characteristics
 
-| Scenario | SysEx msgs | MIDI msgs | Bytes/frame |
-|----------|-----------|-----------|-------------|
-| All same color | 1 palette + 1 reapply | 64 notes + 28 CCs | ~300 |
-| Steady state (no change) | 0 | 0 | 0 |
-| Full rainbow (64 unique) | 64 palette + 1 reapply | 64 notes + 28 CCs | ~1,400 |
-| Worst case (all unique, all changed) | 92 palette + 1 reapply | 64 notes + 28 CCs | ~1,900 |
+| Scenario                             | SysEx msgs             | MIDI msgs         | Bytes/frame |
+| ------------------------------------ | ---------------------- | ----------------- | ----------- |
+| All same color                       | 1 palette + 1 reapply  | 64 notes + 28 CCs | ~300        |
+| Steady state (no change)             | 0                      | 0                 | 0           |
+| Full rainbow (64 unique)             | 64 palette + 1 reapply | 64 notes + 28 CCs | ~1,400      |
+| Worst case (all unique, all changed) | 92 palette + 1 reapply | 64 notes + 28 CCs | ~1,900      |
 
 At MIDI baud rate (~3,125 bytes/sec for DIN MIDI), this would be a bottleneck — but USB MIDI has no such limit. USB Full Speed allows ~1 MB/s, so even worst-case frames complete in <2ms.
 
@@ -1243,30 +1249,30 @@ const _: () = assert!(
 
 Located in `crates/hypercolor-hal/tests/push2/`:
 
-| Test | Validates |
-|------|----------|
-| `sysex_encoding` | SysEx byte encoding (7-bit split, message framing) |
-| `palette_entry_encoding` | Set Palette Entry message format for all color extremes |
-| `pad_note_map` | Linear index ↔ MIDI note mapping (boundary: 0→36, 63→99) |
-| `button_cc_map` | Linear index ↔ CC mapping for all button groups |
-| `touch_strip_packing` | 31 brightness values → 16 packed bytes |
-| `touch_strip_quantization` | RGB → 3-bit luminance quantization accuracy |
-| `display_xor_shaping` | XOR mask application, round-trip verification |
-| `display_line_size` | Compile-time size assertion for `Push2DisplayLine` |
-| `display_header_format` | Header magic bytes match spec |
-| `frame_encoding_dedup` | Color deduplication produces correct palette slot count |
-| `frame_encoding_diff` | Unchanged frames produce zero commands |
-| `init_sequence` | Init commands are well-formed and in correct order |
-| `shutdown_sequence` | Shutdown restores device to Live mode |
+| Test                       | Validates                                                |
+| -------------------------- | -------------------------------------------------------- |
+| `sysex_encoding`           | SysEx byte encoding (7-bit split, message framing)       |
+| `palette_entry_encoding`   | Set Palette Entry message format for all color extremes  |
+| `pad_note_map`             | Linear index ↔ MIDI note mapping (boundary: 0→36, 63→99) |
+| `button_cc_map`            | Linear index ↔ CC mapping for all button groups          |
+| `touch_strip_packing`      | 31 brightness values → 16 packed bytes                   |
+| `touch_strip_quantization` | RGB → 3-bit luminance quantization accuracy              |
+| `display_xor_shaping`      | XOR mask application, round-trip verification            |
+| `display_line_size`        | Compile-time size assertion for `Push2DisplayLine`       |
+| `display_header_format`    | Header magic bytes match spec                            |
+| `frame_encoding_dedup`     | Color deduplication produces correct palette slot count  |
+| `frame_encoding_diff`      | Unchanged frames produce zero commands                   |
+| `init_sequence`            | Init commands are well-formed and in correct order       |
+| `shutdown_sequence`        | Shutdown restores device to Live mode                    |
 
 ### 14.2 Integration Tests
 
-| Test | Validates |
-|------|----------|
-| `palette_round_trip` | Write palette entries, read back via `0x04`, verify match |
-| `display_frame_timing` | 60 FPS display sustains without USB transfer errors |
-| `mode_switch_echo` | Mode switch reply received on both ports |
-| `identity_parse` | Device identity reply parsed correctly |
+| Test                   | Validates                                                 |
+| ---------------------- | --------------------------------------------------------- |
+| `palette_round_trip`   | Write palette entries, read back via `0x04`, verify match |
+| `display_frame_timing` | 60 FPS display sustains without USB transfer errors       |
+| `mode_switch_echo`     | Mode switch reply received on both ports                  |
+| `identity_parse`       | Device identity reply parsed correctly                    |
 
 ### 14.3 Udev Rules (Linux)
 
@@ -1293,11 +1299,11 @@ The MIDI interfaces are managed by the ALSA sequencer and don't need udev rules 
 
 ## Appendix A: Decisions
 
-| # | Topic | Decision | Rationale |
-|---|-------|----------|-----------|
-| 1 | MIDI library | **`midir`** | Cross-platform (Linux ALSA + macOS CoreMIDI) in a single crate. No conditional compilation, native SysEx support, well-maintained. |
-| 2 | Display rendering | **JPEG in, RGB565 internal** | Use existing JPEG display pipeline unchanged. Decode JPEG → RGB565 inside the protocol impl using the `image` crate. Avoids cross-crate API changes; can be optimized to raw RGB565 later if needed. |
-| 3 | Palette management | **Per-frame dedup** | Simple, stateless, worst case ~1.5 KB which clears USB in <2ms. LRU adds complexity with subtle failure modes. Upgrade only if profiling proves palette writes are a bottleneck. |
+| #   | Topic              | Decision                     | Rationale                                                                                                                                                                                            |
+| --- | ------------------ | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | MIDI library       | **`midir`**                  | Cross-platform (Linux ALSA + macOS CoreMIDI) in a single crate. No conditional compilation, native SysEx support, well-maintained.                                                                   |
+| 2   | Display rendering  | **JPEG in, RGB565 internal** | Use existing JPEG display pipeline unchanged. Decode JPEG → RGB565 inside the protocol impl using the `image` crate. Avoids cross-crate API changes; can be optimized to raw RGB565 later if needed. |
+| 3   | Palette management | **Per-frame dedup**          | Simple, stateless, worst case ~1.5 KB which clears USB in <2ms. LRU adds complexity with subtle failure modes. Upgrade only if profiling proves palette writes are a bottleneck.                     |
 
 ## Appendix B: Open Questions
 
@@ -1316,6 +1322,7 @@ F0 00 21 1D 01 01 1A F7
 ```
 
 Reply fields:
+
 - **Power supply status:** 1 = external PSU, 0 = USB-only
 - **Run ID:** 0–127, persists across sleep, resets on reboot (detect device reboots)
 - **Uptime:** seconds since last reboot (32-bit, encoded as 5 SysEx bytes)

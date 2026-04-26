@@ -41,16 +41,16 @@ graph TD
 
 ### mDNS Service Record
 
-| Field | Value |
-|-------|-------|
-| Service type | `_hypercolor._tcp.local.` |
+| Field         | Value                                     |
+| ------------- | ----------------------------------------- |
+| Service type  | `_hypercolor._tcp.local.`                 |
 | Instance name | `<instance_name>._hypercolor._tcp.local.` |
-| Port | Daemon's HTTP port (default 9420) |
-| TXT `id` | Stable UUID v7 instance ID |
-| TXT `name` | Human-readable instance name |
-| TXT `version` | Daemon version (e.g. `0.1.0`) |
-| TXT `api` | API base path (`/api/v1`) |
-| TXT `auth` | `none` or `api_key` |
+| Port          | Daemon's HTTP port (default 9420)         |
+| TXT `id`      | Stable UUID v7 instance ID                |
+| TXT `name`    | Human-readable instance name              |
+| TXT `version` | Daemon version (e.g. `0.1.0`)             |
+| TXT `api`     | API base path (`/api/v1`)                 |
+| TXT `auth`    | `none` or `api_key`                       |
 
 ### mDNS Publish Guard
 
@@ -59,18 +59,19 @@ This prevents advertising unreachable instances when the daemon is bound to
 `127.0.0.1` (the default). The `mdns_publish` config option is an additional
 opt-out switch; it does NOT force publishing on loopback.
 
-| `remote_access` | `listen_address` | Effective bind | mDNS published? |
-|-----------------|-------------------|----------------|-----------------|
-| `false` | `127.0.0.1` (default) | `127.0.0.1:9420` | No (loopback) |
-| `false` | `192.168.1.10` (explicit) | `192.168.1.10:9420` | Yes |
-| `true` | `127.0.0.1` (default) | `0.0.0.0:9420` (override) | Yes |
-| `true` | `192.168.1.10` (explicit) | `192.168.1.10:9420` | Yes |
+| `remote_access` | `listen_address`          | Effective bind            | mDNS published? |
+| --------------- | ------------------------- | ------------------------- | --------------- |
+| `false`         | `127.0.0.1` (default)     | `127.0.0.1:9420`          | No (loopback)   |
+| `false`         | `192.168.1.10` (explicit) | `192.168.1.10:9420`       | Yes             |
+| `true`          | `127.0.0.1` (default)     | `0.0.0.0:9420` (override) | Yes             |
+| `true`          | `192.168.1.10` (explicit) | `192.168.1.10:9420`       | Yes             |
 
 Any of the above become "No" if `mdns_publish = false`.
 
 ### mDNS Interface Selection
 
 On multi-homed hosts, the mDNS publisher should:
+
 - If the effective bind is `0.0.0.0`, let `mdns-sd` advertise on all interfaces
   (default `ServiceDaemon` behavior)
 - If the effective bind is a specific IP, register only that address
@@ -117,6 +118,7 @@ pub instance_id: String,        // loaded from data_dir/instance_id
 The instance ID is stored in `data_dir()/instance_id` (e.g.
 `~/.local/share/hypercolor/instance_id` on Linux), NOT in the config file.
 This avoids:
+
 - Startup write failures on read-only deployments
 - Unexpected config file rewrites that clobber user edits
 - Schema version bumps for runtime-generated state
@@ -126,16 +128,17 @@ read from data dir. If the file is missing or corrupt, regenerate.
 
 ### Behavior matrix
 
-| `remote_access` | `listen_address` | Effective bind |
-|-----------------|-------------------|----------------|
-| `false` (default) | `127.0.0.1` (default) | `127.0.0.1:9420` |
-| `false` | `192.168.1.10` (explicit) | `192.168.1.10:9420` |
-| `true` | `127.0.0.1` (default) | `0.0.0.0:9420` (override) |
-| `true` | `192.168.1.10` (explicit) | `192.168.1.10:9420` (respected) |
+| `remote_access`   | `listen_address`          | Effective bind                  |
+| ----------------- | ------------------------- | ------------------------------- |
+| `false` (default) | `127.0.0.1` (default)     | `127.0.0.1:9420`                |
+| `false`           | `192.168.1.10` (explicit) | `192.168.1.10:9420`             |
+| `true`            | `127.0.0.1` (default)     | `0.0.0.0:9420` (override)       |
+| `true`            | `192.168.1.10` (explicit) | `192.168.1.10:9420` (respected) |
 
 **Warning logic:** Log a warning whenever the effective bind is non-loopback
 AND no API key is configured (via `HYPERCOLOR_API_KEY` env var). This covers
 both `remote_access = true` and explicit non-loopback `listen_address`:
+
 > "Network-accessible without API key — anyone on your network can control your lights"
 
 ---
@@ -149,11 +152,13 @@ middleware — NOT a separate auth layer. This preserves the existing rate limit
 access tier logic, and token extraction pipeline.
 
 **Changes to `SecurityState` / `AuthConfig`:**
+
 - The existing `HYPERCOLOR_API_KEY` env var already populates the control-tier key
 - Add `/api/v1/server` to the exempt paths list (alongside existing `/health`)
 - No new middleware file needed; extend `security.rs` only
 
 **Accepted token formats** (existing, unchanged):
+
 - Header: `Authorization: Bearer <token>`
 - Query parameter: `?token=<value>` (existing name, NOT `?api_key=`)
 
@@ -162,11 +167,13 @@ access tier logic, and token extraction pipeline.
 > introduce `?api_key=` as a second query param name.
 
 **Exempt endpoints** (always accessible, needed for discovery probes):
+
 - `GET /health` (existing)
 - `GET /api/v1/server` (new — returns identity only, no control)
 
 **Config endpoint protection:** When auth keys are configured, the config
 endpoints (`/api/v1/config*`) must redact the following fields in responses:
+
 - `HYPERCOLOR_API_KEY` / `HYPERCOLOR_READ_API_KEY` values (if surfaced)
 
 > The API key is not stored in `hypercolor.toml`, so the config GET endpoints
@@ -174,6 +181,7 @@ endpoints (`/api/v1/config*`) must redact the following fields in responses:
 > endpoint, they must be redacted.
 
 **Rejected requests** use the existing `ApiError::unauthorized()` envelope:
+
 ```json
 {
   "error": {
@@ -200,6 +208,7 @@ api_key = "secret"
 ```
 
 Platform paths (using existing `hypercolor-core::config::paths`):
+
 - Linux: `~/.config/hypercolor/servers.toml`
 - macOS: `~/Library/Application Support/hypercolor/servers.toml`
 - Windows: `%APPDATA%\hypercolor\servers.toml`

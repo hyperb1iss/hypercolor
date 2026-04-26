@@ -11,11 +11,11 @@ Hypercolor is a daemon-first lighting engine. A background service runs the rend
 
 {% mermaid() %}
 graph TB
-    subgraph Input Sources
-        A1[Audio FFT]
-        A2[Screen Capture]
-        A3[MIDI]
-    end
+subgraph Input Sources
+A1[Audio FFT]
+A2[Screen Capture]
+A3[MIDI]
+end
 
     subgraph Effect Engine
         B1[HTML/Canvas/WebGL<br/>Servo Path]
@@ -70,6 +70,7 @@ graph TB
 
     C -.->|frame data| D
     E -.->|device events| D
+
 {% end %}
 
 ## Crate Structure
@@ -90,15 +91,15 @@ hypercolor-daemon    Binary: `hypercolor-daemon` — REST API + WebSocket + MCP
     +-- hypercolor-ui    Leptos WASM web UI (separate from workspace)
 ```
 
-| Crate | Depends On | Responsibility |
-|---|---|---|
-| `hypercolor-types` | (none) | Shared vocabulary types — import from here, never sibling internals |
-| `hypercolor-core` | `types` | Traits, engine logic, effect registry, audio pipeline, spatial mapping |
-| `hypercolor-hal` | `types`, `core` | USB/HID device drivers, protocol implementations |
-| `hypercolor-daemon` | `core`, `hal` | HTTP/WS server, REST API, MCP server, daemon lifecycle |
-| `hypercolor-cli` | `core` | CLI parsing, output formatting, IPC client |
-| `hypercolor-tui` | `core` | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
-| `hypercolor-ui` | (standalone) | Leptos 0.8 CSR web app, compiled to WASM via Trunk |
+| Crate               | Depends On      | Responsibility                                                                              |
+| ------------------- | --------------- | ------------------------------------------------------------------------------------------- |
+| `hypercolor-types`  | (none)          | Shared vocabulary types — import from here, never sibling internals                         |
+| `hypercolor-core`   | `types`         | Traits, engine logic, effect registry, audio pipeline, spatial mapping                      |
+| `hypercolor-hal`    | `types`, `core` | USB/HID device drivers, protocol implementations                                            |
+| `hypercolor-daemon` | `core`, `hal`   | HTTP/WS server, REST API, MCP server, daemon lifecycle                                      |
+| `hypercolor-cli`    | `core`          | CLI parsing, output formatting, IPC client                                                  |
+| `hypercolor-tui`    | `core`          | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
+| `hypercolor-ui`     | (standalone)    | Leptos 0.8 CSR web app, compiled to WASM via Trunk                                          |
 
 {% callout(type="warning", title="UI crate exclusion") %}
 `hypercolor-ui` is excluded from the Cargo workspace because it targets `wasm32-unknown-unknown`. Running `cargo check --workspace` does NOT cover it. Build the UI separately with `just ui-dev` or `cd crates/hypercolor-ui && trunk build`.
@@ -155,6 +156,7 @@ The daemon runs the core engine. The TUI and CLI connect via HTTP. The web front
 The spatial engine bridges the gap between the 2D effect canvas and physical LED positions in 3D space.
 
 Each device zone defines:
+
 - **Position and size** on the canvas (normalized 0-1 coordinates)
 - **LED topology** — strip, matrix, ring, or custom positions
 - **Rotation** — Allows angled placement
@@ -164,17 +166,17 @@ The sampler uses bilinear interpolation at each LED's canvas position to produce
 
 ## Key Design Decisions
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| Language | Rust | Performance (60fps render thread), safety (USB HID), ecosystem (wgpu, Servo, Ratatui) |
-| Effect renderer | wgpu + Servo dual path | Native performance for new effects + compatibility with existing HTML effects |
+| Decision          | Choice                    | Rationale                                                                                                                                                         |
+| ----------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language          | Rust                      | Performance (60fps render thread), safety (USB HID), ecosystem (wgpu, Servo, Ratatui)                                                                             |
+| Effect renderer   | wgpu + Servo dual path    | Native performance for new effects + compatibility with existing HTML effects                                                                                     |
 | Frame composition | SparkleFlinger compositor | Decouples producer cadence from frame deadlines; enables render groups, overlapping zones, and mixed-rate sources without coupling composition to the render loop |
-| Web UI | Leptos 0.8 (WASM) | Type-safe, fine-grained reactivity, single Rust ecosystem |
-| Web server | Axum | tokio-native, first-class WebSocket, serves embedded SPA |
-| TUI | Ratatui | Established ecosystem, true-color LED preview |
-| Audio | cpal + custom FFT | Cross-platform capture, low-latency processing |
-| IPC | tokio broadcast/watch | Multi-consumer events + latest-value state for real-time data |
-| Config | TOML | Rust ecosystem standard, human-readable |
-| Wire format | zerocopy structs | Zero-allocation frame encoding at 60fps |
-| Canvas resolution | 640×480 (configurable) | Resolution-independent effects render in normalized coords; tune via `daemon.canvas_width` / `canvas_height` |
-| License | Apache-2.0 | Permissive open source |
+| Web UI            | Leptos 0.8 (WASM)         | Type-safe, fine-grained reactivity, single Rust ecosystem                                                                                                         |
+| Web server        | Axum                      | tokio-native, first-class WebSocket, serves embedded SPA                                                                                                          |
+| TUI               | Ratatui                   | Established ecosystem, true-color LED preview                                                                                                                     |
+| Audio             | cpal + custom FFT         | Cross-platform capture, low-latency processing                                                                                                                    |
+| IPC               | tokio broadcast/watch     | Multi-consumer events + latest-value state for real-time data                                                                                                     |
+| Config            | TOML                      | Rust ecosystem standard, human-readable                                                                                                                           |
+| Wire format       | zerocopy structs          | Zero-allocation frame encoding at 60fps                                                                                                                           |
+| Canvas resolution | 640×480 (configurable)    | Resolution-independent effects render in normalized coords; tune via `daemon.canvas_width` / `canvas_height`                                                      |
+| License           | Apache-2.0                | Permissive open source                                                                                                                                            |

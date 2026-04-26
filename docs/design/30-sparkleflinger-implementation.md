@@ -231,7 +231,7 @@ there are active render groups in the scene snapshot.
    ceiling it falls back to an owned `Canvas` publish path that costs a
    full-frame copy. The render surface pool starts at
    `DEFAULT_RENDER_SURFACE_SLOTS` (8) and grows by `2 *
-   canvas_receiver_count` as preview consumers attach.
+canvas_receiver_count` as preview consumers attach.
 4. Hand the `ProducerFrame` to `CompositionPlanner::compile_primary_frame`,
    which adds crossfade layers if a scene transition is active and
    remembers the last stable frame so the next transition can pin its
@@ -287,7 +287,7 @@ Three routes feed the final zone buffer:
    forward.
 3. **Single-effect / screen path** — calls
    `scene_snapshot.spatial_engine.sample_into(sampling_canvas,
-   &mut recycled_frame.zones)`. This reuses the Vec in place, so steady-state
+&mut recycled_frame.zones)`. This reuses the Vec in place, so steady-state
    sampling allocates nothing.
 
 Either way the result is a zone-color slice and an `Arc<SpatialLayout>`
@@ -389,15 +389,15 @@ rolling 60-frame window of total-frame microseconds for percentile math.
 
 **Revoke thresholds** (any trigger drops the ceiling from `Full` to `High`):
 
-| Signal | Threshold |
-|---|---|
-| Consecutive copy frames | ≥ 2 |
-| Consecutive over-budget frames | ≥ 2 |
-| EWMA total | > 92 % of full-tier budget |
-| EWMA producer | > 70 % of full-tier budget |
-| EWMA composition | > 25 % of full-tier budget |
-| p95 total | > 95 % of full-tier budget |
-| p99 total | > full-tier budget |
+| Signal                         | Threshold                  |
+| ------------------------------ | -------------------------- |
+| Consecutive copy frames        | ≥ 2                        |
+| Consecutive over-budget frames | ≥ 2                        |
+| EWMA total                     | > 92 % of full-tier budget |
+| EWMA producer                  | > 70 % of full-tier budget |
+| EWMA composition               | > 25 % of full-tier budget |
+| p95 total                      | > 95 % of full-tier budget |
+| p99 total                      | > full-tier budget         |
 
 Percentile-based triggers require at least 10 samples in the rolling
 window before they activate, so the controller can't yank the ceiling
@@ -406,15 +406,15 @@ during the first few frames after startup.
 **Readmit thresholds** (all must hold, for 30 consecutive frames, with at
 least 30 samples in the rolling window):
 
-| Signal | Threshold |
-|---|---|
-| Consecutive copy frames | 0 |
-| Consecutive over-budget frames | 0 |
-| EWMA total | ≤ 80 % of full-tier budget |
-| EWMA producer | ≤ 60 % of full-tier budget |
-| EWMA composition | ≤ 20 % of full-tier budget |
-| p95 total | ≤ 85 % of full-tier budget |
-| p99 total | ≤ full-tier budget |
+| Signal                         | Threshold                  |
+| ------------------------------ | -------------------------- |
+| Consecutive copy frames        | 0                          |
+| Consecutive over-budget frames | 0                          |
+| EWMA total                     | ≤ 80 % of full-tier budget |
+| EWMA producer                  | ≤ 60 % of full-tier budget |
+| EWMA composition               | ≤ 20 % of full-tier budget |
+| p95 total                      | ≤ 85 % of full-tier budget |
+| p99 total                      | ≤ full-tier budget         |
 
 A configured ceiling below `FpsTier::Full` is preserved unchanged — the
 controller only ever tightens, never exceeds, the user's request. The
@@ -490,8 +490,7 @@ its own `SpatialEngine` clone in `RenderSceneState`, which the
 shared engine must also push a `SceneTransaction` (see `apply_layout_update`)
 or the render thread will keep running against stale layout data.
 
-**Producers never mutate published surfaces.** `PublishedSurface` (from Spec
-36) is immutable post-submit. `render_surface_pool` recycles slots through
+**Producers never mutate published surfaces.** `PublishedSurface` (from Spec 36) is immutable post-submit. `render_surface_pool` recycles slots through
 the watch channel so long as there are no extra references outstanding.
 Under retention pressure the pool grows from `DEFAULT_RENDER_SURFACE_SLOTS`
 (8) up to `MAX_RENDER_SURFACE_SLOTS` (12), biased toward
@@ -556,12 +555,13 @@ Three surfaces read from the tracker:
 **REST `GET /api/v1/status`** — includes a `latest_frame` object with frame
 token, total ms, wake late ms, frame age ms, logical layer count, render
 group count, copy stats, and a `render_surfaces` sub-object with slot state
-+ canvas receiver count. The `render_loop` object reports `target_fps`,
-`ceiling_fps` (from the admission gate), `actual_fps`, `consecutive_misses`,
-`total_frames`, `fps_tier`, and `state`. A dedicated `preview_runtime`
-sub-object exposes `canvas_receivers`, `screen_canvas_receivers`,
-`canvas_frames_published`, `screen_canvas_frames_published`, and the
-latest canvas/screen frame numbers.
+
+- canvas receiver count. The `render_loop` object reports `target_fps`,
+  `ceiling_fps` (from the admission gate), `actual_fps`, `consecutive_misses`,
+  `total_frames`, `fps_tier`, and `state`. A dedicated `preview_runtime`
+  sub-object exposes `canvas_receivers`, `screen_canvas_receivers`,
+  `canvas_frames_published`, `screen_canvas_frames_published`, and the
+  latest canvas/screen frame numbers.
 
 **WebSocket metrics (`MetricsPayload`)** — same data, richer. Top-level
 groups are `fps` (target, ceiling, actual, dropped), `frame_time`

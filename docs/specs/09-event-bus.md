@@ -2,7 +2,7 @@
 
 > The nervous system. Every signal between daemon, TUI, CLI, and web UI flows through here.
 
-*Synthesized from: [ARCHITECTURE.md](../../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance).*
+_Synthesized from: [ARCHITECTURE.md](../../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance)._
 
 ---
 
@@ -29,13 +29,13 @@ Hypercolor is a multi-process, multi-frontend architecture. One daemon renders e
 
 Three distinct communication patterns coexist:
 
-| Pattern | Channel Type | Semantics | Consumers |
-|---------|-------------|-----------|-----------|
-| **Events** | `broadcast::Sender` | Every subscriber sees every event. Ordered, fan-out. | All frontends, integrations |
-| **Frame data** | `watch::Sender` | Latest-value only. Subscribers skip stale frames. | TUI LED preview, web UI canvas |
-| **Spectrum data** | `watch::Sender` | Latest-value only. Subscribers skip stale data. | TUI spectrum widget, web UI visualizer |
-| **Active effect** | `watch::Sender` | Latest active effect info. | TUI status bar, web UI header |
-| **Current FPS** | `watch::Sender` | Latest measured FPS. | TUI/web performance display |
+| Pattern           | Channel Type        | Semantics                                            | Consumers                              |
+| ----------------- | ------------------- | ---------------------------------------------------- | -------------------------------------- |
+| **Events**        | `broadcast::Sender` | Every subscriber sees every event. Ordered, fan-out. | All frontends, integrations            |
+| **Frame data**    | `watch::Sender`     | Latest-value only. Subscribers skip stale frames.    | TUI LED preview, web UI canvas         |
+| **Spectrum data** | `watch::Sender`     | Latest-value only. Subscribers skip stale data.      | TUI spectrum widget, web UI visualizer |
+| **Active effect** | `watch::Sender`     | Latest active effect info.                           | TUI status bar, web UI header          |
+| **Current FPS**   | `watch::Sender`     | Latest measured FPS.                                 | TUI/web performance display            |
 
 Events carry discrete state transitions (device connected, effect changed, error). Watch channels carry continuous high-frequency streams where only the most recent value matters. This dual-channel design means a slow WebSocket client never causes frame backpressure on the render loop -- it simply skips to the latest frame.
 
@@ -615,17 +615,17 @@ pub enum ControlValue {
 
 Events are grouped into categories for filtering. Every event belongs to exactly one category.
 
-| Category | Events | Use Cases |
-|----------|--------|-----------|
-| `device` | `DeviceDiscovered`, `DeviceConnected`, `DeviceDisconnected`, `DeviceError`, `DeviceFirmwareInfo`, `DeviceStateChanged`, `DeviceDiscoveryStarted`, `DeviceDiscoveryCompleted` | Device manager, health monitoring |
-| `effect` | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectLayerAdded`, `EffectLayerRemoved`, `EffectError` | UI state sync, effect browser |
-| `scene` | `SceneActivated`, `SceneTransitionStarted`, `SceneTransitionComplete`, `SceneEnabled` | Automation UI, transition coordination |
-| `audio` | `AudioSourceChanged`, `BeatDetected`, `AudioLevelUpdate`, `AudioStarted`, `AudioStopped` | Audio UI, reactive effect tuning |
-| `system` | `FrameRendered`, `FpsChanged`, `ProfileLoaded`, `ProfileSaved`, `ProfileDeleted`, `ConfigChanged`, `ShutdownRequested`, `DaemonStarted`, `DaemonShutdown`, `BrightnessChanged`, `Paused`, `Resumed`, `Error` | System health, monitoring, debug view |
-| `automation` | `TriggerFired`, `ScheduleActivated`, `ContextChanged` | Scene scheduler, context engine |
-| `layout` | `LayoutChanged`, `LayoutZoneAdded`, `LayoutZoneRemoved`, `LayoutUpdated` | Spatial editor sync |
-| `input` | `CaptureStarted`, `CaptureStopped`, `InputSourceChanged` | Input status UI |
-| `integration` | `WebhookReceived` | External integration monitoring |
+| Category      | Events                                                                                                                                                                                                       | Use Cases                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| `device`      | `DeviceDiscovered`, `DeviceConnected`, `DeviceDisconnected`, `DeviceError`, `DeviceFirmwareInfo`, `DeviceStateChanged`, `DeviceDiscoveryStarted`, `DeviceDiscoveryCompleted`                                 | Device manager, health monitoring      |
+| `effect`      | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectLayerAdded`, `EffectLayerRemoved`, `EffectError`                                                                                            | UI state sync, effect browser          |
+| `scene`       | `SceneActivated`, `SceneTransitionStarted`, `SceneTransitionComplete`, `SceneEnabled`                                                                                                                        | Automation UI, transition coordination |
+| `audio`       | `AudioSourceChanged`, `BeatDetected`, `AudioLevelUpdate`, `AudioStarted`, `AudioStopped`                                                                                                                     | Audio UI, reactive effect tuning       |
+| `system`      | `FrameRendered`, `FpsChanged`, `ProfileLoaded`, `ProfileSaved`, `ProfileDeleted`, `ConfigChanged`, `ShutdownRequested`, `DaemonStarted`, `DaemonShutdown`, `BrightnessChanged`, `Paused`, `Resumed`, `Error` | System health, monitoring, debug view  |
+| `automation`  | `TriggerFired`, `ScheduleActivated`, `ContextChanged`                                                                                                                                                        | Scene scheduler, context engine        |
+| `layout`      | `LayoutChanged`, `LayoutZoneAdded`, `LayoutZoneRemoved`, `LayoutUpdated`                                                                                                                                     | Spatial editor sync                    |
+| `input`       | `CaptureStarted`, `CaptureStopped`, `InputSourceChanged`                                                                                                                                                     | Input status UI                        |
+| `integration` | `WebhookReceived`                                                                                                                                                                                            | External integration monitoring        |
 
 **Category derivation (compile-time):**
 
@@ -740,12 +740,12 @@ pub enum EventPriority {
 
 ### 2.4 Event Priority & Delivery Guarantees
 
-| Priority | Events | Delivery |
-|----------|--------|----------|
-| **Critical** | `DaemonShutdown`, `ShutdownRequested`, `Error(severity=Critical)` | Guaranteed delivery. Sent before bus teardown. Never dropped, even under backpressure. |
-| **High** | `DeviceConnected`, `DeviceDisconnected`, `DeviceError` | Delivered within 1ms of occurrence. |
-| **Normal** | `EffectStarted`, `EffectStopped`, `ProfileLoaded`, `BrightnessChanged`, `LayoutChanged`, `SceneActivated`, `ConfigChanged` | Delivered within 5ms. |
-| **Low** | `BeatDetected`, `AudioLevelUpdate`, `FrameRendered`, `DeviceDiscoveryCompleted`, `LayoutUpdated`, `WebhookReceived` | Best-effort. May be coalesced or dropped if bus is congested. |
+| Priority     | Events                                                                                                                     | Delivery                                                                               |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **Critical** | `DaemonShutdown`, `ShutdownRequested`, `Error(severity=Critical)`                                                          | Guaranteed delivery. Sent before bus teardown. Never dropped, even under backpressure. |
+| **High**     | `DeviceConnected`, `DeviceDisconnected`, `DeviceError`                                                                     | Delivered within 1ms of occurrence.                                                    |
+| **Normal**   | `EffectStarted`, `EffectStopped`, `ProfileLoaded`, `BrightnessChanged`, `LayoutChanged`, `SceneActivated`, `ConfigChanged` | Delivered within 5ms.                                                                  |
+| **Low**      | `BeatDetected`, `AudioLevelUpdate`, `FrameRendered`, `DeviceDiscoveryCompleted`, `LayoutUpdated`, `WebhookReceived`        | Best-effort. May be coalesced or dropped if bus is congested.                          |
 
 The `tokio::broadcast` channel has a buffer capacity of **256 events**. If a subscriber falls behind (e.g., a slow WebSocket client), it receives `tokio::sync::broadcast::error::RecvError::Lagged(n)` and must request a state snapshot to recover. This is by design -- we never want event delivery to block the render loop.
 
@@ -815,12 +815,12 @@ async fn event_consumer_loop(
 
 The 256-event capacity is a balance between memory usage and lag tolerance:
 
-| Capacity | Memory (approx) | Lag Runway at 30 events/sec | Notes |
-|----------|-----------------|----------------------------|-------|
-| 64 | ~32 KB | ~2 seconds | Too tight for burst scenarios |
-| 128 | ~64 KB | ~4 seconds | Marginal for slow WebSocket clients |
-| **256** | **~128 KB** | **~8 seconds** | Default. Handles bursts and moderate lag. |
-| 512 | ~256 KB | ~17 seconds | Excessive for most setups |
+| Capacity | Memory (approx) | Lag Runway at 30 events/sec | Notes                                     |
+| -------- | --------------- | --------------------------- | ----------------------------------------- |
+| 64       | ~32 KB          | ~2 seconds                  | Too tight for burst scenarios             |
+| 128      | ~64 KB          | ~4 seconds                  | Marginal for slow WebSocket clients       |
+| **256**  | **~128 KB**     | **~8 seconds**              | Default. Handles bursts and moderate lag. |
+| 512      | ~256 KB         | ~17 seconds                 | Excessive for most setups                 |
 
 If profiling reveals frequent lagging on specific deployments (e.g., high device counts generating many events), the capacity can be increased via configuration:
 
@@ -917,13 +917,13 @@ let (fps_tx, fps_rx) = watch::channel(FpsSnapshot::default());
 
 ### 4.5 Why Watch, Not Broadcast
 
-| Property | `broadcast` | `watch` |
-|----------|------------|---------|
-| Buffering | N messages (256) | 1 value (latest only) |
-| Missed messages | `Lagged(n)` error | Silently skipped |
-| Subscriber overhead | Per-subscriber buffer | Single shared value |
-| Ideal for | Discrete events (must see each one) | Continuous streams (only latest matters) |
-| Backpressure model | Slow subscriber eventually lags | Slow subscriber skips to latest |
+| Property            | `broadcast`                         | `watch`                                  |
+| ------------------- | ----------------------------------- | ---------------------------------------- |
+| Buffering           | N messages (256)                    | 1 value (latest only)                    |
+| Missed messages     | `Lagged(n)` error                   | Silently skipped                         |
+| Subscriber overhead | Per-subscriber buffer               | Single shared value                      |
+| Ideal for           | Discrete events (must see each one) | Continuous streams (only latest matters) |
+| Backpressure model  | Slow subscriber eventually lags     | Slow subscriber skips to latest          |
 
 Frame data at 60fps means 60 values/second. If the TUI renders at 30fps, it naturally skips every other frame -- exactly what `watch` provides for free. A broadcast channel would waste buffer space on frames the TUI will never read.
 
@@ -1636,12 +1636,12 @@ The TUI and CLI communicate with the daemon over a local socket. The protocol is
 
 ### 8.1 Transport Selection
 
-| Platform | Primary IPC | Path / Name | Fallback |
-|----------|------------|-------------|----------|
-| **Linux** | Unix domain socket | `/run/hypercolor/hypercolor.sock` | TCP `127.0.0.1:9421` |
-| **macOS** | Unix domain socket | `/tmp/hypercolor/hypercolor.sock` | TCP `127.0.0.1:9421` |
-| **Windows** | Named pipe | `\\.\pipe\hypercolor` | TCP `127.0.0.1:9421` |
-| **Remote** | TCP | `<host>:9421` | (no fallback) |
+| Platform    | Primary IPC        | Path / Name                       | Fallback             |
+| ----------- | ------------------ | --------------------------------- | -------------------- |
+| **Linux**   | Unix domain socket | `/run/hypercolor/hypercolor.sock` | TCP `127.0.0.1:9421` |
+| **macOS**   | Unix domain socket | `/tmp/hypercolor/hypercolor.sock` | TCP `127.0.0.1:9421` |
+| **Windows** | Named pipe         | `\\.\pipe\hypercolor`             | TCP `127.0.0.1:9421` |
+| **Remote**  | TCP                | `<host>:9421`                     | (no fallback)        |
 
 Transport selection is automatic. The client tries in order: platform-native IPC, then TCP fallback. The `--socket` and `--host` flags override auto-detection.
 
@@ -1659,6 +1659,7 @@ Every message on the IPC socket is length-prefixed:
 **Length** is the byte count of the payload, not including the 4-byte length prefix itself.
 
 **Payload type** is determined by the first byte:
+
 - `0x7B` (`{`) -- JSON-RPC message (text)
 - `0x01` -- Binary frame data
 - `0x02` -- Binary spectrum data
@@ -1675,14 +1676,14 @@ All command/response interactions use strict JSON-RPC 2.0. The IPC protocol is r
 
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "effects.apply",
-    "params": {
-        "effect_id": "aurora",
-        "controls": { "effectSpeed": 70 },
-        "transition_ms": 500
-    }
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "effects.apply",
+  "params": {
+    "effect_id": "aurora",
+    "controls": { "effectSpeed": 70 },
+    "transition_ms": 500
+  }
 }
 ```
 
@@ -1692,15 +1693,15 @@ All command/response interactions use strict JSON-RPC 2.0. The IPC protocol is r
 
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "result": {
-        "effect": {
-            "id": "aurora",
-            "name": "Aurora"
-        },
-        "applied_controls": { "effectSpeed": 70 }
-    }
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "effect": {
+      "id": "aurora",
+      "name": "Aurora"
+    },
+    "applied_controls": { "effectSpeed": 70 }
+  }
 }
 ```
 
@@ -1708,15 +1709,15 @@ All command/response interactions use strict JSON-RPC 2.0. The IPC protocol is r
 
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "error": {
-        "code": -32602,
-        "message": "Effect 'nonexistent' not found",
-        "data": {
-            "available": ["aurora", "rainbow-wave", "solid-color"]
-        }
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32602,
+    "message": "Effect 'nonexistent' not found",
+    "data": {
+      "available": ["aurora", "rainbow-wave", "solid-color"]
     }
+  }
 }
 ```
 
@@ -1724,18 +1725,18 @@ All command/response interactions use strict JSON-RPC 2.0. The IPC protocol is r
 
 ```json
 {
-    "jsonrpc": "2.0",
-    "method": "event",
-    "params": {
-        "type": "EffectStarted",
-        "timestamp": "2026-03-01T20:32:01.482Z",
-        "data": {
-            "effect": { "id": "aurora", "name": "Aurora", "engine": "servo" },
-            "trigger": "user",
-            "previous": { "id": "rainbow", "name": "Rainbow Wave", "engine": "wgpu" },
-            "transition": { "transition_type": "crossfade", "duration_ms": 500 }
-        }
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "type": "EffectStarted",
+    "timestamp": "2026-03-01T20:32:01.482Z",
+    "data": {
+      "effect": { "id": "aurora", "name": "Aurora", "engine": "servo" },
+      "trigger": "user",
+      "previous": { "id": "rainbow", "name": "Rainbow Wave", "engine": "wgpu" },
+      "transition": { "transition_type": "crossfade", "duration_ms": 500 }
     }
+  }
 }
 ```
 
@@ -1743,18 +1744,18 @@ All command/response interactions use strict JSON-RPC 2.0. The IPC protocol is r
 
 Standard JSON-RPC 2.0 error codes, plus Hypercolor-specific application errors.
 
-| Code | Meaning | When |
-|------|---------|------|
-| `-32700` | Parse error | Malformed JSON |
-| `-32600` | Invalid request | Missing required JSON-RPC fields |
-| `-32601` | Method not found | Unknown RPC method |
-| `-32602` | Invalid params | Params fail validation |
-| `-32603` | Internal error | Unexpected daemon error |
-| `-1` | Not found | Resource (effect, device, profile) does not exist |
-| `-2` | Conflict | State conflict (e.g., device already connected) |
-| `-3` | Unavailable | Daemon is starting up or shutting down |
-| `-4` | Timeout | Backend operation timed out |
-| `-5` | Subscription error | Invalid channel or filter |
+| Code     | Meaning            | When                                              |
+| -------- | ------------------ | ------------------------------------------------- |
+| `-32700` | Parse error        | Malformed JSON                                    |
+| `-32600` | Invalid request    | Missing required JSON-RPC fields                  |
+| `-32601` | Method not found   | Unknown RPC method                                |
+| `-32602` | Invalid params     | Params fail validation                            |
+| `-32603` | Internal error     | Unexpected daemon error                           |
+| `-1`     | Not found          | Resource (effect, device, profile) does not exist |
+| `-2`     | Conflict           | State conflict (e.g., device already connected)   |
+| `-3`     | Unavailable        | Daemon is starting up or shutting down            |
+| `-4`     | Timeout            | Backend operation timed out                       |
+| `-5`     | Subscription error | Invalid channel or filter                         |
 
 ### 8.5 RPC Method Catalog
 
@@ -2077,14 +2078,14 @@ CLI/TUI                                    Daemon
 
 ```json
 {
-    "jsonrpc": "2.0",
-    "method": "hello",
-    "params": {
-        "version": "1.0",
-        "daemon_version": "0.1.0",
-        "capabilities": ["events", "frames", "spectrum", "commands"],
-        "pid": 4821
-    }
+  "jsonrpc": "2.0",
+  "method": "hello",
+  "params": {
+    "version": "1.0",
+    "daemon_version": "0.1.0",
+    "capabilities": ["events", "frames", "spectrum", "commands"],
+    "pid": 4821
+  }
 }
 ```
 
@@ -2145,16 +2146,16 @@ impl IpcListener {
 
 ### 8.9 Transport Comparison
 
-| Property | Unix Socket | Named Pipe | TCP Localhost |
-|----------|------------|------------|---------------|
-| **Latency** | ~2us | ~5us | ~30us |
-| **Throughput** | Kernel-limited | Kernel-limited | ~1 Gbps |
-| **Auth** | File permissions + `SO_PEERCRED` | Security descriptors | None (localhost) or API key |
-| **Firewall** | Not affected | Not affected | May be blocked |
-| **Remote** | No | No | Yes |
-| **Cleanup** | Must remove stale socket file | Automatic | Automatic |
-| **Max connections** | ulimit (typically 1024+) | `max_instances` (configurable) | ulimit |
-| **Container-friendly** | Volume mount required | N/A | Yes |
+| Property               | Unix Socket                      | Named Pipe                     | TCP Localhost               |
+| ---------------------- | -------------------------------- | ------------------------------ | --------------------------- |
+| **Latency**            | ~2us                             | ~5us                           | ~30us                       |
+| **Throughput**         | Kernel-limited                   | Kernel-limited                 | ~1 Gbps                     |
+| **Auth**               | File permissions + `SO_PEERCRED` | Security descriptors           | None (localhost) or API key |
+| **Firewall**           | Not affected                     | Not affected                   | May be blocked              |
+| **Remote**             | No                               | No                             | Yes                         |
+| **Cleanup**            | Must remove stale socket file    | Automatic                      | Automatic                   |
+| **Max connections**    | ulimit (typically 1024+)         | `max_instances` (configurable) | ulimit                      |
+| **Container-friendly** | Volume mount required            | N/A                            | Yes                         |
 
 ---
 
@@ -2179,30 +2180,47 @@ The `hypercolor-v1` subprotocol is requested by the client to ensure version com
 
 ```json
 {
-    "type": "hello",
-    "version": "1.0",
-    "state": {
-        "running": true,
-        "paused": false,
-        "brightness": 85,
-        "fps": { "target": 60, "actual": 59.7 },
-        "effect": { "id": "aurora", "name": "Aurora", "engine": "servo" },
-        "profile": { "id": "chill", "name": "Chill Mode" },
-        "layout": { "id": "main_setup", "name": "Main Desk Setup" },
-        "devices": {
-            "connected": 5,
-            "total_leds": 842,
-            "list": [
-                { "id": "wled_strip_1", "name": "WLED Living Room", "leds": 120, "status": "connected" },
-                { "id": "prism8_case", "name": "Prism 8 Controller", "leds": 1008, "status": "connected" }
-            ]
+  "type": "hello",
+  "version": "1.0",
+  "state": {
+    "running": true,
+    "paused": false,
+    "brightness": 85,
+    "fps": { "target": 60, "actual": 59.7 },
+    "effect": { "id": "aurora", "name": "Aurora", "engine": "servo" },
+    "profile": { "id": "chill", "name": "Chill Mode" },
+    "layout": { "id": "main_setup", "name": "Main Desk Setup" },
+    "devices": {
+      "connected": 5,
+      "total_leds": 842,
+      "list": [
+        {
+          "id": "wled_strip_1",
+          "name": "WLED Living Room",
+          "leds": 120,
+          "status": "connected"
         },
-        "inputs": {
-            "audio": { "enabled": true, "source": "PipeWire" },
-            "screen": { "enabled": false }
+        {
+          "id": "prism8_case",
+          "name": "Prism 8 Controller",
+          "leds": 1008,
+          "status": "connected"
         }
+      ]
     },
-    "capabilities": ["frames", "spectrum", "canvas", "events", "commands", "metrics"]
+    "inputs": {
+      "audio": { "enabled": true, "source": "PipeWire" },
+      "screen": { "enabled": false }
+    }
+  },
+  "capabilities": [
+    "frames",
+    "spectrum",
+    "canvas",
+    "events",
+    "commands",
+    "metrics"
+  ]
 }
 ```
 
@@ -2216,19 +2234,19 @@ By default, only `events` is subscribed. The client explicitly subscribes to hig
 
 ```json
 {
-    "type": "subscribe",
-    "channels": ["frames", "spectrum"],
-    "config": {
-        "frames": {
-            "fps": 30,
-            "format": "binary",
-            "zones": "all"
-        },
-        "spectrum": {
-            "fps": 30,
-            "bins": 64
-        }
+  "type": "subscribe",
+  "channels": ["frames", "spectrum"],
+  "config": {
+    "frames": {
+      "fps": 30,
+      "format": "binary",
+      "zones": "all"
+    },
+    "spectrum": {
+      "fps": 30,
+      "bins": 64
     }
+  }
 }
 ```
 
@@ -2236,12 +2254,12 @@ By default, only `events` is subscribed. The client explicitly subscribes to hig
 
 ```json
 {
-    "type": "subscribed",
-    "channels": ["frames", "spectrum"],
-    "config": {
-        "frames": { "fps": 30, "format": "binary", "zones": "all" },
-        "spectrum": { "fps": 30, "bins": 64 }
-    }
+  "type": "subscribed",
+  "channels": ["frames", "spectrum"],
+  "config": {
+    "frames": { "fps": 30, "format": "binary", "zones": "all" },
+    "spectrum": { "fps": 30, "bins": 64 }
+  }
 }
 ```
 
@@ -2249,30 +2267,30 @@ By default, only `events` is subscribed. The client explicitly subscribes to hig
 
 ```json
 {
-    "type": "unsubscribe",
-    "channels": ["canvas"]
+  "type": "unsubscribe",
+  "channels": ["canvas"]
 }
 ```
 
 **Available channels:**
 
-| Channel | Data Type | Default FPS | Description |
-|---------|-----------|-------------|-------------|
-| `frames` | Binary (0x01) | 30 | Per-zone LED colors |
-| `spectrum` | Binary (0x02) | 30 | Audio FFT spectrum |
-| `canvas` | Binary (0x03) | 15 | Raw canvas pixels (640x480 default, configurable) |
-| `events` | JSON | N/A (push) | Discrete state change events |
-| `metrics` | JSON | 1 | Performance metrics |
+| Channel    | Data Type     | Default FPS | Description                                       |
+| ---------- | ------------- | ----------- | ------------------------------------------------- |
+| `frames`   | Binary (0x01) | 30          | Per-zone LED colors                               |
+| `spectrum` | Binary (0x02) | 30          | Audio FFT spectrum                                |
+| `canvas`   | Binary (0x03) | 15          | Raw canvas pixels (640x480 default, configurable) |
+| `events`   | JSON          | N/A (push)  | Discrete state change events                      |
+| `metrics`  | JSON          | 1           | Performance metrics                               |
 
 ### 9.3 Binary Frame Mode for LED Data
 
 Binary WebSocket messages use the same encoding as the IPC protocol (sections 5.2 and 6.2). The first byte discriminates the message type.
 
-| Type Byte | Format | Description |
-|-----------|--------|-------------|
-| `0x01` | Frame binary | LED colors for all zones (see section 5.2) |
-| `0x02` | Spectrum binary | Audio spectrum data (see section 6.2) |
-| `0x03` | Canvas binary | Raw canvas pixel data |
+| Type Byte | Format          | Description                                |
+| --------- | --------------- | ------------------------------------------ |
+| `0x01`    | Frame binary    | LED colors for all zones (see section 5.2) |
+| `0x02`    | Spectrum binary | Audio spectrum data (see section 6.2)      |
+| `0x03`    | Canvas binary   | Raw canvas pixel data                      |
 
 **Canvas message (type 0x03):**
 
@@ -2289,6 +2307,7 @@ Offset  Size    Field               Type        Notes
 ```
 
 **Canvas sizes:**
+
 - RGB (format 0): `14 + 320 * 200 * 3 = 192,014 bytes`
 - RGBA (format 1): `14 + 320 * 200 * 4 = 256,014 bytes`
 
@@ -2300,15 +2319,15 @@ All JSON messages from the server use a consistent envelope:
 
 ```json
 {
-    "type": "event",
-    "event": "EffectStarted",
-    "timestamp": "2026-03-01T12:00:00.123Z",
-    "data": {
-        "effect": { "id": "aurora", "name": "Aurora", "engine": "servo" },
-        "trigger": "user",
-        "previous": { "id": "rainbow", "name": "Rainbow Wave", "engine": "wgpu" },
-        "transition": { "transition_type": "crossfade", "duration_ms": 500 }
-    }
+  "type": "event",
+  "event": "EffectStarted",
+  "timestamp": "2026-03-01T12:00:00.123Z",
+  "data": {
+    "effect": { "id": "aurora", "name": "Aurora", "engine": "servo" },
+    "trigger": "user",
+    "previous": { "id": "rainbow", "name": "Rainbow Wave", "engine": "wgpu" },
+    "transition": { "transition_type": "crossfade", "duration_ms": 500 }
+  }
 }
 ```
 
@@ -2318,21 +2337,26 @@ The `event` field matches the `HypercolorEvent` variant name. The `data` field m
 
 ```json
 {
-    "type": "metrics",
-    "timestamp": "2026-03-01T12:00:01.000Z",
-    "data": {
-        "fps": { "target": 60, "actual": 59.7 },
-        "frame_time_ms": { "render": 12.3, "sample": 0.4, "push": 1.8, "total": 14.5 },
-        "memory_mb": 42,
-        "device_latency": {
-            "wled_strip_1": 0.8,
-            "prism8_case": 2.1
-        },
-        "event_bus": {
-            "subscribers": 3,
-            "events_per_sec": 12
-        }
+  "type": "metrics",
+  "timestamp": "2026-03-01T12:00:01.000Z",
+  "data": {
+    "fps": { "target": 60, "actual": 59.7 },
+    "frame_time_ms": {
+      "render": 12.3,
+      "sample": 0.4,
+      "push": 1.8,
+      "total": 14.5
+    },
+    "memory_mb": 42,
+    "device_latency": {
+      "wled_strip_1": 0.8,
+      "prism8_case": 2.1
+    },
+    "event_bus": {
+      "subscribers": 3,
+      "events_per_sec": 12
     }
+  }
 }
 ```
 
@@ -2344,14 +2368,14 @@ Clients can issue commands over the WebSocket instead of separate REST requests.
 
 ```json
 {
-    "type": "command",
-    "id": "cmd_001",
-    "method": "POST",
-    "path": "/effects/aurora/apply",
-    "body": {
-        "controls": { "effectSpeed": 70 },
-        "transition": { "type": "crossfade", "duration_ms": 500 }
-    }
+  "type": "command",
+  "id": "cmd_001",
+  "method": "POST",
+  "path": "/effects/aurora/apply",
+  "body": {
+    "controls": { "effectSpeed": 70 },
+    "transition": { "type": "crossfade", "duration_ms": 500 }
+  }
 }
 ```
 
@@ -2359,13 +2383,13 @@ Clients can issue commands over the WebSocket instead of separate REST requests.
 
 ```json
 {
-    "type": "response",
-    "id": "cmd_001",
-    "status": 200,
-    "data": {
-        "effect": { "id": "aurora", "name": "Aurora" },
-        "applied_controls": { "effectSpeed": 70 }
-    }
+  "type": "response",
+  "id": "cmd_001",
+  "status": 200,
+  "data": {
+    "effect": { "id": "aurora", "name": "Aurora" },
+    "applied_controls": { "effectSpeed": 70 }
+  }
 }
 ```
 
@@ -2379,9 +2403,9 @@ Additionally, the daemon sends a lightweight JSON heartbeat on the `events` chan
 
 ```json
 {
-    "type": "heartbeat",
-    "timestamp": "2026-03-01T12:01:00.000Z",
-    "uptime_seconds": 86460
+  "type": "heartbeat",
+  "timestamp": "2026-03-01T12:01:00.000Z",
+  "uptime_seconds": 86460
 }
 ```
 
@@ -2417,20 +2441,20 @@ Binary messages (frames, spectrum, canvas) are sent **uncompressed**. They're al
 
 ### 9.9 WebSocket Message Summary
 
-| Direction | Type | Format | Message `type` Field |
-|-----------|------|--------|----------------------|
-| S -> C | State snapshot | JSON text | `hello` |
-| S -> C | Discrete event | JSON text | `event` |
-| S -> C | Performance metrics | JSON text | `metrics` |
-| S -> C | Heartbeat | JSON text | `heartbeat` |
-| S -> C | LED frame data | Binary | `0x01` first byte |
-| S -> C | Spectrum data | Binary | `0x02` first byte |
-| S -> C | Canvas data | Binary | `0x03` first byte |
-| S -> C | Command response | JSON text | `response` |
-| S -> C | Subscription ack | JSON text | `subscribed` |
-| C -> S | Subscribe | JSON text | `subscribe` |
-| C -> S | Unsubscribe | JSON text | `unsubscribe` |
-| C -> S | Command (REST over WS) | JSON text | `command` |
+| Direction | Type                   | Format    | Message `type` Field |
+| --------- | ---------------------- | --------- | -------------------- |
+| S -> C    | State snapshot         | JSON text | `hello`              |
+| S -> C    | Discrete event         | JSON text | `event`              |
+| S -> C    | Performance metrics    | JSON text | `metrics`            |
+| S -> C    | Heartbeat              | JSON text | `heartbeat`          |
+| S -> C    | LED frame data         | Binary    | `0x01` first byte    |
+| S -> C    | Spectrum data          | Binary    | `0x02` first byte    |
+| S -> C    | Canvas data            | Binary    | `0x03` first byte    |
+| S -> C    | Command response       | JSON text | `response`           |
+| S -> C    | Subscription ack       | JSON text | `subscribed`         |
+| C -> S    | Subscribe              | JSON text | `subscribe`          |
+| C -> S    | Unsubscribe            | JSON text | `unsubscribe`        |
+| C -> S    | Command (REST over WS) | JSON text | `command`            |
 
 ---
 
@@ -2442,14 +2466,21 @@ All `HypercolorEvent` variants derive `Serialize` and `Deserialize` via serde. T
 
 ```json
 {
-    "type": "DeviceConnected",
-    "data": {
+  "type": "DeviceConnected",
+  "data": {
+    "device_id": "wled_strip_1",
+    "name": "WLED Living Room",
+    "backend": "wled",
+    "led_count": 120,
+    "zones": [
+      {
+        "zone_id": "zone_0",
         "device_id": "wled_strip_1",
-        "name": "WLED Living Room",
-        "backend": "wled",
-        "led_count": 120,
-        "zones": [{ "zone_id": "zone_0", "device_id": "wled_strip_1", "topology": "strip", "led_count": 120 }]
-    }
+        "topology": "strip",
+        "led_count": 120
+      }
+    ]
+  }
 }
 ```
 
@@ -2474,13 +2505,13 @@ For the event bus itself (the `tokio::broadcast` channel), events are passed as 
 
 **Serialization strategy by transport:**
 
-| Transport | Event Format | Frame/Spectrum Format |
-|-----------|-------------|----------------------|
-| In-process (bus) | Native Rust struct (zero-cost) | Native Rust struct |
-| IPC (Unix socket / named pipe) | JSON-RPC (serde_json) | Custom binary (0x01/0x02) |
-| WebSocket | JSON text frame | Binary WebSocket frame (0x01/0x02/0x03) |
-| D-Bus | D-Bus signal marshaling (zbus) | N/A (not streamed over D-Bus) |
-| MQTT | JSON | N/A (not streamed over MQTT) |
+| Transport                      | Event Format                   | Frame/Spectrum Format                   |
+| ------------------------------ | ------------------------------ | --------------------------------------- |
+| In-process (bus)               | Native Rust struct (zero-cost) | Native Rust struct                      |
+| IPC (Unix socket / named pipe) | JSON-RPC (serde_json)          | Custom binary (0x01/0x02)               |
+| WebSocket                      | JSON text frame                | Binary WebSocket frame (0x01/0x02/0x03) |
+| D-Bus                          | D-Bus signal marshaling (zbus) | N/A (not streamed over D-Bus)           |
+| MQTT                           | JSON                           | N/A (not streamed over MQTT)            |
 
 ### 10.3 Bincode for Persistent Event Log
 
@@ -2518,6 +2549,7 @@ fn read_events(reader: &mut impl std::io::Read) -> Result<Vec<TimestampedEvent>>
 ```
 
 **Bincode vs JSON size comparison for a `DeviceConnected` event:**
+
 - JSON: ~280 bytes
 - Bincode: ~85 bytes (~70% smaller)
 
@@ -2527,13 +2559,13 @@ The ring buffer retains the last 10,000 events (configurable). At ~85 bytes/even
 
 All binary messages on both IPC and WebSocket use a single-byte type discriminator at offset 0.
 
-| Type Byte | Message | Direction |
-|-----------|---------|-----------|
-| `0x01` | LED frame data (`FrameData`) | Server -> Client |
-| `0x02` | Audio spectrum data (`SpectrumData`) | Server -> Client |
-| `0x03` | Canvas pixel data | Server -> Client |
-| `0x04`-`0x0F` | Reserved for future binary streams | -- |
-| `0x7B` (`{`) | JSON-RPC / JSON message | Both |
+| Type Byte     | Message                              | Direction        |
+| ------------- | ------------------------------------ | ---------------- |
+| `0x01`        | LED frame data (`FrameData`)         | Server -> Client |
+| `0x02`        | Audio spectrum data (`SpectrumData`) | Server -> Client |
+| `0x03`        | Canvas pixel data                    | Server -> Client |
+| `0x04`-`0x0F` | Reserved for future binary streams   | --               |
+| `0x7B` (`{`)  | JSON-RPC / JSON message              | Both             |
 
 Bytes `0x10`-`0x7A` and `0x7C`-`0xFF` are reserved for future use. Any message with an unrecognized type byte should be silently ignored by the receiver.
 
@@ -2599,24 +2631,24 @@ Err(RecvError::Lagged(n)) => {
 
 Each transport applies its own rate limits to outbound streaming data:
 
-| Transport | Frame Rate Limit | Spectrum Rate Limit | Event Burst Limit |
-|-----------|-----------------|--------------------|--------------------|
-| WebSocket | Client-configurable (default 30fps) | Client-configurable (default 30fps) | 100 events/sec |
-| IPC (TUI) | Client-configurable (default 30fps) | Client-configurable (default 30fps) | No limit (local) |
-| IPC (CLI watch) | Client-configurable (default 10fps) | Client-configurable (default 10fps) | No limit (local) |
-| D-Bus signals | N/A (events only) | N/A | 50 signals/sec |
+| Transport       | Frame Rate Limit                    | Spectrum Rate Limit                 | Event Burst Limit |
+| --------------- | ----------------------------------- | ----------------------------------- | ----------------- |
+| WebSocket       | Client-configurable (default 30fps) | Client-configurable (default 30fps) | 100 events/sec    |
+| IPC (TUI)       | Client-configurable (default 30fps) | Client-configurable (default 30fps) | No limit (local)  |
+| IPC (CLI watch) | Client-configurable (default 10fps) | Client-configurable (default 10fps) | No limit (local)  |
+| D-Bus signals   | N/A (events only)                   | N/A                                 | 50 signals/sec    |
 
 When a transport's outbound queue fills, the daemon drops the oldest undelivered message for that transport. This is per-connection -- one slow WebSocket client doesn't affect others.
 
 ### 11.4 What Happens When Subscribers Can't Keep Up
 
-| Scenario | Behavior | Recovery |
-|----------|----------|----------|
-| Slow WebSocket client, frame data | Frames are dropped; client always gets the latest frame on its next read | Automatic (watch semantics) |
-| Slow WebSocket client, events | Client receives `Lagged` notification in the event stream | Client re-subscribes and gets a `hello` state snapshot |
-| TUI rendering slower than daemon | TUI skips frames transparently; LED preview shows latest data | Automatic |
-| CLI `watch` mode falls behind | Events are dropped; CLI prints warning | User adjusts filter or lowers rate |
-| D-Bus signal queue full | Oldest signals are dropped by the D-Bus daemon | Desktop consumer re-reads properties |
+| Scenario                          | Behavior                                                                 | Recovery                                               |
+| --------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------ |
+| Slow WebSocket client, frame data | Frames are dropped; client always gets the latest frame on its next read | Automatic (watch semantics)                            |
+| Slow WebSocket client, events     | Client receives `Lagged` notification in the event stream                | Client re-subscribes and gets a `hello` state snapshot |
+| TUI rendering slower than daemon  | TUI skips frames transparently; LED preview shows latest data            | Automatic                                              |
+| CLI `watch` mode falls behind     | Events are dropped; CLI prints warning                                   | User adjusts filter or lowers rate                     |
+| D-Bus signal queue full           | Oldest signals are dropped by the D-Bus daemon                           | Desktop consumer re-reads properties                   |
 
 ---
 
@@ -2749,22 +2781,22 @@ match events.recv().await {
 
 Typical bandwidth for a full-featured TUI session (1,356 LEDs, audio active):
 
-| Stream | Size/msg | Rate | Bandwidth |
-|--------|----------|------|-----------|
-| LED frames | ~2.7 KB | 30 fps | 81 KB/s |
-| Spectrum (64 bins) | 287 B | 30 fps | 8.6 KB/s |
-| Events | ~200 B | ~10/s | 2 KB/s |
-| **Total** | | | **~92 KB/s** |
+| Stream             | Size/msg | Rate   | Bandwidth    |
+| ------------------ | -------- | ------ | ------------ |
+| LED frames         | ~2.7 KB  | 30 fps | 81 KB/s      |
+| Spectrum (64 bins) | 287 B    | 30 fps | 8.6 KB/s     |
+| Events             | ~200 B   | ~10/s  | 2 KB/s       |
+| **Total**          |          |        | **~92 KB/s** |
 
 Typical bandwidth for a web UI session with spatial editor open:
 
-| Stream | Size/msg | Rate | Bandwidth |
-|--------|----------|------|-----------|
-| LED frames | ~2.7 KB | 30 fps | 81 KB/s |
-| Spectrum (64 bins) | 287 B | 30 fps | 8.6 KB/s |
-| Canvas (RGB) | 192 KB | 15 fps | 2,880 KB/s |
-| Events | ~200 B | ~10/s | 2 KB/s |
-| **Total** | | | **~2.97 MB/s** |
+| Stream             | Size/msg | Rate   | Bandwidth      |
+| ------------------ | -------- | ------ | -------------- |
+| LED frames         | ~2.7 KB  | 30 fps | 81 KB/s        |
+| Spectrum (64 bins) | 287 B    | 30 fps | 8.6 KB/s       |
+| Canvas (RGB)       | 192 KB   | 15 fps | 2,880 KB/s     |
+| Events             | ~200 B   | ~10/s  | 2 KB/s         |
+| **Total**          |          |        | **~2.97 MB/s** |
 
 Canvas is the expensive channel. Only subscribe when the spatial editor is open.
 

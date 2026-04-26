@@ -88,8 +88,8 @@ The communications payload budget is 28 bytes:
 
 Implication:
 
-- 8 LEDs * RGBW = 32 bytes -> does **not** fit in one packet
-- 8 LEDs * RGB = 24 bytes -> **does** fit in one packet
+- 8 LEDs \* RGBW = 32 bytes -> does **not** fit in one packet
+- 8 LEDs \* RGB = 24 bytes -> **does** fit in one packet
 
 This spec therefore uses **RGB banks on the internal side protocol**, with RGBW derivation optional on the keyscanner side.
 
@@ -170,13 +170,13 @@ Offset  Size  Field
 
 #### 4.2.2 Opcodes
 
-| Opcode | Name | Direction | Purpose |
-|--------|------|-----------|---------|
-| `0x01` | `CapabilitiesRequest` | Host -> Neuron | Optional binary probe |
-| `0x02` | `CapabilitiesResponse` | Neuron -> Host | Mirrors Focus capability data |
-| `0x10` | `FrameRgb176` | Host -> Neuron | Full 176-LED RGB frame |
-| `0x11` | `Ack` | Neuron -> Host | Sequence acknowledgment |
-| `0x12` | `Error` | Neuron -> Host | CRC / shape / unsupported error |
+| Opcode | Name                   | Direction      | Purpose                         |
+| ------ | ---------------------- | -------------- | ------------------------------- |
+| `0x01` | `CapabilitiesRequest`  | Host -> Neuron | Optional binary probe           |
+| `0x02` | `CapabilitiesResponse` | Neuron -> Host | Mirrors Focus capability data   |
+| `0x10` | `FrameRgb176`          | Host -> Neuron | Full 176-LED RGB frame          |
+| `0x11` | `Ack`                  | Neuron -> Host | Sequence acknowledgment         |
+| `0x12` | `Error`                | Neuron -> Host | CRC / shape / unsupported error |
 
 #### 4.2.3 `FrameRgb176` Payload
 
@@ -438,7 +438,7 @@ This avoids silently flooding the CDC port when the custom firmware is absent or
 
 Full RGB frame:
 
-- 176 LEDs * 3 bytes = 528 bytes
+- 176 LEDs \* 3 bytes = 528 bytes
 - header + CRC ~= 10 bytes
 - total ~= 538 bytes / frame
 

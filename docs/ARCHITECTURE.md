@@ -339,6 +339,7 @@ impl ServoRenderer {
 ```
 
 **Servo integration details:**
+
 - `SoftwareRenderingContext` for headless rendering (OSMesa backend, no GPU/display required)
 - `read_to_image()` returns `ImageBuffer<Rgba<u8>>` — exactly what we need
 - `evaluate_javascript()` for injecting control values and audio data
@@ -352,12 +353,27 @@ impl ServoRenderer {
 Effects declare their parameters via metadata. The system must support two formats:
 
 **HTML meta tags (LightScript compatibility):**
+
 ```html
-<meta property="speed" label="Speed" type="number" min="1" max="10" default="5" />
-<meta property="palette" label="Palette" type="combobox" values="Aurora,Rainbow,Neon" default="Aurora" />
+<meta
+  property="speed"
+  label="Speed"
+  type="number"
+  min="1"
+  max="10"
+  default="5"
+/>
+<meta
+  property="palette"
+  label="Palette"
+  type="combobox"
+  values="Aurora,Rainbow,Neon"
+  default="Aurora"
+/>
 ```
 
 **Rust-native effect definition:**
+
 ```rust
 pub struct EffectMetadata {
     pub id: String,
@@ -397,6 +413,7 @@ pub enum ControlValue {
 The Servo renderer must implement the Lightscript runtime contract. Key surface:
 
 **Window globals injected by the host:**
+
 ```
 window.<controlId> = value          // Control values
 window.update()                     // Called when controls change
@@ -405,6 +422,7 @@ window.engine.zone                  // { hue[], saturation[], lightness[] }
 ```
 
 **Standard shader uniforms (Three.js WebGL effects):**
+
 ```glsl
 uniform float iTime;               // Elapsed seconds
 uniform vec2 iResolution;          // Canvas size (320, 200)
@@ -417,6 +435,7 @@ uniform sampler2D iAudioSpectrum;  // 200-bin FFT texture
 ```
 
 **Audio data (full Lightscript audio API):**
+
 ```
 Standard:    level, bass, mid, treble, freq[200], beat, beatPulse
 Mel scale:   melBands[24], melBandsNormalized[24]
@@ -464,6 +483,7 @@ pub trait InputSource: Send + Sync {
 ```
 
 Current Cargo features:
+
 ```toml
 [features]
 default = []
@@ -501,12 +521,14 @@ boundaries.
 ### Backend Implementations
 
 **WLED** (`ddp-rs` crate):
+
 - UDP DDP packets — 480 pixels/packet, no universe management
 - E1.31/sACN fallback via `sacn` crate (170 pixels/universe)
 - mDNS auto-discovery
 - Multiple WLED devices simultaneously
 
 **PrismRGB / Nollie** (direct USB HID via `hidapi`):
+
 - Prism 8: 8 channels × 126 LEDs, GRB format, `packet_id = index + channel*6`, frame commit `0xFF`
 - Prism S: Strimer cables (ATX 120 LEDs + GPU 108/162 LEDs), RGB format, chunked buffer
 - Prism Mini: 1 channel × 128 LEDs, `0xAA` marker packets, hardware lighting config
@@ -514,6 +536,7 @@ boundaries.
 - All protocols fully reverse-engineered — see DRIVERS.md
 
 **Philips Hue** (`reqwest` + Hue API v2):
+
 - REST/SSE bridge API
 - Entertainment API for low-latency streaming
 - Bridge discovery via mDNS
@@ -581,6 +604,7 @@ impl SpatialSampler {
 ### Layout Editor
 
 The web UI provides a drag-and-drop spatial editor (Three.js / Canvas 2D):
+
 - Drag device zones onto the canvas
 - Resize, rotate, reposition
 - Preview effect output in real-time on the zone shapes
@@ -637,12 +661,14 @@ Global keyboard state for reactive effects (key press → color flash). Requires
 The primary interface. Served by the daemon itself — no separate web server.
 
 **Development:**
+
 ```mermaid
 graph LR
     Vite["Vite dev server (HMR, port 5173)"] -->|proxy| Axum["Axum daemon (port 9420)"]
 ```
 
 **Production:**
+
 ```
 Axum serves embedded SvelteKit build (via rust-embed)
 Single binary: hypercolor contains the entire web UI
@@ -651,6 +677,7 @@ Single binary: hypercolor contains the entire web UI
 **WebSocket protocol:** Binary frames at configurable rate (default: 30fps for preview, full 60fps available). Each frame contains current LED colors for all zones — the web UI renders a live preview.
 
 **Key UI components:**
+
 - Effect browser + search/filter
 - Control panel (auto-generated from effect metadata)
 - Spatial layout editor (Three.js drag-and-drop)
@@ -664,6 +691,7 @@ Single binary: hypercolor contains the entire web UI
 SSH-friendly terminal interface. Connects to the running daemon over Unix socket.
 
 **Widgets:**
+
 - Live LED strip preview (true-color half-blocks, 2 pixels per cell)
 - Current effect name + parameter sliders
 - Audio spectrum (Sparkline/BarChart)
@@ -704,52 +732,52 @@ Enables desktop integration: systemd service management, GNOME extension hooks, 
 
 ### Core
 
-| Crate | Purpose | License |
-|---|---|---|
-| `tokio` | Async runtime | MIT |
-| `wgpu` | GPU compute/render (Vulkan/OpenGL) | MIT/Apache |
-| `image` | Pixel buffer types | MIT/Apache |
-| `serde` + `toml` | Configuration serialization | MIT/Apache |
-| `tracing` | Structured logging | MIT |
-| `thiserror` | Error types | MIT/Apache |
-| `notify` | Filesystem watcher (effect hot-reload) | CC0/Artistic |
-| `rgb` | Color types | MIT |
+| Crate            | Purpose                                | License      |
+| ---------------- | -------------------------------------- | ------------ |
+| `tokio`          | Async runtime                          | MIT          |
+| `wgpu`           | GPU compute/render (Vulkan/OpenGL)     | MIT/Apache   |
+| `image`          | Pixel buffer types                     | MIT/Apache   |
+| `serde` + `toml` | Configuration serialization            | MIT/Apache   |
+| `tracing`        | Structured logging                     | MIT          |
+| `thiserror`      | Error types                            | MIT/Apache   |
+| `notify`         | Filesystem watcher (effect hot-reload) | CC0/Artistic |
+| `rgb`            | Color types                            | MIT          |
 
 ### Device Backends
 
-| Crate | Purpose | License | Feature Flag |
-|---|---|---|---|
-| `ddp-rs` | WLED DDP protocol | MIT | `wled` |
-| `sacn` | E1.31/sACN protocol | MIT/Apache | `wled-sacn` |
-| `hidapi` | USB HID (PrismRGB) | MIT | `hid` |
-| `reqwest` | HTTP (Hue, REST APIs) | MIT/Apache | `hue` |
+| Crate     | Purpose               | License    | Feature Flag |
+| --------- | --------------------- | ---------- | ------------ |
+| `ddp-rs`  | WLED DDP protocol     | MIT        | `wled`       |
+| `sacn`    | E1.31/sACN protocol   | MIT/Apache | `wled-sacn`  |
+| `hidapi`  | USB HID (PrismRGB)    | MIT        | `hid`        |
+| `reqwest` | HTTP (Hue, REST APIs) | MIT/Apache | `hue`        |
 
 ### Input Sources
 
-| Crate | Purpose | License |
-|---|---|---|
-| `cpal` | Audio capture (cross-platform) | Apache-2.0 |
-| `spectrum-analyzer` | FFT + frequency analysis | MIT/Apache |
-| `lamco-pipewire` | Screen capture (Wayland) | MIT |
-| `xcap` | Screen capture (X11 fallback) | Apache-2.0 |
+| Crate               | Purpose                        | License    |
+| ------------------- | ------------------------------ | ---------- |
+| `cpal`              | Audio capture (cross-platform) | Apache-2.0 |
+| `spectrum-analyzer` | FFT + frequency analysis       | MIT/Apache |
+| `lamco-pipewire`    | Screen capture (Wayland)       | MIT        |
+| `xcap`              | Screen capture (X11 fallback)  | Apache-2.0 |
 
 ### Frontends
 
-| Crate | Purpose | License |
-|---|---|---|
-| `axum` + `tower-http` | Web server + WebSocket | MIT |
-| `axum-embed` / `rust-embed` | Embed SvelteKit in binary | MIT |
-| `ratatui` | TUI rendering | MIT |
-| `tachyonfx` | TUI visual effects | MIT |
-| `clap` | CLI argument parsing | MIT/Apache |
-| `zbus` | D-Bus IPC | MIT |
+| Crate                       | Purpose                   | License    |
+| --------------------------- | ------------------------- | ---------- |
+| `axum` + `tower-http`       | Web server + WebSocket    | MIT        |
+| `axum-embed` / `rust-embed` | Embed SvelteKit in binary | MIT        |
+| `ratatui`                   | TUI rendering             | MIT        |
+| `tachyonfx`                 | TUI visual effects        | MIT        |
+| `clap`                      | CLI argument parsing      | MIT/Apache |
+| `zbus`                      | D-Bus IPC                 | MIT        |
 
 ### Servo (Effect Engine)
 
-| Crate | Purpose | License |
-|---|---|---|
-| `servo` | HTML/Canvas/WebGL renderer | MPL-2.0 |
-| `surfman` | GPU surface management | MIT/Apache/MPL |
+| Crate     | Purpose                    | License        |
+| --------- | -------------------------- | -------------- |
+| `servo`   | HTML/Canvas/WebGL renderer | MPL-2.0        |
+| `surfman` | GPU surface management     | MIT/Apache/MPL |
 
 Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a matching `rust-toolchain`. MPL-2.0 is file-level copyleft — our code stays MIT/Apache, only modified Servo files carry MPL.
 
@@ -758,6 +786,7 @@ Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a match
 ## Phased Roadmap
 
 ### Phase 0: Foundation
+
 - Cargo workspace scaffold
 - `hypercolor-core` with effect engine trait, device backend trait, event bus
 - wgpu renderer: load WGSL shader → render the configured canvas → read pixels
@@ -767,12 +796,14 @@ Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a match
 - **Ship target:** A single wgpu shader lighting a WLED strip
 
 ### Phase 1: Hardware Expansion
+
 - USB HID backend: PrismRGB Prism 8, Prism S, Prism Mini, Nollie 8
 - Multi-device support with zone-per-device mapping
 - Audio input source (cpal + FFT)
 - Configuration file (TOML profiles)
 
 ### Phase 2: Web Compatibility
+
 - Servo integration: headless HTML/Canvas rendering
 - Lightscript API shim (inject controls + audio into window globals)
 - Parse `<meta>` tags for effect metadata/controls
@@ -780,6 +811,7 @@ Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a match
 - Web UI: Axum + embedded SvelteKit with effect browser + live preview
 
 ### Phase 3: Full Frontend Suite
+
 - Spatial layout editor (Three.js drag-and-drop in web UI)
 - TUI (Ratatui) with LED preview and effect switching
 - Screen capture input source
@@ -788,6 +820,7 @@ Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a match
 - Philips Hue backend
 
 ### Phase 4: Ecosystem
+
 - Wasm plugin runtime (Wasmtime + WIT) for community device backends
 - Effect development server with hot-reload
 - Effect marketplace / repository
@@ -798,16 +831,16 @@ Servo publishes versioned releases to crates.io (LTS `0.1.0`+). Requires a match
 
 ## Key Decisions & Rationale
 
-| Decision | Choice | Why |
-|---|---|---|
-| **Language** | Rust | Performance (60fps render loop), safety (USB HID), ecosystem (wgpu, Servo, Ratatui) |
-| **Effect renderer** | wgpu + Servo dual path | Native performance for new effects + compatibility with 230 existing HTML effects |
-| **Web UI framework** | SvelteKit (not Leptos/Dioxus) | Rich Canvas/WebGL ecosystem needed for spatial editor; effects are literally HTML — they render natively in a browser UI |
-| **Web server** | Axum | tokio-native, first-class WebSocket, serves embedded SPA |
-| **Plugin system** | Compile-time traits → Wasm later | Ship fast with zero overhead; add runtime extensibility when community demands it |
-| **TUI** | Ratatui | Established in the ecosystem (git-iris, unifi-cli), true-color LED preview |
-| **Audio** | cpal + spectrum-analyzer | Cross-platform capture, efficient FFT |
-| **IPC** | tokio broadcast/watch channels | Multi-consumer events + latest-value state — perfect for real-time LED data |
-| **Config format** | TOML | Rust ecosystem standard, human-readable |
-| **Canvas resolution** | 640×480 default, configurable | Historical LightScript SDK grid is 320×200; engine defaults to 640×480 for smoother gradients on large layouts. Readback cost is still negligible (≤1.2 MB/frame). |
-| **License** | MIT/Apache-2.0 (dual) | Maximum openness, GPL-2.0 components isolated behind process boundaries |
+| Decision              | Choice                           | Why                                                                                                                                                                |
+| --------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Language**          | Rust                             | Performance (60fps render loop), safety (USB HID), ecosystem (wgpu, Servo, Ratatui)                                                                                |
+| **Effect renderer**   | wgpu + Servo dual path           | Native performance for new effects + compatibility with 230 existing HTML effects                                                                                  |
+| **Web UI framework**  | SvelteKit (not Leptos/Dioxus)    | Rich Canvas/WebGL ecosystem needed for spatial editor; effects are literally HTML — they render natively in a browser UI                                           |
+| **Web server**        | Axum                             | tokio-native, first-class WebSocket, serves embedded SPA                                                                                                           |
+| **Plugin system**     | Compile-time traits → Wasm later | Ship fast with zero overhead; add runtime extensibility when community demands it                                                                                  |
+| **TUI**               | Ratatui                          | Established in the ecosystem (git-iris, unifi-cli), true-color LED preview                                                                                         |
+| **Audio**             | cpal + spectrum-analyzer         | Cross-platform capture, efficient FFT                                                                                                                              |
+| **IPC**               | tokio broadcast/watch channels   | Multi-consumer events + latest-value state — perfect for real-time LED data                                                                                        |
+| **Config format**     | TOML                             | Rust ecosystem standard, human-readable                                                                                                                            |
+| **Canvas resolution** | 640×480 default, configurable    | Historical LightScript SDK grid is 320×200; engine defaults to 640×480 for smoother gradients on large layouts. Readback cost is still negligible (≤1.2 MB/frame). |
+| **License**           | MIT/Apache-2.0 (dual)            | Maximum openness, GPL-2.0 components isolated behind process boundaries                                                                                            |

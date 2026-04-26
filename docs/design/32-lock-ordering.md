@@ -7,62 +7,62 @@ a canonical acquisition order to prevent deadlocks, and flags code that violates
 
 ### AppState Locks (Daemon)
 
-| # | Field | Type | Guards | File |
-|---|-------|------|--------|------|
-| 1 | `render_loop` | `tokio::RwLock` | Frame timing, FPS tier, start/stop | `api/mod.rs:109` |
-| 2 | `scene_manager` | `tokio::RwLock` | Scene stack, transitions, render groups | `api/mod.rs:100` |
-| 3 | `effect_engine` | `tokio::Mutex` | Active renderer, controls, scene generation | `api/mod.rs:97` |
-| 4 | `effect_registry` | `tokio::RwLock` | Effect catalog, metadata, rescan | `api/mod.rs:92` |
-| 5 | `input_manager` | `tokio::Mutex` | Audio/screen/interaction capture lifecycle | `api/mod.rs:133` |
-| 6 | `spatial_engine` | `tokio::RwLock` | Active layout, zone positions, sampling | `api/mod.rs:112` |
-| 7 | `backend_manager` | `tokio::Mutex` | Device backends, routing, frame writes | `api/mod.rs:115` |
-| 8 | `lifecycle_manager` | `tokio::Mutex` | Device state machine, connect/disconnect | `api/mod.rs:124` |
-| 9 | `performance` | `tokio::RwLock` | Rolling frame metrics snapshot | `api/mod.rs:121` |
-| 10 | `profiles` | `tokio::RwLock` | Saved lighting profile store | `api/mod.rs:139` |
-| 11 | `layouts` | `tokio::RwLock` | Persisted spatial layout store | `api/mod.rs:160` |
-| 12 | `layout_auto_exclusions` | `tokio::RwLock` | Per-layout discovery exclusion sets | `api/mod.rs:166` |
-| 13 | `logical_devices` | `tokio::RwLock` | Physical-to-logical device segments | `api/mod.rs:172` |
-| 14 | `effect_layout_links` | `tokio::RwLock` | Effect-to-layout associations | `api/mod.rs:178` |
-| 15 | `attachment_registry` | `tokio::RwLock` | Attachment templates (built-in + user) | `api/mod.rs:142` |
-| 16 | `attachment_profiles` | `tokio::RwLock` | Per-device attachment profile store | `api/mod.rs:145` |
-| 17 | `device_settings` | `tokio::RwLock` | Per-device user settings, global brightness | `api/mod.rs:148` |
-| 18 | `playlist_runtime` | `tokio::Mutex` | Active playlist worker state | `api/mod.rs:196` |
-| 19 | `reconnect_tasks` | `std::Mutex` | Active reconnect JoinHandle map | `api/mod.rs:127` |
-| 20 | `scene_transactions` | `std::Mutex` (inner) | Frame-boundary layout/resize queue | `scene_transactions.rs:18` |
-| 21 | `security_state.rate_limiter` | `tokio::Mutex` | API rate-limiting window | `api/security.rs:38` |
+| #   | Field                         | Type                 | Guards                                      | File                       |
+| --- | ----------------------------- | -------------------- | ------------------------------------------- | -------------------------- |
+| 1   | `render_loop`                 | `tokio::RwLock`      | Frame timing, FPS tier, start/stop          | `api/mod.rs:109`           |
+| 2   | `scene_manager`               | `tokio::RwLock`      | Scene stack, transitions, render groups     | `api/mod.rs:100`           |
+| 3   | `effect_engine`               | `tokio::Mutex`       | Active renderer, controls, scene generation | `api/mod.rs:97`            |
+| 4   | `effect_registry`             | `tokio::RwLock`      | Effect catalog, metadata, rescan            | `api/mod.rs:92`            |
+| 5   | `input_manager`               | `tokio::Mutex`       | Audio/screen/interaction capture lifecycle  | `api/mod.rs:133`           |
+| 6   | `spatial_engine`              | `tokio::RwLock`      | Active layout, zone positions, sampling     | `api/mod.rs:112`           |
+| 7   | `backend_manager`             | `tokio::Mutex`       | Device backends, routing, frame writes      | `api/mod.rs:115`           |
+| 8   | `lifecycle_manager`           | `tokio::Mutex`       | Device state machine, connect/disconnect    | `api/mod.rs:124`           |
+| 9   | `performance`                 | `tokio::RwLock`      | Rolling frame metrics snapshot              | `api/mod.rs:121`           |
+| 10  | `profiles`                    | `tokio::RwLock`      | Saved lighting profile store                | `api/mod.rs:139`           |
+| 11  | `layouts`                     | `tokio::RwLock`      | Persisted spatial layout store              | `api/mod.rs:160`           |
+| 12  | `layout_auto_exclusions`      | `tokio::RwLock`      | Per-layout discovery exclusion sets         | `api/mod.rs:166`           |
+| 13  | `logical_devices`             | `tokio::RwLock`      | Physical-to-logical device segments         | `api/mod.rs:172`           |
+| 14  | `effect_layout_links`         | `tokio::RwLock`      | Effect-to-layout associations               | `api/mod.rs:178`           |
+| 15  | `attachment_registry`         | `tokio::RwLock`      | Attachment templates (built-in + user)      | `api/mod.rs:142`           |
+| 16  | `attachment_profiles`         | `tokio::RwLock`      | Per-device attachment profile store         | `api/mod.rs:145`           |
+| 17  | `device_settings`             | `tokio::RwLock`      | Per-device user settings, global brightness | `api/mod.rs:148`           |
+| 18  | `playlist_runtime`            | `tokio::Mutex`       | Active playlist worker state                | `api/mod.rs:196`           |
+| 19  | `reconnect_tasks`             | `std::Mutex`         | Active reconnect JoinHandle map             | `api/mod.rs:127`           |
+| 20  | `scene_transactions`          | `std::Mutex` (inner) | Frame-boundary layout/resize queue          | `scene_transactions.rs:18` |
+| 21  | `security_state.rate_limiter` | `tokio::Mutex`       | API rate-limiting window                    | `api/security.rs:38`       |
 
 ### Core Crate Internal Locks
 
-| Field | Type | Guards | File |
-|-------|------|--------|------|
-| `DeviceRegistry::inner` | `tokio::RwLock` | Device map, fingerprint index | `device/registry.rs:49` |
-| `CredentialStore::cache` | `tokio::RwLock` | Cached network credentials | `device/net/credentials.rs:66` |
-| `BackendManager` per-backend | `tokio::Mutex` | Individual `dyn DeviceBackend` handle | `device/manager.rs:30` |
-| `UsbBackend::last_async_error` | `std::Mutex` | Latest async write error string | `device/usb_backend.rs:76` |
-| `UsbBackend::prism_s` | `tokio::RwLock` | PrismS device config cache | `device/usb_backend.rs:214` |
-| `AudioCaptureManager::analyzer` | `std::Mutex` | Audio FFT/beat analyzer state | `input/audio/mod.rs:265` |
-| `EvdevInputSource::shared` | `std::Mutex` | Keyboard/evdev latest snapshot | `input/evdev.rs:42` |
-| `InteractionInputSource::shared` | `std::Mutex` | Mouse/interaction latest snapshot | `input/interaction/mod.rs:31` |
-| `WaylandScreenCapture::latest_snapshot` | `std::Mutex` | Latest screen capture frame | `input/screen/wayland.rs:34` |
-| `ServoDelegate::last_url` | `std::Mutex` | Servo navigation URL | `effect/servo/delegate.rs:37` |
-| `ServoDelegate::console_messages` | `std::Mutex` | Servo console message ring | `effect/servo/delegate.rs:38` |
-| `SERVO_WORKER` | `std::Mutex` (static) | Shared Servo worker thread lifecycle | `effect/servo/worker.rs:51` |
-| `ServoWorkerClient::state` | `std::Mutex` | Client-side Servo render state | `effect/servo/worker_client.rs:109` |
-| `CircuitBreaker::next_retry` | `std::Mutex` | Servo crash retry timestamp | `effect/servo/circuit_breaker.rs:60` |
-| `DATA_DIR_OVERRIDE` | `std::RwLock` (static) | Test-only config path override | `config/paths.rs:12` |
-| `CONFIG_DIR_OVERRIDE` | `std::RwLock` (static) | Test-only config path override | `config/paths.rs:13` |
+| Field                                   | Type                   | Guards                                | File                                 |
+| --------------------------------------- | ---------------------- | ------------------------------------- | ------------------------------------ |
+| `DeviceRegistry::inner`                 | `tokio::RwLock`        | Device map, fingerprint index         | `device/registry.rs:49`              |
+| `CredentialStore::cache`                | `tokio::RwLock`        | Cached network credentials            | `device/net/credentials.rs:66`       |
+| `BackendManager` per-backend            | `tokio::Mutex`         | Individual `dyn DeviceBackend` handle | `device/manager.rs:30`               |
+| `UsbBackend::last_async_error`          | `std::Mutex`           | Latest async write error string       | `device/usb_backend.rs:76`           |
+| `UsbBackend::prism_s`                   | `tokio::RwLock`        | PrismS device config cache            | `device/usb_backend.rs:214`          |
+| `AudioCaptureManager::analyzer`         | `std::Mutex`           | Audio FFT/beat analyzer state         | `input/audio/mod.rs:265`             |
+| `EvdevInputSource::shared`              | `std::Mutex`           | Keyboard/evdev latest snapshot        | `input/evdev.rs:42`                  |
+| `InteractionInputSource::shared`        | `std::Mutex`           | Mouse/interaction latest snapshot     | `input/interaction/mod.rs:31`        |
+| `WaylandScreenCapture::latest_snapshot` | `std::Mutex`           | Latest screen capture frame           | `input/screen/wayland.rs:34`         |
+| `ServoDelegate::last_url`               | `std::Mutex`           | Servo navigation URL                  | `effect/servo/delegate.rs:37`        |
+| `ServoDelegate::console_messages`       | `std::Mutex`           | Servo console message ring            | `effect/servo/delegate.rs:38`        |
+| `SERVO_WORKER`                          | `std::Mutex` (static)  | Shared Servo worker thread lifecycle  | `effect/servo/worker.rs:51`          |
+| `ServoWorkerClient::state`              | `std::Mutex`           | Client-side Servo render state        | `effect/servo/worker_client.rs:109`  |
+| `CircuitBreaker::next_retry`            | `std::Mutex`           | Servo crash retry timestamp           | `effect/servo/circuit_breaker.rs:60` |
+| `DATA_DIR_OVERRIDE`                     | `std::RwLock` (static) | Test-only config path override        | `config/paths.rs:12`                 |
+| `CONFIG_DIR_OVERRIDE`                   | `std::RwLock` (static) | Test-only config path override        | `config/paths.rs:13`                 |
 
 ### Daemon-Only Internal Locks
 
-| Field | Type | Guards | File |
-|-------|------|--------|------|
-| `WS_CANVAS_BINARY_CACHE` | `std::Mutex` (sharded) | Per-shard binary canvas encode cache | `api/ws/cache.rs:44` |
-| `WS_FRAME_PAYLOAD_CACHE` | `std::Mutex` (sharded) | Per-shard frame JSON payload cache | `api/ws/cache.rs:55` |
-| `WS_SPECTRUM_PAYLOAD_CACHE` | `std::Mutex` (sharded) | Per-shard spectrum binary cache | `api/ws/cache.rs:66` |
-| `WS_PREVIEW_SCALE_LUT_CACHE` | `std::Mutex` (static) | Preview brightness lookup table | `api/ws/cache.rs:76` |
-| `WS_COMMAND_ROUTER_CACHE` | `std::Mutex` (static) | Cached WS command dispatch router | `api/ws/cache.rs:82` |
-| `JsonLibraryStore::data` | `tokio::RwLock` | Persisted favorites/presets/playlists | `library.rs:196` |
-| `IncrementalDiscoveryState` | `tokio::Mutex` | Discovery scan incremental merge state | `discovery/scan.rs:401` |
+| Field                        | Type                   | Guards                                 | File                    |
+| ---------------------------- | ---------------------- | -------------------------------------- | ----------------------- |
+| `WS_CANVAS_BINARY_CACHE`     | `std::Mutex` (sharded) | Per-shard binary canvas encode cache   | `api/ws/cache.rs:44`    |
+| `WS_FRAME_PAYLOAD_CACHE`     | `std::Mutex` (sharded) | Per-shard frame JSON payload cache     | `api/ws/cache.rs:55`    |
+| `WS_SPECTRUM_PAYLOAD_CACHE`  | `std::Mutex` (sharded) | Per-shard spectrum binary cache        | `api/ws/cache.rs:66`    |
+| `WS_PREVIEW_SCALE_LUT_CACHE` | `std::Mutex` (static)  | Preview brightness lookup table        | `api/ws/cache.rs:76`    |
+| `WS_COMMAND_ROUTER_CACHE`    | `std::Mutex` (static)  | Cached WS command dispatch router      | `api/ws/cache.rs:82`    |
+| `JsonLibraryStore::data`     | `tokio::RwLock`        | Persisted favorites/presets/playlists  | `library.rs:196`        |
+| `IncrementalDiscoveryState`  | `tokio::Mutex`         | Discovery scan incremental merge state | `discovery/scan.rs:401` |
 
 ## Acquisition Order
 

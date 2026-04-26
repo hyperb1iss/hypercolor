@@ -120,34 +120,34 @@ pub struct AudioData {
 
 ### Field Correspondence to Lightscript API
 
-| Rust Field | Lightscript JS Path | JS Type | Notes |
-|---|---|---|---|
-| `level` | `engine.audio.level` | `number` | 0.0-1.0 |
-| `density` | `engine.audio.density` | `number` | 0.0-1.0, spectral flatness |
-| `width` | `engine.audio.width` | `number` | 0.0-1.0, stereo correlation |
-| `freq` | `engine.audio.freq` | `Int8Array(200)` | Scaled to -128..127 for compat |
-| `bass` | `engine.audio.bass` | `number` | Hypercolor extension |
-| `mid` | `engine.audio.mid` | `number` | Hypercolor extension |
-| `treble` | `engine.audio.treble` | `number` | Hypercolor extension |
-| `mel_bands` | `engine.audio.melBands` | `Float32Array(24)` | Raw energy |
-| `mel_bands_normalized` | `engine.audio.melBandsNormalized` | `Float32Array(24)` | Auto-scaled 0-1 |
-| `chromagram` | `engine.audio.chromagram` | `Float32Array(12)` | Pitch class energy |
-| `spectral_centroid` | `engine.audio.spectralCentroid` | `number` | 0.0-1.0 |
-| `spectral_spread` | `engine.audio.spectralSpread` | `number` | 0.0-1.0 |
-| `spectral_rolloff` | `engine.audio.spectralRolloff` | `number` | 0.0-1.0 |
-| `spectral_flux` | `engine.audio.spectralFlux` | `number` | 0.0-1.0 |
-| `is_on_beat` | `engine.audio.isOnBeat` | `boolean` | True on onset frame |
-| `beat_phase` | `engine.audio.beatPhase` | `number` | 0.0-1.0 continuous ramp |
-| `beat_confidence` | `engine.audio.beatConfidence` | `number` | 0.0-1.0 |
-| `beat_anticipation` | `engine.audio.beatAnticipation` | `number` | 0.0-1.0 |
-| `dominant_pitch_class` | `engine.audio.dominantPitchClass` | `number` | 0-11 integer |
-| `is_major` | `engine.audio.isMajor` | `boolean` | Chord quality |
-| `minor_major_ratio` | `engine.audio.minorMajorRatio` | `number` | -1.0 to +1.0 |
-| `beat_pulse` | `engine.audio.beatPulse` | `number` | Envelope 0-1 |
-| `onset_pulse` | `engine.audio.onsetPulse` | `number` | Envelope 0-1 |
-| `tempo` | `engine.audio.tempo` | `number` | BPM (60-180) |
-| `spectral_flux_bands` | `engine.audio.spectralFluxBands` | `Float32Array(3)` | [bass, mid, treble] |
-| `harmonic_hue` | `engine.audio.harmonicHue` | `number` | 0.0-1.0 hue |
+| Rust Field             | Lightscript JS Path               | JS Type            | Notes                          |
+| ---------------------- | --------------------------------- | ------------------ | ------------------------------ |
+| `level`                | `engine.audio.level`              | `number`           | 0.0-1.0                        |
+| `density`              | `engine.audio.density`            | `number`           | 0.0-1.0, spectral flatness     |
+| `width`                | `engine.audio.width`              | `number`           | 0.0-1.0, stereo correlation    |
+| `freq`                 | `engine.audio.freq`               | `Int8Array(200)`   | Scaled to -128..127 for compat |
+| `bass`                 | `engine.audio.bass`               | `number`           | Hypercolor extension           |
+| `mid`                  | `engine.audio.mid`                | `number`           | Hypercolor extension           |
+| `treble`               | `engine.audio.treble`             | `number`           | Hypercolor extension           |
+| `mel_bands`            | `engine.audio.melBands`           | `Float32Array(24)` | Raw energy                     |
+| `mel_bands_normalized` | `engine.audio.melBandsNormalized` | `Float32Array(24)` | Auto-scaled 0-1                |
+| `chromagram`           | `engine.audio.chromagram`         | `Float32Array(12)` | Pitch class energy             |
+| `spectral_centroid`    | `engine.audio.spectralCentroid`   | `number`           | 0.0-1.0                        |
+| `spectral_spread`      | `engine.audio.spectralSpread`     | `number`           | 0.0-1.0                        |
+| `spectral_rolloff`     | `engine.audio.spectralRolloff`    | `number`           | 0.0-1.0                        |
+| `spectral_flux`        | `engine.audio.spectralFlux`       | `number`           | 0.0-1.0                        |
+| `is_on_beat`           | `engine.audio.isOnBeat`           | `boolean`          | True on onset frame            |
+| `beat_phase`           | `engine.audio.beatPhase`          | `number`           | 0.0-1.0 continuous ramp        |
+| `beat_confidence`      | `engine.audio.beatConfidence`     | `number`           | 0.0-1.0                        |
+| `beat_anticipation`    | `engine.audio.beatAnticipation`   | `number`           | 0.0-1.0                        |
+| `dominant_pitch_class` | `engine.audio.dominantPitchClass` | `number`           | 0-11 integer                   |
+| `is_major`             | `engine.audio.isMajor`            | `boolean`          | Chord quality                  |
+| `minor_major_ratio`    | `engine.audio.minorMajorRatio`    | `number`           | -1.0 to +1.0                   |
+| `beat_pulse`           | `engine.audio.beatPulse`          | `number`           | Envelope 0-1                   |
+| `onset_pulse`          | `engine.audio.onsetPulse`         | `number`           | Envelope 0-1                   |
+| `tempo`                | `engine.audio.tempo`              | `number`           | BPM (60-180)                   |
+| `spectral_flux_bands`  | `engine.audio.spectralFluxBands`  | `Float32Array(3)`  | [bass, mid, treble]            |
+| `harmonic_hue`         | `engine.audio.harmonicHue`        | `number`           | 0.0-1.0 hue                    |
 
 ### Default Values (Silence)
 
@@ -194,16 +194,16 @@ impl Default for AudioData {
 
 ### Parameters
 
-| Parameter | Value | Rationale |
-|---|---|---|
-| Sample rate | 48000 Hz | PipeWire default. WASAPI common default. Matched to system. |
-| Primary FFT size | 1024 samples | 46.88 Hz resolution, 21.3ms window. Balances latency vs. bass resolution. |
-| Secondary FFT size | 4096 samples | 11.72 Hz resolution, 85.3ms window. Used for chromagram/pitch at 15 Hz. |
-| Window function | Hann | 4-bin main lobe, -31 dB side lobes. Industry standard for audio visualization. |
-| Hop size | 256 samples (5.3ms) | 75% overlap. Fresh spectrum every 5.3ms without sacrificing frequency resolution. |
-| Magnitude scaling | 20 * log10(\|z\| + 1e-10) | dB scale, floored at -100 dB. |
-| Normalization range | -80 dB (silence) to 0 dB (max) | Maps to 0.0-1.0 output range. |
-| FFT crate | `realfft` | Real-to-complex (r2c) in-place transform. ~15 us for 1024-point. |
+| Parameter           | Value                          | Rationale                                                                         |
+| ------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
+| Sample rate         | 48000 Hz                       | PipeWire default. WASAPI common default. Matched to system.                       |
+| Primary FFT size    | 1024 samples                   | 46.88 Hz resolution, 21.3ms window. Balances latency vs. bass resolution.         |
+| Secondary FFT size  | 4096 samples                   | 11.72 Hz resolution, 85.3ms window. Used for chromagram/pitch at 15 Hz.           |
+| Window function     | Hann                           | 4-bin main lobe, -31 dB side lobes. Industry standard for audio visualization.    |
+| Hop size            | 256 samples (5.3ms)            | 75% overlap. Fresh spectrum every 5.3ms without sacrificing frequency resolution. |
+| Magnitude scaling   | 20 \* log10(\|z\| + 1e-10)     | dB scale, floored at -100 dB.                                                     |
+| Normalization range | -80 dB (silence) to 0 dB (max) | Maps to 0.0-1.0 output range.                                                     |
+| FFT crate           | `realfft`                      | Real-to-complex (r2c) in-place transform. ~15 us for 1024-point.                  |
 
 ### Hann Window
 
@@ -293,17 +293,17 @@ fn map_to_200_bins(fft_magnitudes: &[f32; 512], sample_rate: u32) -> [f32; 200] 
 
 Bin boundaries at 48 kHz sample rate (nyquist = 24000 Hz):
 
-| Output Bin Range | Frequency Range | Musical Region | FFT Bins Covered | Bins/Output |
-|---|---|---|---|---|
-| 0-9 | 20-46 Hz | Sub-bass (lowest octave) | 0-1 | ~1 each (interpolated) |
-| 10-19 | 46-107 Hz | Sub-bass / kick fundamental | 1-2 | ~1 each |
-| 20-34 | 107-303 Hz | Bass guitar, low synths | 2-6 | 1-2 each |
-| 35-54 | 303-858 Hz | Guitar body, vocal fundamental | 6-18 | 1-3 each |
-| 55-79 | 858-2.9 kHz | Vocal presence, snare attack | 18-62 | 2-4 each |
-| 80-109 | 2.9-8.5 kHz | Presence, cymbal body | 62-181 | 3-5 each |
-| 110-139 | 8.5-14.5 kHz | Brilliance, shimmer | 181-309 | 4-5 each |
-| 140-169 | 14.5-18.3 kHz | Air, sibilance | 309-390 | 3-4 each |
-| 170-199 | 18.3-20 kHz | Ultra-high (near inaudible) | 390-426 | 1-2 each |
+| Output Bin Range | Frequency Range | Musical Region                 | FFT Bins Covered | Bins/Output            |
+| ---------------- | --------------- | ------------------------------ | ---------------- | ---------------------- |
+| 0-9              | 20-46 Hz        | Sub-bass (lowest octave)       | 0-1              | ~1 each (interpolated) |
+| 10-19            | 46-107 Hz       | Sub-bass / kick fundamental    | 1-2              | ~1 each                |
+| 20-34            | 107-303 Hz      | Bass guitar, low synths        | 2-6              | 1-2 each               |
+| 35-54            | 303-858 Hz      | Guitar body, vocal fundamental | 6-18             | 1-3 each               |
+| 55-79            | 858-2.9 kHz     | Vocal presence, snare attack   | 18-62            | 2-4 each               |
+| 80-109           | 2.9-8.5 kHz     | Presence, cymbal body          | 62-181           | 3-5 each               |
+| 110-139          | 8.5-14.5 kHz    | Brilliance, shimmer            | 181-309          | 4-5 each               |
+| 140-169          | 14.5-18.3 kHz   | Air, sibilance                 | 309-390          | 3-4 each               |
+| 170-199          | 18.3-20 kHz     | Ultra-high (near inaudible)    | 390-426          | 1-2 each               |
 
 **Key observation:** Low-frequency output bins map to very few FFT bins (sometimes < 1). This means sub-bass resolution is limited by the 1024-point FFT's 46.88 Hz spacing. The secondary 4096-point FFT (11.72 Hz resolution) is used for pitch detection precisely because of this limitation.
 
@@ -311,11 +311,11 @@ Bin boundaries at 48 kHz sample rate (nyquist = 24000 Hz):
 
 Three summary bands computed from the 200-bin output:
 
-| Band | Bin Range | Frequency Range | Computation |
-|---|---|---|---|
-| Bass | 0-39 | 20-250 Hz | RMS of bins 0..=39 |
-| Mid | 40-129 | 250-4000 Hz | RMS of bins 40..=129 |
-| Treble | 130-199 | 4000-20000 Hz | RMS of bins 130..=199 |
+| Band   | Bin Range | Frequency Range | Computation           |
+| ------ | --------- | --------------- | --------------------- |
+| Bass   | 0-39      | 20-250 Hz       | RMS of bins 0..=39    |
+| Mid    | 40-129    | 250-4000 Hz     | RMS of bins 40..=129  |
+| Treble | 130-199   | 4000-20000 Hz   | RMS of bins 130..=199 |
 
 ```rust
 fn band_energy(bins: &[f32; 200], lo: usize, hi: usize) -> f32 {
@@ -412,32 +412,32 @@ impl MelFilterbank {
 
 Computed for FFT size 1024, sample rate 48000 Hz:
 
-| Band | Center Freq (Hz) | Bandwidth (Hz) | Low Edge (Hz) | High Edge (Hz) | Musical Region |
-|---|---|---|---|---|---|
-| 0 | 47 | 30 | 20 | 73 | Sub-bass fundamental |
-| 1 | 73 | 35 | 47 | 104 | Kick drum fundamental |
-| 2 | 104 | 42 | 73 | 141 | Bass guitar low |
-| 3 | 141 | 50 | 104 | 187 | Bass guitar high |
-| 4 | 187 | 60 | 141 | 243 | Low vocals |
-| 5 | 243 | 72 | 187 | 313 | Vocal fundamental |
-| 6 | 313 | 86 | 243 | 399 | Guitar body |
-| 7 | 399 | 103 | 313 | 507 | Snare body |
-| 8 | 507 | 123 | 399 | 641 | Low-mid |
-| 9 | 641 | 148 | 507 | 808 | Mid |
-| 10 | 808 | 177 | 641 | 1016 | Vocal presence |
-| 11 | 1016 | 213 | 808 | 1280 | Upper mid |
-| 12 | 1280 | 256 | 1016 | 1613 | Guitar bite |
-| 13 | 1613 | 307 | 1280 | 2031 | Vocal clarity |
-| 14 | 2031 | 369 | 1613 | 2554 | Snare attack |
-| 15 | 2554 | 443 | 2031 | 3214 | Presence |
-| 16 | 3214 | 532 | 2554 | 4044 | High presence |
-| 17 | 4044 | 639 | 3214 | 5088 | Cymbal body |
-| 18 | 5088 | 767 | 4044 | 6405 | Brilliance |
-| 19 | 6405 | 921 | 5088 | 8063 | High brilliance |
-| 20 | 8063 | 1106 | 6405 | 10147 | Air |
-| 21 | 10147 | 1330 | 8063 | 12773 | Upper air |
-| 22 | 12773 | 1594 | 10147 | 16078 | Shimmer |
-| 23 | 16078 | 1922 | 12773 | 20000 | Ultra-high presence |
+| Band | Center Freq (Hz) | Bandwidth (Hz) | Low Edge (Hz) | High Edge (Hz) | Musical Region        |
+| ---- | ---------------- | -------------- | ------------- | -------------- | --------------------- |
+| 0    | 47               | 30             | 20            | 73             | Sub-bass fundamental  |
+| 1    | 73               | 35             | 47            | 104            | Kick drum fundamental |
+| 2    | 104              | 42             | 73            | 141            | Bass guitar low       |
+| 3    | 141              | 50             | 104           | 187            | Bass guitar high      |
+| 4    | 187              | 60             | 141           | 243            | Low vocals            |
+| 5    | 243              | 72             | 187           | 313            | Vocal fundamental     |
+| 6    | 313              | 86             | 243           | 399            | Guitar body           |
+| 7    | 399              | 103            | 313           | 507            | Snare body            |
+| 8    | 507              | 123            | 399           | 641            | Low-mid               |
+| 9    | 641              | 148            | 507           | 808            | Mid                   |
+| 10   | 808              | 177            | 641           | 1016           | Vocal presence        |
+| 11   | 1016             | 213            | 808           | 1280           | Upper mid             |
+| 12   | 1280             | 256            | 1016          | 1613           | Guitar bite           |
+| 13   | 1613             | 307            | 1280          | 2031           | Vocal clarity         |
+| 14   | 2031             | 369            | 1613          | 2554           | Snare attack          |
+| 15   | 2554             | 443            | 2031          | 3214           | Presence              |
+| 16   | 3214             | 532            | 2554          | 4044           | High presence         |
+| 17   | 4044             | 639            | 3214          | 5088           | Cymbal body           |
+| 18   | 5088             | 767            | 4044          | 6405           | Brilliance            |
+| 19   | 6405             | 921            | 5088          | 8063           | High brilliance       |
+| 20   | 8063             | 1106           | 6405          | 10147          | Air                   |
+| 21   | 10147            | 1330           | 8063          | 12773          | Upper air             |
+| 22   | 12773            | 1594           | 10147         | 16078          | Shimmer               |
+| 23   | 16078            | 1922           | 12773         | 20000          | Ultra-high presence   |
 
 ### Auto-Normalization
 
@@ -472,20 +472,20 @@ impl MelNormalizer {
 
 A4 = 440 Hz reference. Semitones from A4: `12 * log2(f / 440)`. Map to pitch class (0=C through 11=B):
 
-| Index | Pitch | Frequency Examples (Hz) | Octaves in 20-20kHz |
-|---|---|---|---|
-| 0 | C | 32.7, 65.4, 130.8, 261.6, 523.3, 1047, 2093, 4186, 8372, 16744 | 10 |
-| 1 | C# | 34.6, 69.3, 138.6, 277.2, 554.4, 1109, 2217, 4435, 8870, 17740 | 10 |
-| 2 | D | 36.7, 73.4, 146.8, 293.7, 587.3, 1175, 2349, 4699, 9397 | 9 |
-| 3 | D# | 38.9, 77.8, 155.6, 311.1, 622.3, 1245, 2489, 4978, 9956 | 9 |
-| 4 | E | 41.2, 82.4, 164.8, 329.6, 659.3, 1319, 2637, 5274, 10548 | 9 |
-| 5 | F | 43.7, 87.3, 174.6, 349.2, 698.5, 1397, 2794, 5588, 11175 | 9 |
-| 6 | F# | 46.2, 92.5, 185.0, 370.0, 740.0, 1480, 2960, 5920, 11840 | 9 |
-| 7 | G | 49.0, 98.0, 196.0, 392.0, 784.0, 1568, 3136, 6272, 12544 | 9 |
-| 8 | G# | 51.9, 103.8, 207.7, 415.3, 830.6, 1661, 3322, 6645, 13290 | 9 |
-| 9 | A | 55.0, 110.0, 220.0, 440.0, 880.0, 1760, 3520, 7040, 14080 | 9 |
-| 10 | A# | 58.3, 116.5, 233.1, 466.2, 932.3, 1865, 3729, 7459, 14917 | 9 |
-| 11 | B | 61.7, 123.5, 246.9, 493.9, 987.8, 1976, 3951, 7902, 15804 | 9 |
+| Index | Pitch | Frequency Examples (Hz)                                        | Octaves in 20-20kHz |
+| ----- | ----- | -------------------------------------------------------------- | ------------------- |
+| 0     | C     | 32.7, 65.4, 130.8, 261.6, 523.3, 1047, 2093, 4186, 8372, 16744 | 10                  |
+| 1     | C#    | 34.6, 69.3, 138.6, 277.2, 554.4, 1109, 2217, 4435, 8870, 17740 | 10                  |
+| 2     | D     | 36.7, 73.4, 146.8, 293.7, 587.3, 1175, 2349, 4699, 9397        | 9                   |
+| 3     | D#    | 38.9, 77.8, 155.6, 311.1, 622.3, 1245, 2489, 4978, 9956        | 9                   |
+| 4     | E     | 41.2, 82.4, 164.8, 329.6, 659.3, 1319, 2637, 5274, 10548       | 9                   |
+| 5     | F     | 43.7, 87.3, 174.6, 349.2, 698.5, 1397, 2794, 5588, 11175       | 9                   |
+| 6     | F#    | 46.2, 92.5, 185.0, 370.0, 740.0, 1480, 2960, 5920, 11840       | 9                   |
+| 7     | G     | 49.0, 98.0, 196.0, 392.0, 784.0, 1568, 3136, 6272, 12544       | 9                   |
+| 8     | G#    | 51.9, 103.8, 207.7, 415.3, 830.6, 1661, 3322, 6645, 13290      | 9                   |
+| 9     | A     | 55.0, 110.0, 220.0, 440.0, 880.0, 1760, 3520, 7040, 14080      | 9                   |
+| 10    | A#    | 58.3, 116.5, 233.1, 466.2, 932.3, 1865, 3729, 7459, 14917      | 9                   |
+| 11    | B     | 61.7, 123.5, 246.9, 493.9, 987.8, 1976, 3951, 7902, 15804      | 9                   |
 
 ### Frequency-to-Pitch Mapping
 
@@ -614,11 +614,11 @@ impl EnergyOnsetDetector {
 
 Three independent instances run on bass (20-250 Hz), mid (250-4 kHz), and treble (4-20 kHz) bands.
 
-| Band | Onset Character | Typical Lighting Response |
-|---|---|---|
-| Bass onset | Kick drum, bass drop | Full-room pulse, brightness spike |
-| Mid onset | Snare, vocal attack | Flash, pattern shift |
-| Treble onset | Hi-hat, cymbal | Sparkle, particle burst |
+| Band         | Onset Character      | Typical Lighting Response         |
+| ------------ | -------------------- | --------------------------------- |
+| Bass onset   | Kick drum, bass drop | Full-room pulse, brightness spike |
+| Mid onset    | Snare, vocal attack  | Flash, pattern shift              |
+| Treble onset | Hi-hat, cymbal       | Sparkle, particle burst           |
 
 ### Method 2: Spectral Flux
 
@@ -745,13 +745,13 @@ impl BeatPulse {
 
 ### Tempo Change Handling
 
-| Scenario | Strategy |
-|---|---|
-| Tempo change | BPM estimator adapts over 2-4 seconds as new intervals accumulate |
-| Breakdown (quiet section) | Onset energy drops below threshold. Phase tracking continues on last known BPM. Confidence decays. |
-| Drop (breakdown to full energy) | First strong onset after breakdown resets phase. Immediate lock. |
-| Stop-start | After 3 seconds of no onsets, reset BPM tracking. Fresh start. |
-| Rubato / live music | Lower confidence, reduce anticipation. Fall back to pure onset detection. |
+| Scenario                        | Strategy                                                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Tempo change                    | BPM estimator adapts over 2-4 seconds as new intervals accumulate                                  |
+| Breakdown (quiet section)       | Onset energy drops below threshold. Phase tracking continues on last known BPM. Confidence decays. |
+| Drop (breakdown to full energy) | First strong onset after breakdown resets phase. Immediate lock.                                   |
+| Stop-start                      | After 3 seconds of no onsets, reset BPM tracking. Fresh start.                                     |
+| Rubato / live music             | Lower confidence, reduce anticipation. Fall back to pure onset detection.                          |
 
 ---
 
@@ -770,23 +770,23 @@ fn asymmetric_smooth(current: f32, previous: f32, attack: f32, decay: f32) -> f3
 
 ### Per-Field Smoothing Constants
 
-| Field(s) | Attack | Decay | Rationale |
-|---|---|---|---|
-| `freq[200]` | 0.6 | 0.15 | Spectrum bars: snap up, slow fade |
-| `bass`, `mid`, `treble` | 0.5 | 0.12 | Band energy: slightly smoother than raw bins |
-| `mel_bands[24]` | 0.6 | 0.15 | Same as freq -- perceptually equivalent |
-| `level` | 0.4 | 0.10 | Overall level: gentler tracking |
-| `spectral_centroid` | 0.3 | 0.08 | Brightness: slow drift, not jitter |
-| `spectral_spread` | 0.3 | 0.08 | Same cadence as centroid |
-| `spectral_rolloff` | 0.3 | 0.08 | Same cadence as centroid |
-| `spectral_flux` | 0.8 | 0.3 | Fast response -- flux is inherently transient |
-| `chromagram[12]` | 0.2 | 0.05 | Pitch: stable, not jumpy |
-| `harmonic_hue` | 0.15 | 0.03 | Color: very slow drift (avoids disco strobe) |
-| `minor_major_ratio` | 0.15 | 0.05 | Chord mood: gradual emotional shift |
-| `beat_pulse` | 1.0 | N/A | Handled by BeatPulse decay, not EMA |
-| `beat_anticipation` | 1.0 | N/A | Handled by anticipator, not EMA |
-| `density` | 0.2 | 0.05 | Spectral flatness: stable |
-| `width` | 0.2 | 0.05 | Stereo width: stable |
+| Field(s)                | Attack | Decay | Rationale                                     |
+| ----------------------- | ------ | ----- | --------------------------------------------- |
+| `freq[200]`             | 0.6    | 0.15  | Spectrum bars: snap up, slow fade             |
+| `bass`, `mid`, `treble` | 0.5    | 0.12  | Band energy: slightly smoother than raw bins  |
+| `mel_bands[24]`         | 0.6    | 0.15  | Same as freq -- perceptually equivalent       |
+| `level`                 | 0.4    | 0.10  | Overall level: gentler tracking               |
+| `spectral_centroid`     | 0.3    | 0.08  | Brightness: slow drift, not jitter            |
+| `spectral_spread`       | 0.3    | 0.08  | Same cadence as centroid                      |
+| `spectral_rolloff`      | 0.3    | 0.08  | Same cadence as centroid                      |
+| `spectral_flux`         | 0.8    | 0.3   | Fast response -- flux is inherently transient |
+| `chromagram[12]`        | 0.2    | 0.05  | Pitch: stable, not jumpy                      |
+| `harmonic_hue`          | 0.15   | 0.03  | Color: very slow drift (avoids disco strobe)  |
+| `minor_major_ratio`     | 0.15   | 0.05  | Chord mood: gradual emotional shift           |
+| `beat_pulse`            | 1.0    | N/A   | Handled by BeatPulse decay, not EMA           |
+| `beat_anticipation`     | 1.0    | N/A   | Handled by anticipator, not EMA               |
+| `density`               | 0.2    | 0.05  | Spectral flatness: stable                     |
+| `width`                 | 0.2    | 0.05  | Stereo width: stable                          |
 
 ### Peak Hold (Optional)
 
@@ -1090,7 +1090,7 @@ Existing community HTML effects (230+) access the original three fields: `level`
 Effects can detect Hypercolor's extended API:
 
 ```javascript
-const hasExtendedAudio = typeof engine.audio.melBands !== 'undefined';
+const hasExtendedAudio = typeof engine.audio.melBands !== "undefined";
 ```
 
 ---
@@ -1198,11 +1198,11 @@ struct AudioData {
 
 ### Texture Format
 
-| Binding | Texture | Width | Format | Content |
-|---|---|---|---|---|
-| 1 | `audio_spectrum` | 200 | `R32Float` | `freq[200]` logarithmic bins, 0.0-1.0 |
-| 2 | `audio_mel` | 24 | `R32Float` | `mel_bands_normalized[24]`, 0.0-1.0 |
-| 3 | `audio_chroma` | 12 | `R32Float` | `chromagram[12]`, 0.0-1.0 |
+| Binding | Texture          | Width | Format     | Content                               |
+| ------- | ---------------- | ----- | ---------- | ------------------------------------- |
+| 1       | `audio_spectrum` | 200   | `R32Float` | `freq[200]` logarithmic bins, 0.0-1.0 |
+| 2       | `audio_mel`      | 24    | `R32Float` | `mel_bands_normalized[24]`, 0.0-1.0   |
+| 3       | `audio_chroma`   | 12    | `R32Float` | `chromagram[12]`, 0.0-1.0             |
 
 Textures are updated each frame via `queue.write_texture()`. The 1D texture approach avoids the 256-element minimum for storage buffers and provides hardware-accelerated sampling with filtering.
 
@@ -1235,11 +1235,11 @@ Hypercolor targets Linux (primary) and Windows (secondary) via cpal's platform b
 
 ### Linux: PipeWire / PulseAudio
 
-| Layer | Role | Crate |
-|---|---|---|
-| PipeWire | Graph-based audio routing, modern default | Accessed via PulseAudio compat layer |
-| PulseAudio | Legacy systems, source enumeration | `libpulse-binding` |
-| ALSA | Lowest level, no native loopback | cpal fallback (mic input only) |
+| Layer      | Role                                      | Crate                                |
+| ---------- | ----------------------------------------- | ------------------------------------ |
+| PipeWire   | Graph-based audio routing, modern default | Accessed via PulseAudio compat layer |
+| PulseAudio | Legacy systems, source enumeration        | `libpulse-binding`                   |
+| ALSA       | Lowest level, no native loopback          | cpal fallback (mic input only)       |
 
 **System audio capture:** PipeWire and PulseAudio expose every output sink as a `.monitor` source. Hypercolor detects the default sink's monitor automatically via `pa_context_get_source_info_list()` with `PA_SOURCE_MONITOR` flag filtering.
 
@@ -1257,13 +1257,13 @@ Hypercolor targets Linux (primary) and Windows (secondary) via cpal's platform b
 
 ### Windows: WASAPI
 
-| Feature | Behavior |
-|---|---|
-| Backend | cpal WASAPI host (default on Windows) |
-| System loopback | WASAPI loopback capture mode on the default render endpoint |
-| Device enumeration | `IMMDeviceEnumerator` via cpal's device listing |
-| Sample format | f32 (cpal handles conversion from device native format) |
-| Latency | Shared mode: ~10ms. Exclusive mode: ~3ms (not recommended for loopback) |
+| Feature            | Behavior                                                                |
+| ------------------ | ----------------------------------------------------------------------- |
+| Backend            | cpal WASAPI host (default on Windows)                                   |
+| System loopback    | WASAPI loopback capture mode on the default render endpoint             |
+| Device enumeration | `IMMDeviceEnumerator` via cpal's device listing                         |
+| Sample format      | f32 (cpal handles conversion from device native format)                 |
+| Latency            | Shared mode: ~10ms. Exclusive mode: ~3ms (not recommended for loopback) |
 
 **WASAPI loopback capture:**
 
@@ -1291,11 +1291,11 @@ fn find_monitor_source() -> Result<cpal::Device> {
 
 The audio pipeline adapts to whatever sample rate the device provides:
 
-| Device Rate | FFT Size | Freq Resolution | Nyquist |
-|---|---|---|---|
-| 44100 Hz | 1024 | 43.07 Hz | 22050 Hz |
-| 48000 Hz | 1024 | 46.88 Hz | 24000 Hz |
-| 96000 Hz | 1024 | 93.75 Hz | 48000 Hz |
+| Device Rate | FFT Size | Freq Resolution | Nyquist  |
+| ----------- | -------- | --------------- | -------- |
+| 44100 Hz    | 1024     | 43.07 Hz        | 22050 Hz |
+| 48000 Hz    | 1024     | 46.88 Hz        | 24000 Hz |
+| 96000 Hz    | 1024     | 93.75 Hz        | 48000 Hz |
 
 If the device sample rate differs from 48000, the mel filterbank and bin mapping tables are recomputed at startup. No runtime resampling is performed -- the FFT adapts to the native rate.
 
@@ -1337,11 +1337,11 @@ quality = "full"             # "full" | "balanced" | "minimal"
 
 ### Quality Tiers
 
-| Tier | FFT Size | DSP Rate | Features Enabled | CPU Cost |
-|---|---|---|---|---|
-| **Full** | 1024 + 4096 | 60 Hz | All: spectrum, mel, chroma, harmonics, beat | ~86 us/frame |
-| **Balanced** | 1024 | 30 Hz | Spectrum, mel, beat detection. No chroma/harmonics. | ~40 us/frame |
-| **Minimal** | 512 | 30 Hz | Spectrum, beat detection only. No mel, no chroma. | ~20 us/frame |
+| Tier         | FFT Size    | DSP Rate | Features Enabled                                    | CPU Cost     |
+| ------------ | ----------- | -------- | --------------------------------------------------- | ------------ |
+| **Full**     | 1024 + 4096 | 60 Hz    | All: spectrum, mel, chroma, harmonics, beat         | ~86 us/frame |
+| **Balanced** | 1024        | 30 Hz    | Spectrum, mel, beat detection. No chroma/harmonics. | ~40 us/frame |
+| **Minimal**  | 512         | 30 Hz    | Spectrum, beat detection only. No mel, no chroma.   | ~20 us/frame |
 
 ```rust
 pub enum AudioQuality {
@@ -1403,11 +1403,11 @@ pub struct DeviceLatencyProfile {
 }
 ```
 
-| Transport | output_latency_ms | anticipation_offset_ms |
-|---|---|---|
-| USB HID (PrismRGB, keyboard) | 8 | 0 |
-| WLED (DDP over LAN) | 4 | 0 |
-| Philips Hue (DTLS UDP) | 35 | 25 |
+| Transport                    | output_latency_ms | anticipation_offset_ms |
+| ---------------------------- | ----------------- | ---------------------- |
+| USB HID (PrismRGB, keyboard) | 8                 | 0                      |
+| WLED (DDP over LAN)          | 4                 | 0                      |
+| Philips Hue (DTLS UDP)       | 35                | 25                     |
 
 ---
 
@@ -1443,14 +1443,14 @@ One frame of the DSP pipeline, executed every hop (5.3ms at 60 Hz, 10.6ms at 30 
 
 ## Appendix B: Crate Dependencies
 
-| Crate | Purpose | License |
-|---|---|---|
-| `cpal` | Cross-platform audio I/O (WASAPI, PulseAudio/ALSA) | Apache-2.0 |
-| `realfft` | In-place real-to-complex FFT | Apache-2.0/MIT |
-| `libpulse-binding` | PulseAudio API for Linux monitor source discovery | MIT/Apache |
-| `crossbeam` | Lock-free SPSC ring buffer (`ArrayQueue`) | MIT/Apache |
-| `triple-buffer` | Lock-free single-producer single-consumer triple buffer | MIT |
-| `bytemuck` | Zero-copy GPU buffer marshaling (`Pod`, `Zeroable`) | MIT/Apache/Zlib |
+| Crate              | Purpose                                                 | License         |
+| ------------------ | ------------------------------------------------------- | --------------- |
+| `cpal`             | Cross-platform audio I/O (WASAPI, PulseAudio/ALSA)      | Apache-2.0      |
+| `realfft`          | In-place real-to-complex FFT                            | Apache-2.0/MIT  |
+| `libpulse-binding` | PulseAudio API for Linux monitor source discovery       | MIT/Apache      |
+| `crossbeam`        | Lock-free SPSC ring buffer (`ArrayQueue`)               | MIT/Apache      |
+| `triple-buffer`    | Lock-free single-producer single-consumer triple buffer | MIT             |
+| `bytemuck`         | Zero-copy GPU buffer marshaling (`Pod`, `Zeroable`)     | MIT/Apache/Zlib |
 
 ## Appendix C: Spectral Feature Formulas
 

@@ -101,101 +101,101 @@ However, no NZXT plugin in `Plugins/Nzxt/` imports the suite's LCD helper module
 
 ### 3.1 Legacy controllers
 
-| VID:PID | Family | Product |
-|--------|--------|---------|
-| `04D8:00DF` | Hue Plus serial | Hue Plus |
+| VID:PID     | Family          | Product                 |
+| ----------- | --------------- | ----------------------- |
+| `04D8:00DF` | Hue Plus serial | Hue Plus                |
 | `1E71:1714` | Smart Device V1 | Hue 1 / Smart Device V1 |
-| `1E71:170E` | Legacy Kraken | Kraken X2 |
-| `1E71:1715` | Legacy Kraken | Kraken M2 |
+| `1E71:170E` | Legacy Kraken   | Kraken X2               |
+| `1E71:1715` | Legacy Kraken   | Kraken M2               |
 
 ### 3.2 Gen2 controller family
 
-| PID | Product |
-|-----|---------|
-| `0x2001` | Hue 2 |
-| `0x2002` | Hue 2 Ambient |
-| `0x2005` | N7 Z390 / motherboard-family controller |
-| `0x2006` | Smart Device V2 |
-| `0x2007` | Kraken X3 Series |
-| `0x2009` | RGB and Fan Controller |
-| `0x200A` | N7 Z490 |
-| `0x200B` | N7 B550 |
-| `0x200C` | N7 Z590 |
-| `0x200D` | Smart Device V2 Case Controller |
-| `0x200E` | RGB and Fan Controller |
-| `0x200F` | Smart Device V2 Case Controller |
-| `0x2010` | RGB and Fan Controller |
-| `0x2011` | RGB and Fan Controller |
+| PID      | Product                                         |
+| -------- | ----------------------------------------------- |
+| `0x2001` | Hue 2                                           |
+| `0x2002` | Hue 2 Ambient                                   |
+| `0x2005` | N7 Z390 / motherboard-family controller         |
+| `0x2006` | Smart Device V2                                 |
+| `0x2007` | Kraken X3 Series                                |
+| `0x2009` | RGB and Fan Controller                          |
+| `0x200A` | N7 Z490                                         |
+| `0x200B` | N7 B550                                         |
+| `0x200C` | N7 Z590                                         |
+| `0x200D` | Smart Device V2 Case Controller                 |
+| `0x200E` | RGB and Fan Controller                          |
+| `0x200F` | Smart Device V2 Case Controller                 |
+| `0x2010` | RGB and Fan Controller                          |
+| `0x2011` | RGB and Fan Controller                          |
 | `0x2012` | RGB Controller / RGB and Fan Controller variant |
-| `0x2014` | Kraken X3 Series RGB |
-| `0x2016` | N7 Z690 |
-| `0x2017` | N5 Z690 |
-| `0x2019` | RGB and Fan Controller |
-| `0x201B` | N7 B650E |
-| `0x201D` | N7 Z790 |
-| `0x201F` | RGB and Fan Controller |
-| `0x2020` | RGB and Fan Controller |
+| `0x2014` | Kraken X3 Series RGB                            |
+| `0x2016` | N7 Z690                                         |
+| `0x2017` | N5 Z690                                         |
+| `0x2019` | RGB and Fan Controller                          |
+| `0x201B` | N7 B650E                                        |
+| `0x201D` | N7 Z790                                         |
+| `0x201F` | RGB and Fan Controller                          |
+| `0x2020` | RGB and Fan Controller                          |
 | `0x2021` | RGB Controller / RGB and Fan Controller variant |
-| `0x2022` | Control Hub |
+| `0x2022` | Control Hub                                     |
 
 ### 3.3 Screen and modern AIO family
 
-| PID | Product | Known capabilities from local sources |
-|-----|---------|----------------------------------------|
-| `0x3008` | Kraken Z3 | RGB, pump/fan telemetry, pump/fan control |
-| `0x300C` | Kraken Elite | Pump/fan telemetry, pump/fan control; RGB/LCD unresolved |
-| `0x300E` | Kraken | Pump/fan telemetry, pump/fan control; RGB/LCD unresolved |
+| PID      | Product                          | Known capabilities from local sources                                       |
+| -------- | -------------------------------- | --------------------------------------------------------------------------- |
+| `0x3008` | Kraken Z3                        | RGB, pump/fan telemetry, pump/fan control                                   |
+| `0x300C` | Kraken Elite                     | Pump/fan telemetry, pump/fan control; RGB/LCD unresolved                    |
+| `0x300E` | Kraken                           | Pump/fan telemetry, pump/fan control; RGB/LCD unresolved                    |
 | `0x3012` | Kraken Elite v2 / 2024 Elite RGB | 24-LED ring RGB, external RGB channel, pump/fan telemetry, pump/fan control |
 
 ### 3.4 Peripheral family
 
-| PID | Product |
-|-----|---------|
-| `0x2100` | Lift Mouse |
-| `0x2103` | Function |
-| `0x2104` | Function TKL |
-| `0x2105` | Function MiniTKL |
-| `0x2106` | Function ISO |
-| `0x2107` | Function TKL ISO |
+| PID      | Product              |
+| -------- | -------------------- |
+| `0x2100` | Lift Mouse           |
+| `0x2103` | Function             |
+| `0x2104` | Function TKL         |
+| `0x2105` | Function MiniTKL     |
+| `0x2106` | Function ISO         |
+| `0x2107` | Function TKL ISO     |
 | `0x2108` | Function MiniTKL ISO |
-| `0x2130` | Function 2 |
-| `0x2131` | Function 2 ISO |
-| `0x2136` | Function 2 variant |
+| `0x2130` | Function 2           |
+| `0x2131` | Function 2 ISO       |
+| `0x2136` | Function 2 variant   |
 
 ### 3.5 Partner kit on NZXT protocol
 
-| PID | Product |
-|-----|---------|
+| PID      | Product                        |
+| -------- | ------------------------------ |
 | `0x2004` | Vertagear RGB LED Upgrade Kits |
 
 ### 3.6 Gen2 accessory IDs discovered from OpenRGB
 
 These IDs appear in the Gen2 topology response (`0x21 0x03`) and determine segment names and LED counts.
 
-| ID | Accessory | LEDs |
-|----|-----------|------|
-| `0x01` | Hue 1 strip | 10 |
-| `0x02` | Aer 1 fan | 8 |
-| `0x04` | Hue 2 strip 10 LED | 10 |
-| `0x05` | Hue 2 strip 8 LED | 8 |
-| `0x06` | Hue 2 strip 6 LED | 6 |
-| `0x08` | Hue 2 cable comb | 14 |
-| `0x09` | Hue 2 underglow 300 mm | 15 |
-| `0x0A` | Hue 2 underglow 200 mm | 10 |
-| `0x0B` | Aer 2 120 | 8 |
-| `0x0C` | Aer 2 140 | 8 |
-| `0x10` | Kraken X3 ring | 8 |
-| `0x11` | Kraken X3 logo | 1 |
-| `0x13` | F120 RGB | 18 |
-| `0x14` | F140 RGB | 18 |
-| `0x15` | F120 RGB Duo | 20 |
-| `0x16` | F140 RGB Duo | 20 |
-| `0x17` | F120 RGB Core | 8 |
-| `0x18` | F140 RGB Core | 8 |
-| `0x19` | F120 RGB Core case version | 8 |
-| `0x1D` | F360 RGB Core case version | 24 |
-| `0x1E` | Kraken Elite ring | 24 |
-| `0x1F` | F420 RGB | 24 |
+| ID     | Accessory                  | LEDs |
+| ------ | -------------------------- | ---- |
+| `0x01` | Hue 1 strip                | 10   |
+| `0x02` | Aer 1 fan                  | 8    |
+| `0x04` | Hue 2 strip 10 LED         | 10   |
+| `0x05` | Hue 2 strip 8 LED          | 8    |
+| `0x06` | Hue 2 strip 6 LED          | 6    |
+| `0x08` | Hue 2 cable comb           | 14   |
+| `0x09` | Hue 2 underglow 300 mm     | 15   |
+| `0x0A` | Hue 2 underglow 200 mm     | 10   |
+| `0x0B` | Aer 2 120                  | 8    |
+| `0x0C` | Aer 2 140                  | 8    |
+| `0x10` | Kraken X3 ring             | 8    |
+| `0x11` | Kraken X3 logo             | 1    |
+| `0x13` | F120 RGB                   | 18   |
+| `0x14` | F140 RGB                   | 18   |
+| `0x15` | F120 RGB Duo               | 20   |
+| `0x16` | F140 RGB Duo               | 20   |
+| `0x17` | F120 RGB Core              | 8    |
+| `0x18` | F140 RGB Core              | 8    |
+| `0x19` | F120 RGB Core case version | 8    |
+| `0x1D` | F360 RGB Core case version | 24   |
+| `0x1E` | Kraken Elite ring          | 24   |
+| `0x1F` | F420 RGB                   | 24   |
 
 ---
 
@@ -300,20 +300,20 @@ byte 1+ = remaining color bytes
 
 #### Effect IDs
 
-| Mode | ID |
-|------|----|
-| Fixed | `0x00` |
-| Fading | `0x01` |
-| Spectrum | `0x02` |
-| Marquee | `0x03` |
+| Mode          | ID     |
+| ------------- | ------ |
+| Fixed         | `0x00` |
+| Fading        | `0x01` |
+| Spectrum      | `0x02` |
+| Marquee       | `0x03` |
 | Cover Marquee | `0x04` |
-| Alternating | `0x05` |
-| Pulsing | `0x06` |
-| Breathing | `0x07` |
-| Alert | `0x08` |
-| Candlelight | `0x09` |
-| Wings | `0x0C` |
-| Wave | `0x0D` |
+| Alternating   | `0x05` |
+| Pulsing       | `0x06` |
+| Breathing     | `0x07` |
+| Alert         | `0x08` |
+| Candlelight   | `0x09` |
+| Wings         | `0x0C` |
+| Wave          | `0x0D` |
 
 #### Scope decision
 
@@ -330,16 +330,16 @@ This is the main NZXT protocol family and the most important implementation targ
 
 #### Core command set
 
-| Purpose | Request | Response |
-|--------|---------|----------|
-| Firmware query | `10 01` | `11 01` |
-| LED topology query | `20 03` | `21 03` |
-| Direct RGB stream | `22 10|n ...` | none required |
-| Apply stream | `22 A0 ...` | none required |
-| Fan poll enable | `60 03` | none documented |
-| Fan poll interval | `60 02 ...` | none documented |
-| Fan set | `62 01 ...` | async fan packet follows |
-| Fan state async packet | none | `67 02` |
+| Purpose                | Request     | Response                 |
+| ---------------------- | ----------- | ------------------------ | ------------- |
+| Firmware query         | `10 01`     | `11 01`                  |
+| LED topology query     | `20 03`     | `21 03`                  |
+| Direct RGB stream      | `22 10      | n ...`                   | none required |
+| Apply stream           | `22 A0 ...` | none required            |
+| Fan poll enable        | `60 03`     | none documented          |
+| Fan poll interval      | `60 02 ...` | none documented          |
+| Fan set                | `62 01 ...` | async fan packet follows |
+| Fan state async packet | none        | `67 02`                  |
 
 #### Firmware query
 
@@ -460,16 +460,16 @@ NZXT motherboards reuse the Gen2 digital path for NZXT headers and ARGB headers,
 
 #### Channel model from local plugins
 
-| PID | NZXT headers | ARGB headers | 12V RGB headers |
-|-----|--------------|--------------|-----------------|
-| `0x2005` | 3 | 0 | 0 |
-| `0x200A` | 2 | 1 | 1 |
-| `0x200B` | 2 | 1 | 1 |
-| `0x200C` | 2 | 1 | 1 |
-| `0x2016` | 2 | 1 | 1 |
-| `0x2017` | 2 | 1 | 1 |
-| `0x201B` | 4 | 2 | 0 |
-| `0x201D` | 4 | 2 | 0 |
+| PID      | NZXT headers | ARGB headers | 12V RGB headers |
+| -------- | ------------ | ------------ | --------------- |
+| `0x2005` | 3            | 0            | 0               |
+| `0x200A` | 2            | 1            | 1               |
+| `0x200B` | 2            | 1            | 1               |
+| `0x200C` | 2            | 1            | 1               |
+| `0x2016` | 2            | 1            | 1               |
+| `0x2017` | 2            | 1            | 1               |
+| `0x201B` | 4            | 2            | 0               |
+| `0x201D` | 4            | 2            | 0               |
 
 #### Analog RGB packet
 
@@ -538,20 +538,20 @@ Zones:
 
 #### Effect IDs
 
-| Mode | ID |
-|------|----|
-| Fixed | `0x00` |
-| Fading | `0x01` |
-| Spectrum | `0x02` |
-| Marquee | `0x03` |
+| Mode          | ID     |
+| ------------- | ------ |
+| Fixed         | `0x00` |
+| Fading        | `0x01` |
+| Spectrum      | `0x02` |
+| Marquee       | `0x03` |
 | Cover Marquee | `0x04` |
-| Alternating | `0x05` |
-| Breathing | `0x06` |
-| Pulse | `0x07` |
-| Tai Chi | `0x08` |
-| Water Cooler | `0x09` |
-| Loading | `0x0A` |
-| Wings | `0x0C` |
+| Alternating   | `0x05` |
+| Breathing     | `0x06` |
+| Pulse         | `0x07` |
+| Tai Chi       | `0x08` |
+| Water Cooler  | `0x09` |
+| Loading       | `0x0A` |
+| Wings         | `0x0C` |
 
 #### Scope decision
 
@@ -824,20 +824,20 @@ This suggests a reusable Gen2 core with device-specific apply descriptors.
 
 From local component JSONs and OpenRGB accessory discovery:
 
-| Accessory | LEDs |
-|-----------|------|
-| NZXT strip 6 | 6 |
-| NZXT strip 8 | 8 |
-| NZXT strip 10 | 10 |
-| Aer fan / Aer 2 fan | 8 |
-| F120/F140 RGB | 18 |
-| F120/F140 RGB Duo | 20 |
-| F120/F140 RGB Core | 8 |
-| F360 RGB Core | 24 |
-| F420 RGB | 24 |
-| Kraken X3 ring | 8 |
-| Kraken X3 logo | 1 |
-| Kraken Elite ring | 24 |
+| Accessory           | LEDs |
+| ------------------- | ---- |
+| NZXT strip 6        | 6    |
+| NZXT strip 8        | 8    |
+| NZXT strip 10       | 10   |
+| Aer fan / Aer 2 fan | 8    |
+| F120/F140 RGB       | 18   |
+| F120/F140 RGB Duo   | 20   |
+| F120/F140 RGB Core  | 8    |
+| F360 RGB Core       | 24   |
+| F420 RGB            | 24   |
+| Kraken X3 ring      | 8    |
+| Kraken X3 logo      | 1    |
+| Kraken Elite ring   | 24   |
 
 ### 5.2 Layout guidance
 
@@ -1068,12 +1068,12 @@ The local plugin only exposes thermal control. Full RGB support for these PIDs r
 
 ### 9.3 Phase plan
 
-| Phase | Scope |
-|------|-------|
+| Phase       | Scope                                                                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Phase 1** | Hue Plus, Smart Device V1 direct RGB, Gen2 controllers, motherboard digital/analog headers, Kraken X3/Z3/Elite v2 lighting, pump/fan telemetry/control |
-| **Phase 2** | Legacy Kraken X2/M2 direct RGB and telemetry, Gen2 effect parity, Vertagear variant support |
-| **Phase 3** | Function keyboard new protocol, legacy keyboard protocol, Lift mouse |
-| **Phase 4** | LCD capture, LCD clean-room spec, screen protocol implementation for Kraken Z/Elite families |
+| **Phase 2** | Legacy Kraken X2/M2 direct RGB and telemetry, Gen2 effect parity, Vertagear variant support                                                            |
+| **Phase 3** | Function keyboard new protocol, legacy keyboard protocol, Lift mouse                                                                                   |
+| **Phase 4** | LCD capture, LCD clean-room spec, screen protocol implementation for Kraken Z/Elite families                                                           |
 
 ---
 

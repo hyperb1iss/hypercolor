@@ -31,18 +31,19 @@
 Native USB HID driver for PrismRGB and Nollie LED controllers via the `hypercolor-hal` abstraction layer. All four controllers communicate over USB HID with 65-byte reports (1-byte report ID + 64-byte payload), sharing a common command vocabulary but differing in channel layout, color format, and packetization strategy.
 
 Clean-room implementation derived from publicly available protocol knowledge:
+
 - OpenRGB's `ENESMBusInterface` and `LianLiController` implementations (C++)
 - uni-sync Rust crate by EightB1ts
 - Original community driver source documentation
 
 ### Controller Family
 
-| Controller | Channels | Max LEDs | Color Format | Unique Traits |
-|------------|----------|----------|-------------|---------------|
-| **Prism 8** | 8 | 1,008 | GRB | Voltage monitoring, dynamic channel counts |
-| **Nollie 8 v2** | 8 | 1,008 | GRB | Identical protocol to Prism 8 |
-| **Prism S** | 2 | 282 | RGB | Strimer cable controller, combined buffer |
-| **Prism Mini** | 1 | 128 | RGB | Low-power saver, 4-bit color compression |
+| Controller      | Channels | Max LEDs | Color Format | Unique Traits                              |
+| --------------- | -------- | -------- | ------------ | ------------------------------------------ |
+| **Prism 8**     | 8        | 1,008    | GRB          | Voltage monitoring, dynamic channel counts |
+| **Nollie 8 v2** | 8        | 1,008    | GRB          | Identical protocol to Prism 8              |
+| **Prism S**     | 2        | 282      | RGB          | Strimer cable controller, combined buffer  |
+| **Prism Mini**  | 1        | 128      | RGB          | Low-power saver, 4-bit color compression   |
 
 ### Relationship to Other Specs
 
@@ -56,21 +57,21 @@ Clean-room implementation derived from publicly available protocol knowledge:
 
 ### 2.1 Controller Variants
 
-| Device | VID | PID | HID Interface | Channels | LEDs/Channel | Max LEDs | Color Format | Brightness Scale |
-|--------|-----|-----|---------------|----------|--------------|----------|-------------|-----------------|
-| **Prism 8** | `0x16D5` | `0x1F01` | 0 | 8 | 126 | 1,008 | GRB | 0.75 |
-| **Nollie 8 v2** | `0x16D2` | `0x1F01` | 0 | 8 | 126 | 1,008 | GRB | 1.00 |
-| **Prism S** | `0x16D0` | `0x1294` | 2 | 2 | variable | 282 | RGB | 0.50 |
-| **Prism Mini** | `0x16D0` | `0x1407` | 2 | 1 | 128 | 128 | RGB | 1.00 |
+| Device          | VID      | PID      | HID Interface | Channels | LEDs/Channel | Max LEDs | Color Format | Brightness Scale |
+| --------------- | -------- | -------- | ------------- | -------- | ------------ | -------- | ------------ | ---------------- |
+| **Prism 8**     | `0x16D5` | `0x1F01` | 0             | 8        | 126          | 1,008    | GRB          | 0.75             |
+| **Nollie 8 v2** | `0x16D2` | `0x1F01` | 0             | 8        | 126          | 1,008    | GRB          | 1.00             |
+| **Prism S**     | `0x16D0` | `0x1294` | 2             | 2        | variable     | 282      | RGB          | 0.50             |
+| **Prism Mini**  | `0x16D0` | `0x1407` | 2             | 1        | 128          | 128      | RGB          | 1.00             |
 
 ### 2.2 VID Disambiguation
 
 PrismRGB uses three different Vendor IDs. Prism S and Prism Mini share VID `0x16D0` but have distinct PIDs:
 
-| VID | Vendor | Controllers |
-|-----|--------|-------------|
-| `0x16D5` | PrismRGB | Prism 8 |
-| `0x16D2` | PrismRGB (Nollie) | Nollie 8 v2 |
+| VID      | Vendor                | Controllers         |
+| -------- | --------------------- | ------------------- |
+| `0x16D5` | PrismRGB              | Prism 8             |
+| `0x16D2` | PrismRGB (Nollie)     | Nollie 8 v2         |
 | `0x16D0` | GCS (MCS Electronics) | Prism S, Prism Mini |
 
 ### 2.3 Protocol Database Registration
@@ -109,14 +110,14 @@ All controllers use USB HID interrupt transfers (not control transfers like Raze
 
 ### 3.2 Command Vocabulary
 
-| Prefix | Direction | Purpose | Used By |
-|--------|-----------|---------|---------|
-| `0xFC` | Write then Read | Query commands (firmware version, channel counts, voltage) | Prism 8, Nollie 8 |
-| `0xFE` | Write only | Configuration commands (hardware effect, settings save, channel update) | Prism 8, Nollie 8, Prism S |
-| `0xFF` | Write only | Frame commit / latch | Prism 8, Nollie 8 |
-| `0xAA` | Write only | Data marker (at offset 4) | Prism Mini |
-| `0xBB` | Write only | Hardware lighting config (at offset 4) | Prism Mini |
-| `0xCC` | Write only | Firmware version query (at offset 4) | Prism Mini |
+| Prefix | Direction       | Purpose                                                                 | Used By                    |
+| ------ | --------------- | ----------------------------------------------------------------------- | -------------------------- |
+| `0xFC` | Write then Read | Query commands (firmware version, channel counts, voltage)              | Prism 8, Nollie 8          |
+| `0xFE` | Write only      | Configuration commands (hardware effect, settings save, channel update) | Prism 8, Nollie 8, Prism S |
+| `0xFF` | Write only      | Frame commit / latch                                                    | Prism 8, Nollie 8          |
+| `0xAA` | Write only      | Data marker (at offset 4)                                               | Prism Mini                 |
+| `0xBB` | Write only      | Hardware lighting config (at offset 4)                                  | Prism Mini                 |
+| `0xCC` | Write only      | Firmware version query (at offset 4)                                    | Prism Mini                 |
 
 Note: Prism 8 / Nollie 8 use byte [1] as the command prefix. Prism Mini uses byte [4] as the marker byte (bytes [1-3] are part of the packet header).
 
@@ -208,10 +209,10 @@ fn encode_color(r: u8, g: u8, b: u8, scale: f32, format: DeviceColorFormat) -> [
 
 The Nollie 8 v2 uses the **exact same protocol** as the Prism 8. The only differences:
 
-| Property | Prism 8 | Nollie 8 v2 |
-|----------|---------|-------------|
-| Vendor ID | `0x16D5` | `0x16D2` |
-| Brightness scale | 0.75 | 1.00 (no scaling) |
+| Property         | Prism 8  | Nollie 8 v2       |
+| ---------------- | -------- | ----------------- |
+| Vendor ID        | `0x16D5` | `0x16D2`          |
+| Brightness scale | 0.75     | 1.00 (no scaling) |
 
 All protocol logic is shared. The implementation parameterizes only VID and brightness.
 
@@ -389,11 +390,11 @@ original driver source.
 
 ### 5.1 Strimer Cable Types
 
-| Cable | LED Count | Grid Layout | RGB Data Size |
-|-------|----------|-------------|---------------|
-| **24-pin ATX Strimer** | 120 | 20 × 6 | 360 bytes |
-| **Dual 8-pin GPU Strimer** | 108 | 27 × 4 | 324 bytes |
-| **Triple 8-pin GPU Strimer** | 162 | 27 × 6 | 486 bytes |
+| Cable                        | LED Count | Grid Layout | RGB Data Size |
+| ---------------------------- | --------- | ----------- | ------------- |
+| **24-pin ATX Strimer**       | 120       | 20 × 6      | 360 bytes     |
+| **Dual 8-pin GPU Strimer**   | 108       | 27 × 4      | 324 bytes     |
+| **Triple 8-pin GPU Strimer** | 162       | 27 × 6      | 486 bytes     |
 
 ```rust
 /// Cable mode byte for settings save command.
@@ -478,16 +479,16 @@ reconstructs the buffer by byte offset.
 
 ### 5.4 Key Differences from Prism 8
 
-| Feature | Prism 8 / Nollie 8 | Prism S |
-|---------|-------------------|---------|
-| Color format | GRB | RGB |
-| Brightness scale | 0.75 / 1.00 | 0.50 |
-| Frame commit | Explicit `0xFF` byte | Implicit (on completion) |
-| Firmware version query | Yes (`0xFC 0x01`) | No |
-| Voltage monitoring | Yes (`0xFC 0x1A`) | No |
-| Packet addressing | `packet_id = idx + ch*6` | Sequential byte stream |
-| HID interface | 0 | 2 |
-| Channel model | 8 independent channels | 2 cables in combined buffer |
+| Feature                | Prism 8 / Nollie 8       | Prism S                     |
+| ---------------------- | ------------------------ | --------------------------- |
+| Color format           | GRB                      | RGB                         |
+| Brightness scale       | 0.75 / 1.00              | 0.50                        |
+| Frame commit           | Explicit `0xFF` byte     | Implicit (on completion)    |
+| Firmware version query | Yes (`0xFC 0x01`)        | No                          |
+| Voltage monitoring     | Yes (`0xFC 0x1A`)        | No                          |
+| Packet addressing      | `packet_id = idx + ch*6` | Sequential byte stream      |
+| HID interface          | 0                        | 2                           |
+| Channel model          | 8 independent channels   | 2 cables in combined buffer |
 
 ### 5.5 Shutdown
 
@@ -711,16 +712,16 @@ pub struct PrismRgbProtocol {
 
 ### 7.2 Protocol Trait Mapping
 
-| Protocol Trait Method | Prism 8 / Nollie 8 | Prism S | Prism Mini |
-|----------------------|---------------------|---------|------------|
-| `name()` | `"PrismRGB Prism 8"` / `"Nollie 8 v2"` | `"PrismRGB Prism S"` | `"PrismRGB Prism Mini"` |
-| `init_sequence()` | `[FC 01]` firmware, `[FC 03]` channels, `[FE 02]` hw effect | `[FE 01]` settings save | `[CC]` firmware query, `[BB]` hw config |
-| `shutdown_sequence()` | Fill + commit + `[FE 02]` + `[FE 01]` hw mode | Fill + `[FE 01]` settings save | Fill + `[BB]` hw config |
-| `encode_frame()` | Per-channel GRB packets + `[FF]` commit | Combined RGB buffer, sequential chunks | Numbered RGB packets with `[AA]` marker |
-| `parse_response()` | Firmware version, channel counts, voltage | — (no responses) | Firmware version |
-| `zones()` | 8 zones (one per channel) | 2 zones (ATX + GPU) | 1 zone |
-| `total_leds()` | Sum of channel counts (up to 1,008) | ATX + GPU count (up to 282) | 128 |
-| `frame_interval()` | 16ms (60fps) | 16ms (60fps) | 16ms (60fps) |
+| Protocol Trait Method | Prism 8 / Nollie 8                                          | Prism S                                | Prism Mini                              |
+| --------------------- | ----------------------------------------------------------- | -------------------------------------- | --------------------------------------- |
+| `name()`              | `"PrismRGB Prism 8"` / `"Nollie 8 v2"`                      | `"PrismRGB Prism S"`                   | `"PrismRGB Prism Mini"`                 |
+| `init_sequence()`     | `[FC 01]` firmware, `[FC 03]` channels, `[FE 02]` hw effect | `[FE 01]` settings save                | `[CC]` firmware query, `[BB]` hw config |
+| `shutdown_sequence()` | Fill + commit + `[FE 02]` + `[FE 01]` hw mode               | Fill + `[FE 01]` settings save         | Fill + `[BB]` hw config                 |
+| `encode_frame()`      | Per-channel GRB packets + `[FF]` commit                     | Combined RGB buffer, sequential chunks | Numbered RGB packets with `[AA]` marker |
+| `parse_response()`    | Firmware version, channel counts, voltage                   | — (no responses)                       | Firmware version                        |
+| `zones()`             | 8 zones (one per channel)                                   | 2 zones (ATX + GPU)                    | 1 zone                                  |
+| `total_leds()`        | Sum of channel counts (up to 1,008)                         | ATX + GPU count (up to 282)            | 128                                     |
+| `frame_interval()`    | 16ms (60fps)                                                | 16ms (60fps)                           | 16ms (60fps)                            |
 
 ### 7.3 Transport
 
@@ -838,23 +839,23 @@ graph TD
 
 ### 8.4 Bandwidth Analysis
 
-| Device | Packets/Frame | Bytes/Frame | At 60fps |
-|--------|--------------|-------------|----------|
-| Prism 8 (all 8ch, 126 LEDs each) | 48 data + 1 commit = 49 | 3,185 | 191 KB/s |
-| Nollie 8 (all 8ch, 126 LEDs each) | 49 | 3,185 | 191 KB/s |
-| Prism S (ATX + Triple GPU) | ceil(846/64) = 14 | 910 | 55 KB/s |
-| Prism Mini (128 LEDs) | 7 | 455 | 27 KB/s |
+| Device                            | Packets/Frame           | Bytes/Frame | At 60fps |
+| --------------------------------- | ----------------------- | ----------- | -------- |
+| Prism 8 (all 8ch, 126 LEDs each)  | 48 data + 1 commit = 49 | 3,185       | 191 KB/s |
+| Nollie 8 (all 8ch, 126 LEDs each) | 49                      | 3,185       | 191 KB/s |
+| Prism S (ATX + Triple GPU)        | ceil(846/64) = 14       | 910         | 55 KB/s  |
+| Prism Mini (128 LEDs)             | 7                       | 455         | 27 KB/s  |
 
 All devices operate well within USB 1.1 Full Speed bandwidth (1.5 MB/s for interrupt transfers).
 
 ### 8.5 Timing Constraints
 
-| Operation | Minimum Delay | Notes |
-|-----------|--------------|-------|
-| Prism S settings save | 50ms | Required pause after `0xFE 0x01` write |
-| Prism 8 voltage poll | Every 150 frames | ~2.5s at 60fps |
-| Inter-packet gap | None required | Controllers handle back-to-back writes |
-| Frame commit to next frame | One frame interval | Don't send color data until next tick |
+| Operation                  | Minimum Delay      | Notes                                  |
+| -------------------------- | ------------------ | -------------------------------------- |
+| Prism S settings save      | 50ms               | Required pause after `0xFE 0x01` write |
+| Prism 8 voltage poll       | Every 150 frames   | ~2.5s at 60fps                         |
+| Inter-packet gap           | None required      | Controllers handle back-to-back writes |
+| Frame commit to next frame | One frame interval | Don't send color data until next tick  |
 
 ---
 
@@ -864,21 +865,22 @@ Spec 04 defined a self-contained USB HID backend using `hidapi` and a `HidContro
 
 ### 9.1 What Changed
 
-| Spec 04 | Spec 20 (this spec) | Reason |
-|---------|---------------------|--------|
-| `hidapi` crate | `nusb` crate | Async-native, better cross-platform support |
-| `HidController` trait | `Protocol` trait (spec 16) | Pure encoding, zero I/O — testable without hardware |
-| `HidTransport` trait (custom) | `Transport` trait (spec 16) | Unified async I/O abstraction shared with all USB drivers |
-| `HidDeviceType` enum | `PrismRgbModel` enum | Scoped to PrismRGB family, protocol-database-aware |
-| `HidDeviceInfo` struct | `DeviceDescriptor` (spec 16) | Static compile-time registry with `prismrgb_device!` macro |
-| `discover_devices()` function | `UsbScanner` (spec 16) | Shared USB scanner filtered by protocol database |
-| `open_device()` factory | `UsbBackend` (spec 16) | Unified connect flow: lookup descriptor → create Protocol + Transport |
-| `HidError` enum | `ProtocolError` + `TransportError` (spec 16) | Separated encoding errors from I/O errors |
-| Per-device `HidDevice` field | Transport injected by `UsbBackend` | Protocol holds no I/O resources |
+| Spec 04                       | Spec 20 (this spec)                          | Reason                                                                |
+| ----------------------------- | -------------------------------------------- | --------------------------------------------------------------------- |
+| `hidapi` crate                | `nusb` crate                                 | Async-native, better cross-platform support                           |
+| `HidController` trait         | `Protocol` trait (spec 16)                   | Pure encoding, zero I/O — testable without hardware                   |
+| `HidTransport` trait (custom) | `Transport` trait (spec 16)                  | Unified async I/O abstraction shared with all USB drivers             |
+| `HidDeviceType` enum          | `PrismRgbModel` enum                         | Scoped to PrismRGB family, protocol-database-aware                    |
+| `HidDeviceInfo` struct        | `DeviceDescriptor` (spec 16)                 | Static compile-time registry with `prismrgb_device!` macro            |
+| `discover_devices()` function | `UsbScanner` (spec 16)                       | Shared USB scanner filtered by protocol database                      |
+| `open_device()` factory       | `UsbBackend` (spec 16)                       | Unified connect flow: lookup descriptor → create Protocol + Transport |
+| `HidError` enum               | `ProtocolError` + `TransportError` (spec 16) | Separated encoding errors from I/O errors                             |
+| Per-device `HidDevice` field  | Transport injected by `UsbBackend`           | Protocol holds no I/O resources                                       |
 
 ### 9.2 What Stays the Same
 
 All byte-level protocol knowledge is preserved exactly:
+
 - Packet formats (§4, §5, §6) are identical to spec 04
 - Command bytes, color orderings, brightness scales unchanged
 - Voltage monitoring, low-power saver, 4-bit compression logic unchanged
@@ -912,12 +914,14 @@ pub struct MockPrismTransport {
 ### 10.2 Test Categories
 
 **Packet encoding (all variants):**
+
 - Verify byte-level packet layout for every command type
 - Round-trip encode → parse for query/response pairs
 - Color format conversion: RGB input → GRB wire bytes (Prism 8/Nollie 8)
 - Brightness scaling: verify channel values are pre-multiplied correctly
 
 **Prism 8 / Nollie 8 specific:**
+
 - Packet addressing: verify `packet_id = idx + (ch × 6)` for all 48 packets
 - Channel count parsing: big-endian query response vs little-endian update
 - Voltage reading: uint16 LE → float conversion
@@ -925,12 +929,14 @@ pub struct MockPrismTransport {
 - Shared implementation: same test suite passes for both Prism 8 (0.75 scale) and Nollie 8 (1.0 scale)
 
 **Prism S specific:**
+
 - Combined buffer layout: ATX data pads to byte 320, GPU marker at 320
 - GPU-only mode: marker at byte 0, zero-filled first chunk
 - Buffer chunking: verify 64-byte splits align correctly
 - No frame commit: verify no `0xFF` byte is sent
 
 **Prism Mini specific:**
+
 - 1-indexed packet numbering: packets start at 1, not 0
 - Total packet count header: verify `ceil(led_count / 20)`
 - Data marker: verify `0xAA` at offset 4 in every data packet
@@ -939,12 +945,14 @@ pub struct MockPrismTransport {
 - Hardware config: verify `0xBB` marker and field positions
 
 **Protocol database:**
+
 - All four devices resolve to valid descriptors
 - VID/PID disambiguation: `0x16D0` maps to both Prism S and Prism Mini via different PIDs
 - Interface numbers match (0 for Prism 8/Nollie 8, 2 for Prism S/Mini)
 - `PrismRgbModel` → brightness scale mapping is correct
 
 **Init/shutdown sequences:**
+
 - Init produces correct command order for each variant
 - Shutdown produces correct command order including final frame
 - Prism S 50ms delay is encoded in `ProtocolCommand::post_delay`
@@ -971,21 +979,21 @@ fn prism8_firmware_query_matches_reference() {
 
 ## Appendix A: Quick Reference — All Packet Formats
 
-| Device | Packet | Bytes [0..] | Purpose |
-|--------|--------|-------------|---------|
-| **Prism 8 / Nollie 8** | `[0x00, 0xFC, 0x01, 0x00...]` | 65 | Query firmware version |
-| | `[0x00, 0xFC, 0x03, 0x00...]` | 65 | Query channel LED counts |
-| | `[0x00, 0xFC, 0x1A, 0x00...]` | 65 | Read voltage rails |
-| | `[0x00, 0xFE, 0x01, 0x00, ...]` | 65 | Activate hardware mode |
-| | `[0x00, 0xFE, 0x02, 0x00, R, G, B, 0x64, 0x0A, 0x00, 0x01]` | 65 | Set hardware effect |
-| | `[0x00, 0xFE, 0x03, ch0_lo, ch0_hi, ...]` | 65 | Update channel counts |
-| | `[0x00, packet_id, GRB...]` | 65 | Color data (21 LEDs) |
-| | `[0x00, 0xFF]` | 65 | Frame commit / latch |
-| **Prism S** | `[0x00, 0xFE, 0x01, R, G, B, mode]` | 65 | Save settings |
-| | `[0x00, <64 bytes RGB data>]` | 65 | Buffer chunk (sequential) |
-| **Prism Mini** | `[0x00, 0x00, 0x00, 0x00, 0xCC]` | 65 | Query firmware version |
-| | `[0x00, pkt#, total, 0x00, 0xAA, RGB...]` | 65 | Color data (20 LEDs) |
-| | `[0x00, 0x00, 0x00, 0x00, 0xBB, ...]` | 65 | Hardware lighting config |
+| Device                 | Packet                                                      | Bytes [0..] | Purpose                   |
+| ---------------------- | ----------------------------------------------------------- | ----------- | ------------------------- |
+| **Prism 8 / Nollie 8** | `[0x00, 0xFC, 0x01, 0x00...]`                               | 65          | Query firmware version    |
+|                        | `[0x00, 0xFC, 0x03, 0x00...]`                               | 65          | Query channel LED counts  |
+|                        | `[0x00, 0xFC, 0x1A, 0x00...]`                               | 65          | Read voltage rails        |
+|                        | `[0x00, 0xFE, 0x01, 0x00, ...]`                             | 65          | Activate hardware mode    |
+|                        | `[0x00, 0xFE, 0x02, 0x00, R, G, B, 0x64, 0x0A, 0x00, 0x01]` | 65          | Set hardware effect       |
+|                        | `[0x00, 0xFE, 0x03, ch0_lo, ch0_hi, ...]`                   | 65          | Update channel counts     |
+|                        | `[0x00, packet_id, GRB...]`                                 | 65          | Color data (21 LEDs)      |
+|                        | `[0x00, 0xFF]`                                              | 65          | Frame commit / latch      |
+| **Prism S**            | `[0x00, 0xFE, 0x01, R, G, B, mode]`                         | 65          | Save settings             |
+|                        | `[0x00, <64 bytes RGB data>]`                               | 65          | Buffer chunk (sequential) |
+| **Prism Mini**         | `[0x00, 0x00, 0x00, 0x00, 0xCC]`                            | 65          | Query firmware version    |
+|                        | `[0x00, pkt#, total, 0x00, 0xAA, RGB...]`                   | 65          | Color data (20 LEDs)      |
+|                        | `[0x00, 0x00, 0x00, 0x00, 0xBB, ...]`                       | 65          | Hardware lighting config  |
 
 ## Appendix B: Command Byte Map
 
@@ -1007,11 +1015,11 @@ fn prism8_firmware_query_matches_reference() {
 
 ## Appendix C: Byte Order Summary
 
-| Protocol | Query Response | Config Write |
-|----------|---------------|-------------|
-| Prism 8 channel counts query (`0xFC 0x03`) | **Big-endian** | N/A |
-| Prism 8 channel counts update (`0xFE 0x03`) | N/A | **Little-endian** |
-| Prism 8 voltage (`0xFC 0x1A`) | **Little-endian** | N/A |
+| Protocol                                    | Query Response    | Config Write      |
+| ------------------------------------------- | ----------------- | ----------------- |
+| Prism 8 channel counts query (`0xFC 0x03`)  | **Big-endian**    | N/A               |
+| Prism 8 channel counts update (`0xFE 0x03`) | N/A               | **Little-endian** |
+| Prism 8 voltage (`0xFC 0x1A`)               | **Little-endian** | N/A               |
 
 This endianness mismatch is intentional behavior observed in the original firmware.
 

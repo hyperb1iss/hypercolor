@@ -161,21 +161,22 @@ The layout viewer renders a spatial representation of how the effect appears on 
 
 **Built-in layout presets:**
 
-| Preset | Description | LED Count |
-|---|---|---|
-| `single-strip` | One horizontal LED strip | 60 |
-| `dual-strip` | Two parallel strips (desk underglow) | 120 |
-| `pc-case-basic` | 2 fans + 1 strip | ~80 |
-| `full-pc-case` | 4 fans + 2 strips + RAM + GPU + Strimers | ~500 |
-| `keyboard-60` | 60% keyboard matrix (14x5) | 70 |
-| `keyboard-full` | Full-size keyboard matrix (22x6) | 132 |
-| `monitor-ambient` | LED strip behind monitor (3 sides) | 90 |
-| `room` | Multiple strips around a room perimeter | 300 |
-| `desk-setup` | Monitor + keyboard + mouse + desk strips | ~250 |
+| Preset            | Description                              | LED Count |
+| ----------------- | ---------------------------------------- | --------- |
+| `single-strip`    | One horizontal LED strip                 | 60        |
+| `dual-strip`      | Two parallel strips (desk underglow)     | 120       |
+| `pc-case-basic`   | 2 fans + 1 strip                         | ~80       |
+| `full-pc-case`    | 4 fans + 2 strips + RAM + GPU + Strimers | ~500      |
+| `keyboard-60`     | 60% keyboard matrix (14x5)               | 70        |
+| `keyboard-full`   | Full-size keyboard matrix (22x6)         | 132       |
+| `monitor-ambient` | LED strip behind monitor (3 sides)       | 90        |
+| `room`            | Multiple strips around a room perimeter  | 300       |
+| `desk-setup`      | Monitor + keyboard + mouse + desk strips | ~250      |
 
 Authors can also load custom layout JSON files exported from the main Hypercolor spatial editor.
 
 **Viewport features:**
+
 - Pan and zoom with mouse/trackpad
 - Toggle between 2D overhead and 3D perspective views
 - Show/hide sampling grid overlay (see which canvas pixels map to which LEDs)
@@ -188,16 +189,17 @@ Most compelling effects are audio-reactive, but testing requires music playing. 
 
 **Simulator modes:**
 
-| Mode | Description | Use Case |
-|---|---|---|
-| **Metronome** | Clean, periodic beats at configurable BPM | Test beat detection, pulse effects |
-| **Sweep** | Frequency sweep from bass to treble over N seconds | Verify full-spectrum response |
-| **Bass Pulse** | Isolated bass hits with configurable intensity | Test bass-reactive effects |
-| **Full Spectrum** | Pre-recorded spectrum data playing in a loop | Realistic testing without live audio |
-| **Random** | Randomized spectrum with configurable energy distribution | Stress testing, edge cases |
-| **File** | Load an audio file, extract real FFT data | Test against specific songs |
+| Mode              | Description                                               | Use Case                             |
+| ----------------- | --------------------------------------------------------- | ------------------------------------ |
+| **Metronome**     | Clean, periodic beats at configurable BPM                 | Test beat detection, pulse effects   |
+| **Sweep**         | Frequency sweep from bass to treble over N seconds        | Verify full-spectrum response        |
+| **Bass Pulse**    | Isolated bass hits with configurable intensity            | Test bass-reactive effects           |
+| **Full Spectrum** | Pre-recorded spectrum data playing in a loop              | Realistic testing without live audio |
+| **Random**        | Randomized spectrum with configurable energy distribution | Stress testing, edge cases           |
+| **File**          | Load an audio file, extract real FFT data                 | Test against specific songs          |
 
 **Simulator controls:**
+
 - BPM slider (60-200)
 - Per-band energy sliders (bass, low-mid, mid, high-mid, treble)
 - Beat confidence slider (how "clean" the beats are)
@@ -251,7 +253,14 @@ This is the minimum viable effect. If someone can write this, they can make LEDs
 <head>
   <title>My First Effect</title>
   <meta description="A simple color wave" />
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" />
+  <meta
+    property="speed"
+    label="Speed"
+    type="number"
+    min="1"
+    max="10"
+    default="5"
+  />
 </head>
 <body>
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -299,7 +308,12 @@ my-effect/
 **Effect class with Lightscript decorators:**
 
 ```typescript
-import { CanvasEffect, NumberControl, ComboboxControl, ColorControl } from "@hypercolor/lightscript";
+import {
+  CanvasEffect,
+  NumberControl,
+  ComboboxControl,
+  ColorControl,
+} from "@hypercolor/lightscript";
 
 export class NeonRain extends CanvasEffect {
   @NumberControl({ label: "Speed", min: 1, max: 20, default: 8 })
@@ -380,7 +394,9 @@ export class NoiseField extends CanvasEffect {
     for (let y = 0; y < 200; y++) {
       for (let x = 0; x < 320; x++) {
         const n = this.noise(x * 0.02 + this.time, y * 0.02);
-        const color = chroma.scale(["#000", "#e135ff", "#80ffea"])(n * 0.5 + 0.5);
+        const color = chroma.scale(["#000", "#e135ff", "#80ffea"])(
+          n * 0.5 + 0.5,
+        );
         const [r, g, b] = color.rgb();
         const i = (y * 320 + x) * 4;
         imageData.data[i] = r;
@@ -443,18 +459,18 @@ export class PlasmaShader extends WebGLEffect {
 
 **Standard uniform bindings (auto-injected):**
 
-| Uniform | Type | Description |
-|---|---|---|
-| `iTime` | `float` | Elapsed seconds since effect start |
-| `iResolution` | `vec2` | Canvas size (320.0, 200.0) |
-| `iMouse` | `vec2` | Mouse position (normalized 0-1, rarely used for LED effects) |
-| `iAudioLevel` | `float` | Overall audio level (0-1) |
-| `iAudioBass` | `float` | Bass band energy (0-1) |
-| `iAudioMid` | `float` | Mid band energy (0-1) |
-| `iAudioTreble` | `float` | Treble band energy (0-1) |
-| `iAudioSpectrum` | `sampler2D` | 200-bin FFT as a 200x1 texture |
-| `iAudioBeat` | `float` | Beat pulse (0-1, spikes on beats) |
-| `iAudioBeatPhase` | `float` | Phase within current beat (0-1) |
+| Uniform           | Type        | Description                                                  |
+| ----------------- | ----------- | ------------------------------------------------------------ |
+| `iTime`           | `float`     | Elapsed seconds since effect start                           |
+| `iResolution`     | `vec2`      | Canvas size (320.0, 200.0)                                   |
+| `iMouse`          | `vec2`      | Mouse position (normalized 0-1, rarely used for LED effects) |
+| `iAudioLevel`     | `float`     | Overall audio level (0-1)                                    |
+| `iAudioBass`      | `float`     | Bass band energy (0-1)                                       |
+| `iAudioMid`       | `float`     | Mid band energy (0-1)                                        |
+| `iAudioTreble`    | `float`     | Treble band energy (0-1)                                     |
+| `iAudioSpectrum`  | `sampler2D` | 200-bin FFT as a 200x1 texture                               |
+| `iAudioBeat`      | `float`     | Beat pulse (0-1, spikes on beats)                            |
+| `iAudioBeatPhase` | `float`     | Phase within current beat (0-1)                              |
 
 These are the same uniforms used by lightscript-workshop today. Effect portability is preserved.
 
@@ -618,13 +634,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 **Standard library modules:**
 
-| Module | Contents |
-|---|---|
-| `lib/noise.wgsl` | Simplex 2D/3D/4D, value noise, Worley/cellular, FBM (fractional Brownian motion), curl noise, domain warping |
-| `lib/color.wgsl` | HSV/HSL/Oklab conversion, palette interpolation, gamma correction, color blending modes, named palettes |
-| `lib/audio.wgsl` | Spectrum sampling helpers, beat-reactive easing, frequency band extraction, spectrum smoothing |
-| `lib/math.wgsl` | Rotation matrices, SDF primitives (circle, box, hexagon), smooth min/max, polar coordinates, remapping |
-| `lib/pattern.wgsl` | Voronoi, checkerboard, hexagonal grid, truchet tiles, reaction-diffusion |
+| Module             | Contents                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `lib/noise.wgsl`   | Simplex 2D/3D/4D, value noise, Worley/cellular, FBM (fractional Brownian motion), curl noise, domain warping |
+| `lib/color.wgsl`   | HSV/HSL/Oklab conversion, palette interpolation, gamma correction, color blending modes, named palettes      |
+| `lib/audio.wgsl`   | Spectrum sampling helpers, beat-reactive easing, frequency band extraction, spectrum smoothing               |
+| `lib/math.wgsl`    | Rotation matrices, SDF primitives (circle, box, hexagon), smooth min/max, polar coordinates, remapping       |
+| `lib/pattern.wgsl` | Voronoi, checkerboard, hexagonal grid, truchet tiles, reaction-diffusion                                     |
 
 The include system is a simple text preprocessor -- no module system, no namespacing, just source concatenation with duplicate-include guards. This keeps WGSL effects fully self-contained when distributed (includes are inlined at build time).
 
@@ -719,12 +735,14 @@ Shadertoy GLSL (mainImage)
 ```
 
 **What works automatically:**
+
 - All GLSL math functions, texture sampling, swizzling
 - `iTime`, `iResolution`, `iMouse`, `iFrame` uniforms
 - Single-pass shaders (the vast majority of Shadertoy effects)
 - Most GLSL extensions used by Shadertoy
 
 **What requires manual adaptation:**
+
 - Multi-pass shaders (Buffer A/B/C/D) -- need to be restructured as compute passes
 - `iChannel0-3` when used for texture input (need to provide textures)
 - Shaders using `texelFetch` on buffer channels for feedback loops
@@ -805,15 +823,15 @@ The compositor stacks visual layers, each with its own generator, blend mode, an
 
 **Layer types:**
 
-| Layer Type | Description | Parameters |
-|---|---|---|
-| **Gradient** | Linear, radial, conic, or multi-stop gradient | Colors, angle, position, scale |
-| **Solid** | Single color fill | Color |
-| **Noise** | Simplex/Perlin/Worley noise field | Scale, octaves, speed, color mapping |
-| **Pattern** | Repeating geometric patterns | Type (stripe, checker, hex, dot), size, rotation |
-| **Wave** | Sine/triangle/sawtooth wave patterns | Frequency, amplitude, direction, phase |
-| **Particles** | Simple particle emitter | Count, size, speed, lifetime, color |
-| **Image** | Static image or GIF | Source, position, scale, tiling |
+| Layer Type    | Description                                   | Parameters                                       |
+| ------------- | --------------------------------------------- | ------------------------------------------------ |
+| **Gradient**  | Linear, radial, conic, or multi-stop gradient | Colors, angle, position, scale                   |
+| **Solid**     | Single color fill                             | Color                                            |
+| **Noise**     | Simplex/Perlin/Worley noise field             | Scale, octaves, speed, color mapping             |
+| **Pattern**   | Repeating geometric patterns                  | Type (stripe, checker, hex, dot), size, rotation |
+| **Wave**      | Sine/triangle/sawtooth wave patterns          | Frequency, amplitude, direction, phase           |
+| **Particles** | Simple particle emitter                       | Count, size, speed, lifetime, color              |
+| **Image**     | Static image or GIF                           | Source, position, scale, tiling                  |
 
 **Layer properties:**
 
@@ -852,6 +870,7 @@ graph LR
 ```
 
 Each wiring has:
+
 - **Input range** mapping (e.g., bass 0.0-1.0 → scale 0.3-1.5)
 - **Smoothing** factor (0 = raw, 1 = heavily smoothed)
 - **Response curve** (linear, exponential, logarithmic, step)
@@ -869,8 +888,19 @@ import { CanvasEffect } from "@hypercolor/lightscript";
 
 export class MyVisualEffect extends CanvasEffect {
   layers = [
-    { type: "gradient", colors: ["#e135ff", "#000000"], mode: "radial", blend: "screen" },
-    { type: "noise", scale: 4, speed: 0.3, colors: ["#000", "#80ffea"], blend: "add" },
+    {
+      type: "gradient",
+      colors: ["#e135ff", "#000000"],
+      mode: "radial",
+      blend: "screen",
+    },
+    {
+      type: "noise",
+      scale: 4,
+      speed: 0.3,
+      colors: ["#000", "#80ffea"],
+      blend: "add",
+    },
   ];
 
   onRender(ctx: CanvasRenderingContext2D, dt: number): void {
@@ -895,13 +925,13 @@ Quick-start presets for common effect patterns. Each preset generates a starting
 
 **Preset categories:**
 
-| Category | Presets |
-|---|---|
-| **Ambient** | Slow gradient cycle, breathing pulse, aurora, lava lamp, ocean waves |
-| **Audio-Reactive** | Spectrum bars, bass pulse, beat flash, waveform, VU meter |
-| **Gaming** | Health bar, cooldown indicator, team colors, ambient from screen |
-| **Seasonal** | Holiday lights, fireplace, thunderstorm, snowfall, spring bloom |
-| **Aesthetic** | Vaporwave, cyberpunk, retrowave, pastel dream, dark forest |
+| Category           | Presets                                                              |
+| ------------------ | -------------------------------------------------------------------- |
+| **Ambient**        | Slow gradient cycle, breathing pulse, aurora, lava lamp, ocean waves |
+| **Audio-Reactive** | Spectrum bars, bass pulse, beat flash, waveform, VU meter            |
+| **Gaming**         | Health bar, cooldown indicator, team colors, ambient from screen     |
+| **Seasonal**       | Holiday lights, fireplace, thunderstorm, snowfall, spring bloom      |
+| **Aesthetic**      | Vaporwave, cyberpunk, retrowave, pastel dream, dark forest           |
 
 ### 4.4 Node-Based Shader Editor (v2/v3)
 
@@ -1049,20 +1079,21 @@ hypercolor simulate --list
 
 **Device simulation library:**
 
-| Device | LED Count | Topology | Notes |
-|---|---|---|---|
-| WLED strip (1m, 60/m) | 60 | Linear strip | Most common WLED config |
-| WLED strip (5m, 60/m) | 300 | Linear strip | Long strip, tests color continuity |
-| Corsair LL120 fan | 16 | Ring | Dual-ring fan, inner + outer |
-| Corsair H150i LCD | 48 | 3x ring | AIO pump head with LCD |
-| Lian Li Strimer Plus ATX | 120 | 20x6 matrix | Cable with grid layout |
-| Lian Li Strimer Plus GPU | 108 | 27x4 matrix | GPU power cable |
-| Razer Huntsman V2 | 132 | 22x6 matrix | Per-key keyboard |
-| G.Skill Trident Z5 (2x) | 10 | 2x linear (5 each) | RAM stick LEDs |
-| ASUS ROG Strix Z790 | 8 | Irregular | Motherboard accent LEDs |
-| Full PC setup | ~500 | Mixed | All above devices combined |
+| Device                   | LED Count | Topology           | Notes                              |
+| ------------------------ | --------- | ------------------ | ---------------------------------- |
+| WLED strip (1m, 60/m)    | 60        | Linear strip       | Most common WLED config            |
+| WLED strip (5m, 60/m)    | 300       | Linear strip       | Long strip, tests color continuity |
+| Corsair LL120 fan        | 16        | Ring               | Dual-ring fan, inner + outer       |
+| Corsair H150i LCD        | 48        | 3x ring            | AIO pump head with LCD             |
+| Lian Li Strimer Plus ATX | 120       | 20x6 matrix        | Cable with grid layout             |
+| Lian Li Strimer Plus GPU | 108       | 27x4 matrix        | GPU power cable                    |
+| Razer Huntsman V2        | 132       | 22x6 matrix        | Per-key keyboard                   |
+| G.Skill Trident Z5 (2x)  | 10        | 2x linear (5 each) | RAM stick LEDs                     |
+| ASUS ROG Strix Z790      | 8         | Irregular          | Motherboard accent LEDs            |
+| Full PC setup            | ~500      | Mixed              | All above devices combined         |
 
 Each simulation includes:
+
 - Accurate LED positions (measured from real hardware)
 - Correct color format (RGB vs GRB)
 - Brightness characteristics (gamma curve, max brightness)
@@ -1078,14 +1109,14 @@ Pre-configured spatial layouts for common setups. These go beyond single-device 
 hypercolor dev my-effect.html --layout gaming-desk
 ```
 
-| Layout | Devices | Description |
-|---|---|---|
-| `minimal` | 1 strip (60 LEDs) | Fastest preview, single-strip testing |
-| `gaming-desk` | Monitor backlight + desk strips + keyboard | Typical desk setup |
-| `full-tower` | 4 fans + 2 strips + RAM + GPU Strimer + ATX Strimer | Full PC case |
-| `studio` | Desk strips + monitor + shelving strips | Content creator setup |
-| `room-ambient` | Ceiling strip + wall strips + bias lighting | Room-scale lighting |
-| `streamers` | Strimers only (ATX + GPU) | For testing Strimer-specific layouts |
+| Layout         | Devices                                             | Description                           |
+| -------------- | --------------------------------------------------- | ------------------------------------- |
+| `minimal`      | 1 strip (60 LEDs)                                   | Fastest preview, single-strip testing |
+| `gaming-desk`  | Monitor backlight + desk strips + keyboard          | Typical desk setup                    |
+| `full-tower`   | 4 fans + 2 strips + RAM + GPU Strimer + ATX Strimer | Full PC case                          |
+| `studio`       | Desk strips + monitor + shelving strips             | Content creator setup                 |
+| `room-ambient` | Ceiling strip + wall strips + bias lighting         | Room-scale lighting                   |
+| `streamers`    | Strimers only (ATX + GPU)                           | For testing Strimer-specific layouts  |
 
 ### 6.3 Performance Benchmarking
 
@@ -1304,12 +1335,14 @@ Step 5: "Let's add color response. Use harmonicHue for musically-
 The API reference is auto-generated from source code to ensure it's always current.
 
 **Lightscript SDK (TypeScript):**
+
 - Generated from TypeScript declaration files using TypeDoc
 - Every class, method, property, and decorator is documented
 - Includes inline examples for every public API
 - Cross-linked (e.g., clicking `getAudioData()` takes you to the `AudioData` type definition)
 
 **WGSL Standard Library:**
+
 - Generated from structured comments in `.wgsl` files:
   ```wgsl
   /// Fractional Brownian motion using simplex noise.
@@ -1339,18 +1372,18 @@ The cookbook is a curated collection of copy-pasteable patterns for common effec
 
 **Example cookbook entries:**
 
-| Pattern | Description |
-|---|---|
-| Smooth gradient cycle | HSL-based gradient that cycles smoothly without color banding |
-| Particle fountain | Gravity-based particles with configurable emission, pooling for perf |
-| Bass-reactive pulse | Radial pulse that expands on beat, contracts between beats |
-| Trail effect | Partial canvas clear (alpha overlay) for motion trails |
-| Spectrum bars | FFT visualization with configurable bar count, peak hold |
-| Noise-based aurora | Multi-octave simplex noise with color palette mapping |
-| Voronoi cells | Animated Voronoi diagram (both Canvas 2D and WGSL versions) |
-| Reaction-diffusion | Gray-Scott model for organic pattern generation |
-| Color palette interpolation | Iq-style cosine palettes with HSL fallback |
-| Per-zone awareness | Effects that adapt to zone topology (different on strips vs fans) |
+| Pattern                     | Description                                                          |
+| --------------------------- | -------------------------------------------------------------------- |
+| Smooth gradient cycle       | HSL-based gradient that cycles smoothly without color banding        |
+| Particle fountain           | Gravity-based particles with configurable emission, pooling for perf |
+| Bass-reactive pulse         | Radial pulse that expands on beat, contracts between beats           |
+| Trail effect                | Partial canvas clear (alpha overlay) for motion trails               |
+| Spectrum bars               | FFT visualization with configurable bar count, peak hold             |
+| Noise-based aurora          | Multi-octave simplex noise with color palette mapping                |
+| Voronoi cells               | Animated Voronoi diagram (both Canvas 2D and WGSL versions)          |
+| Reaction-diffusion          | Gray-Scott model for organic pattern generation                      |
+| Color palette interpolation | Iq-style cosine palettes with HSL fallback                           |
+| Per-zone awareness          | Effects that adapt to zone topology (different on strips vs fans)    |
 
 ### 7.5 Example Gallery
 
@@ -1363,6 +1396,7 @@ Every built-in and custom effect has a gallery entry with:
 - **"Use as template" button** (fork the effect into a new project)
 
 The gallery is filterable by:
+
 - Rendering path (Canvas 2D, WebGL, WGSL)
 - Audio-reactive (yes/no)
 - Difficulty (beginner, intermediate, advanced)
@@ -1373,12 +1407,12 @@ The gallery is filterable by:
 
 Video tutorials supplement the written docs for visual learners:
 
-| Series | Episodes | Format |
-|---|---|---|
-| **Quick Start** | 3 episodes (5 min each) | Install → first effect → hardware |
-| **Effect Masterclass** | 10 episodes (15-20 min each) | Deep dive into each effect technique |
-| **Shader Wizardry** | 5 episodes (20 min each) | WGSL shader programming from scratch |
-| **Live Builds** | Monthly | Build an effect from scratch on stream, explain decisions |
+| Series                 | Episodes                     | Format                                                    |
+| ---------------------- | ---------------------------- | --------------------------------------------------------- |
+| **Quick Start**        | 3 episodes (5 min each)      | Install → first effect → hardware                         |
+| **Effect Masterclass** | 10 episodes (15-20 min each) | Deep dive into each effect technique                      |
+| **Shader Wizardry**    | 5 episodes (20 min each)     | WGSL shader programming from scratch                      |
+| **Live Builds**        | Monthly                      | Build an effect from scratch on stream, explain decisions |
 
 Videos are embedded in the relevant docs pages (not siloed in a separate video section). The Quick Start series is linked from the README and installation guide.
 
@@ -1422,20 +1456,20 @@ Validating my-effect.html...
 
 **Validation rules:**
 
-| Check | Required | Description |
-|---|---|---|
-| Title | Yes | Non-empty, max 50 characters |
-| Description | Yes | Non-empty, max 200 characters |
-| Author/Publisher | Yes | Non-empty |
-| Tags | Yes (2+) | From a controlled vocabulary + freeform |
-| Canvas size | Yes | Must be 320x200 (or compatible) |
-| No JS errors | Yes | Effect runs without throwing for 5 seconds |
-| Frame rate | Warn | Warning if below 30fps, fail if below 15fps |
-| Memory stability | Warn | Warning if memory grows >1MB/min |
-| Preview image | Required for publish | Auto-generated or manually provided |
-| No external requests | Warn | Effects should be self-contained (CDN deps get vendored) |
-| License | Recommended | Default: MIT if not specified |
-| Version | Yes for updates | Semantic versioning (1.0.0 format) |
+| Check                | Required             | Description                                              |
+| -------------------- | -------------------- | -------------------------------------------------------- |
+| Title                | Yes                  | Non-empty, max 50 characters                             |
+| Description          | Yes                  | Non-empty, max 200 characters                            |
+| Author/Publisher     | Yes                  | Non-empty                                                |
+| Tags                 | Yes (2+)             | From a controlled vocabulary + freeform                  |
+| Canvas size          | Yes                  | Must be 320x200 (or compatible)                          |
+| No JS errors         | Yes                  | Effect runs without throwing for 5 seconds               |
+| Frame rate           | Warn                 | Warning if below 30fps, fail if below 15fps              |
+| Memory stability     | Warn                 | Warning if memory grows >1MB/min                         |
+| Preview image        | Required for publish | Auto-generated or manually provided                      |
+| No external requests | Warn                 | Effects should be self-contained (CDN deps get vendored) |
+| License              | Recommended          | Default: MIT if not specified                            |
+| Version              | Yes for updates      | Semantic versioning (1.0.0 format)                       |
 
 ### 8.3 `hypercolor package`
 
@@ -1473,6 +1507,7 @@ hypercolor package my-effect/
    - Thumbnail: 80x50 PNG for list views
 
 Authors can override the auto-generated preview with a custom image:
+
 ```bash
 hypercolor package my-effect.html --preview my-custom-preview.png
 ```
@@ -1584,17 +1619,17 @@ Hypercolor exposes an MCP server that lets AI assistants interact with the effec
 
 **MCP tools:**
 
-| Tool | Description |
-|---|---|
-| `create_effect` | Generate a new effect from a natural language description |
-| `modify_effect` | Modify an existing effect's code or parameters |
-| `preview_effect` | Capture a screenshot of the current effect output |
-| `set_control` | Change an effect's control value |
-| `get_audio_state` | Read current audio analysis data |
-| `list_effects` | List available effects with metadata |
-| `get_effect_source` | Read an effect's source code |
-| `run_benchmark` | Run performance benchmark on an effect |
-| `get_layout` | Get current spatial layout configuration |
+| Tool                | Description                                               |
+| ------------------- | --------------------------------------------------------- |
+| `create_effect`     | Generate a new effect from a natural language description |
+| `modify_effect`     | Modify an existing effect's code or parameters            |
+| `preview_effect`    | Capture a screenshot of the current effect output         |
+| `set_control`       | Change an effect's control value                          |
+| `get_audio_state`   | Read current audio analysis data                          |
+| `list_effects`      | List available effects with metadata                      |
+| `get_effect_source` | Read an effect's source code                              |
+| `run_benchmark`     | Run performance benchmark on an effect                    |
+| `get_layout`        | Get current spatial layout configuration                  |
 
 **Example MCP interaction:**
 
@@ -1720,6 +1755,7 @@ This integrates through the existing MCP protocol -- any AI assistant with MCP s
 ```
 
 **What makes this work for Bliss:**
+
 - Terminal-native workflow (no mandatory browser)
 - Sub-100ms save-to-LEDs latency
 - LSP integration for editor of choice
@@ -1773,6 +1809,7 @@ This integrates through the existing MCP protocol -- any AI assistant with MCP s
 ```
 
 **What makes this work for Yuki:**
+
 - Zero code required
 - Visual palette tools (color pickers, gradient editor)
 - Drag-and-drop audio wiring
@@ -1814,6 +1851,7 @@ This integrates through the existing MCP protocol -- any AI assistant with MCP s
 ```
 
 **What makes this work for Jake:**
+
 - Curated marketplace with animated previews
 - One-click install
 - Simple control panel (no code visible)
@@ -1860,6 +1898,7 @@ This integrates through the existing MCP protocol -- any AI assistant with MCP s
 ```
 
 **What makes this work for Sam:**
+
 - Full audio API access with per-band control
 - System audio capture (capture from DAW output)
 - Audio file testing mode for reproducible development
@@ -1934,6 +1973,7 @@ Minute 28-30: Ship
 7. Preview images are auto-generated (no design tools needed)
 
 **What could slow it down:**
+
 - Cargo build time on first install (mitigated by providing pre-built binaries)
 - WLED not being auto-discovered (firewall, mDNS issues)
 - Unfamiliar with Canvas 2D API (mitigated by tutorial comments and working examples)
@@ -1946,62 +1986,62 @@ Minute 28-30: Ship
 
 The minimum viable authoring experience. Everything needed for an expert to create and test effects locally.
 
-| Feature | Priority | Complexity |
-|---|---|---|
-| `hypercolor dev` command (file watcher + browser preview) | P0 | Medium |
-| HTML/Canvas hot-reload (iframe reload on save) | P0 | Low |
-| WGSL shader hot-swap (naga compile + pipeline swap) | P0 | Medium |
-| Auto-generated control panel from `<meta>` tags | P0 | Low |
-| Virtual LED layout viewer (basic -- single strip) | P0 | Medium |
-| `hypercolor new effect` with 3 templates (canvas-2d-basic, wgsl-fragment, lightscript-ts) | P0 | Low |
-| Shader error overlay (browser) | P0 | Low |
-| Performance metrics (frame time display) | P1 | Low |
+| Feature                                                                                   | Priority | Complexity |
+| ----------------------------------------------------------------------------------------- | -------- | ---------- |
+| `hypercolor dev` command (file watcher + browser preview)                                 | P0       | Medium     |
+| HTML/Canvas hot-reload (iframe reload on save)                                            | P0       | Low        |
+| WGSL shader hot-swap (naga compile + pipeline swap)                                       | P0       | Medium     |
+| Auto-generated control panel from `<meta>` tags                                           | P0       | Low        |
+| Virtual LED layout viewer (basic -- single strip)                                         | P0       | Medium     |
+| `hypercolor new effect` with 3 templates (canvas-2d-basic, wgsl-fragment, lightscript-ts) | P0       | Low        |
+| Shader error overlay (browser)                                                            | P0       | Low        |
+| Performance metrics (frame time display)                                                  | P1       | Low        |
 
 ### Phase 2: Rich Development (v0.2)
 
 The experience that makes development genuinely pleasant.
 
-| Feature | Priority | Complexity |
-|---|---|---|
-| Hardware bridge (dev server → daemon → LEDs) | P0 | Medium |
-| Audio simulator (metronome, sweep, file modes) | P0 | Medium |
-| Layout presets (5+ presets) | P1 | Low |
-| Full Lightscript SDK with Vite plugin | P1 | High |
-| `hypercolor bench` command | P1 | Medium |
-| Device simulator library (10+ devices) | P1 | Medium |
-| WGSL include system (`lib/noise.wgsl`, etc.) | P1 | Low |
-| Terminal error output (ANSI colors) | P1 | Low |
-| All 8 templates | P2 | Medium |
+| Feature                                        | Priority | Complexity |
+| ---------------------------------------------- | -------- | ---------- |
+| Hardware bridge (dev server → daemon → LEDs)   | P0       | Medium     |
+| Audio simulator (metronome, sweep, file modes) | P0       | Medium     |
+| Layout presets (5+ presets)                    | P1       | Low        |
+| Full Lightscript SDK with Vite plugin          | P1       | High       |
+| `hypercolor bench` command                     | P1       | Medium     |
+| Device simulator library (10+ devices)         | P1       | Medium     |
+| WGSL include system (`lib/noise.wgsl`, etc.)   | P1       | Low        |
+| Terminal error output (ANSI colors)            | P1       | Low        |
+| All 8 templates                                | P2       | Medium     |
 
 ### Phase 3: Publishing & Community (v0.3)
 
 The ecosystem layer.
 
-| Feature | Priority | Complexity |
-|---|---|---|
-| `hypercolor validate` | P0 | Low |
-| `hypercolor package` (with preview generation) | P0 | Medium |
-| `.hyper` package format | P0 | Low |
-| Effect registry (API + storage) | P1 | High |
-| `hypercolor publish` / `hypercolor install` | P1 | Medium |
-| Compatibility test suite (210 community effects) | P1 | High |
-| Screenshot comparison testing | P2 | Medium |
-| Color accuracy verification | P2 | Medium |
+| Feature                                          | Priority | Complexity |
+| ------------------------------------------------ | -------- | ---------- |
+| `hypercolor validate`                            | P0       | Low        |
+| `hypercolor package` (with preview generation)   | P0       | Medium     |
+| `.hyper` package format                          | P0       | Low        |
+| Effect registry (API + storage)                  | P1       | High       |
+| `hypercolor publish` / `hypercolor install`      | P1       | Medium     |
+| Compatibility test suite (210 community effects) | P1       | High       |
+| Screenshot comparison testing                    | P2       | Medium     |
+| Color accuracy verification                      | P2       | Medium     |
 
 ### Phase 4: Accessibility & AI (v0.4+)
 
 Broadening the creator audience.
 
-| Feature | Priority | Complexity |
-|---|---|---|
-| Visual layer compositor | P1 | High |
-| Preset generators (ambient, audio, gaming) | P1 | Medium |
-| Interactive tutorial system | P1 | High |
-| Docs site (auto-generated API reference + cookbook) | P1 | Medium |
-| MCP server for AI-assisted creation | P2 | Medium |
-| AI prompt-to-shader pipeline | P2 | High |
-| Node-based shader editor | P3 | Very High |
-| Shadertoy compatibility layer | P2 | Medium |
+| Feature                                             | Priority | Complexity |
+| --------------------------------------------------- | -------- | ---------- |
+| Visual layer compositor                             | P1       | High       |
+| Preset generators (ambient, audio, gaming)          | P1       | Medium     |
+| Interactive tutorial system                         | P1       | High       |
+| Docs site (auto-generated API reference + cookbook) | P1       | Medium     |
+| MCP server for AI-assisted creation                 | P2       | Medium     |
+| AI prompt-to-shader pipeline                        | P2       | High       |
+| Node-based shader editor                            | P3       | Very High  |
+| Shadertoy compatibility layer                       | P2       | Medium     |
 
 ---
 

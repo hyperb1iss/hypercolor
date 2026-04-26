@@ -40,11 +40,11 @@ ARTIFACT = hypercolor-{os}-{arch}   (e.g., hypercolor-linux-amd64)
 
 **Mapping:**
 
-| Platform | Artifact Suffix | Binaries |
-|----------|----------------|----------|
-| Linux x86_64 | `linux-amd64` | `hypercolor-daemon`, `hypercolor` |
-| Linux aarch64 | `linux-arm64` | `hypercolor-daemon`, `hypercolor` |
-| macOS arm64 | `macos-arm64` | `hypercolor-daemon`, `hypercolor` |
+| Platform      | Artifact Suffix | Binaries                          |
+| ------------- | --------------- | --------------------------------- |
+| Linux x86_64  | `linux-amd64`   | `hypercolor-daemon`, `hypercolor` |
+| Linux aarch64 | `linux-arm64`   | `hypercolor-daemon`, `hypercolor` |
+| macOS arm64   | `macos-arm64`   | `hypercolor-daemon`, `hypercolor` |
 
 **Install steps (Linux):**
 
@@ -162,6 +162,7 @@ WantedBy=default.target
 ```
 
 **Key changes from current:**
+
 - `Type=notify` with `WatchdogSec=30` — daemon sends `sd_notify` heartbeats every 15s
 - Resource limits — prevents runaway memory/CPU from a broken effect
 - Security hardening — minimal filesystem access
@@ -241,6 +242,7 @@ launchctl stop tech.hyperbliss.hypercolor
 ```
 
 **Key design decisions:**
+
 - `RunAtLoad: true` — starts on login without requiring a separate autostart mechanism
 - `KeepAlive.SuccessfulExit: false` — restarts on crash but not on clean shutdown
 - `ThrottleInterval: 3` — minimum 3 seconds between restart attempts
@@ -281,12 +283,14 @@ graph LR
 ```
 
 **Why a separate binary (not embedded in the daemon):**
+
 - Daemon runs headless — no GUI toolkit dependency
 - Tray binary can crash/restart independently
 - Different lifecycle: tray follows desktop session, daemon can outlive it
 - Different dependencies: tray needs platform GUI APIs, daemon doesn't
 
 **Why REST API (not D-Bus on Linux):**
+
 - Consistent cross-platform interface (same code path on Linux and macOS)
 - D-Bus is Linux-only; REST API works everywhere the daemon runs
 - WebSocket for real-time state updates (effect changes, device connect/disconnect)
@@ -298,6 +302,7 @@ graph LR
 **Toolkit:** `ksni` crate for StatusNotifierItem (SNI) protocol.
 
 SNI is the modern replacement for the legacy XEmbed system tray. Supported by:
+
 - KDE Plasma (native)
 - XFCE (native since 4.16)
 - MATE (native)
@@ -368,14 +373,15 @@ with System Settings > General > Login Items.
 
 ### Tray Icon States
 
-| State | Icon | Description |
-|-------|------|-------------|
-| Active | Filled, colored | Daemon running, effect active |
-| Paused | Filled, dimmed | Daemon running, output paused |
-| Disconnected | Outline only | Daemon not reachable |
-| Error | Warning badge | Daemon error state |
+| State        | Icon            | Description                   |
+| ------------ | --------------- | ----------------------------- |
+| Active       | Filled, colored | Daemon running, effect active |
+| Paused       | Filled, dimmed  | Daemon running, output paused |
+| Disconnected | Outline only    | Daemon not reachable          |
+| Error        | Warning badge   | Daemon error state            |
 
 Icons should be provided as:
+
 - **Linux:** SVG (symbolic icons for dark/light theme compatibility)
 - **macOS:** PDF template image (automatically adapts to light/dark menu bar)
 
@@ -455,6 +461,7 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 ## Implementation Phases
 
 ### Phase 1: Distribution (this PR)
+
 - [x] CI builds cross-platform binaries (linux-amd64, linux-arm64, macos-arm64)
 - [x] CI creates GitHub releases with binaries attached
 - [x] CI updates Homebrew tap
@@ -463,12 +470,14 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 - [ ] Update Homebrew formula with `service` block
 
 ### Phase 2: Service Hardening
+
 - [ ] `sd_notify` integration in daemon (READY=1 + WATCHDOG=1)
 - [ ] Update systemd unit to `Type=notify` with hardening
 - [ ] `hypercolor service` CLI commands with platform detection
 - [ ] Launchd lifecycle management in CLI
 
 ### Phase 3: Status Bar Applet
+
 - [ ] `hypercolor-tray` binary scaffold (separate crate: `crates/hypercolor-tray`)
 - [ ] Linux: `ksni` SNI implementation with icon states
 - [ ] macOS: `objc2-app-kit` NSStatusItem implementation
@@ -479,6 +488,7 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 - [ ] Launchd agent for tray (macOS)
 
 ### Phase 4: Polish
+
 - [ ] Tray icon set (SVG symbolic for Linux, PDF template for macOS)
 - [ ] Homebrew post-install caveats
 - [ ] `hypercolor doctor` / `hypercolor diagnose` for installation health checks

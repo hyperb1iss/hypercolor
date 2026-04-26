@@ -122,13 +122,13 @@ impl InputSource for ScreenCaptureInput {
 
 ### Lifecycle
 
-| Event | Behavior |
-|---|---|
-| **Construction** | Auto-detect backend, request portal permissions (Wayland), allocate staging buffer |
-| **First sample** | PipeWire: blocks until first frame arrives or 5s timeout. XShm/xcap: immediate |
-| **Steady state** | Non-blocking reads from backend's frame buffer (double/triple buffered) |
+| Event                  | Behavior                                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| **Construction**       | Auto-detect backend, request portal permissions (Wayland), allocate staging buffer           |
+| **First sample**       | PipeWire: blocks until first frame arrives or 5s timeout. XShm/xcap: immediate               |
+| **Steady state**       | Non-blocking reads from backend's frame buffer (double/triple buffered)                      |
 | **Monitor disconnect** | Backend emits `CaptureError::MonitorLost`, input source signals the render loop to fall back |
-| **Drop** | Release PipeWire stream, detach XShm segment, close portal session |
+| **Drop**               | Release PipeWire stream, detach XShm segment, close portal session                           |
 
 ---
 
@@ -377,11 +377,11 @@ pub fn auto_detect_backend(config: &CaptureConfig) -> Result<Box<dyn CaptureBack
 
 ### 2.6 Feature Flag Matrix
 
-| Feature Flag | Platforms | Dependencies | What it enables |
-|---|---|---|---|
+| Feature Flag      | Platforms  | Dependencies                                | What it enables                         |
+| ----------------- | ---------- | ------------------------------------------- | --------------------------------------- |
 | `screen-pipewire` | Linux only | `libpipewire-0.3`, `zbus`, `wayland-client` | `PipeWireCapture` with DMA-BUF + portal |
-| `screen-x11` | Linux only | `x11`, `xcb` (XShm extension) | `XShmCapture` shared memory capture |
-| *(default)* | All | `xcap`, `image` | `XcapCapture` universal fallback |
+| `screen-x11`      | Linux only | `x11`, `xcb` (XShm extension)               | `XShmCapture` shared memory capture     |
+| _(default)_       | All        | `xcap`, `image`                             | `XcapCapture` universal fallback        |
 
 ```toml
 # Cargo.toml feature definitions
@@ -658,12 +658,12 @@ impl SectorGrid {
 
 ### Grid Size Rationale
 
-| Grid | Sectors | Bytes (RGB) | Use Case |
-|---|---|---|---|
-| 16 x 9 | 144 | 432 B | Ultra-low-power, few LEDs |
-| 32 x 18 | 576 | 1.7 KB | Good balance for typical setups (< 200 LEDs) |
-| **64 x 36** | **2,304** | **6.9 KB** | **Default.** Fine-grained enough for 200+ LED strips |
-| 128 x 72 | 9,216 | 27.6 KB | Overkill for most setups, useful for giant matrices |
+| Grid        | Sectors   | Bytes (RGB) | Use Case                                             |
+| ----------- | --------- | ----------- | ---------------------------------------------------- |
+| 16 x 9      | 144       | 432 B       | Ultra-low-power, few LEDs                            |
+| 32 x 18     | 576       | 1.7 KB      | Good balance for typical setups (< 200 LEDs)         |
+| **64 x 36** | **2,304** | **6.9 KB**  | **Default.** Fine-grained enough for 200+ LED strips |
+| 128 x 72    | 9,216     | 27.6 KB     | Overkill for most setups, useful for giant matrices  |
 
 The default 64x36 grid matches a 640x360 capture resolution perfectly: each sector is exactly 10x10 pixels. This integer alignment eliminates interpolation artifacts in the box filter.
 
@@ -993,10 +993,10 @@ pub fn dominant_color(pixels: &[Rgb], bucket_count: u32) -> Rgb {
 
 **When to use which:**
 
-| Method | Pros | Cons | Best for |
-|---|---|---|---|
-| Average | Fast, stable, simple | Muddy when regions have mixed colors | Sector grid zones, large areas |
-| Dominant | Perceptually accurate, bold | Slightly more CPU, can jump between hues | Edge zones, small strips |
+| Method   | Pros                        | Cons                                     | Best for                       |
+| -------- | --------------------------- | ---------------------------------------- | ------------------------------ |
+| Average  | Fast, stable, simple        | Muddy when regions have mixed colors     | Sector grid zones, large areas |
+| Dominant | Perceptually accurate, bold | Slightly more CPU, can jump between hues | Edge zones, small strips       |
 
 Default behavior: dominant for edge-mapped zones, average for sector-mapped zones. Configurable per zone.
 
@@ -1021,12 +1021,12 @@ impl SaturationBoost {
 
 Recommended defaults by use case:
 
-| Profile | Factor | Rationale |
-|---|---|---|
-| Cinema | 1.3 | Subtle — preserve director's intent |
-| TV | 1.4 | Moderate boost for typical viewing |
-| Gaming | 1.5–1.6 | Punchy — match gaming aesthetic |
-| Reactive | 1.8 | Maximum visual impact for music vis |
+| Profile  | Factor  | Rationale                           |
+| -------- | ------- | ----------------------------------- |
+| Cinema   | 1.3     | Subtle — preserve director's intent |
+| TV       | 1.4     | Moderate boost for typical viewing  |
+| Gaming   | 1.5–1.6 | Punchy — match gaming aesthetic     |
+| Reactive | 1.8     | Maximum visual impact for music vis |
 
 ### 6.4 Black Level Handling
 
@@ -1231,13 +1231,13 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 
 **Smoothing profiles (recommended defaults):**
 
-| Profile | Alpha | Scene-Cut Threshold | Boost | Static Dampen | Feel |
-|---|---|---|---|---|---|
-| Cinema | 0.08–0.12 | 0.55 | 3.0 | 0.4 | Glacial, dreamy transitions |
-| TV | 0.15–0.25 | 0.55 | 3.0 | 0.5 | Smooth but responsive |
-| Gaming | 0.30–0.50 | 0.50 | 2.5 | 0.6 | Snappy, tracks action |
-| Reactive | 0.60–0.80 | 0.40 | 2.0 | 0.8 | Music visualizer, maximum response |
-| Instant | 1.0 | — | — | — | Raw output, debug only |
+| Profile  | Alpha     | Scene-Cut Threshold | Boost | Static Dampen | Feel                               |
+| -------- | --------- | ------------------- | ----- | ------------- | ---------------------------------- |
+| Cinema   | 0.08–0.12 | 0.55                | 3.0   | 0.4           | Glacial, dreamy transitions        |
+| TV       | 0.15–0.25 | 0.55                | 3.0   | 0.5           | Smooth but responsive              |
+| Gaming   | 0.30–0.50 | 0.50                | 2.5   | 0.6           | Snappy, tracks action              |
+| Reactive | 0.60–0.80 | 0.40                | 2.0   | 0.8           | Music visualizer, maximum response |
+| Instant  | 1.0       | —                   | —     | —             | Raw output, debug only             |
 
 ### 6.6 Letterbox Detection
 
@@ -1417,31 +1417,31 @@ Path 3: Hybrid (edge zones direct, interior zones via effect)
 
 The screen capture pipeline must not visibly affect system performance, especially during gaming. The budget applies to the entire pipeline from frame capture through LED color output.
 
-| Stage | Target | Hard Limit | Notes |
-|---|---|---|---|
-| Frame capture (PipeWire DMA-BUF) | ~0.1ms | 1.0ms | Zero-copy — just a pointer swap |
-| Frame capture (PipeWire MemPtr) | ~0.5ms | 2.0ms | Shared memory read |
-| Frame capture (XShm, 640x360) | ~0.5ms | 2.0ms | Shared memory blit at reduced resolution |
-| Frame capture (xcap, 1080p→640x360) | ~2.0ms | 4.0ms | Full capture + CPU resize |
-| Sector grid computation (GPU) | ~0.2ms | 0.5ms | Compute shader, 9KB readback |
-| Sector grid computation (CPU) | ~0.3ms | 1.0ms | Box filter over 230K pixels |
-| Region mapping | ~0.05ms | 0.1ms | Trivial arithmetic over ~200 zones |
-| Color processing | ~0.05ms | 0.2ms | Saturation, black level, white balance |
-| Temporal smoothing | ~0.02ms | 0.05ms | EMA over ~200 color values |
-| **Total (PipeWire + GPU)** | **~0.42ms** | **1.85ms** | **<0.5% CPU at 30fps** |
-| **Total (XShm + CPU)** | **~0.92ms** | **3.35ms** | **<3% CPU at 30fps** |
-| **Total (xcap + CPU)** | **~2.42ms** | **6.35ms** | **<5% CPU at 30fps** |
+| Stage                               | Target      | Hard Limit | Notes                                    |
+| ----------------------------------- | ----------- | ---------- | ---------------------------------------- |
+| Frame capture (PipeWire DMA-BUF)    | ~0.1ms      | 1.0ms      | Zero-copy — just a pointer swap          |
+| Frame capture (PipeWire MemPtr)     | ~0.5ms      | 2.0ms      | Shared memory read                       |
+| Frame capture (XShm, 640x360)       | ~0.5ms      | 2.0ms      | Shared memory blit at reduced resolution |
+| Frame capture (xcap, 1080p→640x360) | ~2.0ms      | 4.0ms      | Full capture + CPU resize                |
+| Sector grid computation (GPU)       | ~0.2ms      | 0.5ms      | Compute shader, 9KB readback             |
+| Sector grid computation (CPU)       | ~0.3ms      | 1.0ms      | Box filter over 230K pixels              |
+| Region mapping                      | ~0.05ms     | 0.1ms      | Trivial arithmetic over ~200 zones       |
+| Color processing                    | ~0.05ms     | 0.2ms      | Saturation, black level, white balance   |
+| Temporal smoothing                  | ~0.02ms     | 0.05ms     | EMA over ~200 color values               |
+| **Total (PipeWire + GPU)**          | **~0.42ms** | **1.85ms** | **<0.5% CPU at 30fps**                   |
+| **Total (XShm + CPU)**              | **~0.92ms** | **3.35ms** | **<3% CPU at 30fps**                     |
+| **Total (xcap + CPU)**              | **~2.42ms** | **6.35ms** | **<5% CPU at 30fps**                     |
 
 ### 8.2 Memory Budget
 
-| Component | Size | Notes |
-|---|---|---|
-| Staging buffer (640x360 BGRA) | 921 KB | One allocation, reused every frame |
-| Sector grid (64x36 RGB) | 6.9 KB | Reused |
-| Zone colors (~200 zones) | 0.6 KB | Reused |
-| Smoother prev_colors (~200) | 0.6 KB | Reused |
-| PipeWire stream buffers (x4) | ~3.6 MB | Owned by PipeWire, not us |
-| **Total owned** | **~1 MB** | Well under 20 MB target |
+| Component                     | Size      | Notes                              |
+| ----------------------------- | --------- | ---------------------------------- |
+| Staging buffer (640x360 BGRA) | 921 KB    | One allocation, reused every frame |
+| Sector grid (64x36 RGB)       | 6.9 KB    | Reused                             |
+| Zone colors (~200 zones)      | 0.6 KB    | Reused                             |
+| Smoother prev_colors (~200)   | 0.6 KB    | Reused                             |
+| PipeWire stream buffers (x4)  | ~3.6 MB   | Owned by PipeWire, not us          |
+| **Total owned**               | **~1 MB** | Well under 20 MB target            |
 
 ### 8.3 Frame Timing
 
@@ -1595,16 +1595,16 @@ Hypercolor is a Linux-first project, but screen capture should work on Windows (
 
 ### Platform Matrix
 
-| Capability | Linux (Wayland) | Linux (X11) | Windows | macOS |
-|---|---|---|---|---|
-| **Primary backend** | PipeWire + Portal | XShm | xcap (DXGI/WGC) | xcap (SCKit) |
-| **DMA-BUF zero-copy** | Yes | No | No | No |
-| **Streaming mode** | Yes (PipeWire) | No | No | No |
-| **Permission model** | Portal dialog + restore token | None (open access) | App capability | Screen Recording permission |
-| **Multi-monitor** | Portal multi-select | Root window spans all | Per-monitor via xcap | Per-monitor via xcap |
-| **GPU downsample** | Yes (wgpu + DMA-BUF) | No (CPU only) | Possible (wgpu) | Possible (wgpu) |
-| **Feature gate** | `screen-pipewire` | `screen-x11` | Default (xcap) | Default (xcap) |
-| **Performance** | Excellent (<1% CPU) | Good (2-5% CPU) | Moderate (3-7% CPU) | Moderate (3-7% CPU) |
+| Capability            | Linux (Wayland)               | Linux (X11)           | Windows              | macOS                       |
+| --------------------- | ----------------------------- | --------------------- | -------------------- | --------------------------- |
+| **Primary backend**   | PipeWire + Portal             | XShm                  | xcap (DXGI/WGC)      | xcap (SCKit)                |
+| **DMA-BUF zero-copy** | Yes                           | No                    | No                   | No                          |
+| **Streaming mode**    | Yes (PipeWire)                | No                    | No                   | No                          |
+| **Permission model**  | Portal dialog + restore token | None (open access)    | App capability       | Screen Recording permission |
+| **Multi-monitor**     | Portal multi-select           | Root window spans all | Per-monitor via xcap | Per-monitor via xcap        |
+| **GPU downsample**    | Yes (wgpu + DMA-BUF)          | No (CPU only)         | Possible (wgpu)      | Possible (wgpu)             |
+| **Feature gate**      | `screen-pipewire`             | `screen-x11`          | Default (xcap)       | Default (xcap)              |
+| **Performance**       | Excellent (<1% CPU)           | Good (2-5% CPU)       | Moderate (3-7% CPU)  | Moderate (3-7% CPU)         |
 
 ### What Works on Windows (Development)
 
@@ -1616,6 +1616,7 @@ Windows developers can work on the full capture pipeline using the `xcap` backen
 - WLED DDP output works over the network (no USB dependencies).
 
 **What doesn't work on Windows:**
+
 - PipeWire backend (`#[cfg(target_os = "linux")]`).
 - XShm backend (`#[cfg(target_os = "linux")]`).
 - Portal restore tokens (Linux-specific D-Bus).

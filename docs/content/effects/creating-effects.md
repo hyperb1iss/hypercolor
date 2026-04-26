@@ -40,65 +40,65 @@ bun run build
 Each effect lives at `effects/<id>/main.ts` and exports one default value.
 
 ```typescript
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from "@hypercolor/sdk";
 
 export default canvas(
-    'Aurora',
-    {
-        glow: num('Glow', [0, 100], 74, { group: 'Atmosphere' }),
-        palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], {
-            group: 'Color',
-        }),
-        tint: color('Tint', '#80ffea'),
-    },
-    (ctx, time, controls) => {
-        const width = ctx.canvas.width
-        const height = ctx.canvas.height
-        const glow = (controls.glow as number) / 100
+  "Aurora",
+  {
+    glow: num("Glow", [0, 100], 74, { group: "Atmosphere" }),
+    palette: combo("Palette", ["Aurora", "Fire", "Ocean"], {
+      group: "Color",
+    }),
+    tint: color("Tint", "#80ffea"),
+  },
+  (ctx, time, controls) => {
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    const glow = (controls.glow as number) / 100;
 
-        const gradient = ctx.createLinearGradient(0, 0, width, height)
-        gradient.addColorStop(0, controls.tint as string)
-        gradient.addColorStop(1, '#0a1020')
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, controls.tint as string);
+    gradient.addColorStop(1, "#0a1020");
 
-        ctx.fillStyle = gradient
-        ctx.fillRect(0, 0, width, height)
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
 
-        ctx.globalAlpha = 0.16 + glow * 0.24
-        ctx.fillStyle = '#e135ff'
-        ctx.beginPath()
-        ctx.arc(
-            width * (0.5 + Math.sin(time * 0.5) * 0.18),
-            height * (0.45 + Math.cos(time * 0.3) * 0.1),
-            Math.min(width, height) * (0.2 + glow * 0.14),
-            0,
-            Math.PI * 2
-        )
-        ctx.fill()
-        ctx.globalAlpha = 1
-    },
-    {
-        author: 'You',
-        description: 'A starter canvas effect',
-        presets: [
-            {
-                name: 'Default',
-                controls: {
-                    glow: 74,
-                    palette: 'Aurora',
-                    tint: '#80ffea',
-                },
-            },
-            {
-                name: 'Fire',
-                controls: {
-                    glow: 92,
-                    palette: 'Fire',
-                    tint: '#ff6a3d',
-                },
-            },
-        ],
-    }
-)
+    ctx.globalAlpha = 0.16 + glow * 0.24;
+    ctx.fillStyle = "#e135ff";
+    ctx.beginPath();
+    ctx.arc(
+      width * (0.5 + Math.sin(time * 0.5) * 0.18),
+      height * (0.45 + Math.cos(time * 0.3) * 0.1),
+      Math.min(width, height) * (0.2 + glow * 0.14),
+      0,
+      Math.PI * 2,
+    );
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  },
+  {
+    author: "You",
+    description: "A starter canvas effect",
+    presets: [
+      {
+        name: "Default",
+        controls: {
+          glow: 74,
+          palette: "Aurora",
+          tint: "#80ffea",
+        },
+      },
+      {
+        name: "Fire",
+        controls: {
+          glow: 92,
+          palette: "Fire",
+          tint: "#ff6a3d",
+        },
+      },
+    ],
+  },
+);
 ```
 
 Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon canvas is configurable, so resolution-dependent code should be checked against the real runtime.
@@ -107,17 +107,17 @@ Always read `ctx.canvas.width` and `ctx.canvas.height` every frame. The daemon c
 
 The SDK supports both shorthand control declarations and explicit helpers.
 
-| Value shape | Control type | Example |
-|---|---|---|
-| `[min, max, default]` | Number slider | `speed: [1, 10, 5]` |
-| `string[]` | Dropdown | `palette: ['Aurora', 'Fire', 'Ocean']` |
-| `'#rrggbb'` | Color picker | `tint: '#80ffea'` |
-| `boolean` | Toggle | `mirror: false` |
+| Value shape           | Control type  | Example                                |
+| --------------------- | ------------- | -------------------------------------- |
+| `[min, max, default]` | Number slider | `speed: [1, 10, 5]`                    |
+| `string[]`            | Dropdown      | `palette: ['Aurora', 'Fire', 'Ocean']` |
+| `'#rrggbb'`           | Color picker  | `tint: '#80ffea'`                      |
+| `boolean`             | Toggle        | `mirror: false`                        |
 
 Explicit helpers add labels, groups, defaults, and tooltips:
 
 ```typescript
-import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
+import { canvas, color, combo, num, toggle } from "@hypercolor/sdk";
 ```
 
 Metadata matters because it becomes HTML artifact metadata and catalog data inside the daemon:
@@ -136,20 +136,20 @@ Metadata matters because it becomes HTML artifact metadata and catalog data insi
 Fragment shader effects use the same workspace flow:
 
 ```typescript
-import { effect, combo, num } from '@hypercolor/sdk'
-import shader from './fragment.glsl'
+import { effect, combo, num } from "@hypercolor/sdk";
+import shader from "./fragment.glsl";
 
 export default effect(
-    'Borealis',
-    shader,
-    {
-        intensity: num('Intensity', [0, 100], 82),
-        palette: combo('Palette', ['Aurora', 'SilkCircuit', 'Frost']),
-    },
-    {
-        description: 'Aurora curtains with layered shader motion',
-    }
-)
+  "Borealis",
+  shader,
+  {
+    intensity: num("Intensity", [0, 100], 82),
+    palette: combo("Palette", ["Aurora", "SilkCircuit", "Frost"]),
+  },
+  {
+    description: "Aurora curtains with layered shader motion",
+  },
+);
 ```
 
 The workspace `bunfig.toml` already declares `.glsl` as `text`, so `import shader from './fragment.glsl'` just works in `bun run build`.

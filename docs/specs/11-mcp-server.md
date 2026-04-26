@@ -72,14 +72,14 @@ On connection, the server responds to the `initialize` request with its identity
 
 ### 2.2 Capability Breakdown
 
-| Capability | Feature | Purpose |
-|---|---|---|
-| `tools` | `listChanged: true` | Notify when plugin effects add/remove tools |
-| `resources` | `subscribe: true` | Clients subscribe to state/device/audio changes |
-| `resources` | `listChanged: true` | Notify when new resource types appear (e.g., new input source) |
-| `prompts` | `listChanged: true` | Notify if prompt templates are updated |
-| `logging` | — | Emit structured log messages for debugging |
-| `completions` | — | Autocomplete effect names, profile names, device IDs in prompt arguments |
+| Capability    | Feature             | Purpose                                                                  |
+| ------------- | ------------------- | ------------------------------------------------------------------------ |
+| `tools`       | `listChanged: true` | Notify when plugin effects add/remove tools                              |
+| `resources`   | `subscribe: true`   | Clients subscribe to state/device/audio changes                          |
+| `resources`   | `listChanged: true` | Notify when new resource types appear (e.g., new input source)           |
+| `prompts`     | `listChanged: true` | Notify if prompt templates are updated                                   |
+| `logging`     | —                   | Emit structured log messages for debugging                               |
+| `completions` | —                   | Autocomplete effect names, profile names, device IDs in prompt arguments |
 
 ---
 
@@ -211,8 +211,14 @@ Set a solid color across all devices or specific targets. Accepts color names, h
       "resolved_color": {
         "type": "object",
         "properties": {
-          "hex": { "type": "string", "description": "Resolved hex code (e.g., '#ff6ac1')" },
-          "name": { "type": "string", "description": "Nearest CSS color name, if applicable" },
+          "hex": {
+            "type": "string",
+            "description": "Resolved hex code (e.g., '#ff6ac1')"
+          },
+          "name": {
+            "type": "string",
+            "description": "Nearest CSS color name, if applicable"
+          },
           "rgb": {
             "type": "object",
             "properties": {
@@ -225,7 +231,10 @@ Set a solid color across all devices or specific targets. Accepts color names, h
         "required": ["hex", "rgb"]
       },
       "applied": { "type": "boolean" },
-      "device_count": { "type": "integer", "description": "Number of devices the color was applied to" }
+      "device_count": {
+        "type": "integer",
+        "description": "Number of devices the color was applied to"
+      }
     },
     "required": ["resolved_color", "applied"]
   },
@@ -252,7 +261,15 @@ List available lighting effects with optional filtering by category, audio react
     "properties": {
       "category": {
         "type": "string",
-        "enum": ["ambient", "reactive", "visualizer", "pattern", "nature", "gaming", "holiday"],
+        "enum": [
+          "ambient",
+          "reactive",
+          "visualizer",
+          "pattern",
+          "nature",
+          "gaming",
+          "holiday"
+        ],
         "description": "Filter by effect category"
       },
       "audio_reactive": {
@@ -298,7 +315,10 @@ List available lighting effects with optional filtering by category, audio react
                 "type": "object",
                 "properties": {
                   "name": { "type": "string" },
-                  "type": { "type": "string", "enum": ["number", "color", "boolean", "enum"] },
+                  "type": {
+                    "type": "string",
+                    "enum": ["number", "color", "boolean", "enum"]
+                  },
                   "default": {},
                   "min": { "type": "number" },
                   "max": { "type": "number" }
@@ -353,8 +373,14 @@ List all known RGB devices with connection status, LED count, and zone informati
           "properties": {
             "id": { "type": "string" },
             "name": { "type": "string" },
-            "backend": { "type": "string", "enum": ["wled", "usb_hid", "hue", "razer", "corsair"] },
-            "status": { "type": "string", "enum": ["connected", "disconnected", "error"] },
+            "backend": {
+              "type": "string",
+              "enum": ["wled", "usb_hid", "hue", "razer", "corsair"]
+            },
+            "status": {
+              "type": "string",
+              "enum": ["connected", "disconnected", "error"]
+            },
             "total_leds": { "type": "integer" },
             "zones": {
               "type": "array",
@@ -446,8 +472,14 @@ Retrieve the full daemon state: running effect, brightness, connected devices, a
       "inputs": {
         "type": "object",
         "properties": {
-          "audio": { "type": "string", "enum": ["active", "disabled", "error"] },
-          "screen": { "type": "string", "enum": ["active", "disabled", "error"] }
+          "audio": {
+            "type": "string",
+            "enum": ["active", "disabled", "error"]
+          },
+          "screen": {
+            "type": "string",
+            "enum": ["active", "disabled", "error"]
+          }
         }
       },
       "uptime_seconds": { "type": "integer" },
@@ -599,7 +631,15 @@ Create a new automated lighting scene from a natural language description.
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["schedule", "sunset", "sunrise", "device_connect", "device_disconnect", "audio_beat", "webhook"],
+            "enum": [
+              "schedule",
+              "sunset",
+              "sunrise",
+              "device_connect",
+              "device_disconnect",
+              "audio_beat",
+              "webhook"
+            ],
             "description": "Trigger type"
           },
           "cron": {
@@ -638,7 +678,11 @@ Create a new automated lighting scene from a natural language description.
       "scene_id": { "type": "string" },
       "name": { "type": "string" },
       "enabled": { "type": "boolean" },
-      "next_trigger": { "type": "string", "format": "date-time", "description": "Next scheduled activation time, if applicable" }
+      "next_trigger": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Next scheduled activation time, if applicable"
+      }
     },
     "required": ["scene_id", "name", "enabled"]
   },
@@ -707,7 +751,10 @@ Enable, disable, or configure audio-reactive lighting.
     "type": "object",
     "properties": {
       "enabled": { "type": "boolean" },
-      "audio_source": { "type": "string", "description": "Detected audio device name" },
+      "audio_source": {
+        "type": "string",
+        "description": "Detected audio device name"
+      },
       "sample_rate": { "type": "integer" },
       "config": {
         "type": "object",
@@ -796,13 +843,20 @@ Get effect and configuration recommendations based on mood, activity, or aesthet
           "properties": {
             "effect_id": { "type": "string" },
             "effect_name": { "type": "string" },
-            "reason": { "type": "string", "description": "Why this effect fits the request" },
+            "reason": {
+              "type": "string",
+              "description": "Why this effect fits the request"
+            },
             "recommended_controls": {
               "type": "object",
               "additionalProperties": true,
               "description": "Suggested control parameter values"
             },
-            "recommended_brightness": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "recommended_brightness": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
             "score": { "type": "number", "minimum": 0, "maximum": 1 }
           },
           "required": ["effect_id", "effect_name", "reason", "score"]
@@ -844,7 +898,11 @@ Toggle the lighting system on or off, or explicitly set power state.
     "type": "object",
     "properties": {
       "power": { "type": "string", "enum": ["on", "off"] },
-      "was": { "type": "string", "enum": ["on", "off"], "description": "Previous power state" }
+      "was": {
+        "type": "string",
+        "enum": ["on", "off"],
+        "description": "Previous power state"
+      }
     },
     "required": ["power", "was"]
   },
@@ -884,7 +942,14 @@ Create or update a time-based schedule for automatic lighting changes.
       },
       "solar_event": {
         "type": "string",
-        "enum": ["sunrise", "sunset", "civil_dawn", "civil_dusk", "nautical_dawn", "nautical_dusk"],
+        "enum": [
+          "sunrise",
+          "sunset",
+          "civil_dawn",
+          "civil_dusk",
+          "nautical_dawn",
+          "nautical_dusk"
+        ],
         "description": "Solar event to trigger on (for 'solar' type)"
       },
       "offset_minutes": {
@@ -927,7 +992,10 @@ Create or update a time-based schedule for automatic lighting changes.
       "name": { "type": "string" },
       "enabled": { "type": "boolean" },
       "next_trigger": { "type": "string", "format": "date-time" },
-      "description": { "type": "string", "description": "Human-readable summary of the schedule" }
+      "description": {
+        "type": "string",
+        "description": "Human-readable summary of the schedule"
+      }
     },
     "required": ["schedule_id", "name", "enabled"]
   },
@@ -960,7 +1028,14 @@ Run diagnostics on the lighting system or specific devices.
         "type": "array",
         "items": {
           "type": "string",
-          "enum": ["connectivity", "latency", "frame_delivery", "color_accuracy", "protocol", "all"]
+          "enum": [
+            "connectivity",
+            "latency",
+            "frame_delivery",
+            "color_accuracy",
+            "protocol",
+            "all"
+          ]
         },
         "description": "Which diagnostic checks to run. Defaults to 'all'.",
         "default": ["all"]
@@ -980,10 +1055,19 @@ Run diagnostics on the lighting system or specific devices.
         "items": {
           "type": "object",
           "properties": {
-            "severity": { "type": "string", "enum": ["info", "warning", "error", "critical"] },
-            "component": { "type": "string", "description": "Affected component (device ID, subsystem name)" },
+            "severity": {
+              "type": "string",
+              "enum": ["info", "warning", "error", "critical"]
+            },
+            "component": {
+              "type": "string",
+              "description": "Affected component (device ID, subsystem name)"
+            },
             "message": { "type": "string" },
-            "suggestion": { "type": "string", "description": "Actionable fix recommendation" }
+            "suggestion": {
+              "type": "string",
+              "description": "Actionable fix recommendation"
+            }
           },
           "required": ["severity", "component", "message"]
         }
@@ -992,7 +1076,10 @@ Run diagnostics on the lighting system or specific devices.
         "type": "object",
         "properties": {
           "fps": { "type": "number" },
-          "frame_drop_rate": { "type": "number", "description": "Percentage of dropped frames" },
+          "frame_drop_rate": {
+            "type": "number",
+            "description": "Percentage of dropped frames"
+          },
           "avg_latency_ms": { "type": "number" },
           "device_error_count": { "type": "integer" },
           "uptime_seconds": { "type": "integer" }
@@ -1064,9 +1151,15 @@ Enable or configure screen capture ambient lighting (Ambilight-style).
     "type": "object",
     "properties": {
       "enabled": { "type": "boolean" },
-      "capture_backend": { "type": "string", "enum": ["pipewire", "xshm", "dma_buf"] },
+      "capture_backend": {
+        "type": "string",
+        "enum": ["pipewire", "xshm", "dma_buf"]
+      },
       "monitor": { "type": "string" },
-      "resolution": { "type": "string", "description": "Capture resolution (e.g., '1920x1080')" },
+      "resolution": {
+        "type": "string",
+        "description": "Capture resolution (e.g., '1920x1080')"
+      },
       "fps": { "type": "number", "description": "Current capture frame rate" },
       "permission_required": {
         "type": "boolean",
@@ -1086,22 +1179,22 @@ Enable or configure screen capture ambient lighting (Ambilight-style).
 
 ### 3.15 Tool Summary
 
-| Tool | Read-only | Description |
-|---|---|---|
-| `set_effect` | No | Apply effect by name or natural language |
-| `set_color` | No | Set solid color by name, hex, or description |
-| `list_effects` | Yes | Browse/filter the effect catalog |
-| `list_devices` | Yes | Enumerate connected devices |
-| `get_state` | Yes | Current system state snapshot |
-| `set_brightness` | No | Global or per-device brightness |
-| `apply_profile` | No | Activate a saved profile |
-| `create_scene` | No | Create an automated scene |
-| `set_audio_reactive` | No | Enable/configure audio reactivity |
-| `suggest_lighting` | Yes | AI-powered lighting suggestions |
-| `toggle` | No | Power on/off |
-| `set_schedule` | No | Time-based automation |
-| `diagnose` | Yes | Troubleshoot device issues |
-| `capture_screen` | No | Screen ambient mode |
+| Tool                 | Read-only | Description                                  |
+| -------------------- | --------- | -------------------------------------------- |
+| `set_effect`         | No        | Apply effect by name or natural language     |
+| `set_color`          | No        | Set solid color by name, hex, or description |
+| `list_effects`       | Yes       | Browse/filter the effect catalog             |
+| `list_devices`       | Yes       | Enumerate connected devices                  |
+| `get_state`          | Yes       | Current system state snapshot                |
+| `set_brightness`     | No        | Global or per-device brightness              |
+| `apply_profile`      | No        | Activate a saved profile                     |
+| `create_scene`       | No        | Create an automated scene                    |
+| `set_audio_reactive` | No        | Enable/configure audio reactivity            |
+| `suggest_lighting`   | Yes       | AI-powered lighting suggestions              |
+| `toggle`             | No        | Power on/off                                 |
+| `set_schedule`       | No        | Time-based automation                        |
+| `diagnose`           | Yes       | Troubleshoot device issues                   |
+| `capture_screen`     | No        | Screen ambient mode                          |
 
 ---
 
@@ -1241,13 +1334,13 @@ The server also exposes parameterized resource templates via `resources/template
 
 Clients can subscribe to resource changes via `resources/subscribe`. The server emits `notifications/resources/updated` when the subscribed resource changes.
 
-| Resource | Update frequency | Trigger |
-|---|---|---|
-| `hypercolor://state` | On state change | Effect change, brightness change, pause/resume |
-| `hypercolor://devices` | On device change | Device connect/disconnect, config change |
-| `hypercolor://effects` | Rare | Plugin load/unload |
-| `hypercolor://profiles` | On profile CRUD | Profile create/update/delete |
-| `hypercolor://audio` | Rate-limited ~10 Hz | Continuous while audio is active |
+| Resource                | Update frequency    | Trigger                                        |
+| ----------------------- | ------------------- | ---------------------------------------------- |
+| `hypercolor://state`    | On state change     | Effect change, brightness change, pause/resume |
+| `hypercolor://devices`  | On device change    | Device connect/disconnect, config change       |
+| `hypercolor://effects`  | Rare                | Plugin load/unload                             |
+| `hypercolor://profiles` | On profile CRUD     | Profile create/update/delete                   |
+| `hypercolor://audio`    | Rate-limited ~10 Hz | Continuous while audio is active               |
 
 Audio resource subscriptions are rate-limited to prevent flooding the MCP client. The daemon's internal audio analysis runs at 60 Hz, but MCP updates are decimated to ~10 Hz with change-detection gating — updates only emit when levels shift by more than 5% or a beat is detected.
 
@@ -1492,6 +1585,7 @@ The MCP server supports three transport modes, selectable via daemon configurati
 The primary transport for local AI tools — Claude Code, Cursor, Zed, and other editor-integrated assistants.
 
 **How it works:**
+
 - The AI client launches the Hypercolor MCP server as a child process.
 - JSON-RPC messages flow over stdin/stdout, one message per line.
 - stderr is reserved for daemon log output.
@@ -1528,6 +1622,7 @@ In stdio mode, the MCP subprocess connects to the running daemon over the Unix s
 The modern MCP transport for web-based AI agents, remote access, and multi-client scenarios.
 
 **How it works:**
+
 - The daemon hosts an HTTP endpoint at the configured MCP port.
 - Clients POST JSON-RPC requests; the server responds with JSON or SSE streams.
 - Supports session management via `MCP-Session-Id` headers.
@@ -1549,6 +1644,7 @@ hypercolor daemon --mcp-transport http --mcp-port 9421
 ```
 
 **Security requirements for HTTP transport:**
+
 - Origin header validation to prevent DNS rebinding attacks.
 - Localhost-only binding by default. Network binding requires explicit opt-in.
 - API key authentication when `bind_address` is not localhost.
@@ -1570,11 +1666,11 @@ The server hosts separate SSE and POST endpoints matching the legacy specificati
 
 ### 6.4 Transport Selection Matrix
 
-| Transport | Use case | Multi-client | Session state |
-|---|---|---|---|
-| **stdio** | Claude Code, local editors | No (1:1) | In-process |
-| **Streamable HTTP** | Web agents, remote access | Yes | Session ID headers |
-| **SSE (legacy)** | Older MCP clients | Yes | Per-connection |
+| Transport           | Use case                   | Multi-client | Session state      |
+| ------------------- | -------------------------- | ------------ | ------------------ |
+| **stdio**           | Claude Code, local editors | No (1:1)     | In-process         |
+| **Streamable HTTP** | Web agents, remote access  | Yes          | Session ID headers |
+| **SSE (legacy)**    | Older MCP clients          | Yes          | Per-connection     |
 
 ---
 
@@ -1670,12 +1766,12 @@ fn description_match_score(query_words: &[&str], description: &str) -> f32 {
 
 ### 7.4 Confidence Thresholds
 
-| Threshold | Behavior |
-|---|---|
-| `>= 0.9` | Apply immediately, high confidence |
+| Threshold   | Behavior                                           |
+| ----------- | -------------------------------------------------- |
+| `>= 0.9`    | Apply immediately, high confidence                 |
 | `0.6 - 0.9` | Apply best match, mention alternatives in response |
-| `0.3 - 0.6` | Return matches but suggest the user confirm |
-| `< 0.3` | No match — suggest using `list_effects` to browse |
+| `0.3 - 0.6` | Return matches but suggest the user confirm        |
+| `< 0.3`     | No match — suggest using `list_effects` to browse  |
 
 ---
 
@@ -1956,17 +2052,18 @@ hypercolor-core = { path = "../hypercolor-core" }
 
 The MCP server inherits the daemon's local-first security model:
 
-| Transport | Default auth | Network exposure |
-|---|---|---|
-| stdio | None (process-level isolation) | None — child process only |
-| HTTP (localhost) | None | Localhost only |
-| HTTP (network) | API key required | Explicit opt-in |
+| Transport        | Default auth                   | Network exposure          |
+| ---------------- | ------------------------------ | ------------------------- |
+| stdio            | None (process-level isolation) | None — child process only |
+| HTTP (localhost) | None                           | Localhost only            |
+| HTTP (network)   | API key required               | Explicit opt-in           |
 
 ### 9.2 Input Validation
 
 All tool inputs are validated against their JSON Schema before execution. The `rmcp` crate handles schema-level validation automatically via `schemars` derive macros.
 
 Additional validation:
+
 - **Color inputs** are sanitized to prevent injection through color name resolution.
 - **Cron expressions** are parsed with `cron` crate and validated for syntax.
 - **Device IDs** are checked against the known device inventory.
@@ -1977,12 +2074,12 @@ Additional validation:
 
 MCP tool calls are rate-limited to prevent abuse from misbehaving clients:
 
-| Operation type | Limit | Scope |
-|---|---|---|
-| Read-only tools (`get_state`, `list_*`, `diagnose`) | 120 / min | Per session |
-| Write tools (`set_*`, `apply_*`, `create_*`, `toggle`) | 60 / min | Per session |
-| Resource reads | 120 / min | Per session |
-| Resource subscriptions | 10 active | Per session |
+| Operation type                                         | Limit     | Scope       |
+| ------------------------------------------------------ | --------- | ----------- |
+| Read-only tools (`get_state`, `list_*`, `diagnose`)    | 120 / min | Per session |
+| Write tools (`set_*`, `apply_*`, `create_*`, `toggle`) | 60 / min  | Per session |
+| Resource reads                                         | 120 / min | Per session |
+| Resource subscriptions                                 | 10 active | Per session |
 
 ### 9.4 Sensitive Operations
 
@@ -1996,13 +2093,13 @@ Tools that modify state include `annotations` with `destructiveHint: false` beca
 
 Standard MCP JSON-RPC error codes:
 
-| Code | Meaning | When |
-|---|---|---|
-| `-32600` | Invalid request | Malformed JSON-RPC |
-| `-32601` | Method not found | Unknown tool name |
-| `-32602` | Invalid params | Input fails schema validation |
-| `-32603` | Internal error | Daemon crash, bus failure |
-| `-32002` | Resource not found | Unknown resource URI |
+| Code     | Meaning            | When                          |
+| -------- | ------------------ | ----------------------------- |
+| `-32600` | Invalid request    | Malformed JSON-RPC            |
+| `-32601` | Method not found   | Unknown tool name             |
+| `-32602` | Invalid params     | Input fails schema validation |
+| `-32603` | Internal error     | Daemon crash, bus failure     |
+| `-32002` | Resource not found | Unknown resource URI          |
 
 ### 10.2 Tool Execution Errors
 
@@ -2022,13 +2119,13 @@ Tool-level errors use `isError: true` in the result with actionable feedback:
 
 **Error categories:**
 
-| Category | Example | Guidance |
-|---|---|---|
-| No match | Effect query returned zero results | Suggest `list_effects` with different filters |
-| Device offline | Target device disconnected | Suggest checking connectivity or running `diagnose` |
-| Invalid state | Cannot pause when already paused | Return current state for context |
-| Permission denied | Screen capture requires user approval | Explain the portal permission flow |
-| Resource exhausted | Too many active schedules | Suggest removing unused schedules |
+| Category           | Example                               | Guidance                                            |
+| ------------------ | ------------------------------------- | --------------------------------------------------- |
+| No match           | Effect query returned zero results    | Suggest `list_effects` with different filters       |
+| Device offline     | Target device disconnected            | Suggest checking connectivity or running `diagnose` |
+| Invalid state      | Cannot pause when already paused      | Return current state for context                    |
+| Permission denied  | Screen capture requires user approval | Explain the portal permission flow                  |
+| Resource exhausted | Too many active schedules             | Suggest removing unused schedules                   |
 
 ### 10.3 Graceful Degradation
 
@@ -2041,4 +2138,4 @@ When the daemon's internal state is partially available (e.g., audio subsystem c
 
 ---
 
-*Built on the [Model Context Protocol (2025-11-25)](https://modelcontextprotocol.io/specification/2025-11-25) and the [`rmcp`](https://crates.io/crates/rmcp) Rust SDK.*
+_Built on the [Model Context Protocol (2025-11-25)](https://modelcontextprotocol.io/specification/2025-11-25) and the [`rmcp`](https://crates.io/crates/rmcp) Rust SDK._

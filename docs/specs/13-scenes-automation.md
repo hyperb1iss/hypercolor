@@ -29,7 +29,7 @@
 
 ## 1. Scene
 
-A `Scene` is the fundamental unit of lighting state. It captures *what every targeted LED should look like* -- a serializable, composable, restorable snapshot. Scenes are the nouns of the system; everything else (transitions, schedules, triggers, rules) exists to decide *when* and *how* scenes activate.
+A `Scene` is the fundamental unit of lighting state. It captures _what every targeted LED should look like_ -- a serializable, composable, restorable snapshot. Scenes are the nouns of the system; everything else (transitions, schedules, triggers, rules) exists to decide _when_ and _how_ scenes activate.
 
 ### Struct Definition
 
@@ -159,13 +159,13 @@ pub struct SceneOverlay {
 
 ### Validation Rules
 
-| Constraint | Error |
-|---|---|
-| `name` is empty or exceeds 128 chars | `InvalidSceneName` |
-| `global_brightness` outside `[0.0, 1.0]` | `BrightnessOutOfRange` |
-| Duplicate `zone_id` in `assignments` | `DuplicateZoneAssignment` |
+| Constraint                                   | Error                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| `name` is empty or exceeds 128 chars         | `InvalidSceneName`                                                |
+| `global_brightness` outside `[0.0, 1.0]`     | `BrightnessOutOfRange`                                            |
+| Duplicate `zone_id` in `assignments`         | `DuplicateZoneAssignment`                                         |
 | `ZoneAssignment` references nonexistent zone | `UnknownZone` (warning, not hard error -- zones may appear later) |
-| Overlay `opacity` outside `[0.0, 1.0]` | `OpacityOutOfRange` |
+| Overlay `opacity` outside `[0.0, 1.0]`       | `OpacityOutOfRange`                                               |
 
 ### Storage
 
@@ -265,7 +265,7 @@ This enables scene-level "desaturated night mode" without modifying every effect
 
 ## 3. TransitionSpec
 
-A `TransitionSpec` fully describes *how* the system moves between two scenes. It is carried on every `Scene` as a default, but can be overridden at activation time by the caller (schedule rule, automation rule, or manual API call).
+A `TransitionSpec` fully describes _how_ the system moves between two scenes. It is carried on every `Scene` as a default, but can be overridden at activation time by the caller (schedule rule, automation rule, or manual API call).
 
 ```rust
 use std::time::Duration;
@@ -407,16 +407,16 @@ pub enum StepJump {
 
 The system ships with named presets. Users reference them by name in TOML configs and CLI flags.
 
-| Preset Name | Type | Duration | Easing | Notes |
-|---|---|---|---|---|
-| `instant` | `Cut` | 0ms | n/a | No animation |
-| `smooth` | `Crossfade` | 1000ms | `EaseInOut` | Default for most scene switches |
-| `slow-fade` | `Crossfade` | 3000ms | `EaseInOut` | Schedule-based changes |
-| `dramatic` | `Blackout` (500ms hold) | 2000ms | `EaseInOut` | Scene reveals |
-| `flash-white` | `Flash` (#fff, 200ms) | 800ms | `Linear` | Alert / notification |
-| `sweep-right` | `Wipe` Right (0.4 soft) | 1500ms | `EaseInOut` | Directional drama |
-| `sunrise` | `Crossfade` | 30000ms | `EaseIn` | 30s warm fade-in |
-| `sleep` | `Crossfade` | 60000ms | `EaseOut` | 60s fade to off |
+| Preset Name   | Type                    | Duration | Easing      | Notes                           |
+| ------------- | ----------------------- | -------- | ----------- | ------------------------------- |
+| `instant`     | `Cut`                   | 0ms      | n/a         | No animation                    |
+| `smooth`      | `Crossfade`             | 1000ms   | `EaseInOut` | Default for most scene switches |
+| `slow-fade`   | `Crossfade`             | 3000ms   | `EaseInOut` | Schedule-based changes          |
+| `dramatic`    | `Blackout` (500ms hold) | 2000ms   | `EaseInOut` | Scene reveals                   |
+| `flash-white` | `Flash` (#fff, 200ms)   | 800ms    | `Linear`    | Alert / notification            |
+| `sweep-right` | `Wipe` Right (0.4 soft) | 1500ms   | `EaseInOut` | Directional drama               |
+| `sunrise`     | `Crossfade`             | 30000ms  | `EaseIn`    | 30s warm fade-in                |
+| `sleep`       | `Crossfade`             | 60000ms  | `EaseOut`   | 60s fade to off                 |
 
 ---
 
@@ -574,20 +574,20 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 **Flash transition** has two phases within `duration`:
 
-| Phase | Time Range | Behavior |
-|---|---|---|
-| Flash | `[0, flash_ratio)` | Blend `from_colors` toward solid `flash_color` |
-| Reveal | `[flash_ratio, 1.0]` | Blend solid `flash_color` toward `to_colors` |
+| Phase  | Time Range           | Behavior                                       |
+| ------ | -------------------- | ---------------------------------------------- |
+| Flash  | `[0, flash_ratio)`   | Blend `from_colors` toward solid `flash_color` |
+| Reveal | `[flash_ratio, 1.0]` | Blend solid `flash_color` toward `to_colors`   |
 
 Where `flash_ratio = flash_duration / total_duration`.
 
 **Blackout transition** has three phases:
 
-| Phase | Time Range | Behavior |
-|---|---|---|
-| Fade Out | `[0, fade_each)` | Blend `from_colors` toward black |
-| Hold | `[fade_each, fade_each + hold)` | Solid black |
-| Fade In | `[fade_each + hold, 1.0]` | Blend black toward `to_colors` |
+| Phase    | Time Range                      | Behavior                         |
+| -------- | ------------------------------- | -------------------------------- |
+| Fade Out | `[0, fade_each)`                | Blend `from_colors` toward black |
+| Hold     | `[fade_each, fade_each + hold)` | Solid black                      |
+| Fade In  | `[fade_each + hold, 1.0]`       | Blend black toward `to_colors`   |
 
 Where `fade_each = (1.0 - hold_ratio) / 2.0`.
 
@@ -927,7 +927,7 @@ pub struct CircadianState {
 
 ### Color Temperature Application
 
-The circadian engine applies as a **white-point adaptation filter** on top of the active scene's output. It does not replace colors -- it *shifts* them toward the target color temperature.
+The circadian engine applies as a **white-point adaptation filter** on top of the active scene's output. It does not replace colors -- it _shifts_ them toward the target color temperature.
 
 **Algorithm:**
 
@@ -1038,17 +1038,17 @@ pub struct TriggerState {
 
 ### Built-in Trigger Sources
 
-| Source ID | Struct | Events Emitted | State Keys |
-|---|---|---|---|
-| `desktop` | `DesktopTriggerSource` | `screen_locked`, `screen_unlocked`, `workspace_changed`, `fullscreen_entered`, `fullscreen_exited`, `idle_entered`, `idle_exited`, `power_state` | `screen_locked`, `idle_seconds`, `workspace`, `fullscreen`, `power_state` |
-| `app` | `AppTriggerSource` | `launched`, `exited`, `focused`, `unfocused` | `foreground_app`, `running_apps`, `foreground_category` |
-| `system` | `SystemTriggerSource` | `usb_connected`, `usb_disconnected`, `network_connected`, `network_disconnected`, `suspend`, `resume`, `display_connected`, `display_disconnected` | `ac_power`, `connected_displays`, `network_ssid` |
-| `audio` | `AudioTriggerSource` | `silence`, `loud`, `beat_detected`, `music_started`, `music_stopped` | `audio_playing`, `bpm`, `level` |
-| `mqtt` | `MqttTriggerSource` | Configurable per subscription | Configurable per subscription |
-| `ha` | `HomeAssistantTriggerSource` | `entity_changed`, `event` | Mirrors watched entity states |
-| `stream` | `StreamTriggerSource` | `started`, `ended`, `subscription`, `bits`, `raid`, `follow`, `channel_point_redeem`, `hype_train` | `live`, `viewer_count` |
-| `calendar` | `CalendarTriggerSource` | `event_starting`, `event_started`, `event_ended`, `focus_time_started`, `focus_time_ended` | `current_event`, `next_event` |
-| `external` | Webhook REST endpoint | User-defined | n/a |
+| Source ID  | Struct                       | Events Emitted                                                                                                                                     | State Keys                                                                |
+| ---------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `desktop`  | `DesktopTriggerSource`       | `screen_locked`, `screen_unlocked`, `workspace_changed`, `fullscreen_entered`, `fullscreen_exited`, `idle_entered`, `idle_exited`, `power_state`   | `screen_locked`, `idle_seconds`, `workspace`, `fullscreen`, `power_state` |
+| `app`      | `AppTriggerSource`           | `launched`, `exited`, `focused`, `unfocused`                                                                                                       | `foreground_app`, `running_apps`, `foreground_category`                   |
+| `system`   | `SystemTriggerSource`        | `usb_connected`, `usb_disconnected`, `network_connected`, `network_disconnected`, `suspend`, `resume`, `display_connected`, `display_disconnected` | `ac_power`, `connected_displays`, `network_ssid`                          |
+| `audio`    | `AudioTriggerSource`         | `silence`, `loud`, `beat_detected`, `music_started`, `music_stopped`                                                                               | `audio_playing`, `bpm`, `level`                                           |
+| `mqtt`     | `MqttTriggerSource`          | Configurable per subscription                                                                                                                      | Configurable per subscription                                             |
+| `ha`       | `HomeAssistantTriggerSource` | `entity_changed`, `event`                                                                                                                          | Mirrors watched entity states                                             |
+| `stream`   | `StreamTriggerSource`        | `started`, `ended`, `subscription`, `bits`, `raid`, `follow`, `channel_point_redeem`, `hype_train`                                                 | `live`, `viewer_count`                                                    |
+| `calendar` | `CalendarTriggerSource`      | `event_starting`, `event_started`, `event_ended`, `focus_time_started`, `focus_time_ended`                                                         | `current_event`, `next_event`                                             |
+| `external` | Webhook REST endpoint        | User-defined                                                                                                                                       | n/a                                                                       |
 
 ### Application Detection
 
@@ -1192,7 +1192,7 @@ on TriggerEvent received:
 
 Trigger expressions form a composable tree that matches incoming `TriggerEvent`s. The tree structure enables complex event matching without custom code.
 
-```rust
+````rust
 /// A composable trigger expression tree.
 ///
 /// Trigger expressions match against incoming `TriggerEvent`s.
@@ -1267,16 +1267,16 @@ pub enum TriggerExpr {
         within: Duration,
     },
 }
-```
+````
 
 ### Match Semantics
 
-| Variant | Match Logic | State Required |
-|---|---|---|
-| `Event` | Stateless point match against each incoming event | None |
-| `All` | Stateful: tracks which children have matched within a 10s window | `HashSet<usize>` of matched children |
-| `Any` | Stateless: delegates to children, first match wins | None |
-| `Sequence` | Stateful: tracks current position in sequence + start time | `(usize, Instant)` cursor |
+| Variant    | Match Logic                                                      | State Required                       |
+| ---------- | ---------------------------------------------------------------- | ------------------------------------ |
+| `Event`    | Stateless point match against each incoming event                | None                                 |
+| `All`      | Stateful: tracks which children have matched within a 10s window | `HashSet<usize>` of matched children |
+| `Any`      | Stateless: delegates to children, first match wins               | None                                 |
+| `Sequence` | Stateful: tracks current position in sequence + start time       | `(usize, Instant)` cursor            |
 
 **Filter matching** supports three value comparison modes:
 
@@ -1290,7 +1290,7 @@ pub enum TriggerExpr {
 
 Condition expressions are checked **at the instant a trigger fires**. They inspect the current state of the system to decide whether the action should proceed. Unlike triggers (which are event-driven), conditions are state-driven.
 
-```rust
+````rust
 /// A composable condition expression tree.
 ///
 /// Conditions are evaluated synchronously when a trigger fires.
@@ -1399,7 +1399,7 @@ pub enum ComparisonOp {
     /// evaluate to `false` and log a warning.
     Matches(String),
 }
-```
+````
 
 ### Evaluation Semantics
 
@@ -1414,7 +1414,7 @@ pub enum ComparisonOp {
 
 Action expressions define what happens when a rule fires. Like trigger and condition expressions, they form a composable tree -- enabling sequential workflows, parallel fan-out, delays, and nested actions.
 
-```rust
+````rust
 /// A composable action expression tree.
 ///
 /// Action expressions define the operations performed when an
@@ -1540,23 +1540,23 @@ pub enum ActionExpr {
     /// and placeholder rules under development.
     Noop,
 }
-```
+````
 
 ### Execution Semantics
 
-| Variant | Async? | Blocks Sequence? | Side Effects |
-|---|---|---|---|
-| `ActivateScene` | Yes (transition) | No (returns immediately, transition runs in background) | Pushes onto priority stack |
-| `RestorePreviousScene` | Yes (transition) | No | Pops priority stack |
-| `SetBrightness` | Yes (ramp) | No | Modifies global brightness |
-| `SetZoneEffect` | No | No | Surgical zone override |
-| `TemporaryOverlay` | Yes (transition + timer) | No (timer runs in background) | Pushes/pops priority stack |
-| `Sequence` | Yes | Yes (awaits all children in order) | Depends on children |
-| `Parallel` | Yes | Yes (awaits all children concurrently) | Depends on children |
-| `Delay` | Yes | Yes (sleeps) | None |
-| `Webhook` | Yes (HTTP) | No (fire-and-forget) | Outbound HTTP |
-| `MqttPublish` | Yes (publish) | No | Outbound MQTT |
-| `Noop` | No | No | None |
+| Variant                | Async?                   | Blocks Sequence?                                        | Side Effects               |
+| ---------------------- | ------------------------ | ------------------------------------------------------- | -------------------------- |
+| `ActivateScene`        | Yes (transition)         | No (returns immediately, transition runs in background) | Pushes onto priority stack |
+| `RestorePreviousScene` | Yes (transition)         | No                                                      | Pops priority stack        |
+| `SetBrightness`        | Yes (ramp)               | No                                                      | Modifies global brightness |
+| `SetZoneEffect`        | No                       | No                                                      | Surgical zone override     |
+| `TemporaryOverlay`     | Yes (transition + timer) | No (timer runs in background)                           | Pushes/pops priority stack |
+| `Sequence`             | Yes                      | Yes (awaits all children in order)                      | Depends on children        |
+| `Parallel`             | Yes                      | Yes (awaits all children concurrently)                  | Depends on children        |
+| `Delay`                | Yes                      | Yes (sleeps)                                            | None                       |
+| `Webhook`              | Yes (HTTP)               | No (fire-and-forget)                                    | Outbound HTTP              |
+| `MqttPublish`          | Yes (publish)            | No                                                      | Outbound MQTT              |
+| `Noop`                 | No                       | No                                                      | None                       |
 
 ### Action Cancellation
 
@@ -1565,7 +1565,7 @@ When a higher-priority rule fires while a `Sequence` is in progress:
 1. The in-progress `Sequence` is **interrupted** after the current step completes.
 2. Steps that haven't started yet are discarded.
 3. The interrupted rule's context is pushed down the priority stack.
-4. If/when the higher-priority rule's context ends, the interrupted sequence does NOT resume -- the previous *scene* is restored, but multi-step sequences are one-shot.
+4. If/when the higher-priority rule's context ends, the interrupted sequence does NOT resume -- the previous _scene_ is restored, but multi-step sequences are one-shot.
 
 ---
 
@@ -1929,14 +1929,14 @@ pub struct NetworkActivity {
 
 ### Built-in Detectors
 
-| Detector | Confidence Signals | Detected Context |
-|---|---|---|
-| `WorkDetector` | IDE/terminal/browser focused, low idle time | `Working` at 0.4-0.8 |
-| `GamingDetector` | Fullscreen + high GPU + game process | `Gaming` at 0.7-0.95 |
-| `MediaDetector` | Media player focused, audio playing | `Media` at 0.6-0.85 |
-| `StreamDetector` | OBS running + streaming platform active | `Streaming` at 0.8-0.9 |
-| `CallDetector` | Call app focused + microphone active | `InCall` at 0.7-0.9 |
-| `AfkDetector` | Screen locked or idle > 5 minutes | `Idle`/`Away` at 0.6-0.99 |
+| Detector         | Confidence Signals                          | Detected Context          |
+| ---------------- | ------------------------------------------- | ------------------------- |
+| `WorkDetector`   | IDE/terminal/browser focused, low idle time | `Working` at 0.4-0.8      |
+| `GamingDetector` | Fullscreen + high GPU + game process        | `Gaming` at 0.7-0.95      |
+| `MediaDetector`  | Media player focused, audio playing         | `Media` at 0.6-0.85       |
+| `StreamDetector` | OBS running + streaming platform active     | `Streaming` at 0.8-0.9    |
+| `CallDetector`   | Call app focused + microphone active        | `InCall` at 0.7-0.9       |
+| `AfkDetector`    | Screen locked or idle > 5 minutes           | `Idle`/`Away` at 0.6-0.99 |
 
 ### Evaluation Cycle
 
@@ -2094,13 +2094,13 @@ When multiple rules or sources request conflicting actions simultaneously:
 
 ### Photosensitive Mode Transformations
 
-| Original | Photosensitive Replacement |
-|---|---|
-| `Cut` | `Crossfade` with `min_transition_ms` |
-| `Flash` | `Crossfade` with `max(flash_duration * 3, 500ms)` |
-| Strobe effects > 1Hz | Capped to 1Hz pulse |
-| Brightness delta > 0.05/frame | Clamped to 0.05/frame |
-| `TemporaryOverlay` < 1s | Extended to 1s minimum |
+| Original                      | Photosensitive Replacement                        |
+| ----------------------------- | ------------------------------------------------- |
+| `Cut`                         | `Crossfade` with `min_transition_ms`              |
+| `Flash`                       | `Crossfade` with `max(flash_duration * 3, 500ms)` |
+| Strobe effects > 1Hz          | Capped to 1Hz pulse                               |
+| Brightness delta > 0.05/frame | Clamped to 0.05/frame                             |
+| `TemporaryOverlay` < 1s       | Extended to 1s minimum                            |
 
 ### Crash Recovery and State Persistence
 
@@ -2120,18 +2120,18 @@ On startup:
 
 ## Crate Dependencies
 
-| Crate | Version | Purpose | License |
-|---|---|---|---|
-| `cron` | 0.13+ | Cron expression parsing | MIT/Apache-2.0 |
-| `sun` | 0.2+ | Sunrise/sunset solar position | MIT |
-| `chrono` | 0.4+ | Date/time handling | MIT/Apache-2.0 |
-| `chrono-tz` | 0.10+ | Timezone database | MIT/Apache-2.0 |
-| `rumqttc` | 0.24+ | Async MQTT client | Apache-2.0 |
-| `oklab` | 1.0+ | Perceptual color space conversion | MIT |
-| `uuid` | 1.0+ | UUID v7 scene/rule identifiers | MIT/Apache-2.0 |
-| `serde_json` | 1.0+ | Trigger payloads, HA API | MIT/Apache-2.0 |
-| `regex` | 1.0+ | Condition expression matching | MIT/Apache-2.0 |
-| `tokio` | 1.0+ | Async runtime (scheduler, timers) | MIT |
+| Crate        | Version | Purpose                           | License        |
+| ------------ | ------- | --------------------------------- | -------------- |
+| `cron`       | 0.13+   | Cron expression parsing           | MIT/Apache-2.0 |
+| `sun`        | 0.2+    | Sunrise/sunset solar position     | MIT            |
+| `chrono`     | 0.4+    | Date/time handling                | MIT/Apache-2.0 |
+| `chrono-tz`  | 0.10+   | Timezone database                 | MIT/Apache-2.0 |
+| `rumqttc`    | 0.24+   | Async MQTT client                 | Apache-2.0     |
+| `oklab`      | 1.0+    | Perceptual color space conversion | MIT            |
+| `uuid`       | 1.0+    | UUID v7 scene/rule identifiers    | MIT/Apache-2.0 |
+| `serde_json` | 1.0+    | Trigger payloads, HA API          | MIT/Apache-2.0 |
+| `regex`      | 1.0+    | Condition expression matching     | MIT/Apache-2.0 |
+| `tokio`      | 1.0+    | Async runtime (scheduler, timers) | MIT            |
 
 ---
 
@@ -2181,4 +2181,4 @@ hypercolor-core/src/
 
 ---
 
-*This specification is part of the Hypercolor technical spec series. See also: [ARCHITECTURE.md](../../ARCHITECTURE.md) for system overview.*
+_This specification is part of the Hypercolor technical spec series. See also: [ARCHITECTURE.md](../../ARCHITECTURE.md) for system overview._

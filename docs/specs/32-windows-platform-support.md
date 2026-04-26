@@ -30,14 +30,14 @@
 
 Hypercolor's architecture is already well-factored for multi-platform support. The core engine, effect pipeline, render loop, REST/WebSocket API, Leptos UI, and HIDAPI transport are platform-agnostic. Six subsystems have Linux-specific implementations that need Windows counterparts:
 
-| Subsystem | Linux Impl | Windows Target | Difficulty |
-|-----------|-----------|----------------|------------|
-| USB HID | HIDAPI + HIDRAW + nusb | HIDAPI (already works) | **Trivial** |
-| Audio capture | PulseAudio (`libpulse-binding`) | WASAPI via `cpal` | **Medium** |
-| Keyboard input | `evdev` | `device_query` (already in deps) | **Small** |
-| SMBus / I2C | `i2cdev` (`/dev/i2c-*`) | PawnIO + NvAPI + ADL | **Hard** |
-| Session monitoring | D-Bus logind + screensaver | Win32 power/session events | **Medium** |
-| Service lifecycle | systemd + launchd | Windows Service API or tray-only | **Medium** |
+| Subsystem          | Linux Impl                      | Windows Target                   | Difficulty  |
+| ------------------ | ------------------------------- | -------------------------------- | ----------- |
+| USB HID            | HIDAPI + HIDRAW + nusb          | HIDAPI (already works)           | **Trivial** |
+| Audio capture      | PulseAudio (`libpulse-binding`) | WASAPI via `cpal`                | **Medium**  |
+| Keyboard input     | `evdev`                         | `device_query` (already in deps) | **Small**   |
+| SMBus / I2C        | `i2cdev` (`/dev/i2c-*`)         | PawnIO + NvAPI + ADL             | **Hard**    |
+| Session monitoring | D-Bus logind + screensaver      | Win32 power/session events       | **Medium**  |
+| Service lifecycle  | systemd + launchd               | Windows Service API or tray-only | **Medium**  |
 
 **~65% of the codebase compiles on Windows today** with no changes. The work is filling in platform-conditional branches that already have `#[cfg]` gates.
 
@@ -112,6 +112,7 @@ No feature flags for platform selection — use `#[cfg(target_os)]` exclusively.
 Every `#[cfg(target_os = "linux")]` block needs a corresponding `#[cfg(target_os = "windows")]` or `#[cfg(not(target_os = "linux"))]` branch. Audit and fix all compile errors.
 
 **Key files:**
+
 - `hypercolor-daemon/src/main.rs` — Gate `sd-notify` behind `#[cfg(target_os = "linux")]` (already done), ensure Windows builds skip it
 - `hypercolor-daemon/src/startup.rs` — Gate evdev import
 - `hypercolor-hal/src/transport/mod.rs` — Gate HIDRAW and SMBus module inclusion
@@ -124,6 +125,7 @@ Every `#[cfg(target_os = "linux")]` block needs a corresponding `#[cfg(target_os
 HIDAPI already works on Windows — the `hidapi` crate links against the Windows HID API. No new transport needed. HIDRAW is Linux-only but unnecessary on Windows since HIDAPI covers all USB HID use cases.
 
 **Verify:** All devices currently using HIDAPI transport work on Windows:
+
 - Razer peripherals (keyboards, mice, headsets, docks)
 - ASUS USB motherboard controllers (Gen 1–5)
 - ASUS addressable headers (Gen 1–4)
@@ -173,6 +175,7 @@ A Windows binary that starts, discovers USB HID devices, applies effects, and se
 **New file:** `hypercolor-core/src/input/audio/windows.rs`
 
 **Implementation:**
+
 1. Enumerate audio sources via `cpal::available_hosts()` → `cpal::Host::output_devices()`
 2. Open a loopback stream on the default output device (captures system audio)
 3. Feed samples into the existing `AudioAnalyzer` FFT pipeline via the lock-free ring buffer
@@ -181,6 +184,7 @@ A Windows binary that starts, discovers USB HID devices, applies effects, and se
 **Key difference from Linux:** PulseAudio uses `.monitor` sink sources for loopback. WASAPI has native loopback capture on output devices — simpler in some ways.
 
 **Wire-up in `audio/mod.rs`:**
+
 ```rust
 #[cfg(target_os = "linux")]
 mod linux;
@@ -201,11 +205,13 @@ mod windows;
 **New file:** `hypercolor-core/src/input/windows_input.rs`
 
 **Implementation:**
+
 1. Implement `InputSource` trait
 2. Poll key states at the engine tick rate
 3. Map Windows virtual key codes to the existing `KeyCode` enum
 
 **Wire-up in `input/mod.rs`:**
+
 ```rust
 #[cfg(target_os = "linux")]
 pub mod evdev;
@@ -229,11 +235,11 @@ This phase has its own deep dive in §9. Summary here:
 
 Windows has no `/dev/i2c-*` equivalent. Three complementary approaches are needed (matching OpenRGB's proven model):
 
-| Strategy | Covers | Mechanism | Admin Required |
-|----------|--------|-----------|----------------|
-| **PawnIO** | Motherboard SMBus (Intel i801, AMD PIIX4, Nuvoton) | Userspace I/O executor with chipset-specific binary modules | Yes |
-| **NvAPI** | NVIDIA GPU I2C | NVIDIA driver SDK (`nvapi64.dll`) | No (driver only) |
-| **ADL** | AMD GPU I2C | AMD Display Library (`atiadlxx.dll`) | No (driver only) |
+| Strategy   | Covers                                             | Mechanism                                                   | Admin Required   |
+| ---------- | -------------------------------------------------- | ----------------------------------------------------------- | ---------------- |
+| **PawnIO** | Motherboard SMBus (Intel i801, AMD PIIX4, Nuvoton) | Userspace I/O executor with chipset-specific binary modules | Yes              |
+| **NvAPI**  | NVIDIA GPU I2C                                     | NVIDIA driver SDK (`nvapi64.dll`)                           | No (driver only) |
+| **ADL**    | AMD GPU I2C                                        | AMD Display Library (`atiadlxx.dll`)                        | No (driver only) |
 
 ### 6.2 Transport Abstraction
 
@@ -249,6 +255,7 @@ Windows: ADL WriteAndReadI2C → atiadlxx.dll
 ```
 
 **New files:**
+
 - `hypercolor-hal/src/transport/smbus_pawnio.rs` — PawnIO wrapper
 - `hypercolor-hal/src/transport/smbus_nvapi.rs` — NVIDIA I2C wrapper
 - `hypercolor-hal/src/transport/smbus_adl.rs` — AMD I2C wrapper
@@ -272,12 +279,14 @@ PawnIO is an open-source (LGPL 2.1) userspace executor created by namazso. It bu
 - `SmbusNCT6793.bin` — Nuvoton Super I/O (some boards expose SMBus through Super I/O)
 
 **Integration approach:**
+
 1. Bundle PawnIO DLL and `.bin` modules with the Hypercolor Windows installer
 2. Load PawnIO at runtime via `libloading` (Rust FFI)
 3. Implement `Transport` trait using `pawnio_execute("ioctl_smbus_xfer", ...)`
 4. Global mutex (`Global\Access_SMBUS.HTP.Method`) for multi-process safety (matches OpenRGB convention)
 
 **PawnIO API (FFI bindings):**
+
 ```rust
 // Minimal FFI surface
 extern "C" {
@@ -300,12 +309,14 @@ extern "C" {
 ### 6.5 GPU Vendor SDK Integration
 
 **NVIDIA NvAPI:**
+
 - Dynamically load `nvapi64.dll` (ships with NVIDIA driver)
 - Use `NvAPI_I2CRead` / `NvAPI_I2CWrite` for I2C transactions
 - GPU port 1 is where ASUS Aura controllers live
 - Existing `AuraSmBusProtocol` works unchanged — it just needs a different transport
 
 **AMD ADL:**
+
 - Dynamically load `atiadlxx.dll` (ships with AMD driver)
 - Use `ADL2_Display_WriteAndReadI2C` for I2C transactions
 - Enumerate adapters to find GPUs with I2C buses
@@ -333,6 +344,7 @@ ASUS Aura motherboard LEDs, GPU LEDs, and DRAM LEDs controllable on Windows. Adm
 **New file:** `hypercolor-core/src/session/windows.rs`
 
 Implement `SessionMonitor` for:
+
 - **Sleep/wake** — `WM_POWERBROADCAST` with `PBT_APMQUERYSUSPEND` / `PBT_APMRESUMEAUTOMATIC`
 - **Lock/unlock** — `WTSRegisterSessionNotification` → `WM_WTSSESSION_CHANGE` with `WTS_SESSION_LOCK` / `WTS_SESSION_UNLOCK`
 - **Lid close** (laptops) — `RegisterPowerSettingNotification` with `GUID_LIDSWITCH_STATE_CHANGE`
@@ -348,6 +360,7 @@ Uses the `windows` crate for Win32 API access. Spawns a hidden message-only wind
 2. **Windows Service mode** (optional) — For headless/server setups. Uses the `windows-service` crate. Registered via `sc.exe` or the installer.
 
 **CLI integration:**
+
 ```rust
 #[cfg(target_os = "windows")]
 ServiceCommand::Start => {
@@ -409,11 +422,13 @@ This section covers the technical details of Windows SMBus access, informed by O
 Linux exposes I2C buses as `/dev/i2c-*` device files accessible from userspace. Windows has no equivalent. The SMBus controller is owned by the chipset driver (Intel or AMD), and there's no public API to perform I2C transactions.
 
 **Historical approaches (and why they failed):**
+
 - **InpOut32** — Direct port I/O from userspace. Now flagged as malware by AV vendors.
 - **WinRing0** — Ring 0 privilege escalation. Same AV problem, plus security risk.
 - **Custom kernel driver** — Requires EV code signing ($$$), Microsoft WHQL process.
 
 **Current approach (proven by OpenRGB):**
+
 - **PawnIO** — Modern userspace executor. Not flagged by AV. Requires admin but no kernel driver signing.
 
 ### 9.2 PawnIO Architecture
@@ -435,11 +450,11 @@ graph TD
 
 ### 9.3 Chipset Module Coverage
 
-| Module | Chipset | Coverage |
-|--------|---------|----------|
-| `SmbusI801.bin` | Intel i801 | Intel 6th gen+ (Skylake through current) |
-| `SmbusPIIX4.bin` | AMD PIIX4 | AMD Ryzen (all generations) — dual bus with port select |
-| `SmbusNCT6793.bin` | Nuvoton NCT6793 | Some boards with Super I/O SMBus |
+| Module             | Chipset         | Coverage                                                |
+| ------------------ | --------------- | ------------------------------------------------------- |
+| `SmbusI801.bin`    | Intel i801      | Intel 6th gen+ (Skylake through current)                |
+| `SmbusPIIX4.bin`   | AMD PIIX4       | AMD Ryzen (all generations) — dual bus with port select |
+| `SmbusNCT6793.bin` | Nuvoton NCT6793 | Some boards with Super I/O SMBus                        |
 
 This covers the vast majority of gaming motherboards with ASUS Aura.
 
@@ -487,6 +502,7 @@ let mutex = unsafe {
 ### 9.6 GPU I2C via Vendor SDKs
 
 **NvAPI wrapper:**
+
 ```rust
 #[cfg(target_os = "windows")]
 pub struct NvApiI2cBus {
@@ -497,6 +513,7 @@ pub struct NvApiI2cBus {
 ```
 
 **ADL wrapper:**
+
 ```rust
 #[cfg(target_os = "windows")]
 pub struct AdlI2cBus {
@@ -539,21 +556,21 @@ trait SmBusBackend: Send + Sync {
 
 ### New Windows Dependencies
 
-| Crate | Purpose | Conditional |
-|-------|---------|-------------|
-| `cpal` | WASAPI audio capture | `cfg(target_os = "windows")` in core |
-| `windows` | Win32 session/power events, named mutex, registry | `cfg(target_os = "windows")` in core + daemon |
-| `windows-service` | Optional Windows Service mode | `cfg(target_os = "windows")` in daemon |
-| `libloading` | PawnIO DLL + NvAPI + ADL runtime loading | `cfg(target_os = "windows")` in HAL |
+| Crate             | Purpose                                           | Conditional                                   |
+| ----------------- | ------------------------------------------------- | --------------------------------------------- |
+| `cpal`            | WASAPI audio capture                              | `cfg(target_os = "windows")` in core          |
+| `windows`         | Win32 session/power events, named mutex, registry | `cfg(target_os = "windows")` in core + daemon |
+| `windows-service` | Optional Windows Service mode                     | `cfg(target_os = "windows")` in daemon        |
+| `libloading`      | PawnIO DLL + NvAPI + ADL runtime loading          | `cfg(target_os = "windows")` in HAL           |
 
 ### Bundled Artifacts (Windows only)
 
-| Artifact | Source | License |
-|----------|--------|---------|
-| `PawnIO.dll` | [PawnIO](https://github.com/namazso/PawnIO) | LGPL 2.1 |
-| `SmbusI801.bin` | PawnIO modules | LGPL 2.1 |
-| `SmbusPIIX4.bin` | PawnIO modules | LGPL 2.1 |
-| `SmbusNCT6793.bin` | PawnIO modules | LGPL 2.1 |
+| Artifact           | Source                                      | License  |
+| ------------------ | ------------------------------------------- | -------- |
+| `PawnIO.dll`       | [PawnIO](https://github.com/namazso/PawnIO) | LGPL 2.1 |
+| `SmbusI801.bin`    | PawnIO modules                              | LGPL 2.1 |
+| `SmbusPIIX4.bin`   | PawnIO modules                              | LGPL 2.1 |
+| `SmbusNCT6793.bin` | PawnIO modules                              | LGPL 2.1 |
 
 LGPL 2.1 is compatible with Apache-2.0 for dynamic linking. PawnIO is loaded via `libloading` (dynamic), not statically linked.
 
@@ -584,13 +601,13 @@ strategy:
 
 ### Hardware Testing
 
-| Phase | Test Target | Hardware Required |
-|-------|-------------|-------------------|
-| 1 | USB HID devices | Any Razer/Corsair/ASUS USB peripheral |
-| 2 | Audio reactive | Any Windows audio output |
-| 3a | Motherboard SMBus | Intel or AMD board with ASUS Aura |
-| 3b | GPU I2C | ASUS ROG GPU (NVIDIA or AMD) |
-| 3c | DRAM | ASUS Aura RGB RAM |
+| Phase | Test Target       | Hardware Required                     |
+| ----- | ----------------- | ------------------------------------- |
+| 1     | USB HID devices   | Any Razer/Corsair/ASUS USB peripheral |
+| 2     | Audio reactive    | Any Windows audio output              |
+| 3a    | Motherboard SMBus | Intel or AMD board with ASUS Aura     |
+| 3b    | GPU I2C           | ASUS ROG GPU (NVIDIA or AMD)          |
+| 3c    | DRAM              | ASUS Aura RGB RAM                     |
 
 ### Mock Testing
 
@@ -602,15 +619,15 @@ strategy:
 
 ## 12. Risk Register
 
-| Risk | Impact | Likelihood | Mitigation |
-|------|--------|------------|------------|
-| PawnIO flagged by AV | High | Low | PawnIO is actively maintained and not currently flagged. Distribute with code signing. |
-| ASUS locks SMBus to Armoury Crate | High | Medium | Armoury Crate doesn't lock the bus — OpenRGB coexists. Global mutex prevents conflicts. |
-| PawnIO doesn't cover niche chipsets | Medium | Low | i801 + PIIX4 cover 95%+ of gaming boards. NCT6793 for edge cases. |
-| GPU vendor SDK API changes | Medium | Low | NvAPI and ADL are stable for years. Dynamic loading isolates breakage. |
-| Admin requirement deters users | Medium | Medium | USB devices work without admin. Only SMBus needs elevation. Clear messaging in UI. |
-| DRAM remap hub inaccessible | Low | Medium | DRAM is Phase 3 / lower priority. USB peripherals and motherboard LEDs are the primary targets. |
-| Windows Defender SmartScreen blocks unsigned installer | Medium | High | Get EV code signing cert or distribute via winget/scoop with checksums. |
+| Risk                                                   | Impact | Likelihood | Mitigation                                                                                      |
+| ------------------------------------------------------ | ------ | ---------- | ----------------------------------------------------------------------------------------------- |
+| PawnIO flagged by AV                                   | High   | Low        | PawnIO is actively maintained and not currently flagged. Distribute with code signing.          |
+| ASUS locks SMBus to Armoury Crate                      | High   | Medium     | Armoury Crate doesn't lock the bus — OpenRGB coexists. Global mutex prevents conflicts.         |
+| PawnIO doesn't cover niche chipsets                    | Medium | Low        | i801 + PIIX4 cover 95%+ of gaming boards. NCT6793 for edge cases.                               |
+| GPU vendor SDK API changes                             | Medium | Low        | NvAPI and ADL are stable for years. Dynamic loading isolates breakage.                          |
+| Admin requirement deters users                         | Medium | Medium     | USB devices work without admin. Only SMBus needs elevation. Clear messaging in UI.              |
+| DRAM remap hub inaccessible                            | Low    | Medium     | DRAM is Phase 3 / lower priority. USB peripherals and motherboard LEDs are the primary targets. |
+| Windows Defender SmartScreen blocks unsigned installer | Medium | High       | Get EV code signing cert or distribute via winget/scoop with checksums.                         |
 
 ---
 
@@ -625,6 +642,7 @@ Phase 2 (audio + keyboard input) is straightforward with `cpal` and `device_quer
 Phase 3 (SMBus) is the real investment, but OpenRGB has proven the path. PawnIO + vendor GPU SDKs is a known-good architecture. The key insight is that the `AuraSmBusProtocol` implementation doesn't change at all — only the transport backend underneath it.
 
 **Recommended priority order:**
+
 1. Phase 1 (USB + compile) — unlocks the largest device catalog
 2. Phase 2 (audio + input) — completes the effect experience
 3. Phase 4 (session + service) — makes it production-ready

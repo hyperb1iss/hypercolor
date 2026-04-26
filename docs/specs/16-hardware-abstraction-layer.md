@@ -73,11 +73,11 @@ graph TD
 
 ### Crate Dependencies
 
-| Crate | Depends On | Provides |
-|-------|-----------|----------|
-| `hypercolor-types` | `serde`, `uuid` | `DeviceFamily`, `DeviceIdentifier`, `DeviceInfo`, `DeviceColorFormat` |
-| `hypercolor-hal` | `hypercolor-types`, `nusb`, `thiserror`, `tracing` | `Protocol`, `Transport`, `ProtocolDatabase`, driver implementations |
-| `hypercolor-core` | `hypercolor-types`, `hypercolor-hal`, `tokio`, `async-trait` | `DeviceBackend`, `UsbBackend`, `UsbScanner`, `UsbHotplugMonitor` |
+| Crate              | Depends On                                                   | Provides                                                              |
+| ------------------ | ------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `hypercolor-types` | `serde`, `uuid`                                              | `DeviceFamily`, `DeviceIdentifier`, `DeviceInfo`, `DeviceColorFormat` |
+| `hypercolor-hal`   | `hypercolor-types`, `nusb`, `thiserror`, `tracing`           | `Protocol`, `Transport`, `ProtocolDatabase`, driver implementations   |
+| `hypercolor-core`  | `hypercolor-types`, `hypercolor-hal`, `tokio`, `async-trait` | `DeviceBackend`, `UsbBackend`, `UsbScanner`, `UsbHotplugMonitor`      |
 
 **Critical constraint:** `hypercolor-hal` MUST NOT depend on `hypercolor-core`. The dependency arrow is strictly `types → hal → core`.
 
@@ -549,11 +549,11 @@ Some Lian Li hubs share a PID but require different drivers based on firmware ve
 pub firmware_predicate: Option<fn(&str) -> bool>,
 ```
 
-| PID | Firmware | Matched Variant |
-|-----|----------|-----------------|
-| `0xA101` | contains `"v1.7"` | `LianLiHubVariant::Al` |
+| PID      | Firmware          | Matched Variant                              |
+| -------- | ----------------- | -------------------------------------------- |
+| `0xA101` | contains `"v1.7"` | `LianLiHubVariant::Al`                       |
 | `0xA101` | contains `"v1.0"` | `LianLiHubVariant::Original` (AL10 fallback) |
-| `0xA101` | (default) | `LianLiHubVariant::Al` |
+| `0xA101` | (default)         | `LianLiHubVariant::Al`                       |
 
 Devices without firmware gating (Razer, PrismRGB, most Lian Li variants) have `firmware_predicate: None` and match unconditionally — `lookup()` returns the single entry directly.
 
@@ -561,7 +561,7 @@ Devices without firmware gating (Razer, PrismRGB, most Lian Li variants) have `f
 
 Each driver family provides a registration macro that expands into a `DeviceDescriptor` const and an entry in the database's static initializer:
 
-```rust
+````rust
 /// Register a Razer device.
 ///
 /// # Example
@@ -608,18 +608,18 @@ macro_rules! corsair_device {
     ($name:ident, $pid:expr, $display:expr,
      interface: $iface:expr, usage_page: $up:expr, usage: $u:expr) => { ... };
 }
-```
+````
 
 ### PrismRGB Migration Reference
 
 PrismRGB devices (spec 04) migrate into the HAL with these VID/PID mappings:
 
-| Device | VID | PID | Interface | Model |
-|--------|-----|-----|-----------|-------|
-| Prism 8 | `0x16D5` | `0x1F01` | 0 | `Prism8` |
-| Nollie 8 v2 | `0x16D2` | `0x1F01` | 0 | `Nollie8` |
-| Prism S | `0x16D0` | `0x1294` | 2 | `PrismS` |
-| Prism Mini | `0x16D0` | `0x1407` | 2 | `PrismMini` |
+| Device      | VID      | PID      | Interface | Model       |
+| ----------- | -------- | -------- | --------- | ----------- |
+| Prism 8     | `0x16D5` | `0x1F01` | 0         | `Prism8`    |
+| Nollie 8 v2 | `0x16D2` | `0x1F01` | 0         | `Nollie8`   |
+| Prism S     | `0x16D0` | `0x1294` | 2         | `PrismS`    |
+| Prism Mini  | `0x16D0` | `0x1407` | 2         | `PrismMini` |
 
 Note: PrismRGB controllers use VIDs `0x16D5`, `0x16D2`, and `0x16D0` — completely separate from Lian Li Uni Hubs (VID `0x0CF2`). See spec 19 §9 for disambiguation.
 
@@ -801,14 +801,14 @@ impl TransportScanner for UsbScanner {
 
 The scanner builds `DiscoveredDevice` entries with:
 
-| Field | Source |
-|-------|--------|
-| `connection_type` | `ConnectionType::Usb` |
-| `name` | `DeviceDescriptor.name` |
-| `family` | `DeviceDescriptor.family` |
-| `fingerprint` | `DeviceFingerprint` from `DeviceIdentifier::UsbHid` |
-| `info.zones` | Protocol instance `zones()` (constructed temporarily for metadata) |
-| `info.capabilities` | Protocol instance `capabilities()` |
+| Field               | Source                                                             |
+| ------------------- | ------------------------------------------------------------------ |
+| `connection_type`   | `ConnectionType::Usb`                                              |
+| `name`              | `DeviceDescriptor.name`                                            |
+| `family`            | `DeviceDescriptor.family`                                          |
+| `fingerprint`       | `DeviceFingerprint` from `DeviceIdentifier::UsbHid`                |
+| `info.zones`        | Protocol instance `zones()` (constructed temporarily for metadata) |
+| `info.capabilities` | Protocol instance `capabilities()`                                 |
 
 The scanner instantiates a protocol temporarily during scan to query zone metadata and capabilities. This is cheap since protocols are pure data structures with no I/O.
 
@@ -938,10 +938,10 @@ Not all USB devices fit the Protocol+Transport pattern. Corsair Phase 1 uses an 
 
 ### When to Use Bridge vs. HAL
 
-| Pattern | When | Example |
-|---------|------|---------|
-| **Protocol + Transport (HAL)** | Direct USB access with known wire protocol | Razer, Lian Li, PrismRGB, Corsair Phase 2 |
-| **Bridge Backend (core)** | External service handles USB; we talk HTTP/gRPC | Corsair OpenLinkHub, future external bridges |
+| Pattern                        | When                                            | Example                                      |
+| ------------------------------ | ----------------------------------------------- | -------------------------------------------- |
+| **Protocol + Transport (HAL)** | Direct USB access with known wire protocol      | Razer, Lian Li, PrismRGB, Corsair Phase 2    |
+| **Bridge Backend (core)**      | External service handles USB; we talk HTTP/gRPC | Corsair OpenLinkHub, future external bridges |
 
 ### Bridge Backend Characteristics
 
@@ -1268,6 +1268,7 @@ impl MockTransport {
 **Packet capture replay:**
 
 For each supported device family, maintain a set of captured USB packets (from vendor software, uchroma, or real hardware) and verify that:
+
 - `encode_frame()` produces byte-identical output for the same input colors
 - `parse_response()` correctly decodes captured response packets
 - Init/shutdown sequences match reference implementations

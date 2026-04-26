@@ -37,10 +37,10 @@ RGB LEDs contain three discrete light-emitting diodes — red, green, and blue. 
 The standard relative luminance coefficients quantify how the eye weights each channel:
 
 | Channel | Rec. 601 Weight | sRGB/WCAG Weight |
-|---------|----------------|------------------|
-| Red     | 29.9%          | 21.3%            |
-| Green   | 58.7%          | 71.5%            |
-| Blue    | 11.4%          | 7.2%             |
+| ------- | --------------- | ---------------- |
+| Red     | 29.9%           | 21.3%            |
+| Green   | 58.7%           | 71.5%            |
+| Blue    | 11.4%           | 7.2%             |
 
 This means a "pure green" LED (0, 255, 0) appears nearly **6x brighter** than a "pure blue" (0, 0, 255) to the human eye, even though both run at the same PWM duty cycle. This asymmetry is the root cause of most LED color design problems.
 
@@ -62,13 +62,13 @@ On a 60-LED NeoPixel strip, full white draws 3.6A. Adafruit's rule of thumb: pla
 
 Saturation controls how "pure" a color appears versus how washed-out or gray it looks. The optimal range depends on context:
 
-| Saturation Range (HSV/HSL) | Result on LEDs | Best Use Case |
-|----------------------------|----------------|---------------|
-| **90-100%** | Maximum vividness, primary/secondary hues pop. Can look harsh in a dark room at high brightness. | Accent colors, single-color washes, reactive effects |
-| **70-90%** | Rich and vivid without being aggressive. The sweet spot for most effect work. | Multi-color palettes, gradients, ambient effects |
-| **40-70%** | Noticeably softer. Good for pastels if combined with appropriate lightness, but can read as "washed out" on LEDs without a dedicated white channel. | Pastel effects (better with RGBW hardware) |
-| **10-40%** | Very desaturated. On RGB LEDs (without W channel), this just looks like dim white/gray with a slight color tint. | Subtle mood lighting, background glow |
-| **0-10%** | Effectively white/gray. The color information is lost. | Not useful for color effects |
+| Saturation Range (HSV/HSL) | Result on LEDs                                                                                                                                      | Best Use Case                                        |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| **90-100%**                | Maximum vividness, primary/secondary hues pop. Can look harsh in a dark room at high brightness.                                                    | Accent colors, single-color washes, reactive effects |
+| **70-90%**                 | Rich and vivid without being aggressive. The sweet spot for most effect work.                                                                       | Multi-color palettes, gradients, ambient effects     |
+| **40-70%**                 | Noticeably softer. Good for pastels if combined with appropriate lightness, but can read as "washed out" on LEDs without a dedicated white channel. | Pastel effects (better with RGBW hardware)           |
+| **10-40%**                 | Very desaturated. On RGB LEDs (without W channel), this just looks like dim white/gray with a slight color tint.                                    | Subtle mood lighting, background glow                |
+| **0-10%**                  | Effectively white/gray. The color information is lost.                                                                                              | Not useful for color effects                         |
 
 ### Key Insight: LEDs Reward High Saturation
 
@@ -85,25 +85,27 @@ Unlike screens where medium saturation produces pleasant, usable colors, **physi
 The #1 beginner mistake with LED color: pushing lightness/value too high causes colors to **blow out to white**. This happens because high lightness in additive color mixing means "add more of all channels," which converges on white.
 
 In **HSL** terms:
+
 - L=50% is peak color vividness (the pure hue)
 - L=60-70% starts washing out — color is still visible but diluted
 - L=75%+ is pastel territory — mostly white with a hint of color
 - L=90%+ is effectively white on LEDs
 
 In **HSV** terms:
+
 - V=100%, S=100% is peak vividness (the pure hue)
 - Reducing S while keeping V high adds white → washout
 - Reducing V while keeping S high makes colors darker/richer without washing out
 
 ### Practical Brightness Guidelines
 
-| HSV Value (V) | HSL Lightness (L) | Visual Result on LEDs |
-|---------------|--------------------|-----------------------|
-| 100%          | 50%                | Maximum vividness — the "true" color |
-| 80%           | 40%                | Rich and deep. Often the best for ambient lighting. |
-| 60%           | 30%                | Moody, dark but saturated. Great for accents. |
-| 40%           | 20%                | Dim but still colored. Useful for "breathing" lows. |
-| 20%           | 10%                | Very dim. Hard to distinguish hues. |
+| HSV Value (V) | HSL Lightness (L) | Visual Result on LEDs                               |
+| ------------- | ----------------- | --------------------------------------------------- |
+| 100%          | 50%               | Maximum vividness — the "true" color                |
+| 80%           | 40%               | Rich and deep. Often the best for ambient lighting. |
+| 60%           | 30%               | Moody, dark but saturated. Great for accents.       |
+| 40%           | 20%               | Dim but still colored. Useful for "breathing" lows. |
+| 20%           | 10%               | Very dim. Hard to distinguish hues.                 |
 
 ### How to Keep Colors Vivid
 
@@ -136,40 +138,40 @@ Not all hues are created equal on RGB LED hardware. Some are physically produced
 
 #### Tier 1: Stunning (Single-die or clean two-die mix)
 
-| Color       | Hue  | RGB           | Why It Works |
-|-------------|------|---------------|--------------|
-| **Red**     | 0°   | 255, 0, 0     | Single die. Pure, intense, unmistakable. |
-| **Green**   | 120° | 0, 255, 0     | Single die. Brightest perceived color. |
-| **Blue**    | 240° | 0, 0, 255     | Single die. Deep and striking, though perceived as dim. |
-| **Cyan**    | 180° | 0, 255, 255   | Clean G+B mix. Crisp and electric. |
-| **Magenta** | 300° | 255, 0, 255   | Clean R+B mix. Vivid and eye-catching. |
+| Color       | Hue  | RGB         | Why It Works                                            |
+| ----------- | ---- | ----------- | ------------------------------------------------------- |
+| **Red**     | 0°   | 255, 0, 0   | Single die. Pure, intense, unmistakable.                |
+| **Green**   | 120° | 0, 255, 0   | Single die. Brightest perceived color.                  |
+| **Blue**    | 240° | 0, 0, 255   | Single die. Deep and striking, though perceived as dim. |
+| **Cyan**    | 180° | 0, 255, 255 | Clean G+B mix. Crisp and electric.                      |
+| **Magenta** | 300° | 255, 0, 255 | Clean R+B mix. Vivid and eye-catching.                  |
 
 #### Tier 2: Excellent (Two-die mixes that look great with tuning)
 
-| Color        | Hue    | RGB             | Notes |
-|--------------|--------|-----------------|-------|
-| **Orange**   | 20-30° | 255, 80-120, 0  | Needs green pulled way back from 50%. See yellow/brown section. |
-| **Purple**   | 270°   | 128, 0, 255     | Rich and moody. |
-| **Rose/Pink**| 330°   | 255, 0, 100-128 | Softer than magenta, feminine and warm. |
-| **Azure**    | 210°   | 0, 128, 255     | Cool and crisp. |
-| **Spring Green** | 150° | 0, 255, 128  | Fresh and vivid. |
-| **Amber**    | ~30°   | 255, 140, 0     | Widely praised as the most eye-friendly color. |
+| Color            | Hue    | RGB             | Notes                                                           |
+| ---------------- | ------ | --------------- | --------------------------------------------------------------- |
+| **Orange**       | 20-30° | 255, 80-120, 0  | Needs green pulled way back from 50%. See yellow/brown section. |
+| **Purple**       | 270°   | 128, 0, 255     | Rich and moody.                                                 |
+| **Rose/Pink**    | 330°   | 255, 0, 100-128 | Softer than magenta, feminine and warm.                         |
+| **Azure**        | 210°   | 0, 128, 255     | Cool and crisp.                                                 |
+| **Spring Green** | 150°   | 0, 255, 128     | Fresh and vivid.                                                |
+| **Amber**        | ~30°   | 255, 140, 0     | Widely praised as the most eye-friendly color.                  |
 
 #### Tier 3: Challenging (Require careful tuning or RGBW hardware)
 
-| Color       | Hue  | RGB Attempt     | Problem |
-|-------------|------|-----------------|---------|
-| **Yellow**  | 60°  | 255, 255, 0     | R+G at full power. Often reads as green-tinted. Appears excessively bright due to both R and G contributions. |
-| **Warm White** | n/a | 255, 200, 100 | Requires all three channels. Looks better with RGBW hardware. |
-| **Pastel anything** | varies | varies  | Desaturated colors lose definition without a W channel. |
+| Color               | Hue    | RGB Attempt   | Problem                                                                                                       |
+| ------------------- | ------ | ------------- | ------------------------------------------------------------------------------------------------------------- |
+| **Yellow**          | 60°    | 255, 255, 0   | R+G at full power. Often reads as green-tinted. Appears excessively bright due to both R and G contributions. |
+| **Warm White**      | n/a    | 255, 200, 100 | Requires all three channels. Looks better with RGBW hardware.                                                 |
+| **Pastel anything** | varies | varies        | Desaturated colors lose definition without a W channel.                                                       |
 
 #### Tier 4: Effectively Impossible on RGB
 
-| Color     | Why |
-|-----------|-----|
+| Color     | Why                                                                                                                  |
+| --------- | -------------------------------------------------------------------------------------------------------------------- |
 | **Brown** | Requires context (surrounding brighter colors) to read as brown. An isolated "brown" LED just looks like dim orange. |
-| **Gray**  | Just dim white. No way to distinguish from low-brightness white. |
-| **Black** | LED off. Not a color you can emit. |
+| **Gray**  | Just dim white. No way to distinguish from low-brightness white.                                                     |
+| **Black** | LED off. Not a color you can emit.                                                                                   |
 
 ### Hue Regions and Their Character
 
@@ -196,7 +198,7 @@ The **most challenging range** is **30°-90°** (orange through yellow-green), w
 Yellow requires both red and green at full (or near-full) power: RGB(255, 255, 0). This creates two issues:
 
 1. **Double the power draw** — drawing ~40mA per LED instead of ~20mA, making the LED appear disproportionately bright compared to single-channel colors.
-2. **No true yellow wavelength** — The human eye perceives yellow at ~570-590nm. RGB LEDs emit red (~630nm) and green (~530nm) separately. The brain *interprets* this as yellow, but the spectral content is completely different from monochromatic yellow. On some LED hardware, this reads as greenish-white rather than warm yellow.
+2. **No true yellow wavelength** — The human eye perceives yellow at ~570-590nm. RGB LEDs emit red (~630nm) and green (~530nm) separately. The brain _interprets_ this as yellow, but the spectral content is completely different from monochromatic yellow. On some LED hardware, this reads as greenish-white rather than warm yellow.
 
 ### The Brown Impossibility
 
@@ -216,13 +218,13 @@ Brown is perceptually "dark orange." But LEDs cannot make dark colors in isolati
 
 ### Recommended Warm Color Palette
 
-| Name          | RGB            | HSV Approx.   | Notes |
-|---------------|----------------|----------------|-------|
-| Warm Red      | 255, 30, 0     | 7°, 100%, 100% | Deep warm red |
-| Orange        | 255, 100, 0    | 24°, 100%, 100%| Classic vivid orange |
-| Amber         | 255, 140, 0    | 33°, 100%, 100%| Eye-friendly, warm |
-| Gold          | 255, 190, 0    | 45°, 100%, 100%| Richer than pure yellow |
-| Tuned Yellow  | 255, 200, 10   | 47°, 96%, 100% | Much better than 255,255,0 |
+| Name         | RGB          | HSV Approx.     | Notes                      |
+| ------------ | ------------ | --------------- | -------------------------- |
+| Warm Red     | 255, 30, 0   | 7°, 100%, 100%  | Deep warm red              |
+| Orange       | 255, 100, 0  | 24°, 100%, 100% | Classic vivid orange       |
+| Amber        | 255, 140, 0  | 33°, 100%, 100% | Eye-friendly, warm         |
+| Gold         | 255, 190, 0  | 45°, 100%, 100% | Richer than pure yellow    |
+| Tuned Yellow | 255, 200, 10 | 47°, 96%, 100%  | Much better than 255,255,0 |
 
 ---
 
@@ -230,14 +232,14 @@ Brown is perceptually "dark orange." But LEDs cannot make dark colors in isolati
 
 ### Key Differences
 
-| Property | Monitor/Screen | Physical LED |
-|----------|---------------|--------------|
-| **Viewing** | Reflected/filtered light through LCD, or OLED emissive behind glass | Direct point-source emission, often viewed from multiple angles |
-| **Brightness context** | Surrounded by other lit pixels; relative perception matters | Often in dark/dim environments; absolute brightness dominates |
-| **Color gamut** | sRGB, DCI-P3 defined by panel spectral response | Defined by specific LED die wavelengths; varies by manufacturer |
-| **Gamma** | Display applies gamma curve (typically 2.2) | No built-in gamma correction; PWM is linear |
-| **Diffusion** | Sub-pixel blending behind diffuser panel | Point sources that may or may not have diffuser caps |
-| **Black level** | Backlight bleed (LCD) or true black (OLED) | Off = black, but ambient light washes it out |
+| Property               | Monitor/Screen                                                      | Physical LED                                                    |
+| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Viewing**            | Reflected/filtered light through LCD, or OLED emissive behind glass | Direct point-source emission, often viewed from multiple angles |
+| **Brightness context** | Surrounded by other lit pixels; relative perception matters         | Often in dark/dim environments; absolute brightness dominates   |
+| **Color gamut**        | sRGB, DCI-P3 defined by panel spectral response                     | Defined by specific LED die wavelengths; varies by manufacturer |
+| **Gamma**              | Display applies gamma curve (typically 2.2)                         | No built-in gamma correction; PWM is linear                     |
+| **Diffusion**          | Sub-pixel blending behind diffuser panel                            | Point sources that may or may not have diffuser caps            |
+| **Black level**        | Backlight bleed (LCD) or true black (OLED)                          | Off = black, but ambient light washes it out                    |
 
 ### Critical Corrections When Designing for LEDs
 
@@ -266,13 +268,13 @@ RGB interpolation moves in a straight line through the RGB cube. Many straight l
 
 ### Transitions That Look Good
 
-| From → To | Via RGB | Via Hue Rotation | Verdict |
-|-----------|---------|------------------|---------|
-| Red → Blue | Dull purple, brightness dip | Vivid purple/magenta | Hue rotation wins |
-| Red → Green | Muddy brown/yellow | Through yellow OR through cyan/blue (choose shorter path) | Hue rotation wins |
-| Blue → Cyan | Clean (adjacent in RGB space) | Clean | Either works |
-| Yellow → Blue | GRAY midpoint | Through green OR through red | Hue rotation essential |
-| Magenta → Green | Gray midpoint | Through blue OR through red/yellow | Hue rotation essential |
+| From → To       | Via RGB                       | Via Hue Rotation                                          | Verdict                |
+| --------------- | ----------------------------- | --------------------------------------------------------- | ---------------------- |
+| Red → Blue      | Dull purple, brightness dip   | Vivid purple/magenta                                      | Hue rotation wins      |
+| Red → Green     | Muddy brown/yellow            | Through yellow OR through cyan/blue (choose shorter path) | Hue rotation wins      |
+| Blue → Cyan     | Clean (adjacent in RGB space) | Clean                                                     | Either works           |
+| Yellow → Blue   | GRAY midpoint                 | Through green OR through red                              | Hue rotation essential |
+| Magenta → Green | Gray midpoint                 | Through blue OR through red/yellow                        | Hue rotation essential |
 
 ### Best Practice: Interpolate in a Perceptual Color Space
 
@@ -306,14 +308,14 @@ For OKLCH, interpolate L, C, and H (taking the shorter angular path for H).
 
 ### Head-to-Head Comparison for LED Work
 
-| Feature | HSL | HSV | OKLCH/OKLAB |
-|---------|-----|-----|-------------|
-| **Perceptual uniformity** | No. Yellow at L=50% appears far brighter than blue at L=50%. | No. Same problem — V=100% blue looks ~10% as bright as V=100% white. | Yes (mostly). Equal L steps produce visually equal brightness changes. |
-| **Vivid color access** | S=100%, L=50% | S=100%, V=100% | C=max for gamut, L=varies by hue |
-| **Gradient quality** | Brightness spikes at yellow | Brightness fluctuations across hue sweep | Consistent perceived brightness |
-| **Ease of use** | Intuitive for web designers | Intuitive for LED programmers | Slightly more complex; requires RGB conversion |
-| **Hardware output** | Convert to RGB | Convert to RGB | Convert to RGB |
-| **Best use case** | Quick prototyping, simple single-color effects | Hue cycling, rainbow effects, FastLED-style animations | Perceptually correct gradients, palette generation, professional effects |
+| Feature                   | HSL                                                          | HSV                                                                  | OKLCH/OKLAB                                                              |
+| ------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Perceptual uniformity** | No. Yellow at L=50% appears far brighter than blue at L=50%. | No. Same problem — V=100% blue looks ~10% as bright as V=100% white. | Yes (mostly). Equal L steps produce visually equal brightness changes.   |
+| **Vivid color access**    | S=100%, L=50%                                                | S=100%, V=100%                                                       | C=max for gamut, L=varies by hue                                         |
+| **Gradient quality**      | Brightness spikes at yellow                                  | Brightness fluctuations across hue sweep                             | Consistent perceived brightness                                          |
+| **Ease of use**           | Intuitive for web designers                                  | Intuitive for LED programmers                                        | Slightly more complex; requires RGB conversion                           |
+| **Hardware output**       | Convert to RGB                                               | Convert to RGB                                                       | Convert to RGB                                                           |
+| **Best use case**         | Quick prototyping, simple single-color effects               | Hue cycling, rainbow effects, FastLED-style animations               | Perceptually correct gradients, palette generation, professional effects |
 
 ### HSV: The LED Workhorse
 
@@ -334,12 +336,14 @@ OKLCH (and its Cartesian form OKLAB) fixes HSV's perceptual problems:
 - **H (hue)** has minimal hue-shift artifacts (greatly improved over CIE LCH in the blue region)
 
 **When to use OKLCH:**
+
 - Generating color palettes where all colors should appear equally vivid
 - Building gradients/transitions between colors
 - Any effect where perceived brightness consistency matters
 - Designing multi-color schemes
 
 **When HSV is fine:**
+
 - Simple rainbow cycling
 - Single-color brightness animations (breathing, pulsing)
 - FastLED-ecosystem projects where HSV is native
@@ -351,6 +355,7 @@ Bjorn Ottosson (creator of OKLAB) also created **Okhsv** and **Okhsl** — perce
 ### Practical Recommendation for Hypercolor
 
 Use a **dual-space approach:**
+
 - **Author/design** colors in OKLCH for perceptual correctness
 - **Interpolate** gradients and transitions in OKLAB for smooth results
 - **Convert to RGB** as the final step before sending to LED hardware
@@ -379,6 +384,7 @@ corrected_value = 255 * (input_value / 255) ^ gamma
 ```
 
 Standard gamma values:
+
 - **2.2** — The most common. Good general-purpose correction.
 - **2.8** — Aggressive correction. Better for high-brightness environments.
 - **1.8** — Mild correction. Was the old Mac standard.
@@ -402,13 +408,13 @@ For each input value i (0-255):
 Example values (gamma 2.2):
 
 | Input (linear) | Output (corrected) | Perceived brightness |
-|----------------|--------------------|-----------------------|
-| 0              | 0                  | Off |
-| 32             | 2                  | Barely visible |
-| 64             | 10                 | Very dim |
-| 128            | 55                 | Perceptual midpoint |
-| 192            | 137                | Moderately bright |
-| 255            | 255                | Full brightness |
+| -------------- | ------------------ | -------------------- |
+| 0              | 0                  | Off                  |
+| 32             | 2                  | Barely visible       |
+| 64             | 10                 | Very dim             |
+| 128            | 55                 | Perceptual midpoint  |
+| 192            | 137                | Moderately bright    |
+| 255            | 255                | Full brightness      |
 
 Notice: **perceptual "half brightness" requires only a PWM value of ~55/255 (21.6%), not 128/255 (50%)**. This is why uncorrected fades look wrong.
 
@@ -503,13 +509,13 @@ These principles come from stage lighting, architectural LED installations, and 
 
 ### Simultaneous Color Count
 
-| Colors | Effect | Guidance |
-|--------|--------|----------|
-| **1**  | Monochromatic. Elegant, focused, professional. | Best for ambient lighting, workstation setups, and subtle effects. |
-| **2**  | Complementary or accent. Strong visual hierarchy. | The most versatile and design-friendly option. One dominant + one accent. |
-| **3**  | Triadic or analogous. Vibrant but still cohesive. | Maximum for most "tasteful" effects. Use stage lighting's warm/cold/accent model. |
-| **4-5** | Requires careful balancing. Easily becomes chaotic. | Only for gradient effects or palettes with clear structure. |
-| **6+** | Rainbow territory. Festive or playful, but rarely "clean." | Fine for party/celebration effects. Not for daily ambient use. |
+| Colors  | Effect                                                     | Guidance                                                                          |
+| ------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **1**   | Monochromatic. Elegant, focused, professional.             | Best for ambient lighting, workstation setups, and subtle effects.                |
+| **2**   | Complementary or accent. Strong visual hierarchy.          | The most versatile and design-friendly option. One dominant + one accent.         |
+| **3**   | Triadic or analogous. Vibrant but still cohesive.          | Maximum for most "tasteful" effects. Use stage lighting's warm/cold/accent model. |
+| **4-5** | Requires careful balancing. Easily becomes chaotic.        | Only for gradient effects or palettes with clear structure.                       |
+| **6+**  | Rainbow territory. Festive or playful, but rarely "clean." | Fine for party/celebration effects. Not for daily ambient use.                    |
 
 ### The "Clown Car" Threshold
 
@@ -534,27 +540,27 @@ The most visually effective LED application is often the simplest: a single-colo
 
 ### Vivid Single Colors (HSV S=100%, V=100%)
 
-| Color        | H°   | RGB           | Power Draw | Perceived Brightness |
-|--------------|------|---------------|------------|---------------------|
-| Red          | 0    | 255, 0, 0     | Low        | Medium              |
-| Orange       | 25   | 255, 106, 0   | Medium     | Medium-High         |
-| Amber/Gold   | 35   | 255, 150, 0   | Medium     | High                |
-| Yellow*      | 50   | 255, 213, 0   | Medium-High| Very High           |
-| Green        | 120  | 0, 255, 0     | Low        | Very High           |
-| Spring Green | 150  | 0, 255, 128   | Medium     | High                |
-| Cyan         | 180  | 0, 255, 255   | Medium     | High                |
-| Azure        | 210  | 0, 128, 255   | Medium     | Medium              |
-| Blue         | 240  | 0, 0, 255     | Low        | Low                 |
-| Purple       | 270  | 128, 0, 255   | Medium     | Low-Medium          |
-| Magenta      | 300  | 255, 0, 255   | Medium     | Medium              |
-| Rose         | 330  | 255, 0, 128   | Medium     | Medium              |
+| Color        | H°  | RGB         | Power Draw  | Perceived Brightness |
+| ------------ | --- | ----------- | ----------- | -------------------- |
+| Red          | 0   | 255, 0, 0   | Low         | Medium               |
+| Orange       | 25  | 255, 106, 0 | Medium      | Medium-High          |
+| Amber/Gold   | 35  | 255, 150, 0 | Medium      | High                 |
+| Yellow\*     | 50  | 255, 213, 0 | Medium-High | Very High            |
+| Green        | 120 | 0, 255, 0   | Low         | Very High            |
+| Spring Green | 150 | 0, 255, 128 | Medium      | High                 |
+| Cyan         | 180 | 0, 255, 255 | Medium      | High                 |
+| Azure        | 210 | 0, 128, 255 | Medium      | Medium               |
+| Blue         | 240 | 0, 0, 255   | Low         | Low                  |
+| Purple       | 270 | 128, 0, 255 | Medium      | Low-Medium           |
+| Magenta      | 300 | 255, 0, 255 | Medium      | Medium               |
+| Rose         | 330 | 255, 0, 128 | Medium      | Medium               |
 
-*Yellow values shifted from pure (255,255,0) for better LED appearance.
+\*Yellow values shifted from pure (255,255,0) for better LED appearance.
 
 ### Gamma Correction LUT (gamma=2.2, selected values)
 
 | Input | Output | Input | Output | Input | Output |
-|-------|--------|-------|--------|-------|--------|
+| ----- | ------ | ----- | ------ | ----- | ------ |
 | 0     | 0      | 96    | 18     | 192   | 137    |
 | 16    | 0      | 112   | 27     | 208   | 163    |
 | 32    | 2      | 128   | 38     | 224   | 192    |
@@ -565,20 +571,24 @@ The most visually effective LED application is often the simplest: a single-colo
 ### Color Scheme Quick Picks
 
 **Monochromatic Elegance:**
+
 - Cyan only: H=180°, vary V from 20-100%
 - Blue only: H=240°, vary V from 30-100%
 
 **Complementary Drama:**
+
 - Blue (240°) + Orange (25°) — the classic
 - Cyan (180°) + Red (0°) — high-tech, electric
 - Purple (270°) + Gold (45°) — premium, regal
 
 **Analogous Harmony:**
+
 - Blue (240°) + Purple (270°) + Magenta (300°) — cool and moody
 - Cyan (180°) + Green (120°) + Spring Green (150°) — fresh and natural
 - Red (0°) + Orange (25°) + Amber (35°) — warm and inviting
 
 **Triadic Balance:**
+
 - Red (0°) + Green (120°) + Blue (240°) — classic primary
 - Orange (30°) + Purple (270°) + Cyan (180°) — vibrant
 
@@ -587,12 +597,14 @@ The most visually effective LED application is often the simplest: a single-colo
 ## Sources
 
 ### Color Science & Perception
+
 - [HSL and HSV - Wikipedia](https://en.wikipedia.org/wiki/HSL_and_HSV)
 - [Sensitivity of the Human Eye](https://www.giangrandi.org/optics/eye/eye.shtml)
 - [Relative Luminance - Wikipedia](https://en.wikipedia.org/wiki/Relative_luminance)
 - [Luminous Efficiency Function - Wikipedia](https://en.wikipedia.org/wiki/Luminous_efficiency_function)
 
 ### Gamma Correction
+
 - [RGB LEDs: How To Master Gamma And Hue For Perfect Brightness - Hackaday](https://hackaday.com/2016/08/23/rgb-leds-how-to-master-gamma-and-hue-for-perfect-brightness/)
 - [LED Tricks: Gamma Correction - Adafruit](https://learn.adafruit.com/led-tricks-gamma-correction/the-issue)
 - [Gamma Correction for LED Lighting - Electric Fire Design](https://electricfiredesign.com/2022/11/14/gamma-correction-for-led-lighting/)
@@ -601,6 +613,7 @@ The most visually effective LED application is often the simplest: a single-colo
 - [Introduction to Gamma Curves in LED Pixel Tapes - ArtLEDs](https://www.artleds.com/blog/introduction-to-gamma-curves-and-gamma-correction-in-led-pixel-tapes-application/)
 
 ### OKLAB & Perceptual Color Spaces
+
 - [A Perceptual Color Space for Image Processing (OKLAB) - Bjorn Ottosson](https://bottosson.github.io/posts/oklab/)
 - [Okhsv and Okhsl: Two New Color Spaces - Bjorn Ottosson](https://bottosson.github.io/posts/colorpicker/)
 - [Optimizing Oklab Gradients - Aras Pranckevicus](https://aras-p.info/blog/2022/03/11/Optimizing-Oklab-gradients/)
@@ -608,6 +621,7 @@ The most visually effective LED application is often the simplest: a single-colo
 - [Oklab Color Space - Wikipedia](https://en.wikipedia.org/wiki/Oklab_color_space)
 
 ### LED Hardware & Color Mixing
+
 - [Why Every LED Light Should Be Using HSI - SaikoLED](https://blog.saikoled.com/post/43693602826/why-every-led-light-should-be-using-hsi)
 - [Buttery Smooth Fades with the Power of HSV - Hackaday](https://hackaday.com/2018/06/18/buttery-smooth-fades-with-the-power-of-hsv/)
 - [RGB LED Color Mixing - Springtree LED](https://www.springtree.net/audio-visual-blog/rgb-led-color-mixing/)
@@ -616,6 +630,7 @@ The most visually effective LED application is often the simplest: a single-colo
 - [Color Mixing with LEDs - ETC](https://www.etcconnect.com/uploadedFiles/Main_Site/Documents/Public/White_Papers/Selador_white_paper_US.pdf)
 
 ### LED Strip & NeoPixel Specifics
+
 - [Adafruit NeoPixel Uberguide](https://learn.adafruit.com/adafruit-neopixel-uberguide)
 - [FastLED HSV Colors](https://github.com/FastLED/FastLED/wiki/FastLED-HSV-Colors)
 - [Why Can't RGB LED Lights Create the Color Orange? - Boogey Lights](https://www.boogeylights.com/why-cant-rgb-led-lights-create-the-color-orange/)
@@ -623,11 +638,13 @@ The most visually effective LED application is often the simplest: a single-colo
 - [Creating Pastel Shades with RGB + Warm White LED Strip - LuxaLight](https://www.luxalight.eu/en/blog/creating-pastel-shades-rgb-warm-white-led-strip)
 
 ### Color Transitions & Gradients
+
 - [Color Shifting in CSS - Josh W. Comeau](https://www.joshwcomeau.com/animation/color-shifting/)
 - [Hue-Angle Transitions - Riley J. Shaw](https://rileyjshaw.com/blog/hue-angle-transitions/)
 - [Smooth RGB LED Transitions with Johnny-Five - Hackster.io](https://www.hackster.io/IainIsCreative/smooth-rgb-led-transitions-with-johnny-five-e6127f)
 
 ### Stage Lighting & Professional Design
+
 - [Stage Lighting: How to Choose a Color Scheme - Illuminated Integration](https://illuminated-integration.com/blog/stage-lighting-color-scheme/)
 - [Color Theory for Concert Lighting Design - HARMAN](https://pro.harman.com/insights/performing-arts/color-theory-for-concert-lighting-design/)
 - [What Are the Rules to Using Color in Stage Lighting? - Learn Stage Lighting](https://www.learnstagelighting.com/blog/how-do-i-use-color-effectively%2F)
@@ -636,6 +653,7 @@ The most visually effective LED application is often the simplest: a single-colo
 - [Lighting Staging: 6 Design Principles for 2025 Events](https://mtisound.com/lighting-staging-6-design-principles-for-2025-events/)
 
 ### RGB Community & Keyboards
+
 - [What is the Best RGB Color for Your Keyboard? - Durgod](https://www.durgod.com/blogs/what-is-the-best-rgb-color-for-your-keyboard/)
 - [Fix RGB Lighting Issues on Keyboards - KeebsForAll](https://keebsforall.com/blogs/mechanical-keyboards-101/fix-rgb-lighting-issues-on-keyboards)
 - [Bias Lighting 101 - KontrolFreek](https://www.kontrolfreek.com/blogs/kfb/bias-lighting-101)

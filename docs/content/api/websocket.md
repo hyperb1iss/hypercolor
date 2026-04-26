@@ -32,12 +32,12 @@ websocat ws://localhost:9420/api/v1/ws
 Using JavaScript:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:9420/api/v1/ws')
+const ws = new WebSocket("ws://localhost:9420/api/v1/ws");
 
 ws.onmessage = (event) => {
-    const message = JSON.parse(event.data)
-    console.log(message.type, message.data)
-}
+  const message = JSON.parse(event.data);
+  console.log(message.type, message.data);
+};
 ```
 
 ## Message Format

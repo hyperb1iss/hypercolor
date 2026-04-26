@@ -102,16 +102,16 @@ SessionChanged(SessionEvent),
 
 And consumed by the `DesktopTriggerSource` and `SystemTriggerSource` (spec 13 §7) to populate their state maps:
 
-| SessionEvent | Trigger Source | Event Type | State Key |
-|---|---|---|---|
-| `ScreenLocked` | `desktop` | `screen_locked` | `screen_locked: true` |
-| `ScreenUnlocked` | `desktop` | `screen_unlocked` | `screen_locked: false` |
-| `Suspending` | `system` | `suspend` | `power_state: "suspended"` |
-| `Resumed` | `system` | `resume` | `power_state: "active"` |
-| `IdleEntered` | `desktop` | `idle_entered` | `idle_seconds: N` |
-| `IdleExited` | `desktop` | `idle_exited` | `idle_seconds: 0` |
-| `LidClosed` | `system` | `lid_closed` | `lid_open: false` |
-| `LidOpened` | `system` | `lid_opened` | `lid_open: true` |
+| SessionEvent     | Trigger Source | Event Type        | State Key                  |
+| ---------------- | -------------- | ----------------- | -------------------------- |
+| `ScreenLocked`   | `desktop`      | `screen_locked`   | `screen_locked: true`      |
+| `ScreenUnlocked` | `desktop`      | `screen_unlocked` | `screen_locked: false`     |
+| `Suspending`     | `system`       | `suspend`         | `power_state: "suspended"` |
+| `Resumed`        | `system`       | `resume`          | `power_state: "active"`    |
+| `IdleEntered`    | `desktop`      | `idle_entered`    | `idle_seconds: N`          |
+| `IdleExited`     | `desktop`      | `idle_exited`     | `idle_seconds: 0`          |
+| `LidClosed`      | `system`       | `lid_closed`      | `lid_open: false`          |
+| `LidOpened`      | `system`       | `lid_opened`      | `lid_open: true`           |
 
 ---
 
@@ -161,6 +161,7 @@ Watches two signal families on the user's session:
 ### 4.1 Suspend / Resume
 
 Subscribe to `org.freedesktop.login1.Manager::PrepareForSleep(bool)`:
+
 - `true` → emit `SessionEvent::Suspending`
 - `false` → emit `SessionEvent::Resumed`
 
@@ -196,6 +197,7 @@ The kernel holds suspend for up to `InhibitDelayMaxUSec` (default 5s) while the 
 ### 4.4 Fallback
 
 If the system bus is unreachable (containers, WSL, non-systemd inits):
+
 - Log a warning at startup
 - The monitor's `run()` returns `Err` immediately
 - `SessionWatcher` continues without logind events
@@ -211,12 +213,12 @@ Subscribes to `ActiveChanged(bool)` on multiple well-known screensaver interface
 
 ### 5.1 Watched Interfaces
 
-| Service | Object Path | Interface |
-|---|---|---|
+| Service                       | Object Path                    | Interface                     |
+| ----------------------------- | ------------------------------ | ----------------------------- |
 | `org.freedesktop.ScreenSaver` | `/org/freedesktop/ScreenSaver` | `org.freedesktop.ScreenSaver` |
-| `org.gnome.ScreenSaver` | `/org/gnome/ScreenSaver` | `org.gnome.ScreenSaver` |
-| `org.mate.ScreenSaver` | `/org/mate/ScreenSaver` | `org.mate.ScreenSaver` |
-| `com.canonical.Unity` | `/org/gnome/ScreenSaver` | `org.gnome.ScreenSaver` |
+| `org.gnome.ScreenSaver`       | `/org/gnome/ScreenSaver`       | `org.gnome.ScreenSaver`       |
+| `org.mate.ScreenSaver`        | `/org/mate/ScreenSaver`        | `org.mate.ScreenSaver`        |
+| `com.canonical.Unity`         | `/org/gnome/ScreenSaver`       | `org.gnome.ScreenSaver`       |
 
 ### 5.2 Deduplication
 
@@ -301,6 +303,7 @@ fn find_lid_device() -> Option<Device> {
 ### 7.2 Event Loop
 
 Use `evdev`'s async tokio support to read `InputEvent`s. Filter for `EV_SW` / `SW_LID`:
+
 - Value `1` → lid closed → `SessionEvent::LidClosed`
 - Value `0` → lid opened → `SessionEvent::LidOpened`
 
@@ -368,6 +371,7 @@ Before forwarding an event, check if it's a no-op transition (e.g., `ScreenLocke
 ### 8.2 Startup State Sync
 
 On launch, query current state from each monitor:
+
 - Logind: `Session.LockedHint` property for current lock state
 - Screensaver: `GetActive()` for current screensaver state
 - Evdev: `get_switch_state()` for current lid state
@@ -429,17 +433,17 @@ pub enum WakeAction {
 
 ### 9.3 Default Policies
 
-| Event | Default Sleep Action | Default Wake Action |
-|---|---|---|
-| `ScreenLocked` | `Dim { brightness: 0.0, fade_ms: 2000 }` | — |
-| `ScreenUnlocked` | — | `Restore { fade_ms: 500 }` |
-| `Suspending` | `Off { fade_ms: 300 }` | — |
-| `Resumed` | — | `Restore { fade_ms: 150 }` |
-| `IdleEntered` (stage 1) | `Dim { brightness: 0.3, fade_ms: 3000 }` | — |
-| `IdleEntered` (stage 2) | `Dim { brightness: 0.0, fade_ms: 5000 }` | — |
-| `IdleExited` | — | `Restore { fade_ms: 300 }` |
-| `LidClosed` | `Off { fade_ms: 500 }` | — |
-| `LidOpened` | — | `Restore { fade_ms: 300 }` |
+| Event                   | Default Sleep Action                     | Default Wake Action        |
+| ----------------------- | ---------------------------------------- | -------------------------- |
+| `ScreenLocked`          | `Dim { brightness: 0.0, fade_ms: 2000 }` | —                          |
+| `ScreenUnlocked`        | —                                        | `Restore { fade_ms: 500 }` |
+| `Suspending`            | `Off { fade_ms: 300 }`                   | —                          |
+| `Resumed`               | —                                        | `Restore { fade_ms: 150 }` |
+| `IdleEntered` (stage 1) | `Dim { brightness: 0.3, fade_ms: 3000 }` | —                          |
+| `IdleEntered` (stage 2) | `Dim { brightness: 0.0, fade_ms: 5000 }` | —                          |
+| `IdleExited`            | —                                        | `Restore { fade_ms: 300 }` |
+| `LidClosed`             | `Off { fade_ms: 500 }`                   | —                          |
+| `LidOpened`             | —                                        | `Restore { fade_ms: 300 }` |
 
 **Suspend gets a fast fade** (300ms) because the inhibitor lock has a hard timeout. **Screen lock gets a slow fade** (2s) because there's no time pressure. **Idle is progressive**: stage 1 dims, stage 2 goes dark.
 
@@ -473,11 +477,13 @@ pub enum LedPowerState {
 ### 10.2 Frame Suppression
 
 When `LedPowerState::Sleeping`:
+
 - **Pause the effect engine** (don't advance time or compute frames)
 - **Stop calling `write_colors()`** on device backends
 - **Keep the render loop alive** (it should check for wake events at a low tick rate, e.g., 1 Hz)
 
 This eliminates USB traffic entirely during sleep, which is critical for:
+
 - Laptop battery life
 - Avoiding USB errors on devices that disconnect during suspend
 - Not confusing devices that reset state on resume
@@ -485,6 +491,7 @@ This eliminates USB traffic entirely during sleep, which is critical for:
 ### 10.3 Resume Sequence
 
 On `Resumed`:
+
 1. Re-discover USB devices (handles may be stale after suspend)
 2. Re-connect to devices that were previously connected
 3. Re-run init sequences (devices may have reset)
@@ -650,19 +657,19 @@ impl Default for SessionConfig {
 
 ### 13.1 Required
 
-| Crate | Version | Feature | Purpose |
-|---|---|---|---|
-| `zbus` | 5.x | `tokio` | D-Bus client (logind, screensaver) |
-| `tokio-util` | 0.7.x | — | `CancellationToken` for monitor lifecycle |
+| Crate        | Version | Feature | Purpose                                   |
+| ------------ | ------- | ------- | ----------------------------------------- |
+| `zbus`       | 5.x     | `tokio` | D-Bus client (logind, screensaver)        |
+| `tokio-util` | 0.7.x   | —       | `CancellationToken` for monitor lifecycle |
 
 ### 13.2 Optional (Feature-Gated)
 
-| Crate | Feature Flag | Purpose |
-|---|---|---|
-| `evdev` | `lid-monitor` | Laptop lid switch via kernel input events |
-| `wayland-client` | `idle-wayland` | Wayland display connection |
-| `wayland-protocols` | `idle-wayland` | `ext-idle-notify-v1` protocol |
-| `x11rb` or `x11` | `idle-x11` | `XScreenSaverQueryInfo` for X11 idle detection |
+| Crate               | Feature Flag   | Purpose                                        |
+| ------------------- | -------------- | ---------------------------------------------- |
+| `evdev`             | `lid-monitor`  | Laptop lid switch via kernel input events      |
+| `wayland-client`    | `idle-wayland` | Wayland display connection                     |
+| `wayland-protocols` | `idle-wayland` | `ext-idle-notify-v1` protocol                  |
+| `x11rb` or `x11`    | `idle-x11`     | `XScreenSaverQueryInfo` for X11 idle detection |
 
 ### 13.3 Dependency Rationale
 
@@ -697,35 +704,35 @@ Hypercolor's session subsystem is a direct evolution of uchroma's `PowerMonitor`
 
 ### What uchroma got right
 
-| Pattern | uchroma Implementation | Hypercolor Equivalent |
-|---|---|---|
-| Logind `PrepareForSleep` | `manager.on_prepare_for_sleep()` | `LogindMonitor` §4 |
-| Multiple screensaver interfaces | `SCREENSAVERS` tuple with 4 services | `ScreensaverMonitor` §5 |
-| Fast vs. slow fade | `FAST_SUSPEND_FADE_TIME = 0.3s` vs normal | `suspend_fade_ms: 300` vs `screen_lock_fade_ms: 2000` |
-| Animation pause (not stop) | `AnimationLoop._pause_event` asyncio Event | `LedPowerState::Sleeping` pauses effect engine |
-| Brightness save/restore | `preferences.brightness` saved on suspend | Sleep policy saves pre-sleep state |
-| Stale USB handle recovery | `resume()` force-closes and re-opens HID | Resume sequence re-discovers and re-connects §10.3 |
+| Pattern                         | uchroma Implementation                     | Hypercolor Equivalent                                 |
+| ------------------------------- | ------------------------------------------ | ----------------------------------------------------- |
+| Logind `PrepareForSleep`        | `manager.on_prepare_for_sleep()`           | `LogindMonitor` §4                                    |
+| Multiple screensaver interfaces | `SCREENSAVERS` tuple with 4 services       | `ScreensaverMonitor` §5                               |
+| Fast vs. slow fade              | `FAST_SUSPEND_FADE_TIME = 0.3s` vs normal  | `suspend_fade_ms: 300` vs `screen_lock_fade_ms: 2000` |
+| Animation pause (not stop)      | `AnimationLoop._pause_event` asyncio Event | `LedPowerState::Sleeping` pauses effect engine        |
+| Brightness save/restore         | `preferences.brightness` saved on suspend  | Sleep policy saves pre-sleep state                    |
+| Stale USB handle recovery       | `resume()` force-closes and re-opens HID   | Resume sequence re-discovers and re-connects §10.3    |
 
 ### What uchroma was missing
 
-| Gap | Impact | Hypercolor Fix |
-|---|---|---|
-| No sleep inhibitor lock | LED fade could be cut short by kernel | Logind `Inhibit("delay")` §4.3 |
-| No lid detection | Lid close without suspend = LEDs stay on | `LidMonitor` via evdev §7 |
-| No idle detection | No progressive dimming before screen lock | `IdleMonitor` with staged thresholds §6 |
-| No user preferences | Hardcoded fade times, no per-device override | Full `SessionConfig` with per-device overrides §11 |
-| No deduplication | Both logind Lock and screensaver ActiveChanged could double-fire | `DeduplicationState` in SessionWatcher §8.1 |
-| Screensaver errors swallowed silently | Hard to debug when session awareness breaks | Structured tracing with monitor names |
-| `Suspended` as D-Bus property only | External clients can toggle, but no internal preference-driven policy | REST API + config-driven policy §9, §11 |
+| Gap                                   | Impact                                                                | Hypercolor Fix                                     |
+| ------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------- |
+| No sleep inhibitor lock               | LED fade could be cut short by kernel                                 | Logind `Inhibit("delay")` §4.3                     |
+| No lid detection                      | Lid close without suspend = LEDs stay on                              | `LidMonitor` via evdev §7                          |
+| No idle detection                     | No progressive dimming before screen lock                             | `IdleMonitor` with staged thresholds §6            |
+| No user preferences                   | Hardcoded fade times, no per-device override                          | Full `SessionConfig` with per-device overrides §11 |
+| No deduplication                      | Both logind Lock and screensaver ActiveChanged could double-fire      | `DeduplicationState` in SessionWatcher §8.1        |
+| Screensaver errors swallowed silently | Hard to debug when session awareness breaks                           | Structured tracing with monitor names              |
+| `Suspended` as D-Bus property only    | External clients can toggle, but no internal preference-driven policy | REST API + config-driven policy §9, §11            |
 
 ---
 
 ## Implementation Priority
 
-| Phase | Scope | Value |
-|---|---|---|
+| Phase       | Scope                                                                         | Value                                             |
+| ----------- | ----------------------------------------------------------------------------- | ------------------------------------------------- |
 | **Phase 1** | `LogindMonitor` (suspend/resume + lock/unlock) + sleep inhibitor + basic fade | Covers 80% of use cases with one D-Bus connection |
-| **Phase 2** | `ScreensaverMonitor` (DE compatibility) + deduplication | Catches DEs where logind Lock isn't reliable |
-| **Phase 3** | `IdleMonitor` (Wayland + X11) + progressive dimming | Smooth experience before screen lock fires |
-| **Phase 4** | `LidMonitor` + per-device overrides | Laptop-specific polish |
-| **Phase 5** | REST API + UI for sleep preferences | User-facing configuration |
+| **Phase 2** | `ScreensaverMonitor` (DE compatibility) + deduplication                       | Catches DEs where logind Lock isn't reliable      |
+| **Phase 3** | `IdleMonitor` (Wayland + X11) + progressive dimming                           | Smooth experience before screen lock fires        |
+| **Phase 4** | `LidMonitor` + per-device overrides                                           | Laptop-specific polish                            |
+| **Phase 5** | REST API + UI for sleep preferences                                           | User-facing configuration                         |

@@ -1,6 +1,6 @@
 # Prior-Art WebAssembly Plugin Ecosystems
 
-*Research date: 2026-04-18. Target: WASM effect loader for the Hypercolor daemon.*
+_Research date: 2026-04-18. Target: WASM effect loader for the Hypercolor daemon._
 
 The Hypercolor render loop needs third-party effects that can run on a 16.6 ms frame budget at 60 fps, recover gracefully from misbehaving guests, and be distributable to non-Rust authors. This document surveys shipped WebAssembly plugin ecosystems, then distills their techniques into a patterns inventory we can pull from when designing the loader.
 
@@ -77,6 +77,7 @@ Sources: [proxy-wasm spec](https://github.com/proxy-wasm/spec), [Envoy Wasm docs
 Fastly is the production reference for "WASM with sub-millisecond cold start at scale." The [Compute platform](https://docs.fastly.com/products/compute) runs a fresh WASM instance per request and destroys it when the response is sent.
 
 The cold-start magic comes from three techniques:
+
 - **AOT compilation**: modules are compiled to native machine code once (via Cranelift) and the native code is persisted. No JIT at request time.
 - **The pooling allocator**: Wasmtime pre-reserves virtual memory slots up-front. Creating a new instance grabs a slot, not a fresh `mmap`.
 - **Copy-on-write linear memory init**: the initial linear memory image is a [memfd that's mmapped CoW](https://github.com/bytecodealliance/wasmtime/pull/3697) into each slot; the instance pays for memory only when it writes.
@@ -92,6 +93,7 @@ Sources: [Fastly Compute docs](https://docs.fastly.com/products/compute), [Lucet
 WAM 2 is the closest academic/industrial analogue to our problem: real-time compute on streaming buffers, polyglot plugin authoring, and a single standard usable across unrelated hosts. It's documented in a [2022 ACM paper](https://dl.acm.org/doi/fullHtml/10.1145/3487553.3524225) by Michel Buffa et al., and the [website](https://www.webaudiomodules.com/docs/intro/) still tracks the canonical implementation.
 
 The architecture has three parts:
+
 - **WAM processor**: a `WAM` instance that runs in the high-priority AudioWorklet thread as a WASM module. Extends `AudioWorkletProcessor`. This is the real-time DSP core.
 - **WAM controller**: runs in the main thread, handles loading, preset management, and UI. Talks to the processor via message passing plus SharedArrayBuffer ring buffers.
 - **WAM host**: the DAW or page embedding the plugin. Loads WAMs by URI.
@@ -129,6 +131,7 @@ Sources: [Hyperlight Wasm announcement](https://opensource.microsoft.com/blog/20
 ## 10. Lunatic and wasmCloud actor model
 
 Lunatic is an Erlang-inspired WASM runtime ([GitHub](https://github.com/lunatic-solutions/lunatic), YC W21). Each actor is its own WASM instance with its own linear memory and stack; actors communicate only by message passing through mailboxes. One actor crashing cannot corrupt another; supervisors restart crashed actors. This is great for backend services and awful for our use case because:
+
 - Messages must be copied between actors' linear memories, which we'd pay on every frame.
 - The message-passing model wants coarse-grained tasks, not a 16 ms deadline.
 - Actor supervision overhead is designed for "long-running service with rare crashes," not "600 effects per second, each with a hard deadline."
@@ -150,6 +153,7 @@ These are the most successful UGC-with-user-scripting platforms in production. N
 **Roblox** uses [Luau](https://luau.org/sandbox/), their Lua fork with gradual typing. Luau has VM-level support for a global interrupt that the host sets, and any Luau code is guaranteed to hit the interrupt handler eventually at function calls or loop iterations. This is [epoch-based interruption, Lua flavor](https://github.com/Roblox/luau/blob/master/SECURITY.md), and it's the feature that makes Roblox's UGC game engine workable. Each script also gets its own global table via `__index` into a builtin, so scripts can't pollute each other. Roblox's [plugin marketplace](https://devforum.roblox.com/t/introducing-plugin-marketplace/400582) is curated, requires ID verification to raise per-user publish limits above 2, and supports paid distribution.
 
 What to learn:
+
 - **Visual scripting layer on top of the real plugin runtime.** ProtoFlux and Udon Graph lower the barrier to entry for non-programmers. Worth considering as a follow-on to a "pro" WASM-native path.
 - **API whitelists, not blacklists.** VRChat learned this the hard way. The set of exposed host capabilities should be explicit and small.
 - **Interrupt-on-budget is a first-class VM feature.** Luau and wasmtime both have it; use it.
@@ -162,51 +166,51 @@ Sources: [Resonite ProtoFlux wiki](https://wiki.resonite.com/ProtoFlux), [Resoni
 Twelve concrete techniques to pull into the WASM effect loader design. Each cites the ecosystem it comes from and explains how it maps to our frame-budget render loop.
 
 **P1. WIT-first host-guest contract, generated on both sides.**
-*Source: Zed, wasmCloud, Spin.*
+_Source: Zed, wasmCloud, Spin._
 Define the host-plugin ABI in WIT (canvas dimensions, frame input, audio FFT, keyboard pressure, host logging). Use `wit_bindgen::generate!` on the guest side and `wasmtime::component::bindgen!` on the host side. Drift becomes structurally impossible and we get polyglot guest support for free as the Component Model toolchain matures.
 
 **P2. Epoch-based interruption for per-frame budget enforcement.**
-*Source: Envoy proxy-wasm, Roblox Luau's global interrupt.*
+_Source: Envoy proxy-wasm, Roblox Luau's global interrupt._
 A timer on the daemon's control thread bumps the wasmtime epoch once per frame (or once every N frames for slack). Effects that don't return within budget get trapped, we log the offending effect, and the render loop substitutes a safe fallback for that frame. Fuel is the alternative, but epoch is 2-3x cheaper at runtime per the wasmtime docs and we don't need deterministic auditability.
 
 **P3. Pre-compile to `.cwasm` and use the pooling instance allocator.**
-*Source: Fastly Compute@Edge, wasmtime pooling allocator.*
+_Source: Fastly Compute@Edge, wasmtime pooling allocator._
 At install time, compile each effect's `.wasm` to a `.cwasm` once and cache it. At runtime, instantiate via `PoolingAllocationConfig` with affine slots, so an effect that re-instantiates (on reload, on param change, on render restart) reuses the same memory slot and benefits from CoW init. This gets us sub-millisecond instance creation.
 
 **P4. SHM ring buffer for high-frequency inputs, not function calls.**
-*Source: Web Audio Modules 2.*
+_Source: Web Audio Modules 2._
 Audio FFT frames, keyboard pressure, MIDI, and any other per-frame or per-packet streams live in a shared linear-memory region that the host writes and the guest reads. Avoids paying function-call overhead for every sample. The guest gets a pointer + length once at init and just reads from it each tick.
 
 **P5. Declarative capability manifest per effect.**
-*Source: Spin `spin.toml`, WASI capabilities, Shopify `shopify.extension.toml`.*
+_Source: Spin `spin.toml`, WASI capabilities, Shopify `shopify.extension.toml`._
 Each effect ships a `hypercolor-effect.toml` or equivalent that declares: API version, required inputs (audio, screen, keyboard), canvas dimensions it supports, whether it uses host logging, whether it's CPU or GPU pathway. The loader rejects effects whose manifest doesn't match the current host. This turns "plugin crashes because audio device is missing" into "plugin never loads because manifest says it needs audio."
 
 **P6. Immutable versioned bundles with API-version gating.**
-*Source: Zed `wasm_api_version`, Shopify app versions.*
+_Source: Zed `wasm_api_version`, Shopify app versions._
 Every published effect is an immutable `.tar.gz` containing the `.wasm`, `.cwasm` cache, manifest, and preview asset. The manifest embeds the `hypercolor_api_version` it was built against. The loader refuses to instantiate effects built against an incompatible host. This makes upgrades predictable.
 
 **P7. Registry-as-git-repo with CI-built artifacts.**
-*Source: Zed's `zed-industries/extensions` repo.*
+_Source: Zed's `zed-industries/extensions` repo._
 Authors submit PRs to a `hypercolor/effects` repo. CI builds the effect, runs it against a headless test host (render 60 frames, check no panic, check canvas checksum), produces a signed artifact, uploads to our CDN. The daemon fetches metadata from our API and downloads on demand. No central review team required for the first 100 effects; CI is the review.
 
 **P8. Polyglot PDKs generated from the WIT.**
-*Source: Extism PDKs.*
+_Source: Extism PDKs._
 Ship `hypercolor-effect-pdk` for at least Rust, JS/TS (via AssemblyScript or JCO), and Zig. Each PDK is a thin idiomatic wrapper over the generated WIT bindings so authors don't need to understand the Component Model to ship an effect. Rust and TS are the priorities; the others are nice-to-have.
 
 **P9. Host capability whitelist, not blacklist.**
-*Source: VRChat Udon, Luau's explicit builtin table.*
+_Source: VRChat Udon, Luau's explicit builtin table._
 The WIT world defines the exact set of host functions an effect can call. There is no escape hatch, no "just expose `std::fs` for debugging." If an effect needs a capability we haven't exposed, we add it to the WIT with intent and publish a new API version. VRChat has patched sandbox escapes repeatedly because they started with a blacklist; we don't.
 
 **P10. Supervisor + fallback effect on crash.**
-*Source: Lunatic/Erlang "let it crash."*
+_Source: Lunatic/Erlang "let it crash."_
 Each effect runs in its own `wasmtime::Store`. On panic or budget miss, the loader kills the store, logs to the event bus, and swaps a safe built-in effect (solid color, or the previous known-good effect) into the render pipeline for that slot. On repeated crashes (e.g., 3 times in 30 seconds), the effect is marked disabled until manually re-enabled. The render loop never stops.
 
 **P11. Local dev-extension install with file-watcher hot reload.**
-*Source: Zed `install dev extension`, plus our own SDK-dev pattern.*
+_Source: Zed `install dev extension`, plus our own SDK-dev pattern._
 `hyper effect dev /path/to/effect-src` watches the source tree, rebuilds the `.wasm` on change, and swaps it into the running daemon at the next frame boundary. We already have the infra for this via `just effect-build`; the WASM loader just needs to accept a "replace this effect's module" command on a frame boundary. Zed doesn't do true hot reload; we can, because we control the render tick.
 
 **P12. Dual distribution: public registry + private/local.**
-*Source: Figma private plugins, Shopify custom distribution, Roblox's verified-author publish limits.*
+_Source: Figma private plugins, Shopify custom distribution, Roblox's verified-author publish limits._
 Public registry goes through CI-gated review. Private distribution is "drop a `.tar.gz` in `~/.local/share/hypercolor/effects/` and it loads." This serves enterprise/internal use cases and demo pipelines without blocking on our review queue.
 
 ## Top 5 ideas to copy

@@ -34,23 +34,23 @@ WLED is the primary network-attached LED backend for Hypercolor. WLED devices ar
 
 **Protocol selection logic:**
 
-| Condition | Protocol |
-|---|---|
-| WLED firmware >= 0.11.0 (all modern) | DDP (default) |
-| User override in config | E1.31 |
+| Condition                                       | Protocol       |
+| ----------------------------------------------- | -------------- |
+| WLED firmware >= 0.11.0 (all modern)            | DDP (default)  |
+| User override in config                         | E1.31          |
 | Device reports DDP unsupported via `/json/info` | E1.31 fallback |
-| Integration with xLights/Vixen/DMX ecosystem | E1.31 |
+| Integration with xLights/Vixen/DMX ecosystem    | E1.31          |
 
 **Transport:** UDP unicast to each device. No multicast. No TCP.
 
 **Port assignments:**
 
-| Protocol | Port | Direction |
-|---|---|---|
-| DDP | 4048 | Hypercolor --> WLED |
-| E1.31 | 5568 | Hypercolor --> WLED |
-| WLED JSON API | 80 | Hypercolor --> WLED (HTTP) |
-| mDNS | 5353 | Bidirectional (multicast) |
+| Protocol      | Port | Direction                  |
+| ------------- | ---- | -------------------------- |
+| DDP           | 4048 | Hypercolor --> WLED        |
+| E1.31         | 5568 | Hypercolor --> WLED        |
+| WLED JSON API | 80   | Hypercolor --> WLED (HTTP) |
+| mDNS          | 5353 | Bidirectional (multicast)  |
 
 ---
 
@@ -70,32 +70,32 @@ Byte:   0         1         2         3         4  5  6  7    8  9
 
 **Byte 0 -- Flags:**
 
-| Bits | Name | Description |
-|------|------|-------------|
-| `VV` (7:6) | Version | Protocol version. Always `01` (version 1). |
-| `x` (5) | Reserved | Set to `0`. |
-| `T` (4) | Timecode | If `1` AND `P` is `1`, 4-byte timecode appended after header. WLED ignores timecodes -- never set this. |
-| `S` (3) | Storage | If `1`, data comes from device storage, not packet payload. Not used for streaming. |
-| `R` (2) | Reply | Set in replies from displays. Never set by Hypercolor. |
-| `Q` (1) | Query | Request data from the device. Not used for streaming. |
-| `P` (0) | Push | **Critical.** Set to `1` on the final packet of a frame. Tells WLED to latch and display. |
+| Bits       | Name     | Description                                                                                             |
+| ---------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `VV` (7:6) | Version  | Protocol version. Always `01` (version 1).                                                              |
+| `x` (5)    | Reserved | Set to `0`.                                                                                             |
+| `T` (4)    | Timecode | If `1` AND `P` is `1`, 4-byte timecode appended after header. WLED ignores timecodes -- never set this. |
+| `S` (3)    | Storage  | If `1`, data comes from device storage, not packet payload. Not used for streaming.                     |
+| `R` (2)    | Reply    | Set in replies from displays. Never set by Hypercolor.                                                  |
+| `Q` (1)    | Query    | Request data from the device. Not used for streaming.                                                   |
+| `P` (0)    | Push     | **Critical.** Set to `1` on the final packet of a frame. Tells WLED to latch and display.               |
 
 **Standard flags value for streaming:** `0x41` (version 1, push set) for the last/only packet of a frame. `0x40` (version 1, no push) for non-final fragmented packets.
 
 **Byte 1 -- Sequence Number:**
 
-| Bits | Name | Description |
-|------|------|-------------|
-| `xxxx` (7:4) | Reserved | Set to `0`. |
+| Bits         | Name     | Description                                                                           |
+| ------------ | -------- | ------------------------------------------------------------------------------------- |
+| `xxxx` (7:4) | Reserved | Set to `0`.                                                                           |
 | `nnnn` (3:0) | Sequence | 1-15, wrapping. `0` = sequence tracking disabled. WLED uses this for packet ordering. |
 
 **Byte 2 -- Data Type:**
 
-| Bits | Name | Description |
-|------|------|-------------|
-| `C` (7) | Custom | `0` = standard types, `1` = vendor-defined. Always `0`. |
-| `R` (6) | Reserved | Set to `0`. |
-| `TTT` (5:3) | Type | `000` = undefined, `001` = RGB, `010` = HSL, `011` = RGBW, `100` = grayscale. |
+| Bits        | Name             | Description                                                                                              |
+| ----------- | ---------------- | -------------------------------------------------------------------------------------------------------- |
+| `C` (7)     | Custom           | `0` = standard types, `1` = vendor-defined. Always `0`.                                                  |
+| `R` (6)     | Reserved         | Set to `0`.                                                                                              |
+| `TTT` (5:3) | Type             | `000` = undefined, `001` = RGB, `010` = HSL, `011` = RGBW, `100` = grayscale.                            |
 | `BBB` (2:0) | Bits per element | `000` = undefined (1 bit), `001` = 4-bit, `010` = 8-bit, `011` = 16-bit, `100` = 24-bit, `101` = 32-bit. |
 
 **Standard data type for RGB 8-bit:** `0x0A` (`TTT=001` RGB, `BBB=010` 8-bit).
@@ -103,13 +103,13 @@ Byte:   0         1         2         3         4  5  6  7    8  9
 
 **Byte 3 -- Destination ID:**
 
-| Value | Meaning |
-|-------|---------|
-| `0x00` | Reserved |
-| `0x01` | Default output device (the one you want) |
-| `0x02`-`0xF9` | Custom device IDs |
-| `0xFE` | DMX transit |
-| `0xFF` | All devices (broadcast) |
+| Value         | Meaning                                  |
+| ------------- | ---------------------------------------- |
+| `0x00`        | Reserved                                 |
+| `0x01`        | Default output device (the one you want) |
+| `0x02`-`0xF9` | Custom device IDs                        |
+| `0xFE`        | DMX transit                              |
+| `0xFF`        | All devices (broadcast)                  |
 
 **Standard value:** `0x01`.
 
@@ -126,6 +126,7 @@ Number of bytes in the data payload following the header. Maximum practical valu
 Raw pixel data immediately follows the header. No padding, no alignment.
 
 **RGB (3 bytes per pixel):**
+
 ```
 ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬─ ─ ─
 │ R0       │ G0       │ B0       │ R1       │ G1       │ B1       │ ...
@@ -134,6 +135,7 @@ Raw pixel data immediately follows the header. No padding, no alignment.
 ```
 
 **RGBW (4 bytes per pixel):**
+
 ```
 ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬─ ─ ─
 │ R0       │ G0       │ B0       │ W0       │ R1       │ G1       │ B1       │ W1       │ ...
@@ -147,10 +149,10 @@ When the pixel payload exceeds the per-packet maximum (1440 bytes for RGB = 480 
 
 **Example: 600 RGB pixels (1800 bytes) split into 2 packets:**
 
-| Packet | Flags | Seq | Offset | Length | Pixels |
-|--------|-------|-----|--------|--------|--------|
-| 1 | `0x40` | 1 | `0x00000000` | 1440 | 0-479 |
-| 2 | `0x41` | 1 | `0x000005A0` | 360 | 480-599 |
+| Packet | Flags  | Seq | Offset       | Length | Pixels  |
+| ------ | ------ | --- | ------------ | ------ | ------- |
+| 1      | `0x40` | 1   | `0x00000000` | 1440   | 0-479   |
+| 2      | `0x41` | 1   | `0x000005A0` | 360    | 480-599 |
 
 ### 2.4 Rust Types
 
@@ -277,7 +279,7 @@ impl DdpSequence {
 
 ## 3. E1.31/sACN Packet Format
 
-E1.31 (Streaming ACN) is the fallback protocol. Each universe carries a maximum of 512 DMX channels, which maps to **170 RGB pixels** (170 * 3 = 510 channels + 1 start code = 511) or **128 RGBW pixels** (128 * 4 = 512). Defined by [ANSI E1.31-2018](https://tsp.esta.org/tsp/documents/docs/E1-31-2016.pdf).
+E1.31 (Streaming ACN) is the fallback protocol. Each universe carries a maximum of 512 DMX channels, which maps to **170 RGB pixels** (170 _ 3 = 510 channels + 1 start code = 511) or **128 RGBW pixels** (128 _ 4 = 512). Defined by [ANSI E1.31-2018](https://tsp.esta.org/tsp/documents/docs/E1-31-2016.pdf).
 
 ### 3.1 Packet Layout
 
@@ -334,7 +336,7 @@ Default Port:   5568
 
 ### 3.3 Universe Management
 
-Each universe carries 510 usable bytes (512 channels minus the 2 reserved by convention). For RGB pixels, that means **170 pixels per universe** (170 * 3 = 510). For RGBW, **127 pixels** (127 * 4 = 508, rounding down to avoid splitting a pixel across universes).
+Each universe carries 510 usable bytes (512 channels minus the 2 reserved by convention). For RGB pixels, that means **170 pixels per universe** (170 _ 3 = 510). For RGBW, **127 pixels** (127 _ 4 = 508, rounding down to avoid splitting a pixel across universes).
 
 **Universe allocation for N pixels (RGB):**
 
@@ -346,6 +348,7 @@ Universe 4: pixels 510 - N     (channels 1 to remainder*3)
 ```
 
 **Multicast addressing (not used by Hypercolor -- unicast only, but documented for reference):**
+
 ```
 239.255.{universe_high}.{universe_low}
 Universe 1   -> 239.255.0.1
@@ -1270,14 +1273,14 @@ The HTTP JSON API is the control and metadata plane for WLED devices. Hypercolor
 
 ### 6.1 Endpoint Map
 
-| Endpoint | Method | Purpose | Hot Path? |
-|---|---|---|---|
-| `/json/info` | GET | Device capabilities, firmware, LED config, MAC | No -- discovery only |
-| `/json/state` | GET | Current state, segment definitions, brightness | No -- discovery + periodic |
-| `/json/state` | POST | Modify device state (realtime mode, brightness) | No -- lifecycle events |
-| `/json/si` | GET | Combined state + info in one request | No -- health checks |
-| `/json/eff` | GET | List of available built-in effects | No -- optional |
-| `/json/pal` | GET | List of available palettes | No -- optional |
+| Endpoint      | Method | Purpose                                         | Hot Path?                  |
+| ------------- | ------ | ----------------------------------------------- | -------------------------- |
+| `/json/info`  | GET    | Device capabilities, firmware, LED config, MAC  | No -- discovery only       |
+| `/json/state` | GET    | Current state, segment definitions, brightness  | No -- discovery + periodic |
+| `/json/state` | POST   | Modify device state (realtime mode, brightness) | No -- lifecycle events     |
+| `/json/si`    | GET    | Combined state + info in one request            | No -- health checks        |
+| `/json/eff`   | GET    | List of available built-in effects              | No -- optional             |
+| `/json/pal`   | GET    | List of available palettes                      | No -- optional             |
 
 ### 6.2 Typed `/json/info` Response
 
@@ -1785,12 +1788,12 @@ WLED segments divide a single LED strip into independently controllable regions.
 
 ### 6.1 Mapping Rules
 
-| WLED Concept | Hypercolor Concept | Relationship |
-|---|---|---|
-| Device (ESP32) | `WledDevice` | 1:1 |
-| Segment | `Zone` | 1:1, or N:1 if merged |
-| Segment pixel range | Zone LED range | Direct mapping |
-| Segment brightness | Zone brightness override | Respected as ceiling |
+| WLED Concept        | Hypercolor Concept       | Relationship          |
+| ------------------- | ------------------------ | --------------------- |
+| Device (ESP32)      | `WledDevice`             | 1:1                   |
+| Segment             | `Zone`                   | 1:1, or N:1 if merged |
+| Segment pixel range | Zone LED range           | Direct mapping        |
+| Segment brightness  | Zone brightness override | Respected as ceiling  |
 
 ### 6.2 Zone Construction from Segments
 
@@ -1883,7 +1886,7 @@ impl WledDevice {
 
 ## 8. Multi-Device Coordination
 
-At 60fps, Hypercolor sends frames to every WLED device on the network simultaneously. With N devices, that means N * M packets per frame (where M is the number of DDP fragments or E1.31 universes per device). Low latency and minimal jitter are non-negotiable.
+At 60fps, Hypercolor sends frames to every WLED device on the network simultaneously. With N devices, that means N \* M packets per frame (where M is the number of DDP fragments or E1.31 universes per device). Low latency and minimal jitter are non-negotiable.
 
 ### 7.1 Shared Socket Architecture
 
@@ -2014,13 +2017,13 @@ mod sendmmsg {
 
 ### 7.4 Frame Timing Constraints
 
-| Metric | Budget | Notes |
-|---|---|---|
-| Total device output | 2.0ms target, 4.0ms hard limit | From the 16.6ms frame budget (see design doc 13) |
-| Per-device DDP send | ~0.1ms | Single `sendto` syscall for <= 480 pixels |
-| Per-device E1.31 send | ~0.1ms per universe | Multiple `sendto` calls |
-| `sendmmsg` batch | ~0.05ms for 10 packets | Single syscall, Linux only |
-| Network RTT (local WiFi) | 1-5ms | Not waited on -- UDP is fire-and-forget |
+| Metric                   | Budget                         | Notes                                            |
+| ------------------------ | ------------------------------ | ------------------------------------------------ |
+| Total device output      | 2.0ms target, 4.0ms hard limit | From the 16.6ms frame budget (see design doc 13) |
+| Per-device DDP send      | ~0.1ms                         | Single `sendto` syscall for <= 480 pixels        |
+| Per-device E1.31 send    | ~0.1ms per universe            | Multiple `sendto` calls                          |
+| `sendmmsg` batch         | ~0.05ms for 10 packets         | Single syscall, Linux only                       |
+| Network RTT (local WiFi) | 1-5ms                          | Not waited on -- UDP is fire-and-forget          |
 
 **If the 2ms budget is exceeded:** The frame is still sent (not dropped), but the render loop logs a warning and the adaptive performance system may reduce target FPS for WLED devices specifically.
 
@@ -2032,15 +2035,15 @@ UDP is inherently unreliable. Frames will be lost. Devices will go offline. The 
 
 ### 8.1 Error Classification
 
-| Error | Classification | Response |
-|---|---|---|
-| `sendto` returns `EAGAIN`/`EWOULDBLOCK` | Transient | Log, skip frame, continue. Socket buffer full. |
-| `sendto` returns `EHOSTUNREACH` | Degraded | Mark device degraded. Reduce send rate. Start health checks. |
-| `sendto` returns `ENETUNREACH` | Offline | Mark device offline. Stop sending. Await rediscovery. |
-| `sendto` returns other error | Transient | Log, retry next frame. |
-| HTTP enrichment timeout | Transient | Use cached info. Retry on next enrichment cycle. |
-| HTTP enrichment connection refused | Offline | Device rebooting or firmware changed. Mark offline. |
-| mDNS service removed | Offline | Device powered off or left network. |
+| Error                                   | Classification | Response                                                     |
+| --------------------------------------- | -------------- | ------------------------------------------------------------ |
+| `sendto` returns `EAGAIN`/`EWOULDBLOCK` | Transient      | Log, skip frame, continue. Socket buffer full.               |
+| `sendto` returns `EHOSTUNREACH`         | Degraded       | Mark device degraded. Reduce send rate. Start health checks. |
+| `sendto` returns `ENETUNREACH`          | Offline        | Mark device offline. Stop sending. Await rediscovery.        |
+| `sendto` returns other error            | Transient      | Log, retry next frame.                                       |
+| HTTP enrichment timeout                 | Transient      | Use cached info. Retry on next enrichment cycle.             |
+| HTTP enrichment connection refused      | Offline        | Device rebooting or firmware changed. Mark offline.          |
+| mDNS service removed                    | Offline        | Device powered off or left network.                          |
 
 ### 8.2 Health State Machine
 
@@ -2132,15 +2135,15 @@ impl WledHealthMonitor {
 
 ### 8.4 Timeout Configuration
 
-| Operation | Default Timeout | Configurable |
-|---|---|---|
-| DDP frame send | No timeout (UDP `sendto` is non-blocking) | N/A |
-| E1.31 frame send | No timeout (UDP `sendto` is non-blocking) | N/A |
-| HTTP enrichment | 5 seconds | `device.protocol.wled.api_timeout_ms` |
-| Health check HTTP | 3 seconds | `device.protocol.wled.health_timeout_ms` |
-| mDNS browse | Continuous | N/A |
-| UDP broadcast scan | 3 seconds | `discovery.udp_scan_timeout_secs` |
-| Degraded -> Offline | 30 seconds | `device.protocol.wled.offline_after_secs` |
+| Operation           | Default Timeout                           | Configurable                              |
+| ------------------- | ----------------------------------------- | ----------------------------------------- |
+| DDP frame send      | No timeout (UDP `sendto` is non-blocking) | N/A                                       |
+| E1.31 frame send    | No timeout (UDP `sendto` is non-blocking) | N/A                                       |
+| HTTP enrichment     | 5 seconds                                 | `device.protocol.wled.api_timeout_ms`     |
+| Health check HTTP   | 3 seconds                                 | `device.protocol.wled.health_timeout_ms`  |
+| mDNS browse         | Continuous                                | N/A                                       |
+| UDP broadcast scan  | 3 seconds                                 | `discovery.udp_scan_timeout_secs`         |
+| Degraded -> Offline | 30 seconds                                | `device.protocol.wled.offline_after_secs` |
 
 ---
 
@@ -2321,17 +2324,17 @@ auto_import_segments = true                # Auto-create zones from WLED segment
 
 ## 12. Crate Dependencies
 
-| Crate | Version | Purpose |
-|---|---|---|
-| [`ddp-rs`](https://crates.io/crates/ddp-rs) | `^1.2` | DDP packet construction and connection management. Provides `DDPConnection`, `PixelConfig`, and protocol types. Hypercolor may use its packet building or hand-roll packets for tighter control (as shown in section 2.4). |
-| [`sacn`](https://crates.io/crates/sacn) | `^2.1` | E1.31/sACN source implementation. Provides `SacnSource` for universe management, multicast/unicast transmission, and sequence tracking per ANSI E1.31-2018. |
-| [`mdns-sd`](https://crates.io/crates/mdns-sd) | `^0.11` | mDNS/DNS-SD service browsing and resolution. Used for `_wled._tcp` zero-config discovery. Async-compatible via `recv_async()`. |
-| [`tokio`](https://crates.io/crates/tokio) | `^1.36` | Async runtime. `tokio::net::UdpSocket` for all UDP I/O, `tokio::time` for health check intervals, `tokio::sync` for device state sharing. |
-| [`reqwest`](https://crates.io/crates/reqwest) | `^0.12` | HTTP client for WLED JSON API enrichment (`/json/info`, `/json/state`). Used with `tokio` runtime. |
-| [`serde`](https://crates.io/crates/serde) / [`serde_json`](https://crates.io/crates/serde_json) | `^1.0` | JSON parsing for WLED API responses and TOML config (de)serialization. |
-| [`uuid`](https://crates.io/crates/uuid) | `^1.7` | E1.31 sender CID generation. One UUID per Hypercolor instance, persisted across restarts. |
-| [`thiserror`](https://crates.io/crates/thiserror) | `^2.0` | Error type derivation for `WledError`. |
-| [`tracing`](https://crates.io/crates/tracing) | `^0.1` | Structured logging for discovery events, health state transitions, and frame metrics. |
+| Crate                                                                                           | Version | Purpose                                                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`ddp-rs`](https://crates.io/crates/ddp-rs)                                                     | `^1.2`  | DDP packet construction and connection management. Provides `DDPConnection`, `PixelConfig`, and protocol types. Hypercolor may use its packet building or hand-roll packets for tighter control (as shown in section 2.4). |
+| [`sacn`](https://crates.io/crates/sacn)                                                         | `^2.1`  | E1.31/sACN source implementation. Provides `SacnSource` for universe management, multicast/unicast transmission, and sequence tracking per ANSI E1.31-2018.                                                                |
+| [`mdns-sd`](https://crates.io/crates/mdns-sd)                                                   | `^0.11` | mDNS/DNS-SD service browsing and resolution. Used for `_wled._tcp` zero-config discovery. Async-compatible via `recv_async()`.                                                                                             |
+| [`tokio`](https://crates.io/crates/tokio)                                                       | `^1.36` | Async runtime. `tokio::net::UdpSocket` for all UDP I/O, `tokio::time` for health check intervals, `tokio::sync` for device state sharing.                                                                                  |
+| [`reqwest`](https://crates.io/crates/reqwest)                                                   | `^0.12` | HTTP client for WLED JSON API enrichment (`/json/info`, `/json/state`). Used with `tokio` runtime.                                                                                                                         |
+| [`serde`](https://crates.io/crates/serde) / [`serde_json`](https://crates.io/crates/serde_json) | `^1.0`  | JSON parsing for WLED API responses and TOML config (de)serialization.                                                                                                                                                     |
+| [`uuid`](https://crates.io/crates/uuid)                                                         | `^1.7`  | E1.31 sender CID generation. One UUID per Hypercolor instance, persisted across restarts.                                                                                                                                  |
+| [`thiserror`](https://crates.io/crates/thiserror)                                               | `^2.0`  | Error type derivation for `WledError`.                                                                                                                                                                                     |
+| [`tracing`](https://crates.io/crates/tracing)                                                   | `^0.1`  | Structured logging for discovery events, health state transitions, and frame metrics.                                                                                                                                      |
 
 ### 10.1 Dependency Notes
 

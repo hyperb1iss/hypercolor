@@ -41,15 +41,22 @@ Tier 3 (Component)   →  Usage-specific, theme-agnostic
 Theme is controlled by a `data-theme` attribute on `<html>`:
 
 ```html
-<html data-theme="dark">   <!-- default -->
-<html data-theme="light">
+<html data-theme="dark">
+  <!-- default -->
+  <html data-theme="light"></html>
+</html>
 ```
 
 Leptos toggles this attribute. CSS uses attribute selectors:
 
 ```css
-:root, [data-theme="dark"]  { /* dark semantic tokens */ }
-[data-theme="light"]         { /* light semantic tokens */ }
+:root,
+[data-theme="dark"] {
+  /* dark semantic tokens */
+}
+[data-theme="light"] {
+  /* light semantic tokens */
+}
 ```
 
 User preference is persisted to `localStorage` and respects `prefers-color-scheme` on first visit.
@@ -60,48 +67,48 @@ Raw values. Never referenced directly in components.
 
 ```css
 @theme {
-    /* ── Neutrals (OKLCH, hue 280 = violet undertone) ── */
-    --color-void-1:     oklch(0.110 0.020 280);   /* deepest */
-    --color-void-2:     oklch(0.130 0.018 280);
-    --color-void-3:     oklch(0.155 0.016 280);
-    --color-void-4:     oklch(0.185 0.014 280);
-    --color-void-5:     oklch(0.220 0.012 280);
-    --color-void-6:     oklch(0.280 0.010 280);
+  /* ── Neutrals (OKLCH, hue 280 = violet undertone) ── */
+  --color-void-1: oklch(0.11 0.02 280); /* deepest */
+  --color-void-2: oklch(0.13 0.018 280);
+  --color-void-3: oklch(0.155 0.016 280);
+  --color-void-4: oklch(0.185 0.014 280);
+  --color-void-5: oklch(0.22 0.012 280);
+  --color-void-6: oklch(0.28 0.01 280);
 
-    --color-cloud-1:    oklch(0.985 0.005 280);   /* brightest */
-    --color-cloud-2:    oklch(0.960 0.008 280);
-    --color-cloud-3:    oklch(0.930 0.010 280);
-    --color-cloud-4:    oklch(0.890 0.012 280);
-    --color-cloud-5:    oklch(0.840 0.014 280);
-    --color-cloud-6:    oklch(0.780 0.016 280);
+  --color-cloud-1: oklch(0.985 0.005 280); /* brightest */
+  --color-cloud-2: oklch(0.96 0.008 280);
+  --color-cloud-3: oklch(0.93 0.01 280);
+  --color-cloud-4: oklch(0.89 0.012 280);
+  --color-cloud-5: oklch(0.84 0.014 280);
+  --color-cloud-6: oklch(0.78 0.016 280);
 
-    /* ── SilkCircuit Accent Palette ── */
-    --color-purple:     oklch(0.65 0.30 320);      /* #e135ff — primary accent */
-    --color-cyan:       oklch(0.88 0.18 175);      /* #80ffea — interactive focus */
-    --color-coral:      oklch(0.72 0.22 350);      /* #ff6ac1 — secondary accent */
-    --color-yellow:     oklch(0.93 0.15 105);      /* #f1fa8c — warnings, attention */
-    --color-green:      oklch(0.85 0.22 155);      /* #50fa7b — success */
-    --color-red:        oklch(0.68 0.22 25);       /* #ff6363 — error, danger */
-    --color-blue:       oklch(0.72 0.12 260);      /* #82aaff — info */
+  /* ── SilkCircuit Accent Palette ── */
+  --color-purple: oklch(0.65 0.3 320); /* #e135ff — primary accent */
+  --color-cyan: oklch(0.88 0.18 175); /* #80ffea — interactive focus */
+  --color-coral: oklch(0.72 0.22 350); /* #ff6ac1 — secondary accent */
+  --color-yellow: oklch(0.93 0.15 105); /* #f1fa8c — warnings, attention */
+  --color-green: oklch(0.85 0.22 155); /* #50fa7b — success */
+  --color-red: oklch(0.68 0.22 25); /* #ff6363 — error, danger */
+  --color-blue: oklch(0.72 0.12 260); /* #82aaff — info */
 
-    /* ── Typography ── */
-    --font-sans:  'Satoshi', 'Inter', system-ui, sans-serif;
-    --font-mono:  'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-    --font-display: 'Satoshi', system-ui, sans-serif;
+  /* ── Typography ── */
+  --font-sans: "Satoshi", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  --font-display: "Satoshi", system-ui, sans-serif;
 
-    /* ── Motion ── */
-    --ease-silk:    cubic-bezier(0.4, 0, 0.2, 1);
-    --ease-spring:  cubic-bezier(0.34, 1.56, 0.64, 1);
-    --ease-out:     cubic-bezier(0, 0, 0.2, 1);
-    --duration-fast:   120ms;
-    --duration-normal: 200ms;
-    --duration-slow:   400ms;
+  /* ── Motion ── */
+  --ease-silk: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 400ms;
 
-    /* ── Radii ── */
-    --radius-sm:  6px;
-    --radius-md:  10px;
-    --radius-lg:  14px;
-    --radius-xl:  20px;
+  /* ── Radii ── */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
 }
 ```
 
@@ -110,57 +117,58 @@ Raw values. Never referenced directly in components.
 Intent-mapped. These are what components reference.
 
 ```css
-:root, [data-theme="dark"] {
-    color-scheme: dark;
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
 
-    /* ── Surfaces (elevation via white overlay) ── */
-    --surface-base:      var(--color-void-1);           /* page bg */
-    --surface-raised:    var(--color-void-2);           /* sidebar, header */
-    --surface-overlay:   var(--color-void-3);           /* cards, panels */
-    --surface-sunken:    var(--color-void-4);           /* inputs, wells */
-    --surface-hover:     var(--color-void-5);           /* hover states */
-    --surface-active:    var(--color-void-6);           /* pressed/selected */
+  /* ── Surfaces (elevation via white overlay) ── */
+  --surface-base: var(--color-void-1); /* page bg */
+  --surface-raised: var(--color-void-2); /* sidebar, header */
+  --surface-overlay: var(--color-void-3); /* cards, panels */
+  --surface-sunken: var(--color-void-4); /* inputs, wells */
+  --surface-hover: var(--color-void-5); /* hover states */
+  --surface-active: var(--color-void-6); /* pressed/selected */
 
-    /* ── Glass (Prism overlays) ── */
-    --glass-bg:          oklch(0.13 0.02 280 / 0.70);
-    --glass-bg-dense:    oklch(0.13 0.02 280 / 0.85);
-    --glass-blur:        16px;
-    --glass-saturate:    1.3;
-    --glass-border:      oklch(1 0 0 / 0.06);
+  /* ── Glass (Prism overlays) ── */
+  --glass-bg: oklch(0.13 0.02 280 / 0.7);
+  --glass-bg-dense: oklch(0.13 0.02 280 / 0.85);
+  --glass-blur: 16px;
+  --glass-saturate: 1.3;
+  --glass-border: oklch(1 0 0 / 0.06);
 
-    /* ── Text ── */
-    --text-primary:      oklch(0.96 0.01 280);          /* near-white, not pure */
-    --text-secondary:    oklch(0.68 0.03 280);          /* muted labels */
-    --text-tertiary:     oklch(0.52 0.04 280);          /* placeholders, disabled */
-    --text-inverse:      var(--color-void-1);
+  /* ── Text ── */
+  --text-primary: oklch(0.96 0.01 280); /* near-white, not pure */
+  --text-secondary: oklch(0.68 0.03 280); /* muted labels */
+  --text-tertiary: oklch(0.52 0.04 280); /* placeholders, disabled */
+  --text-inverse: var(--color-void-1);
 
-    /* ── Borders ── */
-    --border-subtle:     oklch(1 0 0 / 0.06);
-    --border-default:    oklch(1 0 0 / 0.10);
-    --border-strong:     oklch(1 0 0 / 0.16);
-    --border-focus:      oklch(0.88 0.18 175 / 0.40);   /* cyan focus ring */
+  /* ── Borders ── */
+  --border-subtle: oklch(1 0 0 / 0.06);
+  --border-default: oklch(1 0 0 / 0.1);
+  --border-strong: oklch(1 0 0 / 0.16);
+  --border-focus: oklch(0.88 0.18 175 / 0.4); /* cyan focus ring */
 
-    /* ── Accent ── */
-    --accent:            var(--color-purple);
-    --accent-hover:      oklch(0.70 0.30 320);
-    --accent-muted:      oklch(0.65 0.30 320 / 0.12);
-    --accent-subtle:     oklch(0.65 0.30 320 / 0.06);
+  /* ── Accent ── */
+  --accent: var(--color-purple);
+  --accent-hover: oklch(0.7 0.3 320);
+  --accent-muted: oklch(0.65 0.3 320 / 0.12);
+  --accent-subtle: oklch(0.65 0.3 320 / 0.06);
 
-    /* ── Ambient (dynamic — set from JS) ── */
-    --ambient-hue:       320;        /* default: purple */
-    --ambient-glow:      oklch(0.65 0.20 var(--ambient-hue) / 0.08);
-    --ambient-border:    oklch(0.65 0.20 var(--ambient-hue) / 0.15);
-    --ambient-tint:      oklch(0.65 0.20 var(--ambient-hue) / 0.04);
+  /* ── Ambient (dynamic — set from JS) ── */
+  --ambient-hue: 320; /* default: purple */
+  --ambient-glow: oklch(0.65 0.2 var(--ambient-hue) / 0.08);
+  --ambient-border: oklch(0.65 0.2 var(--ambient-hue) / 0.15);
+  --ambient-tint: oklch(0.65 0.2 var(--ambient-hue) / 0.04);
 
-    /* ── Semantic status ── */
-    --status-success:    var(--color-green);
-    --status-error:      var(--color-red);
-    --status-warning:    var(--color-yellow);
-    --status-info:       var(--color-blue);
+  /* ── Semantic status ── */
+  --status-success: var(--color-green);
+  --status-error: var(--color-red);
+  --status-warning: var(--color-yellow);
+  --status-info: var(--color-blue);
 
-    /* ── Scrollbar ── */
-    --scrollbar-thumb:   oklch(0.65 0.30 320 / 0.15);
-    --scrollbar-hover:   oklch(0.65 0.30 320 / 0.30);
+  /* ── Scrollbar ── */
+  --scrollbar-thumb: oklch(0.65 0.3 320 / 0.15);
+  --scrollbar-hover: oklch(0.65 0.3 320 / 0.3);
 }
 ```
 
@@ -168,47 +176,47 @@ Intent-mapped. These are what components reference.
 
 ```css
 [data-theme="light"] {
-    color-scheme: light;
+  color-scheme: light;
 
-    /* ── Surfaces ── */
-    --surface-base:      var(--color-cloud-1);
-    --surface-raised:    var(--color-cloud-2);
-    --surface-overlay:   white;
-    --surface-sunken:    var(--color-cloud-3);
-    --surface-hover:     var(--color-cloud-4);
-    --surface-active:    var(--color-cloud-5);
+  /* ── Surfaces ── */
+  --surface-base: var(--color-cloud-1);
+  --surface-raised: var(--color-cloud-2);
+  --surface-overlay: white;
+  --surface-sunken: var(--color-cloud-3);
+  --surface-hover: var(--color-cloud-4);
+  --surface-active: var(--color-cloud-5);
 
-    /* ── Glass ── */
-    --glass-bg:          oklch(0.98 0.005 280 / 0.70);
-    --glass-bg-dense:    oklch(0.98 0.005 280 / 0.85);
-    --glass-border:      oklch(0 0 0 / 0.08);
+  /* ── Glass ── */
+  --glass-bg: oklch(0.98 0.005 280 / 0.7);
+  --glass-bg-dense: oklch(0.98 0.005 280 / 0.85);
+  --glass-border: oklch(0 0 0 / 0.08);
 
-    /* ── Text ── */
-    --text-primary:      oklch(0.18 0.02 280);
-    --text-secondary:    oklch(0.42 0.03 280);
-    --text-tertiary:     oklch(0.58 0.02 280);
-    --text-inverse:      var(--color-cloud-1);
+  /* ── Text ── */
+  --text-primary: oklch(0.18 0.02 280);
+  --text-secondary: oklch(0.42 0.03 280);
+  --text-tertiary: oklch(0.58 0.02 280);
+  --text-inverse: var(--color-cloud-1);
 
-    /* ── Borders ── */
-    --border-subtle:     oklch(0 0 0 / 0.06);
-    --border-default:    oklch(0 0 0 / 0.10);
-    --border-strong:     oklch(0 0 0 / 0.18);
-    --border-focus:      oklch(0.65 0.30 320 / 0.50);   /* purple focus in light */
+  /* ── Borders ── */
+  --border-subtle: oklch(0 0 0 / 0.06);
+  --border-default: oklch(0 0 0 / 0.1);
+  --border-strong: oklch(0 0 0 / 0.18);
+  --border-focus: oklch(0.65 0.3 320 / 0.5); /* purple focus in light */
 
-    /* ── Accent (slightly desaturated for light bg) ── */
-    --accent:            oklch(0.58 0.28 320);
-    --accent-hover:      oklch(0.52 0.28 320);
-    --accent-muted:      oklch(0.58 0.28 320 / 0.10);
-    --accent-subtle:     oklch(0.58 0.28 320 / 0.05);
+  /* ── Accent (slightly desaturated for light bg) ── */
+  --accent: oklch(0.58 0.28 320);
+  --accent-hover: oklch(0.52 0.28 320);
+  --accent-muted: oklch(0.58 0.28 320 / 0.1);
+  --accent-subtle: oklch(0.58 0.28 320 / 0.05);
 
-    /* ── Ambient (same mechanism, lower intensity) ── */
-    --ambient-glow:      oklch(0.58 0.15 var(--ambient-hue) / 0.06);
-    --ambient-border:    oklch(0.58 0.15 var(--ambient-hue) / 0.12);
-    --ambient-tint:      oklch(0.58 0.15 var(--ambient-hue) / 0.03);
+  /* ── Ambient (same mechanism, lower intensity) ── */
+  --ambient-glow: oklch(0.58 0.15 var(--ambient-hue) / 0.06);
+  --ambient-border: oklch(0.58 0.15 var(--ambient-hue) / 0.12);
+  --ambient-tint: oklch(0.58 0.15 var(--ambient-hue) / 0.03);
 
-    /* ── Scrollbar ── */
-    --scrollbar-thumb:   oklch(0 0 0 / 0.12);
-    --scrollbar-hover:   oklch(0 0 0 / 0.24);
+  /* ── Scrollbar ── */
+  --scrollbar-thumb: oklch(0 0 0 / 0.12);
+  --scrollbar-hover: oklch(0 0 0 / 0.24);
 }
 ```
 
@@ -221,29 +229,30 @@ default metrics, and excellent weight range. It reads as "designed" rather than 
 
 ### 3.1 Type Scale
 
-| Level     | Size   | Weight | Tracking   | Use                          |
-|-----------|--------|--------|------------|------------------------------|
-| Display   | 28px   | 700    | -0.03em    | Page titles                  |
-| Title     | 20px   | 600    | -0.02em    | Section headers, card names  |
-| Heading   | 16px   | 600    | -0.015em   | Subsections, panel headers   |
-| Body      | 14px   | 400    | -0.01em    | Primary content              |
-| Label     | 12px   | 500    | 0em        | Control labels, nav items    |
-| Caption   | 11px   | 500    | 0.01em     | Metadata, badges, timestamps |
-| Micro     | 10px   | 500    | 0.02em     | Tiny labels, status text     |
+| Level   | Size | Weight | Tracking | Use                          |
+| ------- | ---- | ------ | -------- | ---------------------------- |
+| Display | 28px | 700    | -0.03em  | Page titles                  |
+| Title   | 20px | 600    | -0.02em  | Section headers, card names  |
+| Heading | 16px | 600    | -0.015em | Subsections, panel headers   |
+| Body    | 14px | 400    | -0.01em  | Primary content              |
+| Label   | 12px | 500    | 0em      | Control labels, nav items    |
+| Caption | 11px | 500    | 0.01em   | Metadata, badges, timestamps |
+| Micro   | 10px | 500    | 0.02em   | Tiny labels, status text     |
 
 ### 3.2 Mono Scale
 
 JetBrains Mono for all data, metrics, hex values, and code.
 
-| Level     | Size   | Weight | Use                          |
-|-----------|--------|--------|------------------------------|
-| Mono-lg   | 14px   | 500    | Hex values in pickers        |
-| Mono-md   | 12px   | 400    | Status values, FPS counter   |
-| Mono-sm   | 10px   | 400    | Slider values, RGB channels  |
+| Level   | Size | Weight | Use                         |
+| ------- | ---- | ------ | --------------------------- |
+| Mono-lg | 14px | 500    | Hex values in pickers       |
+| Mono-md | 12px | 400    | Status values, FPS counter  |
+| Mono-sm | 10px | 400    | Slider values, RGB channels |
 
 ### 3.3 Dark Mode Adjustments
 
 In dark mode, text weights are optically lighter due to irradiation. Compensate:
+
 - Body weight in dark: 400 (normal)
 - Body weight in light: 350 (if available) or keep 400 with `font-optical-sizing: auto`
 - Display/Title: +50 weight in dark mode (`font-weight: 700` → visually matches light `650`)
@@ -272,6 +281,7 @@ graph TD
 ### 4.2 Glass Panels (Prism)
 
 Used **only** for floating elements that benefit from depth:
+
 - Command palette
 - Dropdown menus
 - Popovers / tooltips
@@ -282,15 +292,15 @@ Used **only** for floating elements that benefit from depth:
 
 ```css
 .glass {
-    background: var(--glass-bg);
-    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-    border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
 }
 
 .glass-dense {
-    background: var(--glass-bg-dense);
-    backdrop-filter: blur(20px) saturate(var(--glass-saturate));
-    border: 1px solid var(--glass-border);
+  background: var(--glass-bg-dense);
+  backdrop-filter: blur(20px) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
 }
 ```
 
@@ -311,13 +321,13 @@ The killer differentiator. The UI subtly reflects the active effect's color.
 
 ### 5.2 What Gets Tinted
 
-| Element                    | Token Used          | Intensity |
-|----------------------------|---------------------|-----------|
-| Shell edge radial gradient | `--ambient-glow`    | Very subtle (4-8%) |
-| Scrollbar thumb            | `--ambient-border`  | Medium (15%) |
-| Active effect card border  | `--ambient-border`  | Medium (15%) |
-| Sidebar "Now Playing" bg   | `--ambient-tint`    | Subtle (4%) |
-| Noise overlay tint         | `--ambient-tint`    | Very subtle (3%) |
+| Element                    | Token Used         | Intensity          |
+| -------------------------- | ------------------ | ------------------ |
+| Shell edge radial gradient | `--ambient-glow`   | Very subtle (4-8%) |
+| Scrollbar thumb            | `--ambient-border` | Medium (15%)       |
+| Active effect card border  | `--ambient-border` | Medium (15%)       |
+| Sidebar "Now Playing" bg   | `--ambient-tint`   | Subtle (4%)        |
+| Noise overlay tint         | `--ambient-tint`   | Very subtle (3%)   |
 
 ### 5.3 Fallback
 
@@ -338,12 +348,14 @@ The ambient system is a progressive enhancement; the UI works perfectly without 
 ### 6.1 Accent Usage Rules
 
 **Electric Purple** (`--accent`) is the only accent used in UI chrome:
+
 - Interactive elements: buttons, toggles, active states
 - Focus indicators (with cyan for keyboard focus)
 - The sidebar active indicator bar
 - Slider thumbs
 
 **Other SilkCircuit colors** appear ONLY in semantic contexts:
+
 - Category badges (ambient=cyan, audio=coral, gaming=purple, etc.)
 - Status indicators (success=green, error=red, warning=yellow)
 - Data visualization and device backend indicators
@@ -383,25 +395,25 @@ In light mode, category colors automatically desaturate slightly via the OKLCH p
 
 ### 7.2 Duration Scale
 
-| Token              | Value  | Use                              |
-|--------------------|--------|----------------------------------|
-| `--duration-fast`  | 120ms  | Hover, focus, press feedback     |
-| `--duration-normal`| 200ms  | Toggles, color changes, state    |
-| `--duration-slow`  | 400ms  | Page transitions, panel reveals  |
+| Token               | Value | Use                             |
+| ------------------- | ----- | ------------------------------- |
+| `--duration-fast`   | 120ms | Hover, focus, press feedback    |
+| `--duration-normal` | 200ms | Toggles, color changes, state   |
+| `--duration-slow`   | 400ms | Page transitions, panel reveals |
 
 ### 7.3 Entrance Animations (Preserved)
 
 Keep all existing keyframes — they're well-designed. Rename for consistency:
 
-| Current Name       | New Name              | Duration | Easing       |
-|--------------------|-----------------------|----------|--------------|
-| `fadeInUp`         | `enter-up`            | 350ms    | silk         |
-| `fadeIn`           | `enter-fade`          | 250ms    | silk         |
-| `slideInRight`     | `enter-right`         | 350ms    | silk         |
-| `slideInLeft`      | `enter-left`          | 350ms    | silk         |
-| `scaleIn`          | `enter-scale`         | 250ms    | spring       |
-| `popIn`            | `enter-pop`           | 350ms    | spring       |
-| `slideDown`        | `enter-down`          | 300ms    | silk         |
+| Current Name   | New Name      | Duration | Easing |
+| -------------- | ------------- | -------- | ------ |
+| `fadeInUp`     | `enter-up`    | 350ms    | silk   |
+| `fadeIn`       | `enter-fade`  | 250ms    | silk   |
+| `slideInRight` | `enter-right` | 350ms    | silk   |
+| `slideInLeft`  | `enter-left`  | 350ms    | silk   |
+| `scaleIn`      | `enter-scale` | 250ms    | spring |
+| `popIn`        | `enter-pop`   | 350ms    | spring |
+| `slideDown`    | `enter-down`  | 300ms    | silk   |
 
 ### 7.4 Micro-Interactions (Preserved)
 
@@ -500,11 +512,11 @@ Keep the fractal noise SVG overlay. Increase from 1.5% to **2.5%** opacity in da
 
 ```css
 .noise-overlay::before {
-    opacity: var(--noise-opacity, 0.025);
+  opacity: var(--noise-opacity, 0.025);
 }
 
 [data-theme="light"] {
-    --noise-opacity: 0.01;
+  --noise-opacity: 0.01;
 }
 ```
 
@@ -514,17 +526,17 @@ For the shell's base layer, an optional aurora gradient that shifts with `--ambi
 
 ```css
 .aurora-bg::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: -1;
-    background: radial-gradient(
-        ellipse 80% 50% at 20% 100%,
-        oklch(0.30 0.08 var(--ambient-hue) / 0.06),
-        transparent 70%
-    );
-    transition: background 2s var(--ease-silk);
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background: radial-gradient(
+    ellipse 80% 50% at 20% 100%,
+    oklch(0.3 0.08 var(--ambient-hue) / 0.06),
+    transparent 70%
+  );
+  transition: background 2s var(--ease-silk);
 }
 ```
 
@@ -568,14 +580,14 @@ Register semantic tokens as Tailwind theme extensions so components use readable
 
 ```css
 @theme {
-    /* These reference the semantic tokens, enabling dark: prefix */
-    --color-surface-base:    var(--surface-base);
-    --color-surface-raised:  var(--surface-raised);
-    --color-surface-overlay: var(--surface-overlay);
-    --color-surface-sunken:  var(--surface-sunken);
-    --color-text-primary:    var(--text-primary);
-    --color-text-secondary:  var(--text-secondary);
-    --color-text-tertiary:   var(--text-tertiary);
+  /* These reference the semantic tokens, enabling dark: prefix */
+  --color-surface-base: var(--surface-base);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-overlay: var(--surface-overlay);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
 }
 ```
 
@@ -611,6 +623,7 @@ Usage in Leptos: `class="bg-surface-base text-text-primary border-border-subtle"
 ## Appendix A: Research Sources
 
 Design decisions informed by competitive analysis of:
+
 - **Razer Synapse 3/4** — single-accent discipline, dark-only rationale, Chroma Studio layer metaphor
 - **Proprietary RGB tools** — canvas-as-spatial-map, dark + neon accent pairing, effect control type system
 - **Linear** — LCH color space, 3-variable theme generation, elevation via opacity
@@ -622,14 +635,14 @@ Design decisions informed by competitive analysis of:
 
 ## Appendix B: Font Evaluation
 
-| Font         | Pros                                     | Cons                          | Verdict      |
-|--------------|------------------------------------------|-------------------------------|--------------|
-| Inter        | Universal, safe, excellent features      | Generic, overused             | Replace      |
-| Satoshi      | Geometric, tight, distinctive, free      | Less proven at small sizes    | **Primary**  |
-| General Sans | Similar to Satoshi, softer              | Less personality              | Backup       |
-| Geist Sans   | Vercel-associated, technical             | Too "developer tool"          | Skip         |
-| Space Grotesk| Distinctive but overused in AI/crypto   | Cliche risk                   | Skip         |
-| Plus Jakarta | Warm, rounded, approachable              | Too soft for "control surface"| Skip         |
+| Font          | Pros                                  | Cons                           | Verdict     |
+| ------------- | ------------------------------------- | ------------------------------ | ----------- |
+| Inter         | Universal, safe, excellent features   | Generic, overused              | Replace     |
+| Satoshi       | Geometric, tight, distinctive, free   | Less proven at small sizes     | **Primary** |
+| General Sans  | Similar to Satoshi, softer            | Less personality               | Backup      |
+| Geist Sans    | Vercel-associated, technical          | Too "developer tool"           | Skip        |
+| Space Grotesk | Distinctive but overused in AI/crypto | Cliche risk                    | Skip        |
+| Plus Jakarta  | Warm, rounded, approachable           | Too soft for "control surface" | Skip        |
 
 ## Appendix C: Naming Conventions
 

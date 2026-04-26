@@ -27,12 +27,13 @@
 
 Corsair integration follows a two-phase strategy driven by protocol complexity and hardware availability:
 
-| Phase | Approach | Scope | Dependency |
-|-------|----------|-------|------------|
-| **Phase 1** | OpenLinkHub REST bridge | Immediate iCUE LINK support | External: OpenLinkHub daemon |
-| **Phase 2** | Native iCUE LINK driver | Per-LED 60fps direct control | None (standalone) |
+| Phase       | Approach                | Scope                        | Dependency                   |
+| ----------- | ----------------------- | ---------------------------- | ---------------------------- |
+| **Phase 1** | OpenLinkHub REST bridge | Immediate iCUE LINK support  | External: OpenLinkHub daemon |
+| **Phase 2** | Native iCUE LINK driver | Per-LED 60fps direct control | None (standalone)            |
 
 **Target hardware (Bliss's inventory):**
+
 - iCUE LINK System Hub (`0x0C3F`) — central daisy-chain bus controller
 - iCUE LINK LCD AIO — connected downstream via LINK bus
 
@@ -46,13 +47,13 @@ Corsair has five distinct protocol families across their product line. Understan
 
 ### 2.1 Protocol Family Map
 
-| # | Family | Usage Page | Packet Size | Products | Priority |
-|---|--------|-----------|-------------|----------|----------|
-| 1 | **iCUE LINK** | `0xFF42` (usage `0x01`) | 513B write / 512B read | System Hub, LINK fans, AIOs | **High** (Phase 1+2) |
-| 2 | Commander Core / XT | `0xFF42` (usage `0x01`) | 97B / 385B / 1025B (varies) | Commander Core, Core XT | Low |
-| 3 | Lighting Node | bare interface | 65B write / 17B read | Node Pro, Commander Pro, LS100 | Low |
-| 4 | Peripheral V2 | `0xFF42` (interface 1) | 65B or 1025B | K100, K70, M65, Dark Core | Low |
-| 5 | Legacy Peripheral | `0xFFC2` | varies | K65, K95, Scimitar, M65 (pre-2020) | None |
+| #   | Family              | Usage Page              | Packet Size                 | Products                           | Priority             |
+| --- | ------------------- | ----------------------- | --------------------------- | ---------------------------------- | -------------------- |
+| 1   | **iCUE LINK**       | `0xFF42` (usage `0x01`) | 513B write / 512B read      | System Hub, LINK fans, AIOs        | **High** (Phase 1+2) |
+| 2   | Commander Core / XT | `0xFF42` (usage `0x01`) | 97B / 385B / 1025B (varies) | Commander Core, Core XT            | Low                  |
+| 3   | Lighting Node       | bare interface          | 65B write / 17B read        | Node Pro, Commander Pro, LS100     | Low                  |
+| 4   | Peripheral V2       | `0xFF42` (interface 1)  | 65B or 1025B                | K100, K70, M65, Dark Core          | Low                  |
+| 5   | Legacy Peripheral   | `0xFFC2`                | varies                      | K65, K95, Scimitar, M65 (pre-2020) | None                 |
 
 **VID:** `0x1B1C` (Corsair) across all families.
 
@@ -91,15 +92,15 @@ pub struct CorsairBridgeBackend {
 
 ### 3.2 API Endpoints
 
-| Operation | Method | Endpoint | Body |
-|-----------|--------|----------|------|
-| Health check | `GET` | `/api/` | — |
-| List devices | `GET` | `/api/devices/` | — |
-| Set color | `POST` | `/api/color` | `{ serial, profile, channel, ... }` |
-| Set brightness | `POST` | `/api/brightness/gradual` | `{ serial, brightness: 0-100 }` |
-| Set fan speed | `POST` | `/api/speed/manual` | `{ serial, channel, speed }` |
-| LCD image | `POST` | `/api/lcd/image` | `{ serial, image_data }` |
-| LCD rotation | `POST` | `/api/lcd/rotation` | `{ serial, rotation }` |
+| Operation      | Method | Endpoint                  | Body                                |
+| -------------- | ------ | ------------------------- | ----------------------------------- |
+| Health check   | `GET`  | `/api/`                   | —                                   |
+| List devices   | `GET`  | `/api/devices/`           | —                                   |
+| Set color      | `POST` | `/api/color`              | `{ serial, profile, channel, ... }` |
+| Set brightness | `POST` | `/api/brightness/gradual` | `{ serial, brightness: 0-100 }`     |
+| Set fan speed  | `POST` | `/api/speed/manual`       | `{ serial, channel, speed }`        |
+| LCD image      | `POST` | `/api/lcd/image`          | `{ serial, image_data }`            |
+| LCD rotation   | `POST` | `/api/lcd/rotation`       | `{ serial, rotation }`              |
 
 ### 3.3 Device Discovery Mapping
 
@@ -170,31 +171,30 @@ Phase 1 routes Corsair lighting through OpenLinkHub's REST API for static color,
 profile changes, and other non-streaming operations. Hypercolor does not ship a
 dedicated high-frequency relay path here anymore.
 
-Per-LED 60fps animation is deferred until the native USB backend lands in Phase
-2. At that point, the effect engine will write frames directly through the
+Per-LED 60fps animation is deferred until the native USB backend lands in Phase 2. At that point, the effect engine will write frames directly through the
 native Corsair transport instead of tunneling through a separate compatibility
 service.
 
 ### 5.3 Decision Matrix
 
-| Scenario | Transport | Latency | Per-LED |
-|----------|-----------|---------|---------|
-| Static color | REST API | ~10ms | No (zone-level) |
-| Preset effect (breathing, rainbow) | REST API | ~10ms | No |
-| Real-time animation (60fps) | Native USB backend (Phase 2) | TBD | Deferred |
-| Brightness adjustment | REST API | ~10ms | No |
-| Fan speed control | REST API | ~10ms | N/A |
+| Scenario                           | Transport                    | Latency | Per-LED         |
+| ---------------------------------- | ---------------------------- | ------- | --------------- |
+| Static color                       | REST API                     | ~10ms   | No (zone-level) |
+| Preset effect (breathing, rainbow) | REST API                     | ~10ms   | No              |
+| Real-time animation (60fps)        | Native USB backend (Phase 2) | TBD     | Deferred        |
+| Brightness adjustment              | REST API                     | ~10ms   | No              |
+| Fan speed control                  | REST API                     | ~10ms   | N/A             |
 
 ### 5.4 Profile Preset Mapping
 
 Hypercolor's built-in effects map to OpenLinkHub profile names:
 
 | Hypercolor Effect | OpenLinkHub Profile |
-|-------------------|-------------------|
-| Solid color | `static` |
-| Breathing | `breathing` |
-| Rainbow wave | `rainbow` |
-| Color cycle | `colorshift` |
+| ----------------- | ------------------- |
+| Solid color       | `static`            |
+| Breathing         | `breathing`         |
+| Rainbow wave      | `rainbow`           |
+| Color cycle       | `colorshift`        |
 
 ---
 
@@ -204,13 +204,13 @@ This section documents the wire protocol for future native driver implementation
 
 ### 6.1 USB Identification
 
-| Field | Value |
-|-------|-------|
-| VID | `0x1B1C` |
-| PID | `0x0C3F` (System Hub) |
-| Interface | `0x00` |
-| Usage Page | `0xFF42` |
-| Usage | `0x01` |
+| Field      | Value                 |
+| ---------- | --------------------- |
+| VID        | `0x1B1C`              |
+| PID        | `0x0C3F` (System Hub) |
+| Interface  | `0x00`                |
+| Usage Page | `0xFF42`              |
+| Usage      | `0x01`                |
 
 ### 6.2 Packet Geometry
 
@@ -231,29 +231,29 @@ Max data per request: 508 bytes
 
 ### 6.3 Command Vocabulary
 
-| Command | Bytes | Purpose |
-|---------|-------|---------|
-| Open endpoint | `0x0D, 0x01` | Open a data endpoint for read/write |
-| Open color endpoint | `0x0D, 0x00` | Open endpoint for color writes |
-| Close endpoint | `0x05, 0x01, 0x01` | Close current endpoint |
-| Get firmware | `0x02, 0x13` | Query hub firmware version |
-| Get device mode | `0x01, 0x08, 0x01` | Software vs hardware mode |
-| Software mode | `0x01, 0x03, 0x00, 0x02` | Take control from firmware |
-| Hardware mode | `0x01, 0x03, 0x00, 0x01` | Return control to firmware |
-| Write (standard) | `0x06, 0x01` | First chunk of standard data |
-| Write color (first) | `0x06, 0x00` | First chunk of color data |
-| Write color (next) | `0x07, 0x00` | Subsequent color data chunks |
-| Read | `0x08, 0x01` | Read endpoint data |
+| Command             | Bytes                    | Purpose                             |
+| ------------------- | ------------------------ | ----------------------------------- |
+| Open endpoint       | `0x0D, 0x01`             | Open a data endpoint for read/write |
+| Open color endpoint | `0x0D, 0x00`             | Open endpoint for color writes      |
+| Close endpoint      | `0x05, 0x01, 0x01`       | Close current endpoint              |
+| Get firmware        | `0x02, 0x13`             | Query hub firmware version          |
+| Get device mode     | `0x01, 0x08, 0x01`       | Software vs hardware mode           |
+| Software mode       | `0x01, 0x03, 0x00, 0x02` | Take control from firmware          |
+| Hardware mode       | `0x01, 0x03, 0x00, 0x01` | Return control to firmware          |
+| Write (standard)    | `0x06, 0x01`             | First chunk of standard data        |
+| Write color (first) | `0x06, 0x00`             | First chunk of color data           |
+| Write color (next)  | `0x07, 0x00`             | Subsequent color data chunks        |
+| Read                | `0x08, 0x01`             | Read endpoint data                  |
 
 ### 6.4 Endpoint Addresses
 
-| Endpoint | Address | Data Type | Purpose |
-|----------|---------|-----------|---------|
-| Get devices | `0x36` | `0x21, 0x00` | Enumerate downstream devices |
-| Get temperatures | `0x21` | `0x10, 0x00` | Read temperature sensors |
-| Get fan speeds | `0x17` | `0x25, 0x00` | Read fan RPMs |
-| Set fan speed | `0x18` | `0x07, 0x00` | Write fan speed targets |
-| Set color | `0x22` | `0x12, 0x00` | Write LED color data |
+| Endpoint         | Address | Data Type    | Purpose                      |
+| ---------------- | ------- | ------------ | ---------------------------- |
+| Get devices      | `0x36`  | `0x21, 0x00` | Enumerate downstream devices |
+| Get temperatures | `0x21`  | `0x10, 0x00` | Read temperature sensors     |
+| Get fan speeds   | `0x17`  | `0x25, 0x00` | Read fan RPMs                |
+| Set fan speed    | `0x18`  | `0x07, 0x00` | Write fan speed targets      |
+| Set color        | `0x22`  | `0x12, 0x00` | Write LED color data         |
 
 ### 6.5 Protocol Flow — Read Transaction
 
@@ -296,27 +296,27 @@ Per-channel record:
 
 ### 6.8 Known Downstream Device Types
 
-| Type | Model | Name | LEDs |
-|------|-------|------|------|
-| `0x01` | `0x00` | iCUE LINK QX RGB Fan | 34 |
-| `0x02` | `0x00` | iCUE LINK LX RGB Fan | 18 |
-| `0x03` | `0x00` | iCUE LINK RX RGB MAX Fan | 8 |
-| `0x04` | `0x00` | iCUE LINK RX MAX Fan | 0 |
-| `0x05` | `0x00` | iCUE LINK ADAPTER | 0 |
-| `0x05` | `0x01` | 9000D RGB AIRFLOW | 22 |
-| `0x05` | `0x02` | 5000T RGB Case | 160 |
-| `0x06` | `0x00` | Cooler Pump LCD | 24 |
-| `0x07` | `0x00` | H100i RGB | 20 |
-| `0x07` | `0x01` | H115i RGB | 20 |
-| `0x07` | `0x02` | H150i RGB | 20 |
-| `0x07` | `0x03` | H170i RGB | 20 |
-| `0x09` | `0x00` | XC7 ELITE CPU Block | 24 |
-| `0x0A` | `0x00` | XG3 HYBRID GPU Block | 0 |
-| `0x0C` | `0x00` | XD5 ELITE Pump/Res | 22 |
-| `0x0D` | `0x00` | XG7 RGB GPU Backplate | 16 |
-| `0x0F` | `0x00` | iCUE LINK RX RGB Fan | 8 |
-| `0x11` | `0x00` | TITAN 240 AIO | 20 |
-| `0x11` | `0x02` | TITAN 360 AIO | 20 |
+| Type   | Model  | Name                     | LEDs |
+| ------ | ------ | ------------------------ | ---- |
+| `0x01` | `0x00` | iCUE LINK QX RGB Fan     | 34   |
+| `0x02` | `0x00` | iCUE LINK LX RGB Fan     | 18   |
+| `0x03` | `0x00` | iCUE LINK RX RGB MAX Fan | 8    |
+| `0x04` | `0x00` | iCUE LINK RX MAX Fan     | 0    |
+| `0x05` | `0x00` | iCUE LINK ADAPTER        | 0    |
+| `0x05` | `0x01` | 9000D RGB AIRFLOW        | 22   |
+| `0x05` | `0x02` | 5000T RGB Case           | 160  |
+| `0x06` | `0x00` | Cooler Pump LCD          | 24   |
+| `0x07` | `0x00` | H100i RGB                | 20   |
+| `0x07` | `0x01` | H115i RGB                | 20   |
+| `0x07` | `0x02` | H150i RGB                | 20   |
+| `0x07` | `0x03` | H170i RGB                | 20   |
+| `0x09` | `0x00` | XC7 ELITE CPU Block      | 24   |
+| `0x0A` | `0x00` | XG3 HYBRID GPU Block     | 0    |
+| `0x0C` | `0x00` | XD5 ELITE Pump/Res       | 22   |
+| `0x0D` | `0x00` | XG7 RGB GPU Backplate    | 16   |
+| `0x0F` | `0x00` | iCUE LINK RX RGB Fan     | 8    |
+| `0x11` | `0x00` | TITAN 240 AIO            | 20   |
+| `0x11` | `0x02` | TITAN 360 AIO            | 20   |
 
 ### 6.9 Keepalive Requirement
 
@@ -325,6 +325,7 @@ The hub reverts to its default rainbow effect if no color packet is received wit
 ### 6.10 Complexity Assessment
 
 Native iCUE LINK is a **high-complexity** driver:
+
 - Hub enumeration with variable-length device records
 - Multi-chunk color writes with endpoint lifecycle management
 - Keepalive thread to prevent hardware timeout
@@ -421,6 +422,7 @@ pub struct MockOpenLinkHub {
 ```
 
 **Test scenarios:**
+
 - Discovery: `GET /api/devices/` → verify device mapping to `DeviceInfo`
 - Color: `POST /api/color` → verify request body format
 - Brightness: `POST /api/brightness/gradual` → verify 0-100% scaling
@@ -428,23 +430,27 @@ pub struct MockOpenLinkHub {
 - Device disconnect → stale handle detection
 
 **API response fixtures:**
+
 - Captured from a real OpenLinkHub instance with iCUE LINK System Hub
 - Covers: QX fans, LCD AIO, temperature probes, fan RPM data
 
 ### 8.2 Phase 2 — Native Protocol Tests (Future)
 
 **Packet encoding:**
+
 - Verify 513-byte write buffer layout
 - Command byte sequences match reference implementation
 - Multi-chunk color data splitting at 508-byte boundaries
 - Flat RGB buffer offset calculation across multiple downstream devices
 
 **Device enumeration:**
+
 - Parse variable-length device records
 - Handle empty slots (`device_id_length = 0`)
 - Device type/model → LED count mapping
 
 **Integration test:**
+
 - Full round-trip: discover → software mode → set color → verify → hardware mode
 
 ---

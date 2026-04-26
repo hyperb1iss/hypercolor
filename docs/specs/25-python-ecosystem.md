@@ -28,15 +28,16 @@
 
 ### The Stack
 
-| Project | Repo | Purpose |
-|---------|------|---------|
-| **hypercolor-python** | `~/dev/hypercolor-python` | Async Python API client + CLI (`hyper` command) |
-| **hypercolor-homeassistant** | `~/dev/hypercolor-homeassistant` | HA custom integration (HACS-compatible) |
-| **hypercolor-card** | `~/dev/hypercolor-card` | Custom Lovelace card with effect visualization |
+| Project                      | Repo                             | Purpose                                         |
+| ---------------------------- | -------------------------------- | ----------------------------------------------- |
+| **hypercolor-python**        | `~/dev/hypercolor-python`        | Async Python API client + CLI (`hyper` command) |
+| **hypercolor-homeassistant** | `~/dev/hypercolor-homeassistant` | HA custom integration (HACS-compatible)         |
+| **hypercolor-card**          | `~/dev/hypercolor-card`          | Custom Lovelace card with effect visualization  |
 
 ### What We're Wrapping
 
 Hypercolor daemon API on `:9420` — REST + WebSocket with:
+
 - ~60 REST endpoints across 8 domains (devices, effects, layouts, scenes, profiles, library, attachments, system)
 - WebSocket with 5 channels (events, frames, spectrum, canvas, metrics)
 - Binary frame protocol for LED data + audio FFT
@@ -45,17 +46,17 @@ Hypercolor daemon API on `:9420` — REST + WebSocket with:
 
 ### What's Different From the Prior Stack
 
-| Aspect | Prior Stack | Hypercolor |
-|--------|-----------|------------|
-| API surface | ~15 endpoints | ~60 endpoints |
-| WebSocket | None | 5 channels, binary frames |
-| Auth | None | Bearer tokens (optional) |
-| Response format | Custom `{ status, api_version }` | Standard envelope `{ data, meta }` |
-| Device model | Single canvas | Multi-device, zones, layouts |
-| Effects | Simple list + apply | Controls schema, presets, playlists |
-| Scenes | None | Scene engine with triggers |
-| Profiles | None | Full system snapshots |
-| Audio | None | FFT spectrum, beat detection |
+| Aspect          | Prior Stack                      | Hypercolor                          |
+| --------------- | -------------------------------- | ----------------------------------- |
+| API surface     | ~15 endpoints                    | ~60 endpoints                       |
+| WebSocket       | None                             | 5 channels, binary frames           |
+| Auth            | None                             | Bearer tokens (optional)            |
+| Response format | Custom `{ status, api_version }` | Standard envelope `{ data, meta }`  |
+| Device model    | Single canvas                    | Multi-device, zones, layouts        |
+| Effects         | Simple list + apply              | Controls schema, presets, playlists |
+| Scenes          | None                             | Scene engine with triggers          |
+| Profiles        | None                             | Full system snapshots               |
+| Audio           | None                             | FFT spectrum, beat detection        |
 
 ---
 
@@ -131,17 +132,18 @@ hypercolor-python/
 
 ### 3.2 Tooling
 
-| Tool | Version | Purpose |
-|------|---------|---------|
-| **uv** | latest | Project management, venv, lockfile |
-| **ruff** | latest | Lint + format (replaces black, isort, flake8, pylint) |
-| **ty** | latest | Type checking (replaces mypy — faster, Astral-native) |
-| **pytest** | 8.x | Testing |
-| **pytest-asyncio** | latest | Async test support |
+| Tool               | Version | Purpose                                               |
+| ------------------ | ------- | ----------------------------------------------------- |
+| **uv**             | latest  | Project management, venv, lockfile                    |
+| **ruff**           | latest  | Lint + format (replaces black, isort, flake8, pylint) |
+| **ty**             | latest  | Type checking (replaces mypy — faster, Astral-native) |
+| **pytest**         | 8.x     | Testing                                               |
+| **pytest-asyncio** | latest  | Async test support                                    |
 
 **Build system:** `hatchling` (simple, well-supported)
 
 **Runtime deps:**
+
 - `httpx>=0.28` — async HTTP client
 - `websockets>=14` — async WebSocket client (for WS channels)
 - `msgspec>=0.19` — zero-copy JSON/binary (de)serialization
@@ -149,6 +151,7 @@ hypercolor-python/
 - `rich>=14` — terminal formatting
 
 **Dev deps:**
+
 - `pytest`, `pytest-asyncio`, `pytest-cov`
 - `respx` — httpx mocking (better than unittest.mock for httpx)
 
@@ -180,6 +183,7 @@ class ErrorEnvelope(msgspec.Struct):
 ```
 
 **Device models:**
+
 ```python
 class DeviceInfo(msgspec.Struct, rename="camel"):
     id: str
@@ -206,6 +210,7 @@ class DeviceState(msgspec.Struct, rename="camel"):
 ```
 
 **Effect models:**
+
 ```python
 class Effect(msgspec.Struct, rename="camel"):
     id: str
@@ -233,7 +238,7 @@ class ActiveEffect(msgspec.Struct, rename="camel"):
     layout_id: str | None = None
 ```
 
-*Full models for Layout, Scene, Profile, Library, Attachment, Audio follow same pattern.*
+_Full models for Layout, Scene, Profile, Library, Attachment, Audio follow same pattern._
 
 ### 3.4 Exception Hierarchy
 
@@ -474,6 +479,7 @@ class HypercolorEventStream:
 ```
 
 **Usage:**
+
 ```python
 async with HypercolorClient("hyperia.home") as client:
     async with client.events() as stream:
@@ -552,6 +558,7 @@ hyper spectrum                       # Live audio spectrum visualizer (sparkline
 ```
 
 **SilkCircuit formatting example:**
+
 ```python
 PALETTE = {
     "electric_purple": "#e135ff",
@@ -617,14 +624,14 @@ hypercolor-homeassistant/
 
 ### 4.2 Key Differences From Prior Integration
 
-| Aspect | Prior HA | Hypercolor HA |
-|--------|-------------|---------------|
-| Coordinator | Multiple ad-hoc coordinators | Single `HypercolorCoordinator` subclass + WS event push |
-| Platforms | Light, Select, Button | Light, Select, Button, Sensor, Switch, Number |
-| Devices | One device per entry | Multi-device — each physical device gets its own HA device |
-| Update strategy | Polling (5 min) | WebSocket events + fallback polling |
-| Auth | None | Optional API key in config flow |
-| Controls | Static | Dynamic `number` entities from effect control schema |
+| Aspect          | Prior HA                     | Hypercolor HA                                              |
+| --------------- | ---------------------------- | ---------------------------------------------------------- |
+| Coordinator     | Multiple ad-hoc coordinators | Single `HypercolorCoordinator` subclass + WS event push    |
+| Platforms       | Light, Select, Button        | Light, Select, Button, Sensor, Switch, Number              |
+| Devices         | One device per entry         | Multi-device — each physical device gets its own HA device |
+| Update strategy | Polling (5 min)              | WebSocket events + fallback polling                        |
+| Auth            | None                         | Optional API key in config flow                            |
+| Controls        | Static                       | Dynamic `number` entities from effect control schema       |
 
 ### 4.3 Coordinator
 
@@ -696,6 +703,7 @@ class HypercolorCoordinator(DataUpdateCoordinator[HypercolorState]):
 #### Engine-Level Entities (one per Hypercolor instance)
 
 **Light: `light.hypercolor_{host}`** — master engine control:
+
 - On/off (enable/disable render engine)
 - Brightness (0-255 HA → 0-100% daemon, controls global brightness)
 - Effect selection (dropdown of all registered effects)
@@ -703,21 +711,25 @@ class HypercolorCoordinator(DataUpdateCoordinator[HypercolorState]):
 - Extra state attributes: active effect name, FPS, device count, audio active
 
 **Select entities:**
+
 - **Layout selector** `select.hypercolor_{host}_layout` — choose active spatial layout
 - **Profile selector** `select.hypercolor_{host}_profile` — apply saved profile
 - **Playlist selector** `select.hypercolor_{host}_playlist` — choose/stop playlist
 
 **Button entities:**
+
 - **Discover devices** `button.hypercolor_{host}_discover` — trigger device scan
 - **Scene triggers** `button.hypercolor_{host}_scene_{name}` (per scene) — activate scene
 
 **Sensor entities:**
+
 - **FPS** `sensor.hypercolor_{host}_fps` — actual render framerate
 - **Connected devices** `sensor.hypercolor_{host}_device_count` — count
 - **Total LEDs** `sensor.hypercolor_{host}_led_count` — aggregate
 - **Audio level** `sensor.hypercolor_{host}_audio_level` — if spectrum subscribed
 
 **Number entities** (dynamic, per active effect control):
+
 - Spawned from `ControlDefinition` schema when effect changes
 - Range controls → `NumberEntity` with min/max/step
 - `number.hypercolor_{host}_control_{control_id}`
@@ -730,6 +742,7 @@ individual device control for static colors, adaptive lighting sync, and per-dev
 The previous API couldn't support this. Hypercolor's daemon exposes full per-device state.
 
 **Light: `light.hypercolor_{device_name}`** — individual device control:
+
 - On/off (enable/disable device output via `PUT /devices/{id}`)
 - Brightness (per-device brightness, independent of global)
 - Color modes: `RGB`, `COLOR_TEMP`, `BRIGHTNESS`
@@ -744,10 +757,12 @@ The previous API couldn't support this. Hypercolor's daemon exposes full per-dev
   - `zones` (list of zone names)
 
 **Switch: `switch.hypercolor_{device_name}_enabled`** — enable/disable device output:
+
 - Simpler alternative to light on/off for automation use cases
 - Toggling off removes device from the render loop without affecting other devices
 
 **Button: `button.hypercolor_{device_name}_identify`** — flash device LEDs:
+
 - Calls `POST /devices/{id}/identify`
 - Useful for figuring out which physical device is which
 
@@ -765,6 +780,7 @@ name but color controls are read-only (reflecting what the engine is pushing).
 **2. Static color override:**
 User sets an RGB color or color temp via the HA light entity. This sends a per-device
 color override to the daemon, pulling the device out of the global effect loop.
+
 ```python
 # User sets light.hypercolor_keyboard to blue via HA
 # → PATCH /devices/{id}/override { "color": [0, 100, 255] }
@@ -821,12 +837,14 @@ DeviceInfo(
 ```
 
 **Device discovery flow:**
+
 1. Coordinator fetches `GET /devices` on startup and on `device_connected`/`device_disconnected` WS events
 2. New devices → HA's `async_forward_entry_setups` creates entities for each platform
 3. Removed devices → entities marked unavailable (not deleted, in case device reconnects)
 4. Each platform's `async_setup_entry` iterates `coordinator.data.devices` and creates per-device entities
 
 **Example HA device page for a Hypercolor instance:**
+
 ```
 Hypercolor (hyperia.home)          ← hub device
 ├── Razer BlackWidow V4 Pro        ← child device
@@ -899,6 +917,7 @@ class HypercolorConfigFlow(ConfigFlow, domain=DOMAIN):
 ```
 
 **Options flow** — for post-setup tuning:
+
 - Poll interval
 - WebSocket enable/disable
 - Audio spectrum subscription toggle
@@ -931,22 +950,23 @@ hypercolor-card/
 ```
 
 **Build:** Pure Bun — no Vite, no Rollup, no Webpack. Single entry, single output:
+
 ```bash
 bun build src/hypercolor-card.ts --outdir dist --minify --target browser
 ```
 
 ### 5.2 Upgrades Over hyper-light-card
 
-| Aspect | hyper-light-card (previous) | hypercolor-card |
-|--------|----------------------------|-----------------|
-| Theme | Generic | SilkCircuit neon palette |
-| Devices | Single entity | Multi-device tree view |
-| Controls | None | Dynamic controls from effect schema |
-| Audio | None | Spectrum visualizer (bass/mid/treble bars) |
-| Scenes | None | Scene trigger buttons |
-| Profiles | None | Profile quick-switch |
-| Playlists | None | Playlist control (play/stop/skip) |
-| Layouts | Dropdown | Visual layout preview |
+| Aspect    | hyper-light-card (previous) | hypercolor-card                            |
+| --------- | --------------------------- | ------------------------------------------ |
+| Theme     | Generic                     | SilkCircuit neon palette                   |
+| Devices   | Single entity               | Multi-device tree view                     |
+| Controls  | None                        | Dynamic controls from effect schema        |
+| Audio     | None                        | Spectrum visualizer (bass/mid/treble bars) |
+| Scenes    | None                        | Scene trigger buttons                      |
+| Profiles  | None                        | Profile quick-switch                       |
+| Playlists | None                        | Playlist control (play/stop/skip)          |
+| Layouts   | Dropdown                    | Visual layout preview                      |
 
 ### 5.3 Card Sections
 
@@ -994,22 +1014,22 @@ CSS custom properties wired to SilkCircuit palette, with dynamic ColorThief extr
 
 ### Python Projects (hypercolor-python + hypercolor-homeassistant)
 
-| Gate | Tool | Config |
-|------|------|--------|
-| Format | `ruff format` | line-length=99 |
-| Lint | `ruff check` | E, W, F, I, C, B, N, UP, RUF, ASYNC, S, TRY, PL |
-| Types | `ty check` | strict mode |
-| Test | `pytest` | asyncio_mode="auto", cov target 90%+ |
-| Build | `hatchling` | src layout, PEP 660 |
-| Env | `uv` | lockfile, Python 3.13 |
+| Gate   | Tool          | Config                                          |
+| ------ | ------------- | ----------------------------------------------- |
+| Format | `ruff format` | line-length=99                                  |
+| Lint   | `ruff check`  | E, W, F, I, C, B, N, UP, RUF, ASYNC, S, TRY, PL |
+| Types  | `ty check`    | strict mode                                     |
+| Test   | `pytest`      | asyncio_mode="auto", cov target 90%+            |
+| Build  | `hatchling`   | src layout, PEP 660                             |
+| Env    | `uv`          | lockfile, Python 3.13                           |
 
 ### TypeScript Project (hypercolor-card)
 
-| Gate | Tool |
-|------|------|
-| Runtime / Build / Test | Bun (bundler + test runner) |
-| Lint | Biome (replaces ESLint + Prettier — single fast tool) |
-| Types | TypeScript strict |
+| Gate                   | Tool                                                  |
+| ---------------------- | ----------------------------------------------------- |
+| Runtime / Build / Test | Bun (bundler + test runner)                           |
+| Lint                   | Biome (replaces ESLint + Prettier — single fast tool) |
+| Types                  | TypeScript strict                                     |
 
 ---
 
@@ -1057,7 +1077,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [quality, validate]
     steps:
-      - # Create GitHub release with zip of custom_components/hypercolor/
+      -  # Create GitHub release with zip of custom_components/hypercolor/
 ```
 
 ### hypercolor-card
@@ -1068,14 +1088,14 @@ jobs:
     steps:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - run: bun run check          # biome lint + format check
+      - run: bun run check # biome lint + format check
       - run: bun test
-      - run: bun run build           # bun build (bundler)
+      - run: bun run build # bun build (bundler)
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     steps:
-      - # Create GitHub release with hypercolor-card.js
+      -  # Create GitHub release with hypercolor-card.js
 ```
 
 ---
@@ -1086,47 +1106,47 @@ jobs:
 
 Build order matters — the HA integration depends on the client.
 
-| Step | Task | Est. |
-|------|------|------|
-| 1.1 | Scaffold project (`uv init`, pyproject.toml, ruff/ty config) | small |
-| 1.2 | Models — all msgspec structs matching daemon API types | medium |
-| 1.3 | Exceptions — full hierarchy | small |
-| 1.4 | Async client — all REST endpoints | large |
-| 1.5 | WebSocket client — event stream + binary frame parsing | large |
-| 1.6 | Sync client wrapper | small |
-| 1.7 | Tests — models, client (respx mocking), WebSocket | large |
-| 1.8 | CLI — Typer commands with SilkCircuit formatting | medium |
-| 1.9 | CI/CD pipeline | small |
-| 1.10 | Docs (MkDocs Material) | medium |
+| Step | Task                                                         | Est.   |
+| ---- | ------------------------------------------------------------ | ------ |
+| 1.1  | Scaffold project (`uv init`, pyproject.toml, ruff/ty config) | small  |
+| 1.2  | Models — all msgspec structs matching daemon API types       | medium |
+| 1.3  | Exceptions — full hierarchy                                  | small  |
+| 1.4  | Async client — all REST endpoints                            | large  |
+| 1.5  | WebSocket client — event stream + binary frame parsing       | large  |
+| 1.6  | Sync client wrapper                                          | small  |
+| 1.7  | Tests — models, client (respx mocking), WebSocket            | large  |
+| 1.8  | CLI — Typer commands with SilkCircuit formatting             | medium |
+| 1.9  | CI/CD pipeline                                               | small  |
+| 1.10 | Docs (MkDocs Material)                                       | medium |
 
 ### Phase 2: hypercolor-homeassistant
 
-| Step | Task | Est. |
-|------|------|------|
-| 2.1 | Scaffold integration (manifest, const, strings) | small |
-| 2.2 | Config flow (host/port/api_key) + options flow | medium |
-| 2.3 | Coordinator — WS-backed with polling fallback | medium |
-| 2.4 | Light platform | medium |
-| 2.5 | Select platform (layout, profile, playlist) | medium |
-| 2.6 | Button platform (discover, identify, scenes) | small |
-| 2.7 | Sensor platform (FPS, devices, LEDs) | small |
-| 2.8 | Switch platform (per-device enable) | small |
-| 2.9 | Number platform (dynamic effect controls) | large |
-| 2.10 | Tests — all platforms + coordinator | large |
-| 2.11 | HACS validation + CI | small |
+| Step | Task                                            | Est.   |
+| ---- | ----------------------------------------------- | ------ |
+| 2.1  | Scaffold integration (manifest, const, strings) | small  |
+| 2.2  | Config flow (host/port/api_key) + options flow  | medium |
+| 2.3  | Coordinator — WS-backed with polling fallback   | medium |
+| 2.4  | Light platform                                  | medium |
+| 2.5  | Select platform (layout, profile, playlist)     | medium |
+| 2.6  | Button platform (discover, identify, scenes)    | small  |
+| 2.7  | Sensor platform (FPS, devices, LEDs)            | small  |
+| 2.8  | Switch platform (per-device enable)             | small  |
+| 2.9  | Number platform (dynamic effect controls)       | large  |
+| 2.10 | Tests — all platforms + coordinator             | large  |
+| 2.11 | HACS validation + CI                            | small  |
 
 ### Phase 3: hypercolor-card
 
-| Step | Task | Est. |
-|------|------|------|
-| 3.1 | Scaffold (Vite + Lit + TypeScript) | small |
-| 3.2 | State management + HA entity binding | medium |
-| 3.3 | Card layout + SilkCircuit styling | medium |
-| 3.4 | Effect selector + controls rendering | medium |
-| 3.5 | Audio spectrum visualizer | medium |
-| 3.6 | Device tree + layout preview | medium |
-| 3.7 | Card editor (config UI) | medium |
-| 3.8 | HACS setup + CI | small |
+| Step | Task                                 | Est.   |
+| ---- | ------------------------------------ | ------ |
+| 3.1  | Scaffold (Vite + Lit + TypeScript)   | small  |
+| 3.2  | State management + HA entity binding | medium |
+| 3.3  | Card layout + SilkCircuit styling    | medium |
+| 3.4  | Effect selector + controls rendering | medium |
+| 3.5  | Audio spectrum visualizer            | medium |
+| 3.6  | Device tree + layout preview         | medium |
+| 3.7  | Card editor (config UI)              | medium |
+| 3.8  | HACS setup + CI                      | small  |
 
 ---
 
@@ -1153,6 +1173,7 @@ Build order matters — the HA integration depends on the client.
 **Go polyrepo, build in order, ship incrementally.**
 
 Three separate repos under `~/dev/`:
+
 - `hypercolor-python` — publish to PyPI as `hypercolor`
 - `hypercolor-homeassistant` — HACS default repository
 - `hypercolor-card` — HACS Lovelace plugin

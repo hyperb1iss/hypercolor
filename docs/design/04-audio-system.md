@@ -12,14 +12,14 @@ This document covers the complete audio pipeline: capturing system audio on Linu
 
 ### Design Goals
 
-| Goal | Target |
-|---|---|
-| Audio-to-photon latency | < 30ms total (capture + DSP + render + device output) |
-| DSP frame rate | 60 Hz (one analysis per render frame) |
-| CPU budget (audio thread) | < 5% single core on i7-14700K |
-| Capture source | System audio loopback (PipeWire/PulseAudio monitor) |
-| API compatibility | Full Lightscript `window.engine.audio` contract |
-| Zero-config | Auto-detect default audio output monitor source |
+| Goal                      | Target                                                |
+| ------------------------- | ----------------------------------------------------- |
+| Audio-to-photon latency   | < 30ms total (capture + DSP + render + device output) |
+| DSP frame rate            | 60 Hz (one analysis per render frame)                 |
+| CPU budget (audio thread) | < 5% single core on i7-14700K                         |
+| Capture source            | System audio loopback (PipeWire/PulseAudio monitor)   |
+| API compatibility         | Full Lightscript `window.engine.audio` contract       |
+| Zero-config               | Auto-detect default audio output monitor source       |
 
 ---
 
@@ -98,6 +98,7 @@ graph LR
 Identical monitor source mechanism. PulseAudio invented the concept. The same `libpulse` API works here natively. Systems still running bare PulseAudio (older Ubuntu, some enterprise distros) get first-class support through the same code path.
 
 **Key command for users:**
+
 ```bash
 # List available monitor sources
 pactl list sources short | grep monitor
@@ -126,13 +127,13 @@ For legacy JACK-only setups (rare in 2026): cpal supports JACK as a host backend
 
 ### Capture Parameters
 
-| Parameter | Default | Range | Notes |
-|---|---|---|---|
-| Sample rate | 48000 Hz | 44100-96000 | Match system default. 48kHz is PipeWire default |
-| Buffer size | 1024 samples | 256-4096 | ~21ms at 48kHz. Good latency/stability balance |
-| Channels | 2 (stereo) | 1-2 | Downmix to mono for FFT. Stereo for width analysis |
-| Bit depth | f32 | -- | cpal delivers f32 normalized [-1.0, 1.0] |
-| Ring buffer | 4096 samples | -- | ~85ms history. Enough for 4096-point FFT |
+| Parameter   | Default      | Range       | Notes                                              |
+| ----------- | ------------ | ----------- | -------------------------------------------------- |
+| Sample rate | 48000 Hz     | 44100-96000 | Match system default. 48kHz is PipeWire default    |
+| Buffer size | 1024 samples | 256-4096    | ~21ms at 48kHz. Good latency/stability balance     |
+| Channels    | 2 (stereo)   | 1-2         | Downmix to mono for FFT. Stereo for width analysis |
+| Bit depth   | f32          | --          | cpal delivers f32 normalized [-1.0, 1.0]           |
+| Ring buffer | 4096 samples | --          | ~85ms history. Enough for 4096-point FFT           |
 
 ### Audio Source Configuration
 
@@ -188,7 +189,8 @@ graph LR
     Bin --> Smooth["Smooth (EMA decay)"]
     Smooth --> Out["Output [200]"]
 ```
-```
+
+````
 
 ### Window Function Selection
 
@@ -207,18 +209,18 @@ The window function shapes the frequency resolution vs. spectral leakage tradeof
 fn hann_window(n: usize, total: usize) -> f32 {
     0.5 * (1.0 - (2.0 * std::f32::consts::PI * n as f32 / total as f32).cos())
 }
-```
+````
 
 ### FFT Size Tradeoffs
 
 The FFT size determines frequency resolution and latency. At 48 kHz sample rate:
 
-| FFT Size | Frequency Resolution | Time Window | Latency | Best For |
-|---|---|---|---|---|
-| 512 | 93.75 Hz | 10.7 ms | Lowest | Beat detection, transient response |
-| 1024 | 46.88 Hz | 21.3 ms | Low | Balanced (our primary) |
-| 2048 | 23.44 Hz | 42.7 ms | Medium | Better bass resolution |
-| 4096 | 11.72 Hz | 85.3 ms | High | Precise pitch detection |
+| FFT Size | Frequency Resolution | Time Window | Latency | Best For                           |
+| -------- | -------------------- | ----------- | ------- | ---------------------------------- |
+| 512      | 93.75 Hz             | 10.7 ms     | Lowest  | Beat detection, transient response |
+| 1024     | 46.88 Hz             | 21.3 ms     | Low     | Balanced (our primary)             |
+| 2048     | 23.44 Hz             | 42.7 ms     | Medium  | Better bass resolution             |
+| 4096     | 11.72 Hz             | 85.3 ms     | High    | Precise pitch detection            |
 
 **Primary FFT: 1024 samples at 48 kHz.**
 
@@ -306,14 +308,14 @@ fn map_to_200_bins(fft_magnitudes: &[f32; 512], sample_rate: u32) -> [f32; 200] 
 
 **Bin distribution across the spectrum:**
 
-| Output Bins | Frequency Range | Musical Range | Notes |
-|---|---|---|---|
-| 0-19 | 20-80 Hz | Sub-bass | Kick drums, 808 bass |
-| 20-49 | 80-300 Hz | Bass | Bass guitar, low synths |
-| 50-89 | 300-1200 Hz | Low-mid | Vocals, guitar body |
-| 90-129 | 1.2-4 kHz | Mid | Vocal presence, snare attack |
-| 130-169 | 4-12 kHz | High-mid | Cymbal body, synth brightness |
-| 170-199 | 12-20 kHz | Treble | Air, sibilance, hi-hat shimmer |
+| Output Bins | Frequency Range | Musical Range | Notes                          |
+| ----------- | --------------- | ------------- | ------------------------------ |
+| 0-19        | 20-80 Hz        | Sub-bass      | Kick drums, 808 bass           |
+| 20-49       | 80-300 Hz       | Bass          | Bass guitar, low synths        |
+| 50-89       | 300-1200 Hz     | Low-mid       | Vocals, guitar body            |
+| 90-129      | 1.2-4 kHz       | Mid           | Vocal presence, snare attack   |
+| 130-169     | 4-12 kHz        | High-mid      | Cymbal body, synth brightness  |
+| 170-199     | 12-20 kHz       | Treble        | Air, sibilance, hi-hat shimmer |
 
 ### Smoothing and Decay
 
@@ -369,11 +371,11 @@ impl PeakHold {
 
 Three summary bands matching Lightscript's `bass`, `mid`, `treble`:
 
-| Band | Frequency Range | Output Bins | Use |
-|---|---|---|---|
-| **Bass** | 20-250 Hz | 0-39 | Kick detection, room pulse |
-| **Mid** | 250-4000 Hz | 40-129 | Vocal/melody tracking |
-| **Treble** | 4000-20000 Hz | 130-199 | Sparkle, shimmer, hi-hat |
+| Band       | Frequency Range | Output Bins | Use                        |
+| ---------- | --------------- | ----------- | -------------------------- |
+| **Bass**   | 20-250 Hz       | 0-39        | Kick detection, room pulse |
+| **Mid**    | 250-4000 Hz     | 40-129      | Vocal/melody tracking      |
+| **Treble** | 4000-20000 Hz   | 130-199     | Sparkle, shimmer, hi-hat   |
 
 ```rust
 fn band_energy(bins: &[f32; 200], lo: usize, hi: usize) -> f32 {
@@ -392,7 +394,7 @@ fn band_energy(bins: &[f32; 200], lo: usize, hi: usize) -> f32 {
 
 ## 3. Beat Detection
 
-Beat detection is the most perceptually critical feature. When the beat drops and the lights are 50ms late, it feels wrong. When they're 20ms *early*, it feels magical -- the room *anticipates* the music.
+Beat detection is the most perceptually critical feature. When the beat drops and the lights are 50ms late, it feels wrong. When they're 20ms _early_, it feels magical -- the room _anticipates_ the music.
 
 ### Multi-Algorithm Approach
 
@@ -459,15 +461,15 @@ impl EnergyOnsetDetector {
 
 Run separate onset detectors for bass (20-250 Hz), mid (250-4 kHz), and treble (4-20 kHz). This distinguishes kick drums from snare hits from hi-hats -- different physical impacts deserve different lighting responses.
 
-| Band | Onset Character | Typical Lighting Response |
-|---|---|---|
-| **Bass onset** | Kick drum, bass drop | Full-room pulse, brightness spike |
-| **Mid onset** | Snare, vocal attack | Flash, pattern shift |
-| **Treble onset** | Hi-hat, cymbal | Sparkle, particle burst |
+| Band             | Onset Character      | Typical Lighting Response         |
+| ---------------- | -------------------- | --------------------------------- |
+| **Bass onset**   | Kick drum, bass drop | Full-room pulse, brightness spike |
+| **Mid onset**    | Snare, vocal attack  | Flash, pattern shift              |
+| **Treble onset** | Hi-hat, cymbal       | Sparkle, particle burst           |
 
 ### Method 2: Spectral Flux
 
-Spectral flux measures how much the frequency spectrum *changed* between frames. It catches onsets that energy detection misses (e.g., a snare hit during a sustained bass note, where total energy barely changes but the spectrum shifts dramatically).
+Spectral flux measures how much the frequency spectrum _changed_ between frames. It catches onsets that energy detection misses (e.g., a snare hit during a sustained bass note, where total energy barely changes but the spectrum shifts dramatically).
 
 ```rust
 pub struct SpectralFluxDetector {
@@ -519,7 +521,7 @@ Compute spectral flux separately for bass/mid/treble ranges. This feeds the mult
 
 ### Method 3: BPM Estimation & Phase Tracking
 
-Tempo tracking enables *predictive* beat timing -- the "beatAnticipation" and "beatPhase" fields that make lighting feel like it *knows* the music.
+Tempo tracking enables _predictive_ beat timing -- the "beatAnticipation" and "beatPhase" fields that make lighting feel like it _knows_ the music.
 
 **Auto-correlation BPM estimation:**
 
@@ -615,11 +617,11 @@ fn normalize_bpm(raw_bpm: f32) -> f32 {
 
 ### Beat Anticipation
 
-The `beatAnticipation` field from Lightscript is what separates good audio-reactive lighting from great. It fires *before* the beat arrives, so the light reaches peak intensity at the exact moment the transient hits the ear.
+The `beatAnticipation` field from Lightscript is what separates good audio-reactive lighting from great. It fires _before_ the beat arrives, so the light reaches peak intensity at the exact moment the transient hits the ear.
 
 **How it works:**
 
-Once we have a stable BPM estimate, we know when the next beat *should* arrive. Fire the anticipation signal 15-25ms before that predicted moment. This compensates for:
+Once we have a stable BPM estimate, we know when the next beat _should_ arrive. Fire the anticipation signal 15-25ms before that predicted moment. This compensates for:
 
 1. Effect rendering latency (~2-5ms)
 2. Device output latency (USB HID: ~5-10ms, network: ~3-8ms)
@@ -680,13 +682,13 @@ impl BeatPulse {
 
 Music isn't a metronome. The system must handle:
 
-| Scenario | Strategy |
-|---|---|
-| **Tempo change** | BPM estimator adapts over 2-4 seconds as new intervals accumulate |
-| **Breakdown (quiet section)** | Onset energy drops below threshold. Phase tracking continues based on last known BPM. Confidence decays. |
-| **Drop (breakdown → full energy)** | First strong onset after breakdown resets phase. Immediate lock. |
-| **Stop-start** | After 3 seconds of no onsets, reset BPM tracking. Fresh start. |
-| **Rubato / live music** | Lower confidence, reduce anticipation. Fall back to pure onset detection. |
+| Scenario                           | Strategy                                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **Tempo change**                   | BPM estimator adapts over 2-4 seconds as new intervals accumulate                                        |
+| **Breakdown (quiet section)**      | Onset energy drops below threshold. Phase tracking continues based on last known BPM. Confidence decays. |
+| **Drop (breakdown → full energy)** | First strong onset after breakdown resets phase. Immediate lock.                                         |
+| **Stop-start**                     | After 3 seconds of no onsets, reset BPM tracking. Fresh start.                                           |
+| **Rubato / live music**            | Lower confidence, reduce anticipation. Fall back to pure onset detection.                                |
 
 ---
 
@@ -705,32 +707,32 @@ f(mel) = 700 * (10^(mel/2595) - 1)
 
 **24-band mel filterbank:**
 
-| Band | Center Freq | Bandwidth | Musical Region |
-|---|---|---|---|
-| 0 | 47 Hz | 30 Hz | Sub-bass fundamental |
-| 1 | 73 Hz | 35 Hz | Bass drum fundamental |
-| 2 | 104 Hz | 42 Hz | Bass guitar low range |
-| 3 | 141 Hz | 50 Hz | Bass guitar high range |
-| 4 | 187 Hz | 60 Hz | Low vocals |
-| 5 | 243 Hz | 72 Hz | Vocal fundamental |
-| 6 | 313 Hz | 86 Hz | Guitar body |
-| 7 | 399 Hz | 103 Hz | Snare body |
-| 8 | 507 Hz | 123 Hz | Low-mid |
-| 9 | 641 Hz | 148 Hz | Mid |
-| 10 | 808 Hz | 177 Hz | Vocal presence |
-| 11 | 1.02 kHz | 213 Hz | Upper mid |
-| 12 | 1.28 kHz | 256 Hz | Guitar bite |
-| 13 | 1.61 kHz | 307 Hz | Vocal clarity |
-| 14 | 2.03 kHz | 369 Hz | Snare attack |
-| 15 | 2.55 kHz | 443 Hz | Presence |
-| 16 | 3.21 kHz | 532 Hz | High presence |
-| 17 | 4.04 kHz | 639 Hz | Cymbal body |
-| 18 | 5.09 kHz | 767 Hz | Brilliance |
-| 19 | 6.41 kHz | 921 Hz | High brilliance |
-| 20 | 8.08 kHz | 1.11 kHz | Air |
-| 21 | 10.2 kHz | 1.33 kHz | Upper air |
-| 22 | 12.8 kHz | 1.59 kHz | Shimmer |
-| 23 | 16.1 kHz | 1.92 kHz | Ultra-high presence |
+| Band | Center Freq | Bandwidth | Musical Region         |
+| ---- | ----------- | --------- | ---------------------- |
+| 0    | 47 Hz       | 30 Hz     | Sub-bass fundamental   |
+| 1    | 73 Hz       | 35 Hz     | Bass drum fundamental  |
+| 2    | 104 Hz      | 42 Hz     | Bass guitar low range  |
+| 3    | 141 Hz      | 50 Hz     | Bass guitar high range |
+| 4    | 187 Hz      | 60 Hz     | Low vocals             |
+| 5    | 243 Hz      | 72 Hz     | Vocal fundamental      |
+| 6    | 313 Hz      | 86 Hz     | Guitar body            |
+| 7    | 399 Hz      | 103 Hz    | Snare body             |
+| 8    | 507 Hz      | 123 Hz    | Low-mid                |
+| 9    | 641 Hz      | 148 Hz    | Mid                    |
+| 10   | 808 Hz      | 177 Hz    | Vocal presence         |
+| 11   | 1.02 kHz    | 213 Hz    | Upper mid              |
+| 12   | 1.28 kHz    | 256 Hz    | Guitar bite            |
+| 13   | 1.61 kHz    | 307 Hz    | Vocal clarity          |
+| 14   | 2.03 kHz    | 369 Hz    | Snare attack           |
+| 15   | 2.55 kHz    | 443 Hz    | Presence               |
+| 16   | 3.21 kHz    | 532 Hz    | High presence          |
+| 17   | 4.04 kHz    | 639 Hz    | Cymbal body            |
+| 18   | 5.09 kHz    | 767 Hz    | Brilliance             |
+| 19   | 6.41 kHz    | 921 Hz    | High brilliance        |
+| 20   | 8.08 kHz    | 1.11 kHz  | Air                    |
+| 21   | 10.2 kHz    | 1.33 kHz  | Upper air              |
+| 22   | 12.8 kHz    | 1.59 kHz  | Shimmer                |
+| 23   | 16.1 kHz    | 1.92 kHz  | Ultra-high presence    |
 
 ```rust
 pub struct MelFilterbank {
@@ -800,20 +802,20 @@ A chromagram maps all frequencies to their pitch class (C, C#, D, ..., B), colla
 
 **Pitch class frequencies (A4 = 440 Hz reference):**
 
-| Bin | Note | Frequency (Hz) | Octaves Present in 20-20kHz |
-|---|---|---|---|
-| 0 | C | 32.7, 65.4, 130.8, 261.6, 523.3, 1047, 2093, 4186, 8372, 16744 | 10 |
-| 1 | C# | 34.6, 69.3, 138.6, 277.2, 554.4, 1109, 2217, 4435, 8870, 17740 | 10 |
-| 2 | D | 36.7, 73.4, 146.8, 293.7, 587.3, 1175, 2349, 4699, 9397 | 9 |
-| 3 | D# | 38.9, 77.8, 155.6, 311.1, 622.3, 1245, 2489, 4978, 9956 | 9 |
-| 4 | E | 41.2, 82.4, 164.8, 329.6, 659.3, 1319, 2637, 5274, 10548 | 9 |
-| 5 | F | 43.7, 87.3, 174.6, 349.2, 698.5, 1397, 2794, 5588, 11175 | 9 |
-| 6 | F# | 46.2, 92.5, 185.0, 370.0, 740.0, 1480, 2960, 5920, 11840 | 9 |
-| 7 | G | 49.0, 98.0, 196.0, 392.0, 784.0, 1568, 3136, 6272, 12544 | 9 |
-| 8 | G# | 51.9, 103.8, 207.7, 415.3, 830.6, 1661, 3322, 6645, 13290 | 9 |
-| 9 | A | 55.0, 110.0, 220.0, 440.0, 880.0, 1760, 3520, 7040, 14080 | 9 |
-| 10 | A# | 58.3, 116.5, 233.1, 466.2, 932.3, 1865, 3729, 7459, 14917 | 9 |
-| 11 | B | 61.7, 123.5, 246.9, 493.9, 987.8, 1976, 3951, 7902, 15804 | 9 |
+| Bin | Note | Frequency (Hz)                                                 | Octaves Present in 20-20kHz |
+| --- | ---- | -------------------------------------------------------------- | --------------------------- |
+| 0   | C    | 32.7, 65.4, 130.8, 261.6, 523.3, 1047, 2093, 4186, 8372, 16744 | 10                          |
+| 1   | C#   | 34.6, 69.3, 138.6, 277.2, 554.4, 1109, 2217, 4435, 8870, 17740 | 10                          |
+| 2   | D    | 36.7, 73.4, 146.8, 293.7, 587.3, 1175, 2349, 4699, 9397        | 9                           |
+| 3   | D#   | 38.9, 77.8, 155.6, 311.1, 622.3, 1245, 2489, 4978, 9956        | 9                           |
+| 4   | E    | 41.2, 82.4, 164.8, 329.6, 659.3, 1319, 2637, 5274, 10548       | 9                           |
+| 5   | F    | 43.7, 87.3, 174.6, 349.2, 698.5, 1397, 2794, 5588, 11175       | 9                           |
+| 6   | F#   | 46.2, 92.5, 185.0, 370.0, 740.0, 1480, 2960, 5920, 11840       | 9                           |
+| 7   | G    | 49.0, 98.0, 196.0, 392.0, 784.0, 1568, 3136, 6272, 12544       | 9                           |
+| 8   | G#   | 51.9, 103.8, 207.7, 415.3, 830.6, 1661, 3322, 6645, 13290      | 9                           |
+| 9   | A    | 55.0, 110.0, 220.0, 440.0, 880.0, 1760, 3520, 7040, 14080      | 9                           |
+| 10  | A#   | 58.3, 116.5, 233.1, 466.2, 932.3, 1865, 3729, 7459, 14917      | 9                           |
+| 11  | B    | 61.7, 123.5, 246.9, 493.9, 987.8, 1976, 3951, 7902, 15804      | 9                           |
 
 **Computation:** Use the 4096-point FFT for better frequency resolution. For each FFT bin, determine its closest pitch class and accumulate energy:
 
@@ -915,20 +917,20 @@ The `harmonicHue` field maps the dominant pitch to a color hue, creating synesth
 
 **Pitch-to-hue mapping (circle of fifths → color wheel):**
 
-| Pitch | Hue (degrees) | Color | Musical Character |
-|---|---|---|---|
-| C | 0 | Red | Root, grounding |
-| G | 30 | Orange | Brightness, warmth |
-| D | 60 | Yellow | Clarity |
-| A | 90 | Yellow-green | Openness |
-| E | 120 | Green | Natural, calm |
-| B | 150 | Cyan-green | Ethereal |
-| F# | 180 | Cyan | Tension |
-| C# | 210 | Blue-cyan | Mystery |
-| G# | 240 | Blue | Depth |
-| D# | 270 | Purple | Richness |
-| A# | 300 | Magenta | Intensity |
-| F | 330 | Pink-red | Warmth, return |
+| Pitch | Hue (degrees) | Color        | Musical Character  |
+| ----- | ------------- | ------------ | ------------------ |
+| C     | 0             | Red          | Root, grounding    |
+| G     | 30            | Orange       | Brightness, warmth |
+| D     | 60            | Yellow       | Clarity            |
+| A     | 90            | Yellow-green | Openness           |
+| E     | 120           | Green        | Natural, calm      |
+| B     | 150           | Cyan-green   | Ethereal           |
+| F#    | 180           | Cyan         | Tension            |
+| C#    | 210           | Blue-cyan    | Mystery            |
+| G#    | 240           | Blue         | Depth              |
+| D#    | 270           | Purple       | Richness           |
+| A#    | 300           | Magenta      | Intensity          |
+| F     | 330           | Pink-red     | Warmth, return     |
 
 ```rust
 const PITCH_TO_HUE: [f32; 12] = [
@@ -973,27 +975,28 @@ These are the standard mappings that effect authors should reach for. Each maps 
 
 ### Canonical Mapping Table
 
-| Audio Feature | Visual Parameter | Feel | Example |
-|---|---|---|---|
-| `bass` | Brightness / intensity | Power, impact | Room pulse on kick drum |
-| `mid` | Color shift / saturation | Melody tracking | Palette warm-cool shift |
-| `treble` | Speed / sparkle rate | Energy, air | Particle emission rate |
-| `beat` | Flash / pulse | Rhythm | Strobe on beat |
-| `beatPulse` | Smooth intensity envelope | Groove | Breathing glow |
-| `beatPhase` | Animation phase | Flow | Wave position synced to tempo |
-| `level` | Zone size / spread | Volume | Expanding rings |
-| `spectralCentroid` | Color temperature | Brightness | High centroid → cool colors, low → warm |
-| `spectralFlux` | Pattern change rate | Surprise | Trigger new pattern on flux spike |
-| `chromagram` | Palette selection | Harmonic color | Pitch classes drive hue palette |
-| `harmonicHue` | Direct hue mapping | Synesthesia | Music literally becomes color |
-| `chordMood` | Warm/cool bias | Emotion | Major chords → warm glow, minor → cool |
-| `melBands[n]` | Per-segment brightness | Detailed spectrum | 24-zone LED strip visualization |
-| `beatAnticipation` | Pre-flash ramp | Precognition | Lights begin rising before the beat |
-| `momentum` | Base animation speed | Energy level | Faster patterns during intense sections |
+| Audio Feature      | Visual Parameter          | Feel              | Example                                 |
+| ------------------ | ------------------------- | ----------------- | --------------------------------------- |
+| `bass`             | Brightness / intensity    | Power, impact     | Room pulse on kick drum                 |
+| `mid`              | Color shift / saturation  | Melody tracking   | Palette warm-cool shift                 |
+| `treble`           | Speed / sparkle rate      | Energy, air       | Particle emission rate                  |
+| `beat`             | Flash / pulse             | Rhythm            | Strobe on beat                          |
+| `beatPulse`        | Smooth intensity envelope | Groove            | Breathing glow                          |
+| `beatPhase`        | Animation phase           | Flow              | Wave position synced to tempo           |
+| `level`            | Zone size / spread        | Volume            | Expanding rings                         |
+| `spectralCentroid` | Color temperature         | Brightness        | High centroid → cool colors, low → warm |
+| `spectralFlux`     | Pattern change rate       | Surprise          | Trigger new pattern on flux spike       |
+| `chromagram`       | Palette selection         | Harmonic color    | Pitch classes drive hue palette         |
+| `harmonicHue`      | Direct hue mapping        | Synesthesia       | Music literally becomes color           |
+| `chordMood`        | Warm/cool bias            | Emotion           | Major chords → warm glow, minor → cool  |
+| `melBands[n]`      | Per-segment brightness    | Detailed spectrum | 24-zone LED strip visualization         |
+| `beatAnticipation` | Pre-flash ramp            | Precognition      | Lights begin rising before the beat     |
+| `momentum`         | Base animation speed      | Energy level      | Faster patterns during intense sections |
 
 ### Preset Mapping Recipes
 
 **"Pulse" -- The universal audio-reactive default:**
+
 ```
 brightness = 0.3 + 0.7 * beatPulse * bass
 speed = 1.0 + 2.0 * treble
@@ -1002,12 +1005,14 @@ saturation = 0.5 + 0.5 * mid
 ```
 
 **"Spectrum Bars" -- Classic visualizer:**
+
 ```
 bar_height[i] = melBands[i] (for 24 zones)
 bar_color[i] = hsl(i * 15, 100%, 50% + 30% * melBands[i])
 ```
 
 **"Synesthesia" -- Music-to-color:**
+
 ```
 hue = harmonicHue * 360
 saturation = 0.6 + 0.4 * dominantPitchConfidence
@@ -1016,6 +1021,7 @@ warmth_bias = chordMood * 20  // shift hue +-20 degrees
 ```
 
 **"Ambient" -- Soft, low-energy:**
+
 ```
 brightness = 0.05 + 0.15 * level
 color_drift = spectralCentroid * 0.01  // very slow
@@ -1024,6 +1030,7 @@ smoothing = 0.95  // heavy temporal filtering
 ```
 
 **"Rave" -- Maximum reactivity:**
+
 ```
 flash_trigger = beat AND bass > 0.7
 strobe_rate = tempo / 60  // lock to BPM
@@ -1053,17 +1060,17 @@ gantt
 
 ### Per-Stage Breakdown
 
-| Stage | Latency | Deterministic? | Notes |
-|---|---|---|---|
-| **PipeWire capture** | 2-5 ms | Near-deterministic | Default quantum is 1024 samples / 48kHz = 21ms buffer, but PipeWire delivers partial buffers. Monitor source tapping adds ~1ms. |
-| **Ring buffer fill** | 0-21 ms | Variable | Worst case: waiting for 1024 samples. Best case: buffer already full from overlap. Average: ~10ms. Mitigated by hop size (see below). |
-| **FFT computation** | < 0.5 ms | Deterministic | 1024-point FFT is ~20 microseconds on modern hardware. Negligible. |
-| **Feature extraction** | < 1 ms | Deterministic | Mel bands, chromagram, spectral features, beat detection. All O(N) on FFT output. |
-| **Effect render** | 1-5 ms | Variable | wgpu shaders: < 1ms. Servo Canvas 2D: ~3-5ms. WebGL: ~2-4ms. |
-| **Pixel sampling** | < 0.5 ms | Deterministic | 640x480 canvas (default), bilinear sampling at LED positions. Still trivial. |
-| **USB HID write** | 5-10 ms | Semi-deterministic | PrismRGB: 48 packets + commit at ~125 microseconds each. Worst case with USB scheduling jitter. |
-| **WLED DDP** | 3-5 ms | Semi-deterministic | Single UDP packet for < 480 LEDs. Network latency on LAN. |
-| **Hue Entertainment** | 20-40 ms | Variable | DTLS encrypted UDP. Bridge processing. Unavoidable. |
+| Stage                  | Latency  | Deterministic?     | Notes                                                                                                                                 |
+| ---------------------- | -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **PipeWire capture**   | 2-5 ms   | Near-deterministic | Default quantum is 1024 samples / 48kHz = 21ms buffer, but PipeWire delivers partial buffers. Monitor source tapping adds ~1ms.       |
+| **Ring buffer fill**   | 0-21 ms  | Variable           | Worst case: waiting for 1024 samples. Best case: buffer already full from overlap. Average: ~10ms. Mitigated by hop size (see below). |
+| **FFT computation**    | < 0.5 ms | Deterministic      | 1024-point FFT is ~20 microseconds on modern hardware. Negligible.                                                                    |
+| **Feature extraction** | < 1 ms   | Deterministic      | Mel bands, chromagram, spectral features, beat detection. All O(N) on FFT output.                                                     |
+| **Effect render**      | 1-5 ms   | Variable           | wgpu shaders: < 1ms. Servo Canvas 2D: ~3-5ms. WebGL: ~2-4ms.                                                                          |
+| **Pixel sampling**     | < 0.5 ms | Deterministic      | 640x480 canvas (default), bilinear sampling at LED positions. Still trivial.                                                          |
+| **USB HID write**      | 5-10 ms  | Semi-deterministic | PrismRGB: 48 packets + commit at ~125 microseconds each. Worst case with USB scheduling jitter.                                       |
+| **WLED DDP**           | 3-5 ms   | Semi-deterministic | Single UDP packet for < 480 LEDs. Network latency on LAN.                                                                             |
+| **Hue Entertainment**  | 20-40 ms | Variable           | DTLS encrypted UDP. Bridge processing. Unavoidable.                                                                                   |
 
 ### Hop Size and Overlap
 
@@ -1129,6 +1136,7 @@ On first launch with no audio configuration:
 5. Display "Listening to: [sink name]" in the UI
 
 If no monitor source is found, display a clear diagnostic:
+
 ```
 Audio: No system audio source detected
   - PipeWire/PulseAudio not running, or
@@ -1172,12 +1180,12 @@ Audio: No system audio source detected
 
 Available sources populated from PulseAudio/PipeWire enumeration:
 
-| Source | Description |
-|---|---|
+| Source                 | Description                                       |
+| ---------------------- | ------------------------------------------------- |
 | System Audio (monitor) | Default output loopback -- captures all app audio |
-| Microphone | Default input device |
-| [Named PW node] | Specific PipeWire node by name |
-| None | Disable audio capture |
+| Microphone             | Default input device                              |
+| [Named PW node]        | Specific PipeWire node by name                    |
+| None                   | Disable audio capture                             |
 
 ### Noise Floor Calibration
 
@@ -1255,6 +1263,7 @@ pw-cli create-node adapter '{
 **Solution:** Default monitor capture with high smoothing, low sensitivity, heavy temporal filtering. The "Ambient" mapping preset. Beat detection essentially disabled (high threshold). Color drift follows spectral centroid slowly over minutes.
 
 **Audio settings:**
+
 ```toml
 [audio]
 gain = 0.5
@@ -1508,22 +1517,22 @@ struct AudioData {
 
 Target: < 5% of a single core on i7-14700K (equivalent: ~5% of one P-core at 5.5 GHz).
 
-| Operation | Per-Frame Cost | At 60 FPS | Notes |
-|---|---|---|---|
-| **Ring buffer management** | ~1 us | 60 us | Lock-free SPSC ring buffer |
-| **Hann window (1024)** | ~2 us | 120 us | Pre-computed coefficients |
-| **FFT 1024-point** | ~15 us | 900 us | realfft crate, in-place r2c |
-| **Magnitude + log scale** | ~5 us | 300 us | 512 complex → 512 magnitude |
-| **200-bin mapping** | ~3 us | 180 us | Log interpolation |
-| **Smoothing (200 bins)** | ~1 us | 60 us | Asymmetric EMA |
-| **Band energy (3 bands)** | ~1 us | 60 us | Summation |
-| **Mel filterbank (24)** | ~10 us | 600 us | Sparse matrix multiply |
-| **Chromagram (12)** | ~8 us | 480 us | From 4096-point FFT, at 15 Hz |
-| **Spectral features (4)** | ~5 us | 300 us | Centroid, spread, rolloff, flux |
-| **Beat detection** | ~10 us | 600 us | Energy onset + spectral flux + tempo |
-| **Harmonic analysis** | ~5 us | 300 us | Dominant pitch, chord mood, hue |
-| **JS injection string** | ~20 us | 1200 us | String formatting for Servo path |
-| **Total per frame** | **~86 us** | **~5.2 ms** | |
+| Operation                  | Per-Frame Cost | At 60 FPS   | Notes                                |
+| -------------------------- | -------------- | ----------- | ------------------------------------ |
+| **Ring buffer management** | ~1 us          | 60 us       | Lock-free SPSC ring buffer           |
+| **Hann window (1024)**     | ~2 us          | 120 us      | Pre-computed coefficients            |
+| **FFT 1024-point**         | ~15 us         | 900 us      | realfft crate, in-place r2c          |
+| **Magnitude + log scale**  | ~5 us          | 300 us      | 512 complex → 512 magnitude          |
+| **200-bin mapping**        | ~3 us          | 180 us      | Log interpolation                    |
+| **Smoothing (200 bins)**   | ~1 us          | 60 us       | Asymmetric EMA                       |
+| **Band energy (3 bands)**  | ~1 us          | 60 us       | Summation                            |
+| **Mel filterbank (24)**    | ~10 us         | 600 us      | Sparse matrix multiply               |
+| **Chromagram (12)**        | ~8 us          | 480 us      | From 4096-point FFT, at 15 Hz        |
+| **Spectral features (4)**  | ~5 us          | 300 us      | Centroid, spread, rolloff, flux      |
+| **Beat detection**         | ~10 us         | 600 us      | Energy onset + spectral flux + tempo |
+| **Harmonic analysis**      | ~5 us          | 300 us      | Dominant pitch, chord mood, hue      |
+| **JS injection string**    | ~20 us         | 1200 us     | String formatting for Servo path     |
+| **Total per frame**        | **~86 us**     | **~5.2 ms** |                                      |
 
 At ~86 microseconds per frame, the DSP pipeline consumes ~0.5% of one core at 60 FPS. Well within budget, even with generous margins.
 
@@ -1570,12 +1579,12 @@ No mutexes in the hot path. The render thread always reads the latest `AudioData
 
 For systems where even 5ms of DSP per frame is too much (embedded, Raspberry Pi, old hardware):
 
-| Strategy | Savings | Impact |
-|---|---|---|
-| Run DSP at 30 Hz instead of 60 | 50% | Slightly delayed response, beats still detected |
-| Reduce FFT to 512-point | ~40% | Coarser bass resolution. Fine for most effects. |
-| Skip chromagram/harmonic | ~30% | Lose pitch-to-color mapping. Spectrum + beat still work. |
-| Skip mel filterbank | ~15% | Lose per-band visualization. Use raw 200-bin output. |
+| Strategy                       | Savings | Impact                                                   |
+| ------------------------------ | ------- | -------------------------------------------------------- |
+| Run DSP at 30 Hz instead of 60 | 50%     | Slightly delayed response, beats still detected          |
+| Reduce FFT to 512-point        | ~40%    | Coarser bass resolution. Fine for most effects.          |
+| Skip chromagram/harmonic       | ~30%    | Lose pitch-to-color mapping. Spectrum + beat still work. |
+| Skip mel filterbank            | ~15%    | Lose per-band visualization. Use raw 200-bin output.     |
 
 Configure via quality tier:
 
@@ -1600,13 +1609,13 @@ If even this is too much, compute it on demand only when an effect declares `aud
 
 ## Crate Dependencies
 
-| Crate | Purpose | License |
-|---|---|---|
-| `cpal` | Cross-platform audio capture | Apache-2.0 |
-| `realfft` | FFT (faster than spectrum-analyzer for our use case) | Apache-2.0/MIT |
-| `libpulse-binding` | PulseAudio API for monitor source discovery | MIT/Apache |
-| `crossbeam` | Lock-free ring buffer and atomic utilities | MIT/Apache |
-| `bytemuck` | Zero-copy GPU buffer marshaling | MIT/Apache/Zlib |
+| Crate              | Purpose                                              | License         |
+| ------------------ | ---------------------------------------------------- | --------------- |
+| `cpal`             | Cross-platform audio capture                         | Apache-2.0      |
+| `realfft`          | FFT (faster than spectrum-analyzer for our use case) | Apache-2.0/MIT  |
+| `libpulse-binding` | PulseAudio API for monitor source discovery          | MIT/Apache      |
+| `crossbeam`        | Lock-free ring buffer and atomic utilities           | MIT/Apache      |
+| `bytemuck`         | Zero-copy GPU buffer marshaling                      | MIT/Apache/Zlib |
 
 The `spectrum-analyzer` crate (listed in ARCHITECTURE.md) wraps `realfft` with windowing and frequency analysis. Either works; `realfft` gives us more control over the pipeline, while `spectrum-analyzer` gives us a higher-level API. Recommendation: start with `spectrum-analyzer` for rapid prototyping, drop to `realfft` if we need finer control over the DSP chain.
 

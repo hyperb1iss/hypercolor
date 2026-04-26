@@ -29,15 +29,15 @@ The daemon defaults to `info` level, which logs device connections, effect chang
 
 ### Key Log Targets
 
-| Target | What It Shows |
-|---|---|
-| `hypercolor_daemon` | API requests, WebSocket connections, startup sequence |
-| `hypercolor_core::engine` | Render loop timing, FPS, frame drops |
-| `hypercolor_core::effect` | Effect loading, control updates, renderer state |
-| `hypercolor_core::input` | Audio capture, FFT processing, beat detection |
-| `hypercolor_hal` | Device discovery, USB communication, protocol encoding |
-| `hypercolor_hal::drivers::razer` | Razer-specific USB packet details |
-| `hypercolor_hal::drivers::prismrgb` | PrismRGB chunked protocol details |
+| Target                              | What It Shows                                          |
+| ----------------------------------- | ------------------------------------------------------ |
+| `hypercolor_daemon`                 | API requests, WebSocket connections, startup sequence  |
+| `hypercolor_core::engine`           | Render loop timing, FPS, frame drops                   |
+| `hypercolor_core::effect`           | Effect loading, control updates, renderer state        |
+| `hypercolor_core::input`            | Audio capture, FFT processing, beat detection          |
+| `hypercolor_hal`                    | Device discovery, USB communication, protocol encoding |
+| `hypercolor_hal::drivers::razer`    | Razer-specific USB packet details                      |
+| `hypercolor_hal::drivers::prismrgb` | PrismRGB chunked protocol details                      |
 
 ## Built-in Diagnostics
 
@@ -52,6 +52,7 @@ curl -X POST http://localhost:9420/api/v1/diagnose | jq
 ```
 
 This checks:
+
 - Device connectivity and USB permissions
 - Audio capture device availability
 - Effect engine status
@@ -150,22 +151,26 @@ curl http://localhost:9420/api/v1/devices/debug/routing | jq
 If effects aren't reacting to audio:
 
 1. Check that audio is enabled in config:
+
    ```bash
    curl "http://localhost:9420/api/v1/config/get?key=audio.enabled" | jq
    ```
 
 2. List available capture devices:
+
    ```bash
    curl http://localhost:9420/api/v1/audio/devices | jq
    ```
 
 3. Check the audio state:
+
    ```bash
    # Via MCP tool or REST
    curl http://localhost:9420/api/v1/status | jq '.audio'
    ```
 
 4. Verify your system's audio capture is working:
+
    ```bash
    # PulseAudio/PipeWire — list sources
    pactl list sources short
@@ -202,6 +207,7 @@ RUST_LOG=hypercolor_core::effect=trace,hypercolor_core::engine=debug just daemon
 ```
 
 This shows:
+
 - Which renderer is being used (Servo vs. wgpu)
 - Frame timing and potential drops
 - Control value injection

@@ -701,6 +701,7 @@ averaging the lowest 8 bins (sub-bass through bass) and passing the
 result to `motion.update_spectrum(energy)`.
 
 **Sensitivity scaling:**
+
 - Off: no spectrum pulse
 - Subtle: energy multiplied by 0.5
 - Full: energy used directly
@@ -740,6 +741,7 @@ pub fn canvas_ambient_bleed() -> Effect {
 ```
 
 **Sensitivity scaling:**
+
 - Off: no bleed
 - Subtle: lightness capped at 0.04 (barely perceptible)
 - Full: lightness at 0.08 (clearly visible but not overwhelming)
@@ -766,6 +768,7 @@ pub fn idle_dim(area: Rect) -> Effect {
 ```
 
 **Sensitivity scaling:**
+
 - Off: no idle dimming or breathing
 - Subtle: breathing only, no dimming
 - Full: breathing + gradual dimming
@@ -793,24 +796,24 @@ The default is `Full`. Users who prefer reduced motion set it to `Subtle`
 
 ### 8.2 Scaling Rules
 
-| Effect | Off | Subtle | Full |
-|--------|-----|--------|------|
-| Title shimmer | static gradient | slower phase | full shimmer |
-| Device arrival | instant appear | 300ms fade | 600ms sweep |
-| Device departure | instant remove | 200ms fade | 400ms dissolve |
-| Effect transition | instant swap | 250ms fade | 500ms sweep |
-| Control patch | no feedback | 150ms pulse | 250ms pulse |
-| Scene activation | status text only | 400ms border flash | 800ms radial ripple |
-| Screen transition | instant swap | 200ms fade | 300ms dissolve+coalesce |
-| Panel focus | instant border change | 200ms fade | 300ms glow |
-| Connection lost | status text only | red border tint | glitch + hsl shift |
-| Connection restored | status text only | green border flash | green sweep |
-| Error flash | status text only | 200ms flash | 400ms flash |
-| Idle breathing | none | breathing only | breathing + dim |
-| Notification slide | instant appear | 200ms fade | 300ms sweep |
-| Spectrum pulse | none | 50% amplitude | full amplitude |
-| Canvas bleed | none | 50% lightness | full lightness |
-| Idle dim | none | none | full dim |
+| Effect              | Off                   | Subtle             | Full                    |
+| ------------------- | --------------------- | ------------------ | ----------------------- |
+| Title shimmer       | static gradient       | slower phase       | full shimmer            |
+| Device arrival      | instant appear        | 300ms fade         | 600ms sweep             |
+| Device departure    | instant remove        | 200ms fade         | 400ms dissolve          |
+| Effect transition   | instant swap          | 250ms fade         | 500ms sweep             |
+| Control patch       | no feedback           | 150ms pulse        | 250ms pulse             |
+| Scene activation    | status text only      | 400ms border flash | 800ms radial ripple     |
+| Screen transition   | instant swap          | 200ms fade         | 300ms dissolve+coalesce |
+| Panel focus         | instant border change | 200ms fade         | 300ms glow              |
+| Connection lost     | status text only      | red border tint    | glitch + hsl shift      |
+| Connection restored | status text only      | green border flash | green sweep             |
+| Error flash         | status text only      | 200ms flash        | 400ms flash             |
+| Idle breathing      | none                  | breathing only     | breathing + dim         |
+| Notification slide  | instant appear        | 200ms fade         | 300ms sweep             |
+| Spectrum pulse      | none                  | 50% amplitude      | full amplitude          |
+| Canvas bleed        | none                  | 50% lightness      | full lightness          |
+| Idle dim            | none                  | none               | full dim                |
 
 ### 8.3 Environment Detection
 
@@ -836,13 +839,13 @@ level is shown in the status bar.
 
 ### 9.1 Targets
 
-| Metric | Budget | Measured By |
-|--------|--------|-------------|
-| Motion processing per frame | < 3ms | `MotionSystem::last_process_us()` |
-| Total render per frame | < 20ms | Existing render timing in bridge metrics |
-| Memory: effect instances | < 64 KB | Estimated from tachyonfx object sizes |
-| Active effects (typical) | 3-5 | `EffectManager::is_running()` inventory |
-| Active effects (peak) | 12-15 | During scene transition with all reactive layers |
+| Metric                      | Budget  | Measured By                                      |
+| --------------------------- | ------- | ------------------------------------------------ |
+| Motion processing per frame | < 3ms   | `MotionSystem::last_process_us()`                |
+| Total render per frame      | < 20ms  | Existing render timing in bridge metrics         |
+| Memory: effect instances    | < 64 KB | Estimated from tachyonfx object sizes            |
+| Active effects (typical)    | 3-5     | `EffectManager::is_running()` inventory          |
+| Active effects (peak)       | 12-15   | During scene transition with all reactive layers |
 
 ### 9.2 Budget Enforcement
 
@@ -1146,13 +1149,13 @@ look good, feel right, don't distract).
 
 Recommended terminal matrix:
 
-| Terminal | Truecolor | Notes |
-|----------|-----------|-------|
-| Ghostty | Yes | Primary dev terminal |
-| Kitty | Yes | Secondary, verify rendering |
-| WezTerm | Yes | Third option |
-| macOS Terminal.app | 256 | Degradation path |
-| tmux | Passthrough | Verify effects survive multiplexer |
+| Terminal           | Truecolor   | Notes                              |
+| ------------------ | ----------- | ---------------------------------- |
+| Ghostty            | Yes         | Primary dev terminal               |
+| Kitty              | Yes         | Secondary, verify rendering        |
+| WezTerm            | Yes         | Third option                       |
+| macOS Terminal.app | 256         | Degradation path                   |
+| tmux               | Passthrough | Verify effects survive multiplexer |
 
 ### 12.4 Performance Verification
 

@@ -233,7 +233,7 @@ most real-world URLs**. Anything with a login wall, an ads stack, or
 a modern security posture sets `X-Frame-Options: DENY` or a strict
 `frame-ancestors` CSP — GitHub, Google Workspace, Slack, Notion, and
 every SaaS dashboard in that class. We designed against the
-assumption that the iframe pane's *steady state* for serious pages
+assumption that the iframe pane's _steady state_ for serious pages
 is "unavailable." Treating it as core UX would make the modal feel
 broken on anything interesting.
 
@@ -290,14 +290,14 @@ path:
 
 **Latency breakdown**, split into controllable and uncontrollable terms:
 
-| Term | Typical | Control lever |
-| ---- | ------- | ------------- |
-| Pointer-up → PATCH issued | ≤ 5 ms | local |
-| PATCH network round-trip (localhost) | ~ 1 ms | — |
-| Daemon control application | ~ 1 ms | — |
-| Servo scroll dispatch + repaint | 100–300 ms | Servo-internal, **uncontrollable** |
-| Preview stream propagation | 1 × frame interval at subscriber FPS | modal subscribes at 30 fps → ≤ 33 ms |
-| Modal decode + render | ≤ 8 ms | local |
+| Term                                 | Typical                              | Control lever                        |
+| ------------------------------------ | ------------------------------------ | ------------------------------------ |
+| Pointer-up → PATCH issued            | ≤ 5 ms                               | local                                |
+| PATCH network round-trip (localhost) | ~ 1 ms                               | —                                    |
+| Daemon control application           | ~ 1 ms                               | —                                    |
+| Servo scroll dispatch + repaint      | 100–300 ms                           | Servo-internal, **uncontrollable**   |
+| Preview stream propagation           | 1 × frame interval at subscriber FPS | modal subscribes at 30 fps → ≤ 33 ms |
+| Modal decode + render                | ≤ 8 ms                               | local                                |
 
 Dominant term is Servo's paint — reducible only via embedder or
 runtime work (pipelining the scroll with the current paint, tuning
@@ -324,7 +324,7 @@ not thrashing.
   close-affordance design.
 - Unsaved changes confirm before close. The modal holds a draft copy
   of the viewport + scroll + fit values. Note that "draft" here is
-  the UX abstraction — the *committed pixel-flushing* policy lives in
+  the UX abstraction — the _committed pixel-flushing_ policy lives in
   §§ 6.1/6.2: viewport rect updates flow to the daemon mid-drag
   (80 ms throttle) so the Servo pane previews them live, scroll
   commits fire only on release, and Apply issues a final reconciling
@@ -592,7 +592,7 @@ Draft behaviour when the source resizes:
   dimensions at modal-open time. When the source resizes, we freeze
   the draft's reference dimensions and surface a banner at the top
   of the modal: `⚠ Source resized to 3840×2160 (was 2560×1440).
-  [Rebase to new size]   [Keep current values]`. The user chooses:
+[Rebase to new size]   [Keep current values]`. The user chooses:
   "Rebase" rescales the draft pixel values proportionally to the new
   dimensions, "Keep" leaves them (which clamps any out-of-bounds
   edges on Apply).
@@ -611,8 +611,8 @@ Cast starts (via `ashpd` in
 `crates/hypercolor-core/src/input/screen.rs`) is entirely upstream of
 this modal. It grants Hypercolor access to a specific monitor or
 window; `ScreenData.source_width/height` reflects whatever the portal
-handed us. This modal picks the rectangular *region within that
-surface* to sample — the piece that is missing today and that the
+handed us. This modal picks the rectangular _region within that
+surface_ to sample — the piece that is missing today and that the
 inline picker is too cramped to do well. If the user wants a
 different monitor they reset the capture outside the modal; the
 modal's capture pane updates automatically as the daemon's screen
@@ -641,7 +641,7 @@ We explicitly don't rely on it:
   the OS security prompt on every tweak.
 
 The right read is: portal region capture is a privacy/scope concern
-solved at grant time. The modal is an *authoring* concern solved
+solved at grant time. The modal is an _authoring_ concern solved
 per-effect, at runtime, against the fullest surface the portal will
 give us.
 
@@ -1050,13 +1050,13 @@ site.
 
 **Load-status states**:
 
-| State          | Meaning                                            | Auto-collapse? |
-| -------------- | -------------------------------------------------- | -------------- |
-| `Loading`      | iframe `load` event has not fired yet              | never          |
-| `Loaded`       | `load` fired and same-origin read succeeded        | never          |
-| `CrossOrigin`  | `load` fired, `contentWindow.scrollX` threw        | never          |
-| `Blocked`      | `load` fired but `contentDocument` is null AND ≥3s passed since load | never; shows manual collapse |
-| `Errored`      | `onerror` fired (rare; typically network failure)  | never          |
+| State         | Meaning                                                              | Auto-collapse?               |
+| ------------- | -------------------------------------------------------------------- | ---------------------------- |
+| `Loading`     | iframe `load` event has not fired yet                                | never                        |
+| `Loaded`      | `load` fired and same-origin read succeeded                          | never                        |
+| `CrossOrigin` | `load` fired, `contentWindow.scrollX` threw                          | never                        |
+| `Blocked`     | `load` fired but `contentDocument` is null AND ≥3s passed since load | never; shows manual collapse |
+| `Errored`     | `onerror` fired (rare; typically network failure)                    | never                        |
 
 No state auto-collapses the iframe pane. `Blocked` shows a clear
 explanation ("This site can't be previewed here — probably
@@ -1144,7 +1144,7 @@ let cross_origin = match iframe.content_window() {
 ```
 
 If the read throws, we mark load status as `CrossOrigin`. The 3s
-timer is a *hint* that the load may be blocked — we surface a
+timer is a _hint_ that the load may be blocked — we surface a
 "Still loading…" message past 3s — but we do NOT auto-collapse the
 pane on that signal. Slow networks, heavy pages, and late script
 loads all produce false positives for timeout-based blocked
@@ -1185,7 +1185,7 @@ short docs page (future work) with more detail for power users.
 
 As stated in § 3.2, we do not proxy pages to work around cross-
 origin limits. The trade-offs (breaking auth, CSP, SPAs) outweigh
-the convenience gain. The Servo pane is the *primary* authoring
+the convenience gain. The Servo pane is the _primary_ authoring
 surface regardless of whether the iframe is available — § 4.3
 makes that the core framing — and cross-origin-blocked sites are
 the expected steady state for anything with real security posture,
@@ -1217,14 +1217,14 @@ Scroll changes force a Servo repaint. The end-to-end budget breaks
 into controllable and uncontrollable terms (same table as § 4.4,
 repeated here for the performance chapter):
 
-| Term                                   | Typical | Control lever |
-| -------------------------------------- | ------- | ------------- |
-| Pointer-up → PATCH issued              | ≤ 5 ms  | local        |
-| PATCH network round-trip (localhost)   | ~ 1 ms  | —            |
-| Daemon control application             | ~ 1 ms  | —            |
-| Servo scroll dispatch + repaint        | 100–300 ms | **uncontrollable** |
-| Preview stream propagation             | ≤ 33 ms @ 30 fps | modal subscription FPS |
-| Modal decode + render                  | ≤ 8 ms  | local        |
+| Term                                 | Typical          | Control lever          |
+| ------------------------------------ | ---------------- | ---------------------- |
+| Pointer-up → PATCH issued            | ≤ 5 ms           | local                  |
+| PATCH network round-trip (localhost) | ~ 1 ms           | —                      |
+| Daemon control application           | ~ 1 ms           | —                      |
+| Servo scroll dispatch + repaint      | 100–300 ms       | **uncontrollable**     |
+| Preview stream propagation           | ≤ 33 ms @ 30 fps | modal subscription FPS |
+| Modal decode + render                | ≤ 8 ms           | local                  |
 
 Total ~250–440 ms end-to-end. The controllable terms (≤ ~50 ms
 combined) are pinned by:
@@ -1305,12 +1305,12 @@ repaint that follows is on Servo's timeline, not the render loop.
 Not automatable in unit tests (browser-specific behavior). Manual
 test matrix:
 
-| Site                 | Expected iframe outcome     |
-| -------------------- | --------------------------- |
-| `about:blank`        | Loaded, same-origin, snap works |
-| hyperbliss.tech      | Loaded, cross-origin detected, snap button disabled with tooltip (no toast fires since click is blocked at the button) |
-| `https://github.com` | Blocked (`X-Frame-Options`), pane stays visible with "cannot render" message + manual `[Collapse]` button available |
-| `http://localhost:<port>` | Same-origin if UI is on same host, cross-origin otherwise |
+| Site                      | Expected iframe outcome                                                                                                |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `about:blank`             | Loaded, same-origin, snap works                                                                                        |
+| hyperbliss.tech           | Loaded, cross-origin detected, snap button disabled with tooltip (no toast fires since click is blocked at the button) |
+| `https://github.com`      | Blocked (`X-Frame-Options`), pane stays visible with "cannot render" message + manual `[Collapse]` button available    |
+| `http://localhost:<port>` | Same-origin if UI is on same host, cross-origin otherwise                                                              |
 
 Manual test lives in `docs/design/46-viewport-designer-manual-tests.md`
 alongside this spec.
@@ -1483,7 +1483,7 @@ pick be suggested? **Proposed: no** — the effect's live control
 values are the source of truth; the modal always opens against
 them. Saved presets (Wave 4) cover the "I want to save this" case.
 
-### 16.4 Drag-commit strategy — *resolved in §§ 6.1/6.2*
+### 16.4 Drag-commit strategy — _resolved in §§ 6.1/6.2_
 
 Resolved, kept here as a pointer to avoid future re-litigation.
 Viewport rect: 80 ms throttle during drag + final commit on

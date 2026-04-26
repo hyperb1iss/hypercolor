@@ -10,7 +10,7 @@ Looking at `crates/hypercolor-core/src/effect/servo/renderer.rs:30-31`:
 
 - **`DEFAULT_EFFECT_FPS_CAP: u32 = 30`** — bootstrap default written to
   `window.__hypercolorFpsCap` before the first frame arrives. The SDK's RAF helper
-  reads this to gate its animation loop. It's a *pre-frame placeholder*; on the first
+  reads this to gate its animation loop. It's a _pre-frame placeholder_; on the first
   real tick, `enqueue_frame_scripts` overwrites it with
   `FpsTier::from_fps((1.0 / delta_secs).round())`, clamped to
   `MAX_EFFECT_FPS_CAP = 60`. So non-Display effects dynamically track the render
@@ -26,7 +26,7 @@ Looking at `crates/hypercolor-core/src/effect/servo/renderer.rs:30-31`:
 **Why this design:** LCD faces tend to be heavy (clocks, dashboards, gauge layouts)
 and run on small surfaces whose native refresh doesn't benefit from >30fps. Pinning
 them prevents one Display face from budget-missing and triggering a render-loop
-downshift that would penalize every *other* device. It's a QoS separation between
+downshift that would penalize every _other_ device. It's a QoS separation between
 "LED animation effects" and "LCD display chrome."
 
 ## Resolution contract (non-negotiable)
@@ -75,7 +75,7 @@ upscale path.
 
 ### Tier 1: Do these next
 
-#### 1. Amortize sensor & audio scripts when data is stale *(easy, medium impact)*
+#### 1. Amortize sensor & audio scripts when data is stale _(easy, medium impact)_
 
 `push_frame_scripts` (`lightscript.rs:353`) pushes `sensor_update_script`
 unconditionally, and `audio_update_script` whenever `include_audio_updates` is true.
@@ -95,7 +95,7 @@ Control updates are already diffed — extend the same pattern:
 **Risk:** Low. The bootstrap already initializes these to zeros/defaults, so skipping
 updates is semantically safe.
 
-#### 2. Instrument total JS/render stage cost before deeper surgery *(easy, high value)*
+#### 2. Instrument total JS/render stage cost before deeper surgery _(easy, high value)_
 
 Before changing worker architecture or script transport shape, add measurements for
 the stages we actually control:
@@ -116,7 +116,7 @@ optimization should target script generation, event-loop behavior, or readback.
 
 ### Tier 2: Investigate, then commit
 
-#### 3. Tighten per-tick stall handling around in-flight renders *(medium, high stability impact)*
+#### 3. Tighten per-tick stall handling around in-flight renders _(medium, high stability impact)_
 
 `SCRIPT_TIMEOUT` is 250ms and `RENDER_RESPONSE_TIMEOUT` is 500ms. A runaway effect
 can still leave the main renderer reusing stale frames for far too long.
@@ -137,7 +137,7 @@ cancellation semantics.
 **Risk:** Medium. The logic needs to cooperate cleanly with the current circuit breaker
 and session lifecycle.
 
-#### 4. Automatic fallback and degraded-mode UX *(medium, medium UX impact)*
+#### 4. Automatic fallback and degraded-mode UX _(medium, medium UX impact)_
 
 Today when the breaker opens, the active HTML effect just goes dark and the user has
 to intervene. We should improve that, but this is a daemon orchestration change, not a
@@ -156,9 +156,9 @@ and display faces already live on a separate lane from LED effects.
 
 ### Tier 3: Bigger architectural lifts
 
-#### 5. Subprocess isolation for Servo *(hard, transformative)*
+#### 5. Subprocess isolation for Servo _(hard, transformative)_
 
-The honest fix for crash isolation *and* the path to parallel HTML effect rendering.
+The honest fix for crash isolation _and_ the path to parallel HTML effect rendering.
 Spawn Servo in a child process, IPC via shared memory for the framebuffer (shmem +
 semaphore) and Unix domain sockets for script commands. On child crash, respawn.
 
@@ -172,7 +172,7 @@ semaphore) and Unix domain sockets for script commands. On child crash, respawn.
 - **Prerequisite:** Should probably wait until Tier 1+2 ship and we have real data on
   whether HTML-effect crashes are frequent enough to justify.
 
-#### 6. Async PBO readback *(skip if software-rendering)*
+#### 6. Async PBO readback _(skip if software-rendering)_
 
 The `bootstrap_software_rendering_context` call at `worker.rs:39` strongly suggests
 we're on OSMesa (software GL). In software mode, `glReadPixels` is a CPU memcpy — no

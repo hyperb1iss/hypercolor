@@ -49,7 +49,7 @@ canvas. Screencast migrates to the new control type, the picker widget
 serves both effects, and future viewport-style effects (camera feeds,
 media player output, etc.) plug into the same primitive.
 
-The philosophy stays intact. Effects are web pages. With this spec, *any*
+The philosophy stays intact. Effects are web pages. With this spec, _any_
 web page becomes an effect, and the user's desk becomes the canvas.
 
 ---
@@ -285,7 +285,7 @@ export function rect(
   label: string,
   defaultValue: { x: number; y: number; width: number; height: number },
   opts?: RectOptions,
-): ControlSpec<'rect'>;
+): ControlSpec<"rect">;
 
 export interface RectOptions {
   tooltip?: string;
@@ -297,8 +297,14 @@ export interface RectOptions {
 The build pipeline emits:
 
 ```html
-<meta property="viewport" label="Viewport" type="rect"
-      default="0,0,1,1" aspectLock="1.7777" group="Source"/>
+<meta
+  property="viewport"
+  label="Viewport"
+  type="rect"
+  default="0,0,1,1"
+  aspectLock="1.7777"
+  group="Source"
+/>
 ```
 
 The daemon's meta parser at
@@ -394,15 +400,15 @@ appears in `GET /api/v1/effects` alongside screencast.
 
 ### 7.2 Controls
 
-| ID | Label | Type | Default | Notes |
-|----|-------|------|---------|-------|
-| `url` | URL | Text | `https://example.com` | HTTP, HTTPS, or file URLs |
-| `viewport` | Viewport | Rect | full | `preview_source: WebViewport` |
-| `fit_mode` | Fit | Dropdown | Cover | Contain / Cover / Stretch |
-| `brightness` | Brightness | Slider | 1.0 | `[0.0, 2.0]`, step 0.01 |
-| `refresh_interval` | Refresh | Slider | 0 | Seconds, 0 = never reload |
-| `render_width` | Render Width | Slider | 1280 | `[640, 1920]`, step 160 |
-| `render_height` | Render Height | Slider | 720 | `[360, 1080]`, step 90 |
+| ID                 | Label         | Type     | Default               | Notes                         |
+| ------------------ | ------------- | -------- | --------------------- | ----------------------------- |
+| `url`              | URL           | Text     | `https://example.com` | HTTP, HTTPS, or file URLs     |
+| `viewport`         | Viewport      | Rect     | full                  | `preview_source: WebViewport` |
+| `fit_mode`         | Fit           | Dropdown | Cover                 | Contain / Cover / Stretch     |
+| `brightness`       | Brightness    | Slider   | 1.0                   | `[0.0, 2.0]`, step 0.01       |
+| `refresh_interval` | Refresh       | Slider   | 0                     | Seconds, 0 = never reload     |
+| `render_width`     | Render Width  | Slider   | 1280                  | `[640, 1920]`, step 160       |
+| `render_height`    | Render Height | Slider   | 720                   | `[360, 1080]`, step 90        |
 
 Render width and height control the Servo render size, not the effect
 canvas size. A 1280×720 render sampled through a viewport rect of

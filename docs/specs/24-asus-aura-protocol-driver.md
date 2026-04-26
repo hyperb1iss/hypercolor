@@ -31,23 +31,24 @@
 Native driver for ASUS Aura RGB hardware via the `hypercolor-hal` abstraction layer. ASUS Aura is the largest and most heterogeneous RGB ecosystem in the PC hardware world, spanning motherboards, GPUs, DRAM, peripherals, AIOs, monitors, and handhelds. The ecosystem converges on two primary transport mechanisms — USB HID and ENE SMBus — with protocol variants per device class.
 
 Clean-room implementation derived from publicly available protocol knowledge:
+
 - OpenRGB's `AsusAuraUSBController`, `ENESMBusController`, and `AsusAuraGPUController` (C++)
 - Community ASUS plugin implementations (JavaScript)
 - ASUS Armoury Crate reverse-engineering community documentation
 
 ### Ecosystem Map
 
-| Transport | Controller | Devices | Priority |
-|-----------|-----------|---------|----------|
-| **USB HID** | Aura Motherboard | Z790/Z890/B650/X570+ boards | **Phase 1** |
-| **USB HID** | Aura Addressable | ARGB headers on motherboards | **Phase 1** |
-| **USB HID** | Aura Terminal | Standalone ARGB controller | **Phase 1** |
-| **I2C SMBus** | ENE Motherboard | Older AMD/Intel boards | Phase 2 |
-| **I2C SMBus** | ENE GPU | RTX 30/40/50, RX 6000/7000 (ASUS) | Phase 2 |
-| **I2C SMBus** | ENE DRAM | Aura-compatible RGB RAM | Phase 3 |
-| **USB HID** | Aura Mouse | ROG/TUF mice | Phase 3 |
-| **USB HID** | Aura Keyboard | ROG/TUF keyboards | Phase 3 |
-| **USB HID** | Aura Peripherals | Mousemats, headset stands, monitors, AIOs | Phase 4 |
+| Transport     | Controller       | Devices                                   | Priority    |
+| ------------- | ---------------- | ----------------------------------------- | ----------- |
+| **USB HID**   | Aura Motherboard | Z790/Z890/B650/X570+ boards               | **Phase 1** |
+| **USB HID**   | Aura Addressable | ARGB headers on motherboards              | **Phase 1** |
+| **USB HID**   | Aura Terminal    | Standalone ARGB controller                | **Phase 1** |
+| **I2C SMBus** | ENE Motherboard  | Older AMD/Intel boards                    | Phase 2     |
+| **I2C SMBus** | ENE GPU          | RTX 30/40/50, RX 6000/7000 (ASUS)         | Phase 2     |
+| **I2C SMBus** | ENE DRAM         | Aura-compatible RGB RAM                   | Phase 3     |
+| **USB HID**   | Aura Mouse       | ROG/TUF mice                              | Phase 3     |
+| **USB HID**   | Aura Keyboard    | ROG/TUF keyboards                         | Phase 3     |
+| **USB HID**   | Aura Peripherals | Mousemats, headset stands, monitors, AIOs | Phase 4     |
 
 ### Architectural Precedent
 
@@ -57,11 +58,11 @@ ASUS Aura motherboards require **runtime topology discovery** — the device's L
 
 Confirmed on this system:
 
-| Device | Transport | Identifier | Notes |
-|--------|-----------|------------|-------|
-| **ROG STRIX Z790-A GAMING WIFI II** | USB HID | `0B05:19AF` | Motherboard Aura controller on `/dev/hidraw1` |
-| **NVIDIA RTX 4070 SUPER** | I2C SMBus | Buses 3–8 | GPU RGB via ENE controller (if ASUS-branded) |
-| **DDR5 DIMMs (x2)** | I2C SMBus | Bus 9, SPD `0x51`/`0x53`, RGB `0x71`/`0x73` | ENE DRAM V2 (`AUDA0-E6K5-0101`) |
+| Device                              | Transport | Identifier                                  | Notes                                         |
+| ----------------------------------- | --------- | ------------------------------------------- | --------------------------------------------- |
+| **ROG STRIX Z790-A GAMING WIFI II** | USB HID   | `0B05:19AF`                                 | Motherboard Aura controller on `/dev/hidraw1` |
+| **NVIDIA RTX 4070 SUPER**           | I2C SMBus | Buses 3–8                                   | GPU RGB via ENE controller (if ASUS-branded)  |
+| **DDR5 DIMMs (x2)**                 | I2C SMBus | Bus 9, SPD `0x51`/`0x53`, RGB `0x71`/`0x73` | ENE DRAM V2 (`AUDA0-E6K5-0101`)               |
 
 **Vendor ID:** `0x0B05` (ASUSTek Computer Inc.)
 
@@ -73,17 +74,17 @@ Confirmed on this system:
 
 These are the primary motherboard Aura controllers accessible over USB HID. They expose both fixed onboard LEDs and ARGB header control through a unified 65-byte packet protocol.
 
-| PID | Generation | Example Boards |
-|-----|-----------|----------------|
-| `0x1867` | Addressable Gen 1 | Early X470/B450 |
-| `0x1872` | Addressable Gen 2 | Mid-cycle X470/Z390 |
-| `0x18A3` | Addressable Gen 3 | X570/Z490 |
-| `0x18A5` | Addressable Gen 4 | B550/Z490 refresh |
-| `0x18F3` | Motherboard Gen 1 | X570/Z590 |
-| `0x1939` | Motherboard Gen 2 | B660/Z690 |
+| PID      | Generation            | Example Boards                    |
+| -------- | --------------------- | --------------------------------- |
+| `0x1867` | Addressable Gen 1     | Early X470/B450                   |
+| `0x1872` | Addressable Gen 2     | Mid-cycle X470/Z390               |
+| `0x18A3` | Addressable Gen 3     | X570/Z490                         |
+| `0x18A5` | Addressable Gen 4     | B550/Z490 refresh                 |
+| `0x18F3` | Motherboard Gen 1     | X570/Z590                         |
+| `0x1939` | Motherboard Gen 2     | B660/Z690                         |
 | `0x19AF` | **Motherboard Gen 3** | **Z790-A Gaming WiFi II** (local) |
-| `0x1AA6` | Motherboard Gen 4 | X870E/Z890 |
-| `0x1BED` | Motherboard Gen 5 | Latest Z890/B850 |
+| `0x1AA6` | Motherboard Gen 4     | X870E/Z890                        |
+| `0x1BED` | Motherboard Gen 5     | Latest Z890/B850                  |
 
 ### 2.2 Board-Specific Zone Overrides
 
@@ -91,30 +92,30 @@ The config table returned by device firmware is not always accurate. Overrides a
 
 **Firmware string overrides:**
 
-| Firmware String | Board | Mainboard LEDs | ARGB Headers | 12V Headers |
-|----------------|-------|---------------|-------------|-------------|
-| `AULA3-AR32-0207` | ROG STRIX Z690 Gaming WiFi | 3 | 3 | 1 |
-| `AULA3-AR32-0213` | (TBD — Z790 variant) | 2 | 3 | 1 |
-| `AULA3-AR32-0218` | ROG MAXIMUS Z790 Apex | 5 | 3 | 1 |
+| Firmware String   | Board                      | Mainboard LEDs | ARGB Headers | 12V Headers |
+| ----------------- | -------------------------- | -------------- | ------------ | ----------- |
+| `AULA3-AR32-0207` | ROG STRIX Z690 Gaming WiFi | 3              | 3            | 1           |
+| `AULA3-AR32-0213` | (TBD — Z790 variant)       | 2              | 3            | 1           |
+| `AULA3-AR32-0218` | ROG MAXIMUS Z790 Apex      | 5              | 3            | 1           |
 
 **DMI board name overrides (fallback):**
 
-| DMI Board Name | Mainboard LEDs | ARGB Headers | 12V Headers | Notes |
-|---------------|---------------|-------------|-------------|-------|
-| `ROG CROSSHAIR VIII HERO` | 8 | 2 | 2 | |
-| `ROG MAXIMUS Z690 EXTREME` | 7 | 3 | 1 | |
-| `ROG MAXIMUS Z690 EXTREME GLACIAL` | 7 | 4 | 1 | Polymo panel disabled |
-| `TUF GAMING X570-PRO (WI-FI)` | 3 | 1 | 2 | |
-| `PRIME Z790-A WIFI` | 4 | 3 | 1 | |
-| `ROG STRIX B650-A GAMING WIFI` | 3 | 3 | 1 | |
-| `ROG STRIX B650E-F GAMING WIFI` | 3 | 3 | 1 | |
-| `ROG MAXIMUS Z790 APEX ENCORE` | 2 | 3 | 1 | |
-| `ROG STRIX B760-F GAMING WIFI` | 2 | 3 | 1 | |
-| `ROG STRIX Z890-E GAMING WIFI` | 3 | 3 | 1 | |
-| `TUF GAMING Z890-PLUS WIFI` | 1 | 3 | 0 | 4 12V total (special) |
-| `ROG STRIX Z890-A GAMING WIFI` | 2 | 3 | 0 | 3 12V total (special) |
-| `PRIME Z890-P WIFI` | 0 | 3 | 1 | No fixed LEDs |
-| `ROG STRIX B850-F GAMING WIFI` | 2 | 3 | 2 | |
+| DMI Board Name                     | Mainboard LEDs | ARGB Headers | 12V Headers | Notes                 |
+| ---------------------------------- | -------------- | ------------ | ----------- | --------------------- |
+| `ROG CROSSHAIR VIII HERO`          | 8              | 2            | 2           |                       |
+| `ROG MAXIMUS Z690 EXTREME`         | 7              | 3            | 1           |                       |
+| `ROG MAXIMUS Z690 EXTREME GLACIAL` | 7              | 4            | 1           | Polymo panel disabled |
+| `TUF GAMING X570-PRO (WI-FI)`      | 3              | 1            | 2           |                       |
+| `PRIME Z790-A WIFI`                | 4              | 3            | 1           |                       |
+| `ROG STRIX B650-A GAMING WIFI`     | 3              | 3            | 1           |                       |
+| `ROG STRIX B650E-F GAMING WIFI`    | 3              | 3            | 1           |                       |
+| `ROG MAXIMUS Z790 APEX ENCORE`     | 2              | 3            | 1           |                       |
+| `ROG STRIX B760-F GAMING WIFI`     | 2              | 3            | 1           |                       |
+| `ROG STRIX Z890-E GAMING WIFI`     | 3              | 3            | 1           |                       |
+| `TUF GAMING Z890-PLUS WIFI`        | 1              | 3            | 0           | 4 12V total (special) |
+| `ROG STRIX Z890-A GAMING WIFI`     | 2              | 3            | 0           | 3 12V total (special) |
+| `PRIME Z890-P WIFI`                | 0              | 3            | 1           | No fixed LEDs         |
+| `ROG STRIX B850-F GAMING WIFI`     | 2              | 3            | 2           |                       |
 
 DMI board name is read at runtime via `/sys/class/dmi/id/board_name` on Linux.
 
@@ -122,23 +123,24 @@ DMI board name is read at runtime via `/sys/class/dmi/id/board_name` on Linux.
 
 Standalone addressable RGB header controller (external hub):
 
-| PID | Name | Channels | LEDs/Channel | Extra |
-|-----|------|----------|-------------|-------|
-| `0x1889` | ASUS Aura Terminal | 4 | 90 | +1 Logo LED |
+| PID      | Name               | Channels | LEDs/Channel | Extra       |
+| -------- | ------------------ | -------- | ------------ | ----------- |
+| `0x1889` | ASUS Aura Terminal | 4        | 90           | +1 Logo LED |
 
 ### 2.4 ENE SMBus Device Addresses
 
 **Motherboard controllers:**
 
-| Address | Role |
-|---------|------|
-| `0x40` | Primary Aura controller |
-| `0x4E` | Secondary controller |
-| `0x4F` | Tertiary controller |
+| Address | Role                    |
+| ------- | ----------------------- |
+| `0x40`  | Primary Aura controller |
+| `0x4E`  | Secondary controller    |
+| `0x4F`  | Tertiary controller     |
 
 **DRAM controllers (remappable):**
 
 Hub address `0x77` manages dynamic remapping to:
+
 ```
 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x78, 0x79, 0x7A, 0x7B,
 0x7C, 0x7D, 0x7E, 0x7F, 0x4F, 0x66, 0x67, 0x39, 0x3A, 0x3B, 0x3C, 0x3D
@@ -146,31 +148,31 @@ Hub address `0x77` manages dynamic remapping to:
 
 **GPU controllers:**
 
-| Address | GPU Era |
-|---------|---------|
-| `0x29` | GTX 10-series, RTX 20-series, RX 400/500/5000 |
-| `0x2A` | Newer variants |
-| `0x67` | RTX 30/40/50-series, RX 6000+ |
+| Address | GPU Era                                       |
+| ------- | --------------------------------------------- |
+| `0x29`  | GTX 10-series, RTX 20-series, RX 400/500/5000 |
+| `0x2A`  | Newer variants                                |
+| `0x67`  | RTX 30/40/50-series, RX 6000+                 |
 
 ### 2.5 ENE Firmware Variant Dispatch
 
 Read from register `0x1000` (16 bytes). Determines register layout and capabilities via a 4-tuple: `(direct_reg, effect_reg, channel_cfg_offset, led_count_offset)`.
 
-| Version String | Type | Direct Reg | Effect Reg | Channel Cfg | LED Count Offset | Notes |
-|---------------|------|-----------|-----------|------------|-----------------|-------|
-| `LED-0116` | Motherboard V1 | `0x8000` | `0x8010` | `0x13` | `0x02` | First generation |
-| `AUMA0-E8K4-0101` | Motherboard V1 | `0x8000` | `0x8010` | `0x13` | `0x02` | First gen variant |
-| `AUMA0-E6K5-0104` | Motherboard V2 | `0x8100` | `0x8160` | `0x1B` | `0x02` | Second generation |
-| `AUMA0-E6K5-0105` | Motherboard V2 | `0x8100` | `0x8160` | `0x1B` | `0x02` | Variant A |
-| `AUMA0-E6K5-0106` | Motherboard V2 | `0x8100` | `0x8160` | `0x1B` | `0x02` | Variant B |
-| `AUMA0-E6K5-0107` | GPU V2 | `0x8100` | `0x8160` | `0x1B` | `0x03` | GPU cards |
-| `AUMA0-E6K5-0008` | GPU V2 (hybrid) | `0x8100` | `0x8160` | **`0x13`** | `0x03` | V2 regs + **V1 config offset** |
-| `AUMA0-E6K5-1107` | GPU V2 | `0x8100` | `0x8160` | `0x1B` | `0x03` | TUF RTX 4070 Ti |
-| `AUMA0-E6K5-1110` | GPU V3 | `0x8100` | `0x8160` | `0x1B` | `0x03` | RTX 4080+ |
-| `AUMA0-E6K5-1111` | GPU V4 | `0x8100` | `0x8160` | `0x1B` | `0x03` | RTX 4090 |
-| `AUMA0-E6K5-1113` | GPU V5 | `0x8100` | `0x8160` | `0x1B` | `0x03` | RTX 5080 |
-| `DIMM_LED-0102` | DRAM V1 | `0x8000` | `0x8010` | `0x13` | `0x02` | Trident Z RGB era |
-| `AUDA0-E6K5-0101` | DRAM V2 | `0x8100` | `0x8160` | `0x13` | `0x02` | Geil Super Luce; supports Mode 14 |
+| Version String    | Type            | Direct Reg | Effect Reg | Channel Cfg | LED Count Offset | Notes                             |
+| ----------------- | --------------- | ---------- | ---------- | ----------- | ---------------- | --------------------------------- |
+| `LED-0116`        | Motherboard V1  | `0x8000`   | `0x8010`   | `0x13`      | `0x02`           | First generation                  |
+| `AUMA0-E8K4-0101` | Motherboard V1  | `0x8000`   | `0x8010`   | `0x13`      | `0x02`           | First gen variant                 |
+| `AUMA0-E6K5-0104` | Motherboard V2  | `0x8100`   | `0x8160`   | `0x1B`      | `0x02`           | Second generation                 |
+| `AUMA0-E6K5-0105` | Motherboard V2  | `0x8100`   | `0x8160`   | `0x1B`      | `0x02`           | Variant A                         |
+| `AUMA0-E6K5-0106` | Motherboard V2  | `0x8100`   | `0x8160`   | `0x1B`      | `0x02`           | Variant B                         |
+| `AUMA0-E6K5-0107` | GPU V2          | `0x8100`   | `0x8160`   | `0x1B`      | `0x03`           | GPU cards                         |
+| `AUMA0-E6K5-0008` | GPU V2 (hybrid) | `0x8100`   | `0x8160`   | **`0x13`**  | `0x03`           | V2 regs + **V1 config offset**    |
+| `AUMA0-E6K5-1107` | GPU V2          | `0x8100`   | `0x8160`   | `0x1B`      | `0x03`           | TUF RTX 4070 Ti                   |
+| `AUMA0-E6K5-1110` | GPU V3          | `0x8100`   | `0x8160`   | `0x1B`      | `0x03`           | RTX 4080+                         |
+| `AUMA0-E6K5-1111` | GPU V4          | `0x8100`   | `0x8160`   | `0x1B`      | `0x03`           | RTX 4090                          |
+| `AUMA0-E6K5-1113` | GPU V5          | `0x8100`   | `0x8160`   | `0x1B`      | `0x03`           | RTX 5080                          |
+| `DIMM_LED-0102`   | DRAM V1         | `0x8000`   | `0x8010`   | `0x13`      | `0x02`           | Trident Z RGB era                 |
+| `AUDA0-E6K5-0101` | DRAM V2         | `0x8100`   | `0x8160`   | `0x13`      | `0x02`           | Geil Super Luce; supports Mode 14 |
 
 **Key quirk:** `AUMA0-E6K5-0008` (Strix RTX 4070 Super) uses V2 color registers but V1 config table offset — a hybrid that cannot be represented by a simple V1/V2 enum. The implementation must dispatch all four parameters independently per firmware string.
 
@@ -285,16 +287,16 @@ graph TD
 
 ### 3.1 Protocol Family Comparison
 
-| Aspect | USB Motherboard | ENE SMBus | USB Peripherals |
-|--------|----------------|-----------|-----------------|
-| Report ID | `0xEC` | N/A | `0x00` / `0xEE` / `0x03` |
-| Packet size | 65 bytes | 1–3 bytes/op | 8–65 bytes |
-| Transport | `hid_write`/`hid_read` | I2C SMBus | `hid_write`/`hid_read` or feature reports |
-| HID Interface | 2 (via hidraw) | `/dev/i2c-*` | 0–2 (device-dependent) |
-| Max LEDs/pkt | 20 | 5 (V1) / 10 (V2) | 1–15 |
-| Color order | RGB (configurable) | **RBG** (all versions) | RGB or RBG (device-dependent) |
-| Direct mode | `0xFF` | Register `0x8020` | Varies |
-| Apply mechanism | Apply flag in packet | Direct writes usually self-apply; DRAM variants latch via `0x802F`, effect/save uses `0x80A0` | Save packet or read handshake |
+| Aspect          | USB Motherboard        | ENE SMBus                                                                                     | USB Peripherals                           |
+| --------------- | ---------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Report ID       | `0xEC`                 | N/A                                                                                           | `0x00` / `0xEE` / `0x03`                  |
+| Packet size     | 65 bytes               | 1–3 bytes/op                                                                                  | 8–65 bytes                                |
+| Transport       | `hid_write`/`hid_read` | I2C SMBus                                                                                     | `hid_write`/`hid_read` or feature reports |
+| HID Interface   | 2 (via hidraw)         | `/dev/i2c-*`                                                                                  | 0–2 (device-dependent)                    |
+| Max LEDs/pkt    | 20                     | 5 (V1) / 10 (V2)                                                                              | 1–15                                      |
+| Color order     | RGB (configurable)     | **RBG** (all versions)                                                                        | RGB or RBG (device-dependent)             |
+| Direct mode     | `0xFF`                 | Register `0x8020`                                                                             | Varies                                    |
+| Apply mechanism | Apply flag in packet   | Direct writes usually self-apply; DRAM variants latch via `0x802F`, effect/save uses `0x80A0` | Save packet or read handshake             |
 
 ### 3.2 USB HID Transport
 
@@ -302,10 +304,10 @@ graph TD
 
 For the motherboard controller (`0x19AF`) detected on this system:
 
-| Interface | Class | Endpoints | Driver | Purpose |
-|-----------|-------|-----------|--------|---------|
-| 0 | Vendor (`ff:ff:ff`) | 0 endpoints | None | Not used for RGB (vendor-specific, no driver) |
-| 2 | HID | EP 0x82 IN (interrupt, 32B, 4ms) | `usbhid` | **Aura command interface** via hidraw |
+| Interface | Class               | Endpoints                        | Driver   | Purpose                                       |
+| --------- | ------------------- | -------------------------------- | -------- | --------------------------------------------- |
+| 0         | Vendor (`ff:ff:ff`) | 0 endpoints                      | None     | Not used for RGB (vendor-specific, no driver) |
+| 2         | HID                 | EP 0x82 IN (interrupt, 32B, 4ms) | `usbhid` | **Aura command interface** via hidraw         |
 
 **HID Report Descriptor (Interface 2):** Vendor Usage Page `0xFF72`, Report ID `0xEC`, 65-byte reports. Both Input and Output reports supported.
 
@@ -331,20 +333,21 @@ Packets are sent via `hid_write(dev, buf, 65)` and responses read via `hid_read(
 
 ### 4.2 Command Vocabulary
 
-| Command | ID | Direction | Description |
-|---------|----|-----------|-------------|
-| Firmware Version | `0x82` | Request/Response | Query 16-byte firmware string |
-| Config Table | `0xB0` | Request/Response | Query 60-byte device topology |
-| Set Mode (Effect) | `0x35` | Write | Set channel effect mode |
-| Set Effect Color | `0x36` | Write | Set LED colors for effect mode |
-| Set Addressable Mode | `0x3B` | Write | Set ARGB header effect |
-| Commit | `0x3F` | Write | Apply pending changes |
-| Direct Control | `0x40` | Write | Stream per-LED colors (direct mode) |
-| Disable Gen2 | `0x52` | Write | Gen1 compatibility init |
+| Command              | ID     | Direction        | Description                         |
+| -------------------- | ------ | ---------------- | ----------------------------------- |
+| Firmware Version     | `0x82` | Request/Response | Query 16-byte firmware string       |
+| Config Table         | `0xB0` | Request/Response | Query 60-byte device topology       |
+| Set Mode (Effect)    | `0x35` | Write            | Set channel effect mode             |
+| Set Effect Color     | `0x36` | Write            | Set LED colors for effect mode      |
+| Set Addressable Mode | `0x3B` | Write            | Set ARGB header effect              |
+| Commit               | `0x3F` | Write            | Apply pending changes               |
+| Direct Control       | `0x40` | Write            | Stream per-LED colors (direct mode) |
+| Disable Gen2         | `0x52` | Write            | Gen1 compatibility init             |
 
 ### 4.3 Firmware Version Query (`0x82`)
 
 **Request:**
+
 ```
 [0x00] = 0xEC
 [0x01] = 0x82
@@ -352,6 +355,7 @@ Packets are sent via `hid_write(dev, buf, 65)` and responses read via `hid_read(
 ```
 
 **Response:**
+
 ```
 [0x00] = 0xEC
 [0x01] = 0x02        (FIRMWARE_RESPONSE marker)
@@ -363,6 +367,7 @@ The firmware string identifies the board model and is used for zone override loo
 ### 4.4 Configuration Table Query (`0xB0`)
 
 **Request:**
+
 ```
 [0x00] = 0xEC
 [0x01] = 0xB0
@@ -370,6 +375,7 @@ The firmware string identifies the board model and is used for zone override loo
 ```
 
 **Response:**
+
 ```
 [0x00] = 0xEC
 [0x01] = 0x30        (CONFIG_TABLE_RESPONSE marker)
@@ -379,11 +385,11 @@ The firmware string identifies the board model and is used for zone override loo
 
 **Configuration table layout (60 bytes, offsets relative to table start at byte 4):**
 
-| Offset | Field | Description |
-|--------|-------|-------------|
-| `0x02` | `argb_channel_count` | Number of addressable RGB headers |
-| `0x1B` | `mainboard_led_count` | Total fixed onboard LEDs |
-| `0x1D` | `rgb_header_count` | Number of 12V RGB headers |
+| Offset | Field                 | Description                       |
+| ------ | --------------------- | --------------------------------- |
+| `0x02` | `argb_channel_count`  | Number of addressable RGB headers |
+| `0x1B` | `mainboard_led_count` | Total fixed onboard LEDs          |
+| `0x1D` | `rgb_header_count`    | Number of 12V RGB headers         |
 
 These values are used as defaults. If an override exists in §2.2 for the firmware string or DMI board name, the override values take precedence.
 
@@ -401,6 +407,7 @@ Switches a channel from hardware effect mode to direct (per-LED) control:
 ```
 
 **Channel indexing:**
+
 - `0x00`..`0x03` — ARGB header channels 1–4
 - `0x04` — Mainboard fixed LEDs (MAINBOARD_DIRECT_IDX)
 
@@ -420,6 +427,7 @@ Sets LED colors for hardware effect mode. Uses a 16-bit bitmask to select which 
 ```
 
 **LED mask calculation:**
+
 ```rust
 fn led_mask(start: u8, count: u8) -> u16 {
     ((1u16 << count) - 1) << start
@@ -445,14 +453,15 @@ Stream per-LED RGB data in 20-LED chunks:
 
 **Flags byte breakdown:**
 
-| Bit | Mask | Meaning |
-|-----|------|---------|
-| 7 | `0x80` | **Apply flag** — set on final packet to commit frame |
-| 6–0 | `0x7F` | Channel index |
+| Bit | Mask   | Meaning                                              |
+| --- | ------ | ---------------------------------------------------- |
+| 7   | `0x80` | **Apply flag** — set on final packet to commit frame |
+| 6–0 | `0x7F` | Channel index                                        |
 
 **Maximum 20 LEDs per packet** (`0x14`). For channels with more than 20 LEDs, send multiple packets with incrementing `led_offset`, setting the apply flag only on the final packet.
 
 **Example: 3-LED mainboard update:**
+
 ```
 Packet 1 (and only):
   [0x00] = 0xEC
@@ -490,37 +499,37 @@ Some older boards require a Gen1 disable command before entering direct mode:
 
 ### 4.10 USB Motherboard Hardware Effect Modes
 
-| Mode ID | Name | Colors | Speed | Direction |
-|---------|------|--------|-------|-----------|
-| `0x00` | Off | — | — | — |
-| `0x01` | Static | 1 | — | — |
-| `0x02` | Breathing | 1 | Yes | — |
-| `0x03` | Flashing | 1 | Yes | — |
-| `0x04` | Spectrum Cycle | — | Yes | — |
-| `0x05` | Rainbow | — | Yes | Yes |
-| `0x06` | Spectrum Breathing | — | Yes | — |
-| `0x07` | Chase Fade | 1 | Yes | Yes |
-| `0x08` | Spectrum Chase Fade | — | Yes | Yes |
-| `0x09` | Chase | 1 | Yes | Yes |
-| `0x0A` | Spectrum Chase | — | Yes | Yes |
-| `0x0B` | Spectrum Wave | — | Yes | Yes |
-| `0x0C` | Chase Rainbow Pulse | — | Yes | Yes |
-| `0x0D` | Random Flicker | — | Yes | — |
-| `0x0E` | Music | — | — | — |
-| `0xFF` | **Direct** | Per-LED | — | — |
+| Mode ID | Name                | Colors  | Speed | Direction |
+| ------- | ------------------- | ------- | ----- | --------- |
+| `0x00`  | Off                 | —       | —     | —         |
+| `0x01`  | Static              | 1       | —     | —         |
+| `0x02`  | Breathing           | 1       | Yes   | —         |
+| `0x03`  | Flashing            | 1       | Yes   | —         |
+| `0x04`  | Spectrum Cycle      | —       | Yes   | —         |
+| `0x05`  | Rainbow             | —       | Yes   | Yes       |
+| `0x06`  | Spectrum Breathing  | —       | Yes   | —         |
+| `0x07`  | Chase Fade          | 1       | Yes   | Yes       |
+| `0x08`  | Spectrum Chase Fade | —       | Yes   | Yes       |
+| `0x09`  | Chase               | 1       | Yes   | Yes       |
+| `0x0A`  | Spectrum Chase      | —       | Yes   | Yes       |
+| `0x0B`  | Spectrum Wave       | —       | Yes   | Yes       |
+| `0x0C`  | Chase Rainbow Pulse | —       | Yes   | Yes       |
+| `0x0D`  | Random Flicker      | —       | Yes   | —         |
+| `0x0E`  | Music               | —       | —     | —         |
+| `0xFF`  | **Direct**          | Per-LED | —     | —         |
 
 ### 4.11 Color Order Permutations
 
 The USB motherboard protocol defaults to RGB, but some boards have non-standard color ordering. Hypercolor exposes a user-configurable color order:
 
-| Setting | Byte Order | Index Map |
-|---------|-----------|-----------|
-| RGB | R, G, B | `[0, 1, 2]` |
-| RBG | R, B, G | `[0, 2, 1]` |
-| GRB | G, R, B | `[1, 0, 2]` |
-| GBR | G, B, R | `[1, 2, 0]` |
-| BRG | B, R, G | `[2, 0, 1]` |
-| BGR | B, G, R | `[2, 1, 0]` |
+| Setting | Byte Order | Index Map   |
+| ------- | ---------- | ----------- |
+| RGB     | R, G, B    | `[0, 1, 2]` |
+| RBG     | R, B, G    | `[0, 2, 1]` |
+| GRB     | G, R, B    | `[1, 0, 2]` |
+| GBR     | G, B, R    | `[1, 2, 0]` |
+| BRG     | B, R, G    | `[2, 0, 1]` |
+| BGR     | B, G, R    | `[2, 1, 0]` |
 
 Default is RGB. Stored as a per-device configuration parameter.
 
@@ -552,6 +561,7 @@ Uses the same `0x40` direct control packet as §4.7, with channel indices 0–3 
 **LED counts are per-header, not uniform.** A system might have Header 1 with 60 LEDs and Header 2 with 30. The protocol struct stores a `Vec<u32>` of per-header counts, not a single scalar.
 
 **Multi-packet streaming example (90-LED ARGB strip on channel 0):**
+
 ```
 Packet 1: [0xEC, 0x40, 0x00, 0x00, 0x14, RGB x20]  channel 0, offset 0, 20 LEDs
 Packet 2: [0xEC, 0x40, 0x00, 0x14, 0x14, RGB x20]  channel 0, offset 20, 20 LEDs
@@ -564,13 +574,13 @@ Packet 5: [0xEC, 0x40, 0x80, 0x50, 0x0A, RGB x10]  channel 0|apply, offset 80, 1
 
 The Aura Terminal (`0x1889`) uses the same packet format but addresses 4 independent ARGB channels plus a single logo LED. It uses `0x3B` for mode control (not `0x35`):
 
-| Channel | Zone | Max LEDs |
-|---------|------|----------|
-| 0 | ARGB Channel 1 | 90 |
-| 1 | ARGB Channel 2 | 90 |
-| 2 | ARGB Channel 3 | 90 |
-| 3 | ARGB Channel 4 | 90 |
-| 4 | Logo | 1 |
+| Channel | Zone           | Max LEDs |
+| ------- | -------------- | -------- |
+| 0       | ARGB Channel 1 | 90       |
+| 1       | ARGB Channel 2 | 90       |
+| 2       | ARGB Channel 3 | 90       |
+| 3       | ARGB Channel 4 | 90       |
+| 4       | Logo           | 1        |
 
 ---
 
@@ -580,18 +590,19 @@ The ENE SMBus protocol is used by embedded ENE Technology RGB controllers on ASU
 
 ### 6.1 Linux Prerequisites
 
-| Requirement | Command |
-|------------|---------|
-| Kernel module | `modprobe i2c-dev` |
-| Tools (optional) | `pacman -S i2c-tools` |
-| SMBus controller | `i2c-i801` (Intel) or `i2c-piix4` (AMD) |
-| User access | udev rule for `/dev/i2c-*` or run as root |
+| Requirement      | Command                                   |
+| ---------------- | ----------------------------------------- |
+| Kernel module    | `modprobe i2c-dev`                        |
+| Tools (optional) | `pacman -S i2c-tools`                     |
+| SMBus controller | `i2c-i801` (Intel) or `i2c-piix4` (AMD)   |
+| User access      | udev rule for `/dev/i2c-*` or run as root |
 
 ### 6.2 Register Addressing
 
 ENE controllers use a **16-bit register address space** accessed via 2-step indirect addressing:
 
 **Read sequence:**
+
 ```
 1. Write byte-swapped 16-bit register address to SMBus word register 0x00:
    i2c_smbus_write_word_data(addr, 0x00, byte_swap(register))
@@ -601,6 +612,7 @@ ENE controllers use a **16-bit register address space** accessed via 2-step indi
 ```
 
 **Write sequence:**
+
 ```
 1. Write byte-swapped 16-bit register address to SMBus word register 0x00:
    i2c_smbus_write_word_data(addr, 0x00, byte_swap(register))
@@ -610,6 +622,7 @@ ENE controllers use a **16-bit register address space** accessed via 2-step indi
 ```
 
 **Block write sequence (max 3 bytes per operation):**
+
 ```
 1. Write byte-swapped 16-bit register address to SMBus word register 0x00:
    i2c_smbus_write_word_data(addr, 0x00, byte_swap(register))
@@ -619,6 +632,7 @@ ENE controllers use a **16-bit register address space** accessed via 2-step indi
 ```
 
 **Address byte swap:**
+
 ```rust
 fn ene_byte_swap(reg: u16) -> u16 {
     ((reg << 8) & 0xFF00) | ((reg >> 8) & 0x00FF)
@@ -654,14 +668,15 @@ I2C_ADDRESS        0x80F9     1    DRAM I2C address remapper (hub 0x77 only)
 
 Register `0x80A0` accepts two distinct values:
 
-| Value | Constant | Behavior |
-|-------|----------|----------|
+| Value  | Constant        | Behavior                                                    |
+| ------ | --------------- | ----------------------------------------------------------- |
 | `0x01` | `ENE_APPLY_VAL` | **Transient apply** — immediate effect, lost on power cycle |
-| `0xAA` | `ENE_SAVE_VAL` | **Persistent save** — writes to non-volatile storage |
+| `0xAA` | `ENE_SAVE_VAL`  | **Persistent save** — writes to non-volatile storage        |
 
 Hypercolor reserves `0xAA` (persistent) for explicit user "save to device" operations, if exposed.
 
 Direct-mode behavior splits by controller family:
+
 - Motherboard/GPU ENE direct writes generally take effect once direct mode is enabled; they do not require a per-frame `0x80A0` write.
 - DRAM variants `DIMM_LED-0102` and `AUDA0-E6K5-0101` require a **per-frame** latch write of `0x01` to register `0x802F` after the color block uploads. This matches the known working ENE RAM flow.
 - OpenRGB still uses `0x80A0 = 0x01` when switching controller mode/state, but not as the steady-state direct-frame commit path.
@@ -679,6 +694,7 @@ Both V1 (0x8000) and V2 (0x8100):
 ```
 
 Verified from OpenRGB source (`ENESMBusController.cpp:426-435`):
+
 ```cpp
 color_buf[i + 0] = RGBGetRValue(colors[i / 3]);   // RED
 color_buf[i + 1] = RGBGetBValue(colors[i / 3]);   // BLUE
@@ -691,27 +707,28 @@ The Hypercolor protocol encoder must swap B and G when writing to ENE controller
 
 **Separate from USB motherboard modes (§4.10).** The ENE controller has its own mode table:
 
-| Mode ID | Name | Colors | Speed | Direction | Notes |
-|---------|------|--------|-------|-----------|-------|
-| `0` | Off | — | — | — | |
-| `1` | Static | 1 | — | — | |
-| `2` | Breathing | 1 | Yes | — | |
-| `3` | Flashing | 1 | Yes | — | |
-| `4` | Spectrum Cycle | — | Yes | — | |
-| `5` | Rainbow | — | Yes | Yes | |
-| `6` | Spectrum Breathing | — | Yes | — | |
-| `7` | Chase Fade | 1 | Yes | Yes | |
-| `8` | Spectrum Chase Fade | — | Yes | Yes | |
-| `9` | Chase | 1 | Yes | Yes | |
-| `10` | Spectrum Chase | — | Yes | Yes | |
-| `11` | Spectrum Wave | — | Yes | Yes | |
-| `12` | Chase Rainbow Pulse | — | Yes | Yes | |
-| `13` | Random Flicker | — | Yes | — | |
-| `14` | **Double Fade** | — | Yes | — | **DRAM only** — gated on DRAM_3 zone presence |
+| Mode ID | Name                | Colors | Speed | Direction | Notes                                         |
+| ------- | ------------------- | ------ | ----- | --------- | --------------------------------------------- |
+| `0`     | Off                 | —      | —     | —         |                                               |
+| `1`     | Static              | 1      | —     | —         |                                               |
+| `2`     | Breathing           | 1      | Yes   | —         |                                               |
+| `3`     | Flashing            | 1      | Yes   | —         |                                               |
+| `4`     | Spectrum Cycle      | —      | Yes   | —         |                                               |
+| `5`     | Rainbow             | —      | Yes   | Yes       |                                               |
+| `6`     | Spectrum Breathing  | —      | Yes   | —         |                                               |
+| `7`     | Chase Fade          | 1      | Yes   | Yes       |                                               |
+| `8`     | Spectrum Chase Fade | —      | Yes   | Yes       |                                               |
+| `9`     | Chase               | 1      | Yes   | Yes       |                                               |
+| `10`    | Spectrum Chase      | —      | Yes   | Yes       |                                               |
+| `11`    | Spectrum Wave       | —      | Yes   | Yes       |                                               |
+| `12`    | Chase Rainbow Pulse | —      | Yes   | Yes       |                                               |
+| `13`    | Random Flicker      | —      | Yes   | —         |                                               |
+| `14`    | **Double Fade**     | —      | Yes   | —         | **DRAM only** — gated on DRAM_3 zone presence |
 
 **Mode 14 (Double Fade)** is only supported on second-gen DRAM controllers (`AUDA0-E6K5-0101`) where a DRAM_3 zone channel (`0x0E`) is present in the config table. The implementation must check `supports_mode_14` before exposing this mode.
 
 **Speed values:**
+
 ```
 0x00 = Fastest
 0x01 = Fast
@@ -724,33 +741,34 @@ The Hypercolor protocol encoder must swap B and G when writing to ENE controller
 
 Zone channels are stored in the configuration table at the firmware-specific `channel_cfg` offset:
 
-| Channel ID | Zone Name | Description |
-|-----------|-----------|-------------|
-| `0x05` | DRAM 2 | DRAM (Gen 1) |
-| `0x0E` | DRAM 3 | DRAM (Gen 2) — presence enables Mode 14 |
-| `0x82` | Center Start | First center zone LED |
-| `0x83` | Center | Main center zone |
-| `0x84` | Audio | Audio area LEDs |
-| `0x85` | Back I/O | Rear I/O panel LEDs |
-| `0x86` | RGB Header 1 | Primary 12V header |
-| `0x87` | RGB Header 2 | Secondary 12V header |
-| `0x88` | Backplate | Backplate LEDs |
-| `0x8A` | DRAM | DRAM slot LEDs |
-| `0x8B` | PCIe | PCIe slot LEDs |
-| `0x91` | RGB Header 3 | Tertiary 12V header |
-| `0x95` | QLED | Q-LED diagnostic |
-| `0x98` | Power/Reset | Power/Reset buttons |
-| `0x99` | Chipset Top | Chipset heatsink (top) |
-| `0x9A` | Chipset Middle | Chipset heatsink (mid) |
-| `0x9B` | Chipset Bottom | Chipset heatsink (bottom) |
-| `0x9C` | Chipset Bottom 2 | Chipset heatsink (lower) |
-| `0xA0` | I/O Shield | I/O shield LEDs |
-| `0xA2` | M.2 Cover | M.2 heatsink cover |
-| `0xA3` | M.2 Cover 2 | Second M.2 cover |
+| Channel ID | Zone Name        | Description                             |
+| ---------- | ---------------- | --------------------------------------- |
+| `0x05`     | DRAM 2           | DRAM (Gen 1)                            |
+| `0x0E`     | DRAM 3           | DRAM (Gen 2) — presence enables Mode 14 |
+| `0x82`     | Center Start     | First center zone LED                   |
+| `0x83`     | Center           | Main center zone                        |
+| `0x84`     | Audio            | Audio area LEDs                         |
+| `0x85`     | Back I/O         | Rear I/O panel LEDs                     |
+| `0x86`     | RGB Header 1     | Primary 12V header                      |
+| `0x87`     | RGB Header 2     | Secondary 12V header                    |
+| `0x88`     | Backplate        | Backplate LEDs                          |
+| `0x8A`     | DRAM             | DRAM slot LEDs                          |
+| `0x8B`     | PCIe             | PCIe slot LEDs                          |
+| `0x91`     | RGB Header 3     | Tertiary 12V header                     |
+| `0x95`     | QLED             | Q-LED diagnostic                        |
+| `0x98`     | Power/Reset      | Power/Reset buttons                     |
+| `0x99`     | Chipset Top      | Chipset heatsink (top)                  |
+| `0x9A`     | Chipset Middle   | Chipset heatsink (mid)                  |
+| `0x9B`     | Chipset Bottom   | Chipset heatsink (bottom)               |
+| `0x9C`     | Chipset Bottom 2 | Chipset heatsink (lower)                |
+| `0xA0`     | I/O Shield       | I/O shield LEDs                         |
+| `0xA2`     | M.2 Cover        | M.2 heatsink cover                      |
+| `0xA3`     | M.2 Cover 2      | Second M.2 cover                        |
 
 ### 6.8 Detection Sequences
 
 **ENE controller detection (motherboard/GPU):**
+
 ```
 1. Read registers 0xA0..0xAF via i2c_smbus_read_byte_data
 2. Values must be sequential: 0x00, 0x01, 0x02, ..., 0x0F
@@ -761,6 +779,7 @@ Zone channels are stored in the configuration table at the firmware-specific `ch
 ```
 
 **Simple Aura GPU detection (0x29/0x2A):**
+
 ```
 1. Read byte from register 0x20 → expect 0x15
 2. Read byte from register 0x21 → expect 0x89
@@ -801,11 +820,11 @@ APPLY     0x0E     Apply (write 0x01)
 
 ### 6.11 Timing Requirements
 
-| Operation | Delay | Source |
-|-----------|-------|--------|
-| Between SMBus operations | 1ms | ENE bus recovery |
-| DRAM hub free-bus reads | 30ms per byte | OpenRGB SMBus interface |
-| Between ENE block writes | 1ms | Protocol requirement |
+| Operation                | Delay         | Source                  |
+| ------------------------ | ------------- | ----------------------- |
+| Between SMBus operations | 1ms           | ENE bus recovery        |
+| DRAM hub free-bus reads  | 30ms per byte | OpenRGB SMBus interface |
+| Between ENE block writes | 1ms           | Protocol requirement    |
 
 ---
 
@@ -819,6 +838,7 @@ Peripherals (mice, keyboards, mousemats, etc.) share the 65-byte HID report form
 **Interface:** 1 (Usage Page `0xFF01`)
 
 **Update packet (`0x51 0x28`):**
+
 ```
 [0x00] = 0x00        (Report ID)
 [0x01] = 0x51        (Update command)
@@ -836,6 +856,7 @@ Peripherals (mice, keyboards, mousemats, etc.) share the 65-byte HID report form
 ```
 
 **Direct mode (`0x51 0x29`):**
+
 ```
 [0x00] = 0x00
 [0x01] = 0x51
@@ -847,6 +868,7 @@ Peripherals (mice, keyboards, mousemats, etc.) share the 65-byte HID report form
 ```
 
 **Save command (`0x50 0x03`):**
+
 ```
 [0x00] = 0x00
 [0x01] = 0x50
@@ -861,6 +883,7 @@ Peripherals (mice, keyboards, mousemats, etc.) share the 65-byte HID report form
 **Direct frame update sequence:**
 
 1. **Data packets** — Send LED data in 15-LED chunks:
+
 ```
 [0x00] = 0x00        (Report ID)
 [0x01] = 0xC0        (Direct command)
@@ -869,9 +892,11 @@ Peripherals (mice, keyboards, mousemats, etc.) share the 65-byte HID report form
 [0x04] = 0x00
 [0x05..] = LED data  (4 bytes per LED: [index, R, G, B], max 15 LEDs/packet)
 ```
+
 Sent via `hid_write()`. Last data packet padded with `0xFF`.
 
 2. **Apply packet** — Finalize the frame with a write+read handshake:
+
 ```
 [0x00] = 0x00
 [0x01] = 0xC0
@@ -879,6 +904,7 @@ Sent via `hid_write()`. Last data packet padded with `0xFF`.
 [0x03] = 0x90        (apply signal)
 [0x04] = 0x00
 ```
+
 Sent via `hid_write()`, immediately followed by `hid_read()` to complete the handshake. The read response confirms the frame was applied.
 
 ### 7.3 Mousemat Protocol
@@ -886,6 +912,7 @@ Sent via `hid_write()`, immediately followed by `hid_read()` to complete the han
 **Report ID:** `0xEE` (distinct from other devices)
 
 **Direct LED packet (`0xC0 0x81`):**
+
 ```
 [0x00] = 0xEE
 [0x01] = 0xC0
@@ -900,24 +927,26 @@ Sent via `hid_write()`, immediately followed by `hid_read()` to complete the han
 
 **Per-model quirks:**
 
-| Model | PID | LED Offset | Preamble | Component Order |
-|-------|-----|-----------|----------|-----------------|
-| XG279Q | `0x1919` | `0` | None | R, B, G |
-| XG27AQ | `0x198C` | `16` | None | R, B, G |
-| XG27AQM | `0x19BB` | `16` | None | R, B, G |
-| XG27W | `0x1933` | `16` | None | R, B, G |
-| XG32VC | `0x1968` | `16` | **2-phase** | R, B, G |
-| PG32UQ | `0x19B9` | `16` | **2-phase** | R, B, G |
+| Model   | PID      | LED Offset | Preamble    | Component Order |
+| ------- | -------- | ---------- | ----------- | --------------- |
+| XG279Q  | `0x1919` | `0`        | None        | R, B, G         |
+| XG27AQ  | `0x198C` | `16`       | None        | R, B, G         |
+| XG27AQM | `0x19BB` | `16`       | None        | R, B, G         |
+| XG27W   | `0x1933` | `16`       | None        | R, B, G         |
+| XG32VC  | `0x1968` | `16`       | **2-phase** | R, B, G         |
+| PG32UQ  | `0x19B9` | `16`       | **2-phase** | R, B, G         |
 
 **Component write order is R, B, G** (not standard RGB). Each LED requires 3 separate feature reports — one per color component.
 
 **2-phase preamble (PG32UQ and XG32VC only):**
+
 ```
 Phase 1: [0x03, 0x02, 0xA1, 0x80, 0x20, 0x00, 0x00, 0x00]
 Phase 2: [0x03, 0x02, 0xA1, 0x80, 0x30, 0x00, 0x00, 0x00]
 ```
 
 **Per-LED update (3 feature reports per LED):**
+
 ```
 Red:   [0x03, 0x02, 0xA1, 0x80, offset + led*3 + 0, red_value,   0x00, 0x00]
 Blue:  [0x03, 0x02, 0xA1, 0x80, offset + led*3 + 1, blue_value,  0x00, 0x00]
@@ -925,6 +954,7 @@ Green: [0x03, 0x02, 0xA1, 0x80, offset + led*3 + 2, green_value, 0x00, 0x00]
 ```
 
 **Apply:**
+
 ```
 [0x03, 0x02, 0xA1, 0x80, 0xA0, 0x01, 0x00, 0x00]
 ```
@@ -1415,19 +1445,21 @@ graph TD
 
 ### 9.2 Timing Budget
 
-| Operation | Duration | Source |
-|-----------|----------|--------|
-| HID write (65B) | ~1ms | USB Full Speed via hidraw |
-| HID read (65B) | ~1ms | USB Full Speed via hidraw |
-| Config query round-trip | ~50ms | Write + response delay + read |
-| Apply overhead | 0ms | Folded into apply flag on final packet |
+| Operation               | Duration | Source                                 |
+| ----------------------- | -------- | -------------------------------------- |
+| HID write (65B)         | ~1ms     | USB Full Speed via hidraw              |
+| HID read (65B)          | ~1ms     | USB Full Speed via hidraw              |
+| Config query round-trip | ~50ms    | Write + response delay + read          |
+| Apply overhead          | 0ms      | Folded into apply flag on final packet |
 
 **Example: 3 mainboard LEDs + 60-LED ARGB strip:**
+
 - Mainboard: 1 packet (3 LEDs with apply flag)
 - ARGB: 3 packets (20 + 20 + 20 LEDs, last with apply)
 - Total: 4 packets x ~1ms = **~4ms per frame** → 250fps theoretical max
 
 **Example: 3 mainboard LEDs + 3 x 90-LED ARGB strips:**
+
 - Mainboard: 1 packet
 - ARGB Ch1: 5 packets (20+20+20+20+10)
 - ARGB Ch2: 5 packets
@@ -1458,6 +1490,7 @@ graph TD
 ```
 
 **Frame timing:**
+
 - 5-LED V1 DRAM: 5 colors x 3 bytes / 3 bytes per block = 5 writes + 1 latch = **~6ms**
 - 10-LED V2 DRAM: 10 colors x 3 bytes / 3 bytes per block = 10 writes + 1 latch = **~11ms**
 - Non-DRAM ENE direct mode omits the per-frame latch step
@@ -1482,12 +1515,14 @@ pub struct MockAuraTransport {
 ### 10.2 Test Categories
 
 **Packet encoding:**
+
 - Direct control packet layout for various LED counts (1, 20, 21, 60, 90, 120)
 - Apply flag only on final packet per channel
 - Color order permutation: all 6 orderings produce correct byte sequences
 - Multi-channel frame splitting (mainboard + variable ARGB headers)
 
 **Runtime topology discovery:**
+
 - Pre-init: `zones()` returns placeholder with default LED counts
 - Post firmware response: `parse_response()` updates firmware string
 - Post config response: `parse_response()` finalizes topology, `zones()` returns real data
@@ -1496,6 +1531,7 @@ pub struct MockAuraTransport {
 - Per-header LED counts: mixed-length ARGB strips produce correct zone descriptors
 
 **Init sequence:**
+
 - Firmware query packet format (byte-exact)
 - Config table query packet format
 - Gen1 disable emitted when configured
@@ -1505,11 +1541,13 @@ pub struct MockAuraTransport {
   - Terminal: channels 0..4 (uses 0x3B, not 0x35)
 
 **Effect color packet (0x36):**
+
 - LED mask calculation for various (start, count) pairs
 - Color data placement at correct offset within packet
 - Shutdown effect flag handling
 
 **ENE SMBus protocol (Phase 2):**
+
 - Register byte-swap calculation
 - RBG color permutation applied uniformly (V1 and V2)
 - Block write chunking at 3-byte boundary
@@ -1520,6 +1558,7 @@ pub struct MockAuraTransport {
 - DRAM hub remapping sequence
 
 **Device descriptor validation:**
+
 - All PIDs resolve to valid descriptors
 - Transport type is `UsbHidRaw` for all USB motherboard/addressable/terminal
 - Protocol binding IDs are unique
@@ -1554,6 +1593,7 @@ fn smoke_test_asus_aura_motherboard() {
 **Scope:** Full direct-mode control of motherboard fixed LEDs, ARGB headers, and Aura Terminal via USB HID.
 
 **Files to create:**
+
 - `crates/hypercolor-hal/src/drivers/asus/mod.rs`
 - `crates/hypercolor-hal/src/drivers/asus/types.rs`
 - `crates/hypercolor-hal/src/drivers/asus/devices.rs`
@@ -1561,11 +1601,13 @@ fn smoke_test_asus_aura_motherboard() {
 - `crates/hypercolor-hal/tests/asus_protocol_tests.rs`
 
 **Files to modify:**
+
 - `crates/hypercolor-types/src/device.rs` — Add `DeviceFamily::Asus`
 - `crates/hypercolor-hal/src/drivers/mod.rs` — Add `pub mod asus;`
 - `crates/hypercolor-hal/src/database.rs` — Register ASUS descriptors
 
 **Deliverables:**
+
 - [ ] `AuraUsbProtocol` with `RwLock<AuraTopology>` interior mutability
 - [ ] `parse_response()` handling for firmware (0x02) and config (0x30) responses
 - [ ] Firmware string + DMI board name override table (17 entries)
@@ -1581,21 +1623,23 @@ fn smoke_test_asus_aura_motherboard() {
 **Scope:** SMBus-based control for ENE controllers on motherboards and GPUs.
 
 **New files:**
+
 - `crates/hypercolor-hal/src/drivers/asus/smbus.rs` — `AuraSmBusProtocol`
 - `crates/hypercolor-hal/src/transport/smbus.rs` — `SmBusTransport`
 - `crates/hypercolor-hal/tests/asus_smbus_tests.rs`
 
 **Required infrastructure changes:**
 
-| Change | Location | Impact |
-|--------|----------|--------|
-| New `TransportType::I2cSmBus` variant | `registry.rs` | Enum addition |
-| New `SmBusTransport` impl | `transport/smbus.rs` | Uses `/dev/i2c-*` via `i2cdev` crate |
-| New `ConnectionType::SmBus` variant | `hypercolor-types/device.rs` | Existing `ConnectionType` is USB-centric |
-| SMBus bus scanner | `hypercolor-core/src/device/` | New discovery path alongside USB scanner |
-| GPU PCI subsystem matching | `smbus.rs` | PCI vendor/subsystem ID lookup to confirm ASUS GPU |
+| Change                                | Location                      | Impact                                             |
+| ------------------------------------- | ----------------------------- | -------------------------------------------------- |
+| New `TransportType::I2cSmBus` variant | `registry.rs`                 | Enum addition                                      |
+| New `SmBusTransport` impl             | `transport/smbus.rs`          | Uses `/dev/i2c-*` via `i2cdev` crate               |
+| New `ConnectionType::SmBus` variant   | `hypercolor-types/device.rs`  | Existing `ConnectionType` is USB-centric           |
+| SMBus bus scanner                     | `hypercolor-core/src/device/` | New discovery path alongside USB scanner           |
+| GPU PCI subsystem matching            | `smbus.rs`                    | PCI vendor/subsystem ID lookup to confirm ASUS GPU |
 
 **Key challenges:**
+
 - GPU I2C bus identification (PCI vendor/device/subsystem IDs)
 - Firmware variant dispatch (13 version strings → register tuples)
 - V1 and V2 color writes both use RBG byte order
@@ -1608,6 +1652,7 @@ fn smoke_test_asus_aura_motherboard() {
 **Scope:** USB HID control for ROG/TUF mice and keyboards; SMBus DRAM RGB.
 
 **Key challenges:**
+
 - Different report ID and command vocabulary per device class
 - Keyboard apply handshake (write 0x90 packet + hid_read)
 - Wireless device support (USB dongle vs direct)
@@ -1621,6 +1666,7 @@ fn smoke_test_asus_aura_motherboard() {
 **Scope:** Mousemats, headset stands, monitors, AIOs, handhelds.
 
 **Key challenges:**
+
 - Monitor uses 8-byte HID feature reports (`hid_send_feature_report`) — unique transport
 - Monitor per-model quirks: XG279Q offset=0, others offset=16, all use RBG component order
 - PG32UQ/XG32VC require 2-phase preamble before LED writes

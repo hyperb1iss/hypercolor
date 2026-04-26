@@ -26,19 +26,20 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Bliss |
-| **Age** | 28 |
-| **Occupation** | Principal Software Engineer |
-| **Technical Skill** | Expert — writes kernel modules for fun |
-| **OS** | Arch Linux / CachyOS, tiling WM (Hyprland) or GNOME 47 |
-| **Editor** | Neovim with SilkCircuit theme |
-| **Terminal** | Ghostty |
+|                     |                                                        |
+| ------------------- | ------------------------------------------------------ |
+| **Name**            | Bliss                                                  |
+| **Age**             | 28                                                     |
+| **Occupation**      | Principal Software Engineer                            |
+| **Technical Skill** | Expert — writes kernel modules for fun                 |
+| **OS**              | Arch Linux / CachyOS, tiling WM (Hyprland) or GNOME 47 |
+| **Editor**          | Neovim with SilkCircuit theme                          |
+| **Terminal**        | Ghostty                                                |
 
 ### Hardware Setup
 
 **PC (custom white build in Lian Li O11 Dynamic EVO):**
+
 - ASUS ROG STRIX Z790-A GAMING WIFI II (AURA RGB)
 - ASUS Dual RTX 4070 SUPER White OC (GPU RGB via SMBus)
 - G.Skill Trident Z5 Neo RGB DDR5-6000 64GB (2x32GB)
@@ -51,6 +52,7 @@
 - Dygma Defy (split ergo, self-managed RGB)
 
 **Room:**
+
 - 3x WLED ESP32 controllers (desk underglow, monitor backlight, shelf accent)
 - Philips Hue Bridge with 4 Play bars behind monitors
 - Total: **12+ addressable RGB devices, 2000+ individual LEDs**
@@ -138,19 +140,20 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Jake |
-| **Age** | 22 |
-| **Occupation** | College student (Computer Science, junior year) |
+|                     |                                                                                |
+| ------------------- | ------------------------------------------------------------------------------ |
+| **Name**            | Jake                                                                           |
+| **Age**             | 22                                                                             |
+| **Occupation**      | College student (Computer Science, junior year)                                |
 | **Technical Skill** | Intermediate — comfortable with terminal basics, follows Arch Wiki when needed |
-| **OS** | CachyOS (switched from Windows 11 last semester) |
-| **Desktop** | KDE Plasma 6 |
-| **Peripherals** | Corsair K70 RGB Pro, Logitech G502 X Plus, HyperX Cloud III |
+| **OS**              | CachyOS (switched from Windows 11 last semester)                               |
+| **Desktop**         | KDE Plasma 6                                                                   |
+| **Peripherals**     | Corsair K70 RGB Pro, Logitech G502 X Plus, HyperX Cloud III                    |
 
 ### Hardware Setup
 
 **PC (first build, budget-conscious):**
+
 - MSI MAG B650 TOMAHAWK WIFI (RGB headers, Mystic Light)
 - AMD Ryzen 7 7800X3D
 - RTX 4060 Ti (minimal GPU RGB -- just a small logo strip)
@@ -160,6 +163,7 @@
 - No WLED, no smart home devices
 
 **Room:**
+
 - Desk lamp (not smart)
 - Monitor has no ambient lighting
 - Dorm room -- roommate tolerance for RGB is moderate
@@ -248,31 +252,34 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Luna |
-| **Age** | 26 |
-| **Occupation** | Full-time Twitch streamer & YouTube creator (3.2K avg viewers) |
+|                     |                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Name**            | Luna                                                                                                             |
+| **Age**             | 26                                                                                                               |
+| **Occupation**      | Full-time Twitch streamer & YouTube creator (3.2K avg viewers)                                                   |
 | **Technical Skill** | Advanced user — not a developer, but configures complex OBS scenes, runs NGINX, manages her own streaming server |
-| **OS** | Pop!_OS 24.04 (stable, NVIDIA just works) |
-| **Desktop** | COSMIC |
-| **Content** | Variety gaming, Just Chatting, art streams |
+| **OS**              | Pop!\_OS 24.04 (stable, NVIDIA just works)                                                                       |
+| **Desktop**         | COSMIC                                                                                                           |
+| **Content**         | Variety gaming, Just Chatting, art streams                                                                       |
 
 ### Hardware Setup
 
 **Streaming PC:**
+
 - Intel i9-13900K, RTX 4080 SUPER
 - Corsair Dominator Platinum RGB DDR5 64GB
 - 3x Corsair LL120 RGB fans
 - NZXT Kraken Z73 RGB AIO
 
 **Peripherals:**
+
 - Razer Huntsman V3 Pro (per-key RGB, analog switches)
 - Razer DeathAdder V3 Pro (no RGB -- she values sensor over glow)
 - Elgato Stream Deck XL (integrates with everything)
 - GoXLR (audio mixer, has RGB ring)
 
 **Room Lighting (the star of the show):**
+
 - Elgato Key Light x2 (not RGB, but brightness-controlled)
 - Philips Hue Bridge with 8 bulbs:
   - 2x Play bars behind main monitor
@@ -393,47 +400,54 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Marcus |
-| **Age** | 45 |
-| **Occupation** | IT Infrastructure Manager at a mid-size company |
-| **Technical Skill** | Expert in networking and systems, intermediate in development |
-| **OS** | Ubuntu Server 24.04 LTS (headless Home Assistant host), Fedora 41 workstation |
-| **Smart Home Hub** | Home Assistant OS on a dedicated Intel NUC |
+|                     |                                                                               |
+| ------------------- | ----------------------------------------------------------------------------- |
+| **Name**            | Marcus                                                                        |
+| **Age**             | 45                                                                            |
+| **Occupation**      | IT Infrastructure Manager at a mid-size company                               |
+| **Technical Skill** | Expert in networking and systems, intermediate in development                 |
+| **OS**              | Ubuntu Server 24.04 LTS (headless Home Assistant host), Fedora 41 workstation |
+| **Smart Home Hub**  | Home Assistant OS on a dedicated Intel NUC                                    |
 
 ### Hardware Setup
 
 **Home Network:**
+
 - UniFi Dream Machine Pro (manages VLAN segmentation for IoT)
 - Dedicated IoT VLAN for all smart devices
 - 2x UniFi AP U6 Pro (full house WiFi coverage)
 
 **Lighting Inventory (30+ devices across 6 rooms):**
 
-*Living Room:*
+_Living Room:_
+
 - Philips Hue Bridge #1: 6x A19 bulbs (ceiling fixtures), 2x Lightstrip Plus (TV backlight, bookshelf)
 - WLED ESP32 #1: 150-LED strip along crown molding
 - WLED ESP32 #2: 60-LED strip behind couch
 
-*Kitchen:*
+_Kitchen:_
+
 - Philips Hue: 4x A19 bulbs (recessed cans), 1x Lightstrip (under-cabinet)
 - WLED ESP32 #3: 90-LED strip above cabinets
 
-*Office:*
+_Office:_
+
 - PC: modest RGB (mobo header + RAM, controlled via OpenRGB)
 - WLED ESP32 #4: monitor backlight (Hyperion-style)
 - WLED ESP32 #5: desk underglow
 - Hue: 2x Play bars behind monitors
 
-*Master Bedroom:*
+_Master Bedroom:_
+
 - Hue: 2x A19 (nightstand lamps), 1x Lightstrip (headboard)
 - WLED ESP32 #6: ceiling cove strip (100 LEDs)
 
-*Bathroom:*
+_Bathroom:_
+
 - WLED ESP32 #7: mirror backlight (40 LEDs, waterproof)
 
-*Porch/Exterior:*
+_Porch/Exterior:_
+
 - WLED ESP32 #8: 300-LED strip along roofline (seasonal colors)
 - Hue: 2x outdoor Lily spots
 
@@ -534,19 +548,20 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Yuki |
-| **Age** | 19 |
-| **Occupation** | Art school student (digital illustration + motion graphics) |
-| **Technical Skill** | Beginner-intermediate -- comfortable with creative software, not with config files |
-| **OS** | Fedora 41 with GNOME (switched for free creative tools: Krita, Blender, DaVinci Resolve) |
-| **Creative Tools** | Krita, Blender, DaVinci Resolve, Figma (browser) |
-| **Socials** | Instagram (@yuki.palettes), TikTok, Behance |
+|                     |                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| **Name**            | Yuki                                                                                     |
+| **Age**             | 19                                                                                       |
+| **Occupation**      | Art school student (digital illustration + motion graphics)                              |
+| **Technical Skill** | Beginner-intermediate -- comfortable with creative software, not with config files       |
+| **OS**              | Fedora 41 with GNOME (switched for free creative tools: Krita, Blender, DaVinci Resolve) |
+| **Creative Tools**  | Krita, Blender, DaVinci Resolve, Figma (browser)                                         |
+| **Socials**         | Instagram (@yuki.palettes), TikTok, Behance                                              |
 
 ### Hardware Setup
 
 **PC (clean, minimal, curated):**
+
 - White NZXT H7 Flow case
 - No excessive RGB -- just what came with the build:
   - Corsair Vengeance RGB DDR5 32GB (subtle top-edge RGB)
@@ -554,6 +569,7 @@
   - Keychron Q1 HE (per-key RGB, QMK/VIA)
 
 **The Real Setup (room aesthetic):**
+
 - WLED ESP32 x2:
   - Behind desk: 120-LED strip, diffused behind frosted acrylic panel
   - Behind headboard: 60-LED strip
@@ -657,19 +673,20 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Kai |
-| **Age** | 31 |
-| **Occupation** | Senior Software Developer at a cloud infrastructure company, open-source contributor |
-| **Technical Skill** | Expert -- contributes to Rust OSS projects, maintains two crates on crates.io |
-| **OS** | NixOS (of course) |
-| **Languages** | Rust, TypeScript, Go |
-| **OSS Contributions** | OpenRGB (submitted a controller driver), WLED (minor PRs), various Rust crates |
+|                       |                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------ |
+| **Name**              | Kai                                                                                  |
+| **Age**               | 31                                                                                   |
+| **Occupation**        | Senior Software Developer at a cloud infrastructure company, open-source contributor |
+| **Technical Skill**   | Expert -- contributes to Rust OSS projects, maintains two crates on crates.io        |
+| **OS**                | NixOS (of course)                                                                    |
+| **Languages**         | Rust, TypeScript, Go                                                                 |
+| **OSS Contributions** | OpenRGB (submitted a controller driver), WLED (minor PRs), various Rust crates       |
 
 ### Hardware Setup
 
 **Dev/Test Rig:**
+
 - Govee H6167 LED strip (their target device -- WiFi, proprietary protocol)
 - Govee Glide hexa panels (same protocol family)
 - WLED ESP32 (reference device for comparison testing)
@@ -678,6 +695,7 @@
 - A breadboard with WS2812B LEDs for raw testing
 
 **Personal PC:**
+
 - Modest build, not a gamer
 - Only RGB: 2x Corsair Vengeance RGB sticks (barely notices them)
 - WLED strip behind monitor (his one aesthetic indulgence)
@@ -780,19 +798,20 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Sam |
-| **Age** | 35 |
-| **Occupation** | Music producer (electronic / synthwave) and live performer |
+|                     |                                                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Name**            | Sam                                                                                                                   |
+| **Age**             | 35                                                                                                                    |
+| **Occupation**      | Music producer (electronic / synthwave) and live performer                                                            |
 | **Technical Skill** | Advanced user -- runs a complex DAW setup, comfortable with MIDI routing, latency optimization, and audio programming |
-| **OS** | Ubuntu Studio 24.04 (low-latency kernel, JACK audio) |
-| **DAW** | Bitwig Studio 5 |
-| **Audio** | Focusrite Scarlett 18i20 (3rd gen), JACK + PipeWire bridge |
+| **OS**              | Ubuntu Studio 24.04 (low-latency kernel, JACK audio)                                                                  |
+| **DAW**             | Bitwig Studio 5                                                                                                       |
+| **Audio**           | Focusrite Scarlett 18i20 (3rd gen), JACK + PipeWire bridge                                                            |
 
 ### Hardware Setup
 
 **Studio:**
+
 - PC: Ryzen 9 7950X, 128GB RAM, RTX 4070 (not a gaming rig -- GPU for GPU-accelerated plugins)
 - Minimal PC RGB (doesn't care about case lighting)
 - WLED ESP32 x4:
@@ -804,6 +823,7 @@
 - Nanoleaf Canvas squares x12 on the wall behind him (visible during live streams)
 
 **MIDI Controllers:**
+
 - Akai APC40 Mk2 (grid of RGB buttons -- not Hypercolor controlled, but MIDI input source)
 - Novation Launch Control XL (knobs for live parameter tweaking)
 - Custom Arduino MIDI controller (4x rotary encoders assigned to Hypercolor controls)
@@ -914,19 +934,20 @@
 
 ### Profile
 
-| | |
-|---|---|
-| **Name** | Robin |
-| **Age** | 40 |
-| **Occupation** | Graphic designer at a print shop, hobbyist PC builder |
-| **Technical Skill** | Intermediate -- built PCs for 15 years, used Linux casually, not a developer |
-| **Former OS** | Windows 11 (switched after the Recall controversy) |
-| **Current OS** | Linux Mint 22 (wanted something familiar) |
-| **Former RGB Software** | Proprietary RGB software (paid subscription, 2 years) |
+|                         |                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| **Name**                | Robin                                                                        |
+| **Age**                 | 40                                                                           |
+| **Occupation**          | Graphic designer at a print shop, hobbyist PC builder                        |
+| **Technical Skill**     | Intermediate -- built PCs for 15 years, used Linux casually, not a developer |
+| **Former OS**           | Windows 11 (switched after the Recall controversy)                           |
+| **Current OS**          | Linux Mint 22 (wanted something familiar)                                    |
+| **Former RGB Software** | Proprietary RGB software (paid subscription, 2 years)                        |
 
 ### Hardware Setup
 
 **PC (enthusiast build, not bleeding-edge):**
+
 - ASUS TUF Gaming Z790 (AURA Sync RGB)
 - Intel i7-13700K
 - EVGA GeForce RTX 3080 FTW3 (RGB on the shroud)
@@ -937,6 +958,7 @@
 - 2x generic ARGB strips (connected to mobo headers)
 
 **Peripherals:**
+
 - SteelSeries Apex Pro (per-key RGB)
 - SteelSeries Rival 650 (2-zone RGB)
 - No room lighting -- RGB lives inside the case
@@ -944,6 +966,7 @@
 ### What Robin Had on Windows
 
 **Previous Setup (years of customization):**
+
 - 4 saved profiles: "Daily Driver" (subtle blue gradient), "Gaming" (reactive red/orange), "Movie" (dim ambient), "Off" (hardware standby colors)
 - Spatial layout meticulously configured: every device positioned to match physical location in the case
 - Custom effect parameters tuned: speed = 3.7, wave height = 0.6, palette = "Ocean Dusk"
@@ -1142,7 +1165,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 1. Platform Lock-In (Severity: Critical)
 
-> *"I built a $3000 PC and I can't change my LED colors because I'm running the wrong operating system."*
+> _"I built a $3000 PC and I can't change my LED colors because I'm running the wrong operating system."_
 
 - iCUE, Aura Sync, SteelSeries GG, Razer Synapse -- all Windows-only
 - Users who want Linux have to choose between their OS and their RGB
@@ -1152,7 +1175,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 2. Software Fragmentation (Severity: High)
 
-> *"I have six apps running just to make my lights work, and they all fight each other."*
+> _"I have six apps running just to make my lights work, and they all fight each other."_
 
 - Corsair devices need iCUE. Razer needs Synapse. ASUS needs Armoury Crate.
 - OpenRGB unifies some, but not all (no Corsair iCUE LINK, no PrismRGB)
@@ -1163,7 +1186,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 3. Effects That Lie (Severity: Medium)
 
-> *"The preview showed a beautiful aurora. My case looks like a clown vomited."*
+> _"The preview showed a beautiful aurora. My case looks like a clown vomited."_
 
 - Effect thumbnails/previews are rendered on a flat 2D canvas
 - Actual LED output depends on spatial mapping, LED density, diffusion, brightness
@@ -1173,7 +1196,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 4. Devices That Vanish (Severity: High)
 
-> *"My RAM shows up as 'Unknown Device' after every reboot. It was working yesterday."*
+> _"My RAM shows up as 'Unknown Device' after every reboot. It was working yesterday."_
 
 - USB device enumeration order changes between boots
 - I2C/SMBus detection is fragile (race conditions with kernel modules)
@@ -1184,7 +1207,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 5. Settings Amnesia (Severity: Critical)
 
-> *"I spent an hour getting everything perfect. Updated the software. Everything reset."*
+> _"I spent an hour getting everything perfect. Updated the software. Everything reset."_
 
 - iCUE updates occasionally wipe profiles (Corsair's most-reported bug)
 - OpenRGB doesn't auto-apply profiles on startup without manual service configuration
@@ -1195,7 +1218,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 6. Performance Bloat (Severity: Medium)
 
-> *"My RGB software uses more RAM than the game I'm playing."*
+> _"My RGB software uses more RAM than the game I'm playing."_
 
 - iCUE: 250-400MB resident memory
 - Razer Synapse: 150-250MB + Razer Central + Razer Cortex
@@ -1207,7 +1230,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 7. No Automation (Severity: Medium)
 
-> *"I want my lights to change when I start a game, leave the room, or play music. Why can't they?"*
+> _"I want my lights to change when I start a game, leave the room, or play music. Why can't they?"_
 
 - Most RGB software is manual: open app, pick effect, close app
 - Game integration exists in some tools (iCUE, proprietary alternatives) but is Windows-only
@@ -1217,7 +1240,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 
 #### 8. Closed Ecosystems (Severity: High)
 
-> *"I reverse-engineered this protocol by sniffing USB packets for two weeks. Why is this information not public?"*
+> _"I reverse-engineered this protocol by sniffing USB packets for two weeks. Why is this information not public?"_
 
 - Corsair, Razer, ASUS, SteelSeries -- all proprietary protocols
 - No official SDKs for hardware control (or SDKs that are Windows-only, like Corsair's)
@@ -1286,17 +1309,18 @@ It's midnight. The automation dims everything to almost-off. Just a faint warm g
 
 ### A1: Devon — Color Vision Deficiency
 
-| | |
-|---|---|
-| **Name** | Devon |
-| **Age** | 30 |
-| **Condition** | Deuteranopia (red-green color blindness, affects ~8% of males) |
-| **Severity** | Moderate -- can see some reds/greens but distinguishes them poorly |
-| **Technical Skill** | Intermediate -- casual gamer, moderate Linux user |
+|                     |                                                                    |
+| ------------------- | ------------------------------------------------------------------ |
+| **Name**            | Devon                                                              |
+| **Age**             | 30                                                                 |
+| **Condition**       | Deuteranopia (red-green color blindness, affects ~8% of males)     |
+| **Severity**        | Moderate -- can see some reds/greens but distinguishes them poorly |
+| **Technical Skill** | Intermediate -- casual gamer, moderate Linux user                  |
 
 **The Challenge:** Devon uses a color-centric application but can't reliably distinguish between red and green -- two of the three RGB channels. The app's UI might use red/green for status indicators. The effect gallery shows thumbnails that look identical to him. And when he's choosing colors for his setup, he can't tell if his room is "warm amber" or "sickly green."
 
 **What Hypercolor Must Do:**
+
 - **UI:** Never rely solely on red/green to convey information. Use shapes, labels, and patterns alongside color. Device status: green checkmark becomes a labeled "Online" badge. Error states use red + an icon + text.
 - **Color Picker:** Include a CVD simulation preview. "This is how this palette looks with deuteranopia." Toggle between normal vision and simulated. Offer curated palettes that are CVD-friendly (blues, yellows, purples -- the safe zone).
 - **Effect Gallery:** Thumbnails should include the effect name prominently, not rely on color alone to differentiate. Category labels matter more than color-coded borders.
@@ -1306,17 +1330,18 @@ It's midnight. The automation dims everything to almost-off. Just a faint warm g
 
 ### A2: Morgan — Photosensitivity
 
-| | |
-|---|---|
-| **Name** | Morgan |
-| **Age** | 25 |
-| **Condition** | Photosensitive epilepsy (diagnosed at 16) |
-| **Triggers** | Flashing lights >3Hz, high-contrast strobing, rapid red/blue alternation |
-| **Technical Skill** | Intermediate -- uses Linux for programming coursework |
+|                     |                                                                          |
+| ------------------- | ------------------------------------------------------------------------ |
+| **Name**            | Morgan                                                                   |
+| **Age**             | 25                                                                       |
+| **Condition**       | Photosensitive epilepsy (diagnosed at 16)                                |
+| **Triggers**        | Flashing lights >3Hz, high-contrast strobing, rapid red/blue alternation |
+| **Technical Skill** | Intermediate -- uses Linux for programming coursework                    |
 
 **The Challenge:** RGB lighting effects are a minefield. Strobe effects, rapid color cycling, beat-reactive flashing, and high-contrast transitions can trigger seizures. Morgan loves ambient lighting but is terrified of accidentally activating a dangerous effect. Most RGB software has zero awareness of photosensitivity risk.
 
 **What Hypercolor Must Do:**
+
 - **Safety filter (mandatory):** All effects are analyzed for photosensitivity risk before playback. Flash frequency, contrast ratio, and color transition speed are evaluated. Effects exceeding WCAG 2.3 flash thresholds (3 flashes/second, or any flash where the area is large enough and bright enough) are flagged.
 - **Three-tier safety system:**
   - "Safe" -- guaranteed no rapid flashing, gentle transitions only
@@ -1333,17 +1358,18 @@ It's midnight. The automation dims everything to almost-off. Just a faint warm g
 
 ### A3: Priya — Motor Impairment
 
-| | |
-|---|---|
-| **Name** | Priya |
-| **Age** | 37 |
-| **Condition** | Repetitive strain injury (RSI) in both hands, uses ergonomic split keyboard + trackball |
-| **Limitations** | Cannot perform precise drag-and-drop. Fine cursor control is painful. Prolonged mouse use causes flare-ups. |
-| **Technical Skill** | Advanced -- senior developer, heavy keyboard user |
+|                     |                                                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Name**            | Priya                                                                                                       |
+| **Age**             | 37                                                                                                          |
+| **Condition**       | Repetitive strain injury (RSI) in both hands, uses ergonomic split keyboard + trackball                     |
+| **Limitations**     | Cannot perform precise drag-and-drop. Fine cursor control is painful. Prolonged mouse use causes flare-ups. |
+| **Technical Skill** | Advanced -- senior developer, heavy keyboard user                                                           |
 
 **The Challenge:** The spatial layout editor is a drag-and-drop interface. The gradient editor requires dragging color stops. The color picker requires fine cursor movement. All of these are painful or impossible for Priya. She can use a keyboard fluently and can do imprecise clicking, but anything requiring sustained mouse precision is a barrier.
 
 **What Hypercolor Must Do:**
+
 - **Full keyboard navigation:** Every feature accessible via keyboard. Tab through devices in the spatial editor. Arrow keys to reposition. Enter to confirm. No feature should require a mouse.
 - **Keyboard-driven spatial editor:** Select a device zone with Tab, then use arrow keys (with configurable step size) to position it. Numeric input for exact coordinates: "Position X: 0.35, Y: 0.72."
 - **Keyboard-driven gradient editor:** Tab between color stops. Enter to edit color. Arrow keys to reposition stop. Add/remove stops with keybinds, not tiny click targets.
@@ -1359,38 +1385,38 @@ It's midnight. The automation dims everything to almost-off. Just a faint warm g
 
 ### Who do we build for first?
 
-| Persona | Priority | Rationale |
-|---|---|---|
-| **Bliss** | P0 (Alpha) | She's building it. Dogfooding drives quality. If the developer experience is excellent, everything else follows. |
-| **Robin** | P0 (Alpha) | Migration story is the growth engine. Every Windows refugee who successfully migrates becomes an advocate. Strimer support is the killer feature. |
-| **Jake** | P1 (Beta) | Volume user. The onboarding wizard and effect gallery must exist before Hypercolor can grow beyond developers and power users. |
-| **Marcus** | P1 (Beta) | Smart home integration is the feature that no competitor has on Linux. HA + WLED + Hue unified control is a unique selling point. |
-| **Luna** | P2 (v1.0) | Twitch/OBS integration is valuable but depends on a stable core. Build on the event bus architecture. |
-| **Yuki** | P2 (v1.0) | Color tools and gradient editor are design polish. The core must work before it's beautiful. |
-| **Sam** | P2 (v1.0) | Audio-reactive is foundational (Phase 0), but MIDI sync, OSC, and DAW integration are advanced features. |
-| **Kai** | P3 (v1.x) | Plugin ecosystem requires a stable API. Wasm plugins are Phase 4 in the roadmap. Build the API right in Phase 0-1, open it in Phase 4. |
+| Persona    | Priority   | Rationale                                                                                                                                         |
+| ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Bliss**  | P0 (Alpha) | She's building it. Dogfooding drives quality. If the developer experience is excellent, everything else follows.                                  |
+| **Robin**  | P0 (Alpha) | Migration story is the growth engine. Every Windows refugee who successfully migrates becomes an advocate. Strimer support is the killer feature. |
+| **Jake**   | P1 (Beta)  | Volume user. The onboarding wizard and effect gallery must exist before Hypercolor can grow beyond developers and power users.                    |
+| **Marcus** | P1 (Beta)  | Smart home integration is the feature that no competitor has on Linux. HA + WLED + Hue unified control is a unique selling point.                 |
+| **Luna**   | P2 (v1.0)  | Twitch/OBS integration is valuable but depends on a stable core. Build on the event bus architecture.                                             |
+| **Yuki**   | P2 (v1.0)  | Color tools and gradient editor are design polish. The core must work before it's beautiful.                                                      |
+| **Sam**    | P2 (v1.0)  | Audio-reactive is foundational (Phase 0), but MIDI sync, OSC, and DAW integration are advanced features.                                          |
+| **Kai**    | P3 (v1.x)  | Plugin ecosystem requires a stable API. Wasm plugins are Phase 4 in the roadmap. Build the API right in Phase 0-1, open it in Phase 4.            |
 
 ### Feature Mapping by Persona
 
-| Feature | Bliss | Jake | Luna | Marcus | Yuki | Kai | Sam | Robin |
-|---|---|---|---|---|---|---|---|---|
-| CLI orchestration | **Primary** | - | - | Secondary | - | Secondary | Secondary | - |
-| Web UI | Secondary | **Primary** | **Primary** | **Primary** | **Primary** | Secondary | Secondary | **Primary** |
-| TUI | **Primary** | - | - | - | - | Secondary | - | - |
-| Effect gallery | - | **Primary** | Secondary | - | **Primary** | - | - | **Primary** |
-| Spatial layout editor | **Primary** | Secondary | Secondary | **Primary** | Secondary | - | Secondary | **Primary** |
-| Audio reactive | Secondary | Secondary | Secondary | - | - | - | **Primary** | - |
-| MIDI input | - | - | - | - | - | - | **Primary** | - |
-| Twitch integration | - | - | **Primary** | - | - | - | - | - |
-| OBS integration | - | - | **Primary** | - | - | - | - | - |
-| HA integration | - | - | Secondary | **Primary** | - | - | - | - |
-| Game detection | Secondary | **Primary** | Secondary | - | - | - | - | - |
-| Migration wizard | - | - | - | - | - | - | - | **Primary** |
-| Plugin API/SDK | Secondary | - | - | - | - | **Primary** | - | - |
-| Color picker/palette | - | - | - | - | **Primary** | - | - | - |
-| Circadian lighting | - | - | - | **Primary** | - | - | - | - |
-| Device simulator | - | - | - | - | - | **Primary** | - | - |
-| Safety/accessibility | - | - | - | - | - | - | - | - |
+| Feature               | Bliss       | Jake        | Luna        | Marcus      | Yuki        | Kai         | Sam         | Robin       |
+| --------------------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
+| CLI orchestration     | **Primary** | -           | -           | Secondary   | -           | Secondary   | Secondary   | -           |
+| Web UI                | Secondary   | **Primary** | **Primary** | **Primary** | **Primary** | Secondary   | Secondary   | **Primary** |
+| TUI                   | **Primary** | -           | -           | -           | -           | Secondary   | -           | -           |
+| Effect gallery        | -           | **Primary** | Secondary   | -           | **Primary** | -           | -           | **Primary** |
+| Spatial layout editor | **Primary** | Secondary   | Secondary   | **Primary** | Secondary   | -           | Secondary   | **Primary** |
+| Audio reactive        | Secondary   | Secondary   | Secondary   | -           | -           | -           | **Primary** | -           |
+| MIDI input            | -           | -           | -           | -           | -           | -           | **Primary** | -           |
+| Twitch integration    | -           | -           | **Primary** | -           | -           | -           | -           | -           |
+| OBS integration       | -           | -           | **Primary** | -           | -           | -           | -           | -           |
+| HA integration        | -           | -           | Secondary   | **Primary** | -           | -           | -           | -           |
+| Game detection        | Secondary   | **Primary** | Secondary   | -           | -           | -           | -           | -           |
+| Migration wizard      | -           | -           | -           | -           | -           | -           | -           | **Primary** |
+| Plugin API/SDK        | Secondary   | -           | -           | -           | -           | **Primary** | -           | -           |
+| Color picker/palette  | -           | -           | -           | -           | **Primary** | -           | -           | -           |
+| Circadian lighting    | -           | -           | -           | **Primary** | -           | -           | -           | -           |
+| Device simulator      | -           | -           | -           | -           | -           | **Primary** | -           | -           |
+| Safety/accessibility  | -           | -           | -           | -           | -           | -           | -           | -           |
 
 **Safety and accessibility are horizontal concerns -- they apply across all features, not to any single persona.**
 
@@ -1416,4 +1442,4 @@ It's midnight. The automation dims everything to almost-off. Just a faint warm g
 
 ---
 
-*These personas are living documents. As Hypercolor's user base grows, revisit and refine them. Add real user interview data when available. The personas should evolve from "informed speculation" to "grounded in research" as the project matures.*
+_These personas are living documents. As Hypercolor's user base grows, revisit and refine them. Add real user interview data when available. The personas should evolve from "informed speculation" to "grounded in research" as the project matures._

@@ -1457,6 +1457,7 @@ Audio Thread                  Render Thread
 ```
 
 The triple buffer guarantees:
+
 - The producer (audio thread) is **never blocked** by the consumer.
 - The consumer (render thread) always gets the **most recent** data.
 - There is no lock, no mutex, no CAS retry loop on the hot path.
@@ -1508,25 +1509,25 @@ Hypercolor is Linux-first, but the architecture isolates platform-specific code 
 
 ### 8.1 Platform Matrix
 
-| Component | Linux | macOS | Windows | Notes |
-|---|---|---|---|---|
-| **Canvas** | Universal | Universal | Universal | Pure Rust, no platform deps |
-| **RenderLoop** | Universal | Universal | Universal | Pure Rust + tokio |
-| **FrameTimer** | Universal | Universal | Universal | `std::time::Instant` |
-| **wgpu renderer** | Vulkan/OpenGL | Metal | DX12/Vulkan | wgpu abstracts GPU APIs |
-| **Servo renderer** | Software/EGL | Software | Software | Servo supports all three; Software is portable fallback |
-| **Audio capture** | PipeWire/PulseAudio | CoreAudio | WASAPI | cpal abstracts all three |
-| **Monitor source** | `libpulse` API | CoreAudio loopback | WASAPI loopback | Platform-specific discovery |
-| **Screen capture** | PipeWire DMA-BUF / xcap | CGWindowListCreateImage | DXGI Desktop Dup | Fully platform-specific |
-| **Keyboard input** | evdev | IOKit/CGEvent | Raw Input / Win32 | Fully platform-specific |
-| **USB HID** | hidapi (libusb) | hidapi (IOKit) | hidapi (win32) | hidapi abstracts platforms |
-| **mDNS** | Avahi / mdns-sd | Bonjour | Bonjour | mdns-sd crate is cross-platform |
-| **D-Bus / IPC** | zbus (D-Bus) | XPC (future) | Named pipes (future) | D-Bus is Linux-only |
-| **Thread pinning** | `core_affinity` | `core_affinity` | `core_affinity` | cross-platform crate |
-| **RT audio priority** | rtkit / SCHED_FIFO | pthread priority | `SetThreadPriority` | Platform-specific |
-| **systemd watchdog** | sd_notify | launchd (future) | Windows Service (future) | Platform-specific |
-| **GPU load detection** | sysfs / NVML | IOKit | NVML / DXGI | Platform-specific |
-| **GameMode integration** | D-Bus signal | N/A | N/A | Linux-only |
+| Component                | Linux                   | macOS                   | Windows                  | Notes                                                   |
+| ------------------------ | ----------------------- | ----------------------- | ------------------------ | ------------------------------------------------------- |
+| **Canvas**               | Universal               | Universal               | Universal                | Pure Rust, no platform deps                             |
+| **RenderLoop**           | Universal               | Universal               | Universal                | Pure Rust + tokio                                       |
+| **FrameTimer**           | Universal               | Universal               | Universal                | `std::time::Instant`                                    |
+| **wgpu renderer**        | Vulkan/OpenGL           | Metal                   | DX12/Vulkan              | wgpu abstracts GPU APIs                                 |
+| **Servo renderer**       | Software/EGL            | Software                | Software                 | Servo supports all three; Software is portable fallback |
+| **Audio capture**        | PipeWire/PulseAudio     | CoreAudio               | WASAPI                   | cpal abstracts all three                                |
+| **Monitor source**       | `libpulse` API          | CoreAudio loopback      | WASAPI loopback          | Platform-specific discovery                             |
+| **Screen capture**       | PipeWire DMA-BUF / xcap | CGWindowListCreateImage | DXGI Desktop Dup         | Fully platform-specific                                 |
+| **Keyboard input**       | evdev                   | IOKit/CGEvent           | Raw Input / Win32        | Fully platform-specific                                 |
+| **USB HID**              | hidapi (libusb)         | hidapi (IOKit)          | hidapi (win32)           | hidapi abstracts platforms                              |
+| **mDNS**                 | Avahi / mdns-sd         | Bonjour                 | Bonjour                  | mdns-sd crate is cross-platform                         |
+| **D-Bus / IPC**          | zbus (D-Bus)            | XPC (future)            | Named pipes (future)     | D-Bus is Linux-only                                     |
+| **Thread pinning**       | `core_affinity`         | `core_affinity`         | `core_affinity`          | cross-platform crate                                    |
+| **RT audio priority**    | rtkit / SCHED_FIFO      | pthread priority        | `SetThreadPriority`      | Platform-specific                                       |
+| **systemd watchdog**     | sd_notify               | launchd (future)        | Windows Service (future) | Platform-specific                                       |
+| **GPU load detection**   | sysfs / NVML            | IOKit                   | NVML / DXGI              | Platform-specific                                       |
+| **GameMode integration** | D-Bus signal            | N/A                     | N/A                      | Linux-only                                              |
 
 ### 8.2 Platform Abstraction Strategy
 
@@ -1653,17 +1654,17 @@ FrameTimer
 
 ## Appendix B: Size Budget at Default Resolution
 
-| Buffer | Formula | Size |
-|---|---|---|
-| Canvas (single) | 320 * 200 * 4 | 256,000 bytes (250 KB) |
-| Canvas (double-buffered) | 2 * 256,000 | 512,000 bytes (500 KB) |
-| LED colors (2000 LEDs) | 2000 * 3 | 6,000 bytes (5.9 KB) |
-| AudioData (single) | ~1,800 bytes | 1.8 KB |
-| AudioData (triple-buffered) | 3 * 1,800 | 5.4 KB |
-| FrameData (2000 LEDs) | ~6,100 bytes | 6.0 KB |
-| AudioUniforms (GPU) | 64 bytes | 64 bytes |
-| Freq texture (1D, 200 bins) | 200 * 4 | 800 bytes |
-| **Total hot-path buffers** | | **~530 KB** |
+| Buffer                      | Formula       | Size                   |
+| --------------------------- | ------------- | ---------------------- |
+| Canvas (single)             | 320 _ 200 _ 4 | 256,000 bytes (250 KB) |
+| Canvas (double-buffered)    | 2 \* 256,000  | 512,000 bytes (500 KB) |
+| LED colors (2000 LEDs)      | 2000 \* 3     | 6,000 bytes (5.9 KB)   |
+| AudioData (single)          | ~1,800 bytes  | 1.8 KB                 |
+| AudioData (triple-buffered) | 3 \* 1,800    | 5.4 KB                 |
+| FrameData (2000 LEDs)       | ~6,100 bytes  | 6.0 KB                 |
+| AudioUniforms (GPU)         | 64 bytes      | 64 bytes               |
+| Freq texture (1D, 200 bins) | 200 \* 4      | 800 bytes              |
+| **Total hot-path buffers**  |               | **~530 KB**            |
 
 The entire hot-path data set fits in L2 cache on any modern CPU.
 

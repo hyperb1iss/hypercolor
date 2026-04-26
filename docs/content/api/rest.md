@@ -23,6 +23,7 @@ Health check. Returns `200 OK` when the daemon is running. No authentication req
 Current system status including running effect, connected devices, audio state, and performance metrics.
 
 **Response:**
+
 ```json
 {
   "running": true,
@@ -32,6 +33,7 @@ Current system status including running effect, connected devices, audio state, 
   "audio": { "enabled": true, "level": 0.42 }
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/server") %}
@@ -44,6 +46,7 @@ Server identity and version information.
 List all available effects. Returns an array of effect summaries with ID, name, description, tags, and whether the effect is audio-reactive.
 
 **Response:**
+
 ```json
 [
   {
@@ -55,12 +58,14 @@ List all available effects. Returns an array of effect summaries with ID, name, 
   }
 ]
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/effects/{id}") %}
 Get detailed information about a specific effect, including its full control definitions with types, ranges, and defaults.
 
 **Response:**
+
 ```json
 {
   "id": "borealis",
@@ -71,17 +76,21 @@ Get detailed information about a specific effect, including its full control def
       "id": "speed",
       "label": "Speed",
       "type": "number",
-      "min": 1, "max": 10, "default": 5
+      "min": 1,
+      "max": 10,
+      "default": 5
     }
   ]
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/{id}/apply") %}
 Apply an effect to the current output. Optionally include control values to override defaults.
 
 **Request body (optional):**
+
 ```json
 {
   "controls": {
@@ -92,12 +101,14 @@ Apply an effect to the current output. Optionally include control values to over
 ```
 
 **Response:**
+
 ```json
 {
   "applied": true,
   "effect_id": "borealis"
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/effects/active") %}
@@ -108,12 +119,14 @@ Get the currently active effect and its control values.
 Update control values on the currently running effect. Changes apply on the next frame.
 
 **Request body:**
+
 ```json
 {
   "speed": 3,
   "intensity": 90
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/effects/current/reset") %}
@@ -134,6 +147,7 @@ Trigger a rescan of the effects directory. Use this after building new effects t
 List all discovered and connected devices.
 
 **Response:**
+
 ```json
 [
   {
@@ -145,6 +159,7 @@ List all discovered and connected devices.
   }
 ]
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/devices/{id}") %}
@@ -177,6 +192,7 @@ List all defined scenes.
 Create a new scene with effect, controls, and optional transition settings.
 
 **Request body:**
+
 ```json
 {
   "name": "Late Night",
@@ -185,6 +201,7 @@ Create a new scene with effect, controls, and optional transition settings.
   "transition": { "duration_ms": 2000, "easing": "ease_in_out" }
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/scenes/{id}") %}
@@ -213,11 +230,13 @@ List all saved profiles.
 Create a new profile from the current state.
 
 **Request body:**
+
 ```json
 {
   "name": "Gaming"
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/profiles/{id}") %}
@@ -278,11 +297,13 @@ List favorited effects.
 Add an effect to favorites.
 
 **Request body:**
+
 ```json
 {
   "effect_id": "borealis"
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="DELETE", path="/api/v1/library/favorites/{effect}") %}
@@ -359,11 +380,13 @@ Get the current global brightness level.
 Set the global brightness level (0.0 to 1.0).
 
 **Request body:**
+
 ```json
 {
   "brightness": 0.8
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="GET", path="/api/v1/audio/devices") %}
@@ -384,23 +407,27 @@ Get a specific configuration value by dotted key path.
 Set a configuration value.
 
 **Request body:**
+
 ```json
 {
   "key": "audio.enabled",
   "value": true
 }
 ```
+
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/config/reset") %}
 Reset a configuration value to its default.
 
 **Request body:**
+
 ```json
 {
   "key": "audio.device_name"
 }
 ```
+
 {% end %}
 
 ## Diagnostics

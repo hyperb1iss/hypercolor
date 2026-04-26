@@ -648,19 +648,19 @@ Verify:
 
 ## 15. Verification Matrix
 
-| Area | Required Checks |
-| --- | --- |
-| Rust compile | `just check` |
-| Full quality gate | `just verify` |
-| Daemon tests | `just test-crate hypercolor-daemon` |
-| Core tests | `just test-crate hypercolor-core` |
-| HAL tests | `just test-crate hypercolor-hal` |
-| UI preview protocol changes | `just ui-test` and `just ui-build` |
-| Servo-specific changes | Servo lifecycle tests plus a manual `just daemon-servo` smoke run |
-| Display output | Unit tests for encode/render/retry plus simulator preview |
-| GPU compositor | CPU/GPU parity tests and benchmarks |
-| Performance | Render pipeline benchmarks before and after each wave |
-| Soak | 30 minute mixed-output scenarios after Waves 1, 3, 4, 6, and 8 |
+| Area                        | Required Checks                                                   |
+| --------------------------- | ----------------------------------------------------------------- |
+| Rust compile                | `just check`                                                      |
+| Full quality gate           | `just verify`                                                     |
+| Daemon tests                | `just test-crate hypercolor-daemon`                               |
+| Core tests                  | `just test-crate hypercolor-core`                                 |
+| HAL tests                   | `just test-crate hypercolor-hal`                                  |
+| UI preview protocol changes | `just ui-test` and `just ui-build`                                |
+| Servo-specific changes      | Servo lifecycle tests plus a manual `just daemon-servo` smoke run |
+| Display output              | Unit tests for encode/render/retry plus simulator preview         |
+| GPU compositor              | CPU/GPU parity tests and benchmarks                               |
+| Performance                 | Render pipeline benchmarks before and after each wave             |
+| Soak                        | 30 minute mixed-output scenarios after Waves 1, 3, 4, 6, and 8    |
 
 ## 16. Rollout Notes
 

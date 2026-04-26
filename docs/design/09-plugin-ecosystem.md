@@ -37,13 +37,13 @@ Hypercolor's plugin system exists because no core team can support every RGB con
 
 **Reference implementations studied:**
 
-| Project | Model | What we take from it |
-|---|---|---|
-| **Zed** | WIT-based Wasm extensions | WIT interface contracts, capability-based permissions, `extension.toml` manifest |
-| **Nushell** | stdio JSON-RPC plugins | Process isolation, language-agnostic, plugin registry with signatures |
-| **Bevy** | Compile-time `Plugin` trait + `App::add_plugins()` | Zero-overhead trait-based plugins, builder pattern, feature flags |
-| **LightScript engines** | JS device drivers + HTML effects | Separate effect authoring from device communication, meta-tag driven UI |
-| **OpenRGB** | Qt C++ plugins (DLL/.so) | Plugin categories (effects, hardware sync, scheduling), SDK bindings |
+| Project                 | Model                                              | What we take from it                                                             |
+| ----------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **Zed**                 | WIT-based Wasm extensions                          | WIT interface contracts, capability-based permissions, `extension.toml` manifest |
+| **Nushell**             | stdio JSON-RPC plugins                             | Process isolation, language-agnostic, plugin registry with signatures            |
+| **Bevy**                | Compile-time `Plugin` trait + `App::add_plugins()` | Zero-overhead trait-based plugins, builder pattern, feature flags                |
+| **LightScript engines** | JS device drivers + HTML effects                   | Separate effect authoring from device communication, meta-tag driven UI          |
+| **OpenRGB**             | Qt C++ plugins (DLL/.so)                           | Plugin categories (effects, hardware sync, scheduling), SDK bindings             |
 
 ---
 
@@ -151,14 +151,14 @@ Frequency:        UI frame rate, event-driven
 
 ### Extension Point Summary
 
-| Extension Point | Hot Path? | Phase 1 (Trait) | Phase 2 (Wasm) | Phase 3 (gRPC) | UI Panel |
-|---|---|---|---|---|---|
-| Device backends | Yes (60fps) | First-party | Community | GPL/native USB | Config panel |
-| Input sources | Varies | System-level | Network-based | Native libs | Status widget |
-| Effect formats | Yes (60fps) | Core renderers | Lightweight only | Not recommended | N/A |
-| Integrations | No (events) | HA, D-Bus | Network APIs | Complex state | Settings panel |
-| Color processing | Yes (60fps) | Core transforms | Pure math | Not recommended | N/A |
-| UI panels | No | N/A | N/A | N/A | Web Components |
+| Extension Point  | Hot Path?   | Phase 1 (Trait) | Phase 2 (Wasm)   | Phase 3 (gRPC)  | UI Panel       |
+| ---------------- | ----------- | --------------- | ---------------- | --------------- | -------------- |
+| Device backends  | Yes (60fps) | First-party     | Community        | GPL/native USB  | Config panel   |
+| Input sources    | Varies      | System-level    | Network-based    | Native libs     | Status widget  |
+| Effect formats   | Yes (60fps) | Core renderers  | Lightweight only | Not recommended | N/A            |
+| Integrations     | No (events) | HA, D-Bus       | Network APIs     | Complex state   | Settings panel |
+| Color processing | Yes (60fps) | Core transforms | Pure math        | Not recommended | N/A            |
+| UI panels        | No          | N/A             | N/A              | N/A             | Web Components |
 
 ---
 
@@ -331,12 +331,12 @@ settings_panel = "ui/settings.js"    # Optional web component
 
 **Performance budget:** Wasm plugins on the hot path (device backends, color transforms) must meet frame timing requirements. The host enforces a per-frame execution budget:
 
-| Extension Point | Budget per call | Enforcement |
-|---|---|---|
-| Device backend `push_frame` | 8ms | Fuel-based timeout, skip frame on overrun |
-| Color transform `process` | 2ms | Fuel-based timeout, passthrough on overrun |
-| Input source `sample` | 4ms | Fuel-based timeout, reuse last value |
-| Integration event handler | 50ms | Fuel-based timeout, log warning |
+| Extension Point             | Budget per call | Enforcement                                |
+| --------------------------- | --------------- | ------------------------------------------ |
+| Device backend `push_frame` | 8ms             | Fuel-based timeout, skip frame on overrun  |
+| Color transform `process`   | 2ms             | Fuel-based timeout, passthrough on overrun |
+| Input source `sample`       | 4ms             | Fuel-based timeout, reuse last value       |
+| Integration event handler   | 50ms            | Fuel-based timeout, log warning            |
 
 ### Phase 3: gRPC Process Bridge (Out-of-Process Plugins)
 
@@ -359,14 +359,14 @@ graph LR
 
 **When to use gRPC over Wasm:**
 
-| Criterion | Use Wasm | Use gRPC |
-|---|---|---|
-| License contamination (GPL) | -- | Yes |
-| Needs raw USB/HID access | -- | Yes |
-| Needs persistent connections | Possible (WASI sockets) | Easier |
-| Language has no Wasm target | -- | Yes |
-| Performance-critical (60fps) | Preferred (in-process) | Viable (adds ~1ms IPC) |
-| Plugin author's preference | Rust, Go, C | Python, Ruby, Node.js |
+| Criterion                    | Use Wasm                | Use gRPC               |
+| ---------------------------- | ----------------------- | ---------------------- |
+| License contamination (GPL)  | --                      | Yes                    |
+| Needs raw USB/HID access     | --                      | Yes                    |
+| Needs persistent connections | Possible (WASI sockets) | Easier                 |
+| Language has no Wasm target  | --                      | Yes                    |
+| Performance-critical (60fps) | Preferred (in-process)  | Viable (adds ~1ms IPC) |
+| Plugin author's preference   | Rust, Go, C             | Python, Ruby, Node.js  |
 
 **gRPC service definition:**
 
@@ -848,15 +848,15 @@ stateDiagram-v2
 
 **States:**
 
-| State | Description |
-|---|---|
-| `Installed` | Files present in plugin directory, not yet loaded |
-| `Verified` | Manifest parsed, signature checked (if signed), capabilities validated |
-| `Initializing` | Wasm module compiled, instance created, `start()` called |
-| `Active` | Plugin is running and responding to calls |
-| `Degraded` | Plugin returned errors or timed out, operating with reduced trust |
-| `Disabled` | User manually disabled, or too many failures |
-| `Error` | Unrecoverable error, requires user intervention |
+| State          | Description                                                            |
+| -------------- | ---------------------------------------------------------------------- |
+| `Installed`    | Files present in plugin directory, not yet loaded                      |
+| `Verified`     | Manifest parsed, signature checked (if signed), capabilities validated |
+| `Initializing` | Wasm module compiled, instance created, `start()` called               |
+| `Active`       | Plugin is running and responding to calls                              |
+| `Degraded`     | Plugin returned errors or timed out, operating with reduced trust      |
+| `Disabled`     | User manually disabled, or too many failures                           |
+| `Error`        | Unrecoverable error, requires user intervention                        |
 
 **Lifecycle hooks:**
 
@@ -921,12 +921,12 @@ A plugin crash must never take down the daemon or affect other plugins.
 
 **Fallback behaviors by extension point:**
 
-| Extension Point | On Plugin Failure |
-|---|---|
-| Device backend | Device shows as disconnected, LEDs hold last color |
-| Input source | Effect receives zero/default values, continues running |
-| Color transform | Passthrough (colors unchanged) |
-| Integration | External platform loses sync, reconnects when plugin recovers |
+| Extension Point | On Plugin Failure                                             |
+| --------------- | ------------------------------------------------------------- |
+| Device backend  | Device shows as disconnected, LEDs hold last color            |
+| Input source    | Effect receives zero/default values, continues running        |
+| Color transform | Passthrough (colors unchanged)                                |
+| Integration     | External platform loses sync, reconnects when plugin recovers |
 
 ---
 
@@ -953,6 +953,7 @@ hypercolor-daemon
 For plugin authors building gRPC bridges, we provide lightweight SDKs:
 
 **Rust (`hypercolor-bridge-sdk`):**
+
 ```rust
 use hypercolor_bridge_sdk::prelude::*;
 
@@ -982,6 +983,7 @@ async fn main() {
 ```
 
 **Python (`hypercolor-bridge-python`):**
+
 ```python
 from hypercolor_bridge import DeviceBackendService, serve
 
@@ -999,6 +1001,7 @@ if __name__ == "__main__":
 ```
 
 **Go (`hypercolor-bridge-go`):**
+
 ```go
 package main
 
@@ -1082,14 +1085,14 @@ $ hypercolor plugin new midi-input --type input-source --lang go
 
 **Supported scaffolding targets:**
 
-| Language | Wasm Plugin | gRPC Bridge | Notes |
-|---|---|---|---|
-| Rust | Yes | Yes | First-class support, same SDK as core |
-| Go | Yes (TinyGo) | Yes | TinyGo for Wasm, standard Go for gRPC |
-| Python | No | Yes | gRPC only (no Wasm target) |
-| C/C++ | Yes | Yes | Wasm via wasi-sdk |
-| AssemblyScript | Yes | No | TypeScript-like, good for color transforms |
-| JavaScript/TS | No | Yes (via Node.js) | gRPC bridge with @grpc/grpc-js |
+| Language       | Wasm Plugin  | gRPC Bridge       | Notes                                      |
+| -------------- | ------------ | ----------------- | ------------------------------------------ |
+| Rust           | Yes          | Yes               | First-class support, same SDK as core      |
+| Go             | Yes (TinyGo) | Yes               | TinyGo for Wasm, standard Go for gRPC      |
+| Python         | No           | Yes               | gRPC only (no Wasm target)                 |
+| C/C++          | Yes          | Yes               | Wasm via wasi-sdk                          |
+| AssemblyScript | Yes          | No                | TypeScript-like, good for color transforms |
+| JavaScript/TS  | No           | Yes (via Node.js) | gRPC bridge with @grpc/grpc-js             |
 
 ### 7.2 Development Server
 
@@ -1114,6 +1117,7 @@ $ hypercolor dev
 ```
 
 **Development dashboard** (`http://localhost:9421/dev/<plugin-id>`):
+
 - Live call log (every `discover`, `push_frame`, `sample` call with timing)
 - Plugin memory usage graph
 - Error log with stack traces (via DWARF debug info in Wasm)
@@ -1195,15 +1199,15 @@ async fn test_graceful_disconnect() {
 
 **Plugin author documentation** lives at `docs.hypercolor.dev/plugins/` and covers:
 
-| Section | Contents |
-|---|---|
-| **Getting Started** | 15-minute tutorial: scaffold, implement, test, install |
-| **API Reference** | Auto-generated from WIT definitions with examples for each function |
-| **Cookbook** | Common patterns: mDNS discovery, chunked USB writes, rate limiting, error recovery |
-| **Architecture Guide** | How the host calls your plugin, threading model, memory layout |
-| **Examples** | Annotated source of every first-party plugin |
-| **Migration Guide** | Porting JS device plugins to Hypercolor |
-| **Troubleshooting** | Common Wasm build issues, debugging with DWARF, profiling |
+| Section                | Contents                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| **Getting Started**    | 15-minute tutorial: scaffold, implement, test, install                             |
+| **API Reference**      | Auto-generated from WIT definitions with examples for each function                |
+| **Cookbook**           | Common patterns: mDNS discovery, chunked USB writes, rate limiting, error recovery |
+| **Architecture Guide** | How the host calls your plugin, threading model, memory layout                     |
+| **Examples**           | Annotated source of every first-party plugin                                       |
+| **Migration Guide**    | Porting JS device plugins to Hypercolor                                            |
+| **Troubleshooting**    | Common Wasm build issues, debugging with DWARF, profiling                          |
 
 ### 7.6 Example Plugins
 
@@ -1320,12 +1324,12 @@ signature = "base64-encoded-signature"
 
 **Trust model:**
 
-| Trust Level | Description | UX |
-|---|---|---|
-| **Unsigned** | No signature, could be anyone | Yellow warning in UI, manual confirmation |
-| **Self-signed** | Author generated their own key | Plugin shows author's key fingerprint |
-| **Registry-verified** | Author's key registered on registry.hypercolor.dev | Green checkmark, author name displayed |
-| **Core-team-signed** | Signed by the Hypercolor project key | Blue "Official" badge |
+| Trust Level           | Description                                        | UX                                        |
+| --------------------- | -------------------------------------------------- | ----------------------------------------- |
+| **Unsigned**          | No signature, could be anyone                      | Yellow warning in UI, manual confirmation |
+| **Self-signed**       | Author generated their own key                     | Plugin shows author's key fingerprint     |
+| **Registry-verified** | Author's key registered on registry.hypercolor.dev | Green checkmark, author name displayed    |
+| **Core-team-signed**  | Signed by the Hypercolor project key               | Blue "Official" badge                     |
 
 ### 8.5 Auto-Update
 
@@ -1513,16 +1517,16 @@ Every plugin's `log()` calls are captured and surfaced in the UI. Development-mo
 
 ### 10.1 Language Support Matrix
 
-| Language | Wasm Plugin | gRPC Bridge | SDK Available | Best For |
-|---|---|---|---|---|
-| **Rust** | Native | Native | `hypercolor-plugin-sdk` | Device backends, performance-critical plugins |
-| **Go** | Via TinyGo | Native | `hypercolor-bridge-go` | Network-heavy integrations, gRPC bridges |
-| **C/C++** | Via wasi-sdk | Via gRPC libs | Header-only WIT bindings | Porting existing device libraries |
-| **AssemblyScript** | Native | No | `@hypercolor/plugin-sdk` | Color transforms, lightweight math |
-| **Python** | No | Native | `hypercolor-bridge-python` | Rapid prototyping, ML/AI integrations |
-| **JavaScript/TS** | No | Via Node.js gRPC | `@hypercolor/bridge-sdk` | Web API integrations, quick scripts |
-| **Zig** | Via Wasm target | Yes | Community bindings | Systems-level, embedded controllers |
-| **C#/.NET** | Via wasm-experimental | Native | Community bindings | Porting Artemis/OpenRGB.NET plugins |
+| Language           | Wasm Plugin           | gRPC Bridge      | SDK Available              | Best For                                      |
+| ------------------ | --------------------- | ---------------- | -------------------------- | --------------------------------------------- |
+| **Rust**           | Native                | Native           | `hypercolor-plugin-sdk`    | Device backends, performance-critical plugins |
+| **Go**             | Via TinyGo            | Native           | `hypercolor-bridge-go`     | Network-heavy integrations, gRPC bridges      |
+| **C/C++**          | Via wasi-sdk          | Via gRPC libs    | Header-only WIT bindings   | Porting existing device libraries             |
+| **AssemblyScript** | Native                | No               | `@hypercolor/plugin-sdk`   | Color transforms, lightweight math            |
+| **Python**         | No                    | Native           | `hypercolor-bridge-python` | Rapid prototyping, ML/AI integrations         |
+| **JavaScript/TS**  | No                    | Via Node.js gRPC | `@hypercolor/bridge-sdk`   | Web API integrations, quick scripts           |
+| **Zig**            | Via Wasm target       | Yes              | Community bindings         | Systems-level, embedded controllers           |
+| **C#/.NET**        | Via wasm-experimental | Native           | Community bindings         | Porting Artemis/OpenRGB.NET plugins           |
 
 ### 10.2 Audience Mapping
 
@@ -1629,16 +1633,16 @@ func main() {
 
 ### 11.1 Threat Model
 
-| Threat | Severity | Mitigation |
-|---|---|---|
-| Malicious Wasm plugin reads user files | High | Wasm has no filesystem access by default. Capability must be explicitly granted. |
-| Plugin exfiltrates data over network | High | Network access restricted to declared hosts/ports in `plugin.toml` |
-| Plugin crashes and takes down daemon | High | Wasm traps are caught. gRPC bridges are separate processes. `catch_unwind` on all plugin call boundaries. |
-| Plugin consumes excessive CPU | Medium | Wasmtime fuel metering. Frame budget enforcement. Automatic throttling on overrun. |
-| Plugin consumes excessive memory | Medium | Wasmtime memory limits. gRPC bridges monitored via `/proc/[pid]/status`. |
-| Supply chain attack via registry | High | Signed plugins. Automated malware scanning. Manual review for featured plugins. |
-| Plugin A interferes with Plugin B | Medium | Complete isolation. Separate Wasm stores. No shared memory. No inter-plugin communication. |
-| Man-in-the-middle on plugin download | Medium | HTTPS for registry. SHA256 integrity checks. Signature verification. |
+| Threat                                 | Severity | Mitigation                                                                                                |
+| -------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| Malicious Wasm plugin reads user files | High     | Wasm has no filesystem access by default. Capability must be explicitly granted.                          |
+| Plugin exfiltrates data over network   | High     | Network access restricted to declared hosts/ports in `plugin.toml`                                        |
+| Plugin crashes and takes down daemon   | High     | Wasm traps are caught. gRPC bridges are separate processes. `catch_unwind` on all plugin call boundaries. |
+| Plugin consumes excessive CPU          | Medium   | Wasmtime fuel metering. Frame budget enforcement. Automatic throttling on overrun.                        |
+| Plugin consumes excessive memory       | Medium   | Wasmtime memory limits. gRPC bridges monitored via `/proc/[pid]/status`.                                  |
+| Supply chain attack via registry       | High     | Signed plugins. Automated malware scanning. Manual review for featured plugins.                           |
+| Plugin A interferes with Plugin B      | Medium   | Complete isolation. Separate Wasm stores. No shared memory. No inter-plugin communication.                |
+| Man-in-the-middle on plugin download   | Medium   | HTTPS for registry. SHA256 integrity checks. Signature verification.                                      |
 
 ### 11.2 Permission System
 
@@ -1735,50 +1739,50 @@ If Plugin A traps (OOM, fuel exhaustion, panic), Plugins B and C continue runnin
 
 These are the bones of the system. Extracting them would create indirection without benefit:
 
-| Component | Why Core |
-|---|---|
-| **Render loop** | The timing-critical heartbeat. Plugins participate in it; they don't own it. |
-| **wgpu renderer** | Native shader pipeline, deeply coupled to GPU state management. |
-| **Servo renderer** | HTML effect runner, complex lifecycle, ~20 min build time. |
-| **Spatial layout engine** | Canvas-to-LED mapping, geometry transforms. Pure math, no hardware specificity. |
-| **Event bus** | The nervous system. All communication flows through it. |
-| **Configuration system** | Profile, scene, layout persistence. Plugins read/write their own namespace. |
-| **Web UI shell** | SvelteKit app, Axum server, WebSocket frame streaming. Plugins contribute panels, not pages. |
-| **TUI** | Ratatui rendering, Unix socket client. Displays plugin status, doesn't host plugins. |
-| **CLI** | clap command structure. `hypercolor plugin *` subcommands interact with the plugin system. |
-| **Plugin host** | WasmPluginHost, BridgeManager. The meta-plugin system itself is core. |
+| Component                 | Why Core                                                                                     |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| **Render loop**           | The timing-critical heartbeat. Plugins participate in it; they don't own it.                 |
+| **wgpu renderer**         | Native shader pipeline, deeply coupled to GPU state management.                              |
+| **Servo renderer**        | HTML effect runner, complex lifecycle, ~20 min build time.                                   |
+| **Spatial layout engine** | Canvas-to-LED mapping, geometry transforms. Pure math, no hardware specificity.              |
+| **Event bus**             | The nervous system. All communication flows through it.                                      |
+| **Configuration system**  | Profile, scene, layout persistence. Plugins read/write their own namespace.                  |
+| **Web UI shell**          | SvelteKit app, Axum server, WebSocket frame streaming. Plugins contribute panels, not pages. |
+| **TUI**                   | Ratatui rendering, Unix socket client. Displays plugin status, doesn't host plugins.         |
+| **CLI**                   | clap command structure. `hypercolor plugin *` subcommands interact with the plugin system.   |
+| **Plugin host**           | WasmPluginHost, BridgeManager. The meta-plugin system itself is core.                        |
 
 ### 12.2 What Ships as First-Party Plugins
 
 These are maintained by the core team but architecturally are plugins, using the same traits and interfaces as community plugins:
 
-| Plugin | Type | Mechanism | Why Plugin |
-|---|---|---|---|
-| **WLED** | Device backend | Compile-time (feature `wled`) | Protocol-specific. Users without WLED don't need it. |
-| **USB HID (PrismRGB)** | Device backend | Compile-time (feature `hid`) | Hardware-specific. Reference implementation of the trait. |
-| **Philips Hue** | Device backend | Compile-time (feature `hue`) | Network protocol, optional dependency on `reqwest`. |
-| **OpenRGB** | Device backend | gRPC bridge (GPL-2.0 isolated) | GPL contamination requires process boundary. |
-| **Audio FFT** | Input source | Compile-time (feature `audio`) | System-level access (`cpal`). Core use case but optional. |
-| **Screen capture** | Input source | Compile-time (feature `screen-capture`) | System-level access (PipeWire/X11). Optional. |
-| **Home Assistant** | Integration | Compile-time or gRPC | Important enough for first-party, but architecturally an integration. |
+| Plugin                 | Type           | Mechanism                               | Why Plugin                                                            |
+| ---------------------- | -------------- | --------------------------------------- | --------------------------------------------------------------------- |
+| **WLED**               | Device backend | Compile-time (feature `wled`)           | Protocol-specific. Users without WLED don't need it.                  |
+| **USB HID (PrismRGB)** | Device backend | Compile-time (feature `hid`)            | Hardware-specific. Reference implementation of the trait.             |
+| **Philips Hue**        | Device backend | Compile-time (feature `hue`)            | Network protocol, optional dependency on `reqwest`.                   |
+| **OpenRGB**            | Device backend | gRPC bridge (GPL-2.0 isolated)          | GPL contamination requires process boundary.                          |
+| **Audio FFT**          | Input source   | Compile-time (feature `audio`)          | System-level access (`cpal`). Core use case but optional.             |
+| **Screen capture**     | Input source   | Compile-time (feature `screen-capture`) | System-level access (PipeWire/X11). Optional.                         |
+| **Home Assistant**     | Integration    | Compile-time or gRPC                    | Important enough for first-party, but architecturally an integration. |
 
 ### 12.3 What the Community Builds
 
 The spaces we intentionally leave open for community contribution:
 
-| Category | Examples | Expected Mechanism |
-|---|---|---|
-| **WiFi LED backends** | Govee, LIFX, Yeelight, Tuya, Elgato | Wasm (network-based) |
-| **Panel/shape backends** | Nanoleaf, Twinkly | Wasm or gRPC |
-| **Bluetooth backends** | Govee BLE, generic BLE | gRPC (needs native BLE stack) |
-| **Arduino/ESP custom** | FastLED serial, custom UDP | Wasm or gRPC |
-| **Music service inputs** | Spotify, Apple Music, last.fm | Wasm (REST APIs) |
-| **IoT sensor inputs** | Home weather station, CO2, heart rate | Wasm or gRPC |
-| **MIDI input** | MIDI CC, note, velocity mapping | gRPC (needs `midir` or similar) |
-| **Game integration inputs** | Game state from memory/API | gRPC |
-| **Platform integrations** | OBS, Discord, Twitch, StreamDeck | Wasm or gRPC |
-| **Color transforms** | Palette generators, accessibility filters | Wasm |
-| **UI panels** | Custom device config, analytics | Web Components (ES modules) |
+| Category                    | Examples                                  | Expected Mechanism              |
+| --------------------------- | ----------------------------------------- | ------------------------------- |
+| **WiFi LED backends**       | Govee, LIFX, Yeelight, Tuya, Elgato       | Wasm (network-based)            |
+| **Panel/shape backends**    | Nanoleaf, Twinkly                         | Wasm or gRPC                    |
+| **Bluetooth backends**      | Govee BLE, generic BLE                    | gRPC (needs native BLE stack)   |
+| **Arduino/ESP custom**      | FastLED serial, custom UDP                | Wasm or gRPC                    |
+| **Music service inputs**    | Spotify, Apple Music, last.fm             | Wasm (REST APIs)                |
+| **IoT sensor inputs**       | Home weather station, CO2, heart rate     | Wasm or gRPC                    |
+| **MIDI input**              | MIDI CC, note, velocity mapping           | gRPC (needs `midir` or similar) |
+| **Game integration inputs** | Game state from memory/API                | gRPC                            |
+| **Platform integrations**   | OBS, Discord, Twitch, StreamDeck          | Wasm or gRPC                    |
+| **Color transforms**        | Palette generators, accessibility filters | Wasm                            |
+| **UI panels**               | Custom device config, analytics           | Web Components (ES modules)     |
 
 ### 12.4 The Migration Path
 
@@ -1833,6 +1837,7 @@ $ hypercolor plugin publish
 ```
 
 **Plugin architecture:**
+
 - Wasm plugin (compiles to `wasm32-wasip2`)
 - Capabilities: `network` (UDP broadcast 4001, UDP send 4003, hosts: `*.local`, `10.*`, `192.168.*`)
 - ~200 lines of Rust
@@ -1862,6 +1867,7 @@ $ hypercolor plugin new midi-input --type input-source --lang rust --bridge
 ```
 
 **Plugin architecture:**
+
 - gRPC bridge (separate process, needs `midir` crate for native MIDI)
 - No Wasm capabilities needed (USB access via native process)
 - ~150 lines of Rust
@@ -1895,6 +1901,7 @@ $ hypercolor plugin publish --source https://github.com/them/hypercolor-nanoleaf
 ```
 
 **Plugin architecture:**
+
 - gRPC bridge (Go binary)
 - Uses Go's net package for mDNS discovery and UDP streaming
 - ~250 lines of Go
@@ -1925,6 +1932,7 @@ $ hypercolor dev
 ```
 
 **Plugin architecture:**
+
 - Wasm plugin (AssemblyScript compiles to `wasm32`)
 - No capabilities needed (pure computation)
 - ~120 lines of AssemblyScript
@@ -1940,14 +1948,14 @@ $ hypercolor dev
 
 **Actions:**
 
-| Action | Purpose |
-|---|---|
-| Ship WLED, HID, Hue, Audio, Screen Capture as trait-based plugins | Reference implementations for every extension point |
-| Ship OpenRGB as gRPC bridge | Prove the bridge model works for GPL isolation |
-| Write the "Build Your First Plugin" tutorial (15 minutes to working code) | Reduce friction to zero for the curious |
-| Annotate every first-party plugin with doc comments explaining "why" | Learning by reading real, production code |
-| Create the device simulator and dev server | Remove the "I don't have the hardware" barrier |
-| Publish the WIT interfaces as a standalone package | Let people start designing plugins before the Wasm runtime ships |
+| Action                                                                    | Purpose                                                          |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Ship WLED, HID, Hue, Audio, Screen Capture as trait-based plugins         | Reference implementations for every extension point              |
+| Ship OpenRGB as gRPC bridge                                               | Prove the bridge model works for GPL isolation                   |
+| Write the "Build Your First Plugin" tutorial (15 minutes to working code) | Reduce friction to zero for the curious                          |
+| Annotate every first-party plugin with doc comments explaining "why"      | Learning by reading real, production code                        |
+| Create the device simulator and dev server                                | Remove the "I don't have the hardware" barrier                   |
+| Publish the WIT interfaces as a standalone package                        | Let people start designing plugins before the Wasm runtime ships |
 
 ### 14.2 Phase 2: Cultivate (Months 6-12)
 
@@ -1955,14 +1963,14 @@ $ hypercolor dev
 
 **Actions:**
 
-| Action | Purpose |
-|---|---|
-| Launch `registry.hypercolor.dev` with search, install, and signed publishing | Frictionless distribution |
-| Plugin Development Contest: "Light Up Something New" | Cash/hardware prizes for the best 5 plugins. Govee, Nanoleaf, Elgato, LIFX, MIDI -- the most-requested devices. |
-| Featured Plugins program | Hand-curated showcase on the marketplace. Code-reviewed and battle-tested. |
-| "Plugin of the Month" blog post | Interview the author, walk through the code, explain the design decisions. |
-| Cross-post plugin announcements to r/MechanicalKeyboards, r/WLED, r/homeassistant, r/openrgb | Reach communities that already care about RGB |
-| Provide a community Discord channel for plugin authors | Direct access to core team for API questions |
+| Action                                                                                       | Purpose                                                                                                         |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Launch `registry.hypercolor.dev` with search, install, and signed publishing                 | Frictionless distribution                                                                                       |
+| Plugin Development Contest: "Light Up Something New"                                         | Cash/hardware prizes for the best 5 plugins. Govee, Nanoleaf, Elgato, LIFX, MIDI -- the most-requested devices. |
+| Featured Plugins program                                                                     | Hand-curated showcase on the marketplace. Code-reviewed and battle-tested.                                      |
+| "Plugin of the Month" blog post                                                              | Interview the author, walk through the code, explain the design decisions.                                      |
+| Cross-post plugin announcements to r/MechanicalKeyboards, r/WLED, r/homeassistant, r/openrgb | Reach communities that already care about RGB                                                                   |
+| Provide a community Discord channel for plugin authors                                       | Direct access to core team for API questions                                                                    |
 
 ### 14.3 Phase 3: Scale (Months 12-24)
 
@@ -1970,25 +1978,25 @@ $ hypercolor dev
 
 **Actions:**
 
-| Action | Purpose |
-|---|---|
-| Plugin API stability guarantee (WIT `1.0.0`) | Authors trust that their plugins won't break on update |
-| Automated testing infrastructure for registry plugins | CI runs plugin test suites against new Hypercolor releases |
-| Community reviewers program | Trusted community members can approve plugins for "Featured" |
-| Plugin dependency on shared data (e.g., audio spectrum, device list) | Enable richer inter-plugin cooperation without direct coupling |
-| Annual "Hypercolor Plugin Awards" | Celebrate the best community contributions |
-| Corporate plugin program | Companies with proprietary hardware (Corsair, NZXT, Elgato) can publish official plugins |
+| Action                                                               | Purpose                                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Plugin API stability guarantee (WIT `1.0.0`)                         | Authors trust that their plugins won't break on update                                   |
+| Automated testing infrastructure for registry plugins                | CI runs plugin test suites against new Hypercolor releases                               |
+| Community reviewers program                                          | Trusted community members can approve plugins for "Featured"                             |
+| Plugin dependency on shared data (e.g., audio spectrum, device list) | Enable richer inter-plugin cooperation without direct coupling                           |
+| Annual "Hypercolor Plugin Awards"                                    | Celebrate the best community contributions                                               |
+| Corporate plugin program                                             | Companies with proprietary hardware (Corsair, NZXT, Elgato) can publish official plugins |
 
 ### 14.4 Success Metrics
 
-| Metric | Phase 1 Target | Phase 2 Target | Phase 3 Target |
-|---|---|---|---|
-| Published plugins | 6 (all first-party) | 16 (10 community) | 50+ |
-| Unique plugin authors | 1 (core team) | 10 | 30+ |
-| Monthly plugin installs | N/A | 500 | 5,000 |
-| Plugin API stability | Breaking changes OK | Deprecation warnings | SemVer 1.0 guarantee |
-| Avg time to first plugin | N/A | < 2 hours | < 1 hour |
-| Plugin crash rate | < 1/hour | < 1/day | < 1/week |
+| Metric                   | Phase 1 Target      | Phase 2 Target       | Phase 3 Target       |
+| ------------------------ | ------------------- | -------------------- | -------------------- |
+| Published plugins        | 6 (all first-party) | 16 (10 community)    | 50+                  |
+| Unique plugin authors    | 1 (core team)       | 10                   | 30+                  |
+| Monthly plugin installs  | N/A                 | 500                  | 5,000                |
+| Plugin API stability     | Breaking changes OK | Deprecation warnings | SemVer 1.0 guarantee |
+| Avg time to first plugin | N/A                 | < 2 hours            | < 1 hour             |
+| Plugin crash rate        | < 1/hour            | < 1/day              | < 1/week             |
 
 ### 14.5 Developer Relations
 
@@ -2008,16 +2016,17 @@ A significant growth vector: helping existing JS device plugin authors port thei
 
 **JS Plugin → Hypercolor Rust mapping:**
 
-| JS Plugin API | Hypercolor Equivalent |
-|---|---|
-| `device.write(data, len)` | `host.usb_hid_write(data)` (gRPC bridge) |
-| `device.read(data, len, timeout)` | `host.usb_hid_read(timeout)` (gRPC bridge) |
-| `device.addChannel(name, count)` | `DeviceInfo.zones` |
+| JS Plugin API                      | Hypercolor Equivalent                          |
+| ---------------------------------- | ---------------------------------------------- |
+| `device.write(data, len)`          | `host.usb_hid_write(data)` (gRPC bridge)       |
+| `device.read(data, len, timeout)`  | `host.usb_hid_read(timeout)` (gRPC bridge)     |
+| `device.addChannel(name, count)`   | `DeviceInfo.zones`                             |
 | `device.channel(name).getColors()` | `push_frame(colors)` receives colors from host |
-| `device.setFrameRateTarget(fps)` | `plugin.toml` frame_rate setting |
-| `device.log(msg)` | `host.log(level, msg)` |
+| `device.setFrameRateTarget(fps)`   | `plugin.toml` frame_rate setting               |
+| `device.log(msg)`                  | `host.log(level, msg)`                         |
 
 **Porting guide structure:**
+
 1. Map the USB VID/PID and interface from the JS plugin
 2. Translate the initialization sequence (`device.write` calls → HID write commands)
 3. Translate the render loop (`getColors` → `push_frame`)

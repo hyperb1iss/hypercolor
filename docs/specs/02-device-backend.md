@@ -50,17 +50,17 @@ over USB HID, UDP (DDP/E1.31), HTTP/DTLS (Philips Hue), and future transports.
 
 ### Crate dependencies (by feature)
 
-| Feature | Crate | Purpose |
-|---|---|---|
-| `wled` | `ddp-rs` | DDP packet construction |
-| `wled-sacn` | `sacn` | E1.31/sACN fallback |
-| `hid` | `hidapi` | USB HID communication |
-| `hue` | `reqwest` | Hue bridge REST + Entertainment API |
-| _(core)_ | `tokio` | Async runtime, channels, timers |
-| _(core)_ | `rgb` | Color types |
-| _(core)_ | `serde` | Serialization for DeviceInfo, DeviceIdentifier |
-| _(core)_ | `tracing` | Structured logging |
-| _(core)_ | `thiserror` | Error types |
+| Feature     | Crate       | Purpose                                        |
+| ----------- | ----------- | ---------------------------------------------- |
+| `wled`      | `ddp-rs`    | DDP packet construction                        |
+| `wled-sacn` | `sacn`      | E1.31/sACN fallback                            |
+| `hid`       | `hidapi`    | USB HID communication                          |
+| `hue`       | `reqwest`   | Hue bridge REST + Entertainment API            |
+| _(core)_    | `tokio`     | Async runtime, channels, timers                |
+| _(core)_    | `rgb`       | Color types                                    |
+| _(core)_    | `serde`     | Serialization for DeviceInfo, DeviceIdentifier |
+| _(core)_    | `tracing`   | Structured logging                             |
+| _(core)_    | `thiserror` | Error types                                    |
 
 Current backends are native transports; there is no dedicated bridge crate in
 the active architecture.
@@ -75,7 +75,7 @@ are async because every transport involves I/O (USB writes, UDP sends, TCP strea
 The trait is object-safe so backends can be stored as `Box<dyn DeviceBackend>` in
 the render loop's backend registry.
 
-```rust
+````rust
 use crate::device::{
     DeviceError, DeviceHandle, DeviceInfo, DeviceIdentifier, Rgb,
 };
@@ -223,7 +223,7 @@ pub struct FirmwareInfo {
     /// Available update version, if known.
     pub update_available: Option<String>,
 }
-```
+````
 
 ### Why `async_trait`?
 
@@ -246,7 +246,7 @@ Bevy-inspired lifecycle trait for registering backends (and other extension
 points) with the engine. Every backend ships as a plugin that registers itself
 during daemon startup.
 
-```rust
+````rust
 use crate::engine::HypercolorApp;
 
 /// Lifecycle hooks for backend initialization and teardown.
@@ -315,7 +315,7 @@ pub trait DevicePlugin: Send + Sync + 'static {
     /// Default: no-op.
     fn cleanup(&mut self) {}
 }
-```
+````
 
 ### Plugin registration in the daemon
 
@@ -1682,11 +1682,11 @@ characteristics.
 
 ### Event sources
 
-| Source | Events | Latency | Mechanism |
-|--------|--------|---------|-----------|
-| **udev** | ADD, REMOVE | <100ms | `tokio-udev` `MonitorSocket` |
-| **mDNS** | ServiceResolved, ServiceRemoved | 1-5s | `mdns-sd` `ServiceBrowser` |
-| **Health check** | Reachable, Unreachable | 10-30s | Periodic HTTP/TCP probe |
+| Source           | Events                          | Latency | Mechanism                    |
+| ---------------- | ------------------------------- | ------- | ---------------------------- |
+| **udev**         | ADD, REMOVE                     | <100ms  | `tokio-udev` `MonitorSocket` |
+| **mDNS**         | ServiceResolved, ServiceRemoved | 1-5s    | `mdns-sd` `ServiceBrowser`   |
+| **Health check** | Reachable, Unreachable          | 10-30s  | Periodic HTTP/TCP probe      |
 
 ### Event flow
 
@@ -2060,12 +2060,12 @@ than as a transport-specific special case.
 
 ### Build matrix implications
 
-| Feature combo | Compile time (clean) | Binary size | External deps |
-|---------------|----------------------|-------------|---------------|
-| `default` (wled + hid + audio + screen) | ~2 min | ~15 MB | hidapi, cpal |
-| `default` + `servo` | ~25 min | ~80 MB | SpiderMonkey |
-| `default` + `hue` | ~2.5 min | ~18 MB | + reqwest/TLS |
-| Minimal (no defaults) | ~1 min | ~8 MB | tokio only |
+| Feature combo                           | Compile time (clean) | Binary size | External deps |
+| --------------------------------------- | -------------------- | ----------- | ------------- |
+| `default` (wled + hid + audio + screen) | ~2 min               | ~15 MB      | hidapi, cpal  |
+| `default` + `servo`                     | ~25 min              | ~80 MB      | SpiderMonkey  |
+| `default` + `hue`                       | ~2.5 min             | ~18 MB      | + reqwest/TLS |
+| Minimal (no defaults)                   | ~1 min               | ~8 MB       | tokio only    |
 
 ---
 

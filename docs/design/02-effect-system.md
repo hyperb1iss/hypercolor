@@ -27,16 +27,16 @@ Every effect rendered on the 320x200 canvas falls into one or more of these cate
 
 Slow, meditative effects that provide atmosphere without demanding attention. The visual equivalent of background music.
 
-| Effect Pattern | Description | Technique |
-|---|---|---|
-| **Aurora** | Northern lights curtains drifting vertically | Gradient streaks with Perlin noise displacement, slow hue rotation |
-| **Lava Lamp** | Blobby organic forms rising and falling | Metaball algorithm or SVG-filtered circles with buoyancy physics |
-| **Ocean** | Deep water caustics and gentle wave motion | Layered sine waves with Voronoi caustic overlay |
-| **Nebula** | Cosmic gas clouds with slow drift | Fractal Brownian Motion (fBM) noise, multi-octave layering |
-| **Breathing** | Single or multi-color sinusoidal pulse | `sin(time)` brightness modulation, ease-in-out curve |
-| **Candle** | Warm flickering light | Low-frequency noise mapped to brightness + slight hue variation |
-| **Fireflies** | Sparse glowing particles with organic movement | Particle system with attraction/repulsion, fade-in/fade-out lifecycle |
-| **Clouds** | Slow-moving volumetric cloud layers | Multi-layer Perlin noise with parallax scrolling |
+| Effect Pattern | Description                                    | Technique                                                             |
+| -------------- | ---------------------------------------------- | --------------------------------------------------------------------- |
+| **Aurora**     | Northern lights curtains drifting vertically   | Gradient streaks with Perlin noise displacement, slow hue rotation    |
+| **Lava Lamp**  | Blobby organic forms rising and falling        | Metaball algorithm or SVG-filtered circles with buoyancy physics      |
+| **Ocean**      | Deep water caustics and gentle wave motion     | Layered sine waves with Voronoi caustic overlay                       |
+| **Nebula**     | Cosmic gas clouds with slow drift              | Fractal Brownian Motion (fBM) noise, multi-octave layering            |
+| **Breathing**  | Single or multi-color sinusoidal pulse         | `sin(time)` brightness modulation, ease-in-out curve                  |
+| **Candle**     | Warm flickering light                          | Low-frequency noise mapped to brightness + slight hue variation       |
+| **Fireflies**  | Sparse glowing particles with organic movement | Particle system with attraction/repulsion, fade-in/fade-out lifecycle |
+| **Clouds**     | Slow-moving volumetric cloud layers            | Multi-layer Perlin noise with parallax scrolling                      |
 
 **Shared characteristics:** Low CPU/GPU cost. Frame rates can drop to 30fps without visual degradation. Smooth interpolation is critical -- any jitter breaks the illusion of calm. Color temperature should skew warm or cool depending on mood, never harsh.
 
@@ -44,15 +44,15 @@ Slow, meditative effects that provide atmosphere without demanding attention. Th
 
 Effects that respond to music, voice, or ambient sound. The category users care about most for gaming and music setups.
 
-| Effect Pattern | Description | Audio Mapping |
-|---|---|---|
-| **Spectrum Analyzer** | Classic frequency bar visualization | FFT bins -> bar heights, mel-scaled for perceptual accuracy |
-| **Beat Pulse** | Full-canvas flash on beat detection | `beat` -> brightness spike with exponential decay |
-| **Bass Drop** | Radial shockwave from center on heavy bass | `bass` energy -> ring expansion velocity and opacity |
-| **Waveform** | Oscilloscope-style audio waveform | Raw PCM samples -> vertical displacement of horizontal line |
-| **Chromagram Palette** | Colors shift based on detected musical key | 12-bin chromagram -> hue mapping (C=red, D=orange, ...) |
-| **Mood Gradient** | Warm/cool gradient driven by harmonic analysis | `chordMood` (-1 minor, +1 major) -> blue-to-orange gradient |
-| **Frequency Fire** | Flames whose height tracks frequency bands | Bass->flame base, mid->flame body, treble->flame tips |
+| Effect Pattern           | Description                                     | Audio Mapping                                                    |
+| ------------------------ | ----------------------------------------------- | ---------------------------------------------------------------- |
+| **Spectrum Analyzer**    | Classic frequency bar visualization             | FFT bins -> bar heights, mel-scaled for perceptual accuracy      |
+| **Beat Pulse**           | Full-canvas flash on beat detection             | `beat` -> brightness spike with exponential decay                |
+| **Bass Drop**            | Radial shockwave from center on heavy bass      | `bass` energy -> ring expansion velocity and opacity             |
+| **Waveform**             | Oscilloscope-style audio waveform               | Raw PCM samples -> vertical displacement of horizontal line      |
+| **Chromagram Palette**   | Colors shift based on detected musical key      | 12-bin chromagram -> hue mapping (C=red, D=orange, ...)          |
+| **Mood Gradient**        | Warm/cool gradient driven by harmonic analysis  | `chordMood` (-1 minor, +1 major) -> blue-to-orange gradient      |
+| **Frequency Fire**       | Flames whose height tracks frequency bands      | Bass->flame base, mid->flame body, treble->flame tips            |
 | **Spectral Flux Strobe** | Flash intensity proportional to spectral change | `spectralFlux` -> brightness, high flux = dramatic visual change |
 
 **Shared characteristics:** Latency-critical. Audio-to-visual delay must stay under 16ms (one frame at 60fps). Smoothing is essential to prevent seizure-inducing flicker -- exponential moving averages with configurable decay. Effects should degrade gracefully to a static ambient state when audio is silent.
@@ -61,18 +61,19 @@ Effects that respond to music, voice, or ambient sound. The category users care 
 
 Effects that respond to keyboard, mouse, or other HID input. Primarily for per-key keyboard lighting but applicable to any device.
 
-| Effect Pattern | Description | Input Mapping |
-|---|---|---|
-| **Typing Ripples** | Color wave radiating from pressed keys | Key position -> ripple origin, ring expansion with fade |
-| **Key Trail** | Recently pressed keys glow and fade | Key position -> brightness with time-based decay |
-| **WASD Highlight** | Gaming keys illuminate on press | Key state -> zone brightness, configurable key groups |
-| **Heatmap** | Frequently used keys glow hotter | Cumulative key press count -> color temperature ramp |
-| **Rain** | Color drops fall from pressed key positions | Key position -> particle emitter at top of column |
-| **Reactive Zones** | Different keyboard regions have different base effects | Zone map -> independent effect instances per region |
+| Effect Pattern     | Description                                            | Input Mapping                                           |
+| ------------------ | ------------------------------------------------------ | ------------------------------------------------------- |
+| **Typing Ripples** | Color wave radiating from pressed keys                 | Key position -> ripple origin, ring expansion with fade |
+| **Key Trail**      | Recently pressed keys glow and fade                    | Key position -> brightness with time-based decay        |
+| **WASD Highlight** | Gaming keys illuminate on press                        | Key state -> zone brightness, configurable key groups   |
+| **Heatmap**        | Frequently used keys glow hotter                       | Cumulative key press count -> color temperature ramp    |
+| **Rain**           | Color drops fall from pressed key positions            | Key position -> particle emitter at top of column       |
+| **Reactive Zones** | Different keyboard regions have different base effects | Zone map -> independent effect instances per region     |
 
-**Shared characteristics:** Requires the keyboard input source (`evdev` on Linux). Effects need a spatial model of the keyboard -- which physical position maps to which key. The spatial layout engine already handles this via `DeviceZone` topology, but interactive effects need *reverse* mapping: from key event back to canvas coordinate.
+**Shared characteristics:** Requires the keyboard input source (`evdev` on Linux). Effects need a spatial model of the keyboard -- which physical position maps to which key. The spatial layout engine already handles this via `DeviceZone` topology, but interactive effects need _reverse_ mapping: from key event back to canvas coordinate.
 
 **Input event flow:**
+
 ```
 evdev key event -> InputSource::sample() -> InteractiveEffectState
   -> effect reads key states per frame
@@ -83,19 +84,20 @@ evdev key event -> InputSource::sample() -> InteractiveEffectState
 
 Effects that visualize system telemetry, notifications, or time. Functional beauty.
 
-| Effect Pattern | Description | Data Source |
-|---|---|---|
-| **CPU Temperature** | Color gradient from cool blue to hot red | `sysfs` thermal zone -> 30-100C mapped to hue 240-0 |
-| **GPU Load** | Bar or radial fill showing GPU utilization | NVIDIA/AMD driver APIs -> 0-100% mapped to fill level |
-| **Network Activity** | Sparkle/pulse on upload/download | `/proc/net/dev` delta -> particle burst intensity |
-| **Clock** | Time displayed as color patterns | Hour -> hue, minute -> position, second -> animation phase |
-| **Notification Pulse** | Brief flash on desktop notification | D-Bus notification signal -> color burst with app-specific hue |
-| **Disk I/O** | Activity indicator for storage operations | `iostat` data -> brightness/speed modulation |
-| **RAM Pressure** | Fill level showing memory usage | `/proc/meminfo` -> gradient fill from green to red |
+| Effect Pattern         | Description                                | Data Source                                                    |
+| ---------------------- | ------------------------------------------ | -------------------------------------------------------------- |
+| **CPU Temperature**    | Color gradient from cool blue to hot red   | `sysfs` thermal zone -> 30-100C mapped to hue 240-0            |
+| **GPU Load**           | Bar or radial fill showing GPU utilization | NVIDIA/AMD driver APIs -> 0-100% mapped to fill level          |
+| **Network Activity**   | Sparkle/pulse on upload/download           | `/proc/net/dev` delta -> particle burst intensity              |
+| **Clock**              | Time displayed as color patterns           | Hour -> hue, minute -> position, second -> animation phase     |
+| **Notification Pulse** | Brief flash on desktop notification        | D-Bus notification signal -> color burst with app-specific hue |
+| **Disk I/O**           | Activity indicator for storage operations  | `iostat` data -> brightness/speed modulation                   |
+| **RAM Pressure**       | Fill level showing memory usage            | `/proc/meminfo` -> gradient fill from green to red             |
 
-**Shared characteristics:** Data refresh rates are much slower than visual frame rates (1-10 Hz for most telemetry). Effects should interpolate between data points rather than stepping. The informational layer is best used as a *modifier* on an ambient base effect -- CPU temp tinting an aurora, for example.
+**Shared characteristics:** Data refresh rates are much slower than visual frame rates (1-10 Hz for most telemetry). Effects should interpolate between data points rather than stepping. The informational layer is best used as a _modifier_ on an ambient base effect -- CPU temp tinting an aurora, for example.
 
 **Data source architecture:**
+
 ```rust
 pub trait TelemetrySource: Send + Sync {
     fn name(&self) -> &str;
@@ -115,12 +117,12 @@ pub enum TelemetryData {
 
 Effects that mirror or respond to on-screen content. The bridge between display and ambient lighting.
 
-| Effect Pattern | Description | Technique |
-|---|---|---|
-| **Screen Ambience** | Mirror display colors to surrounding LEDs | PipeWire screen capture -> downscale -> canvas fill |
-| **Dominant Color** | Extract dominant screen color, flood all LEDs | K-means clustering on captured frame -> single color |
-| **Edge Glow** | Sample only screen edges for bias lighting | Border sampling with configurable depth |
-| **Game-Specific** | Custom profiles for specific game UIs | Screen region -> health bar red, minimap colors, etc. |
+| Effect Pattern      | Description                                   | Technique                                             |
+| ------------------- | --------------------------------------------- | ----------------------------------------------------- |
+| **Screen Ambience** | Mirror display colors to surrounding LEDs     | PipeWire screen capture -> downscale -> canvas fill   |
+| **Dominant Color**  | Extract dominant screen color, flood all LEDs | K-means clustering on captured frame -> single color  |
+| **Edge Glow**       | Sample only screen edges for bias lighting    | Border sampling with configurable depth               |
+| **Game-Specific**   | Custom profiles for specific game UIs         | Screen region -> health bar red, minimap colors, etc. |
 
 **Shared characteristics:** Screen capture latency is the bottleneck. PipeWire DMA-BUF with zero-copy is essential on Wayland. The Screen Ambience built-in effect (already in the repo) demonstrates the pattern: `engine.zone` provides pre-sampled HSL data in a 28x20 grid, which the effect renders to the canvas. Hypercolor's screen input source must replicate this interface.
 
@@ -130,15 +132,15 @@ Effects that mirror or respond to on-screen content. The bridge between display 
 
 Algorithmically-generated visuals with emergent complexity. These effects are why the 320x200 canvas exists -- they create visual richness that simple color cycling cannot.
 
-| Effect Pattern | Description | Algorithm |
-|---|---|---|
-| **Particle Systems** | Hundreds of colored particles with physics | Position + velocity + acceleration, with spawn/die lifecycle |
-| **Cellular Automata** | Conway's Game of Life variants | Grid state with configurable rule sets (B3/S23, etc.) |
-| **Fractals** | Mandelbrot, Julia, or L-system renderings | Iterative computation, zoom animation |
-| **Voronoi** | Cell-based color regions with drifting seeds | Fortune's algorithm or brute-force at 320x200 (tractable) |
-| **Reaction-Diffusion** | Gray-Scott or Belousov-Zhabotinsky patterns | Two-chemical simulation on pixel grid |
-| **Flow Fields** | Particles following Perlin noise vector field | Noise-based velocity field, particle trails with fade |
-| **Plasma** | Classic demoscene plasma with sine interference | `sin(x + t) + sin(y + t) + sin(x + y + t)` -> palette lookup |
+| Effect Pattern         | Description                                     | Algorithm                                                    |
+| ---------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
+| **Particle Systems**   | Hundreds of colored particles with physics      | Position + velocity + acceleration, with spawn/die lifecycle |
+| **Cellular Automata**  | Conway's Game of Life variants                  | Grid state with configurable rule sets (B3/S23, etc.)        |
+| **Fractals**           | Mandelbrot, Julia, or L-system renderings       | Iterative computation, zoom animation                        |
+| **Voronoi**            | Cell-based color regions with drifting seeds    | Fortune's algorithm or brute-force at 320x200 (tractable)    |
+| **Reaction-Diffusion** | Gray-Scott or Belousov-Zhabotinsky patterns     | Two-chemical simulation on pixel grid                        |
+| **Flow Fields**        | Particles following Perlin noise vector field   | Noise-based velocity field, particle trails with fade        |
+| **Plasma**             | Classic demoscene plasma with sine interference | `sin(x + t) + sin(y + t) + sin(x + y + t)` -> palette lookup |
 
 **Shared characteristics:** Computationally expensive relative to simple effects. The wgpu path is ideal for these -- WGSL compute shaders can run cellular automata or reaction-diffusion on the GPU in microseconds. For the Servo path, WebGL shaders handle the heavy lifting. Canvas 2D implementations should be avoided for complex generative effects due to CPU overhead.
 
@@ -146,30 +148,30 @@ Algorithmically-generated visuals with emergent complexity. These effects are wh
 
 Curated color palettes and mood boards. Less about animation, more about specific aesthetic choices.
 
-| Effect Pattern | Description | Palette Source |
-|---|---|---|
-| **SilkCircuit** | The Hypercolor design system palette | Electric Purple, Neon Cyan, Coral, Electric Yellow |
-| **Synthwave** | Neon pink, electric blue, deep purple | Retrowave aesthetic, optional grid line animation |
-| **Nature** | Earth tones, forest greens, sky blues | Extracted from nature photography |
-| **Seasonal** | Holiday-specific color schemes | Christmas (red/green/gold), Halloween (orange/purple/black) |
-| **Film Palettes** | Colors from iconic cinematography | Blade Runner amber, Matrix green, Tron cyan |
-| **Custom Palette** | User-defined color collection | Color picker with 2-8 color stops |
+| Effect Pattern     | Description                           | Palette Source                                              |
+| ------------------ | ------------------------------------- | ----------------------------------------------------------- |
+| **SilkCircuit**    | The Hypercolor design system palette  | Electric Purple, Neon Cyan, Coral, Electric Yellow          |
+| **Synthwave**      | Neon pink, electric blue, deep purple | Retrowave aesthetic, optional grid line animation           |
+| **Nature**         | Earth tones, forest greens, sky blues | Extracted from nature photography                           |
+| **Seasonal**       | Holiday-specific color schemes        | Christmas (red/green/gold), Halloween (orange/purple/black) |
+| **Film Palettes**  | Colors from iconic cinematography     | Blade Runner amber, Matrix green, Tron cyan                 |
+| **Custom Palette** | User-defined color collection         | Color picker with 2-8 color stops                           |
 
-**Shared characteristics:** These are fundamentally *gradient definitions* applied to a *motion pattern*. The palette defines the colors; the motion (wave, breathe, shift, static) defines how those colors move across the canvas. This separation is key to the effect authoring experience -- users should be able to apply any palette to any motion pattern.
+**Shared characteristics:** These are fundamentally _gradient definitions_ applied to a _motion pattern_. The palette defines the colors; the motion (wave, breathe, shift, static) defines how those colors move across the canvas. This separation is key to the effect authoring experience -- users should be able to apply any palette to any motion pattern.
 
 ### 1.8 Utility
 
 The basics. Every lighting system needs these, and they must be flawless.
 
-| Effect Pattern | Description | Implementation |
-|---|---|---|
-| **Solid Color** | Single color across all LEDs | Canvas filled with one color. Must support hex, HSL, color picker |
-| **Gradient** | Linear or radial gradient | 2-8 color stops, configurable angle and position |
-| **Color Cycle** | Smooth transition through a color sequence | Palette interpolation with configurable speed and easing |
-| **Rainbow** | HSL hue sweep across the canvas | Hue = `(position + time * speed) % 360` |
-| **Breathing** | Pulsing brightness | Sinusoidal brightness envelope, configurable period |
-| **Strobe** | On/off flashing (use responsibly) | Binary state toggle with configurable frequency. **Capped at 10Hz max** for photosensitivity safety |
-| **Off** | All LEDs dark | The most important effect. Must be instant and reliable |
+| Effect Pattern  | Description                                | Implementation                                                                                      |
+| --------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| **Solid Color** | Single color across all LEDs               | Canvas filled with one color. Must support hex, HSL, color picker                                   |
+| **Gradient**    | Linear or radial gradient                  | 2-8 color stops, configurable angle and position                                                    |
+| **Color Cycle** | Smooth transition through a color sequence | Palette interpolation with configurable speed and easing                                            |
+| **Rainbow**     | HSL hue sweep across the canvas            | Hue = `(position + time * speed) % 360`                                                             |
+| **Breathing**   | Pulsing brightness                         | Sinusoidal brightness envelope, configurable period                                                 |
+| **Strobe**      | On/off flashing (use responsibly)          | Binary state toggle with configurable frequency. **Capped at 10Hz max** for photosensitivity safety |
+| **Off**         | All LEDs dark                              | The most important effect. Must be instant and reliable                                             |
 
 **Shared characteristics:** Zero audio dependency. Zero network dependency. These must work on every device, every time, with no configuration. They are the fallback when anything goes wrong.
 
@@ -212,6 +214,7 @@ The authoring experience determines whether Hypercolor grows a creator community
 This is the path of least resistance. Anyone who can write a web page can write a Hypercolor effect. The 230+ existing community HTML effects prove the model works.
 
 **File structure:**
+
 ```
 my-effect/
   my-effect.html      # The effect (required)
@@ -220,24 +223,31 @@ my-effect/
 ```
 
 **Minimal effect:**
+
 ```html
 <head>
   <title>My First Effect</title>
   <meta description="A simple color wave" />
   <meta publisher="username" />
-  <meta property="speed" label="Speed" type="number"
-        min="1" max="100" default="50" />
+  <meta
+    property="speed"
+    label="Speed"
+    type="number"
+    min="1"
+    max="100"
+    default="50"
+  />
 </head>
 <body style="margin:0; background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
 </body>
 <script>
-  const ctx = document.getElementById('exCanvas').getContext('2d');
+  const ctx = document.getElementById("exCanvas").getContext("2d");
   let t = 0;
 
   function update() {
     for (let x = 0; x < 320; x++) {
-      const hue = (x + t * speed / 10) % 360;
+      const hue = (x + (t * speed) / 10) % 360;
       ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
       ctx.fillRect(x, 0, 1, 200);
     }
@@ -251,15 +261,15 @@ my-effect/
 **The Lightscript TypeScript path** extends this with proper structure:
 
 ```typescript
-import { CanvasEffect, NumberControl } from '@hypercolor/lightscript';
+import { CanvasEffect, NumberControl } from "@hypercolor/lightscript";
 
-@NumberControl('speed', { label: 'Speed', min: 1, max: 100, default: 50 })
+@NumberControl("speed", { label: "Speed", min: 1, max: 100, default: 50 })
 export class ColorWave extends CanvasEffect {
   private t = 0;
 
   render(ctx: CanvasRenderingContext2D) {
     for (let x = 0; x < this.width; x++) {
-      const hue = (x + this.t * this.controls.speed / 10) % 360;
+      const hue = (x + (this.t * this.controls.speed) / 10) % 360;
       ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
       ctx.fillRect(x, 0, 1, this.height);
     }
@@ -271,12 +281,12 @@ export class ColorWave extends CanvasEffect {
 **WebGL path** for GPU-accelerated effects:
 
 ```typescript
-import { WebGLEffect, ComboboxControl } from '@hypercolor/lightscript';
+import { WebGLEffect, ComboboxControl } from "@hypercolor/lightscript";
 
-@ComboboxControl('palette', {
-  label: 'Palette',
-  values: ['Aurora', 'Lava', 'Ice'],
-  default: 'Aurora'
+@ComboboxControl("palette", {
+  label: "Palette",
+  values: ["Aurora", "Lava", "Ice"],
+  default: "Aurora",
 })
 export class PlasmaShader extends WebGLEffect {
   fragmentShader = `
@@ -299,6 +309,7 @@ export class PlasmaShader extends WebGLEffect {
 For effects that need maximum throughput or want to leverage GPU compute. These run on the wgpu renderer -- no web engine overhead.
 
 **File structure:**
+
 ```
 my-shader/
   my-shader.wgsl       # The shader (required)
@@ -307,6 +318,7 @@ my-shader/
 ```
 
 **Shader file (`aurora.wgsl`):**
+
 ```wgsl
 struct Uniforms {
     time: f32,
@@ -335,6 +347,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 ```
 
 **Metadata file (`aurora.toml`):**
+
 ```toml
 [effect]
 name = "Aurora Native"
@@ -376,6 +389,7 @@ step = 0.01
 A node-based editor in the web UI for users who think visually rather than textually. Not a v1 feature, but the architecture should not preclude it.
 
 **Concept:**
+
 ```
 [Noise Generator] --> [Color Ramp] --> [Blend] --> [Output]
                                           ^
@@ -383,6 +397,7 @@ A node-based editor in the web UI for users who think visually rather than textu
 ```
 
 **Node types:**
+
 - **Generators:** Noise (Perlin, Simplex, Worley), Gradient, Solid Color, Pattern (stripe, checker, dots)
 - **Modifiers:** Color Ramp, Hue Shift, Brightness, Blur, Distort, Mirror, Tile
 - **Inputs:** Audio (bass, mid, treble, beat, spectrum), Time, Mouse, Keyboard
@@ -397,17 +412,18 @@ A node-based editor in the web UI for users who think visually rather than textu
 
 New effect authors need scaffolding. Ship these templates:
 
-| Template | Description | Path |
-|---|---|---|
-| `canvas-basic` | Minimal Canvas 2D effect with controls | HTML |
-| `canvas-audio` | Audio-reactive Canvas 2D with spectrum access | HTML |
-| `webgl-shader` | Three.js fragment shader with audio uniforms | HTML/WebGL |
+| Template          | Description                                    | Path       |
+| ----------------- | ---------------------------------------------- | ---------- |
+| `canvas-basic`    | Minimal Canvas 2D effect with controls         | HTML       |
+| `canvas-audio`    | Audio-reactive Canvas 2D with spectrum access  | HTML       |
+| `webgl-shader`    | Three.js fragment shader with audio uniforms   | HTML/WebGL |
 | `webgl-particles` | Three.js particle system with audio reactivity | HTML/WebGL |
-| `wgsl-basic` | Minimal WGSL shader with time and resolution | WGSL |
-| `wgsl-audio` | WGSL shader with full audio uniform block | WGSL |
-| `wgsl-compute` | WGSL compute shader for cellular automata/sim | WGSL |
+| `wgsl-basic`      | Minimal WGSL shader with time and resolution   | WGSL       |
+| `wgsl-audio`      | WGSL shader with full audio uniform block      | WGSL       |
+| `wgsl-compute`    | WGSL compute shader for cellular automata/sim  | WGSL       |
 
 **CLI scaffolding:**
+
 ```bash
 hypercolor effect new my-aurora --template canvas-audio
 # Creates effects/custom/my-aurora/my-aurora.html with boilerplate
@@ -418,6 +434,7 @@ hypercolor effect new my-aurora --template canvas-audio
 Effect authors need to verify their work against different device configurations without owning every device.
 
 **Layout simulator:** The effect dev server provides a virtual device panel. Authors select from preset layouts:
+
 - Single LED strip (60 LEDs)
 - Keyboard (full-size, TKL, 60%)
 - Fan ring (16 LEDs) x4
@@ -427,6 +444,7 @@ Effect authors need to verify their work against different device configurations
 The simulator samples the effect canvas at the simulated LED positions and renders the result, showing exactly how the effect will look on real hardware.
 
 **Audio test signals:** When no audio input is available, the dev server can inject:
+
 - Sine sweep (frequency rises over time)
 - Beat pattern (4/4 kicks at configurable BPM)
 - Pink noise (even energy distribution)
@@ -441,6 +459,7 @@ hypercolor dev [--effect effects/custom/my-effect.html] [--port 3420]
 ```
 
 **Architecture:**
+
 ```mermaid
 graph TD
     subgraph devserver["Effect Dev Server (port 3420)"]
@@ -458,6 +477,7 @@ graph TD
 ```
 
 **HMR behavior:**
+
 1. File change detected via `notify` crate
 2. For HTML effects: Servo reloads the page. State is lost (by design -- effects should be stateless between reloads)
 3. For WGSL shaders: Pipeline is recompiled. If compilation fails, error is displayed in the dev UI overlay and the previous working shader continues running
@@ -465,6 +485,7 @@ graph TD
 5. Control values are preserved across reloads (stored in the dev server, re-injected after reload)
 
 **Dev UI overlay** (rendered in the browser preview panel):
+
 - Live FPS counter
 - Frame time histogram (detect jank)
 - Audio data inspector (see the FFT bins, beat state, mel bands)
@@ -483,6 +504,7 @@ How users find effects is as important as the effects themselves. A library of 2
 The web UI's effect browser is the primary discovery interface. It must feel like browsing a curated gallery, not scrolling a file list.
 
 **Layout:**
+
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │  [Search...🔍]  [Category ▼]  [Audio ▼]  [Sort ▼]  [+ New]   │
@@ -512,11 +534,11 @@ Static thumbnails are insufficient. Effects are animated -- the preview must con
 
 **Preview tiers:**
 
-| Tier | Format | When Used | Storage |
-|---|---|---|---|
-| **Thumbnail** | 320x200 PNG | Grid view, search results | Bundled with effect |
-| **Animated Preview** | 320x200 WebP animation (3-5 sec loop) | Hover state, expanded card | Generated on install or first browse |
-| **Live Preview** | Real-time canvas render | Detail view, before applying | Rendered by the effect engine on demand |
+| Tier                 | Format                                | When Used                    | Storage                                 |
+| -------------------- | ------------------------------------- | ---------------------------- | --------------------------------------- |
+| **Thumbnail**        | 320x200 PNG                           | Grid view, search results    | Bundled with effect                     |
+| **Animated Preview** | 320x200 WebP animation (3-5 sec loop) | Hover state, expanded card   | Generated on install or first browse    |
+| **Live Preview**     | Real-time canvas render               | Detail view, before applying | Rendered by the effect engine on demand |
 
 **Animated preview generation:** When a new effect is installed, the daemon renders 180 frames (3 seconds at 60fps) with default parameters and encodes them as an animated WebP. For audio-reactive effects, a standard test signal (pink noise + 120 BPM beat) is used. Previews are cached in `~/.local/share/hypercolor/previews/`.
 
@@ -525,6 +547,7 @@ Static thumbnails are insufficient. Effects are animated -- the preview must con
 ### 3.3 Search & Filtering
 
 **Text search** matches against:
+
 - Effect name (weighted highest)
 - Description text
 - Author name
@@ -533,20 +556,21 @@ Static thumbnails are insufficient. Effects are animated -- the preview must con
 
 **Filter dimensions:**
 
-| Filter | Options |
-|---|---|
-| **Category** | Ambient, Reactive, Interactive, Informational, Screen, Generative, Artistic, Utility |
-| **Audio** | Audio-reactive, Non-audio, Audio-optional |
-| **Renderer** | Servo (HTML), wgpu (native), Both |
-| **Source** | Built-in, Community, Custom (user-created) |
-| **Performance** | Light (<1ms), Medium (1-5ms), Heavy (>5ms) |
-| **Compatibility** | All devices, Strip-optimized, Keyboard-optimized, Matrix-optimized |
+| Filter            | Options                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| **Category**      | Ambient, Reactive, Interactive, Informational, Screen, Generative, Artistic, Utility |
+| **Audio**         | Audio-reactive, Non-audio, Audio-optional                                            |
+| **Renderer**      | Servo (HTML), wgpu (native), Both                                                    |
+| **Source**        | Built-in, Community, Custom (user-created)                                           |
+| **Performance**   | Light (<1ms), Medium (1-5ms), Heavy (>5ms)                                           |
+| **Compatibility** | All devices, Strip-optimized, Keyboard-optimized, Matrix-optimized                   |
 
 **Sort options:** Popular (install count), Rating, Newest, Name (A-Z), Recently Used, Trending (high install rate over last 7 days).
 
 ### 3.4 Recommendations
 
 **"Similar effects"** uses a simple feature vector:
+
 - Category tags (one-hot encoded)
 - Audio reactivity (boolean)
 - Dominant color palette (extracted from preview thumbnail via k-means)
@@ -561,16 +585,16 @@ Cosine similarity between feature vectors produces "Similar to Aurora" suggestio
 
 The effect browser home page shows curated sections:
 
-| Section | Logic |
-|---|---|
-| **Featured** | Manually curated by maintainers. Rotates weekly |
-| **Popular** | Highest install count, all time |
-| **Trending** | Highest install rate, last 7 days |
-| **New Arrivals** | Most recently published |
-| **Audio Essentials** | Best-rated audio-reactive effects |
-| **Chill Vibes** | Top ambient effects |
-| **Recently Used** | User's own history |
-| **By This Author** | Other effects from the same creator (shown in detail view) |
+| Section              | Logic                                                      |
+| -------------------- | ---------------------------------------------------------- |
+| **Featured**         | Manually curated by maintainers. Rotates weekly            |
+| **Popular**          | Highest install count, all time                            |
+| **Trending**         | Highest install rate, last 7 days                          |
+| **New Arrivals**     | Most recently published                                    |
+| **Audio Essentials** | Best-rated audio-reactive effects                          |
+| **Chill Vibes**      | Top ambient effects                                        |
+| **Recently Used**    | User's own history                                         |
+| **By This Author**   | Other effects from the same creator (shown in detail view) |
 
 ---
 
@@ -581,6 +605,7 @@ The effect browser home page shows curated sections:
 Effects live in a git repository. This is the simplest possible infrastructure that supports versioning, forking, pull requests, and community contribution.
 
 **Repository structure:**
+
 ```
 hypercolor-effects/                     # GitHub repository
 ├── registry.toml                       # Effect index (name, version, hash, metadata)
@@ -603,6 +628,7 @@ hypercolor-effects/                     # GitHub repository
 ```
 
 **`effect.toml` manifest:**
+
 ```toml
 [effect]
 name = "Aurora"
@@ -629,6 +655,7 @@ optimized_for = ["strip", "matrix"]
 The Hypercolor daemon ships with a default registry URL pointing to the official `hypercolor-effects` GitHub repository. The registry is a single `registry.toml` file that the client fetches to know what's available.
 
 **Install flow:**
+
 ```bash
 # CLI
 hypercolor effect install aurora
@@ -640,6 +667,7 @@ hypercolor effect search "fire"               # Search the registry
 ```
 
 **Under the hood:**
+
 1. Fetch `registry.toml` from the registry URL (cached, refreshed every 4 hours or on manual refresh)
 2. Download the effect directory as a tarball (GitHub archive API) or sparse checkout
 3. Verify SHA-256 hash against registry entry
@@ -648,15 +676,17 @@ hypercolor effect search "fire"               # Search the registry
 6. Register in local effect database
 
 **Why git, not npm/crates.io?**
+
 - Effects are HTML files and images, not compiled packages. Git handles this naturally
 - GitHub provides free hosting, CI, issues, pull requests
 - Forking an effect to customize it is a native git operation
-- No registry server to maintain. The `registry.toml` file *is* the registry
+- No registry server to maintain. The `registry.toml` file _is_ the registry
 - Version history is implicit in git commits
 
 ### 4.3 Versioning & Updates
 
 Effects follow semver:
+
 - **Patch** (2.1.0 -> 2.1.1): Bug fix, no visible change
 - **Minor** (2.1.0 -> 2.2.0): New controls, visual improvements, backward-compatible
 - **Major** (2.1.0 -> 3.0.0): Breaking changes to controls (renamed/removed parameters)
@@ -709,6 +739,7 @@ version = "^1.5"
 ```
 
 **Shipped packs:**
+
 - **Essentials** -- The effects every user needs (solid, gradient, rainbow, breathing, spectrum)
 - **Gaming** -- Audio-reactive + interactive keyboard effects
 - **Chill** -- Ambient effects for background ambiance
@@ -724,12 +755,14 @@ Effects in the official registry must use an OSI-approved license (MIT, Apache-2
 ### 4.7 Content Moderation
 
 **What could go wrong:**
+
 - **Malicious effects:** JavaScript that attempts to exfiltrate data, phone home, or abuse system resources. Mitigated by Servo sandboxing (no network access, no filesystem access, no clipboard) and the wgpu shader validator (WGSL is not Turing-complete in a dangerous way)
 - **Offensive content:** Effects with hate symbols, explicit imagery. Moderated via GitHub PR review process -- all effects enter the registry through pull requests
 - **Copyright infringement:** Brand logos, copyrighted artwork. Same PR review process
 - **Seizure triggers:** Rapid flashing effects. Automated check: reject effects that produce brightness changes > 3Hz across > 25% of the canvas. Flag for manual review if detected
 
 **Automated checks (CI on PR):**
+
 1. Effect loads without JavaScript errors
 2. Effect renders at least 30fps on the CI runner
 3. No external network requests (CSP violation check)
@@ -758,6 +791,7 @@ graph TD
 ```
 
 **Data model:**
+
 ```rust
 pub struct EffectComposition {
     pub layers: Vec<EffectLayer>,
@@ -820,6 +854,7 @@ Zone Mapping:
 Masks restrict an effect's visibility to specific canvas regions. Useful for vignettes, split effects, and creative compositions.
 
 **Mask types:**
+
 ```rust
 pub enum LayerMask {
     /// Rectangular region (normalized 0-1 coordinates)
@@ -886,17 +921,18 @@ Effects declare parameters. The engine generates UI. This is the contract:
 
 **Supported control types:**
 
-| Type | HTML Meta | Rust | UI Widget | Value |
-|---|---|---|---|---|
-| `number` | `type="number" min="0" max="100" default="50"` | `ControlType::Number { min, max, step }` | Slider + input | `f32` |
-| `boolean` | `type="boolean" default="0"` | `ControlType::Boolean` | Toggle switch | `bool` |
-| `combobox` | `type="combobox" values="A,B,C" default="A"` | `ControlType::Combobox { values }` | Dropdown | `String` |
-| `color` | `type="color" default="#ff0000"` | `ControlType::Color` | Color picker | `String` (hex) |
-| `hue` | `type="hue" min="0" max="360" default="180"` | `ControlType::Hue { min, max }` | Hue wheel | `f32` |
-| `text` | `type="textfield" default=""` | `ControlType::TextField` | Text input | `String` |
-| `sensor` | `type="sensor" default="CPU Load"` | `ControlType::Sensor` | Sensor picker | `String` |
+| Type       | HTML Meta                                      | Rust                                     | UI Widget      | Value          |
+| ---------- | ---------------------------------------------- | ---------------------------------------- | -------------- | -------------- |
+| `number`   | `type="number" min="0" max="100" default="50"` | `ControlType::Number { min, max, step }` | Slider + input | `f32`          |
+| `boolean`  | `type="boolean" default="0"`                   | `ControlType::Boolean`                   | Toggle switch  | `bool`         |
+| `combobox` | `type="combobox" values="A,B,C" default="A"`   | `ControlType::Combobox { values }`       | Dropdown       | `String`       |
+| `color`    | `type="color" default="#ff0000"`               | `ControlType::Color`                     | Color picker   | `String` (hex) |
+| `hue`      | `type="hue" min="0" max="360" default="180"`   | `ControlType::Hue { min, max }`          | Hue wheel      | `f32`          |
+| `text`     | `type="textfield" default=""`                  | `ControlType::TextField`                 | Text input     | `String`       |
+| `sensor`   | `type="sensor" default="CPU Load"`             | `ControlType::Sensor`                    | Sensor picker  | `String`       |
 
 **Control injection flow (Servo path):**
+
 1. Parse `<meta>` tags on effect load to discover controls
 2. Render the control panel UI in the web frontend
 3. When user changes a value: REST/WebSocket -> daemon -> `ServoRenderer::inject_control(name, value)`
@@ -904,6 +940,7 @@ Effects declare parameters. The engine generates UI. This is the contract:
 5. Effect reads the global variable on next frame
 
 **Control injection flow (wgpu path):**
+
 1. Parse `effect.toml` on effect load
 2. Build uniform buffer layout matching the shader's struct
 3. User changes a value -> daemon updates the uniform buffer
@@ -930,6 +967,7 @@ cycleSpeed = 50
 ```
 
 **Operations:**
+
 - **Save preset:** Snapshot current control values with a name
 - **Load preset:** Apply all values from a preset
 - **Delete preset:** Remove a saved preset
@@ -1022,6 +1060,7 @@ pub struct LinkMapping {
 A "Surprise Me" button that randomizes parameters within their declared ranges. Useful for exploration and discovering unexpected combinations.
 
 **Smart randomization rules:**
+
 - Color controls: Random hue, but keep saturation > 50% and lightness between 30-70% (avoid ugly colors)
 - Speed controls: Bias toward the middle of the range (extremes are often unusable)
 - Boolean controls: 50/50 chance
@@ -1118,50 +1157,52 @@ pub struct AudioData {
 ### 7.3 How Effect Authors Access Audio Data
 
 **Servo path (JavaScript):**
+
 ```javascript
 // Injected by the runtime into window.engine.audio every frame
 const audio = window.engine.audio;
 
 // Basic
-audio.level          // -100 to 0 (dB scale, LightScript compat) or 0-1 (Hypercolor mode)
-audio.bass           // 0.0 - 1.0
-audio.mid            // 0.0 - 1.0
-audio.treble         // 0.0 - 1.0
-audio.freq           // Uint8Array(200) — 0-255 scaled magnitudes
+audio.level; // -100 to 0 (dB scale, LightScript compat) or 0-1 (Hypercolor mode)
+audio.bass; // 0.0 - 1.0
+audio.mid; // 0.0 - 1.0
+audio.treble; // 0.0 - 1.0
+audio.freq; // Uint8Array(200) — 0-255 scaled magnitudes
 
 // Beat
-audio.beat           // boolean
-audio.beatPulse      // 0.0 - 1.0, decaying
-audio.beatPhase      // 0.0 - 1.0
-audio.onset          // boolean
-audio.onsetPulse     // 0.0 - 1.0, decaying
+audio.beat; // boolean
+audio.beatPulse; // 0.0 - 1.0, decaying
+audio.beatPhase; // 0.0 - 1.0
+audio.onset; // boolean
+audio.onsetPulse; // 0.0 - 1.0, decaying
 
 // Mel
-audio.melBands            // Float32Array(24)
-audio.melBandsNormalized  // Float32Array(24) — 0.0-1.0
+audio.melBands; // Float32Array(24)
+audio.melBandsNormalized; // Float32Array(24) — 0.0-1.0
 
 // Chromagram
-audio.chromagram               // Float32Array(12)
-audio.dominantPitch            // 0-11
-audio.dominantPitchConfidence  // 0.0-1.0
+audio.chromagram; // Float32Array(12)
+audio.dominantPitch; // 0-11
+audio.dominantPitchConfidence; // 0.0-1.0
 
 // Spectral
-audio.spectralFlux             // 0.0+
-audio.spectralFluxBands        // Float32Array(3)
-audio.brightness               // 0.0-1.0
-audio.spread                   // 0.0-1.0
-audio.rolloff                  // Hz
+audio.spectralFlux; // 0.0+
+audio.spectralFluxBands; // Float32Array(3)
+audio.brightness; // 0.0-1.0
+audio.spread; // 0.0-1.0
+audio.rolloff; // Hz
 
 // Harmonic
-audio.harmonicHue              // 0.0-1.0
-audio.chordMood                // -1.0 to 1.0
+audio.harmonicHue; // 0.0-1.0
+audio.chordMood; // -1.0 to 1.0
 
 // Derived
-audio.density                  // 0.0-1.0
-audio.width                    // 0.0-1.0
+audio.density; // 0.0-1.0
+audio.width; // 0.0-1.0
 ```
 
 **wgpu path (WGSL):**
+
 ```wgsl
 struct AudioUniforms {
     level: f32,
@@ -1188,20 +1229,21 @@ struct AudioUniforms {
 
 A cookbook of proven audio-to-visual mappings:
 
-| Pattern | Audio Source | Visual Target | Why It Works |
-|---|---|---|---|
-| **Bass = Brightness** | `audio.bass` | Global brightness multiplier | Bass frequencies are felt physically; brightness mirrors that impact |
-| **Treble = Speed** | `audio.treble` | Animation speed / particle velocity | High frequencies feel fast; speed matches that perception |
-| **Beat = Flash** | `audio.beatPulse` | Additive white flash with decay | The most instinctive mapping: drum hit = visual impact |
-| **Level = Scale** | `audio.level` | Object size or effect radius | Louder = bigger. Universal metaphor |
-| **Chromagram = Hue** | `audio.harmonicHue` | Base hue rotation | Maps musical key to color wheel. C=red, F#=cyan. Synesthesia |
-| **Mood = Temperature** | `audio.chordMood` | Warm-cool color shift | Minor chords feel cold (blue); major chords feel warm (orange) |
-| **Spectral Flux = Chaos** | `audio.spectralFlux` | Particle spawn rate / distortion | Musical transitions (drops, builds) create visual complexity |
-| **Mel Bands = Multi-bar** | `audio.melBands[i]` | Individual bar/ring/zone brightness | Each mel band drives a separate visual element |
-| **Onset = Particle Burst** | `audio.onset` | Spawn N particles at random positions | Any percussive event creates a visual burst |
-| **Beat Phase = Progress** | `audio.beatPhase` | Circular progress indicator / sweep | Anticipation builds between beats; resolution on beat |
+| Pattern                    | Audio Source         | Visual Target                         | Why It Works                                                         |
+| -------------------------- | -------------------- | ------------------------------------- | -------------------------------------------------------------------- |
+| **Bass = Brightness**      | `audio.bass`         | Global brightness multiplier          | Bass frequencies are felt physically; brightness mirrors that impact |
+| **Treble = Speed**         | `audio.treble`       | Animation speed / particle velocity   | High frequencies feel fast; speed matches that perception            |
+| **Beat = Flash**           | `audio.beatPulse`    | Additive white flash with decay       | The most instinctive mapping: drum hit = visual impact               |
+| **Level = Scale**          | `audio.level`        | Object size or effect radius          | Louder = bigger. Universal metaphor                                  |
+| **Chromagram = Hue**       | `audio.harmonicHue`  | Base hue rotation                     | Maps musical key to color wheel. C=red, F#=cyan. Synesthesia         |
+| **Mood = Temperature**     | `audio.chordMood`    | Warm-cool color shift                 | Minor chords feel cold (blue); major chords feel warm (orange)       |
+| **Spectral Flux = Chaos**  | `audio.spectralFlux` | Particle spawn rate / distortion      | Musical transitions (drops, builds) create visual complexity         |
+| **Mel Bands = Multi-bar**  | `audio.melBands[i]`  | Individual bar/ring/zone brightness   | Each mel band drives a separate visual element                       |
+| **Onset = Particle Burst** | `audio.onset`        | Spawn N particles at random positions | Any percussive event creates a visual burst                          |
+| **Beat Phase = Progress**  | `audio.beatPhase`    | Circular progress indicator / sweep   | Anticipation builds between beats; resolution on beat                |
 
 **Anti-patterns to warn authors about:**
+
 - **Raw FFT to brightness without smoothing:** Creates seizure-inducing flicker. Always smooth with exponential moving average
 - **Beat detection without confidence check:** Low-confidence beats fire on noise. Gate with `beatConfidence > 0.5`
 - **Linear frequency mapping:** Human hearing is logarithmic. Use mel bands, not raw FFT bins, for perceptually even visualization
@@ -1211,16 +1253,16 @@ A cookbook of proven audio-to-visual mappings:
 
 The audio-visual synchronization budget:
 
-| Stage | Latency | Notes |
-|---|---|---|
-| Audio capture buffer | ~23ms | 1024 samples at 44.1kHz. Can reduce to 512 samples (~11ms) at the cost of FFT resolution |
-| FFT computation | <1ms | 2048-point FFT is trivial |
-| Beat detection | ~0ms | Runs inline with FFT |
-| Event bus publish | <1ms | tokio watch channel, essentially free |
-| Effect render | 1-10ms | Depends on effect complexity |
-| Spatial sampling | <1ms | 320x200 bilinear sampling |
-| Device push | 1-5ms | USB HID or UDP |
-| **Total** | **~28-40ms** | 1.5-2.5 frames at 60fps |
+| Stage                | Latency      | Notes                                                                                    |
+| -------------------- | ------------ | ---------------------------------------------------------------------------------------- |
+| Audio capture buffer | ~23ms        | 1024 samples at 44.1kHz. Can reduce to 512 samples (~11ms) at the cost of FFT resolution |
+| FFT computation      | <1ms         | 2048-point FFT is trivial                                                                |
+| Beat detection       | ~0ms         | Runs inline with FFT                                                                     |
+| Event bus publish    | <1ms         | tokio watch channel, essentially free                                                    |
+| Effect render        | 1-10ms       | Depends on effect complexity                                                             |
+| Spatial sampling     | <1ms         | 320x200 bilinear sampling                                                                |
+| Device push          | 1-5ms        | USB HID or UDP                                                                           |
+| **Total**            | **~28-40ms** | 1.5-2.5 frames at 60fps                                                                  |
 
 **Perceived latency:** Humans tolerate audio-visual desync up to ~45ms before it feels "off." The pipeline fits within this budget at default settings. For latency-critical effects (drum pad visualization), reducing the capture buffer to 512 samples brings the total under 25ms.
 
@@ -1236,14 +1278,15 @@ Effects run on a daemon that must be rock-solid. A misbehaving effect cannot cra
 
 Each effect gets a per-frame time budget:
 
-| Budget Tier | Frame Time | Target FPS | Use Case |
-|---|---|---|---|
-| **Light** | <2ms | 60fps (easy) | Solid color, gradient, simple breathing |
-| **Medium** | 2-8ms | 60fps (comfortable) | Aurora, matrix, most Canvas 2D effects |
-| **Heavy** | 8-14ms | 60fps (tight) | WebGL particle systems, complex shaders |
-| **Extreme** | >14ms | Drops below 60fps | Full-scene Three.js, reaction-diffusion |
+| Budget Tier | Frame Time | Target FPS          | Use Case                                |
+| ----------- | ---------- | ------------------- | --------------------------------------- |
+| **Light**   | <2ms       | 60fps (easy)        | Solid color, gradient, simple breathing |
+| **Medium**  | 2-8ms      | 60fps (comfortable) | Aurora, matrix, most Canvas 2D effects  |
+| **Heavy**   | 8-14ms     | 60fps (tight)       | WebGL particle systems, complex shaders |
+| **Extreme** | >14ms      | Drops below 60fps   | Full-scene Three.js, reaction-diffusion |
 
 **Budget enforcement:**
+
 ```rust
 pub struct FrameBudget {
     pub target_frame_time: Duration,  // 16.67ms for 60fps
@@ -1259,14 +1302,14 @@ If an effect consistently exceeds its budget (30+ consecutive overruns), the dae
 
 ### 8.2 GPU vs CPU Rendering Decisions
 
-| Scenario | Renderer | Reason |
-|---|---|---|
-| New WGSL/GLSL shader effect | wgpu (GPU) | Native GPU execution, microsecond frame times |
-| Simple Canvas 2D effect (< 50 draw calls) | Servo (CPU, software rendering) | Servo's software renderer is fast enough for simple effects |
-| Complex Canvas 2D (> 200 draw calls) | Servo (GPU-accelerated if available) | Servo can use GPU compositing for Canvas 2D |
-| WebGL effect | Servo (GPU) | WebGL is inherently GPU-accelerated |
-| Three.js scene | Servo (GPU) | Three.js requires WebGL context |
-| Composition (multi-layer) | wgpu compute shader | Blend operations are trivially parallel |
+| Scenario                                  | Renderer                             | Reason                                                      |
+| ----------------------------------------- | ------------------------------------ | ----------------------------------------------------------- |
+| New WGSL/GLSL shader effect               | wgpu (GPU)                           | Native GPU execution, microsecond frame times               |
+| Simple Canvas 2D effect (< 50 draw calls) | Servo (CPU, software rendering)      | Servo's software renderer is fast enough for simple effects |
+| Complex Canvas 2D (> 200 draw calls)      | Servo (GPU-accelerated if available) | Servo can use GPU compositing for Canvas 2D                 |
+| WebGL effect                              | Servo (GPU)                          | WebGL is inherently GPU-accelerated                         |
+| Three.js scene                            | Servo (GPU)                          | Three.js requires WebGL context                             |
+| Composition (multi-layer)                 | wgpu compute shader                  | Blend operations are trivially parallel                     |
 
 **Fallback chain:** If the GPU is unavailable (headless server, broken driver), all rendering falls back to Servo's `SoftwareRenderingContext`. At 320x200, software rendering is fast enough for most effects (not WebGL, which requires a GPU by definition).
 
@@ -1297,17 +1340,18 @@ Frame budget exceeded?
 
 ### 8.4 Memory Limits
 
-| Resource | Limit | Enforcement |
-|---|---|---|
-| Canvas buffer | 256KB (320x200x4) | Fixed allocation, cannot grow |
-| Per-effect JS heap (Servo) | 64MB | Servo's SpiderMonkey GC enforced |
-| Per-effect GPU memory (wgpu) | 32MB | Texture/buffer allocation cap |
-| Preview cache (all effects) | 256MB | LRU eviction of animated previews |
-| Total effect engine memory | 512MB | Hard cap, daemon refuses to load more effects |
+| Resource                     | Limit             | Enforcement                                   |
+| ---------------------------- | ----------------- | --------------------------------------------- |
+| Canvas buffer                | 256KB (320x200x4) | Fixed allocation, cannot grow                 |
+| Per-effect JS heap (Servo)   | 64MB              | Servo's SpiderMonkey GC enforced              |
+| Per-effect GPU memory (wgpu) | 32MB              | Texture/buffer allocation cap                 |
+| Preview cache (all effects)  | 256MB             | LRU eviction of animated previews             |
+| Total effect engine memory   | 512MB             | Hard cap, daemon refuses to load more effects |
 
 ### 8.5 Sandboxing
 
 **Servo path (HTML effects):**
+
 - **Network:** Disabled. Effects cannot make HTTP requests, WebSocket connections, or any network I/O. CSP: `connect-src 'none'`
 - **Filesystem:** No access. `<input type="file">` disabled. No IndexedDB. No LocalStorage (or limited to 1MB)
 - **Clipboard:** Disabled
@@ -1317,12 +1361,14 @@ Frame budget exceeded?
 - **Process isolation:** Servo runs in the daemon process but with constrained API surface. A misbehaving effect can cause Servo overhead but cannot escape the engine sandbox
 
 **wgpu path (WGSL shaders):**
+
 - **WGSL validation:** The wgpu shader compiler validates all shaders before execution. Invalid shaders are rejected at compile time
 - **No unbounded loops:** WGSL does not allow infinite loops (all loops must have a provable bound or use `break`)
 - **Fixed resources:** Shaders can only access the uniform buffers and textures explicitly bound by the engine
 - **GPU timeout:** The OS GPU scheduler enforces execution time limits (typically 2 seconds). A shader that takes too long is killed by the driver
 
 **Can a malicious effect crash the daemon?**
+
 - **Servo path:** A JavaScript infinite loop will block the Servo event loop. The daemon's frame budget watchdog detects this (frame time > 100ms) and forces a page reload or effect switch. The daemon itself continues running because the render loop has a timeout
 - **wgpu path:** A shader that produces invalid output (NaN, infinity) will render garbage pixels but cannot crash the GPU or daemon. The wgpu validation layer catches out-of-bounds access at compile time
 - **Memory exhaustion:** Both paths have memory caps. If an effect tries to allocate beyond its limit, the allocation fails and the effect errors out
@@ -1336,6 +1382,7 @@ Frame budget exceeded?
 **Context:** Bliss wants to create a new effect where musical pitch classes drive color palette selection. The effect uses Three.js for WebGL rendering with a custom fragment shader.
 
 **Step 1: Scaffold**
+
 ```bash
 hypercolor effect new chromatic-iris --template webgl-shader
 ```
@@ -1347,14 +1394,16 @@ This creates `effects/custom/chromatic-iris/` with a TypeScript file, HTML wrapp
 Bliss writes a Lightscript `WebGLEffect` class with a fragment shader that reads from the chromagram:
 
 ```typescript
-@ComboboxControl('palette', {
-  label: 'Palette',
-  values: ['SilkCircuit', 'Warm', 'Cool', 'Neon'],
-  default: 'SilkCircuit'
+@ComboboxControl("palette", {
+  label: "Palette",
+  values: ["SilkCircuit", "Warm", "Cool", "Neon"],
+  default: "SilkCircuit",
 })
-@NumberControl('chromaSmooth', {
-  label: 'Chroma Smoothing',
-  min: 0, max: 95, default: 70
+@NumberControl("chromaSmooth", {
+  label: "Chroma Smoothing",
+  min: 0,
+  max: 95,
+  default: 70,
 })
 export class ChromaticIris extends WebGLEffect {
   // Fragment shader reads iAudioSpectrum texture
@@ -1364,6 +1413,7 @@ export class ChromaticIris extends WebGLEffect {
 ```
 
 **Step 3: Develop with HMR**
+
 ```bash
 hypercolor dev --effect effects/custom/chromatic-iris/
 ```
@@ -1401,6 +1451,7 @@ He selects "Fire Visualizer" from the newly installed pack. The control panel au
 **Step 5: Save profile**
 
 Jake saves his setup as a profile: "Gaming Night" -- Fire Visualizer on the keyboard, Spectrum Analyzer on the LED strip, Breathing on the case fans. He can switch to this profile with one click or a CLI command:
+
 ```bash
 hypercolor profile "Gaming Night"
 ```
@@ -1416,6 +1467,7 @@ Luna creates a custom effect for her brand gradient (coral pink to electric blue
 **Step 2: Layer composition**
 
 In the web UI's composition editor, she sets up a two-layer stack:
+
 - Layer 1: Her brand gradient (Normal blend, 100% opacity)
 - Layer 2: Spectrum Analyzer (Add blend, 0% opacity initially)
 
@@ -1426,6 +1478,7 @@ She configures a scheduled transition: when she clicks "Go Live" (or triggers vi
 **Step 4: Automate**
 
 Luna adds a D-Bus trigger from her streaming software (OBS). When OBS starts streaming, it fires a D-Bus signal that Hypercolor catches:
+
 ```bash
 # OBS script calls:
 dbus-send --dest=tech.hyperbliss.hypercolor1 \
@@ -1452,10 +1505,21 @@ The `canvas-basic` template is sufficient. No audio needed.
 <head>
   <title>CPU Heatmap</title>
   <meta description="CPU temperature as a color gradient" />
-  <meta property="coolColor" label="Cool Color" type="color" default="#0066ff" />
+  <meta
+    property="coolColor"
+    label="Cool Color"
+    type="color"
+    default="#0066ff"
+  />
   <meta property="hotColor" label="Hot Color" type="color" default="#ff2200" />
-  <meta property="warningTemp" label="Warning Temp (C)" type="number"
-        min="50" max="100" default="80" />
+  <meta
+    property="warningTemp"
+    label="Warning Temp (C)"
+    type="number"
+    min="50"
+    max="100"
+    default="80"
+  />
 </head>
 ```
 
@@ -1481,73 +1545,73 @@ These effects ship with Hypercolor and must work flawlessly on day one. They rep
 
 ### Utility (must-ship)
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 1 | **Solid Color** | Utility | No | Single color fill with color picker |
-| 2 | **Gradient** | Utility | No | Linear/radial gradient, 2-8 stops, configurable angle |
-| 3 | **Rainbow** | Utility | No | Classic HSL sweep with speed and direction |
-| 4 | **Breathing** | Utility | No | Sinusoidal brightness pulse, configurable period and color |
-| 5 | **Color Cycle** | Utility | No | Smooth transitions through a customizable palette |
-| 6 | **Off** | Utility | No | All LEDs dark |
+| #   | Effect          | Category | Audio | Description                                                |
+| --- | --------------- | -------- | ----- | ---------------------------------------------------------- |
+| 1   | **Solid Color** | Utility  | No    | Single color fill with color picker                        |
+| 2   | **Gradient**    | Utility  | No    | Linear/radial gradient, 2-8 stops, configurable angle      |
+| 3   | **Rainbow**     | Utility  | No    | Classic HSL sweep with speed and direction                 |
+| 4   | **Breathing**   | Utility  | No    | Sinusoidal brightness pulse, configurable period and color |
+| 5   | **Color Cycle** | Utility  | No    | Smooth transitions through a customizable palette          |
+| 6   | **Off**         | Utility  | No    | All LEDs dark                                              |
 
 ### Ambient
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 7 | **Aurora** | Ambient | Optional | Northern lights with drift, color customization, optional audio speed modulation |
-| 8 | **Lava Lamp** | Ambient, Generative | No | Metaball organic blobs with configurable color palette |
-| 9 | **Ocean Depths** | Ambient | No | Deep water caustics with gentle wave motion |
-| 10 | **Nebula** | Ambient, Generative | No | fBM noise cosmic clouds with slow drift |
-| 11 | **Fireflies** | Ambient, Generative | No | Sparse glowing particles with organic movement |
-| 12 | **Neon Shift** | Ambient, Artistic | No | Smooth cycling through neon color palette |
+| #   | Effect           | Category            | Audio    | Description                                                                      |
+| --- | ---------------- | ------------------- | -------- | -------------------------------------------------------------------------------- |
+| 7   | **Aurora**       | Ambient             | Optional | Northern lights with drift, color customization, optional audio speed modulation |
+| 8   | **Lava Lamp**    | Ambient, Generative | No       | Metaball organic blobs with configurable color palette                           |
+| 9   | **Ocean Depths** | Ambient             | No       | Deep water caustics with gentle wave motion                                      |
+| 10  | **Nebula**       | Ambient, Generative | No       | fBM noise cosmic clouds with slow drift                                          |
+| 11  | **Fireflies**    | Ambient, Generative | No       | Sparse glowing particles with organic movement                                   |
+| 12  | **Neon Shift**   | Ambient, Artistic   | No       | Smooth cycling through neon color palette                                        |
 
 ### Audio-Reactive
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 13 | **Spectrum** | Reactive | Required | Classic frequency bar visualizer with mel-scaled bands |
-| 14 | **Beat Pulse** | Reactive | Required | Full-canvas flash on beat with color and decay controls |
-| 15 | **Bass Wave** | Reactive | Required | Radial ripple from center driven by bass energy |
-| 16 | **Fire Visualizer** | Reactive | Required | Flames driven by frequency data with fan/bar dashboard |
-| 17 | **Chromatic** | Reactive | Required | Colors shift based on detected musical pitch (chromagram) |
-| 18 | **VU Meter** | Reactive | Required | Classic analog VU meter with peak hold |
+| #   | Effect              | Category | Audio    | Description                                               |
+| --- | ------------------- | -------- | -------- | --------------------------------------------------------- |
+| 13  | **Spectrum**        | Reactive | Required | Classic frequency bar visualizer with mel-scaled bands    |
+| 14  | **Beat Pulse**      | Reactive | Required | Full-canvas flash on beat with color and decay controls   |
+| 15  | **Bass Wave**       | Reactive | Required | Radial ripple from center driven by bass energy           |
+| 16  | **Fire Visualizer** | Reactive | Required | Flames driven by frequency data with fan/bar dashboard    |
+| 17  | **Chromatic**       | Reactive | Required | Colors shift based on detected musical pitch (chromagram) |
+| 18  | **VU Meter**        | Reactive | Required | Classic analog VU meter with peak hold                    |
 
 ### Generative
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 19 | **Plasma** | Generative | Optional | Classic demoscene sine interference pattern |
-| 20 | **Matrix** | Generative | No | Falling characters with customizable sets and color modes |
-| 21 | **Voronoi Flow** | Generative | Optional | Drifting Voronoi cells with audio-reactive seed velocity |
-| 22 | **Particle Storm** | Generative, Reactive | Optional | Particle system with configurable physics and audio spawning |
+| #   | Effect             | Category             | Audio    | Description                                                  |
+| --- | ------------------ | -------------------- | -------- | ------------------------------------------------------------ |
+| 19  | **Plasma**         | Generative           | Optional | Classic demoscene sine interference pattern                  |
+| 20  | **Matrix**         | Generative           | No       | Falling characters with customizable sets and color modes    |
+| 21  | **Voronoi Flow**   | Generative           | Optional | Drifting Voronoi cells with audio-reactive seed velocity     |
+| 22  | **Particle Storm** | Generative, Reactive | Optional | Particle system with configurable physics and audio spawning |
 
 ### Interactive
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 23 | **Typing Ripples** | Interactive | No | Color waves radiate from pressed keys |
-| 24 | **Key Trail** | Interactive | No | Pressed keys glow and fade with configurable trail length |
+| #   | Effect             | Category    | Audio | Description                                               |
+| --- | ------------------ | ----------- | ----- | --------------------------------------------------------- |
+| 23  | **Typing Ripples** | Interactive | No    | Color waves radiate from pressed keys                     |
+| 24  | **Key Trail**      | Interactive | No    | Pressed keys glow and fade with configurable trail length |
 
 ### Screen-Reactive
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 25 | **Screen Ambience** | Screen | No | Mirrors display colors to surrounding LEDs with picture modes |
+| #   | Effect              | Category | Audio | Description                                                   |
+| --- | ------------------- | -------- | ----- | ------------------------------------------------------------- |
+| 25  | **Screen Ambience** | Screen   | No    | Mirrors display colors to surrounding LEDs with picture modes |
 
 ### Informational
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 26 | **System Monitor** | Informational | No | CPU/GPU/RAM as color temperature gradient zones |
+| #   | Effect             | Category      | Audio | Description                                     |
+| --- | ------------------ | ------------- | ----- | ----------------------------------------------- |
+| 26  | **System Monitor** | Informational | No    | CPU/GPU/RAM as color temperature gradient zones |
 
 ### Artistic
 
-| # | Effect | Category | Audio | Description |
-|---|---|---|---|---|
-| 27 | **SilkCircuit** | Artistic | Optional | The Hypercolor design palette: Electric Purple, Neon Cyan, Coral, Electric Yellow in motion |
-| 28 | **Synthwave** | Artistic | Optional | Retrowave neon grid with optional audio-reactive intensity |
-| 29 | **Cyberpunk** | Artistic, Reactive | Optional | Hot magenta and cool cyan with glitch textures |
-| 30 | **Pastel Dream** | Artistic | No | Soft pastel gradient with gentle drift |
+| #   | Effect           | Category           | Audio    | Description                                                                                 |
+| --- | ---------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------- |
+| 27  | **SilkCircuit**  | Artistic           | Optional | The Hypercolor design palette: Electric Purple, Neon Cyan, Coral, Electric Yellow in motion |
+| 28  | **Synthwave**    | Artistic           | Optional | Retrowave neon grid with optional audio-reactive intensity                                  |
+| 29  | **Cyberpunk**    | Artistic, Reactive | Optional | Hot magenta and cool cyan with glitch textures                                              |
+| 30  | **Pastel Dream** | Artistic           | No       | Soft pastel gradient with gentle drift                                                      |
 
 ### Implementation Priority
 
@@ -1609,18 +1673,18 @@ Uniform bindings:
 
 ## Appendix B: Glossary
 
-| Term | Definition |
-|---|---|
-| **Canvas** | The 320x200 RGBA pixel buffer that effects render to |
-| **Spatial sampling** | Extracting LED colors from the canvas at physical LED positions |
-| **Zone** | A group of LEDs belonging to one device channel (e.g., "Fan 1", "Strimer ATX") |
-| **Lightscript** | TypeScript framework for LightScript-compatible effect authoring |
-| **FFT** | Fast Fourier Transform -- converts audio time-domain signal to frequency domain |
-| **Mel scale** | Perceptual frequency scale matching human hearing sensitivity |
-| **Chromagram** | 12-bin pitch class distribution (one bin per semitone, octave-folded) |
-| **Spectral flux** | Frame-to-frame difference in FFT magnitude, used for onset detection |
-| **Beat phase** | Position within the current beat period (0.0 = beat just hit, 1.0 = next beat imminent) |
-| **Blend mode** | Algorithm for combining two pixel layers (Normal, Add, Screen, Multiply, etc.) |
-| **HMR** | Hot Module Replacement -- live-reloading effect code without restarting the engine |
-| **Preset** | Named snapshot of all control parameter values for an effect |
-| **Pack** | Curated collection of effects installable as a single unit |
+| Term                 | Definition                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| **Canvas**           | The 320x200 RGBA pixel buffer that effects render to                                    |
+| **Spatial sampling** | Extracting LED colors from the canvas at physical LED positions                         |
+| **Zone**             | A group of LEDs belonging to one device channel (e.g., "Fan 1", "Strimer ATX")          |
+| **Lightscript**      | TypeScript framework for LightScript-compatible effect authoring                        |
+| **FFT**              | Fast Fourier Transform -- converts audio time-domain signal to frequency domain         |
+| **Mel scale**        | Perceptual frequency scale matching human hearing sensitivity                           |
+| **Chromagram**       | 12-bin pitch class distribution (one bin per semitone, octave-folded)                   |
+| **Spectral flux**    | Frame-to-frame difference in FFT magnitude, used for onset detection                    |
+| **Beat phase**       | Position within the current beat period (0.0 = beat just hit, 1.0 = next beat imminent) |
+| **Blend mode**       | Algorithm for combining two pixel layers (Normal, Add, Screen, Multiply, etc.)          |
+| **HMR**              | Hot Module Replacement -- live-reloading effect code without restarting the engine      |
+| **Preset**           | Named snapshot of all control parameter values for an effect                            |
+| **Pack**             | Curated collection of effects installable as a single unit                              |

@@ -83,6 +83,7 @@ The rest of this document backs those claims with numbers.
   implementation for the Component Model.
 
 References:
+
 - <https://github.com/bytecodealliance/wasmtime/releases>
 - <https://bytecodealliance.org/articles/wasmtime-lts>
 - <https://bytecodealliance.org/articles/wasmtime-security-advisories>
@@ -106,6 +107,7 @@ References:
   runtime). V8 backend exists for Chrome-parity.
 
 References:
+
 - <https://github.com/wasmerio/wasmer/releases>
 - <https://github.com/wasmerio/wasmer/blob/main/CHANGELOG.md>
 
@@ -129,6 +131,7 @@ References:
 - **Component Model**: Not supported. Core Wasm only.
 
 References:
+
 - <https://github.com/wasmi-labs/wasmi/releases>
 - <https://wasmi-labs.github.io/blog/posts/wasmi-v1.0/>
 - <https://wasmi-labs.github.io/blog/posts/wasmi-v0.32/>
@@ -149,6 +152,7 @@ References:
 - **License**: BSD-3-Clause.
 
 References:
+
 - <https://github.com/extism/extism/releases>
 - <https://docs.rs/extism/latest/extism/>
 - <https://dylibso.com/blog/how-does-extism-work/>
@@ -350,6 +354,7 @@ benchmarks show Cranelift-based runtimes "virtually the same" as LLVM-based
 ones for steady-state throughput.
 
 References:
+
 - <https://github.com/WebAssembly/spec/blob/wasm-3.0/proposals/relaxed-simd/Overview.md>
 - <https://v8.dev/features/simd>
 - <https://medium.com/wasmer/webassembly-and-simd-13badb9bf1a8>
@@ -359,6 +364,7 @@ References:
 ## 5. Component Model, WIT, WASIp2 and p3
 
 **Wasmtime** is the reference implementation.
+
 - WASIp2 and the Component Model: **production** since v20.0 (2024) and
   solidly mature by v25.0. WIT-driven bindgen (`wasmtime::component::bindgen!`)
   is the preferred API surface for typed component calls.
@@ -388,6 +394,7 @@ production by Fermyon, Cosmonic, and others.
 
 **Our recommendation on WIT for Hypercolor effects**: Define a custom
 `hypercolor:effect/renderer@0.1.0` world. Keep it tiny:
+
 ```wit
 interface renderer {
   render: func(frame: frame-input) -> result<_, render-error>;
@@ -395,6 +402,7 @@ interface renderer {
   canvas-buffer: func() -> list<u8>;
 }
 ```
+
 Use wasmtime `bindgen!` on the host, `wit-bindgen` on the guest. This
 tradeoff buys us typed cross-language plugin authoring (Rust, C, AssemblyScript,
 Grain, Python via Componentize-Py) at the cost of a small call-overhead tax.
@@ -460,6 +468,7 @@ height. Per-frame, we need to lend that buffer to the plugin for the duration
 of its `render` call.
 
 **Wasmtime**:
+
 - `Memory::data(&store) -> &[u8]` and `Memory::data_mut(&mut store) -> &mut [u8]`
   expose the guest linear memory directly as Rust slices.
 - The slice borrows the `Store` context for its lifetime. Good: the compiler
@@ -481,6 +490,7 @@ of its `render` call.
   `Memory::grow(&mut store, delta)`. Limits enforced via `ResourceLimiter`.
 
 **Wasmer**:
+
 - `MemoryView` is a cursor, with `.read()` and `.write()` methods that copy.
 - `.data_unchecked()` / `.data_unchecked_mut()` are `unsafe` raw-slice escapes,
   the workaround for our zero-copy need. We would have to justify `unsafe`
@@ -488,10 +498,12 @@ of its `render` call.
 - This is the single biggest ergonomic gap versus wasmtime for our workload.
 
 **Wasmi**:
+
 - Same shape as wasmtime: `Memory::data` and `Memory::data_mut` lend slices.
 - `no_std` friendly. Memory is a `Vec<u8>` internally.
 
 **Extism**:
+
 - Inaccessible. The Extism kernel is the canonical way to move data. For
   bulk transfers, it exposes block-at-a-time `load_u64` reads, which is the
   throughput story we measured below.
@@ -529,12 +541,12 @@ Wasmtime's `MemoryCreator` trait is stable and documented.
 
 Per-call host to guest (direct export, no Component Model):
 
-| Runtime   | Per-call overhead          | Source                                      |
-| --------- | -------------------------- | ------------------------------------------- |
-| Wasmtime  | ~10 ns                     | BA 2023 perf writeup, trampoline overhaul   |
-| Wasmer    | ~10 to 30 ns               | Same perf class; LLVM ties Cranelift        |
-| Wasmi     | ~200 to 500 ns (interp)    | Inferred; interpreter dispatch dominates    |
-| Extism    | ~4.75 to 6.7 ns per kernel call; **plus** full call overhead per `plugin.call` | Dylibso 2024 writeup |
+| Runtime  | Per-call overhead                                                              | Source                                    |
+| -------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
+| Wasmtime | ~10 ns                                                                         | BA 2023 perf writeup, trampoline overhaul |
+| Wasmer   | ~10 to 30 ns                                                                   | Same perf class; LLVM ties Cranelift      |
+| Wasmi    | ~200 to 500 ns (interp)                                                        | Inferred; interpreter dispatch dominates  |
+| Extism   | ~4.75 to 6.7 ns per kernel call; **plus** full call overhead per `plugin.call` | Dylibso 2024 writeup                      |
 
 The Dylibso post is explicit: reading a 6.25 MiB payload via Extism's kernel
 costs "approximately 3 million function calls," achieving about 1.57 GiB per
@@ -562,12 +574,12 @@ is the fastest possible shape.
 
 Rust binary size impact when embedded, approximate order of magnitude:
 
-| Runtime   | Full build | Minimal build                | Notes                                  |
-| --------- | ---------- | ---------------------------- | -------------------------------------- |
-| Wasmtime  | 30 to 80 MB | 2.1 MB (runtime-only, C API) | Disable cranelift + winch + cache etc. |
-| Wasmer    | 30 to 60 MB | Unpublished minimal target   | LLVM backend adds tens of MB          |
-| Wasmi     | ~2 MB      | sub-MB achievable            | Pure Rust, no_std, no LLVM/Cranelift  |
-| Extism    | Wasmtime + ~5 MB | Cannot go below Wasmtime   | Framework layer on top                 |
+| Runtime  | Full build       | Minimal build                | Notes                                  |
+| -------- | ---------------- | ---------------------------- | -------------------------------------- |
+| Wasmtime | 30 to 80 MB      | 2.1 MB (runtime-only, C API) | Disable cranelift + winch + cache etc. |
+| Wasmer   | 30 to 60 MB      | Unpublished minimal target   | LLVM backend adds tens of MB           |
+| Wasmi    | ~2 MB            | sub-MB achievable            | Pure Rust, no_std, no LLVM/Cranelift   |
+| Extism   | Wasmtime + ~5 MB | Cannot go below Wasmtime     | Framework layer on top                 |
 
 For us, Hypercolor already ships **Servo** for HTML effect rendering, which
 is hundreds of megabytes. Adding 30 to 80 MB of wasmtime is noise. The
@@ -581,6 +593,7 @@ effects on a build server. This adds operational complexity; file under
 "future optimization."
 
 References:
+
 - <https://docs.wasmtime.dev/examples-minimal.html>
 - <https://lib.rs/crates/wasmtime/features>
 
@@ -588,18 +601,19 @@ References:
 
 ## 10. Security Model and Resource Limits
 
-| Control                    | Wasmtime          | Wasmer        | Wasmi         | Extism (via wasmtime) |
-| -------------------------- | ----------------- | ------------- | ------------- | --------------------- |
-| Capability-based sandbox   | Yes, via WASI     | Yes, WASI/WASIX | Yes, WASI opt-in | Yes (wasmtime)       |
-| Memory limits              | `ResourceLimiter` | Config-driven | ResourceLimiter | Manifest              |
-| CPU time / wall time       | **Epoch deadlines** (~10% overhead) | Metering API | Fuel only    | Timer (via wasmtime)  |
-| Deterministic instruction cap | **Fuel** (expensive) | `Metering` middleware | **Fuel**     | Fuel (via wasmtime)   |
-| Per-function fuel cost tuning | **Yes** (43.0, March 2026) | Middleware weights | Basic fuel | Yes (via wasmtime)    |
-| Stack depth limit          | Yes, config       | Yes           | Yes           | Yes                   |
-| Table element cap          | ResourceLimiter   | Config        | ResourceLimiter | Manifest              |
+| Control                       | Wasmtime                            | Wasmer                | Wasmi            | Extism (via wasmtime) |
+| ----------------------------- | ----------------------------------- | --------------------- | ---------------- | --------------------- |
+| Capability-based sandbox      | Yes, via WASI                       | Yes, WASI/WASIX       | Yes, WASI opt-in | Yes (wasmtime)        |
+| Memory limits                 | `ResourceLimiter`                   | Config-driven         | ResourceLimiter  | Manifest              |
+| CPU time / wall time          | **Epoch deadlines** (~10% overhead) | Metering API          | Fuel only        | Timer (via wasmtime)  |
+| Deterministic instruction cap | **Fuel** (expensive)                | `Metering` middleware | **Fuel**         | Fuel (via wasmtime)   |
+| Per-function fuel cost tuning | **Yes** (43.0, March 2026)          | Middleware weights    | Basic fuel       | Yes (via wasmtime)    |
+| Stack depth limit             | Yes, config                         | Yes                   | Yes              | Yes                   |
+| Table element cap             | ResourceLimiter                     | Config                | ResourceLimiter  | Manifest              |
 
 **Wasmtime's epoch interruption** is the primitive we want for per-frame
 budget enforcement:
+
 - Host increments an atomic counter on a timer (say, every millisecond).
 - Wasm code checks the counter at block boundaries (10 percent overhead).
 - If it exceeds the deadline, execution traps with `Trap::Interrupt`.
@@ -626,21 +640,21 @@ opt-in for deterministic effects. Both together is supported.
 
 Ranking: 1 (best for our use case) to 4.
 
-| Criterion                              | Wasmtime | Wasmer | Wasmi | Extism |
-| -------------------------------------- | -------- | ------ | ----- | ------ |
-| Zero-copy `&mut [u8]` canvas lending   | **1**    | 3 (unsafe) | 2 | 4 (copy) |
-| Per-frame budget enforcement           | **1** (epoch) | 2 (metering) | 3 (fuel) | 2 (via wt) |
-| Host to guest call overhead            | **1** (~10 ns) | 1 | 3 (interp) | 2 |
-| SIMD throughput (v128)                 | **1**    | 1      | 4 (interp) | 1 |
-| AOT disk cache                         | 1        | **1** (pluggable) | 4 (n/a) | 1 |
-| Hot reload (drop Store)                | **1**    | 1      | **1** | 2 (Pool) |
-| Component Model / WIT readiness        | **1**    | 2      | 4 (n/a) | 3 |
-| Pooling / fast re-instantiation        | **1** (COW) | 2   | 3      | 2 |
-| Binary size added to Hypercolor        | 3        | 3      | **1** | 3 |
-| Security / resource limit maturity     | **1**    | 2      | 2      | 1 |
-| Crate ergonomics for our engine        | **1**    | 2 (MemoryView) | 1 | 3 (opinionated) |
-| Active 2026 release cadence            | **1** (monthly, LTS) | 2 (quarterly) | 2 | 2 |
-| **Aggregate for our use case**         | **1**    | 2      | 3      | 4      |
+| Criterion                            | Wasmtime             | Wasmer            | Wasmi      | Extism          |
+| ------------------------------------ | -------------------- | ----------------- | ---------- | --------------- |
+| Zero-copy `&mut [u8]` canvas lending | **1**                | 3 (unsafe)        | 2          | 4 (copy)        |
+| Per-frame budget enforcement         | **1** (epoch)        | 2 (metering)      | 3 (fuel)   | 2 (via wt)      |
+| Host to guest call overhead          | **1** (~10 ns)       | 1                 | 3 (interp) | 2               |
+| SIMD throughput (v128)               | **1**                | 1                 | 4 (interp) | 1               |
+| AOT disk cache                       | 1                    | **1** (pluggable) | 4 (n/a)    | 1               |
+| Hot reload (drop Store)              | **1**                | 1                 | **1**      | 2 (Pool)        |
+| Component Model / WIT readiness      | **1**                | 2                 | 4 (n/a)    | 3               |
+| Pooling / fast re-instantiation      | **1** (COW)          | 2                 | 3          | 2               |
+| Binary size added to Hypercolor      | 3                    | 3                 | **1**      | 3               |
+| Security / resource limit maturity   | **1**                | 2                 | 2          | 1               |
+| Crate ergonomics for our engine      | **1**                | 2 (MemoryView)    | 1          | 3 (opinionated) |
+| Active 2026 release cadence          | **1** (monthly, LTS) | 2 (quarterly)     | 2          | 2               |
+| **Aggregate for our use case**       | **1**                | 2                 | 3          | 4               |
 
 Wasmi ranks high on hot reload, call ergonomics, and binary size, but the
 interpreter tax on SIMD and steady-state throughput disqualifies it for a
@@ -687,6 +701,7 @@ Concrete stack:
   the `Engine`.
 
 **Rejected alternatives, recorded for the spec:**
+
 - **Extism**: adopt only if we later want a polyglot plugin marketplace
   (JavaScript, Python, Ruby effect authors). Defer until we have that need.
 - **Wasmer**: technically competitive; the `MemoryView` copy cost and slower

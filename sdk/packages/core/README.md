@@ -19,30 +19,30 @@ That gives you an effect to edit and the full build/validate/install loop.
 Write an effect:
 
 ```typescript
-import { audio, canvas, num } from '@hypercolor/sdk'
+import { audio, canvas, num } from "@hypercolor/sdk";
 
 export default canvas(
-    'Pulse',
-    {
-        palette: ['SilkCircuit', 'Aurora', 'Synthwave'],
-        speed: num('Speed', [1, 10], 5),
-    },
-    (ctx, time, controls) => {
-        const { width, height } = ctx.canvas
-        const pal = controls.palette as (t: number, alpha?: number) => string
-        const a = audio()
+  "Pulse",
+  {
+    palette: ["SilkCircuit", "Aurora", "Synthwave"],
+    speed: num("Speed", [1, 10], 5),
+  },
+  (ctx, time, controls) => {
+    const { width, height } = ctx.canvas;
+    const pal = controls.palette as (t: number, alpha?: number) => string;
+    const a = audio();
 
-        ctx.fillStyle = 'rgba(4, 2, 14, 0.22)'
-        ctx.fillRect(0, 0, width, height)
+    ctx.fillStyle = "rgba(4, 2, 14, 0.22)";
+    ctx.fillRect(0, 0, width, height);
 
-        const radius = Math.min(width, height) * (0.2 + a.beatPulse * 0.3)
-        ctx.fillStyle = pal(0.7, 0.6 + a.bass * 0.4)
-        ctx.beginPath()
-        ctx.arc(width * 0.5, height * 0.5, radius, 0, Math.PI * 2)
-        ctx.fill()
-    },
-    { audio: true },
-)
+    const radius = Math.min(width, height) * (0.2 + a.beatPulse * 0.3);
+    ctx.fillStyle = pal(0.7, 0.6 + a.bass * 0.4);
+    ctx.beginPath();
+    ctx.arc(width * 0.5, height * 0.5, radius, 0, Math.PI * 2);
+    ctx.fill();
+  },
+  { audio: true },
+);
 ```
 
 Build, validate, and install:
@@ -99,9 +99,9 @@ Pre-release. The SDK is not yet published to npm. Standalone workspaces should p
 
 ```json
 {
-    "devDependencies": {
-        "@hypercolor/sdk": "file:../hypercolor/sdk/packages/core"
-    }
+  "devDependencies": {
+    "@hypercolor/sdk": "file:../hypercolor/sdk/packages/core"
+  }
 }
 ```
 

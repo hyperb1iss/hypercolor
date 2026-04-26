@@ -22,11 +22,11 @@ report) as lighting commands, on command class `0x02` (device configuration).
 
 ### Command Table
 
-| Feature          | Set CMD | Get CMD | Class  | Data Size | Args                        |
-|------------------|---------|---------|--------|-----------|-----------------------------|
-| Scroll mode      | `0x14`  | `0x94`  | `0x02` | `0x02`    | `[VARSTORE, mode]`          |
-| Smart reel       | `0x17`  | `0x97`  | `0x02` | `0x02`    | `[VARSTORE, enabled]`       |
-| Scroll accel     | `0x16`  | `0x96`  | `0x02` | `0x02`    | `[VARSTORE, enabled]`       |
+| Feature      | Set CMD | Get CMD | Class  | Data Size | Args                  |
+| ------------ | ------- | ------- | ------ | --------- | --------------------- |
+| Scroll mode  | `0x14`  | `0x94`  | `0x02` | `0x02`    | `[VARSTORE, mode]`    |
+| Smart reel   | `0x17`  | `0x97`  | `0x02` | `0x02`    | `[VARSTORE, enabled]` |
+| Scroll accel | `0x16`  | `0x96`  | `0x02` | `0x02`    | `[VARSTORE, enabled]` |
 
 ### Argument Values
 
@@ -37,17 +37,17 @@ report) as lighting commands, on command class `0x02` (device configuration).
 
 ### Supported Devices
 
-| Device | PID(s) | Scroll Mode | Smart Reel | Accel |
-|--------|--------|:-----------:|:----------:|:-----:|
-| Basilisk V3 | `0x0099` | ✓ | ✓ | ✓ |
-| Basilisk V3 35K | `0x00CB` | ✓ | ✓ | ✓ |
-| Basilisk V3 Pro (Wired) | `0x00AA` | ✓ | ✓ | ✓ |
-| Basilisk V3 Pro (Wireless) | `0x00AB` | ✓ | ✓ | ✓ |
-| Basilisk V3 Pro 35K (Wired) | `0x00CC` | ✓ | ✓ | ✓ |
-| Basilisk V3 Pro 35K (Wireless) | `0x00CD` | ✓ | ✓ | ✓ |
-| Basilisk V3 Pro 35K Phantom (Wired) | `0x00D6` | ✓ | ✓ | ✓ |
-| Basilisk V3 Pro 35K Phantom (Wireless) | `0x00D7` | ✓ | ✓ | ✓ |
-| Basilisk V3 X HyperSpeed | `0x00B9` | ✓ | ✓ | ✓ |
+| Device                                 | PID(s)   | Scroll Mode | Smart Reel | Accel |
+| -------------------------------------- | -------- | :---------: | :--------: | :---: |
+| Basilisk V3                            | `0x0099` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 35K                        | `0x00CB` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 Pro (Wired)                | `0x00AA` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 Pro (Wireless)             | `0x00AB` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 Pro 35K (Wired)            | `0x00CC` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 Pro 35K (Wireless)         | `0x00CD` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 Pro 35K Phantom (Wired)    | `0x00D6` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 Pro 35K Phantom (Wireless) | `0x00D7` |      ✓      |     ✓      |   ✓   |
+| Basilisk V3 X HyperSpeed               | `0x00B9` |      ✓      |     ✓      |   ✓   |
 
 > **Note:** Naga V2 Pro also supports scroll mode toggle (HyperScroll Pro
 > Wheel) but uses an extended protocol with 6 modes + haptic feedback. Defer

@@ -251,11 +251,11 @@ Transport Staging
 
 The render path uses a fixed three-slot queue per active render pipeline:
 
-| Slot | Role | Mutability |
-|------|------|------------|
-| `front` | most recently published frame | immutable |
-| `back` | current producer target | mutable while leased |
-| `spare` | ready-to-reuse storage | mutable after dequeue |
+| Slot    | Role                          | Mutability            |
+| ------- | ----------------------------- | --------------------- |
+| `front` | most recently published frame | immutable             |
+| `back`  | current producer target       | mutable while leased  |
+| `spare` | ready-to-reuse storage        | mutable after dequeue |
 
 This is the minimum shape that gives Hypercolor the important BufferQueue
 properties:

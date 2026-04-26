@@ -25,7 +25,7 @@
 
 Most RGB software treats the terminal as an afterthought -- a debug console, a config dumper, a glorified `echo`. Hypercolor's TUI is none of that. It is a **live instrument** for controlling light.
 
-The TUI should feel like you're looking through a window into your lighting rig. LEDs pulse in real time. Audio spectrum dances across frequency bands. Effects shift and breathe. You're not reading about what your lights are doing -- you're *watching* them do it, rendered in true-color Unicode right in your terminal.
+The TUI should feel like you're looking through a window into your lighting rig. LEDs pulse in real time. Audio spectrum dances across frequency bands. Effects shift and breathe. You're not reading about what your lights are doing -- you're _watching_ them do it, rendered in true-color Unicode right in your terminal.
 
 **Design pillars:**
 
@@ -33,7 +33,7 @@ The TUI should feel like you're looking through a window into your lighting rig.
 - **Keyboard-first, mouse-aware.** Vim bindings for power users, arrow keys for everyone else. No interaction requires a mouse, but mouse clicks and scrolling work where they make sense.
 - **Information-dense, not cluttered.** Think htop's data density meets neomutt's clean hierarchy. Every pixel of terminal real estate earns its place.
 - **SSH-native.** The TUI connects to the daemon over Unix socket. No GPU, no display server, no X11 forwarding. SSH into your rig from your phone and switch effects.
-- **SilkCircuit identity.** The TUI *is* SilkCircuit Neon. Electric Purple accents, Neon Cyan interactions, Coral data points. The palette isn't decoration -- it's wayfinding.
+- **SilkCircuit identity.** The TUI _is_ SilkCircuit Neon. Electric Purple accents, Neon Cyan interactions, Coral data points. The palette isn't decoration -- it's wayfinding.
 
 ### The Half-Block LED Preview
 
@@ -115,31 +115,31 @@ The TUI uses a vertical split with persistent chrome (status bar, LED preview) a
 
 ### Layout Regions
 
-| Region | Height | Purpose |
-|---|---|---|
-| **Title Bar** | 1 row | App name, daemon FPS, audio status, device count |
-| **LED Preview** | 2 rows | Live half-block rendering of current LED colors |
-| **Nav Sidebar** | Flexible | View selector with keybinding hints |
-| **Main Content** | Flexible | Active view content (the largest area) |
-| **Audio Strip** | 1-2 rows | Spectrum mini-view + audio stats (collapsible) |
-| **Status Bar** | 1 row | Current effect, active devices, profile name |
+| Region           | Height   | Purpose                                          |
+| ---------------- | -------- | ------------------------------------------------ |
+| **Title Bar**    | 1 row    | App name, daemon FPS, audio status, device count |
+| **LED Preview**  | 2 rows   | Live half-block rendering of current LED colors  |
+| **Nav Sidebar**  | Flexible | View selector with keybinding hints              |
+| **Main Content** | Flexible | Active view content (the largest area)           |
+| **Audio Strip**  | 1-2 rows | Spectrum mini-view + audio stats (collapsible)   |
+| **Status Bar**   | 1 row    | Current effect, active devices, profile name     |
 
 ### Responsive Behavior
 
 The layout adapts to terminal dimensions:
 
-| Width | Behavior |
-|---|---|
-| **120+ cols** | Full layout: sidebar + main content |
+| Width           | Behavior                                             |
+| --------------- | ---------------------------------------------------- |
+| **120+ cols**   | Full layout: sidebar + main content                  |
 | **80-119 cols** | Sidebar collapses to icons; main content fills width |
-| **< 80 cols** | Full-width single panel; nav via Tab cycling |
+| **< 80 cols**   | Full-width single panel; nav via Tab cycling         |
 
-| Height | Behavior |
-|---|---|
-| **40+ rows** | Full layout with LED preview + audio strip |
-| **30-39 rows** | Audio strip collapses into status bar |
-| **24-29 rows** | LED preview reduces to 1 row; compact mode |
-| **< 24 rows** | Minimal mode: main content + status bar only |
+| Height         | Behavior                                     |
+| -------------- | -------------------------------------------- |
+| **40+ rows**   | Full layout with LED preview + audio strip   |
+| **30-39 rows** | Audio strip collapses into status bar        |
+| **24-29 rows** | LED preview reduces to 1 row; compact mode   |
+| **< 24 rows**  | Minimal mode: main content + status bar only |
 
 ### Color Architecture
 
@@ -206,6 +206,7 @@ The landing screen. A single-glance overview of the entire lighting system.
 ```
 
 **Dashboard content:**
+
 - **Current Effect** -- Name, parameter summary with inline progress bars, audio reactivity indicator
 - **System Health** -- Daemon PID, engine type, render FPS, audio source, memory, uptime
 - **Connected Devices** -- Table with device name, protocol type, LED count, connection status, output FPS, zone topology
@@ -255,6 +256,7 @@ Browse, search, and preview all available effects.
 ```
 
 **Effect Browser content:**
+
 - **Effect list** (left pane) -- grouped by engine type (native/web/community), with search filter (`/` to activate)
 - **Preview pane** (right pane) -- canvas preview rendered as half-block pixels, effect metadata, inline parameter controls
 - **Canvas preview** -- a 24-column by 12-row half-block grid showing a downsampled view of the effect canvas (640x480 by default). Updates at the TUI frame rate
@@ -307,14 +309,14 @@ Focused parameter editing for the active effect. This is where you dial in the l
 
 **Control widgets (auto-generated from `ControlDefinition`):**
 
-| `ControlType` | Widget | Keys |
-|---|---|---|
-| `Number { min, max, step }` | Horizontal slider with `◀ ▓░ ▶` | `h/l` or `Left/Right` to adjust, number keys for direct input |
-| `Boolean` | Toggle `[●] On / [ ] Off` | `Space` or `Enter` to toggle |
-| `Combobox { values }` | Dropdown `[▸ value ]` with list | `Enter` to open, `j/k` to select |
-| `Color` | HSL sliders + color swatch `████` | Tab between H/S/L, adjust with `h/l` |
-| `Hue { min, max }` | Hue-specific slider with color gradient | `h/l` to adjust |
-| `TextField` | Inline text input | `Enter` to edit, `Esc` to confirm |
+| `ControlType`               | Widget                                  | Keys                                                          |
+| --------------------------- | --------------------------------------- | ------------------------------------------------------------- |
+| `Number { min, max, step }` | Horizontal slider with `◀ ▓░ ▶`         | `h/l` or `Left/Right` to adjust, number keys for direct input |
+| `Boolean`                   | Toggle `[●] On / [ ] Off`               | `Space` or `Enter` to toggle                                  |
+| `Combobox { values }`       | Dropdown `[▸ value ]` with list         | `Enter` to open, `j/k` to select                              |
+| `Color`                     | HSL sliders + color swatch `████`       | Tab between H/S/L, adjust with `h/l`                          |
+| `Hue { min, max }`          | Hue-specific slider with color gradient | `h/l` to adjust                                               |
+| `TextField`                 | Inline text input                       | `Enter` to edit, `Esc` to confirm                             |
 
 ### 3.4 Device Manager
 
@@ -360,6 +362,7 @@ View and manage all connected RGB devices.
 ```
 
 **Device Manager features:**
+
 - **Device list** (left) -- connected devices with status dot, discovered-but-unconnected below a separator
 - **Detail pane** (right) -- full device info, protocol, zone mapping, per-device LED preview
 - **Actions** -- `Enter` to configure/connect, `d` to disconnect, `r` to rediscover, `a` to add manually
@@ -406,6 +409,7 @@ Manage lighting profiles -- saved combinations of effect + parameters + device m
 ```
 
 **Profile features:**
+
 - **Profile list** -- name + active indicator, sorted by last used
 - **Detail pane** -- effect, parameters, per-device overrides, schedule
 - **Actions** -- `Enter` to apply, `e` to edit (opens profile editor modal), `n` to create new from current state, `x` to delete (with confirmation)
@@ -507,6 +511,7 @@ For development and troubleshooting. Shows the internals.
 ```
 
 **Debug view content:**
+
 - **Frame timing** -- per-stage breakdown (render, sample, push), budget comparison, headroom warning
 - **FPS history** -- sparkline graph over the last 60 seconds
 - **Per-device latency** -- transport-level timing for each output backend
@@ -525,56 +530,56 @@ The TUI uses a **panel-focused navigation** model. At any time, one panel has fo
 
 These work from any view, any panel:
 
-| Key | Action |
-|---|---|
-| `D` | Switch to Dashboard |
-| `E` | Switch to Effect Browser |
-| `C` | Switch to Effect Control |
-| `V` | Switch to Device Manager |
-| `P` | Switch to Profile Manager |
-| `S` | Switch to Settings |
-| `B` | Switch to Debug View |
+| Key                 | Action                                     |
+| ------------------- | ------------------------------------------ |
+| `D`                 | Switch to Dashboard                        |
+| `E`                 | Switch to Effect Browser                   |
+| `C`                 | Switch to Effect Control                   |
+| `V`                 | Switch to Device Manager                   |
+| `P`                 | Switch to Profile Manager                  |
+| `S`                 | Switch to Settings                         |
+| `B`                 | Switch to Debug View                       |
 | `Tab` / `Shift+Tab` | Cycle focus between panels in current view |
-| `q` / `Ctrl+C` | Quit TUI (daemon keeps running) |
-| `?` | Toggle help overlay |
-| `:` | Enter command mode |
-| `Ctrl+L` | Force redraw |
+| `q` / `Ctrl+C`      | Quit TUI (daemon keeps running)            |
+| `?`                 | Toggle help overlay                        |
+| `:`                 | Enter command mode                         |
+| `Ctrl+L`            | Force redraw                               |
 
 ### In-Panel Navigation
 
-| Key | Action |
-|---|---|
-| `j` / `Down` | Move selection down |
-| `k` / `Up` | Move selection up |
-| `h` / `Left` | Decrease slider value / collapse tree node |
-| `l` / `Right` | Increase slider value / expand tree node |
-| `g` / `Home` | Jump to first item |
-| `G` / `End` | Jump to last item |
-| `Enter` | Activate selected item / confirm |
-| `Esc` | Cancel / back / close modal |
-| `/` | Activate search filter in lists |
-| `Space` | Toggle boolean / select item |
+| Key           | Action                                     |
+| ------------- | ------------------------------------------ |
+| `j` / `Down`  | Move selection down                        |
+| `k` / `Up`    | Move selection up                          |
+| `h` / `Left`  | Decrease slider value / collapse tree node |
+| `l` / `Right` | Increase slider value / expand tree node   |
+| `g` / `Home`  | Jump to first item                         |
+| `G` / `End`   | Jump to last item                          |
+| `Enter`       | Activate selected item / confirm           |
+| `Esc`         | Cancel / back / close modal                |
+| `/`           | Activate search filter in lists            |
+| `Space`       | Toggle boolean / select item               |
 
 ### Slider Interaction
 
 Number sliders respond to graduated input:
 
-| Key | Step Size |
-|---|---|
-| `h` / `l` | 1% (fine) |
-| `H` / `L` (Shift) | 10% (coarse) |
-| `0`-`9` | Jump to 0%-90% directly |
-| `Enter` | Open direct numeric input |
+| Key               | Step Size                 |
+| ----------------- | ------------------------- |
+| `h` / `l`         | 1% (fine)                 |
+| `H` / `L` (Shift) | 10% (coarse)              |
+| `0`-`9`           | Jump to 0%-90% directly   |
+| `Enter`           | Open direct numeric input |
 
 ### Quick-Switch Shortcuts
 
 From the Dashboard or any view:
 
-| Key | Action |
-|---|---|
-| `1`-`9` | Apply quick-access effect slot (configurable) |
-| `p` then `1`-`9` | Apply profile by number |
-| `Ctrl+Space` | Toggle between current effect and "Off" |
+| Key              | Action                                        |
+| ---------------- | --------------------------------------------- |
+| `1`-`9`          | Apply quick-access effect slot (configurable) |
+| `p` then `1`-`9` | Apply profile by number                       |
+| `Ctrl+Space`     | Toggle between current effect and "Off"       |
 
 ### Command Mode
 
@@ -832,6 +837,7 @@ Every command produces styled, human-friendly output by default. Add `--json` fo
 ```
 
 Colors in the above output:
+
 - "Hypercolor" title: Electric Purple bold
 - Status dots `●`: Success Green (running) / Error Red (stopped)
 - Device names: Neon Cyan
@@ -1011,6 +1017,7 @@ hypercolor completion fish > ~/.config/fish/completions/hypercolor.fish
 ```
 
 Completions include:
+
 - All subcommands and flags
 - Dynamic completions for device names (queried from daemon)
 - Dynamic completions for effect names
@@ -1019,14 +1026,14 @@ Completions include:
 
 ### Environment Variables
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `HYPERCOLOR_SOCKET` | `/run/hypercolor/hypercolor.sock` | Unix socket path |
-| `HYPERCOLOR_HOST` | (none) | Remote daemon address (overrides socket) |
-| `HYPERCOLOR_CONFIG` | `~/.config/hypercolor/config.toml` | Config file path |
-| `HYPERCOLOR_COLOR` | `auto` | Color output: `auto`, `always`, `never` |
-| `NO_COLOR` | (none) | Disable color when set (any value) |
-| `HYPERCOLOR_LOG` | `warn` | Log level: `error`, `warn`, `info`, `debug`, `trace` |
+| Variable            | Default                            | Purpose                                              |
+| ------------------- | ---------------------------------- | ---------------------------------------------------- |
+| `HYPERCOLOR_SOCKET` | `/run/hypercolor/hypercolor.sock`  | Unix socket path                                     |
+| `HYPERCOLOR_HOST`   | (none)                             | Remote daemon address (overrides socket)             |
+| `HYPERCOLOR_CONFIG` | `~/.config/hypercolor/config.toml` | Config file path                                     |
+| `HYPERCOLOR_COLOR`  | `auto`                             | Color output: `auto`, `always`, `never`              |
+| `NO_COLOR`          | (none)                             | Disable color when set (any value)                   |
+| `HYPERCOLOR_LOG`    | `warn`                             | Log level: `error`, `warn`, `info`, `debug`, `trace` |
 
 ### Watch Mode
 
@@ -1147,12 +1154,12 @@ hypercolor --host desktop:9420 set aurora-drift --speed 40
 
 The TUI receives frame data from the daemon for the LED preview. Over SSH, this is the primary bandwidth consumer.
 
-| Data | Size | Rate | Bandwidth |
-|---|---|---|---|
-| LED frame (1,356 LEDs x 3 bytes) | ~4 KB | 30 fps | ~120 KB/s |
-| Audio spectrum (200 bins x 4 bytes) | ~800 B | 30 fps | ~24 KB/s |
-| Events (device, effect changes) | ~100 B | sporadic | negligible |
-| TUI terminal output (120x40 diff) | ~2-5 KB | 30 fps | ~60-150 KB/s |
+| Data                                | Size    | Rate     | Bandwidth    |
+| ----------------------------------- | ------- | -------- | ------------ |
+| LED frame (1,356 LEDs x 3 bytes)    | ~4 KB   | 30 fps   | ~120 KB/s    |
+| Audio spectrum (200 bins x 4 bytes) | ~800 B  | 30 fps   | ~24 KB/s     |
+| Events (device, effect changes)     | ~100 B  | sporadic | negligible   |
+| TUI terminal output (120x40 diff)   | ~2-5 KB | 30 fps   | ~60-150 KB/s |
 
 **Total estimated bandwidth: ~200-300 KB/s** -- well within any SSH connection, including tethered mobile.
 
@@ -1165,6 +1172,7 @@ hypercolor tui --low-bandwidth
 ```
 
 Low-bandwidth mode:
+
 - Reduces LED preview update rate to 5 fps
 - Disables audio spectrum visualization
 - Disables TachyonFX animations
@@ -1216,15 +1224,16 @@ tls = false                           # TLS for production deployments
 
 The TUI adapts to terminal capabilities:
 
-| Feature | Required? | Fallback |
-|---|---|---|
-| True color (24-bit) | Recommended | 256-color palette approximation |
-| Unicode | Required | (no fallback -- box drawing and half-blocks are essential) |
-| Alternate screen | Required | (standard terminal feature) |
-| Mouse events | Optional | Keyboard-only navigation |
-| Clipboard | Optional | No copy/paste integration |
+| Feature             | Required?   | Fallback                                                   |
+| ------------------- | ----------- | ---------------------------------------------------------- |
+| True color (24-bit) | Recommended | 256-color palette approximation                            |
+| Unicode             | Required    | (no fallback -- box drawing and half-blocks are essential) |
+| Alternate screen    | Required    | (standard terminal feature)                                |
+| Mouse events        | Optional    | Keyboard-only navigation                                   |
+| Clipboard           | Optional    | No copy/paste integration                                  |
 
 **Target terminals** (all support true-color + Unicode):
+
 - Ghostty
 - Kitty
 - Alacritty
@@ -1257,25 +1266,25 @@ The daemon publishes LED frame data via a `tokio::sync::watch` channel. The TUI'
 
 ### Performance Targets
 
-| Metric | Target | Rationale |
-|---|---|---|
-| TUI frame rate | 30 fps | Smooth enough for visual preview; saves terminal bandwidth |
-| LED preview latency | < 50ms | Frame publish to terminal write |
-| Input latency | < 20ms | Key press to visual response |
-| Memory footprint | < 15 MB | TUI binary + runtime state |
-| Startup time | < 200ms | Time to first rendered frame |
-| CPU usage (idle) | < 1% | When no LED data is changing |
-| CPU usage (active) | < 5% | During active LED preview + audio spectrum |
+| Metric              | Target  | Rationale                                                  |
+| ------------------- | ------- | ---------------------------------------------------------- |
+| TUI frame rate      | 30 fps  | Smooth enough for visual preview; saves terminal bandwidth |
+| LED preview latency | < 50ms  | Frame publish to terminal write                            |
+| Input latency       | < 20ms  | Key press to visual response                               |
+| Memory footprint    | < 15 MB | TUI binary + runtime state                                 |
+| Startup time        | < 200ms | Time to first rendered frame                               |
+| CPU usage (idle)    | < 1%    | When no LED data is changing                               |
+| CPU usage (active)  | < 5%    | During active LED preview + audio spectrum                 |
 
 ### Scaling with Device Count
 
 The TUI's primary scaling concern is the LED preview strip. With more devices comes more LEDs to render.
 
-| Setup | LEDs | Preview Width | Strategy |
-|---|---|---|---|
-| Single WLED strip | 120 | 120 cells | 1:1 mapping, fits in one row |
-| Moderate (your setup) | 1,356 | 120 cells | Downsample, aggregate zones |
-| Large (30+ devices) | 5,000+ | 120 cells | Zone-based summary, expandable |
+| Setup                 | LEDs   | Preview Width | Strategy                       |
+| --------------------- | ------ | ------------- | ------------------------------ |
+| Single WLED strip     | 120    | 120 cells     | 1:1 mapping, fits in one row   |
+| Moderate (your setup) | 1,356  | 120 cells     | Downsample, aggregate zones    |
+| Large (30+ devices)   | 5,000+ | 120 cells     | Zone-based summary, expandable |
 
 **Downsampling strategy:** When LED count exceeds terminal width, the preview shows a representative sample. Each pixel in the preview represents multiple physical LEDs, using average color. Users can zoom into specific zones in the Device Manager view.
 
@@ -1298,16 +1307,16 @@ The spectrum widget downsamples 200 FFT bins to the available width (typically 2
 
 ### Memory Budget
 
-| Component | Estimated Size |
-|---|---|
-| Ratatui buffer (120x40 cells) | ~96 KB (2 buffers for diffing) |
-| LED frame data (5,000 LEDs max) | ~15 KB |
-| Audio spectrum (200 bins) | ~800 B |
-| Widget state (lists, selections) | ~50 KB |
-| TachyonFX effect state | ~10 KB |
-| IPC connection buffers | ~32 KB |
-| Binary + static data | ~5 MB |
-| **Total** | **< 10 MB typical** |
+| Component                        | Estimated Size                 |
+| -------------------------------- | ------------------------------ |
+| Ratatui buffer (120x40 cells)    | ~96 KB (2 buffers for diffing) |
+| LED frame data (5,000 LEDs max)  | ~15 KB                         |
+| Audio spectrum (200 bins)        | ~800 B                         |
+| Widget state (lists, selections) | ~50 KB                         |
+| TachyonFX effect state           | ~10 KB                         |
+| IPC connection buffers           | ~32 KB                         |
+| Binary + static data             | ~5 MB                          |
+| **Total**                        | **< 10 MB typical**            |
 
 ---
 
@@ -1467,17 +1476,17 @@ $ hypercolor profile show evening
 
 Custom Ratatui widgets built for Hypercolor:
 
-| Widget | Description | Source |
-|---|---|---|
-| `LedStrip` | Half-block LED preview with zone labels | `widgets/led_strip.rs` |
-| `LedMatrix` | 2D half-block grid for matrix zones (Strimers) | `widgets/led_matrix.rs` |
-| `SpectrumBar` | FFT frequency spectrum with colored bands | `widgets/spectrum.rs` |
-| `ParamSlider` | Horizontal slider with value display and fine/coarse control | `widgets/slider.rs` |
-| `ColorPicker` | HSL sliders with color swatch preview | `widgets/color_picker.rs` |
-| `DeviceStatus` | Device name + status dot + LED count badge | `widgets/device_status.rs` |
-| `EffectCard` | Effect name + engine badge + audio indicator | `widgets/effect_card.rs` |
-| `FpsGraph` | Sparkline-style FPS history over time | `widgets/fps_graph.rs` |
-| `BeatPulse` | Animated beat indicator dots | `widgets/beat_pulse.rs` |
+| Widget         | Description                                                  | Source                     |
+| -------------- | ------------------------------------------------------------ | -------------------------- |
+| `LedStrip`     | Half-block LED preview with zone labels                      | `widgets/led_strip.rs`     |
+| `LedMatrix`    | 2D half-block grid for matrix zones (Strimers)               | `widgets/led_matrix.rs`    |
+| `SpectrumBar`  | FFT frequency spectrum with colored bands                    | `widgets/spectrum.rs`      |
+| `ParamSlider`  | Horizontal slider with value display and fine/coarse control | `widgets/slider.rs`        |
+| `ColorPicker`  | HSL sliders with color swatch preview                        | `widgets/color_picker.rs`  |
+| `DeviceStatus` | Device name + status dot + LED count badge                   | `widgets/device_status.rs` |
+| `EffectCard`   | Effect name + engine badge + audio indicator                 | `widgets/effect_card.rs`   |
+| `FpsGraph`     | Sparkline-style FPS history over time                        | `widgets/fps_graph.rs`     |
+| `BeatPulse`    | Animated beat indicator dots                                 | `widgets/beat_pulse.rs`    |
 
 ## Appendix B: IPC Protocol
 
@@ -1504,12 +1513,12 @@ Frame data is sent at the TUI's requested rate (default 30fps), not the daemon's
 
 Predefined TachyonFX compositions for TUI transitions and idle animations:
 
-| Recipe | Effect | When Used |
-|---|---|---|
-| `view_transition` | Horizontal sweep dissolve (200ms) | Switching between views |
-| `focus_glow` | Border color pulse (Neon Cyan, 1s period) | Focused panel border |
-| `idle_shimmer` | Subtle hue rotation on decorative borders (10s period) | When TUI is idle |
-| `alert_flash` | Error Red pulse (3 flashes, 150ms each) | Device disconnect, error |
-| `success_fade` | Success Green highlight that fades (500ms) | Action confirmed |
-| `startup_cascade` | Top-to-bottom reveal with fade-in (400ms) | TUI initial render |
-| `slider_feedback` | Brief color flash on value change (100ms) | Adjusting a parameter |
+| Recipe            | Effect                                                 | When Used                |
+| ----------------- | ------------------------------------------------------ | ------------------------ |
+| `view_transition` | Horizontal sweep dissolve (200ms)                      | Switching between views  |
+| `focus_glow`      | Border color pulse (Neon Cyan, 1s period)              | Focused panel border     |
+| `idle_shimmer`    | Subtle hue rotation on decorative borders (10s period) | When TUI is idle         |
+| `alert_flash`     | Error Red pulse (3 flashes, 150ms each)                | Device disconnect, error |
+| `success_fade`    | Success Green highlight that fades (500ms)             | Action confirmed         |
+| `startup_cascade` | Top-to-bottom reveal with fade-in (400ms)              | TUI initial render       |
+| `slider_feedback` | Brief color flash on value change (100ms)              | Adjusting a parameter    |

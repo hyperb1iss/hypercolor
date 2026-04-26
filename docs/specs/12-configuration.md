@@ -677,13 +677,13 @@ zones = ["wled-desk-strip:strip", "wled-shelf:strip"]
 
 All transition types and their parameters:
 
-| Type | Parameters | Default Duration |
-|---|---|---|
-| `cut` | (none) | 0ms |
-| `crossfade` | `easing` | 1000ms |
-| `wipe` | `direction`, `softness`, `easing` | 1500ms |
-| `flash` | `flash_color`, `flash_duration_ms`, `easing` | 800ms |
-| `blackout` | `hold_ms`, `easing` | 2000ms |
+| Type        | Parameters                                   | Default Duration |
+| ----------- | -------------------------------------------- | ---------------- |
+| `cut`       | (none)                                       | 0ms              |
+| `crossfade` | `easing`                                     | 1000ms           |
+| `wipe`      | `direction`, `softness`, `easing`            | 1500ms           |
+| `flash`     | `flash_color`, `flash_duration_ms`, `easing` | 800ms            |
+| `blackout`  | `hold_ms`, `easing`                          | 2000ms           |
 
 **Wipe directions:** `left`, `right`, `up`, `down`, `radial-in`, `radial-out`, `diagonal` (with optional `angle`).
 
@@ -691,13 +691,13 @@ All transition types and their parameters:
 
 ### 4.6 Scope Values
 
-| Scope | Devices Affected |
-|---|---|
-| `full` | Every device the daemon manages |
-| `pc-only` | USB HID and other physically attached devices |
-| `room-only` | WLED, Hue -- network/wireless devices |
-| `devices` | Explicit device list (array of device IDs) |
-| `zones` | Explicit zone list (array of zone IDs) |
+| Scope       | Devices Affected                              |
+| ----------- | --------------------------------------------- |
+| `full`      | Every device the daemon manages               |
+| `pc-only`   | USB HID and other physically attached devices |
+| `room-only` | WLED, Hue -- network/wireless devices         |
+| `devices`   | Explicit device list (array of device IDs)    |
+| `zones`     | Explicit zone list (array of zone IDs)        |
 
 Applying a scene with a non-`full` scope leaves unaddressed zones unchanged.
 
@@ -819,13 +819,13 @@ led_positions = [[0.5, 0.5]]        # Normalized within zone bounds
 
 ### 5.2 Topology Types
 
-| Topology | Required Fields | Description |
-|---|---|---|
-| `strip` | `led_count`, `direction` | Linear LED strip |
-| `ring` | `led_count`, `direction` | Circular LED ring (fans, halos) |
-| `matrix` | `led_count`, `matrix_width`, `matrix_height`, `direction` | 2D LED grid |
-| `single` | `led_count` (always 1) | Single LED point (bulbs) |
-| `custom` | `led_count`, `led_positions` | Explicit per-LED coordinates |
+| Topology | Required Fields                                           | Description                     |
+| -------- | --------------------------------------------------------- | ------------------------------- |
+| `strip`  | `led_count`, `direction`                                  | Linear LED strip                |
+| `ring`   | `led_count`, `direction`                                  | Circular LED ring (fans, halos) |
+| `matrix` | `led_count`, `matrix_width`, `matrix_height`, `direction` | 2D LED grid                     |
+| `single` | `led_count` (always 1)                                    | Single LED point (bulbs)        |
+| `custom` | `led_count`, `led_positions`                              | Explicit per-LED coordinates    |
 
 ### 5.3 Position Coordinates
 
@@ -1221,28 +1221,28 @@ Resolution: highest priority wins. Ties broken by most-recently-triggered. Activ
 
 ### 7.4 Trigger Types
 
-| Type | Description | Example |
-|---|---|---|
-| `event` | Single event match from a source | App launched, screen locked |
-| `any` | Any of a list of events fires | Zoom OR Teams launched |
-| `all` | All events must fire (unordered) | Game + headphones connected |
+| Type       | Description                         | Example                                |
+| ---------- | ----------------------------------- | -------------------------------------- |
+| `event`    | Single event match from a source    | App launched, screen locked            |
+| `any`      | Any of a list of events fires       | Zoom OR Teams launched                 |
+| `all`      | All events must fire (unordered)    | Game + headphones connected            |
 | `sequence` | Ordered events within a time window | USB connect then app launch within 10s |
 
 ### 7.5 Action Types
 
-| Type | Description |
-|---|---|
-| `activate_scene` | Switch to a named scene |
-| `restore_previous_scene` | Pop the priority stack |
-| `set_brightness` | Adjust global brightness without changing scene |
-| `set_zone_effect` | Change a single zone's effect |
-| `temporary_overlay` | Apply a scene overlay that auto-removes after duration |
-| `sequence` | Execute multiple actions in order |
-| `parallel` | Execute multiple actions simultaneously |
-| `delay` | Wait before next action (within a sequence) |
-| `webhook` | POST to an external URL |
-| `mqtt_publish` | Publish a message to an MQTT topic |
-| `noop` | No-op (useful for testing rules) |
+| Type                     | Description                                            |
+| ------------------------ | ------------------------------------------------------ |
+| `activate_scene`         | Switch to a named scene                                |
+| `restore_previous_scene` | Pop the priority stack                                 |
+| `set_brightness`         | Adjust global brightness without changing scene        |
+| `set_zone_effect`        | Change a single zone's effect                          |
+| `temporary_overlay`      | Apply a scene overlay that auto-removes after duration |
+| `sequence`               | Execute multiple actions in order                      |
+| `parallel`               | Execute multiple actions simultaneously                |
+| `delay`                  | Wait before next action (within a sequence)            |
+| `webhook`                | POST to an external URL                                |
+| `mqtt_publish`           | Publish a message to an MQTT topic                     |
+| `noop`                   | No-op (useful for testing rules)                       |
 
 ---
 
@@ -2168,95 +2168,95 @@ Every field has a compile-time default. A fresh install with zero config files s
 
 ### 9.1 Default Value Table
 
-| Section | Field | Default | Notes |
-|---|---|---|---|
-| **daemon** | `listen_address` | `"127.0.0.1"` | Localhost only |
-| | `port` | `9420` | |
-| | `unix_socket` | `true` | Linux only |
-| | `target_fps` | `60` | |
-| | `canvas_width` | `320` | LightScript standard |
-| | `canvas_height` | `200` | LightScript standard |
-| | `max_devices` | `32` | |
-| | `log_level` | `"info"` | |
-| | `log_file` | `""` | stderr only |
-| | `start_profile` | `"last"` | Resume last session |
-| | `shutdown_behavior` | `"hardware_default"` | |
-| | `shutdown_color` | `"#1a1a2e"` | |
-| **web** | `enabled` | `true` | |
-| | `open_browser` | `false` | |
-| | `cors_origins` | `[]` | localhost only |
-| | `websocket_fps` | `30` | |
-| | `auth_enabled` | `false` | |
-| **effect_engine** | `preferred_renderer` | `"auto"` | |
-| | `servo_enabled` | `true` | |
-| | `wgpu_backend` | `"auto"` | |
-| | `compositor_acceleration_mode` | `"cpu"` | Scene compositor only; legacy `render_acceleration_mode` still deserializes |
-| | `extra_effect_dirs` | `[]` | |
-| | `watch_effects` | `true` | |
-| | `watch_config` | `true` | |
-| **audio** | `enabled` | `true` | |
-| | `device` | `"default"` | System default |
-| | `fft_size` | `1024` | |
-| | `smoothing` | `0.8` | |
-| | `noise_gate` | `0.02` | |
-| | `beat_sensitivity` | `0.6` | |
-| **capture** | `enabled` | `false` | Off by default |
-| | `source` | `"auto"` | |
-| | `capture_fps` | `30` | |
-| | `monitor` | `0` | Primary |
-| **discovery** | `mdns_enabled` | `true` | |
-| | `scan_interval_secs` | `300` | 5 minutes |
-| | `wled_scan` | `true` | |
-| | `hue_scan` | `true` | |
-| **dbus** | `enabled` | `true` | Linux only |
-| | `bus_name` | `"tech.hyperbliss.hypercolor1"` | |
-| **tui** | `theme` | `"silkcircuit"` | |
-| | `preview_fps` | `15` | |
-| | `keybindings` | `"default"` | |
-| **features** | `wasm_plugins` | `false` | |
-| | `hue_entertainment` | `false` | |
-| | `midi_input` | `false` | |
+| Section           | Field                          | Default                         | Notes                                                                       |
+| ----------------- | ------------------------------ | ------------------------------- | --------------------------------------------------------------------------- |
+| **daemon**        | `listen_address`               | `"127.0.0.1"`                   | Localhost only                                                              |
+|                   | `port`                         | `9420`                          |                                                                             |
+|                   | `unix_socket`                  | `true`                          | Linux only                                                                  |
+|                   | `target_fps`                   | `60`                            |                                                                             |
+|                   | `canvas_width`                 | `320`                           | LightScript standard                                                        |
+|                   | `canvas_height`                | `200`                           | LightScript standard                                                        |
+|                   | `max_devices`                  | `32`                            |                                                                             |
+|                   | `log_level`                    | `"info"`                        |                                                                             |
+|                   | `log_file`                     | `""`                            | stderr only                                                                 |
+|                   | `start_profile`                | `"last"`                        | Resume last session                                                         |
+|                   | `shutdown_behavior`            | `"hardware_default"`            |                                                                             |
+|                   | `shutdown_color`               | `"#1a1a2e"`                     |                                                                             |
+| **web**           | `enabled`                      | `true`                          |                                                                             |
+|                   | `open_browser`                 | `false`                         |                                                                             |
+|                   | `cors_origins`                 | `[]`                            | localhost only                                                              |
+|                   | `websocket_fps`                | `30`                            |                                                                             |
+|                   | `auth_enabled`                 | `false`                         |                                                                             |
+| **effect_engine** | `preferred_renderer`           | `"auto"`                        |                                                                             |
+|                   | `servo_enabled`                | `true`                          |                                                                             |
+|                   | `wgpu_backend`                 | `"auto"`                        |                                                                             |
+|                   | `compositor_acceleration_mode` | `"cpu"`                         | Scene compositor only; legacy `render_acceleration_mode` still deserializes |
+|                   | `extra_effect_dirs`            | `[]`                            |                                                                             |
+|                   | `watch_effects`                | `true`                          |                                                                             |
+|                   | `watch_config`                 | `true`                          |                                                                             |
+| **audio**         | `enabled`                      | `true`                          |                                                                             |
+|                   | `device`                       | `"default"`                     | System default                                                              |
+|                   | `fft_size`                     | `1024`                          |                                                                             |
+|                   | `smoothing`                    | `0.8`                           |                                                                             |
+|                   | `noise_gate`                   | `0.02`                          |                                                                             |
+|                   | `beat_sensitivity`             | `0.6`                           |                                                                             |
+| **capture**       | `enabled`                      | `false`                         | Off by default                                                              |
+|                   | `source`                       | `"auto"`                        |                                                                             |
+|                   | `capture_fps`                  | `30`                            |                                                                             |
+|                   | `monitor`                      | `0`                             | Primary                                                                     |
+| **discovery**     | `mdns_enabled`                 | `true`                          |                                                                             |
+|                   | `scan_interval_secs`           | `300`                           | 5 minutes                                                                   |
+|                   | `wled_scan`                    | `true`                          |                                                                             |
+|                   | `hue_scan`                     | `true`                          |                                                                             |
+| **dbus**          | `enabled`                      | `true`                          | Linux only                                                                  |
+|                   | `bus_name`                     | `"tech.hyperbliss.hypercolor1"` |                                                                             |
+| **tui**           | `theme`                        | `"silkcircuit"`                 |                                                                             |
+|                   | `preview_fps`                  | `15`                            |                                                                             |
+|                   | `keybindings`                  | `"default"`                     |                                                                             |
+| **features**      | `wasm_plugins`                 | `false`                         |                                                                             |
+|                   | `hue_entertainment`            | `false`                         |                                                                             |
+|                   | `midi_input`                   | `false`                         |                                                                             |
 
 ### 9.2 Profile Defaults
 
-| Field | Default | Notes |
-|---|---|---|
-| `brightness` | `0.85` | |
-| `saturation` | `1.0` | Full saturation |
-| `speed` | `1.0` | Normal speed |
-| `transition_ms` | `500` | |
-| `audio.enabled` | `false` | |
-| `audio.sensitivity` | `0.7` | |
-| `audio.bass_boost` | `1.0` | No boost |
-| `audio.reactive_brightness` | `false` | |
+| Field                       | Default | Notes           |
+| --------------------------- | ------- | --------------- |
+| `brightness`                | `0.85`  |                 |
+| `saturation`                | `1.0`   | Full saturation |
+| `speed`                     | `1.0`   | Normal speed    |
+| `transition_ms`             | `500`   |                 |
+| `audio.enabled`             | `false` |                 |
+| `audio.sensitivity`         | `0.7`   |                 |
+| `audio.bass_boost`          | `1.0`   | No boost        |
+| `audio.reactive_brightness` | `false` |                 |
 
 ### 9.3 Device Calibration Defaults
 
-| Field | Default | Notes |
-|---|---|---|
-| `brightness_curve` | `"gamma"` | |
-| `gamma` | `2.2` | sRGB standard |
-| `max_brightness` | `1.0` | No cap |
-| `min_brightness` | `0.0` | |
-| `white_point` | `[255, 255, 255]` | Pure white |
-| `color_temp_k` | `6500` | Daylight |
-| `gamma_rgb` | `[2.2, 2.2, 2.2]` | Uniform |
-| `led_density` | `60` | LEDs/meter |
-| `power_limit_watts` | `0.0` | Unlimited |
-| `power_per_led_mw` | `60` | WS2812B typical |
-| `voltage` | `5.0` | |
+| Field               | Default           | Notes           |
+| ------------------- | ----------------- | --------------- |
+| `brightness_curve`  | `"gamma"`         |                 |
+| `gamma`             | `2.2`             | sRGB standard   |
+| `max_brightness`    | `1.0`             | No cap          |
+| `min_brightness`    | `0.0`             |                 |
+| `white_point`       | `[255, 255, 255]` | Pure white      |
+| `color_temp_k`      | `6500`            | Daylight        |
+| `gamma_rgb`         | `[2.2, 2.2, 2.2]` | Uniform         |
+| `led_density`       | `60`              | LEDs/meter      |
+| `power_limit_watts` | `0.0`             | Unlimited       |
+| `power_per_led_mw`  | `60`              | WS2812B typical |
+| `voltage`           | `5.0`             |                 |
 
 ### 9.4 Vendor-Specific Device Defaults
 
 When a device is first detected, vendor-specific defaults override the generic defaults:
 
-| Device | `color_format` | `brightness_multiplier` | `gamma` | `frame_rate` |
-|---|---|---|---|---|
-| PrismRGB Prism 8 (16D5:1F01) | `grb` | `0.75` | `2.2` | `60` |
-| PrismRGB Prism S (16D0:1294) | `rgb` | `0.50` | `2.2` | `33` |
-| WLED (any) | `rgb` | `1.0` | `2.8` | `60` |
-| Hue (any) | `rgb` | `1.0` | `2.2` | `25` |
-| Generic/Unknown | `rgb` | `1.0` | `2.2` | `60` |
+| Device                       | `color_format` | `brightness_multiplier` | `gamma` | `frame_rate` |
+| ---------------------------- | -------------- | ----------------------- | ------- | ------------ |
+| PrismRGB Prism 8 (16D5:1F01) | `grb`          | `0.75`                  | `2.2`   | `60`         |
+| PrismRGB Prism S (16D0:1294) | `rgb`          | `0.50`                  | `2.2`   | `33`         |
+| WLED (any)                   | `rgb`          | `1.0`                   | `2.8`   | `60`         |
+| Hue (any)                    | `rgb`          | `1.0`                   | `2.2`   | `25`         |
+| Generic/Unknown              | `rgb`          | `1.0`                   | `2.2`   | `60`         |
 
 ### 9.5 Default Value Functions
 
@@ -2344,14 +2344,14 @@ schema_version = 3                   # Must be present in every config file
 
 Current schema versions by config kind:
 
-| Config Kind | Current Version | Notes |
-|---|---|---|
-| Main (`hypercolor.toml`) | `3` | v3 added `[features]` section |
-| Profile | `2` | v2 added per-zone `[audio]` overrides |
-| Scene | `1` | Initial schema |
-| Layout | `1` | Initial schema |
-| Device | `1` | Initial schema |
-| Rules | `1` | Initial schema |
+| Config Kind              | Current Version | Notes                                 |
+| ------------------------ | --------------- | ------------------------------------- |
+| Main (`hypercolor.toml`) | `3`             | v3 added `[features]` section         |
+| Profile                  | `2`             | v2 added per-zone `[audio]` overrides |
+| Scene                    | `1`             | Initial schema                        |
+| Layout                   | `1`             | Initial schema                        |
+| Device                   | `1`             | Initial schema                        |
+| Rules                    | `1`             | Initial schema                        |
 
 ### 10.2 Migration Engine
 
@@ -2398,6 +2398,7 @@ Main v1 --migrate_v1_to_v2--> Main v2 --migrate_v2_to_v3--> Main v3 (current)
 2. **Atomic writes** -- Write to a `.tmp` file, then `rename()` (atomic on Linux ext4/btrfs; best-effort on Windows NTFS).
 
 3. **Migration log** -- Every migration is recorded in `$STATE_DIR/hypercolor/migration.log`:
+
    ```
    2026-03-15T10:30:00Z  profiles/gaming.toml  v1 -> v2  "Add audio sensitivity settings per zone"
    2026-03-15T10:30:00Z  hypercolor.toml       v2 -> v3  "Add feature flags section"
@@ -2409,13 +2410,13 @@ Main v1 --migrate_v1_to_v2--> Main v2 --migrate_v2_to_v3--> Main v3 (current)
 
 ### 10.4 Backward Compatibility Guarantees
 
-| Guarantee | Policy |
-|---|---|
-| Config files from older versions | Always auto-migrated on daemon start |
-| Config files from newer versions | Rejected with clear error: "this config requires Hypercolor >= X.Y.Z" |
-| Removed settings | Preserved as `[deprecated]` section for one major version, then stripped |
-| Renamed settings | Migration renames them; old name works for one major version with deprecation warning |
-| Breaking schema changes | Only in major versions (0.x -> 1.0, 1.x -> 2.0). Always with auto-migration |
+| Guarantee                        | Policy                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| Config files from older versions | Always auto-migrated on daemon start                                                  |
+| Config files from newer versions | Rejected with clear error: "this config requires Hypercolor >= X.Y.Z"                 |
+| Removed settings                 | Preserved as `[deprecated]` section for one major version, then stripped              |
+| Renamed settings                 | Migration renames them; old name works for one major version with deprecation warning |
+| Breaking schema changes          | Only in major versions (0.x -> 1.0, 1.x -> 2.0). Always with auto-migration           |
 
 ### 10.5 Optional Version Compatibility Header
 
@@ -2440,32 +2441,32 @@ Section and key names are UPPER_SNAKE_CASE. Nested sections use additional `__` 
 
 ### 11.2 Examples
 
-| Environment Variable | Config Path | Type |
-|---|---|---|
-| `HYPERCOLOR_DAEMON__PORT` | `daemon.port` | `u16` |
-| `HYPERCOLOR_DAEMON__TARGET_FPS` | `daemon.target_fps` | `u32` |
-| `HYPERCOLOR_DAEMON__LOG_LEVEL` | `daemon.log_level` | `String` |
+| Environment Variable                | Config Path             | Type     |
+| ----------------------------------- | ----------------------- | -------- |
+| `HYPERCOLOR_DAEMON__PORT`           | `daemon.port`           | `u16`    |
+| `HYPERCOLOR_DAEMON__TARGET_FPS`     | `daemon.target_fps`     | `u32`    |
+| `HYPERCOLOR_DAEMON__LOG_LEVEL`      | `daemon.log_level`      | `String` |
 | `HYPERCOLOR_DAEMON__LISTEN_ADDRESS` | `daemon.listen_address` | `String` |
-| `HYPERCOLOR_WEB__ENABLED` | `web.enabled` | `bool` |
-| `HYPERCOLOR_WEB__WEBSOCKET_FPS` | `web.websocket_fps` | `u32` |
-| `HYPERCOLOR_AUDIO__DEVICE` | `audio.device` | `String` |
-| `HYPERCOLOR_AUDIO__FFT_SIZE` | `audio.fft_size` | `u32` |
-| `HYPERCOLOR_AUDIO__ENABLED` | `audio.enabled` | `bool` |
-| `HYPERCOLOR_CAPTURE__ENABLED` | `capture.enabled` | `bool` |
-| `HYPERCOLOR_CAPTURE__MONITOR` | `capture.monitor` | `u32` |
-| `HYPERCOLOR_DBUS__ENABLED` | `dbus.enabled` | `bool` |
-| `HYPERCOLOR_TUI__THEME` | `tui.theme` | `String` |
-| `HYPERCOLOR_FEATURES__WASM_PLUGINS` | `features.wasm_plugins` | `bool` |
+| `HYPERCOLOR_WEB__ENABLED`           | `web.enabled`           | `bool`   |
+| `HYPERCOLOR_WEB__WEBSOCKET_FPS`     | `web.websocket_fps`     | `u32`    |
+| `HYPERCOLOR_AUDIO__DEVICE`          | `audio.device`          | `String` |
+| `HYPERCOLOR_AUDIO__FFT_SIZE`        | `audio.fft_size`        | `u32`    |
+| `HYPERCOLOR_AUDIO__ENABLED`         | `audio.enabled`         | `bool`   |
+| `HYPERCOLOR_CAPTURE__ENABLED`       | `capture.enabled`       | `bool`   |
+| `HYPERCOLOR_CAPTURE__MONITOR`       | `capture.monitor`       | `u32`    |
+| `HYPERCOLOR_DBUS__ENABLED`          | `dbus.enabled`          | `bool`   |
+| `HYPERCOLOR_TUI__THEME`             | `tui.theme`             | `String` |
+| `HYPERCOLOR_FEATURES__WASM_PLUGINS` | `features.wasm_plugins` | `bool`   |
 
 ### 11.3 Type Coercion
 
-| Target Type | Accepted Values |
-|---|---|
-| `bool` | `true`, `false`, `1`, `0`, `yes`, `no` |
-| `u16`, `u32`, `u64` | Decimal integers |
-| `f32` | Decimal numbers with optional fractional part |
-| `String` | Raw string value |
-| `Vec<String>` | Comma-separated values: `"origin1,origin2"` |
+| Target Type         | Accepted Values                               |
+| ------------------- | --------------------------------------------- |
+| `bool`              | `true`, `false`, `1`, `0`, `yes`, `no`        |
+| `u16`, `u32`, `u64` | Decimal integers                              |
+| `f32`               | Decimal numbers with optional fractional part |
+| `String`            | Raw string value                              |
+| `Vec<String>`       | Comma-separated values: `"origin1,origin2"`   |
 
 ### 11.4 Use Cases
 
@@ -2535,44 +2536,44 @@ pub fn load_config() -> Result<HypercolorConfig> {
 
 ### 12.1 Path Summary
 
-| Concept | Linux | Windows |
-|---|---|---|
-| **Config root** | `~/.config/hypercolor/` | `%APPDATA%\hypercolor\` |
-| **Data root** | `~/.local/share/hypercolor/` | `%LOCALAPPDATA%\hypercolor\` |
-| **State root** | `~/.local/state/hypercolor/` | `%LOCALAPPDATA%\hypercolor\state\` |
-| **Cache root** | `~/.cache/hypercolor/` | `%LOCALAPPDATA%\hypercolor\cache\` |
-| **Runtime** | `/run/user/$UID/hypercolor/` | N/A (named pipe) |
-| **IPC socket** | `/run/user/$UID/hypercolor/hypercolor.sock` | `\\.\pipe\hypercolor` |
-| **PID file** | `/run/user/$UID/hypercolor/hypercolor.pid` | N/A |
-| **System defaults** | `/etc/hypercolor/` | N/A |
+| Concept             | Linux                                       | Windows                            |
+| ------------------- | ------------------------------------------- | ---------------------------------- |
+| **Config root**     | `~/.config/hypercolor/`                     | `%APPDATA%\hypercolor\`            |
+| **Data root**       | `~/.local/share/hypercolor/`                | `%LOCALAPPDATA%\hypercolor\`       |
+| **State root**      | `~/.local/state/hypercolor/`                | `%LOCALAPPDATA%\hypercolor\state\` |
+| **Cache root**      | `~/.cache/hypercolor/`                      | `%LOCALAPPDATA%\hypercolor\cache\` |
+| **Runtime**         | `/run/user/$UID/hypercolor/`                | N/A (named pipe)                   |
+| **IPC socket**      | `/run/user/$UID/hypercolor/hypercolor.sock` | `\\.\pipe\hypercolor`              |
+| **PID file**        | `/run/user/$UID/hypercolor/hypercolor.pid`  | N/A                                |
+| **System defaults** | `/etc/hypercolor/`                          | N/A                                |
 
 ### 12.2 Platform-Specific Behavior
 
-| Feature | Linux | Windows |
-|---|---|---|
-| IPC mechanism | Unix domain socket | Named pipe |
-| D-Bus integration | Yes (`[dbus]` section) | Skipped |
-| Screen capture | PipeWire, X11 | DXGI (Desktop Duplication API) |
-| Audio capture | PulseAudio/PipeWire | WASAPI |
-| File watcher | `inotify` via `notify` | `ReadDirectoryChangesW` via `notify` |
-| Atomic rename | Guaranteed on ext4/btrfs | Best-effort on NTFS |
-| Keyring | Secret Service D-Bus API | Windows Credential Manager |
+| Feature           | Linux                    | Windows                              |
+| ----------------- | ------------------------ | ------------------------------------ |
+| IPC mechanism     | Unix domain socket       | Named pipe                           |
+| D-Bus integration | Yes (`[dbus]` section)   | Skipped                              |
+| Screen capture    | PipeWire, X11            | DXGI (Desktop Duplication API)       |
+| Audio capture     | PulseAudio/PipeWire      | WASAPI                               |
+| File watcher      | `inotify` via `notify`   | `ReadDirectoryChangesW` via `notify` |
+| Atomic rename     | Guaranteed on ext4/btrfs | Best-effort on NTFS                  |
+| Keyring           | Secret Service D-Bus API | Windows Credential Manager           |
 
 ### 12.3 Environment Variable Overrides for Paths
 
 Default paths can be overridden for non-standard installations:
 
-| Variable | Effect |
-|---|---|
+| Variable                | Effect                             |
+| ----------------------- | ---------------------------------- |
 | `HYPERCOLOR_CONFIG_DIR` | Override config directory entirely |
-| `HYPERCOLOR_DATA_DIR` | Override data directory entirely |
-| `HYPERCOLOR_STATE_DIR` | Override state directory entirely |
-| `HYPERCOLOR_CACHE_DIR` | Override cache directory entirely |
-| `XDG_CONFIG_HOME` | Standard XDG override (Linux) |
-| `XDG_DATA_HOME` | Standard XDG override (Linux) |
-| `XDG_STATE_HOME` | Standard XDG override (Linux) |
-| `XDG_CACHE_HOME` | Standard XDG override (Linux) |
-| `XDG_RUNTIME_DIR` | Standard XDG override (Linux) |
+| `HYPERCOLOR_DATA_DIR`   | Override data directory entirely   |
+| `HYPERCOLOR_STATE_DIR`  | Override state directory entirely  |
+| `HYPERCOLOR_CACHE_DIR`  | Override cache directory entirely  |
+| `XDG_CONFIG_HOME`       | Standard XDG override (Linux)      |
+| `XDG_DATA_HOME`         | Standard XDG override (Linux)      |
+| `XDG_STATE_HOME`        | Standard XDG override (Linux)      |
+| `XDG_CACHE_HOME`        | Standard XDG override (Linux)      |
+| `XDG_RUNTIME_DIR`       | Standard XDG override (Linux)      |
 
 `HYPERCOLOR_*_DIR` variables take precedence over `XDG_*` variables when both are set.
 

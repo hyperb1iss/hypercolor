@@ -22,14 +22,14 @@ Installation                           (event, stage, multi-building)
 
 ### What Changes at Each Scale
 
-| Scale | Typical LED Count | Typical Devices | Primary Challenge | Latency Budget |
-|-------|-------------------|-----------------|-------------------|----------------|
-| **Device** | 1 -- 1,008 | 1 | LED topology (strip, ring, matrix) | < 1ms |
-| **PC Case** | 50 -- 2,000 | 3 -- 10 | Inter-device sync, zone packing | < 5ms |
-| **Desk** | 100 -- 3,000 | 5 -- 15 | Mixed protocols (HID + WLED + OpenRGB) | < 10ms |
-| **Room** | 200 -- 10,000 | 5 -- 30 | Physical distance, wall paths, accent/ambient split | < 20ms |
-| **House** | 500 -- 50,000 | 10 -- 100+ | Multi-room orchestration, network hops, WiFi reliability | < 50ms |
-| **Installation** | 1,000 -- 500,000+ | 20 -- 1,000+ | Precise timing, failover, show control | < 10ms (wired) |
+| Scale            | Typical LED Count | Typical Devices | Primary Challenge                                        | Latency Budget |
+| ---------------- | ----------------- | --------------- | -------------------------------------------------------- | -------------- |
+| **Device**       | 1 -- 1,008        | 1               | LED topology (strip, ring, matrix)                       | < 1ms          |
+| **PC Case**      | 50 -- 2,000       | 3 -- 10         | Inter-device sync, zone packing                          | < 5ms          |
+| **Desk**         | 100 -- 3,000      | 5 -- 15         | Mixed protocols (HID + WLED + OpenRGB)                   | < 10ms         |
+| **Room**         | 200 -- 10,000     | 5 -- 30         | Physical distance, wall paths, accent/ambient split      | < 20ms         |
+| **House**        | 500 -- 50,000     | 10 -- 100+      | Multi-room orchestration, network hops, WiFi reliability | < 50ms         |
+| **Installation** | 1,000 -- 500,000+ | 20 -- 1,000+    | Precise timing, failover, show control                   | < 10ms (wired) |
 
 ### Automatic Scale Detection
 
@@ -84,6 +84,7 @@ pub struct RoomDimensions {
 ```
 
 Physical space is used for:
+
 - Room layout and furniture placement
 - Distance-based calculations (latency estimation, effect propagation speed)
 - 3D visualization
@@ -118,6 +119,7 @@ impl RoomCoord {
 ```
 
 Why normalized? Two reasons:
+
 1. Effects don't care if your room is 3m or 6m wide. A wave that crosses the room should cross the room, regardless of dimensions.
 2. Multi-room orchestration needs a common coordinate system. "Effect starts at x=0.0 in room A and continues at x=0.0 in room B" is meaningful regardless of room sizes.
 
@@ -384,6 +386,7 @@ impl PathTopology {
 ### 3.3 Real-World Topology Scenarios
 
 **Strip follows a shelf edge, wraps around corners:**
+
 ```
 Topology: Path
 Waypoints: [(0, 120, 50), (150, 120, 50), (150, 120, 0), (0, 120, 0)]
@@ -392,6 +395,7 @@ Result: LEDs follow an L-shaped path along two shelf edges
 ```
 
 **Strip goes up a wall, across the ceiling, down another wall:**
+
 ```
 Topology: Path
 Waypoints: [(0, 0, 0), (0, 250, 0), (300, 250, 0), (300, 0, 0)]
@@ -400,6 +404,7 @@ Result: 250cm up + 300cm across + 250cm down = 800cm = ~240 LEDs
 ```
 
 **Hexagonal panel cluster (Nanoleaf-style):**
+
 ```
 Topology: Composite {
     segments: [
@@ -414,6 +419,7 @@ Position defined by panel center in physical coords.
 ```
 
 **WLED 2D Matrix (e.g., 16x16 panel):**
+
 ```
 Topology: Matrix {
     width: 16,
@@ -425,6 +431,7 @@ Position and size defined on the room/canvas layout.
 ```
 
 **Mixed zone -- strip + Hue bulb covering the same area:**
+
 ```
 Zone: "Bookshelf"
 Devices:
@@ -539,6 +546,7 @@ The default and most important view. A bird's-eye 2D representation of the room.
 ```
 
 **Interactions:**
+
 - **Pan**: click + drag background, or scroll wheel + Shift
 - **Zoom**: scroll wheel, or pinch on trackpad
 - **Select**: click device / furniture
@@ -636,6 +644,7 @@ The fastest path from "I have LEDs" to "they're mapped." The user uploads a phot
 ```
 
 **Photo overlay workflow:**
+
 1. Upload a photo (drag-and-drop or file picker)
 2. Optionally set scale reference (click two points and enter real-world distance)
 3. Select a device from the tray
@@ -643,6 +652,7 @@ The fastest path from "I have LEDs" to "they're mapped." The user uploads a phot
 5. The photo + LED positions are saved together as a layout preset
 
 **Placement tools:**
+
 - **Place Strip**: click start, click end -- LEDs distribute evenly along the line. For curves, click intermediate waypoints (same as Trace mode but on the photo).
 - **Place Point**: single click for point lights (Hue bulbs, single LEDs)
 - **Place Ring**: click center, drag to set radius -- LEDs distribute around the circle
@@ -721,6 +731,7 @@ pub enum FurnitureShape {
 ```
 
 **Built-in furniture presets:**
+
 - Desk (various sizes: 120cm, 150cm, 180cm, L-shaped)
 - Monitor (24", 27", 32", 34" ultrawide, 49" super ultrawide)
 - Bookshelf (2-shelf, 3-shelf, 4-shelf, Kallax grid)
@@ -801,6 +812,7 @@ Canvas (320 x 200)
 **Ambient devices** get an area-averaged sample. A Hue floor lamp in the corner of the room samples the canvas over a large region (its `influence_radius` mapped to canvas coordinates) and returns the weighted average color. This prevents ambient lights from "flickering" with high-frequency effect patterns.
 
 **Task devices** get special processing:
+
 - **Monitor backlight**: optionally uses screen capture input instead of the effect canvas, creating bias lighting
 - **Desk lamp**: applies a warmth bias (shift toward 2700K-4000K) to maintain task-appropriate color temperature
 - **Reading light**: respects a minimum brightness floor and limits saturation
@@ -809,16 +821,16 @@ Canvas (320 x 200)
 
 Roles are set per-device or per-segment in the inspector panel. The system suggests roles based on device type and position:
 
-| Device Type | Position | Suggested Role |
-|-------------|----------|----------------|
-| Hue bulb | Floor/standing | Ambient |
-| Hue bulb | Desk | Task (desk lamp) |
-| WLED strip | Ceiling edge | Ambient |
-| WLED strip | Shelf front | Accent |
-| WLED strip | Behind monitor | Task (backlight) |
-| WLED strip | Inside PC case | Feature |
-| OpenRGB device | Inside PC case | Feature |
-| PrismRGB Strimer | Inside PC case | Feature |
+| Device Type      | Position       | Suggested Role   |
+| ---------------- | -------------- | ---------------- |
+| Hue bulb         | Floor/standing | Ambient          |
+| Hue bulb         | Desk           | Task (desk lamp) |
+| WLED strip       | Ceiling edge   | Ambient          |
+| WLED strip       | Shelf front    | Accent           |
+| WLED strip       | Behind monitor | Task (backlight) |
+| WLED strip       | Inside PC case | Feature          |
+| OpenRGB device   | Inside PC case | Feature          |
+| PrismRGB Strimer | Inside PC case | Feature          |
 
 Users can override any suggestion. The role can also be set per-scene (a strip might be Ambient during "Movie Night" but Feature during "Gaming").
 
@@ -887,6 +899,7 @@ Hypercolor virtual devices:
 ```
 
 Each virtual device can be:
+
 - Independently positioned in the room editor
 - Assigned different topologies (one is a Path along the desk, two are Paths along shelf edges)
 - Given different lighting roles (desk strip = Task/backlight, shelf strips = Accent)
@@ -897,12 +910,14 @@ Each virtual device can be:
 Two operating modes for WLED segments:
 
 **Mode A: Hypercolor-Controlled (default)**
+
 - Hypercolor sends raw LED colors via DDP
 - WLED's built-in effects are disabled
 - Hypercolor's effect engine drives everything
 - Maximum spatial integration -- the strip is part of the room's unified effect
 
 **Mode B: WLED-Native**
+
 - WLED runs its own effect on this segment
 - Hypercolor doesn't send color data
 - Used when WLED's built-in effects are preferred (e.g., for a segment in another room not yet mapped)
@@ -1040,6 +1055,7 @@ pub struct RoomAdjacency {
 ```
 
 The floor plan is a simplified top-down layout of rooms. It's not an architectural drawing -- it's a spatial relationship map. Rooms are rectangles (or simple polygons) positioned relative to each other, showing:
+
 - Room name and current effect/scene
 - Device count and online status
 - Adjacency (shared walls for continuous effects)
@@ -1134,13 +1150,13 @@ pub struct RoomOverrides {
 
 **Scene example: "Movie Night"**
 
-| Room | Effect | Brightness | Speed | Notes |
-|------|--------|------------|-------|-------|
-| Living Room | Aurora | 30% | 0.5x | Low, slow ambient behind TV |
-| Kitchen | Solid Color | 10% | -- | Warm white 2700K, just enough to see |
-| Hallway | Solid Color | 5% | -- | Very dim warm white, wayfinding only |
-| Bedroom | Off | 0% | -- | Fully dark |
-| Office | Independent | 100% | 1.0x | Not part of this scene |
+| Room        | Effect      | Brightness | Speed | Notes                                |
+| ----------- | ----------- | ---------- | ----- | ------------------------------------ |
+| Living Room | Aurora      | 30%        | 0.5x  | Low, slow ambient behind TV          |
+| Kitchen     | Solid Color | 10%        | --    | Warm white 2700K, just enough to see |
+| Hallway     | Solid Color | 5%         | --    | Very dim warm white, wayfinding only |
+| Bedroom     | Off         | 0%         | --    | Fully dark                           |
+| Office      | Independent | 100%       | 1.0x  | Not part of this scene               |
 
 ### 7.5 Latency Compensation
 
@@ -1259,6 +1275,7 @@ Result: fully automatic LED position mapping
 ```
 
 This is how xLights' `xlCapture` tool works. The core algorithm:
+
 1. Subtract dark frame from lit frame = LED mask
 2. For each frame in the sequence, identify which LEDs are lit
 3. Binary encoding: LED N is lit when frame number has bit N set
@@ -1296,7 +1313,10 @@ Layouts (with or without photos) can be exported and shared:
         "count": 120,
         "density_per_meter": 60,
         "waypoints": [
-          [100, 0, 130], [400, 0, 130], [400, 0, 220], [100, 0, 220]
+          [100, 0, 130],
+          [400, 0, 130],
+          [400, 0, 220],
+          [100, 0, 220]
         ]
       },
       "role": "accent"
@@ -1322,6 +1342,7 @@ Photos are stored as separate files alongside the JSON layout. Shared layouts ca
 ### 9.1 Bliss's Room: The Power User Paradise
 
 **Setup inventory:**
+
 - PC case: 12 internal devices via OpenRGB + PrismRGB (fans, RAM, GPU, Strimers, header strips)
 - Desk: underglow WLED strip (120 LEDs, 60/m), keyboard backlight, mouse lighting
 - Monitors: 2x backlight WLED strips (90 LEDs each)
@@ -1332,6 +1353,7 @@ Photos are stored as separate files alongside the JSON layout. Shared layouts ca
 - Total: ~2,400+ LEDs across ~20 logical devices
 
 **Room layout (top-down):**
+
 ```
                       BACK WALL (5.0m)
   ┌──────────────────────────────────────────────────────────┐
@@ -1387,22 +1409,27 @@ When music is playing, the entire room responds as a unified organism. Bass hits
 ### 9.2 Alex's House: Multi-Room Harmony
 
 **Living Room:**
+
 - TV backlight (WLED, 90 LEDs)
 - Ceiling strip (WLED, 200 LEDs, ambient)
 - 4x Hue bulbs (2 floor lamps, 2 table lamps)
 
 **Kitchen:**
+
 - Under-cabinet WLED strip (180 LEDs, accent)
 - Pendant Hue bulb (ambient)
 
 **Bedroom:**
+
 - Headboard WLED strip (90 LEDs, accent/feature)
 - 2x Bedside Hue bulbs (ambient)
 
 **Office:**
+
 - Full setup similar to Bliss's (simplified: 8 devices, ~1,200 LEDs)
 
 **House floor plan:**
+
 ```
   ┌──────────────────┬──────────────────────┐
   │                  │                      │
@@ -1428,13 +1455,13 @@ When music is playing, the entire room responds as a unified organism. Bass hits
 
 Alex activates "Movie Night" from the Hypercolor app on her phone. The scene applies per-room settings:
 
-| Room | Effect | Brightness | Role |
-|------|--------|------------|------|
-| Living Room | Screen Ambience (TV capture) | 40% | Ambient wash from TV content |
-| Kitchen | Solid Warm White (2700K) | 10% | Just enough for snack runs |
-| Hallway strip | Solid Warm White (2000K) | 5% | Wayfinding |
-| Bedroom | Off | 0% | Dark |
-| Office | Independent (not part of scene) | 100% | Keeps doing its thing |
+| Room          | Effect                          | Brightness | Role                         |
+| ------------- | ------------------------------- | ---------- | ---------------------------- |
+| Living Room   | Screen Ambience (TV capture)    | 40%        | Ambient wash from TV content |
+| Kitchen       | Solid Warm White (2700K)        | 10%        | Just enough for snack runs   |
+| Hallway strip | Solid Warm White (2000K)        | 5%         | Wayfinding                   |
+| Bedroom       | Off                             | 0%         | Dark                         |
+| Office        | Independent (not part of scene) | 100%       | Keeps doing its thing        |
 
 The living room's ceiling strip and Hue bulbs all react to the TV content -- the WLED strip behind the TV uses screen capture, and the room's ambient lighting derives from an area-averaged version of the TV image. When there's an explosion on screen, the entire room flashes warm orange.
 
@@ -1445,6 +1472,7 @@ All rooms join a continuous `ContinuousEffect` group. A rainbow wave sweeps thro
 ### 9.3 Sam's Studio: Precision Audio-Reactive
 
 **Setup:**
+
 - 4x vertical WLED panels behind monitors (each 60x4 matrix, mounted vertically)
 - 1x ceiling ring WLED (120 LEDs in a circle, 80cm diameter)
 - 1x desk underglow WLED (100 LEDs)
@@ -1497,11 +1525,13 @@ With radial projection, an audio-reactive effect that renders concentric circles
 ### 9.4 Event Setup: Concert Stage
 
 **Setup:**
+
 - 20x vertical WLED strips (1m each, 60 LEDs/m) arranged across stage backdrop
 - 4x horizontal WLED strips (3m each, 60 LEDs/m) along stage front
 - 2x WLED matrix panels (16x16) flanking the stage
 
 **Requirements:**
+
 - Precise timing across all 26 devices
 - All devices on wired Ethernet (no WiFi for reliability)
 - Show-control integration (triggered by music timecode or manual cues)
@@ -1563,6 +1593,7 @@ Phone Camera View:
 ```
 
 **Technical approach:**
+
 1. WebXR API (browser-based AR, no native app required)
 2. User places AR anchors at known physical positions (match the room layout)
 3. AR renderer draws glowing sprites at each LED's physical coordinate
@@ -1607,6 +1638,7 @@ Digital Twin Features:
 ```
 
 The digital twin is a WebGL scene (Three.js) with:
+
 - Room geometry (walls, floor, ceiling as reflective surfaces)
 - Furniture as textured meshes
 - LED strips as emissive line geometries
@@ -1754,12 +1786,14 @@ influence_radius = 200
 ## 12. Implementation Phases
 
 ### Phase 0 (Foundation): Basic Spatial Mapping
+
 - **Already designed**: `SpatialLayout`, `DeviceZone`, `LedTopology`, `SpatialSampler` (see ARCHITECTURE.md)
 - **Deliverable**: Flat canvas with drag-and-drop zone placement. Strip, Ring, Matrix topologies.
 - **Scale**: Device/PC Case level only
 - **Editor**: 2D canvas editor in web UI (existing plan)
 
 ### Phase 1 (Room): Physical Space Awareness
+
 - Add `PhysicalCoord`, `RoomDimensions`, `TransformChain`
 - Add `Path` topology with waypoints and density
 - Add `LightingRole` (ambient, accent, task, feature) with role-aware sampling
@@ -1769,6 +1803,7 @@ influence_radius = 200
 - **Scale**: Room level
 
 ### Phase 2 (House): Multi-Room
+
 - Add `House`, `Room`, `RoomGroup` hierarchy
 - Floor plan editor
 - `RoomCompositor` for cross-room continuous effects
@@ -1779,6 +1814,7 @@ influence_radius = 200
 - **Scale**: House level
 
 ### Phase 3 (Polish): Advanced Editing
+
 - 3D view (Three.js room visualization)
 - Multi-photo layouts
 - Export/share/import layouts
@@ -1786,6 +1822,7 @@ influence_radius = 200
 - Radial and custom projections
 
 ### Phase 4 (Vision): Future Features
+
 - AR overlay (WebXR)
 - LiDAR room scanning
 - Digital twin with light simulation
@@ -1829,17 +1866,17 @@ Transformations:
 
 ## Appendix B: Comparison with Existing Systems
 
-| Feature | Hypercolor | Artemis | xLights | OpenRGB |
-|---------|-----------|---------|---------|---------|
-| Room-level mapping | Yes (Phase 1) | Partial (surface editor) | Yes (3D models) | No |
-| Multi-room | Yes (Phase 2) | No | Yes (controllers) | No |
-| Photo overlay | Yes | No | Yes (custom model backgrounds) | No |
-| Physical coordinates | Yes (cm) | Sort of (pixel coords) | Yes (meters) | No |
-| 3D visualization | Yes (Phase 3) | No | Yes (core feature) | No |
-| Mixed device types | Yes (WLED + Hue + HID) | Yes (via OpenRGB) | Yes (controllers) | Yes (USB/SMBus) |
-| Ambient/accent roles | Yes | Layer-based | No | No |
-| WLED segments | Yes (virtual devices) | No | E1.31 only | Partial |
-| Cross-room effects | Yes (compositor) | No | Yes (universes) | No |
-| AR preview | Phase 4 | No | No | No |
+| Feature              | Hypercolor             | Artemis                  | xLights                        | OpenRGB         |
+| -------------------- | ---------------------- | ------------------------ | ------------------------------ | --------------- |
+| Room-level mapping   | Yes (Phase 1)          | Partial (surface editor) | Yes (3D models)                | No              |
+| Multi-room           | Yes (Phase 2)          | No                       | Yes (controllers)              | No              |
+| Photo overlay        | Yes                    | No                       | Yes (custom model backgrounds) | No              |
+| Physical coordinates | Yes (cm)               | Sort of (pixel coords)   | Yes (meters)                   | No              |
+| 3D visualization     | Yes (Phase 3)          | No                       | Yes (core feature)             | No              |
+| Mixed device types   | Yes (WLED + Hue + HID) | Yes (via OpenRGB)        | Yes (controllers)              | Yes (USB/SMBus) |
+| Ambient/accent roles | Yes                    | Layer-based              | No                             | No              |
+| WLED segments        | Yes (virtual devices)  | No                       | E1.31 only                     | Partial         |
+| Cross-room effects   | Yes (compositor)       | No                       | Yes (universes)                | No              |
+| AR preview           | Phase 4                | No                       | No                             | No              |
 
 xLights is the closest precedent for installation-scale mapping. Hypercolor differentiates by focusing on the home/room scale with a dramatically simpler UX, real-time effects (vs. pre-programmed sequences), and native integration with the PC RGB ecosystem (OpenRGB, HID controllers).

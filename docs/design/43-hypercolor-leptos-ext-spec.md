@@ -388,6 +388,7 @@ Used for `webglcontextlost` / `webglcontextrestored` which are not standard enou
 **Migration target (`hypercolor-ui/src/components/control_panel/number.rs`):**
 
 Before:
+
 ```rust
 on:input=move |ev| {
     if let Some(el) = ev.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
@@ -399,6 +400,7 @@ on:input=move |ev| {
 ```
 
 After:
+
 ```rust
 use hypercolor_leptos_ext::events::Input;
 on:input=move |ev: Input| {
@@ -750,12 +752,14 @@ pub struct CanvasFrameV1 {
 Implementation approach: parse fields by attribute, emit zerocopy structure for `#[header]` fields contiguously, emit musli-encoded body for `#[body]` fields, and a `#[body(rest)]` field gets the remaining bytes. Error path uses a dedicated `DecodeError` type.
 
 For v0.1, we implement the parser-generator for:
+
 - `#[header]` with `le` and `be`
 - `#[body(rest)]` (must be last)
 - `#[frame(tag, schema)]`
 - `#[since(N)]` and `#[default = "fn_path"]` for schema evolution
 
 **Not in v0.1 macro** (deferred to v0.2):
+
 - `#[until(N)]` for field removal
 - `#[convert_from(N, "fn_path")]` for migrations
 - `#[body]` non-rest fields (single musli-body frames only for now)
@@ -1213,20 +1217,20 @@ Current audit result: no direct `web_sys::window()`, `localStorage`, console cal
 
 Every PR runs `scripts/cinder-audit.sh` before and after. Success criteria:
 
-| Metric | Before (current) | Target after PR 6 | Source |
-|---|---|---|---|
-| `dyn_into` total | 50 | ≤ 5 | audit snapshot |
-| `HtmlInputElement` casts | 32 | 0 | audit snapshot |
-| `Closure::*` | 13 | ≤ 3 | audit snapshot |
-| `Rc<RefCell<Option<Closure>>>` | 0 | 0 | snapshot |
-| `tex_image_2d_with_*` | 2 | 0 | snapshot |
-| `new_with_u8_clamped_array` | 3 | 0 | snapshot |
-| `Uint8Array::get_index` | 19 | 0 | snapshot |
-| UI `src/ws/` LOC | 1,745 | ≤ 600 | snapshot |
-| Daemon `api/ws/` LOC (no tests) | 5,201 | ≤ 4,000 | snapshot |
-| UI wasm gzipped | 7,378,595 bytes | no regression | snapshot |
-| `just verify` time | current baseline | ±10% | `hyperfine just verify` |
-| Incremental build time | current baseline | ±10% | `time cargo build` |
+| Metric                          | Before (current) | Target after PR 6 | Source                  |
+| ------------------------------- | ---------------- | ----------------- | ----------------------- |
+| `dyn_into` total                | 50               | ≤ 5               | audit snapshot          |
+| `HtmlInputElement` casts        | 32               | 0                 | audit snapshot          |
+| `Closure::*`                    | 13               | ≤ 3               | audit snapshot          |
+| `Rc<RefCell<Option<Closure>>>`  | 0                | 0                 | snapshot                |
+| `tex_image_2d_with_*`           | 2                | 0                 | snapshot                |
+| `new_with_u8_clamped_array`     | 3                | 0                 | snapshot                |
+| `Uint8Array::get_index`         | 19               | 0                 | snapshot                |
+| UI `src/ws/` LOC                | 1,745            | ≤ 600             | snapshot                |
+| Daemon `api/ws/` LOC (no tests) | 5,201            | ≤ 4,000           | snapshot                |
+| UI wasm gzipped                 | 7,378,595 bytes  | no regression     | snapshot                |
+| `just verify` time              | current baseline | ±10%              | `hyperfine just verify` |
+| Incremental build time          | current baseline | ±10%              | `time cargo build`      |
 
 CI fails a PR if any regression exceeds 10% from the pre-PR baseline.
 
@@ -1366,6 +1370,7 @@ API shapes match the RFC-specified public surfaces, so renaming is mechanical. N
 2. **`BinaryFrame` derive complexity.** The proc-macro must handle header-then-body layout, schema evolution attributes, and endianness correctly. First implementation likely has bugs. Mitigation: extensive `trybuild` + proptest coverage; fuzz on day one.
 
 3. **`Connector` abstraction ergonomics.** Users may find the async-closure bound awkward. If so, provide helper macros:
+
    ```rust
    let connector = connect_ws!("ws://127.0.0.1:9420");
    ```
@@ -1413,4 +1418,4 @@ This spec is considered ratified when:
 
 ---
 
-*"Prove the wedge in-tree. Extract when it hurts to stay."*
+_"Prove the wedge in-tree. Extract when it hurts to stay."_

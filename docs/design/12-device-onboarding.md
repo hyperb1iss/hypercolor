@@ -32,19 +32,19 @@ Onboarding is make-or-break. Most users will tolerate exactly one failure before
 
 - **Zero-config first.** If Hypercolor can figure it out, the user should never have to.
 - **Progressive disclosure.** Show the simple path by default; hide advanced options until requested.
-- **Fail loudly, recover quietly.** When something breaks, tell the user *what* and *why* and *how to fix it*. Then retry in the background.
+- **Fail loudly, recover quietly.** When something breaks, tell the user _what_ and _why_ and _how to fix it_. Then retry in the background.
 - **Confirm with light, not text.** The best proof that a device is working is seeing it light up. Every discovery event should produce a visible flash on the hardware.
 - **Respect existing setups.** If OpenRGB is already running, don't fight it — join it.
 
 ### Time Budget
 
-| Phase | Target | Maximum |
-|---|---|---|
-| First device discovered | 10 seconds | 30 seconds |
-| All local devices discovered | 30 seconds | 2 minutes |
-| Network devices discovered | 45 seconds | 3 minutes |
-| Full setup complete | 2 minutes | 5 minutes |
-| "Lights are working" | 3 minutes | 5 minutes |
+| Phase                        | Target     | Maximum    |
+| ---------------------------- | ---------- | ---------- |
+| First device discovered      | 10 seconds | 30 seconds |
+| All local devices discovered | 30 seconds | 2 minutes  |
+| Network devices discovered   | 45 seconds | 3 minutes  |
+| Full setup complete          | 2 minutes  | 5 minutes  |
+| "Lights are working"         | 3 minutes  | 5 minutes  |
 
 ---
 
@@ -495,6 +495,7 @@ The wizard runs `DiscoveryOrchestrator::full_scan()` and shows real-time progres
 ```
 
 Key behaviors:
+
 - USB scan completes nearly instantly (local enumeration).
 - mDNS results stream in as they resolve (1-5 seconds).
 - OpenRGB probe returns immediately if the daemon is running, fails fast if not.
@@ -543,12 +544,12 @@ All discovered devices are shown in a categorized list with iconography indicati
 
 **Status indicators:**
 
-| Icon | Meaning |
-|---|---|
-| `● Ready` | Device connected and communicating |
-| `▲ Action` | Needs user intervention (permissions, driver, config) |
-| `○ Offline` | Previously known device not currently reachable |
-| `◌ Unknown` | Device found but not yet characterized |
+| Icon        | Meaning                                               |
+| ----------- | ----------------------------------------------------- |
+| `● Ready`   | Device connected and communicating                    |
+| `▲ Action`  | Needs user intervention (permissions, driver, config) |
+| `○ Offline` | Previously known device not currently reachable       |
+| `◌ Unknown` | Device found but not yet characterized                |
 
 Clicking/tapping a device in the "Needs Attention" section opens the relevant troubleshooting flow inline.
 
@@ -582,6 +583,7 @@ For most devices, auto-configuration is the default. Hypercolor uses the built-i
 ```
 
 **Manual override available for:**
+
 - LED count per channel (user attached fewer LEDs than the max)
 - Color format override (rare edge case: wrong color order)
 - Brightness ceiling (power management for WS2812 strips)
@@ -668,6 +670,7 @@ Place devices on the spatial canvas. This is a simplified version of the full la
 ```
 
 **Quick presets:**
+
 - **Desktop Tower** — Arranges motherboard, GPU, RAM, fans, and strimers in a typical PC case layout.
 - **Desk Setup** — Puts monitor backlight strip at top, desk edge strips at bottom, peripherals in between.
 - **Room Layout** — Wide canvas for WLED strips and Hue bulbs across a room.
@@ -704,6 +707,7 @@ The final step. Choose an effect, see it render live on all devices.
 ```
 
 **On completion:**
+
 - Save the selected effect as the default profile.
 - Save the device configuration + layout to `~/.config/hypercolor/config.toml`.
 - The daemon continues running with the chosen effect.
@@ -764,13 +768,13 @@ Linux USB device access is the #1 reason onboarding fails. Hypercolor must handl
 
 ### 4.1 The Permission Landscape
 
-| Resource | Default Permission | What Hypercolor Needs | Solution |
-|---|---|---|---|
-| USB HID devices (`/dev/hidraw*`) | root only | Read + Write | udev rule |
-| i2c bus (`/dev/i2c-*`) | root only | Read + Write (SMBus RGB) | udev rule + kernel module |
-| PipeWire audio capture | User session | Capture monitor source | PipeWire permission grant |
-| Network sockets (UDP/TCP) | User | Outbound to WLED/Hue/OpenRGB | No action needed |
-| D-Bus session bus | User session | Publish service interface | No action needed |
+| Resource                         | Default Permission | What Hypercolor Needs        | Solution                  |
+| -------------------------------- | ------------------ | ---------------------------- | ------------------------- |
+| USB HID devices (`/dev/hidraw*`) | root only          | Read + Write                 | udev rule                 |
+| i2c bus (`/dev/i2c-*`)           | root only          | Read + Write (SMBus RGB)     | udev rule + kernel module |
+| PipeWire audio capture           | User session       | Capture monitor source       | PipeWire permission grant |
+| Network sockets (UDP/TCP)        | User               | Outbound to WLED/Hue/OpenRGB | No action needed          |
+| D-Bus session bus                | User session       | Publish service interface    | No action needed          |
 
 ### 4.2 udev Rules
 
@@ -952,11 +956,13 @@ PulseAudio: Load the monitor module
 ### 4.7 SELinux / AppArmor Considerations
 
 **SELinux (Fedora/CentOS):**
+
 - Custom SELinux policy module for Hypercolor's USB HID access.
 - Ship as an optional `hypercolor-selinux` package.
 - The `hypercolor permissions install` command detects SELinux and offers to install the policy.
 
 **AppArmor (Ubuntu/Debian):**
+
 - Ship an AppArmor profile that allows HID device access, network sockets, and PipeWire.
 - Default to `complain` mode so it doesn't block anything, with instructions to switch to `enforce`.
 
@@ -964,14 +970,14 @@ PulseAudio: Load the monitor module
 
 Distribution packages should handle permissions automatically:
 
-| Package Format | Permission Setup |
-|---|---|
-| AUR (CachyOS/Arch) | Post-install hook copies udev rules, runs `udevadm trigger` |
-| Flatpak | Portal-based USB device access (XDG Portal) — limited HID support, document limitations |
-| AppImage | Bundle `hypercolor permissions install` as post-extract step |
-| DEB (Ubuntu/Debian) | Postinst script installs udev rules |
-| RPM (Fedora) | %post scriptlet installs udev rules + SELinux policy |
-| Nix | `services.udev.packages = [ hypercolor ];` in NixOS config |
+| Package Format      | Permission Setup                                                                        |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| AUR (CachyOS/Arch)  | Post-install hook copies udev rules, runs `udevadm trigger`                             |
+| Flatpak             | Portal-based USB device access (XDG Portal) — limited HID support, document limitations |
+| AppImage            | Bundle `hypercolor permissions install` as post-extract step                            |
+| DEB (Ubuntu/Debian) | Postinst script installs udev rules                                                     |
+| RPM (Fedora)        | %post scriptlet installs udev rules + SELinux policy                                    |
+| Nix                 | `services.udev.packages = [ hypercolor ];` in NixOS config                              |
 
 ---
 
@@ -1292,14 +1298,14 @@ impl DeviceTestSuite {
 
 **Expected latencies:**
 
-| Transport | Typical Latency | 60fps Viable? |
-|---|---|---|
-| USB HID (PrismRGB) | 0.5-2ms | Yes |
-| OpenRGB SDK (TCP local) | 1-5ms | Yes |
-| WLED DDP (WiFi) | 2-15ms | Yes (most) |
-| WLED DDP (Ethernet) | 1-3ms | Yes |
-| Philips Hue (HTTP) | 30-100ms | No (use Entertainment API) |
-| Philips Hue (Entertainment) | 5-20ms | Marginal (25fps target) |
+| Transport                   | Typical Latency | 60fps Viable?              |
+| --------------------------- | --------------- | -------------------------- |
+| USB HID (PrismRGB)          | 0.5-2ms         | Yes                        |
+| OpenRGB SDK (TCP local)     | 1-5ms           | Yes                        |
+| WLED DDP (WiFi)             | 2-15ms          | Yes (most)                 |
+| WLED DDP (Ethernet)         | 1-3ms           | Yes                        |
+| Philips Hue (HTTP)          | 30-100ms        | No (use Entertainment API) |
+| Philips Hue (Entertainment) | 5-20ms          | Marginal (25fps target)    |
 
 ### 6.6 Firmware Version Check
 
@@ -1810,13 +1816,13 @@ for backend in &mut self.backends {
 
 ### 8.7 Notification Behavior
 
-| Event | Web UI | Desktop (D-Bus) | TUI |
-|---|---|---|---|
-| Device connected | Toast: "PrismRGB Prism 8 connected" | Notification bubble | Status bar update |
-| Device disconnected | Toast: "WLED Kitchen offline" | Notification bubble | Status bar update |
-| Reconnecting | Spinner on device card | Silent | Blinking indicator |
-| Reconnected | Toast: "WLED Kitchen back online" | Notification bubble | Status bar update |
-| New device (first time) | Modal: "New device found!" | Notification with action | Prompt |
+| Event                   | Web UI                              | Desktop (D-Bus)          | TUI                |
+| ----------------------- | ----------------------------------- | ------------------------ | ------------------ |
+| Device connected        | Toast: "PrismRGB Prism 8 connected" | Notification bubble      | Status bar update  |
+| Device disconnected     | Toast: "WLED Kitchen offline"       | Notification bubble      | Status bar update  |
+| Reconnecting            | Spinner on device card              | Silent                   | Blinking indicator |
+| Reconnected             | Toast: "WLED Kitchen back online"   | Notification bubble      | Status bar update  |
+| New device (first time) | Modal: "New device found!"          | Notification with action | Prompt             |
 
 ---
 
@@ -2201,20 +2207,21 @@ When both Hypercolor and OpenRGB try to control the same USB device, chaos ensue
 
 Shown in the UI to help users understand when to use which path.
 
-| Capability | OpenRGB Backend | Native Backend |
-|---|---|---|
-| Motherboard RGB (ASUS AURA, MSI, etc.) | Excellent | Not supported |
-| GPU RGB (SMBus) | Excellent | Not supported |
-| RAM RGB (DDR4/DDR5) | Excellent | Not supported |
-| Razer peripherals | Good | Not supported |
-| Corsair peripherals | Good (via OpenRGB) | Not supported |
-| **PrismRGB / Nollie** | **Not supported** | **Excellent** |
-| WLED (DDP) | Via E1.31 (170/universe) | **DDP (480/packet)** |
-| Philips Hue | Not supported | Good |
-| Latency | 1-5ms (SDK overhead) | 0.5-2ms (direct) |
-| Setup complexity | Requires OpenRGB daemon | Zero-config for supported devices |
+| Capability                             | OpenRGB Backend          | Native Backend                    |
+| -------------------------------------- | ------------------------ | --------------------------------- |
+| Motherboard RGB (ASUS AURA, MSI, etc.) | Excellent                | Not supported                     |
+| GPU RGB (SMBus)                        | Excellent                | Not supported                     |
+| RAM RGB (DDR4/DDR5)                    | Excellent                | Not supported                     |
+| Razer peripherals                      | Good                     | Not supported                     |
+| Corsair peripherals                    | Good (via OpenRGB)       | Not supported                     |
+| **PrismRGB / Nollie**                  | **Not supported**        | **Excellent**                     |
+| WLED (DDP)                             | Via E1.31 (170/universe) | **DDP (480/packet)**              |
+| Philips Hue                            | Not supported            | Good                              |
+| Latency                                | 1-5ms (SDK overhead)     | 0.5-2ms (direct)                  |
+| Setup complexity                       | Requires OpenRGB daemon  | Zero-config for supported devices |
 
 **Recommendation surfaced in the UI:**
+
 > Use OpenRGB for motherboard, GPU, RAM, and brand-name peripherals.
 > Use Hypercolor native for PrismRGB controllers and WLED.
 > Both work together seamlessly.
@@ -2497,22 +2504,22 @@ T+8:00    Done. 30 WLED devices across 2 VLANs, all named,
 
 ## Appendix B: Error Taxonomy
 
-| Error Code | Category | Description | User-Facing Message | Auto-Recovery |
-|---|---|---|---|---|
-| `E001` | Permission | HID device permission denied | "USB device needs udev rules" | No (needs sudo) |
-| `E002` | Permission | i2c-dev module not loaded | "Kernel module needed for motherboard RGB" | No (needs sudo) |
-| `E003` | Permission | Audio capture failed | "Can't access audio — check PipeWire config" | Retry on reconnect |
-| `E010` | Hardware | USB device disconnected | "Device unplugged" | Yes (hot-plug monitor) |
-| `E011` | Hardware | USB communication timeout | "Device not responding" | Yes (retry with backoff) |
-| `E012` | Hardware | Wrong LED count | "Expected 126 LEDs, got 42" | No (manual override) |
-| `E020` | Network | WLED device unreachable | "WiFi device offline" | Yes (health monitor) |
-| `E021` | Network | mDNS resolution failed | "Can't resolve device hostname" | Yes (retry) |
-| `E022` | Network | VLAN boundary | "Device on different network" | No (manual IP entry) |
-| `E030` | Protocol | Unexpected firmware response | "Device response doesn't match protocol" | No (report bug) |
-| `E031` | Protocol | Color format mismatch | "Colors appear wrong (RGB/GRB swap)" | Yes (auto-detect) |
-| `E040` | OpenRGB | Daemon not running | "OpenRGB not detected" | Yes (retry on rescan) |
-| `E041` | OpenRGB | Device conflict | "Both Hypercolor and OpenRGB controlling same device" | No (user choice) |
-| `E042` | OpenRGB | Protocol version mismatch | "OpenRGB version too old" | No (upgrade OpenRGB) |
+| Error Code | Category   | Description                  | User-Facing Message                                   | Auto-Recovery            |
+| ---------- | ---------- | ---------------------------- | ----------------------------------------------------- | ------------------------ |
+| `E001`     | Permission | HID device permission denied | "USB device needs udev rules"                         | No (needs sudo)          |
+| `E002`     | Permission | i2c-dev module not loaded    | "Kernel module needed for motherboard RGB"            | No (needs sudo)          |
+| `E003`     | Permission | Audio capture failed         | "Can't access audio — check PipeWire config"          | Retry on reconnect       |
+| `E010`     | Hardware   | USB device disconnected      | "Device unplugged"                                    | Yes (hot-plug monitor)   |
+| `E011`     | Hardware   | USB communication timeout    | "Device not responding"                               | Yes (retry with backoff) |
+| `E012`     | Hardware   | Wrong LED count              | "Expected 126 LEDs, got 42"                           | No (manual override)     |
+| `E020`     | Network    | WLED device unreachable      | "WiFi device offline"                                 | Yes (health monitor)     |
+| `E021`     | Network    | mDNS resolution failed       | "Can't resolve device hostname"                       | Yes (retry)              |
+| `E022`     | Network    | VLAN boundary                | "Device on different network"                         | No (manual IP entry)     |
+| `E030`     | Protocol   | Unexpected firmware response | "Device response doesn't match protocol"              | No (report bug)          |
+| `E031`     | Protocol   | Color format mismatch        | "Colors appear wrong (RGB/GRB swap)"                  | Yes (auto-detect)        |
+| `E040`     | OpenRGB    | Daemon not running           | "OpenRGB not detected"                                | Yes (retry on rescan)    |
+| `E041`     | OpenRGB    | Device conflict              | "Both Hypercolor and OpenRGB controlling same device" | No (user choice)         |
+| `E042`     | OpenRGB    | Protocol version mismatch    | "OpenRGB version too old"                             | No (upgrade OpenRGB)     |
 
 ## Appendix C: Configuration Reference
 

@@ -2,7 +2,7 @@
 
 > Stable identity across reboots, cable swaps, and IP changes. A fingerprint is a promise that the same physical hardware maps to the same `DeviceId` forever.
 
-*Source: [`hypercolor-types/src/device.rs`](../../crates/hypercolor-types/src/device.rs) (`DeviceIdentifier`, `DeviceFingerprint`, `stable_device_id`). Per-driver construction in the USB, SMBus, WLED, Hue, Nanoleaf, and ROLI Blocks scanner/backend modules.*
+_Source: [`hypercolor-types/src/device.rs`](../../crates/hypercolor-types/src/device.rs) (`DeviceIdentifier`, `DeviceFingerprint`, `stable_device_id`). Per-driver construction in the USB, SMBus, WLED, Hue, Nanoleaf, and ROLI Blocks scanner/backend modules._
 
 ---
 
@@ -52,12 +52,12 @@ hash to produce a UUIDv8-encoded `DeviceId`.
 
 Constructed by the USB scanner in `hypercolor-core/src/device/usb_scanner.rs`.
 
-| Field | Source |
-|-------|--------|
-| `vendor_id` | USB descriptor `idVendor` |
-| `product_id` | USB descriptor `idProduct` |
-| `serial` | USB descriptor `iSerialNumber` (optional) |
-| `usb_path` | Kernel topology path via `nusb` (fallback) |
+| Field        | Source                                     |
+| ------------ | ------------------------------------------ |
+| `vendor_id`  | USB descriptor `idVendor`                  |
+| `product_id` | USB descriptor `idProduct`                 |
+| `serial`     | USB descriptor `iSerialNumber` (optional)  |
+| `usb_path`   | Kernel topology path via `nusb` (fallback) |
 
 **Format:** `usb:<vid>:<pid>:<stable_key>`
 
@@ -65,6 +65,7 @@ The stable key prefers `serial` when present. If the device reports no serial nu
 the USB topology path (e.g. `usb-0000:00:14.0-2`) is used as a fallback.
 
 **Examples:**
+
 - `usb:1532:0084:PM2305A00012345` (Razer with serial)
 - `usb:16d5:1f01:usb-0000:00:14.0-2` (no serial, path fallback)
 
@@ -72,10 +73,10 @@ the USB topology path (e.g. `usb-0000:00:14.0-2`) is used as a fallback.
 
 Constructed by the SMBus scanner in `hypercolor-core/src/device/smbus_scanner.rs`.
 
-| Field | Source |
-|-------|--------|
+| Field      | Source                                |
+| ---------- | ------------------------------------- |
 | `bus_path` | Linux device path (e.g. `/dev/i2c-9`) |
-| `address` | 7-bit I2C slave address |
+| `address`  | 7-bit I2C slave address               |
 
 **Format:** `smbus:<bus_path>:<address_hex>`
 
@@ -86,15 +87,16 @@ Constructed by the SMBus scanner in `hypercolor-core/src/device/smbus_scanner.rs
 Constructed by both the WLED scanner (`wled/scanner.rs`) and the WLED backend cache
 (`wled/backend/cache.rs`). Both paths produce identical fingerprints for the same device.
 
-| Priority | Source | Prefix |
-|----------|--------|--------|
-| 1 (preferred) | MAC address from `/json/info` | `net:<mac>` |
-| 2 (fallback) | mDNS hostname | `net:wled:<hostname>` |
-| 3 (last resort) | IP address | `net:wled:<ip>` |
+| Priority        | Source                        | Prefix                |
+| --------------- | ----------------------------- | --------------------- |
+| 1 (preferred)   | MAC address from `/json/info` | `net:<mac>`           |
+| 2 (fallback)    | mDNS hostname                 | `net:wled:<hostname>` |
+| 3 (last resort) | IP address                    | `net:wled:<ip>`       |
 
 **Format:** `net:<mac_lowercase>` or `net:wled:<hostname>` or `net:wled:<ip>`
 
 **Examples:**
+
 - `net:a4:cf:12:34:ab:cd` (MAC available)
 - `net:wled:studio-strip.local` (no MAC, hostname fallback)
 - `net:wled:10.0.0.42` (neither MAC nor hostname)
@@ -104,8 +106,8 @@ Constructed by both the WLED scanner (`wled/scanner.rs`) and the WLED backend ca
 Constructed in `hypercolor-core/src/device/hue/types.rs`. One fingerprint per bridge;
 individual lights are modeled as zones within the bridge device, not as separate devices.
 
-| Field | Source |
-|-------|--------|
+| Field       | Source                                                      |
+| ----------- | ----------------------------------------------------------- |
 | `bridge_id` | Hue bridge config `bridgeid` (MAC-derived, stable for life) |
 
 **Format:** `hue:<bridge_id>`
@@ -122,16 +124,17 @@ promoted to first-class device status.
 Constructed in `hypercolor-core/src/device/nanoleaf/types.rs`. The stable key is a
 `device_key` derived by the scanner's `normalized_device_key()` function.
 
-| Priority | Source |
-|----------|--------|
-| 1 (preferred) | `device_id` from Nanoleaf API (hardware serial) |
-| 2 (fallback) | `serial_no` from API info response |
-| 3 | Device name (lowercased, spaces replaced with hyphens) |
-| 4 (last resort) | `ip:<address>` |
+| Priority        | Source                                                 |
+| --------------- | ------------------------------------------------------ |
+| 1 (preferred)   | `device_id` from Nanoleaf API (hardware serial)        |
+| 2 (fallback)    | `serial_no` from API info response                     |
+| 3               | Device name (lowercased, spaces replaced with hyphens) |
+| 4 (last resort) | `ip:<address>`                                         |
 
 **Format:** `nanoleaf:<device_key>`
 
 **Examples:**
+
 - `nanoleaf:s19124c4321` (hardware serial)
 - `nanoleaf:ip:10.0.0.50` (last resort)
 
@@ -139,8 +142,8 @@ Constructed in `hypercolor-core/src/device/nanoleaf/types.rs`. The stable key is
 
 Constructed in `hypercolor-core/src/device/blocks/scanner.rs`.
 
-| Field | Source |
-|-------|--------|
+| Field | Source                                       |
+| ----- | -------------------------------------------- |
 | `uid` | Numeric device UID from the blocksd REST API |
 
 **Format:** `bridge:blocksd:<uid>`
@@ -158,15 +161,15 @@ services (e.g. OpenLinkHub for Corsair iCUE-class hardware).
 
 ### Summary Table
 
-| Driver | Transport | Stable ID Source | Format | Stability |
-|--------|-----------|-----------------|--------|-----------|
-| USB HID (all families) | `usb` | Serial number or USB path | `usb:<vid>:<pid>:<key>` | Strong (serial) / Weak (path) |
-| ASUS Aura SMBus | `smbus` | Bus path + address | `smbus:<path>:<addr>` | Moderate |
-| WLED | `net` | MAC, hostname, or IP | `net:<mac>` / `net:wled:<host>` | Strong (MAC) / Weak (IP) |
-| Philips Hue | `hue` | Bridge ID | `hue:<bridge_id>` | Strong |
-| Nanoleaf | `nanoleaf` | Device ID, serial, or name | `nanoleaf:<key>` | Strong (serial) / Moderate (name) |
-| ROLI Blocks | `bridge` | blocksd UID | `bridge:blocksd:<uid>` | Strong |
-| External bridge | `bridge` | Service + device serial | `bridge:<svc>:<serial>` | Strong |
+| Driver                 | Transport  | Stable ID Source           | Format                          | Stability                         |
+| ---------------------- | ---------- | -------------------------- | ------------------------------- | --------------------------------- |
+| USB HID (all families) | `usb`      | Serial number or USB path  | `usb:<vid>:<pid>:<key>`         | Strong (serial) / Weak (path)     |
+| ASUS Aura SMBus        | `smbus`    | Bus path + address         | `smbus:<path>:<addr>`           | Moderate                          |
+| WLED                   | `net`      | MAC, hostname, or IP       | `net:<mac>` / `net:wled:<host>` | Strong (MAC) / Weak (IP)          |
+| Philips Hue            | `hue`      | Bridge ID                  | `hue:<bridge_id>`               | Strong                            |
+| Nanoleaf               | `nanoleaf` | Device ID, serial, or name | `nanoleaf:<key>`                | Strong (serial) / Moderate (name) |
+| ROLI Blocks            | `bridge`   | blocksd UID                | `bridge:blocksd:<uid>`          | Strong                            |
+| External bridge        | `bridge`   | Service + device serial    | `bridge:<svc>:<serial>`         | Strong                            |
 
 ## 4. DeviceId Generation
 
@@ -209,6 +212,7 @@ that case the registry allocates a fresh random `DeviceId` and logs a warning.
 
 **Strong stability** -- fingerprint survives reboots, cable swaps, IP changes, and
 firmware updates:
+
 - USB HID with serial number (device-burned unique identifier)
 - Hue bridge (MAC-derived bridge ID, immutable)
 - Nanoleaf with hardware serial
@@ -217,12 +221,14 @@ firmware updates:
 
 **Moderate stability** -- fingerprint survives reboots but may change under specific
 hardware reconfiguration:
+
 - SMBus (stable unless the motherboard's I2C bus numbering changes, which can happen
   after BIOS updates or PCI topology changes)
 - Nanoleaf with name-derived key (changes if the user renames the device)
 - WLED with hostname fallback (changes if hostname is reconfigured)
 
 **Weak stability** -- fingerprint may change on reconnect or network changes:
+
 - USB HID without serial number (path-based; changes when plugged into a different port)
 - WLED with IP fallback (changes on DHCP lease renewal)
 

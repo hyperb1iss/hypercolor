@@ -40,6 +40,7 @@ The `hypercolor` binary is the single entry point for all CLI and TUI interactio
 **Binary name:** `hypercolor`
 
 **Transport selection:**
+
 - If `--host` is set or `HYPERCOLOR_HOST` is defined, connect via TCP/REST to `http://<host>/api/v1`.
 - Otherwise, connect via Unix socket at `HYPERCOLOR_SOCKET` (default: `/run/hypercolor/hypercolor.sock`).
 - If the socket does not exist and no `--host` is given, exit with code `2` and a helpful error message.
@@ -54,25 +55,25 @@ The `hypercolor` binary is the single entry point for all CLI and TUI interactio
 
 These flags are available on every subcommand via clap's `global = true`.
 
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--host <HOST>` | | `Option<String>` | `None` | Remote daemon address (`host:port`). Overrides socket transport. |
-| `--socket <PATH>` | | `Option<String>` | `/run/hypercolor/hypercolor.sock` | Unix socket path for local daemon communication. |
-| `--json` | `-j` | `bool` | `false` | Output machine-readable JSON instead of styled text. |
-| `--quiet` | `-q` | `bool` | `false` | Suppress all non-essential output. Only emit the core data. |
-| `--no-color` | | `bool` | `false` | Disable ANSI color codes in output. |
-| `--verbose` | `-v` | `bool` | `false` | Enable verbose/debug output. Repeatable (`-vv` for trace). |
+| Flag              | Short | Type             | Default                           | Description                                                      |
+| ----------------- | ----- | ---------------- | --------------------------------- | ---------------------------------------------------------------- |
+| `--host <HOST>`   |       | `Option<String>` | `None`                            | Remote daemon address (`host:port`). Overrides socket transport. |
+| `--socket <PATH>` |       | `Option<String>` | `/run/hypercolor/hypercolor.sock` | Unix socket path for local daemon communication.                 |
+| `--json`          | `-j`  | `bool`           | `false`                           | Output machine-readable JSON instead of styled text.             |
+| `--quiet`         | `-q`  | `bool`           | `false`                           | Suppress all non-essential output. Only emit the core data.      |
+| `--no-color`      |       | `bool`           | `false`                           | Disable ANSI color codes in output.                              |
+| `--verbose`       | `-v`  | `bool`           | `false`                           | Enable verbose/debug output. Repeatable (`-vv` for trace).       |
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HYPERCOLOR_SOCKET` | `/run/hypercolor/hypercolor.sock` | Unix socket path. Overridden by `--socket`. |
-| `HYPERCOLOR_HOST` | *(none)* | Remote daemon address. Overridden by `--host`. |
-| `HYPERCOLOR_CONFIG` | `~/.config/hypercolor/config.toml` | Configuration file path. |
-| `HYPERCOLOR_COLOR` | `auto` | Color mode: `auto`, `always`, `never`. |
-| `NO_COLOR` | *(none)* | When set to any value, disables color output ([no-color.org](https://no-color.org)). |
-| `HYPERCOLOR_LOG` | `warn` | Log level for daemon startup: `error`, `warn`, `info`, `debug`, `trace`. |
+| Variable            | Default                            | Description                                                                          |
+| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------ |
+| `HYPERCOLOR_SOCKET` | `/run/hypercolor/hypercolor.sock`  | Unix socket path. Overridden by `--socket`.                                          |
+| `HYPERCOLOR_HOST`   | _(none)_                           | Remote daemon address. Overridden by `--host`.                                       |
+| `HYPERCOLOR_CONFIG` | `~/.config/hypercolor/config.toml` | Configuration file path.                                                             |
+| `HYPERCOLOR_COLOR`  | `auto`                             | Color mode: `auto`, `always`, `never`.                                               |
+| `NO_COLOR`          | _(none)_                           | When set to any value, disables color output ([no-color.org](https://no-color.org)). |
+| `HYPERCOLOR_LOG`    | `warn`                             | Log level for daemon startup: `error`, `warn`, `info`, `debug`, `trace`.             |
 
 ### Color Resolution Order
 
@@ -175,17 +176,17 @@ pub enum Commands {
 
 All commands use consistent exit codes for scripting.
 
-| Code | Name | Meaning |
-|------|------|---------|
-| `0` | `SUCCESS` | Command completed successfully. |
-| `1` | `GENERAL_ERROR` | Unspecified error (catch-all). |
-| `2` | `DAEMON_UNAVAILABLE` | Cannot connect to daemon (socket missing, connection refused). |
-| `3` | `NOT_FOUND` | Requested resource does not exist (effect, device, profile). |
-| `4` | `INVALID_INPUT` | Invalid arguments, parameter values, or option combinations. |
-| `5` | `TIMEOUT` | Operation timed out (discovery, device test). |
-| `6` | `CONFLICT` | State conflict (device already connected, profile name exists). |
-| `7` | `PERMISSION_DENIED` | Insufficient permissions (network API key, socket perms). |
-| `130` | `INTERRUPTED` | User interrupted with Ctrl+C (SIGINT). |
+| Code  | Name                 | Meaning                                                         |
+| ----- | -------------------- | --------------------------------------------------------------- |
+| `0`   | `SUCCESS`            | Command completed successfully.                                 |
+| `1`   | `GENERAL_ERROR`      | Unspecified error (catch-all).                                  |
+| `2`   | `DAEMON_UNAVAILABLE` | Cannot connect to daemon (socket missing, connection refused).  |
+| `3`   | `NOT_FOUND`          | Requested resource does not exist (effect, device, profile).    |
+| `4`   | `INVALID_INPUT`      | Invalid arguments, parameter values, or option combinations.    |
+| `5`   | `TIMEOUT`            | Operation timed out (discovery, device test).                   |
+| `6`   | `CONFLICT`           | State conflict (device already connected, profile name exists). |
+| `7`   | `PERMISSION_DENIED`  | Insufficient permissions (network API key, socket perms).       |
+| `130` | `INTERRUPTED`        | User interrupted with Ctrl+C (SIGINT).                          |
 
 ```rust
 #[repr(u8)]
@@ -348,12 +349,12 @@ hypercolor daemon restart
 
 ### Exit Codes
 
-| Subcommand | Success | Failure |
-|------------|---------|---------|
-| `start` | `0` -- daemon started | `1` -- already running or start failed |
-| `stop` | `0` -- daemon stopped | `2` -- daemon not running |
-| `restart` | `0` -- daemon restarted | `2` -- daemon not running / `1` -- restart failed |
-| `status` | `0` -- daemon running | `2` -- daemon not running |
+| Subcommand | Success                 | Failure                                           |
+| ---------- | ----------------------- | ------------------------------------------------- |
+| `start`    | `0` -- daemon started   | `1` -- already running or start failed            |
+| `stop`     | `0` -- daemon stopped   | `2` -- daemon not running                         |
+| `restart`  | `0` -- daemon restarted | `2` -- daemon not running / `1` -- restart failed |
+| `status`   | `0` -- daemon running   | `2` -- daemon not running                         |
 
 ---
 
@@ -421,11 +422,11 @@ The TUI takes over the terminal alternate screen. No text output -- it renders a
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Clean exit (user quit) |
-| `2` | Cannot connect to daemon |
-| `1` | TUI crashed or terminal error |
+| Code | Meaning                       |
+| ---- | ----------------------------- |
+| `0`  | Clean exit (user quit)        |
+| `2`  | Cannot connect to daemon      |
+| `1`  | TUI crashed or terminal error |
 
 ---
 
@@ -571,10 +572,10 @@ Rainbow Wave
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Status retrieved |
-| `2` | Daemon not running |
+| Code | Meaning            |
+| ---- | ------------------ |
+| `0`  | Status retrieved   |
+| `2`  | Daemon not running |
 
 ---
 
@@ -733,12 +734,12 @@ hypercolor set rainbow-wave --speed 80 --brightness 60
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Effect applied |
-| `2` | Daemon not running |
-| `3` | Effect not found (no fuzzy match above threshold) |
-| `4` | Invalid parameter value |
+| Code | Meaning                                           |
+| ---- | ------------------------------------------------- |
+| `0`  | Effect applied                                    |
+| `2`  | Daemon not running                                |
+| `3`  | Effect not found (no fuzzy match above threshold) |
+| `4`  | Invalid parameter value                           |
 
 ---
 
@@ -794,7 +795,12 @@ hypercolor off --transition 0
 ```json
 {
   "action": "off",
-  "devices_off": ["WLED Living Room", "Prism 8 Controller", "Strimer ATX", "Strimer GPU"],
+  "devices_off": [
+    "WLED Living Room",
+    "Prism 8 Controller",
+    "Strimer ATX",
+    "Strimer GPU"
+  ],
   "leds_off": 1356,
   "transition_ms": 300
 }
@@ -804,11 +810,11 @@ hypercolor off --transition 0
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `2` | Daemon not running |
-| `3` | Named device not found |
+| Code | Meaning                |
+| ---- | ---------------------- |
+| `0`  | Success                |
+| `2`  | Daemon not running     |
+| `3`  | Named device not found |
 
 ---
 
@@ -1012,10 +1018,10 @@ Strimer GPU
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success (even if list is empty) |
-| `2` | Daemon not running |
+| Code | Meaning                         |
+| ---- | ------------------------------- |
+| `0`  | Success (even if list is empty) |
+| `2`  | Daemon not running              |
 
 ---
 
@@ -1229,16 +1235,16 @@ hypercolor device rename "WLED Living Room" "Living Room Strip"
 
 ### Exit Codes
 
-| Subcommand | `0` | Other |
-|------------|-----|-------|
-| `discover` | Scan complete (even if 0 found) | `2` daemon unavailable, `5` all backends timed out |
-| `identify` | Flash started | `3` device not found |
-| `test` | Test passed | `3` device not found, `1` test failed |
-| `info` | Info retrieved | `3` device not found |
-| `calibrate` | Calibration complete | `3` device not found |
-| `connect` | Connected | `3` device not found, `6` already connected |
-| `disconnect` | Disconnected | `3` device not found |
-| `rename` | Renamed | `3` device not found |
+| Subcommand   | `0`                             | Other                                              |
+| ------------ | ------------------------------- | -------------------------------------------------- |
+| `discover`   | Scan complete (even if 0 found) | `2` daemon unavailable, `5` all backends timed out |
+| `identify`   | Flash started                   | `3` device not found                               |
+| `test`       | Test passed                     | `3` device not found, `1` test failed              |
+| `info`       | Info retrieved                  | `3` device not found                               |
+| `calibrate`  | Calibration complete            | `3` device not found                               |
+| `connect`    | Connected                       | `3` device not found, `6` already connected        |
+| `disconnect` | Disconnected                    | `3` device not found                               |
+| `rename`     | Renamed                         | `3` device not found                               |
 
 ---
 
@@ -1456,16 +1462,16 @@ hypercolor profile list
 
 ### Exit Codes
 
-| Subcommand | `0` | Other |
-|------------|-----|-------|
-| `apply` | Applied | `3` profile not found |
-| `save` | Saved | `6` name exists (without `--force`) |
-| `delete` | Deleted | `3` not found |
-| `export` | Exported | `3` not found, `1` write error |
-| `import` | Imported | `4` invalid file, `6` name exists |
-| `show` | Displayed | `3` not found |
-| `edit` | Saved after edit | `3` not found, `4` invalid after edit |
-| `list` | Listed | `2` daemon unavailable |
+| Subcommand | `0`              | Other                                 |
+| ---------- | ---------------- | ------------------------------------- |
+| `apply`    | Applied          | `3` profile not found                 |
+| `save`     | Saved            | `6` name exists (without `--force`)   |
+| `delete`   | Deleted          | `3` not found                         |
+| `export`   | Exported         | `3` not found, `1` write error        |
+| `import`   | Imported         | `4` invalid file, `6` name exists     |
+| `show`     | Displayed        | `3` not found                         |
+| `edit`     | Saved after edit | `3` not found, `4` invalid after edit |
+| `list`     | Listed           | `2` daemon unavailable                |
 
 ---
 
@@ -1651,15 +1657,15 @@ hypercolor scene delete "old-scene" --yes
 
 ### Exit Codes
 
-| Subcommand | `0` | Other |
-|------------|-----|-------|
-| `activate` | Triggered | `3` not found |
-| `create` | Created | `6` name exists, `4` invalid trigger config |
-| `delete` | Deleted | `3` not found |
-| `show` | Displayed | `3` not found |
-| `enable` | Enabled | `3` not found |
-| `disable` | Disabled | `3` not found |
-| `list` | Listed | `2` daemon unavailable |
+| Subcommand | `0`       | Other                                       |
+| ---------- | --------- | ------------------------------------------- |
+| `activate` | Triggered | `3` not found                               |
+| `create`   | Created   | `6` name exists, `4` invalid trigger config |
+| `delete`   | Deleted   | `3` not found                               |
+| `show`     | Displayed | `3` not found                               |
+| `enable`   | Enabled   | `3` not found                               |
+| `disable`  | Disabled  | `3` not found                               |
+| `list`     | Listed    | `2` daemon unavailable                      |
 
 ---
 
@@ -1820,14 +1826,14 @@ hypercolor capture screen stop
 
 ### Exit Codes
 
-| Subcommand | `0` | Other |
-|------------|-----|-------|
-| `audio start` | Started | `6` already active, `3` source not found |
-| `audio stop` | Stopped | `1` not active |
-| `audio status` | Reported | `2` daemon unavailable |
-| `screen start` | Started | `6` already active, `3` display not found |
-| `screen stop` | Stopped | `1` not active |
-| `screen status` | Reported | `2` daemon unavailable |
+| Subcommand      | `0`      | Other                                     |
+| --------------- | -------- | ----------------------------------------- |
+| `audio start`   | Started  | `6` already active, `3` source not found  |
+| `audio stop`    | Stopped  | `1` not active                            |
+| `audio status`  | Reported | `2` daemon unavailable                    |
+| `screen start`  | Started  | `6` already active, `3` display not found |
+| `screen stop`   | Stopped  | `1` not active                            |
+| `screen status` | Reported | `2` daemon unavailable                    |
 
 ---
 
@@ -2000,13 +2006,13 @@ hypercolor config reset --yes
 
 ### Exit Codes
 
-| Subcommand | `0` | Other |
-|------------|-----|-------|
-| `get` | Value found | `3` key not found |
-| `set` | Value set | `4` invalid key or value |
-| `reset` | Reset | `3` key not found |
-| `edit` | Saved | `4` invalid TOML after edit |
-| `show` | Displayed | *(always succeeds -- reads file directly)* |
+| Subcommand | `0`         | Other                                      |
+| ---------- | ----------- | ------------------------------------------ |
+| `get`      | Value found | `3` key not found                          |
+| `set`      | Value set   | `4` invalid key or value                   |
+| `reset`    | Reset       | `3` key not found                          |
+| `edit`     | Saved       | `4` invalid TOML after edit                |
+| `show`     | Displayed   | _(always succeeds -- reads file directly)_ |
 
 ---
 
@@ -2179,14 +2185,14 @@ hypercolor plugin info galaxy-spiral
 
 ### Exit Codes
 
-| Subcommand | `0` | Other |
-|------------|-----|-------|
-| `list` | Listed | `2` daemon unavailable |
-| `install` | Installed | `4` invalid wasm, `6` already installed, `1` download failed |
-| `remove` | Removed | `3` not found |
-| `update` | Updated (or no updates) | `3` not found, `1` update failed |
-| `new` | Project created | `6` directory exists |
-| `info` | Displayed | `3` not found |
+| Subcommand | `0`                     | Other                                                        |
+| ---------- | ----------------------- | ------------------------------------------------------------ |
+| `list`     | Listed                  | `2` daemon unavailable                                       |
+| `install`  | Installed               | `4` invalid wasm, `6` already installed, `1` download failed |
+| `remove`   | Removed                 | `3` not found                                                |
+| `update`   | Updated (or no updates) | `3` not found, `1` update failed                             |
+| `new`      | Project created         | `6` directory exists                                         |
+| `info`     | Displayed               | `3` not found                                                |
 
 ---
 
@@ -2291,11 +2297,11 @@ timestamp,device,led_index,r,g,b
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Clean exit (user interrupt or pipe closed) |
-| `2` | Daemon not running |
-| `130` | Interrupted by Ctrl+C |
+| Code  | Meaning                                    |
+| ----- | ------------------------------------------ |
+| `0`   | Clean exit (user interrupt or pipe closed) |
+| `2`   | Daemon not running                         |
+| `130` | Interrupted by Ctrl+C                      |
 
 ---
 
@@ -2395,12 +2401,12 @@ hypercolor export all ~/hypercolor-backup/ --force
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Exported |
-| `1` | Write error |
-| `2` | Daemon unavailable (for live data) |
-| `6` | File exists (without `--force`) |
+| Code | Meaning                            |
+| ---- | ---------------------------------- |
+| `0`  | Exported                           |
+| `1`  | Write error                        |
+| `2`  | Daemon unavailable (for live data) |
+| `6`  | File exists (without `--force`)    |
 
 ---
 
@@ -2529,12 +2535,12 @@ hypercolor import all ~/hypercolor-backup/ --force
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Imported (or dry run complete) |
-| `1` | Read error or parse error |
-| `4` | Invalid file format |
-| `6` | Resources exist (without `--force`, and not all skipped) |
+| Code | Meaning                                                  |
+| ---- | -------------------------------------------------------- |
+| `0`  | Imported (or dry run complete)                           |
+| `1`  | Read error or parse error                                |
+| `4`  | Invalid file format                                      |
+| `6`  | Resources exist (without `--force`, and not all skipped) |
 
 ---
 
@@ -2657,11 +2663,11 @@ hypercolor diagnose --check daemon --check render
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | All checks passed (warnings are okay) |
-| `1` | One or more checks failed |
-| `2` | Daemon not running (daemon check itself fails) |
+| Code | Meaning                                        |
+| ---- | ---------------------------------------------- |
+| `0`  | All checks passed (warnings are okay)          |
+| `1`  | One or more checks failed                      |
+| `2`  | Daemon not running (daemon check itself fails) |
 
 ---
 
@@ -2701,17 +2707,17 @@ hypercolor completion fish > ~/.config/fish/completions/hypercolor.fish
 
 ### Completion Coverage
 
-| What | Type | Source |
-|------|------|--------|
-| Subcommands and flags | Static | clap derive |
-| Effect names | Dynamic | Daemon query (`completions` RPC) |
-| Device names | Dynamic | Daemon query |
-| Profile names | Dynamic | Daemon query |
-| Scene names | Dynamic | Daemon query |
-| Config keys | Dynamic | Daemon query |
-| Shell names (bash/zsh/fish) | Static | `ValueEnum` |
-| Log levels | Static | `ValueEnum` |
-| File paths (import/export) | Static | Shell built-in |
+| What                        | Type    | Source                           |
+| --------------------------- | ------- | -------------------------------- |
+| Subcommands and flags       | Static  | clap derive                      |
+| Effect names                | Dynamic | Daemon query (`completions` RPC) |
+| Device names                | Dynamic | Daemon query                     |
+| Profile names               | Dynamic | Daemon query                     |
+| Scene names                 | Dynamic | Daemon query                     |
+| Config keys                 | Dynamic | Daemon query                     |
+| Shell names (bash/zsh/fish) | Static  | `ValueEnum`                      |
+| Log levels                  | Static  | `ValueEnum`                      |
+| File paths (import/export)  | Static  | Shell built-in                   |
 
 Dynamic completions gracefully degrade when the daemon is not running -- only static completions are available.
 
@@ -2721,9 +2727,9 @@ Completion script written to stdout. No human-readable wrapper. Pipe directly to
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Completion script generated |
+| Code | Meaning                     |
+| ---- | --------------------------- |
+| `0`  | Completion script generated |
 
 ---
 
@@ -2848,11 +2854,11 @@ hypercolor setup --skip-devices
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Setup complete |
-| `1` | Setup failed or was cancelled |
-| `4` | Invalid user input during wizard |
+| Code | Meaning                          |
+| ---- | -------------------------------- |
+| `0`  | Setup complete                   |
+| `1`  | Setup failed or was cancelled    |
+| `4`  | Invalid user input during wizard |
 
 ---
 
@@ -2867,33 +2873,34 @@ hypercolor setup --skip-devices
 
 ### Color Semantics
 
-| Element | Color | Hex |
-|---------|-------|-----|
-| Section titles, emphasis | Electric Purple (bold) | `#e135ff` |
-| Paths, interactions, links | Neon Cyan | `#80ffea` |
-| Numbers, data values, hashes | Coral | `#ff6ac1` |
-| Warnings, timestamps | Electric Yellow | `#f1fa8c` |
-| Success indicators, checkmarks | Success Green | `#50fa7b` |
-| Errors, failure indicators | Error Red | `#ff6363` |
-| Box borders, separators | Dim Electric Purple | `#e135ff` at 40% |
-| Labels, secondary text | Dim white | `#6272a4` |
-| Body text | Base white | `#f8f8f2` |
+| Element                        | Color                  | Hex              |
+| ------------------------------ | ---------------------- | ---------------- |
+| Section titles, emphasis       | Electric Purple (bold) | `#e135ff`        |
+| Paths, interactions, links     | Neon Cyan              | `#80ffea`        |
+| Numbers, data values, hashes   | Coral                  | `#ff6ac1`        |
+| Warnings, timestamps           | Electric Yellow        | `#f1fa8c`        |
+| Success indicators, checkmarks | Success Green          | `#50fa7b`        |
+| Errors, failure indicators     | Error Red              | `#ff6363`        |
+| Box borders, separators        | Dim Electric Purple    | `#e135ff` at 40% |
+| Labels, secondary text         | Dim white              | `#6272a4`        |
+| Body text                      | Base white             | `#f8f8f2`        |
 
 ### Symbols
 
-| Symbol | Meaning | Unicode |
-|--------|---------|---------|
-| `✦` | Effect applied / active | U+2726 |
-| `●` | Status: connected/active | U+25CF |
-| `○` | Status: off/inactive | U+25CB |
-| `✓` | Check passed | U+2713 |
-| `!` | Warning | U+0021 |
-| `✗` | Error / check failed | U+2717 |
-| `◈` | Web engine effect | U+25C8 |
+| Symbol | Meaning                  | Unicode |
+| ------ | ------------------------ | ------- |
+| `✦`    | Effect applied / active  | U+2726  |
+| `●`    | Status: connected/active | U+25CF  |
+| `○`    | Status: off/inactive     | U+25CB  |
+| `✓`    | Check passed             | U+2713  |
+| `!`    | Warning                  | U+0021  |
+| `✗`    | Error / check failed     | U+2717  |
+| `◈`    | Web engine effect        | U+25C8  |
 
 ### Error Format
 
 Errors are actionable. Every error includes:
+
 1. What went wrong (in Error Red).
 2. Why (context).
 3. What to do about it (suggestion).
@@ -2942,13 +2949,13 @@ When `NO_COLOR` is set (to any value, including empty string):
 
 ### Additional Controls
 
-| Mechanism | Scope | Behavior |
-|-----------|-------|----------|
-| `NO_COLOR` env var | Global | Disables color when set |
-| `--no-color` flag | Per-invocation | Disables color |
-| `HYPERCOLOR_COLOR=never` | Persistent | Disables color |
-| `HYPERCOLOR_COLOR=always` | Persistent | Forces color even in pipes |
-| TTY detection | Automatic | Disables color when stdout is not a TTY |
+| Mechanism                 | Scope          | Behavior                                |
+| ------------------------- | -------------- | --------------------------------------- |
+| `NO_COLOR` env var        | Global         | Disables color when set                 |
+| `--no-color` flag         | Per-invocation | Disables color                          |
+| `HYPERCOLOR_COLOR=never`  | Persistent     | Disables color                          |
+| `HYPERCOLOR_COLOR=always` | Persistent     | Forces color even in pipes              |
+| TTY detection             | Automatic      | Disables color when stdout is not a TTY |
 
 ### Implementation
 

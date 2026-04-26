@@ -76,11 +76,11 @@ Every successful response wraps data in a standard envelope:
 
 **`meta` object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `api_version` | `string` | Always `"1.0"` for v1 endpoints |
-| `request_id` | `string` | Unique per-request identifier, prefixed `req_` |
-| `timestamp` | `string` | ISO 8601 UTC timestamp of response generation |
+| Field         | Type     | Description                                    |
+| ------------- | -------- | ---------------------------------------------- |
+| `api_version` | `string` | Always `"1.0"` for v1 endpoints                |
+| `request_id`  | `string` | Unique per-request identifier, prefixed `req_` |
+| `timestamp`   | `string` | ISO 8601 UTC timestamp of response generation  |
 
 ### 2.5 Error Envelope
 
@@ -103,25 +103,25 @@ All error responses use:
 
 **`error` object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `code` | `string` | Machine-readable error code (see table below) |
-| `message` | `string` | Human-readable description |
+| Field     | Type     | Description                                                   |
+| --------- | -------- | ------------------------------------------------------------- |
+| `code`    | `string` | Machine-readable error code (see table below)                 |
+| `message` | `string` | Human-readable description                                    |
 | `details` | `object` | Additional context (validation errors, conflicting IDs, etc.) |
 
 ### 2.6 Standard Error Codes
 
-| HTTP Status | Code | Meaning |
-|------------|------|---------|
-| 400 | `bad_request` | Malformed request body or invalid parameters |
-| 401 | `unauthorized` | Missing or invalid API key (network access only) |
-| 403 | `forbidden` | Insufficient permissions for this operation |
-| 404 | `not_found` | Resource does not exist |
-| 409 | `conflict` | State conflict (e.g., device already connected, duplicate ID) |
-| 422 | `validation_error` | Request body fails schema validation |
-| 429 | `rate_limited` | Too many requests (network access only) |
-| 500 | `internal_error` | Unexpected daemon error |
-| 503 | `unavailable` | Daemon is starting up or shutting down |
+| HTTP Status | Code               | Meaning                                                       |
+| ----------- | ------------------ | ------------------------------------------------------------- |
+| 400         | `bad_request`      | Malformed request body or invalid parameters                  |
+| 401         | `unauthorized`     | Missing or invalid API key (network access only)              |
+| 403         | `forbidden`        | Insufficient permissions for this operation                   |
+| 404         | `not_found`        | Resource does not exist                                       |
+| 409         | `conflict`         | State conflict (e.g., device already connected, duplicate ID) |
+| 422         | `validation_error` | Request body fails schema validation                          |
+| 429         | `rate_limited`     | Too many requests (network access only)                       |
+| 500         | `internal_error`   | Unexpected daemon error                                       |
+| 503         | `unavailable`      | Daemon is starting up or shutting down                        |
 
 **Validation error details example:**
 
@@ -153,12 +153,12 @@ All error responses use:
 
 List endpoints accept these query parameters:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `offset` | `integer` | `0` | Number of items to skip |
-| `limit` | `integer` | `50` | Maximum items to return (max: 200) |
-| `sort` | `string` | resource-dependent | Field to sort by |
-| `order` | `string` | `"asc"` | Sort direction: `"asc"` or `"desc"` |
+| Parameter | Type      | Default            | Description                         |
+| --------- | --------- | ------------------ | ----------------------------------- |
+| `offset`  | `integer` | `0`                | Number of items to skip             |
+| `limit`   | `integer` | `50`               | Maximum items to return (max: 200)  |
+| `sort`    | `string`  | resource-dependent | Field to sort by                    |
+| `order`   | `string`  | `"asc"`            | Sort direction: `"asc"` or `"desc"` |
 
 Paginated responses include a `pagination` object inside `data`:
 
@@ -230,10 +230,10 @@ ws://192.168.1.100:9420/api/v1/ws?token=hc_ak_x7k2m9p4q1w8...
 
 ### 3.3 Access Tiers
 
-| Tier | Capabilities | Key Prefix |
-|------|-------------|------------|
-| **Read** | Query state, list resources, subscribe to events, receive frames | `hc_ak_r_` |
-| **Control** | All read capabilities + mutations (apply effects, create profiles, etc.) | `hc_ak_` |
+| Tier        | Capabilities                                                             | Key Prefix |
+| ----------- | ------------------------------------------------------------------------ | ---------- |
+| **Read**    | Query state, list resources, subscribe to events, receive frames         | `hc_ak_r_` |
+| **Control** | All read capabilities + mutations (apply effects, create profiles, etc.) | `hc_ak_`   |
 
 A request with a read-only key that attempts a mutation receives:
 
@@ -288,13 +288,13 @@ Rate limiting applies **only** when the daemon is network-accessible (non-loopba
 
 ### 5.1 Rate Tiers
 
-| Tier | Limit | Scope | Applies To |
-|------|-------|-------|------------|
-| Read operations | 120 req/min | Per IP | `GET` requests |
-| Write operations | 60 req/min | Per IP | `POST`, `PATCH`, `PUT`, `DELETE` |
-| Bulk operations | 10 req/min | Per IP | `POST /api/v1/bulk` |
-| Discovery scans | 2 req/min | Global | `POST /api/v1/devices/discover` |
-| WebSocket frames | Unlimited | N/A | Binary frame data |
+| Tier             | Limit       | Scope  | Applies To                       |
+| ---------------- | ----------- | ------ | -------------------------------- |
+| Read operations  | 120 req/min | Per IP | `GET` requests                   |
+| Write operations | 60 req/min  | Per IP | `POST`, `PATCH`, `PUT`, `DELETE` |
+| Bulk operations  | 10 req/min  | Per IP | `POST /api/v1/bulk`              |
+| Discovery scans  | 2 req/min   | Global | `POST /api/v1/devices/discover`  |
+| WebSocket frames | Unlimited   | N/A    | Binary frame data                |
 
 ### 5.2 Rate Limit Headers
 
@@ -306,11 +306,11 @@ X-RateLimit-Remaining: 117
 X-RateLimit-Reset: 1709294460
 ```
 
-| Header | Type | Description |
-|--------|------|-------------|
-| `X-RateLimit-Limit` | `integer` | Maximum requests allowed in the window |
-| `X-RateLimit-Remaining` | `integer` | Requests remaining in current window |
-| `X-RateLimit-Reset` | `integer` | Unix timestamp when the window resets |
+| Header                  | Type      | Description                            |
+| ----------------------- | --------- | -------------------------------------- |
+| `X-RateLimit-Limit`     | `integer` | Maximum requests allowed in the window |
+| `X-RateLimit-Remaining` | `integer` | Requests remaining in current window   |
+| `X-RateLimit-Reset`     | `integer` | Unix timestamp when the window resets  |
 
 ### 5.3 Rate Limit Exceeded Response
 
@@ -349,15 +349,15 @@ GET /api/v1/devices
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `status` | `string` | all | Filter: `"connected"`, `"disconnected"`, `"error"` |
-| `backend` | `string` | all | Filter by backend: `"wled"`, `"hid"`, `"hue"`, `"razer"` |
-| `q` | `string` | -- | Search by name |
-| `offset` | `integer` | `0` | Pagination offset |
-| `limit` | `integer` | `50` | Pagination limit |
-| `sort` | `string` | `"name"` | Sort field: `"name"`, `"status"`, `"backend"`, `"total_leds"`, `"last_seen"` |
-| `order` | `string` | `"asc"` | `"asc"` or `"desc"` |
+| Parameter | Type      | Default  | Description                                                                  |
+| --------- | --------- | -------- | ---------------------------------------------------------------------------- |
+| `status`  | `string`  | all      | Filter: `"connected"`, `"disconnected"`, `"error"`                           |
+| `backend` | `string`  | all      | Filter by backend: `"wled"`, `"hid"`, `"hue"`, `"razer"`                     |
+| `q`       | `string`  | --       | Search by name                                                               |
+| `offset`  | `integer` | `0`      | Pagination offset                                                            |
+| `limit`   | `integer` | `50`     | Pagination limit                                                             |
+| `sort`    | `string`  | `"name"` | Sort field: `"name"`, `"status"`, `"backend"`, `"total_leds"`, `"last_seen"` |
+| `order`   | `string`  | `"asc"`  | `"asc"` or `"desc"`                                                          |
 
 **Response — `200 OK`:**
 
@@ -407,42 +407,42 @@ GET /api/v1/devices
 
 **Device object schema:**
 
-| Field | Type | Nullable | Description |
-|-------|------|----------|-------------|
-| `id` | `string` | no | Stable device identifier |
-| `name` | `string` | no | Display name (user-editable) |
-| `backend` | `string` | no | Driver backend: `"wled"`, `"hid"`, `"hue"`, `"razer"` |
-| `status` | `string` | no | `"connected"`, `"disconnected"`, `"error"`, `"initializing"` |
-| `firmware_version` | `string` | yes | Firmware/driver version if known |
-| `total_leds` | `integer` | no | Sum of LEDs across all zones |
-| `zones` | `Zone[]` | no | Array of device zones |
-| `connection` | `Connection` | no | Connection details |
-| `last_seen` | `string` | no | ISO 8601 timestamp of last communication |
-| `metadata` | `object` | no | Backend-specific metadata |
+| Field              | Type         | Nullable | Description                                                  |
+| ------------------ | ------------ | -------- | ------------------------------------------------------------ |
+| `id`               | `string`     | no       | Stable device identifier                                     |
+| `name`             | `string`     | no       | Display name (user-editable)                                 |
+| `backend`          | `string`     | no       | Driver backend: `"wled"`, `"hid"`, `"hue"`, `"razer"`        |
+| `status`           | `string`     | no       | `"connected"`, `"disconnected"`, `"error"`, `"initializing"` |
+| `firmware_version` | `string`     | yes      | Firmware/driver version if known                             |
+| `total_leds`       | `integer`    | no       | Sum of LEDs across all zones                                 |
+| `zones`            | `Zone[]`     | no       | Array of device zones                                        |
+| `connection`       | `Connection` | no       | Connection details                                           |
+| `last_seen`        | `string`     | no       | ISO 8601 timestamp of last communication                     |
+| `metadata`         | `object`     | no       | Backend-specific metadata                                    |
 
 **Zone object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Zone identifier (unique within device) |
-| `name` | `string` | Display name |
-| `led_count` | `integer` | Number of LEDs in this zone |
-| `topology` | `string` | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
-| `color_order` | `string` | `"rgb"`, `"grb"`, `"bgr"`, `"rgbw"` |
+| Field         | Type      | Description                                             |
+| ------------- | --------- | ------------------------------------------------------- |
+| `id`          | `string`  | Zone identifier (unique within device)                  |
+| `name`        | `string`  | Display name                                            |
+| `led_count`   | `integer` | Number of LEDs in this zone                             |
+| `topology`    | `string`  | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
+| `color_order` | `string`  | `"rgb"`, `"grb"`, `"bgr"`, `"rgbw"`                     |
 
 **Connection object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `string` | Protocol: `"ddp"`, `"e131"`, `"artnet"`, `"usb_hid"`, `"http"`, `"serial"` |
-| `address` | `string` | IP address, USB path, or serial port |
-| `port` | `integer` | Network port (if applicable) |
+| Field     | Type      | Description                                                                |
+| --------- | --------- | -------------------------------------------------------------------------- |
+| `type`    | `string`  | Protocol: `"ddp"`, `"e131"`, `"artnet"`, `"usb_hid"`, `"http"`, `"serial"` |
+| `address` | `string`  | IP address, USB path, or serial port                                       |
+| `port`    | `integer` | Network port (if applicable)                                               |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 503 | `unavailable` | Daemon is starting up |
+| Status | Code          | Condition             |
+| ------ | ------------- | --------------------- |
+| 503    | `unavailable` | Daemon is starting up |
 
 ---
 
@@ -454,9 +454,9 @@ GET /api/v1/devices/:id
 
 **Path parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | `string` | Device identifier |
+| Parameter | Type     | Description       |
+| --------- | -------- | ----------------- |
+| `id`      | `string` | Device identifier |
 
 **Response — `200 OK`:**
 
@@ -482,9 +482,9 @@ Returns a single device object (same schema as list items) in the `data` field.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device ID does not exist |
+| Status | Code        | Condition                |
+| ------ | ----------- | ------------------------ |
+| 404    | `not_found` | Device ID does not exist |
 
 ---
 
@@ -498,9 +498,9 @@ Partial update of device configuration. Only supplied fields are modified.
 
 **Path parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | `string` | Device identifier |
+| Parameter | Type     | Description       |
+| --------- | -------- | ----------------- |
+| `id`      | `string` | Device identifier |
 
 **Request body:**
 
@@ -511,10 +511,10 @@ Partial update of device configuration. Only supplied fields are modified.
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | `string` | no | New display name |
-| `enabled` | `boolean` | no | Enable/disable the device |
+| Field     | Type      | Required | Description               |
+| --------- | --------- | -------- | ------------------------- |
+| `name`    | `string`  | no       | New display name          |
+| `enabled` | `boolean` | no       | Enable/disable the device |
 
 **Response — `200 OK`:**
 
@@ -522,10 +522,10 @@ Returns the updated device object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device ID does not exist |
-| 422 | `validation_error` | Invalid field values |
+| Status | Code               | Condition                |
+| ------ | ------------------ | ------------------------ |
+| 404    | `not_found`        | Device ID does not exist |
+| 422    | `validation_error` | Invalid field values     |
 
 ---
 
@@ -551,9 +551,9 @@ Removes a device from tracking. Does not factory-reset the hardware. The device 
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device ID does not exist |
+| Status | Code        | Condition                |
+| ------ | ----------- | ------------------------ |
+| 404    | `not_found` | Device ID does not exist |
 
 ---
 
@@ -574,10 +574,10 @@ Triggers an asynchronous scan across all configured backends. Discovery results 
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `backends` | `string[]` | no | all enabled | Limit scan to specific backends |
-| `timeout_ms` | `integer` | no | `10000` | Maximum scan duration in milliseconds |
+| Field        | Type       | Required | Default     | Description                           |
+| ------------ | ---------- | -------- | ----------- | ------------------------------------- |
+| `backends`   | `string[]` | no       | all enabled | Limit scan to specific backends       |
+| `timeout_ms` | `integer`  | no       | `10000`     | Maximum scan duration in milliseconds |
 
 **Response — `202 Accepted`:**
 
@@ -595,10 +595,10 @@ Triggers an asynchronous scan across all configured backends. Discovery results 
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 409 | `conflict` | A discovery scan is already in progress |
-| 429 | `rate_limited` | Discovery rate limit exceeded (2/min global) |
+| Status | Code           | Condition                                    |
+| ------ | -------------- | -------------------------------------------- |
+| 409    | `conflict`     | A discovery scan is already in progress      |
+| 429    | `rate_limited` | Discovery rate limit exceeded (2/min global) |
 
 ---
 
@@ -629,9 +629,9 @@ GET /api/v1/devices/:id/zones
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device ID does not exist |
+| Status | Code        | Condition                |
+| ------ | ----------- | ------------------------ |
+| 404    | `not_found` | Device ID does not exist |
 
 ---
 
@@ -647,9 +647,9 @@ Returns a single zone object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device or zone does not exist |
+| Status | Code        | Condition                     |
+| ------ | ----------- | ----------------------------- |
+| 404    | `not_found` | Device or zone does not exist |
 
 ---
 
@@ -670,12 +670,12 @@ PATCH /api/v1/devices/:id/zones/:zone_id
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | `string` | no | Zone display name |
-| `led_count` | `integer` | no | Override LED count (for manual calibration) |
-| `color_order` | `string` | no | `"rgb"`, `"grb"`, `"bgr"`, `"rgbw"` |
-| `topology` | `string` | no | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
+| Field         | Type      | Required | Description                                             |
+| ------------- | --------- | -------- | ------------------------------------------------------- |
+| `name`        | `string`  | no       | Zone display name                                       |
+| `led_count`   | `integer` | no       | Override LED count (for manual calibration)             |
+| `color_order` | `string`  | no       | `"rgb"`, `"grb"`, `"bgr"`, `"rgbw"`                     |
+| `topology`    | `string`  | no       | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
 
 **Response — `200 OK`:**
 
@@ -683,10 +683,10 @@ Returns the updated zone object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device or zone does not exist |
-| 422 | `validation_error` | Invalid field values |
+| Status | Code               | Condition                     |
+| ------ | ------------------ | ----------------------------- |
+| 404    | `not_found`        | Device or zone does not exist |
+| 422    | `validation_error` | Invalid field values          |
 
 ---
 
@@ -707,10 +707,10 @@ Flashes the device's LEDs in a recognizable pattern so the user can identify whi
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `duration_ms` | `integer` | no | `3000` | How long to flash |
-| `color` | `string` | no | `"#ffffff"` | Flash color (hex) |
+| Field         | Type      | Required | Default     | Description       |
+| ------------- | --------- | -------- | ----------- | ----------------- |
+| `duration_ms` | `integer` | no       | `3000`      | How long to flash |
+| `color`       | `string`  | no       | `"#ffffff"` | Flash color (hex) |
 
 **Response — `200 OK`:**
 
@@ -727,10 +727,10 @@ Flashes the device's LEDs in a recognizable pattern so the user can identify whi
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device does not exist |
-| 409 | `conflict` | Device is disconnected |
+| Status | Code        | Condition              |
+| ------ | ----------- | ---------------------- |
+| 404    | `not_found` | Device does not exist  |
+| 409    | `conflict`  | Device is disconnected |
 
 ---
 
@@ -751,10 +751,10 @@ Sends a test color frame to the device to verify connectivity and color ordering
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `color` | `string` | no | `"#ff0000"` | Solid color to send (hex) |
-| `zones` | `string[]` | no | all zones | Specific zones to test |
+| Field   | Type       | Required | Default     | Description               |
+| ------- | ---------- | -------- | ----------- | ------------------------- |
+| `color` | `string`   | no       | `"#ff0000"` | Solid color to send (hex) |
+| `zones` | `string[]` | no       | all zones   | Specific zones to test    |
 
 **Response — `200 OK`:**
 
@@ -772,10 +772,10 @@ Sends a test color frame to the device to verify connectivity and color ordering
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Device does not exist |
-| 409 | `conflict` | Device is disconnected |
+| Status | Code        | Condition              |
+| ------ | ----------- | ---------------------- |
+| 404    | `not_found` | Device does not exist  |
+| 409    | `conflict`  | Device is disconnected |
 
 ---
 
@@ -789,19 +789,19 @@ GET /api/v1/effects
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `q` | `string` | -- | Full-text search across name, description, author, tags |
-| `category` | `string` | all | Filter: `"ambient"`, `"reactive"`, `"visualizer"`, `"pattern"`, `"nature"`, `"gaming"`, `"holiday"`, `"interactive"` |
-| `audio_reactive` | `boolean` | -- | Filter to audio-reactive effects only |
-| `engine` | `string` | all | Filter by render engine: `"servo"`, `"wgpu"`, `"native"` |
-| `source` | `string` | all | Filter by source: `"builtin"`, `"community"`, `"custom"` |
-| `author` | `string` | -- | Filter by author name |
-| `tag` | `string` | -- | Filter by tag (can be repeated for OR logic) |
-| `offset` | `integer` | `0` | Pagination offset |
-| `limit` | `integer` | `50` | Pagination limit |
-| `sort` | `string` | `"name"` | Sort field: `"name"`, `"author"`, `"category"`, `"created_at"` |
-| `order` | `string` | `"asc"` | `"asc"` or `"desc"` |
+| Parameter        | Type      | Default  | Description                                                                                                          |
+| ---------------- | --------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `q`              | `string`  | --       | Full-text search across name, description, author, tags                                                              |
+| `category`       | `string`  | all      | Filter: `"ambient"`, `"reactive"`, `"visualizer"`, `"pattern"`, `"nature"`, `"gaming"`, `"holiday"`, `"interactive"` |
+| `audio_reactive` | `boolean` | --       | Filter to audio-reactive effects only                                                                                |
+| `engine`         | `string`  | all      | Filter by render engine: `"servo"`, `"wgpu"`, `"native"`                                                             |
+| `source`         | `string`  | all      | Filter by source: `"builtin"`, `"community"`, `"custom"`                                                             |
+| `author`         | `string`  | --       | Filter by author name                                                                                                |
+| `tag`            | `string`  | --       | Filter by tag (can be repeated for OR logic)                                                                         |
+| `offset`         | `integer` | `0`      | Pagination offset                                                                                                    |
+| `limit`          | `integer` | `50`     | Pagination limit                                                                                                     |
+| `sort`           | `string`  | `"name"` | Sort field: `"name"`, `"author"`, `"category"`, `"created_at"`                                                       |
+| `order`          | `string`  | `"asc"`  | `"asc"` or `"desc"`                                                                                                  |
 
 **Response — `200 OK`:**
 
@@ -836,19 +836,19 @@ GET /api/v1/effects
 
 **Effect summary object schema (list view):**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Effect identifier (slug) |
-| `name` | `string` | Display name |
-| `description` | `string` | Short description |
-| `author` | `string` | Effect author |
-| `engine` | `string` | Render engine: `"servo"`, `"wgpu"`, `"native"` |
-| `category` | `string` | Primary category |
-| `tags` | `string[]` | Descriptive tags |
-| `audio_reactive` | `boolean` | Whether the effect responds to audio input |
-| `source` | `string` | Origin: `"builtin"`, `"community"`, `"custom"` |
-| `thumbnail_url` | `string` | Path to preview thumbnail |
-| `preset_count` | `integer` | Number of available presets |
+| Field            | Type       | Description                                    |
+| ---------------- | ---------- | ---------------------------------------------- |
+| `id`             | `string`   | Effect identifier (slug)                       |
+| `name`           | `string`   | Display name                                   |
+| `description`    | `string`   | Short description                              |
+| `author`         | `string`   | Effect author                                  |
+| `engine`         | `string`   | Render engine: `"servo"`, `"wgpu"`, `"native"` |
+| `category`       | `string`   | Primary category                               |
+| `tags`           | `string[]` | Descriptive tags                               |
+| `audio_reactive` | `boolean`  | Whether the effect responds to audio input     |
+| `source`         | `string`   | Origin: `"builtin"`, `"community"`, `"custom"` |
+| `thumbnail_url`  | `string`   | Path to preview thumbnail                      |
+| `preset_count`   | `integer`  | Number of available presets                    |
 
 ---
 
@@ -939,30 +939,30 @@ Returns full effect metadata including the controls schema.
 
 **Control object schema:**
 
-| Field | Type | Present When | Description |
-|-------|------|--------------|-------------|
-| `id` | `string` | always | Control identifier |
-| `label` | `string` | always | Human-readable label |
-| `type` | `string` | always | `"number"`, `"color"`, `"boolean"`, `"select"`, `"gradient"` |
-| `min` | `number` | type=`number` | Minimum value |
-| `max` | `number` | type=`number` | Maximum value |
-| `step` | `number` | type=`number` | Step increment |
-| `default` | `any` | always | Default value |
-| `value` | `any` | always | Current value (if this effect is active, reflects live state) |
-| `options` | `string[]` | type=`select` | Available options for select controls |
+| Field     | Type       | Present When  | Description                                                   |
+| --------- | ---------- | ------------- | ------------------------------------------------------------- |
+| `id`      | `string`   | always        | Control identifier                                            |
+| `label`   | `string`   | always        | Human-readable label                                          |
+| `type`    | `string`   | always        | `"number"`, `"color"`, `"boolean"`, `"select"`, `"gradient"`  |
+| `min`     | `number`   | type=`number` | Minimum value                                                 |
+| `max`     | `number`   | type=`number` | Maximum value                                                 |
+| `step`    | `number`   | type=`number` | Step increment                                                |
+| `default` | `any`      | always        | Default value                                                 |
+| `value`   | `any`      | always        | Current value (if this effect is active, reflects live state) |
+| `options` | `string[]` | type=`select` | Available options for select controls                         |
 
 **Preset object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `string` | Preset name |
+| Field        | Type      | Description                                 |
+| ------------ | --------- | ------------------------------------------- |
+| `name`       | `string`  | Preset name                                 |
 | `is_default` | `boolean` | Whether this is the effect's default preset |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect ID does not exist |
+| Status | Code        | Condition                |
+| ------ | ----------- | ------------------------ |
+| 404    | `not_found` | Effect ID does not exist |
 
 ---
 
@@ -990,17 +990,17 @@ Starts rendering the specified effect. If another effect is active, transitions 
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `controls` | `object` | no | effect defaults | Key-value pairs of control overrides |
-| `transition` | `Transition` | no | `{ "type": "crossfade", "duration_ms": 300 }` | Transition specification |
+| Field        | Type         | Required | Default                                       | Description                          |
+| ------------ | ------------ | -------- | --------------------------------------------- | ------------------------------------ |
+| `controls`   | `object`     | no       | effect defaults                               | Key-value pairs of control overrides |
+| `transition` | `Transition` | no       | `{ "type": "crossfade", "duration_ms": 300 }` | Transition specification             |
 
 **Transition object schema:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | `string` | yes | `"crossfade"`, `"cut"`, `"fade_through_black"`, `"wipe"` |
-| `duration_ms` | `integer` | no | Transition duration (0 = instant). Default: `300` |
+| Field         | Type      | Required | Description                                              |
+| ------------- | --------- | -------- | -------------------------------------------------------- |
+| `type`        | `string`  | yes      | `"crossfade"`, `"cut"`, `"fade_through_black"`, `"wipe"` |
+| `duration_ms` | `integer` | no       | Transition duration (0 = instant). Default: `300`        |
 
 **Response — `200 OK`:**
 
@@ -1030,10 +1030,10 @@ Starts rendering the specified effect. If another effect is active, transitions 
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect ID does not exist |
-| 422 | `validation_error` | Control value out of range or unknown control ID |
+| Status | Code               | Condition                                        |
+| ------ | ------------------ | ------------------------------------------------ |
+| 404    | `not_found`        | Effect ID does not exist                         |
+| 422    | `validation_error` | Control value out of range or unknown control ID |
 
 ---
 
@@ -1123,10 +1123,10 @@ The body is a flat object of `control_id: value` pairs.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | No effect is currently active |
-| 422 | `validation_error` | Unknown control ID or value out of range |
+| Status | Code               | Condition                                |
+| ------ | ------------------ | ---------------------------------------- |
+| 404    | `not_found`        | No effect is currently active            |
+| 422    | `validation_error` | Unknown control ID or value out of range |
 
 ---
 
@@ -1174,9 +1174,9 @@ GET /api/v1/effects/:id/presets
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect ID does not exist |
+| Status | Code        | Condition                |
+| ------ | ----------- | ------------------------ |
+| 404    | `not_found` | Effect ID does not exist |
 
 ---
 
@@ -1203,10 +1203,10 @@ Saves the current control values (or specified values) as a named preset.
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | `string` | yes | Preset name (unique per effect) |
-| `controls` | `object` | no | Control values. If omitted, captures the current live values. |
+| Field      | Type     | Required | Description                                                   |
+| ---------- | -------- | -------- | ------------------------------------------------------------- |
+| `name`     | `string` | yes      | Preset name (unique per effect)                               |
+| `controls` | `object` | no       | Control values. If omitted, captures the current live values. |
 
 **Response — `201 Created`:**
 
@@ -1226,11 +1226,11 @@ Saves the current control values (or specified values) as a named preset.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect ID does not exist |
-| 409 | `conflict` | Preset name already exists for this effect |
-| 422 | `validation_error` | Invalid control values |
+| Status | Code               | Condition                                  |
+| ------ | ------------------ | ------------------------------------------ |
+| 404    | `not_found`        | Effect ID does not exist                   |
+| 409    | `conflict`         | Preset name already exists for this effect |
+| 422    | `validation_error` | Invalid control values                     |
 
 ---
 
@@ -1250,10 +1250,10 @@ PATCH /api/v1/effects/:id/presets/:name
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `controls` | `object` | no | Partial control value updates |
-| `name` | `string` | no | Rename the preset |
+| Field      | Type     | Required | Description                   |
+| ---------- | -------- | -------- | ----------------------------- |
+| `controls` | `object` | no       | Partial control value updates |
+| `name`     | `string` | no       | Rename the preset             |
 
 **Response — `200 OK`:**
 
@@ -1261,11 +1261,11 @@ Returns the updated preset object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect or preset does not exist |
-| 409 | `conflict` | New name conflicts with existing preset |
-| 422 | `validation_error` | Invalid control values |
+| Status | Code               | Condition                               |
+| ------ | ------------------ | --------------------------------------- |
+| 404    | `not_found`        | Effect or preset does not exist         |
+| 409    | `conflict`         | New name conflicts with existing preset |
+| 422    | `validation_error` | Invalid control values                  |
 
 ---
 
@@ -1290,9 +1290,9 @@ DELETE /api/v1/effects/:id/presets/:name
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect or preset does not exist |
+| Status | Code        | Condition                       |
+| ------ | ----------- | ------------------------------- |
+| 404    | `not_found` | Effect or preset does not exist |
 
 ---
 
@@ -1340,9 +1340,9 @@ Applies the effect with the preset's control values. If the effect is not curren
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect or preset does not exist |
+| Status | Code        | Condition                       |
+| ------ | ----------- | ------------------------------- |
+| 404    | `not_found` | Effect or preset does not exist |
 
 ---
 
@@ -1407,11 +1407,11 @@ Applies a random effect from the library.
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `category` | `string` | no | Restrict random selection to a category |
-| `audio_reactive` | `boolean` | no | Restrict to audio-reactive (or non-reactive) |
-| `transition` | `Transition` | no | Transition specification |
+| Field            | Type         | Required | Description                                  |
+| ---------------- | ------------ | -------- | -------------------------------------------- |
+| `category`       | `string`     | no       | Restrict random selection to a category      |
+| `audio_reactive` | `boolean`    | no       | Restrict to audio-reactive (or non-reactive) |
+| `transition`     | `Transition` | no       | Transition specification                     |
 
 **Response — `200 OK`:**
 
@@ -1445,9 +1445,9 @@ Returns a preview image of the effect.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Effect does not exist or has no thumbnail |
+| Status | Code        | Condition                                 |
+| ------ | ----------- | ----------------------------------------- |
+| 404    | `not_found` | Effect does not exist or has no thumbnail |
 
 ---
 
@@ -1461,13 +1461,13 @@ GET /api/v1/profiles
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `q` | `string` | -- | Search by name or description |
-| `offset` | `integer` | `0` | Pagination offset |
-| `limit` | `integer` | `50` | Pagination limit |
-| `sort` | `string` | `"name"` | Sort field: `"name"`, `"created_at"`, `"updated_at"` |
-| `order` | `string` | `"asc"` | `"asc"` or `"desc"` |
+| Parameter | Type      | Default  | Description                                          |
+| --------- | --------- | -------- | ---------------------------------------------------- |
+| `q`       | `string`  | --       | Search by name or description                        |
+| `offset`  | `integer` | `0`      | Pagination offset                                    |
+| `limit`   | `integer` | `50`     | Pagination limit                                     |
+| `sort`    | `string`  | `"name"` | Sort field: `"name"`, `"created_at"`, `"updated_at"` |
+| `order`   | `string`  | `"asc"`  | `"asc"` or `"desc"`                                  |
 
 **Response — `200 OK`:**
 
@@ -1502,16 +1502,16 @@ GET /api/v1/profiles
 
 **Profile summary object schema (list view):**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Profile identifier |
-| `name` | `string` | Display name |
-| `description` | `string` | Human-readable description |
-| `created_at` | `string` | ISO 8601 creation timestamp |
-| `updated_at` | `string` | ISO 8601 last-modified timestamp |
-| `effect` | `EffectRef` | `{ "id", "name" }` of the profile's effect |
-| `layout_id` | `string` | Associated layout ID |
-| `brightness` | `integer` | Global brightness (0-100) |
+| Field         | Type        | Description                                |
+| ------------- | ----------- | ------------------------------------------ |
+| `id`          | `string`    | Profile identifier                         |
+| `name`        | `string`    | Display name                               |
+| `description` | `string`    | Human-readable description                 |
+| `created_at`  | `string`    | ISO 8601 creation timestamp                |
+| `updated_at`  | `string`    | ISO 8601 last-modified timestamp           |
+| `effect`      | `EffectRef` | `{ "id", "name" }` of the profile's effect |
+| `layout_id`   | `string`    | Associated layout ID                       |
+| `brightness`  | `integer`   | Global brightness (0-100)                  |
 
 ---
 
@@ -1558,28 +1558,28 @@ GET /api/v1/profiles/:id
 
 **Full profile object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Profile identifier |
-| `name` | `string` | Display name |
-| `description` | `string` | Human-readable description |
-| `created_at` | `string` | ISO 8601 timestamp |
-| `updated_at` | `string` | ISO 8601 timestamp |
-| `effect` | `object` | Effect ID + control values snapshot |
-| `effect.id` | `string` | Effect identifier |
-| `effect.controls` | `object` | Saved control values |
-| `layout_id` | `string` | Layout to activate with this profile |
-| `devices` | `object` | Map of `device_id` to `{ "enabled": bool }` |
-| `inputs` | `object` | Input source configuration |
-| `inputs.audio` | `object` | `{ "enabled": bool, "source": string }` |
-| `inputs.screen` | `object` | `{ "enabled": bool }` |
-| `brightness` | `integer` | Global brightness (0-100) |
+| Field             | Type      | Description                                 |
+| ----------------- | --------- | ------------------------------------------- |
+| `id`              | `string`  | Profile identifier                          |
+| `name`            | `string`  | Display name                                |
+| `description`     | `string`  | Human-readable description                  |
+| `created_at`      | `string`  | ISO 8601 timestamp                          |
+| `updated_at`      | `string`  | ISO 8601 timestamp                          |
+| `effect`          | `object`  | Effect ID + control values snapshot         |
+| `effect.id`       | `string`  | Effect identifier                           |
+| `effect.controls` | `object`  | Saved control values                        |
+| `layout_id`       | `string`  | Layout to activate with this profile        |
+| `devices`         | `object`  | Map of `device_id` to `{ "enabled": bool }` |
+| `inputs`          | `object`  | Input source configuration                  |
+| `inputs.audio`    | `object`  | `{ "enabled": bool, "source": string }`     |
+| `inputs.screen`   | `object`  | `{ "enabled": bool }`                       |
+| `brightness`      | `integer` | Global brightness (0-100)                   |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Profile ID does not exist |
+| Status | Code        | Condition                 |
+| ------ | ----------- | ------------------------- |
+| 404    | `not_found` | Profile ID does not exist |
 
 ---
 
@@ -1617,15 +1617,15 @@ Creates a new profile from supplied values.
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | `string` | yes | Profile display name |
-| `description` | `string` | no | Description |
-| `effect` | `object` | no | Effect + controls. If omitted, captures current effect. |
-| `layout_id` | `string` | no | Layout ID. If omitted, uses current layout. |
-| `devices` | `object` | no | Device enable/disable map. If omitted, uses current state. |
-| `inputs` | `object` | no | Input config. If omitted, uses current state. |
-| `brightness` | `integer` | no | 0-100. If omitted, uses current brightness. |
+| Field         | Type      | Required | Description                                                |
+| ------------- | --------- | -------- | ---------------------------------------------------------- |
+| `name`        | `string`  | yes      | Profile display name                                       |
+| `description` | `string`  | no       | Description                                                |
+| `effect`      | `object`  | no       | Effect + controls. If omitted, captures current effect.    |
+| `layout_id`   | `string`  | no       | Layout ID. If omitted, uses current layout.                |
+| `devices`     | `object`  | no       | Device enable/disable map. If omitted, uses current state. |
+| `inputs`      | `object`  | no       | Input config. If omitted, uses current state.              |
+| `brightness`  | `integer` | no       | 0-100. If omitted, uses current brightness.                |
 
 **Response — `201 Created`:**
 
@@ -1633,10 +1633,10 @@ Returns the full profile object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 409 | `conflict` | Profile name already exists |
-| 422 | `validation_error` | Invalid values (unknown effect, brightness out of range, etc.) |
+| Status | Code               | Condition                                                      |
+| ------ | ------------------ | -------------------------------------------------------------- |
+| 409    | `conflict`         | Profile name already exists                                    |
+| 422    | `validation_error` | Invalid values (unknown effect, brightness out of range, etc.) |
 
 ---
 
@@ -1657,10 +1657,10 @@ Saves the current live system state as a new profile. Captures the active effect
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | `string` | yes | Profile name |
-| `description` | `string` | no | Description |
+| Field         | Type     | Required | Description  |
+| ------------- | -------- | -------- | ------------ |
+| `name`        | `string` | yes      | Profile name |
+| `description` | `string` | no       | Description  |
 
 **Response — `201 Created`:**
 
@@ -1668,9 +1668,9 @@ Returns the full profile object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 409 | `conflict` | Profile name already exists |
+| Status | Code       | Condition                   |
+| ------ | ---------- | --------------------------- |
+| 409    | `conflict` | Profile name already exists |
 
 ---
 
@@ -1690,10 +1690,10 @@ Returns the updated profile object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Profile does not exist |
-| 422 | `validation_error` | Invalid values |
+| Status | Code               | Condition              |
+| ------ | ------------------ | ---------------------- |
+| 404    | `not_found`        | Profile does not exist |
+| 422    | `validation_error` | Invalid values         |
 
 ---
 
@@ -1717,10 +1717,10 @@ DELETE /api/v1/profiles/:id
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Profile does not exist |
-| 409 | `conflict` | Profile is referenced by active scenes |
+| Status | Code        | Condition                              |
+| ------ | ----------- | -------------------------------------- |
+| 404    | `not_found` | Profile does not exist                 |
+| 409    | `conflict`  | Profile is referenced by active scenes |
 
 ---
 
@@ -1770,9 +1770,9 @@ Applies a profile: sets the effect, controls, layout, device states, input confi
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Profile does not exist |
+| Status | Code        | Condition              |
+| ------ | ----------- | ---------------------- |
+| 404    | `not_found` | Profile does not exist |
 
 ---
 
@@ -1792,9 +1792,9 @@ Returns the profile in a portable TOML format suitable for sharing or version co
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Profile does not exist |
+| Status | Code        | Condition              |
+| ------ | ----------- | ---------------------- |
+| 404    | `not_found` | Profile does not exist |
 
 ---
 
@@ -1808,12 +1808,12 @@ GET /api/v1/layouts
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `offset` | `integer` | `0` | Pagination offset |
-| `limit` | `integer` | `50` | Pagination limit |
-| `sort` | `string` | `"name"` | Sort field: `"name"`, `"created_at"` |
-| `order` | `string` | `"asc"` | `"asc"` or `"desc"` |
+| Parameter | Type      | Default  | Description                          |
+| --------- | --------- | -------- | ------------------------------------ |
+| `offset`  | `integer` | `0`      | Pagination offset                    |
+| `limit`   | `integer` | `50`     | Pagination limit                     |
+| `sort`    | `string`  | `"name"` | Sort field: `"name"`, `"created_at"` |
+| `order`   | `string`  | `"asc"`  | `"asc"` or `"desc"`                  |
 
 **Response — `200 OK`:**
 
@@ -1891,33 +1891,33 @@ Returns full layout with all zone positions.
 
 **Layout object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Layout identifier |
-| `name` | `string` | Display name |
-| `canvas_width` | `integer` | Canvas width in pixels (default: 320) |
-| `canvas_height` | `integer` | Canvas height in pixels (default: 200) |
-| `zones` | `LayoutZone[]` | Zone placement array |
+| Field           | Type           | Description                            |
+| --------------- | -------------- | -------------------------------------- |
+| `id`            | `string`       | Layout identifier                      |
+| `name`          | `string`       | Display name                           |
+| `canvas_width`  | `integer`      | Canvas width in pixels (default: 320)  |
+| `canvas_height` | `integer`      | Canvas height in pixels (default: 200) |
+| `zones`         | `LayoutZone[]` | Zone placement array                   |
 
 **LayoutZone object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `device_id` | `string` | Reference to the parent device |
-| `zone_id` | `string` | Reference to the device zone |
-| `position` | `{ x: float, y: float }` | Normalized position (0.0-1.0) on canvas |
-| `size` | `{ w: float, h: float }` | Normalized size (0.0-1.0) on canvas |
-| `rotation` | `float` | Rotation in degrees (0-360) |
-| `topology` | `string` | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
-| `led_count` | `integer` | Number of LEDs in this zone |
-| `mirror` | `boolean` | Mirror the sampled pixels |
-| `reverse` | `boolean` | Reverse LED order |
+| Field       | Type                     | Description                                             |
+| ----------- | ------------------------ | ------------------------------------------------------- |
+| `device_id` | `string`                 | Reference to the parent device                          |
+| `zone_id`   | `string`                 | Reference to the device zone                            |
+| `position`  | `{ x: float, y: float }` | Normalized position (0.0-1.0) on canvas                 |
+| `size`      | `{ w: float, h: float }` | Normalized size (0.0-1.0) on canvas                     |
+| `rotation`  | `float`                  | Rotation in degrees (0-360)                             |
+| `topology`  | `string`                 | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
+| `led_count` | `integer`                | Number of LEDs in this zone                             |
+| `mirror`    | `boolean`                | Mirror the sampled pixels                               |
+| `reverse`   | `boolean`                | Reverse LED order                                       |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Layout ID does not exist |
+| Status | Code        | Condition                |
+| ------ | ----------- | ------------------------ |
+| 404    | `not_found` | Layout ID does not exist |
 
 ---
 
@@ -1950,12 +1950,12 @@ POST /api/v1/layouts
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | `string` | yes | -- | Layout name |
-| `canvas_width` | `integer` | no | `320` | Canvas width |
-| `canvas_height` | `integer` | no | `200` | Canvas height |
-| `zones` | `LayoutZone[]` | yes | -- | Zone placement array |
+| Field           | Type           | Required | Default | Description          |
+| --------------- | -------------- | -------- | ------- | -------------------- |
+| `name`          | `string`       | yes      | --      | Layout name          |
+| `canvas_width`  | `integer`      | no       | `320`   | Canvas width         |
+| `canvas_height` | `integer`      | no       | `200`   | Canvas height        |
+| `zones`         | `LayoutZone[]` | yes      | --      | Zone placement array |
 
 **Response — `201 Created`:**
 
@@ -1963,10 +1963,10 @@ Returns the full layout object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 409 | `conflict` | Layout name already exists |
-| 422 | `validation_error` | Invalid zone references, positions out of range |
+| Status | Code               | Condition                                       |
+| ------ | ------------------ | ----------------------------------------------- |
+| 409    | `conflict`         | Layout name already exists                      |
+| 422    | `validation_error` | Invalid zone references, positions out of range |
 
 ---
 
@@ -1986,10 +1986,10 @@ Returns the updated layout object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Layout does not exist |
-| 422 | `validation_error` | Invalid zone references, positions out of range |
+| Status | Code               | Condition                                       |
+| ------ | ------------------ | ----------------------------------------------- |
+| 404    | `not_found`        | Layout does not exist                           |
+| 422    | `validation_error` | Invalid zone references, positions out of range |
 
 ---
 
@@ -2013,10 +2013,10 @@ DELETE /api/v1/layouts/:id
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Layout does not exist |
-| 409 | `conflict` | Layout is the currently active layout, or referenced by profiles |
+| Status | Code        | Condition                                                        |
+| ------ | ----------- | ---------------------------------------------------------------- |
+| 404    | `not_found` | Layout does not exist                                            |
+| 409    | `conflict`  | Layout is the currently active layout, or referenced by profiles |
 
 ---
 
@@ -2050,9 +2050,9 @@ Sets this layout as the active spatial mapping.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Layout does not exist |
+| Status | Code        | Condition             |
+| ------ | ----------- | --------------------- |
+| 404    | `not_found` | Layout does not exist |
 
 ---
 
@@ -2070,9 +2070,9 @@ Same schema as Get Layout.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | No layout is currently active |
+| Status | Code        | Condition                     |
+| ------ | ----------- | ----------------------------- |
+| 404    | `not_found` | No layout is currently active |
 
 ---
 
@@ -2086,15 +2086,15 @@ GET /api/v1/scenes
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `enabled` | `boolean` | -- | Filter by enabled/disabled state |
-| `trigger_type` | `string` | -- | Filter by trigger type: `"schedule"`, `"webhook"`, `"event"`, `"device"`, `"input"` |
-| `q` | `string` | -- | Search by name |
-| `offset` | `integer` | `0` | Pagination offset |
-| `limit` | `integer` | `50` | Pagination limit |
-| `sort` | `string` | `"name"` | Sort field: `"name"`, `"created_at"`, `"enabled"` |
-| `order` | `string` | `"asc"` | `"asc"` or `"desc"` |
+| Parameter      | Type      | Default  | Description                                                                         |
+| -------------- | --------- | -------- | ----------------------------------------------------------------------------------- |
+| `enabled`      | `boolean` | --       | Filter by enabled/disabled state                                                    |
+| `trigger_type` | `string`  | --       | Filter by trigger type: `"schedule"`, `"webhook"`, `"event"`, `"device"`, `"input"` |
+| `q`            | `string`  | --       | Search by name                                                                      |
+| `offset`       | `integer` | `0`      | Pagination offset                                                                   |
+| `limit`        | `integer` | `50`     | Pagination limit                                                                    |
+| `sort`         | `string`  | `"name"` | Sort field: `"name"`, `"created_at"`, `"enabled"`                                   |
+| `order`        | `string`  | `"asc"`  | `"asc"` or `"desc"`                                                                 |
 
 **Response — `200 OK`:**
 
@@ -2155,58 +2155,58 @@ Returns the full scene object (same schema as list items with all nested details
 
 **Scene object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Scene identifier |
-| `name` | `string` | Display name |
-| `enabled` | `boolean` | Whether the scene is actively listening for triggers |
-| `profile_id` | `string` | Profile to apply when triggered |
-| `trigger` | `Trigger` | Trigger configuration |
-| `conditions` | `Condition[]` | Additional conditions that must be met |
-| `transition` | `Transition` | How to transition when activating |
-| `last_triggered` | `string\|null` | ISO 8601 timestamp of last activation |
-| `created_at` | `string` | ISO 8601 creation timestamp |
-| `updated_at` | `string` | ISO 8601 last-modified timestamp |
+| Field            | Type           | Description                                          |
+| ---------------- | -------------- | ---------------------------------------------------- |
+| `id`             | `string`       | Scene identifier                                     |
+| `name`           | `string`       | Display name                                         |
+| `enabled`        | `boolean`      | Whether the scene is actively listening for triggers |
+| `profile_id`     | `string`       | Profile to apply when triggered                      |
+| `trigger`        | `Trigger`      | Trigger configuration                                |
+| `conditions`     | `Condition[]`  | Additional conditions that must be met               |
+| `transition`     | `Transition`   | How to transition when activating                    |
+| `last_triggered` | `string\|null` | ISO 8601 timestamp of last activation                |
+| `created_at`     | `string`       | ISO 8601 creation timestamp                          |
+| `updated_at`     | `string`       | ISO 8601 last-modified timestamp                     |
 
 **Trigger object schema:**
 
-| Field | Type | Present When | Description |
-|-------|------|--------------|-------------|
-| `type` | `string` | always | `"schedule"`, `"webhook"`, `"event"`, `"device"`, `"input"` |
-| `schedule` | `Schedule` | type=`schedule` | Schedule specification |
-| `secret` | `string` | type=`webhook` | Webhook authentication secret |
-| `event_type` | `string` | type=`event` | Internal event type to react to |
-| `filter` | `object` | type=`event` | Event data filter |
-| `device_id` | `string` | type=`device` | Device to watch |
-| `state` | `string` | type=`device` | `"connected"` or `"disconnected"` |
-| `source` | `string` | type=`input` | Input source: `"audio"`, `"screen"`, `"keyboard"` |
-| `threshold` | `float` | type=`input` | Activation threshold (0.0-1.0) |
+| Field        | Type       | Present When    | Description                                                 |
+| ------------ | ---------- | --------------- | ----------------------------------------------------------- |
+| `type`       | `string`   | always          | `"schedule"`, `"webhook"`, `"event"`, `"device"`, `"input"` |
+| `schedule`   | `Schedule` | type=`schedule` | Schedule specification                                      |
+| `secret`     | `string`   | type=`webhook`  | Webhook authentication secret                               |
+| `event_type` | `string`   | type=`event`    | Internal event type to react to                             |
+| `filter`     | `object`   | type=`event`    | Event data filter                                           |
+| `device_id`  | `string`   | type=`device`   | Device to watch                                             |
+| `state`      | `string`   | type=`device`   | `"connected"` or `"disconnected"`                           |
+| `source`     | `string`   | type=`input`    | Input source: `"audio"`, `"screen"`, `"keyboard"`           |
+| `threshold`  | `float`    | type=`input`    | Activation threshold (0.0-1.0)                              |
 
 **Schedule object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `string` | `"cron"` or `"solar"` |
-| `cron` | `string` | Cron expression (when type=`cron`) |
-| `event` | `string` | `"sunrise"` or `"sunset"` (when type=`solar`) |
-| `offset_minutes` | `integer` | Offset from solar event in minutes |
+| Field            | Type      | Description                                   |
+| ---------------- | --------- | --------------------------------------------- |
+| `type`           | `string`  | `"cron"` or `"solar"`                         |
+| `cron`           | `string`  | Cron expression (when type=`cron`)            |
+| `event`          | `string`  | `"sunrise"` or `"sunset"` (when type=`solar`) |
+| `offset_minutes` | `integer` | Offset from solar event in minutes            |
 
 **Condition object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `string` | `"time_range"`, `"day_of_week"`, `"device_state"` |
-| `after` | `string` | Start time `"HH:MM"` (when type=`time_range`) |
-| `before` | `string` | End time `"HH:MM"` (when type=`time_range`) |
-| `days` | `string[]` | Days of week (when type=`day_of_week`) |
-| `device_id` | `string` | Device ID (when type=`device_state`) |
-| `state` | `string` | Required state (when type=`device_state`) |
+| Field       | Type       | Description                                       |
+| ----------- | ---------- | ------------------------------------------------- |
+| `type`      | `string`   | `"time_range"`, `"day_of_week"`, `"device_state"` |
+| `after`     | `string`   | Start time `"HH:MM"` (when type=`time_range`)     |
+| `before`    | `string`   | End time `"HH:MM"` (when type=`time_range`)       |
+| `days`      | `string[]` | Days of week (when type=`day_of_week`)            |
+| `device_id` | `string`   | Device ID (when type=`device_state`)              |
+| `state`     | `string`   | Required state (when type=`device_state`)         |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Scene ID does not exist |
+| Status | Code        | Condition               |
+| ------ | ----------- | ----------------------- |
+| 404    | `not_found` | Scene ID does not exist |
 
 ---
 
@@ -2244,14 +2244,14 @@ POST /api/v1/scenes
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | `string` | yes | -- | Scene name |
-| `profile_id` | `string` | yes | -- | Profile to apply |
-| `trigger` | `Trigger` | yes | -- | Trigger configuration |
-| `conditions` | `Condition[]` | no | `[]` | Additional conditions |
-| `transition` | `Transition` | no | `{ "type": "crossfade", "duration_ms": 1000 }` | Transition spec |
-| `enabled` | `boolean` | no | `true` | Whether the scene is active |
+| Field        | Type          | Required | Default                                        | Description                 |
+| ------------ | ------------- | -------- | ---------------------------------------------- | --------------------------- |
+| `name`       | `string`      | yes      | --                                             | Scene name                  |
+| `profile_id` | `string`      | yes      | --                                             | Profile to apply            |
+| `trigger`    | `Trigger`     | yes      | --                                             | Trigger configuration       |
+| `conditions` | `Condition[]` | no       | `[]`                                           | Additional conditions       |
+| `transition` | `Transition`  | no       | `{ "type": "crossfade", "duration_ms": 1000 }` | Transition spec             |
+| `enabled`    | `boolean`     | no       | `true`                                         | Whether the scene is active |
 
 **Response — `201 Created`:**
 
@@ -2259,10 +2259,10 @@ Returns the full scene object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Referenced profile_id does not exist |
-| 422 | `validation_error` | Invalid trigger, condition, or transition values |
+| Status | Code               | Condition                                        |
+| ------ | ------------------ | ------------------------------------------------ |
+| 404    | `not_found`        | Referenced profile_id does not exist             |
+| 422    | `validation_error` | Invalid trigger, condition, or transition values |
 
 ---
 
@@ -2282,10 +2282,10 @@ Returns the updated scene object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Scene does not exist |
-| 422 | `validation_error` | Invalid values |
+| Status | Code               | Condition            |
+| ------ | ------------------ | -------------------- |
+| 404    | `not_found`        | Scene does not exist |
+| 422    | `validation_error` | Invalid values       |
 
 ---
 
@@ -2309,9 +2309,9 @@ DELETE /api/v1/scenes/:id
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Scene does not exist |
+| Status | Code        | Condition            |
+| ------ | ----------- | -------------------- |
+| 404    | `not_found` | Scene does not exist |
 
 ---
 
@@ -2349,9 +2349,9 @@ Manually triggers a scene, applying its profile with its configured transition. 
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Scene does not exist |
+| Status | Code        | Condition            |
+| ------ | ----------- | -------------------- |
+| 404    | `not_found` | Scene does not exist |
 
 ---
 
@@ -2383,9 +2383,9 @@ PATCH /api/v1/scenes/:id/enabled
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Scene does not exist |
+| Status | Code        | Condition            |
+| ------ | ----------- | -------------------- |
+| 404    | `not_found` | Scene does not exist |
 
 ---
 
@@ -2437,14 +2437,14 @@ Returns all available input sources (audio capture, screen capture, keyboard).
 
 **Input summary object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Input source identifier |
-| `type` | `string` | `"audio"`, `"screen"`, `"keyboard"` |
-| `name` | `string` | Display name |
-| `enabled` | `boolean` | Whether this input is active |
-| `status` | `string` | `"active"`, `"disabled"`, `"error"`, `"initializing"` |
-| `device_name` | `string` | Underlying hardware/system device name |
+| Field         | Type      | Description                                           |
+| ------------- | --------- | ----------------------------------------------------- |
+| `id`          | `string`  | Input source identifier                               |
+| `type`        | `string`  | `"audio"`, `"screen"`, `"keyboard"`                   |
+| `name`        | `string`  | Display name                                          |
+| `enabled`     | `boolean` | Whether this input is active                          |
+| `status`      | `string`  | `"active"`, `"disabled"`, `"error"`, `"initializing"` |
+| `device_name` | `string`  | Underlying hardware/system device name                |
 
 ---
 
@@ -2513,31 +2513,31 @@ Returns full input details including configuration and live levels.
 
 **Audio config object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `fft_size` | `integer` | FFT window size (power of 2: 512, 1024, 2048, 4096) |
-| `smoothing` | `float` | Temporal smoothing factor (0.0-1.0, higher = smoother) |
-| `noise_gate` | `float` | Minimum level threshold (0.0-1.0) |
-| `frequency_range` | `{ min, max }` | Frequency range in Hz |
-| `gain` | `float` | Input gain multiplier (0.1-10.0) |
-| `beat_sensitivity` | `float` | Beat detection sensitivity (0.0-1.0) |
+| Field              | Type           | Description                                            |
+| ------------------ | -------------- | ------------------------------------------------------ |
+| `fft_size`         | `integer`      | FFT window size (power of 2: 512, 1024, 2048, 4096)    |
+| `smoothing`        | `float`        | Temporal smoothing factor (0.0-1.0, higher = smoother) |
+| `noise_gate`       | `float`        | Minimum level threshold (0.0-1.0)                      |
+| `frequency_range`  | `{ min, max }` | Frequency range in Hz                                  |
+| `gain`             | `float`        | Input gain multiplier (0.1-10.0)                       |
+| `beat_sensitivity` | `float`        | Beat detection sensitivity (0.0-1.0)                   |
 
 **Audio levels object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `level` | `float` | Overall RMS level (0.0-1.0) |
-| `bass` | `float` | Low frequency energy (0.0-1.0) |
-| `mid` | `float` | Mid frequency energy (0.0-1.0) |
-| `treble` | `float` | High frequency energy (0.0-1.0) |
-| `beat` | `boolean` | Whether a beat is detected this frame |
-| `beat_confidence` | `float` | Beat detection confidence (0.0-1.0) |
+| Field             | Type      | Description                           |
+| ----------------- | --------- | ------------------------------------- |
+| `level`           | `float`   | Overall RMS level (0.0-1.0)           |
+| `bass`            | `float`   | Low frequency energy (0.0-1.0)        |
+| `mid`             | `float`   | Mid frequency energy (0.0-1.0)        |
+| `treble`          | `float`   | High frequency energy (0.0-1.0)       |
+| `beat`            | `boolean` | Whether a beat is detected this frame |
+| `beat_confidence` | `float`   | Beat detection confidence (0.0-1.0)   |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Input ID does not exist |
+| Status | Code        | Condition               |
+| ------ | ----------- | ----------------------- |
+| 404    | `not_found` | Input ID does not exist |
 
 ---
 
@@ -2578,10 +2578,10 @@ Returns the updated input object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Input does not exist |
-| 422 | `validation_error` | Invalid config values |
+| Status | Code               | Condition             |
+| ------ | ------------------ | --------------------- |
+| 404    | `not_found`        | Input does not exist  |
+| 422    | `validation_error` | Invalid config values |
 
 ---
 
@@ -2610,11 +2610,11 @@ Starts the input source (begins audio capture, screen capture, or keyboard monit
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Input does not exist |
-| 409 | `conflict` | Input is already enabled |
-| 500 | `internal_error` | Failed to initialize input source |
+| Status | Code             | Condition                         |
+| ------ | ---------------- | --------------------------------- |
+| 404    | `not_found`      | Input does not exist              |
+| 409    | `conflict`       | Input is already enabled          |
+| 500    | `internal_error` | Failed to initialize input source |
 
 ---
 
@@ -2643,9 +2643,9 @@ Stops the input source.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 404 | `not_found` | Input does not exist |
+| Status | Code        | Condition            |
+| ------ | ----------- | -------------------- |
+| 404    | `not_found` | Input does not exist |
 
 ---
 
@@ -2680,20 +2680,20 @@ Returns the current audio spectrum snapshot. For real-time spectrum data, use th
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `timestamp` | `string` | ISO 8601 timestamp of the snapshot |
-| `levels` | `AudioLevels` | Aggregated frequency band levels |
-| `bins` | `float[]` | FFT magnitude bins (mel-scaled, 0.0-1.0) |
-| `bin_count` | `integer` | Number of frequency bins |
-| `frequency_range` | `{ min, max }` | Frequency range in Hz |
-| `bpm` | `float\|null` | Estimated BPM if beat tracking is active |
+| Field             | Type           | Description                              |
+| ----------------- | -------------- | ---------------------------------------- |
+| `timestamp`       | `string`       | ISO 8601 timestamp of the snapshot       |
+| `levels`          | `AudioLevels`  | Aggregated frequency band levels         |
+| `bins`            | `float[]`      | FFT magnitude bins (mel-scaled, 0.0-1.0) |
+| `bin_count`       | `integer`      | Number of frequency bins                 |
+| `frequency_range` | `{ min, max }` | Frequency range in Hz                    |
+| `bpm`             | `float\|null`  | Estimated BPM if beat tracking is active |
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 409 | `conflict` | Audio input is not enabled |
+| Status | Code       | Condition                  |
+| ------ | ---------- | -------------------------- |
+| 409    | `conflict` | Audio input is not enabled |
 
 ---
 
@@ -2747,9 +2747,9 @@ Returns the full audio config object.
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 422 | `validation_error` | Values out of range |
+| Status | Code               | Condition           |
+| ------ | ------------------ | ------------------- |
+| 422    | `validation_error` | Values out of range |
 
 ---
 
@@ -2806,24 +2806,24 @@ Returns a full snapshot of the daemon's current state.
 
 **State object schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `running` | `boolean` | Whether the daemon is fully initialized |
-| `paused` | `boolean` | Whether rendering is paused |
-| `brightness` | `integer` | Global brightness (0-100) |
-| `fps.target` | `integer` | Target frames per second |
-| `fps.actual` | `float` | Measured FPS over the last second |
-| `effect` | `EffectRef\|null` | Currently active effect (`{ "id", "name" }`) |
-| `profile` | `ProfileRef\|null` | Currently active profile (`{ "id", "name" }`) |
-| `layout` | `LayoutRef\|null` | Currently active layout (`{ "id", "name" }`) |
-| `devices.connected` | `integer` | Number of connected devices |
-| `devices.total` | `integer` | Number of known devices (connected + disconnected) |
-| `devices.total_leds` | `integer` | Sum of LEDs across connected devices |
-| `inputs.audio` | `string` | `"active"`, `"disabled"`, `"error"` |
-| `inputs.screen` | `string` | `"active"`, `"disabled"`, `"error"` |
-| `inputs.keyboard` | `string` | `"active"`, `"disabled"`, `"error"` |
-| `uptime_seconds` | `integer` | Seconds since daemon started |
-| `version` | `string` | Daemon version string |
+| Field                | Type               | Description                                        |
+| -------------------- | ------------------ | -------------------------------------------------- |
+| `running`            | `boolean`          | Whether the daemon is fully initialized            |
+| `paused`             | `boolean`          | Whether rendering is paused                        |
+| `brightness`         | `integer`          | Global brightness (0-100)                          |
+| `fps.target`         | `integer`          | Target frames per second                           |
+| `fps.actual`         | `float`            | Measured FPS over the last second                  |
+| `effect`             | `EffectRef\|null`  | Currently active effect (`{ "id", "name" }`)       |
+| `profile`            | `ProfileRef\|null` | Currently active profile (`{ "id", "name" }`)      |
+| `layout`             | `LayoutRef\|null`  | Currently active layout (`{ "id", "name" }`)       |
+| `devices.connected`  | `integer`          | Number of connected devices                        |
+| `devices.total`      | `integer`          | Number of known devices (connected + disconnected) |
+| `devices.total_leds` | `integer`          | Sum of LEDs across connected devices               |
+| `inputs.audio`       | `string`           | `"active"`, `"disabled"`, `"error"`                |
+| `inputs.screen`      | `string`           | `"active"`, `"disabled"`, `"error"`                |
+| `inputs.keyboard`    | `string`           | `"active"`, `"disabled"`, `"error"`                |
+| `uptime_seconds`     | `integer`          | Seconds since daemon started                       |
+| `version`            | `string`           | Daemon version string                              |
 
 ---
 
@@ -2932,9 +2932,9 @@ PATCH /api/v1/state/brightness
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `brightness` | `integer` | yes | Global brightness (0-100) |
+| Field        | Type      | Required | Description               |
+| ------------ | --------- | -------- | ------------------------- |
+| `brightness` | `integer` | yes      | Global brightness (0-100) |
 
 **Response — `200 OK`:**
 
@@ -2950,9 +2950,9 @@ PATCH /api/v1/state/brightness
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 422 | `validation_error` | Brightness out of 0-100 range |
+| Status | Code               | Condition                     |
+| ------ | ------------------ | ----------------------------- |
+| 422    | `validation_error` | Brightness out of 0-100 range |
 
 ---
 
@@ -2970,9 +2970,9 @@ PATCH /api/v1/state/fps
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `fps` | `integer` | yes | Target FPS (1-120) |
+| Field | Type      | Required | Description        |
+| ----- | --------- | -------- | ------------------ |
+| `fps` | `integer` | yes      | Target FPS (1-120) |
 
 **Response — `200 OK`:**
 
@@ -2991,9 +2991,9 @@ PATCH /api/v1/state/fps
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 422 | `validation_error` | FPS out of 1-120 range |
+| Status | Code               | Condition              |
+| ------ | ------------------ | ---------------------- |
+| 422    | `validation_error` | FPS out of 1-120 range |
 
 ---
 
@@ -3092,18 +3092,18 @@ Execute multiple API operations in a single request. Operations can optionally b
 
 **Operation object schema:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `method` | `string` | yes | HTTP method: `"GET"`, `"POST"`, `"PATCH"`, `"PUT"`, `"DELETE"` |
-| `path` | `string` | yes | API path relative to `/api/v1` (without the prefix) |
-| `body` | `object` | no | Request body (for POST/PATCH/PUT) |
+| Field    | Type     | Required | Description                                                    |
+| -------- | -------- | -------- | -------------------------------------------------------------- |
+| `method` | `string` | yes      | HTTP method: `"GET"`, `"POST"`, `"PATCH"`, `"PUT"`, `"DELETE"` |
+| `path`   | `string` | yes      | API path relative to `/api/v1` (without the prefix)            |
+| `body`   | `object` | no       | Request body (for POST/PATCH/PUT)                              |
 
 **Top-level fields:**
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `operations` | `Operation[]` | yes | -- | Ordered list of operations (max: 20) |
-| `atomic` | `boolean` | no | `false` | If true, all operations must succeed or all are rolled back |
+| Field        | Type          | Required | Default | Description                                                 |
+| ------------ | ------------- | -------- | ------- | ----------------------------------------------------------- |
+| `operations` | `Operation[]` | yes      | --      | Ordered list of operations (max: 20)                        |
+| `atomic`     | `boolean`     | no       | `false` | If true, all operations must succeed or all are rolled back |
 
 **Response — `200 OK`:**
 
@@ -3190,11 +3190,11 @@ When `atomic: true` and any operation fails, all operations are rolled back:
 
 **Error responses:**
 
-| Status | Code | Condition |
-|--------|------|-----------|
-| 400 | `bad_request` | Empty operations array or exceeds max (20) |
-| 422 | `validation_error` | Invalid operation method or path format |
-| 429 | `rate_limited` | Bulk rate limit exceeded (10/min) |
+| Status | Code               | Condition                                  |
+| ------ | ------------------ | ------------------------------------------ |
+| 400    | `bad_request`      | Empty operations array or exceeds max (20) |
+| 422    | `validation_error` | Invalid operation method or path format    |
+| 429    | `rate_limited`     | Bulk rate limit exceeded (10/min)          |
 
 ---
 
@@ -3268,19 +3268,26 @@ On connection, the server immediately sends a `hello` message with a full state 
     "device_count": 5,
     "total_leds": 842
   },
-  "capabilities": ["frames", "spectrum", "events", "commands", "canvas", "metrics"],
+  "capabilities": [
+    "frames",
+    "spectrum",
+    "events",
+    "commands",
+    "canvas",
+    "metrics"
+  ],
   "subscriptions": ["events"]
 }
 ```
 
 **Hello message schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `string` | Always `"hello"` |
-| `version` | `string` | WebSocket protocol version (`"1.0"`) |
-| `state` | `object` | Current daemon state snapshot |
-| `capabilities` | `string[]` | Channels this server supports |
+| Field           | Type       | Description                                                             |
+| --------------- | ---------- | ----------------------------------------------------------------------- |
+| `type`          | `string`   | Always `"hello"`                                                        |
+| `version`       | `string`   | WebSocket protocol version (`"1.0"`)                                    |
+| `state`         | `object`   | Current daemon state snapshot                                           |
+| `capabilities`  | `string[]` | Channels this server supports                                           |
 | `subscriptions` | `string[]` | Channels this client is initially subscribed to (default: `["events"]`) |
 
 ---
@@ -3311,24 +3318,24 @@ Clients control bandwidth by subscribing to specific channels. By default, only 
 
 **Subscribe message schema:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | `string` | yes | `"subscribe"` |
-| `channels` | `string[]` | yes | Channels to subscribe to |
-| `config` | `object` | no | Per-channel configuration |
+| Field      | Type       | Required | Description               |
+| ---------- | ---------- | -------- | ------------------------- |
+| `type`     | `string`   | yes      | `"subscribe"`             |
+| `channels` | `string[]` | yes      | Channels to subscribe to  |
+| `config`   | `object`   | no       | Per-channel configuration |
 
 **Channel configuration options:**
 
-| Channel | Config Field | Type | Default | Description |
-|---------|-------------|------|---------|-------------|
-| `frames` | `fps` | `integer` | `30` | Frame delivery rate (1-60) |
-| `frames` | `format` | `string` | `"binary"` | `"binary"` (compact) or `"json"` (debug) |
-| `frames` | `zones` | `string[]` | `["all"]` | Specific zone IDs or `["all"]` |
-| `spectrum` | `fps` | `integer` | `30` | Spectrum delivery rate (1-60) |
-| `spectrum` | `bins` | `integer` | `64` | Number of frequency bins (8, 16, 32, 64, 128) |
-| `canvas` | `fps` | `integer` | `15` | Canvas delivery rate (1-30) |
-| `canvas` | `format` | `string` | `"rgb"` | `"rgb"` (3 bytes/pixel) or `"rgba"` (4 bytes/pixel) |
-| `metrics` | `interval_ms` | `integer` | `1000` | Metrics push interval (100-10000) |
+| Channel    | Config Field  | Type       | Default    | Description                                         |
+| ---------- | ------------- | ---------- | ---------- | --------------------------------------------------- |
+| `frames`   | `fps`         | `integer`  | `30`       | Frame delivery rate (1-60)                          |
+| `frames`   | `format`      | `string`   | `"binary"` | `"binary"` (compact) or `"json"` (debug)            |
+| `frames`   | `zones`       | `string[]` | `["all"]`  | Specific zone IDs or `["all"]`                      |
+| `spectrum` | `fps`         | `integer`  | `30`       | Spectrum delivery rate (1-60)                       |
+| `spectrum` | `bins`        | `integer`  | `64`       | Number of frequency bins (8, 16, 32, 64, 128)       |
+| `canvas`   | `fps`         | `integer`  | `15`       | Canvas delivery rate (1-30)                         |
+| `canvas`   | `format`      | `string`   | `"rgb"`    | `"rgb"` (3 bytes/pixel) or `"rgba"` (4 bytes/pixel) |
+| `metrics`  | `interval_ms` | `integer`  | `1000`     | Metrics push interval (100-10000)                   |
 
 **Subscribe acknowledgment (server -> client):**
 
@@ -3364,13 +3371,13 @@ Clients control bandwidth by subscribing to specific channels. By default, only 
 
 ### 14.4 Available Channels
 
-| Channel | Data Type | Default FPS | Description |
-|---------|-----------|-------------|-------------|
-| `frames` | Binary | 30 | LED color data for all (or selected) zones |
-| `spectrum` | Binary | 30 | Audio FFT spectrum data |
-| `events` | JSON | N/A (push) | System events (device, effect, profile changes) |
-| `canvas` | Binary | 15 | Raw 320x200 canvas pixels (for UI preview) |
-| `metrics` | JSON | 1 Hz | Performance metrics (FPS, latency, memory) |
+| Channel    | Data Type | Default FPS | Description                                     |
+| ---------- | --------- | ----------- | ----------------------------------------------- |
+| `frames`   | Binary    | 30          | LED color data for all (or selected) zones      |
+| `spectrum` | Binary    | 30          | Audio FFT spectrum data                         |
+| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes) |
+| `canvas`   | Binary    | 15          | Raw 320x200 canvas pixels (for UI preview)      |
+| `metrics`  | JSON      | 1 Hz        | Performance metrics (FPS, latency, memory)      |
 
 ---
 
@@ -3453,41 +3460,41 @@ Events are pushed to clients subscribed to the `events` channel. All events use 
 
 **Event message schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `string` | Always `"event"` |
-| `event` | `string` | Event type identifier |
+| Field       | Type     | Description                                   |
+| ----------- | -------- | --------------------------------------------- |
+| `type`      | `string` | Always `"event"`                              |
+| `event`     | `string` | Event type identifier                         |
 | `timestamp` | `string` | ISO 8601 timestamp with millisecond precision |
-| `data` | `object` | Event-specific payload |
+| `data`      | `object` | Event-specific payload                        |
 
 **Event types:**
 
-| Event | Data Fields | Description |
-|-------|-------------|-------------|
-| `effect_changed` | `previous`, `current`, `trigger` | Active effect changed |
-| `effect_control_changed` | `effect_id`, `control_id`, `old_value`, `new_value` | Control value updated |
-| `device_connected` | `device_id`, `name`, `backend`, `led_count` | Device came online |
-| `device_disconnected` | `device_id`, `reason` | Device went offline |
-| `device_discovery_started` | `backends` | Discovery scan began |
-| `device_discovery_completed` | `found`, `duration_ms` | Discovery scan finished |
-| `device_error` | `device_id`, `error`, `recoverable` | Device communication error |
-| `profile_applied` | `profile_id`, `profile_name`, `trigger` | Profile activated |
-| `profile_saved` | `profile_id`, `profile_name` | New profile created/updated |
-| `profile_deleted` | `profile_id` | Profile removed |
-| `scene_triggered` | `scene_id`, `scene_name`, `trigger_type` | Scene automation fired |
-| `scene_enabled` | `scene_id`, `enabled` | Scene toggled on/off |
-| `layout_changed` | `previous`, `current` | Active layout changed |
-| `layout_updated` | `layout_id` | Layout zones modified |
-| `input_source_changed` | `input_id`, `input_type`, `enabled` | Input enabled/disabled |
-| `audio_beat` | `confidence`, `bpm` | Beat detected |
-| `brightness_changed` | `old`, `new` | Global brightness changed |
-| `fps_changed` | `target` | Target FPS changed |
-| `paused` | -- | Rendering paused |
-| `resumed` | -- | Rendering resumed |
-| `daemon_started` | `version`, `device_count` | Daemon initialized |
-| `daemon_shutdown` | `reason` | Daemon shutting down |
-| `error` | `code`, `message`, `severity` | System error (`"warning"`, `"error"`, `"critical"`) |
-| `webhook_received` | `webhook_id`, `source` | External webhook fired |
+| Event                        | Data Fields                                         | Description                                         |
+| ---------------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| `effect_changed`             | `previous`, `current`, `trigger`                    | Active effect changed                               |
+| `effect_control_changed`     | `effect_id`, `control_id`, `old_value`, `new_value` | Control value updated                               |
+| `device_connected`           | `device_id`, `name`, `backend`, `led_count`         | Device came online                                  |
+| `device_disconnected`        | `device_id`, `reason`                               | Device went offline                                 |
+| `device_discovery_started`   | `backends`                                          | Discovery scan began                                |
+| `device_discovery_completed` | `found`, `duration_ms`                              | Discovery scan finished                             |
+| `device_error`               | `device_id`, `error`, `recoverable`                 | Device communication error                          |
+| `profile_applied`            | `profile_id`, `profile_name`, `trigger`             | Profile activated                                   |
+| `profile_saved`              | `profile_id`, `profile_name`                        | New profile created/updated                         |
+| `profile_deleted`            | `profile_id`                                        | Profile removed                                     |
+| `scene_triggered`            | `scene_id`, `scene_name`, `trigger_type`            | Scene automation fired                              |
+| `scene_enabled`              | `scene_id`, `enabled`                               | Scene toggled on/off                                |
+| `layout_changed`             | `previous`, `current`                               | Active layout changed                               |
+| `layout_updated`             | `layout_id`                                         | Layout zones modified                               |
+| `input_source_changed`       | `input_id`, `input_type`, `enabled`                 | Input enabled/disabled                              |
+| `audio_beat`                 | `confidence`, `bpm`                                 | Beat detected                                       |
+| `brightness_changed`         | `old`, `new`                                        | Global brightness changed                           |
+| `fps_changed`                | `target`                                            | Target FPS changed                                  |
+| `paused`                     | --                                                  | Rendering paused                                    |
+| `resumed`                    | --                                                  | Rendering resumed                                   |
+| `daemon_started`             | `version`, `device_count`                           | Daemon initialized                                  |
+| `daemon_shutdown`            | `reason`                                            | Daemon shutting down                                |
+| `error`                      | `code`, `message`, `severity`                       | System error (`"warning"`, `"error"`, `"critical"`) |
+| `webhook_received`           | `webhook_id`, `source`                              | External webhook fired                              |
 
 ---
 
@@ -3559,13 +3566,13 @@ Clients can send REST-equivalent commands over the WebSocket connection, avoidin
 
 **Command message schema:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | `string` | yes | `"command"` |
-| `id` | `string` | yes | Client-generated correlation ID |
-| `method` | `string` | yes | HTTP method: `"GET"`, `"POST"`, `"PATCH"`, `"PUT"`, `"DELETE"` |
-| `path` | `string` | yes | API path relative to `/api/v1` |
-| `body` | `object` | no | Request body |
+| Field    | Type     | Required | Description                                                    |
+| -------- | -------- | -------- | -------------------------------------------------------------- |
+| `type`   | `string` | yes      | `"command"`                                                    |
+| `id`     | `string` | yes      | Client-generated correlation ID                                |
+| `method` | `string` | yes      | HTTP method: `"GET"`, `"POST"`, `"PATCH"`, `"PUT"`, `"DELETE"` |
+| `path`   | `string` | yes      | API path relative to `/api/v1`                                 |
+| `body`   | `object` | no       | Request body                                                   |
 
 **Response message (server -> client):**
 
@@ -3598,13 +3605,13 @@ Clients can send REST-equivalent commands over the WebSocket connection, avoidin
 
 **Response message schema:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `string` | Always `"response"` |
-| `id` | `string` | Matches the command's `id` |
+| Field    | Type      | Description                 |
+| -------- | --------- | --------------------------- |
+| `type`   | `string`  | Always `"response"`         |
+| `id`     | `string`  | Matches the command's `id`  |
 | `status` | `integer` | HTTP-equivalent status code |
-| `data` | `object` | Response data (on success) |
-| `error` | `object` | Error object (on failure) |
+| `data`   | `object`  | Response data (on success)  |
+| `error`  | `object`  | Error object (on failure)   |
 
 ---
 
@@ -3676,22 +3683,22 @@ Clients may also send ping frames; the server will respond with pong.
 
 ### 14.12 WebSocket Message Summary
 
-| Direction | Type | Format | Description |
-|-----------|------|--------|-------------|
-| S -> C | `hello` | JSON | Initial state on connect |
-| C -> S | `subscribe` | JSON | Subscribe to channels |
-| S -> C | `subscribed` | JSON | Subscription acknowledgment |
-| C -> S | `unsubscribe` | JSON | Unsubscribe from channels |
-| S -> C | `unsubscribed` | JSON | Unsubscribe acknowledgment |
-| S -> C | `0x01` | Binary | LED frame data |
-| S -> C | `0x02` | Binary | Audio spectrum data |
-| S -> C | `0x03` | Binary | Canvas pixel data |
-| S -> C | `event` | JSON | System event notification |
-| S -> C | `metrics` | JSON | Performance metrics |
-| C -> S | `command` | JSON | REST-equivalent command |
-| S -> C | `response` | JSON | Command response |
-| S -> C | `backpressure` | JSON | Backpressure warning |
-| S -> C | `subscription_downgraded` | JSON | Auto-downgrade notification |
+| Direction | Type                      | Format | Description                 |
+| --------- | ------------------------- | ------ | --------------------------- |
+| S -> C    | `hello`                   | JSON   | Initial state on connect    |
+| C -> S    | `subscribe`               | JSON   | Subscribe to channels       |
+| S -> C    | `subscribed`              | JSON   | Subscription acknowledgment |
+| C -> S    | `unsubscribe`             | JSON   | Unsubscribe from channels   |
+| S -> C    | `unsubscribed`            | JSON   | Unsubscribe acknowledgment  |
+| S -> C    | `0x01`                    | Binary | LED frame data              |
+| S -> C    | `0x02`                    | Binary | Audio spectrum data         |
+| S -> C    | `0x03`                    | Binary | Canvas pixel data           |
+| S -> C    | `event`                   | JSON   | System event notification   |
+| S -> C    | `metrics`                 | JSON   | Performance metrics         |
+| C -> S    | `command`                 | JSON   | REST-equivalent command     |
+| S -> C    | `response`                | JSON   | Command response            |
+| S -> C    | `backpressure`            | JSON   | Backpressure warning        |
+| S -> C    | `subscription_downgraded` | JSON   | Auto-downgrade notification |
 
 ---
 
@@ -3777,16 +3784,16 @@ ApiResponse:
     data:
       description: Response payload (varies per endpoint)
     meta:
-      $ref: '#/components/schemas/ResponseMeta'
+      $ref: "#/components/schemas/ResponseMeta"
 
 ApiError:
   type: object
   required: [error, meta]
   properties:
     error:
-      $ref: '#/components/schemas/ErrorDetail'
+      $ref: "#/components/schemas/ErrorDetail"
     meta:
-      $ref: '#/components/schemas/ResponseMeta'
+      $ref: "#/components/schemas/ResponseMeta"
 
 ResponseMeta:
   type: object
@@ -3808,8 +3815,18 @@ ErrorDetail:
   properties:
     code:
       type: string
-      enum: [bad_request, unauthorized, forbidden, not_found, conflict,
-             validation_error, rate_limited, internal_error, unavailable]
+      enum:
+        [
+          bad_request,
+          unauthorized,
+          forbidden,
+          not_found,
+          conflict,
+          validation_error,
+          rate_limited,
+          internal_error,
+          unavailable,
+        ]
     message:
       type: string
     details:
@@ -3823,7 +3840,7 @@ PaginatedResponse:
     items:
       type: array
     pagination:
-      $ref: '#/components/schemas/PaginationMeta'
+      $ref: "#/components/schemas/PaginationMeta"
 
 PaginationMeta:
   type: object
@@ -3843,78 +3860,78 @@ PaginationMeta:
 
 ## Appendix A: Complete Endpoint Reference
 
-| Method | Path | Description |
-|--------|------|-------------|
-| **Devices** | | |
-| `GET` | `/devices` | List all devices |
-| `GET` | `/devices/:id` | Get device details |
-| `PATCH` | `/devices/:id` | Update device config |
-| `DELETE` | `/devices/:id` | Remove device |
-| `POST` | `/devices/discover` | Trigger discovery scan |
-| `GET` | `/devices/:id/zones` | List device zones |
-| `GET` | `/devices/:id/zones/:zone_id` | Get zone details |
-| `PATCH` | `/devices/:id/zones/:zone_id` | Update zone config |
-| `POST` | `/devices/:id/identify` | Flash device for identification |
-| `POST` | `/devices/:id/test` | Send test color frame |
-| **Effects** | | |
-| `GET` | `/effects` | List effects |
-| `GET` | `/effects/:id` | Get effect details + controls |
-| `POST` | `/effects/:id/apply` | Apply effect |
-| `GET` | `/effects/current` | Get current effect |
-| `PATCH` | `/effects/current/controls` | Update active controls |
-| `GET` | `/effects/:id/presets` | List presets |
-| `POST` | `/effects/:id/presets` | Create preset |
-| `PATCH` | `/effects/:id/presets/:name` | Update preset |
-| `DELETE` | `/effects/:id/presets/:name` | Delete preset |
-| `POST` | `/effects/:id/presets/:name/apply` | Apply preset |
-| `POST` | `/effects/next` | Next in history |
-| `POST` | `/effects/previous` | Previous in history |
-| `POST` | `/effects/shuffle` | Random effect |
-| `GET` | `/effects/:id/thumbnail` | Get effect thumbnail |
-| **Profiles** | | |
-| `GET` | `/profiles` | List profiles |
-| `GET` | `/profiles/:id` | Get profile details |
-| `POST` | `/profiles` | Create profile |
-| `PUT` | `/profiles/:id` | Update profile |
-| `DELETE` | `/profiles/:id` | Delete profile |
-| `POST` | `/profiles/:id/apply` | Apply profile |
-| `POST` | `/profiles/snapshot` | Save current state as profile |
-| `GET` | `/profiles/:id/export` | Export profile as TOML |
-| **Layouts** | | |
-| `GET` | `/layouts` | List layouts |
-| `GET` | `/layouts/:id` | Get layout details |
-| `POST` | `/layouts` | Create layout |
-| `PUT` | `/layouts/:id` | Update layout |
-| `DELETE` | `/layouts/:id` | Delete layout |
-| `POST` | `/layouts/:id/apply` | Set as active layout |
-| `GET` | `/layouts/current` | Get current layout |
-| **Scenes** | | |
-| `GET` | `/scenes` | List scenes |
-| `GET` | `/scenes/:id` | Get scene details |
-| `POST` | `/scenes` | Create scene |
-| `PUT` | `/scenes/:id` | Update scene |
-| `DELETE` | `/scenes/:id` | Delete scene |
-| `POST` | `/scenes/:id/activate` | Manually trigger scene |
-| `PATCH` | `/scenes/:id/enabled` | Enable/disable scene |
-| **Inputs** | | |
-| `GET` | `/inputs` | List input sources |
-| `GET` | `/inputs/:id` | Get input details + status |
-| `PATCH` | `/inputs/:id` | Configure input |
-| `POST` | `/inputs/:id/enable` | Enable input |
-| `POST` | `/inputs/:id/disable` | Disable input |
-| `GET` | `/inputs/audio/spectrum` | Get audio spectrum snapshot |
-| `GET` | `/inputs/audio/config` | Get audio analysis config |
-| `PATCH` | `/inputs/audio/config` | Update audio analysis config |
-| **System State** | | |
-| `GET` | `/state` | Full state snapshot |
-| `GET` | `/state/health` | Health check |
-| `GET` | `/state/metrics` | Prometheus metrics |
-| `PATCH` | `/state/brightness` | Set global brightness |
-| `PATCH` | `/state/fps` | Set target FPS |
-| `POST` | `/state/pause` | Pause rendering |
-| `POST` | `/state/resume` | Resume rendering |
-| **Bulk** | | |
-| `POST` | `/bulk` | Execute multiple operations |
-| **OpenAPI** | | |
-| `GET` | `/openapi.json` | OpenAPI 3.1 spec |
-| `GET` | `/docs` | Swagger UI |
+| Method           | Path                               | Description                     |
+| ---------------- | ---------------------------------- | ------------------------------- |
+| **Devices**      |                                    |                                 |
+| `GET`            | `/devices`                         | List all devices                |
+| `GET`            | `/devices/:id`                     | Get device details              |
+| `PATCH`          | `/devices/:id`                     | Update device config            |
+| `DELETE`         | `/devices/:id`                     | Remove device                   |
+| `POST`           | `/devices/discover`                | Trigger discovery scan          |
+| `GET`            | `/devices/:id/zones`               | List device zones               |
+| `GET`            | `/devices/:id/zones/:zone_id`      | Get zone details                |
+| `PATCH`          | `/devices/:id/zones/:zone_id`      | Update zone config              |
+| `POST`           | `/devices/:id/identify`            | Flash device for identification |
+| `POST`           | `/devices/:id/test`                | Send test color frame           |
+| **Effects**      |                                    |                                 |
+| `GET`            | `/effects`                         | List effects                    |
+| `GET`            | `/effects/:id`                     | Get effect details + controls   |
+| `POST`           | `/effects/:id/apply`               | Apply effect                    |
+| `GET`            | `/effects/current`                 | Get current effect              |
+| `PATCH`          | `/effects/current/controls`        | Update active controls          |
+| `GET`            | `/effects/:id/presets`             | List presets                    |
+| `POST`           | `/effects/:id/presets`             | Create preset                   |
+| `PATCH`          | `/effects/:id/presets/:name`       | Update preset                   |
+| `DELETE`         | `/effects/:id/presets/:name`       | Delete preset                   |
+| `POST`           | `/effects/:id/presets/:name/apply` | Apply preset                    |
+| `POST`           | `/effects/next`                    | Next in history                 |
+| `POST`           | `/effects/previous`                | Previous in history             |
+| `POST`           | `/effects/shuffle`                 | Random effect                   |
+| `GET`            | `/effects/:id/thumbnail`           | Get effect thumbnail            |
+| **Profiles**     |                                    |                                 |
+| `GET`            | `/profiles`                        | List profiles                   |
+| `GET`            | `/profiles/:id`                    | Get profile details             |
+| `POST`           | `/profiles`                        | Create profile                  |
+| `PUT`            | `/profiles/:id`                    | Update profile                  |
+| `DELETE`         | `/profiles/:id`                    | Delete profile                  |
+| `POST`           | `/profiles/:id/apply`              | Apply profile                   |
+| `POST`           | `/profiles/snapshot`               | Save current state as profile   |
+| `GET`            | `/profiles/:id/export`             | Export profile as TOML          |
+| **Layouts**      |                                    |                                 |
+| `GET`            | `/layouts`                         | List layouts                    |
+| `GET`            | `/layouts/:id`                     | Get layout details              |
+| `POST`           | `/layouts`                         | Create layout                   |
+| `PUT`            | `/layouts/:id`                     | Update layout                   |
+| `DELETE`         | `/layouts/:id`                     | Delete layout                   |
+| `POST`           | `/layouts/:id/apply`               | Set as active layout            |
+| `GET`            | `/layouts/current`                 | Get current layout              |
+| **Scenes**       |                                    |                                 |
+| `GET`            | `/scenes`                          | List scenes                     |
+| `GET`            | `/scenes/:id`                      | Get scene details               |
+| `POST`           | `/scenes`                          | Create scene                    |
+| `PUT`            | `/scenes/:id`                      | Update scene                    |
+| `DELETE`         | `/scenes/:id`                      | Delete scene                    |
+| `POST`           | `/scenes/:id/activate`             | Manually trigger scene          |
+| `PATCH`          | `/scenes/:id/enabled`              | Enable/disable scene            |
+| **Inputs**       |                                    |                                 |
+| `GET`            | `/inputs`                          | List input sources              |
+| `GET`            | `/inputs/:id`                      | Get input details + status      |
+| `PATCH`          | `/inputs/:id`                      | Configure input                 |
+| `POST`           | `/inputs/:id/enable`               | Enable input                    |
+| `POST`           | `/inputs/:id/disable`              | Disable input                   |
+| `GET`            | `/inputs/audio/spectrum`           | Get audio spectrum snapshot     |
+| `GET`            | `/inputs/audio/config`             | Get audio analysis config       |
+| `PATCH`          | `/inputs/audio/config`             | Update audio analysis config    |
+| **System State** |                                    |                                 |
+| `GET`            | `/state`                           | Full state snapshot             |
+| `GET`            | `/state/health`                    | Health check                    |
+| `GET`            | `/state/metrics`                   | Prometheus metrics              |
+| `PATCH`          | `/state/brightness`                | Set global brightness           |
+| `PATCH`          | `/state/fps`                       | Set target FPS                  |
+| `POST`           | `/state/pause`                     | Pause rendering                 |
+| `POST`           | `/state/resume`                    | Resume rendering                |
+| **Bulk**         |                                    |                                 |
+| `POST`           | `/bulk`                            | Execute multiple operations     |
+| **OpenAPI**      |                                    |                                 |
+| `GET`            | `/openapi.json`                    | OpenAPI 3.1 spec                |
+| `GET`            | `/docs`                            | Swagger UI                      |

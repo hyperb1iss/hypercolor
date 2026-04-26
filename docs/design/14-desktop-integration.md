@@ -977,13 +977,13 @@ impl Tray for HypercolorTray {
 
 ### 4.2 Icon State Mapping
 
-| Daemon State | Icon | Tooltip | Tray Behavior |
-|---|---|---|---|
-| Running | `hypercolor-active` (animated glow) | "Aurora | 3 devices | 60fps" | Full color icon |
-| Paused | `hypercolor-paused` (dimmed) | "Paused | 3 devices" | Grayed icon |
-| Error | `hypercolor-error` (warning badge) | "Error: Prism 8 disconnected" | Red badge overlay |
-| Idle | `hypercolor-idle` (outline only) | "No devices connected" | Monochrome outline |
-| Battery Saver | `hypercolor-active` + battery badge | "Battery saver: 15fps" | Modified tooltip |
+| Daemon State  | Icon                                | Tooltip                       | Tray Behavior      |
+| ------------- | ----------------------------------- | ----------------------------- | ------------------ | ----------- | --------------- |
+| Running       | `hypercolor-active` (animated glow) | "Aurora                       | 3 devices          | 60fps"      | Full color icon |
+| Paused        | `hypercolor-paused` (dimmed)        | "Paused                       | 3 devices"         | Grayed icon |
+| Error         | `hypercolor-error` (warning badge)  | "Error: Prism 8 disconnected" | Red badge overlay  |
+| Idle          | `hypercolor-idle` (outline only)    | "No devices connected"        | Monochrome outline |
+| Battery Saver | `hypercolor-active` + battery badge | "Battery saver: 15fps"        | Modified tooltip   |
 
 ### 4.3 Tray Binary
 
@@ -1035,18 +1035,18 @@ hypercolor@hyperbliss.tech/
 **extension.js (GJS):**
 
 ```javascript
-import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
-import St from 'gi://St';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import Gio from "gi://Gio";
+import GLib from "gi://GLib";
+import St from "gi://St";
+import * as Main from "resource:///org/gnome/shell/ui/main.js";
+import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
+import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
+import * as QuickSettings from "resource:///org/gnome/shell/ui/quickSettings.js";
+import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 
-const DBUS_NAME = 'tech.hyperbliss.hypercolor1';
-const DBUS_PATH = '/tech/hyperbliss/hypercolor1';
-const DBUS_IFACE = 'tech.hyperbliss.hypercolor1.Daemon';
+const DBUS_NAME = "tech.hyperbliss.hypercolor1";
+const DBUS_PATH = "/tech/hyperbliss/hypercolor1";
+const DBUS_IFACE = "tech.hyperbliss.hypercolor1.Daemon";
 
 // D-Bus proxy interface
 const HypercolorIface = `
@@ -1085,246 +1085,251 @@ const HypercolorProxy = Gio.DBusProxy.makeProxyWrapper(HypercolorIface);
 // --- Quick Settings Tile (GNOME 44+) ---
 
 class HypercolorToggle extends QuickSettings.QuickToggle {
-    static {
-        GObject.registerClass(this);
-    }
+  static {
+    GObject.registerClass(this);
+  }
 
-    constructor() {
-        super({
-            title: 'Hypercolor',
-            iconName: 'hypercolor-symbolic',
-            toggleMode: true,
-        });
-    }
+  constructor() {
+    super({
+      title: "Hypercolor",
+      iconName: "hypercolor-symbolic",
+      toggleMode: true,
+    });
+  }
 }
 
 class HypercolorMenuToggle extends QuickSettings.QuickMenuToggle {
-    static {
-        GObject.registerClass(this);
-    }
+  static {
+    GObject.registerClass(this);
+  }
 
-    constructor(proxy) {
-        super({
-            title: 'Hypercolor',
-            subtitle: 'No effect',
-            iconName: 'hypercolor-symbolic',
-            toggleMode: true,
-        });
+  constructor(proxy) {
+    super({
+      title: "Hypercolor",
+      subtitle: "No effect",
+      iconName: "hypercolor-symbolic",
+      toggleMode: true,
+    });
 
-        this._proxy = proxy;
+    this._proxy = proxy;
 
-        // Brightness slider in the expanded menu
-        this._brightnessSlider = new QuickSettings.QuickSlider({
-            iconName: 'display-brightness-symbolic',
-        });
-        this._brightnessSlider.slider.connect('notify::value', () => {
-            const brightness = Math.round(this._brightnessSlider.slider.value * 100);
-            this._proxy.Brightness = brightness;
-        });
+    // Brightness slider in the expanded menu
+    this._brightnessSlider = new QuickSettings.QuickSlider({
+      iconName: "display-brightness-symbolic",
+    });
+    this._brightnessSlider.slider.connect("notify::value", () => {
+      const brightness = Math.round(this._brightnessSlider.slider.value * 100);
+      this._proxy.Brightness = brightness;
+    });
 
-        this.menu.addMenuItem(this._brightnessSlider);
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    this.menu.addMenuItem(this._brightnessSlider);
+    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Profile quick-switch items
-        this._profileSection = new PopupMenu.PopupMenuSection();
-        this.menu.addMenuItem(this._profileSection);
+    // Profile quick-switch items
+    this._profileSection = new PopupMenu.PopupMenuSection();
+    this.menu.addMenuItem(this._profileSection);
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Open web UI
-        this.menu.addMenuItem(new PopupMenu.PopupMenuItem('Open Hypercolor', {
-            activate: () => this._proxy.OpenWebUIRemote(),
-        }));
+    // Open web UI
+    this.menu.addMenuItem(
+      new PopupMenu.PopupMenuItem("Open Hypercolor", {
+        activate: () => this._proxy.OpenWebUIRemote(),
+      }),
+    );
 
-        // Toggle handler
-        this.connect('clicked', () => {
-            this._proxy.ToggleRemote();
-        });
+    // Toggle handler
+    this.connect("clicked", () => {
+      this._proxy.ToggleRemote();
+    });
 
-        this._sync();
-    }
+    this._sync();
+  }
 
-    _sync() {
-        const state = this._proxy.State;
-        this.checked = state === 'running';
-        this.subtitle = this._proxy.CurrentEffect || 'No effect';
-        this._brightnessSlider.slider.value = (this._proxy.Brightness || 100) / 100;
-    }
+  _sync() {
+    const state = this._proxy.State;
+    this.checked = state === "running";
+    this.subtitle = this._proxy.CurrentEffect || "No effect";
+    this._brightnessSlider.slider.value = (this._proxy.Brightness || 100) / 100;
+  }
 }
 
 // --- Panel Indicator ---
 
 class HypercolorIndicator extends PanelMenu.Button {
-    static {
-        GObject.registerClass(this);
-    }
+  static {
+    GObject.registerClass(this);
+  }
 
-    constructor(proxy) {
-        super(0.0, 'Hypercolor');
-        this._proxy = proxy;
+  constructor(proxy) {
+    super(0.0, "Hypercolor");
+    this._proxy = proxy;
 
-        // Panel icon
-        this._icon = new St.Icon({
-            icon_name: 'hypercolor-symbolic',
-            style_class: 'system-status-icon',
-        });
-        this.add_child(this._icon);
+    // Panel icon
+    this._icon = new St.Icon({
+      icon_name: "hypercolor-symbolic",
+      style_class: "system-status-icon",
+    });
+    this.add_child(this._icon);
 
-        // Dropdown menu
-        this._buildMenu();
+    // Dropdown menu
+    this._buildMenu();
 
-        // Subscribe to D-Bus property changes
-        this._proxy.connect('g-properties-changed', () => this._updateState());
-        this._updateState();
-    }
+    // Subscribe to D-Bus property changes
+    this._proxy.connect("g-properties-changed", () => this._updateState());
+    this._updateState();
+  }
 
-    _buildMenu() {
-        // Current effect (non-interactive label)
-        this._effectLabel = new PopupMenu.PopupMenuItem('No effect', {
-            reactive: false,
-            style_class: 'hypercolor-effect-label',
-        });
-        this.menu.addMenuItem(this._effectLabel);
+  _buildMenu() {
+    // Current effect (non-interactive label)
+    this._effectLabel = new PopupMenu.PopupMenuItem("No effect", {
+      reactive: false,
+      style_class: "hypercolor-effect-label",
+    });
+    this.menu.addMenuItem(this._effectLabel);
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Toggle
-        this._toggleItem = new PopupMenu.PopupSwitchMenuItem('Active', true);
-        this._toggleItem.connect('toggled', () => {
-            this._proxy.ToggleRemote();
-        });
-        this.menu.addMenuItem(this._toggleItem);
+    // Toggle
+    this._toggleItem = new PopupMenu.PopupSwitchMenuItem("Active", true);
+    this._toggleItem.connect("toggled", () => {
+      this._proxy.ToggleRemote();
+    });
+    this.menu.addMenuItem(this._toggleItem);
 
-        // Next / Previous effect
-        const navSection = new PopupMenu.PopupMenuSection();
-        navSection.addMenuItem(new PopupMenu.PopupMenuItem('Next Effect', {
-            activate: () => this._proxy.NextEffectRemote(),
-        }));
-        navSection.addMenuItem(new PopupMenu.PopupMenuItem('Previous Effect', {
-            activate: () => this._proxy.PreviousEffectRemote(),
-        }));
-        this.menu.addMenuItem(navSection);
+    // Next / Previous effect
+    const navSection = new PopupMenu.PopupMenuSection();
+    navSection.addMenuItem(
+      new PopupMenu.PopupMenuItem("Next Effect", {
+        activate: () => this._proxy.NextEffectRemote(),
+      }),
+    );
+    navSection.addMenuItem(
+      new PopupMenu.PopupMenuItem("Previous Effect", {
+        activate: () => this._proxy.PreviousEffectRemote(),
+      }),
+    );
+    this.menu.addMenuItem(navSection);
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Open web UI
-        this.menu.addMenuItem(new PopupMenu.PopupMenuItem('Open Hypercolor', {
-            activate: () => this._proxy.OpenWebUIRemote(),
-        }));
-    }
+    // Open web UI
+    this.menu.addMenuItem(
+      new PopupMenu.PopupMenuItem("Open Hypercolor", {
+        activate: () => this._proxy.OpenWebUIRemote(),
+      }),
+    );
+  }
 
-    _updateState() {
-        const state = this._proxy.State;
-        const effect = this._proxy.CurrentEffect;
+  _updateState() {
+    const state = this._proxy.State;
+    const effect = this._proxy.CurrentEffect;
 
-        this._icon.icon_name = state === 'running'
-            ? 'hypercolor-active-symbolic'
-            : 'hypercolor-paused-symbolic';
+    this._icon.icon_name =
+      state === "running"
+        ? "hypercolor-active-symbolic"
+        : "hypercolor-paused-symbolic";
 
-        this._effectLabel.label.text = effect || 'No effect';
-        this._toggleItem.setToggleState(state === 'running');
-    }
+    this._effectLabel.label.text = effect || "No effect";
+    this._toggleItem.setToggleState(state === "running");
+  }
 }
 
 // --- Extension Lifecycle ---
 
 export default class HypercolorExtension extends Extension {
-    enable() {
-        this._proxy = new HypercolorProxy(
-            Gio.DBus.session,
-            DBUS_NAME,
-            DBUS_PATH,
-        );
+  enable() {
+    this._proxy = new HypercolorProxy(Gio.DBus.session, DBUS_NAME, DBUS_PATH);
 
-        // Panel indicator
-        this._indicator = new HypercolorIndicator(this._proxy);
-        Main.panel.addToStatusArea('hypercolor', this._indicator);
+    // Panel indicator
+    this._indicator = new HypercolorIndicator(this._proxy);
+    Main.panel.addToStatusArea("hypercolor", this._indicator);
 
-        // Quick Settings toggle (GNOME 44+)
-        this._quickToggle = new HypercolorMenuToggle(this._proxy);
-        Main.panel.statusArea.quickSettings.addExternalIndicator(this._quickToggle);
+    // Quick Settings toggle (GNOME 44+)
+    this._quickToggle = new HypercolorMenuToggle(this._proxy);
+    Main.panel.statusArea.quickSettings.addExternalIndicator(this._quickToggle);
 
-        // --- Desktop Event Hooks ---
+    // --- Desktop Event Hooks ---
 
-        // Workspace change -> profile trigger
-        this._workspaceSignal = global.workspace_manager.connect(
-            'active-workspace-changed',
-            () => this._onWorkspaceChanged(),
-        );
+    // Workspace change -> profile trigger
+    this._workspaceSignal = global.workspace_manager.connect(
+      "active-workspace-changed",
+      () => this._onWorkspaceChanged(),
+    );
 
-        // Screen lock -> dim
-        this._screenShield = Main.screenShield;
-        this._lockSignal = this._screenShield?.connect(
-            'active-changed',
-            () => this._onLockChanged(),
-        );
+    // Screen lock -> dim
+    this._screenShield = Main.screenShield;
+    this._lockSignal = this._screenShield?.connect("active-changed", () =>
+      this._onLockChanged(),
+    );
 
-        // Night Light sync
-        this._nightLightProxy = new Gio.DBusProxy.new_sync(
-            Gio.DBus.session,
-            Gio.DBusProxyFlags.NONE,
-            null,
-            'org.gnome.SettingsDaemon.Color',
-            '/org/gnome/SettingsDaemon/Color',
-            'org.gnome.SettingsDaemon.Color',
-            null,
-        );
-        this._nightLightSignal = this._nightLightProxy?.connect(
-            'g-properties-changed',
-            () => this._onNightLightChanged(),
-        );
+    // Night Light sync
+    this._nightLightProxy = new Gio.DBusProxy.new_sync(
+      Gio.DBus.session,
+      Gio.DBusProxyFlags.NONE,
+      null,
+      "org.gnome.SettingsDaemon.Color",
+      "/org/gnome/SettingsDaemon/Color",
+      "org.gnome.SettingsDaemon.Color",
+      null,
+    );
+    this._nightLightSignal = this._nightLightProxy?.connect(
+      "g-properties-changed",
+      () => this._onNightLightChanged(),
+    );
+  }
+
+  disable() {
+    this._indicator?.destroy();
+    this._indicator = null;
+
+    this._quickToggle?.destroy();
+    this._quickToggle = null;
+
+    if (this._workspaceSignal) {
+      global.workspace_manager.disconnect(this._workspaceSignal);
+    }
+    if (this._lockSignal && this._screenShield) {
+      this._screenShield.disconnect(this._lockSignal);
+    }
+    if (this._nightLightSignal && this._nightLightProxy) {
+      this._nightLightProxy.disconnect(this._nightLightSignal);
     }
 
-    disable() {
-        this._indicator?.destroy();
-        this._indicator = null;
+    this._proxy = null;
+  }
 
-        this._quickToggle?.destroy();
-        this._quickToggle = null;
+  _onWorkspaceChanged() {
+    const index = global.workspace_manager.get_active_workspace_index();
+    // Emit workspace index to daemon for profile mapping
+    // The daemon's config maps workspace indices to profiles:
+    //   [workspace_profiles]
+    //   0 = "coding"
+    //   1 = "gaming"
+    //   2 = "chill"
+    this._proxy.SetProfileRemote(`workspace:${index}`);
+  }
 
-        if (this._workspaceSignal) {
-            global.workspace_manager.disconnect(this._workspaceSignal);
-        }
-        if (this._lockSignal && this._screenShield) {
-            this._screenShield.disconnect(this._lockSignal);
-        }
-        if (this._nightLightSignal && this._nightLightProxy) {
-            this._nightLightProxy.disconnect(this._nightLightSignal);
-        }
-
-        this._proxy = null;
+  _onLockChanged() {
+    const locked = this._screenShield?.active;
+    if (locked) {
+      // Save current brightness, dim to nightlight level
+      this._proxy.SetProfileRemote("__locked__");
+    } else {
+      // Restore previous state
+      this._proxy.SetProfileRemote("__restore__");
     }
+  }
 
-    _onWorkspaceChanged() {
-        const index = global.workspace_manager.get_active_workspace_index();
-        // Emit workspace index to daemon for profile mapping
-        // The daemon's config maps workspace indices to profiles:
-        //   [workspace_profiles]
-        //   0 = "coding"
-        //   1 = "gaming"
-        //   2 = "chill"
-        this._proxy.SetProfileRemote(`workspace:${index}`);
+  _onNightLightChanged() {
+    const temperature =
+      this._nightLightProxy.get_cached_property("Temperature");
+    if (temperature) {
+      const kelvin = temperature.unpack();
+      // Sync color temperature to the daemon for warm-shift effects
+      // The daemon adjusts effect output based on this value
     }
-
-    _onLockChanged() {
-        const locked = this._screenShield?.active;
-        if (locked) {
-            // Save current brightness, dim to nightlight level
-            this._proxy.SetProfileRemote('__locked__');
-        } else {
-            // Restore previous state
-            this._proxy.SetProfileRemote('__restore__');
-        }
-    }
-
-    _onNightLightChanged() {
-        const temperature = this._nightLightProxy.get_cached_property('Temperature');
-        if (temperature) {
-            const kelvin = temperature.unpack();
-            // Sync color temperature to the daemon for warm-shift effects
-            // The daemon adjusts effect output based on this value
-        }
-    }
+  }
 }
 ```
 
@@ -1419,18 +1424,18 @@ org.hyperbliss.hypercolor/
 
 ```json
 {
-    "KPlugin": {
-        "Id": "org.hyperbliss.hypercolor",
-        "Name": "Hypercolor",
-        "Description": "RGB lighting control",
-        "Icon": "hypercolor",
-        "Category": "System Information",
-        "Authors": [{ "Name": "Hyperbliss", "Email": "hyperb1iss@gmail.com" }],
-        "Website": "https://github.com/hyperb1iss/hypercolor"
-    },
-    "X-Plasma-API": "declarativeappletscript",
-    "X-Plasma-MainScript": "ui/main.qml",
-    "KPackageStructure": "Plasma/Applet"
+  "KPlugin": {
+    "Id": "org.hyperbliss.hypercolor",
+    "Name": "Hypercolor",
+    "Description": "RGB lighting control",
+    "Icon": "hypercolor",
+    "Category": "System Information",
+    "Authors": [{ "Name": "Hyperbliss", "Email": "hyperb1iss@gmail.com" }],
+    "Website": "https://github.com/hyperb1iss/hypercolor"
+  },
+  "X-Plasma-API": "declarativeappletscript",
+  "X-Plasma-MainScript": "ui/main.qml",
+  "KPackageStructure": "Plasma/Applet"
 }
 ```
 
@@ -1656,22 +1661,22 @@ Waybar is the de facto status bar for Hyprland and sway. Hypercolor integrates a
 
 ```jsonc
 {
-    "modules-right": [
-        "custom/hypercolor",
-        // ... other modules
-    ],
+  "modules-right": [
+    "custom/hypercolor",
+    // ... other modules
+  ],
 
-    "custom/hypercolor": {
-        "exec": "hypercolor waybar",
-        "return-type": "json",
-        "interval": 2,
-        "on-click": "hypercolor open",
-        "on-click-right": "hypercolor toggle",
-        "on-click-middle": "hypercolor next",
-        "on-scroll-up": "hypercolor brightness +5",
-        "on-scroll-down": "hypercolor brightness -5",
-        "tooltip": true
-    }
+  "custom/hypercolor": {
+    "exec": "hypercolor waybar",
+    "return-type": "json",
+    "interval": 2,
+    "on-click": "hypercolor open",
+    "on-click-right": "hypercolor toggle",
+    "on-click-middle": "hypercolor next",
+    "on-scroll-up": "hypercolor brightness +5",
+    "on-scroll-down": "hypercolor brightness -5",
+    "tooltip": true,
+  },
 }
 ```
 
@@ -1715,24 +1720,24 @@ pub fn waybar_output(state: &DaemonState) -> String {
 
 ```css
 #custom-hypercolor {
-    padding: 0 8px;
-    font-family: "JetBrains Mono", monospace;
+  padding: 0 8px;
+  font-family: "JetBrains Mono", monospace;
 }
 
 #custom-hypercolor.active {
-    color: #e135ff;  /* SilkCircuit Electric Purple */
+  color: #e135ff; /* SilkCircuit Electric Purple */
 }
 
 #custom-hypercolor.paused {
-    color: #f1fa8c;  /* SilkCircuit Electric Yellow */
+  color: #f1fa8c; /* SilkCircuit Electric Yellow */
 }
 
 #custom-hypercolor.error {
-    color: #ff6363;  /* SilkCircuit Error Red */
+  color: #ff6363; /* SilkCircuit Error Red */
 }
 
 #custom-hypercolor.idle {
-    color: #6272a4;
+  color: #6272a4;
 }
 ```
 
@@ -2665,14 +2670,14 @@ priority = 15
 
 ### 12.1 Notification Events
 
-| Event | Summary | Body | Urgency | Condition |
-|---|---|---|---|---|
-| Device connected | "Device Connected" | "Prism 8 (8 channels, 1008 LEDs)" | Low | Always |
-| Device disconnected | "Device Disconnected" | "Prism 8 disconnected" | Normal | Always |
-| Render error | "Effect Error" | "Shader compilation failed: ..." | Normal | Always |
-| Profile auto-switched | "Profile Switched" | "Gaming (triggered by fullscreen)" | Low | If `notify_profile_switch = true` |
-| Update available | "Update Available" | "Hypercolor 0.3.0 available" | Low | Check interval: 24h |
-| Battery saver engaged | "Battery Saver" | "Reduced to 15fps (45% battery)" | Low | First time per power cycle |
+| Event                 | Summary               | Body                               | Urgency | Condition                         |
+| --------------------- | --------------------- | ---------------------------------- | ------- | --------------------------------- |
+| Device connected      | "Device Connected"    | "Prism 8 (8 channels, 1008 LEDs)"  | Low     | Always                            |
+| Device disconnected   | "Device Disconnected" | "Prism 8 disconnected"             | Normal  | Always                            |
+| Render error          | "Effect Error"        | "Shader compilation failed: ..."   | Normal  | Always                            |
+| Profile auto-switched | "Profile Switched"    | "Gaming (triggered by fullscreen)" | Low     | If `notify_profile_switch = true` |
+| Update available      | "Update Available"    | "Hypercolor 0.3.0 available"       | Low     | Check interval: 24h               |
+| Battery saver engaged | "Battery Saver"       | "Reduced to 15fps (45% battery)"   | Low     | First time per power cycle        |
 
 ### 12.2 Notification Preferences
 
@@ -2755,6 +2760,7 @@ These scenarios validate the design against real usage patterns.
 5. **Fullscreen game launch:** Hyprland IPC fires `fullscreen>>1`. Daemon switches to "gaming" profile with audio-reactive effects and full brightness. Game exits, profile restores.
 
 6. **CLI scripting:**
+
    ```bash
    # Quick effect change from terminal
    hypercolor set aurora --speed 8
@@ -2821,20 +2827,20 @@ These scenarios validate the design against real usage patterns.
 
 ### 14.1 What Ships Where
 
-| Component | Package | Required? | Notes |
-|---|---|---|---|
-| `hypercolor-daemon` | `hypercolor` | Yes | Core daemon binary (`hypercolor-daemon`) |
-| `hypercolor-cli` | `hypercolor` | Yes | CLI binary (`hypercolor`, hosts the `hypercolor tui` subcommand) |
-| `hypercolor-tui` | `hypercolor` | Yes | TUI library (launched via `hypercolor tui`) |
-| `hypercolor-tray` | `hypercolor-tray` | Optional | System tray indicator (ksni) |
-| GNOME extension | `gnome-shell-extension-hypercolor` | Optional | GNOME Shell extension |
-| KDE widget | `plasma-widget-hypercolor` | Optional | Plasma plasmoid |
-| COSMIC applet | `cosmic-applet-hypercolor` | Optional | COSMIC panel applet |
-| systemd units | `hypercolor` | Yes | Installed with daemon |
-| D-Bus service file | `hypercolor` | Yes | Installed with daemon |
-| Desktop entry | `hypercolor` | Yes | Installed with daemon |
-| udev rules | `hypercolor` | Yes | USB device access |
-| Icons | `hypercolor` | Yes | hicolor theme |
+| Component           | Package                            | Required? | Notes                                                            |
+| ------------------- | ---------------------------------- | --------- | ---------------------------------------------------------------- |
+| `hypercolor-daemon` | `hypercolor`                       | Yes       | Core daemon binary (`hypercolor-daemon`)                         |
+| `hypercolor-cli`    | `hypercolor`                       | Yes       | CLI binary (`hypercolor`, hosts the `hypercolor tui` subcommand) |
+| `hypercolor-tui`    | `hypercolor`                       | Yes       | TUI library (launched via `hypercolor tui`)                      |
+| `hypercolor-tray`   | `hypercolor-tray`                  | Optional  | System tray indicator (ksni)                                     |
+| GNOME extension     | `gnome-shell-extension-hypercolor` | Optional  | GNOME Shell extension                                            |
+| KDE widget          | `plasma-widget-hypercolor`         | Optional  | Plasma plasmoid                                                  |
+| COSMIC applet       | `cosmic-applet-hypercolor`         | Optional  | COSMIC panel applet                                              |
+| systemd units       | `hypercolor`                       | Yes       | Installed with daemon                                            |
+| D-Bus service file  | `hypercolor`                       | Yes       | Installed with daemon                                            |
+| Desktop entry       | `hypercolor`                       | Yes       | Installed with daemon                                            |
+| udev rules          | `hypercolor`                       | Yes       | USB device access                                                |
+| Icons               | `hypercolor`                       | Yes       | hicolor theme                                                    |
 
 ### 14.2 udev Rules
 
@@ -2922,15 +2928,15 @@ hypercolor status
 
 ## 16. Crate Dependencies (Desktop Integration)
 
-| Crate | Purpose | License |
-|---|---|---|
-| `zbus` | D-Bus client + server | MIT |
-| `sd-notify` | systemd watchdog + ready notification | MIT/Apache |
-| `listenfd` | systemd socket activation | MIT/Apache |
-| `tracing-journald` | Journal log subscriber | MIT |
-| `ksni` | StatusNotifierItem system tray | Apache-2.0 |
-| `open` | Open URLs in default browser | MIT/Apache |
-| `swayipc-async` | sway/i3 IPC events | MIT |
-| `dirs` | XDG directory paths | MIT/Apache |
+| Crate              | Purpose                               | License    |
+| ------------------ | ------------------------------------- | ---------- |
+| `zbus`             | D-Bus client + server                 | MIT        |
+| `sd-notify`        | systemd watchdog + ready notification | MIT/Apache |
+| `listenfd`         | systemd socket activation             | MIT/Apache |
+| `tracing-journald` | Journal log subscriber                | MIT        |
+| `ksni`             | StatusNotifierItem system tray        | Apache-2.0 |
+| `open`             | Open URLs in default browser          | MIT/Apache |
+| `swayipc-async`    | sway/i3 IPC events                    | MIT        |
+| `dirs`             | XDG directory paths                   | MIT/Apache |
 
 All MIT/Apache-2.0 compatible. No GPL contamination in the desktop integration layer.
