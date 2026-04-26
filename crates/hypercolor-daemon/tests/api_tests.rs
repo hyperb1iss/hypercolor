@@ -18,6 +18,10 @@ use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
+use hypercolor_driver_api::{
+    ControlApplyTarget, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
+    DriverTransport, NetworkDriverFactory, ValidatedControlChanges,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
@@ -29,8 +33,14 @@ use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
+use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
-use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue as SurfaceControlValue};
+use hypercolor_types::controls::{
+    ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
+    ControlActionStatus, ControlAvailabilityExpr, ControlChange, ControlOwner,
+    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope,
+    ControlValue as SurfaceControlValue, ControlValueMap,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -137,6 +147,128 @@ impl DeviceBackend for NoopBackend {
 
     async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
+    }
+}
+
+static ACTION_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "action_test",
+    "Action Test",
+    DriverTransport::Network,
+    false,
+    false,
+);
+
+struct ActionTestDriver;
+
+impl NetworkDriverFactory for ActionTestDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &ACTION_TEST_DRIVER
+    }
+
+    fn has_backend_factory(&self) -> bool {
+        false
+    }
+
+    fn build_backend(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
+        Ok(None)
+    }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverControlProvider for ActionTestDriver {
+    async fn driver_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        let mut surface = ControlSurfaceDocument::empty(
+            "driver:action_test",
+            ControlSurfaceScope::Driver {
+                driver_id: "action_test".to_owned(),
+            },
+        );
+        surface.actions.push(ControlActionDescriptor {
+            id: "ping".to_owned(),
+            owner: ControlOwner::Driver {
+                driver_id: "action_test".to_owned(),
+            },
+            group_id: None,
+            label: "Ping".to_owned(),
+            description: None,
+            input_fields: Vec::new(),
+            result_type: None,
+            confirmation: None,
+            apply_impact: ApplyImpact::Live,
+            availability: ControlAvailabilityExpr::Always,
+            ordering: 0,
+        });
+        Ok(Some(surface))
+    }
+
+    async fn device_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _device: &hypercolor_driver_api::TrackedDeviceCtx<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> anyhow::Result<ValidatedControlChanges> {
+        Ok(ValidatedControlChanges::new(changes.to_vec()))
+    }
+
+    async fn apply_changes(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> anyhow::Result<ApplyControlChangesResponse> {
+        Ok(ApplyControlChangesResponse {
+            surface_id: "driver:action_test".to_owned(),
+            previous_revision: 0,
+            revision: 0,
+            accepted: changes
+                .changes
+                .into_iter()
+                .map(|change| hypercolor_types::controls::AppliedControlChange {
+                    field_id: change.field_id,
+                    value: change.value,
+                })
+                .collect(),
+            rejected: Vec::new(),
+            impacts: changes.impacts,
+            values: ControlValueMap::new(),
+        })
+    }
+
+    async fn invoke_action(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        _input: ControlValueMap,
+    ) -> anyhow::Result<ControlActionResult> {
+        assert_eq!(action_id, "ping");
+        Ok(ControlActionResult {
+            surface_id: String::new(),
+            action_id: String::new(),
+            status: ControlActionStatus::Completed,
+            result: None,
+            revision: 0,
+        })
     }
 }
 
@@ -2065,6 +2197,78 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
             .expect("error message")
             .contains("unknown WLED control action")
     );
+}
+
+#[tokio::test]
+async fn invoke_driver_control_surface_action_publishes_progress_event() {
+    let mut state = isolated_state();
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    state.driver_registry = Arc::new(registry);
+    let state = Arc::new(state);
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/control-surfaces/driver:action_test/actions/ping")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "input": {}
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], "driver:action_test");
+    assert_eq!(json["data"]["action_id"], "ping");
+    assert_eq!(json["data"]["status"], "completed");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ControlSurfaceChanged(
+                        event @ ControlSurfaceEvent::ActionProgress { .. },
+                    ) = timestamped.event
+                    {
+                        break event;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before control action event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for control action event");
+
+    match event {
+        ControlSurfaceEvent::ActionProgress {
+            surface_id,
+            action_id,
+            status,
+            progress,
+        } => {
+            assert_eq!(surface_id, "driver:action_test");
+            assert_eq!(action_id, "ping");
+            assert_eq!(status, ControlActionStatus::Completed);
+            assert_eq!(progress, None);
+        }
+        _ => panic!("expected action_progress control surface event"),
+    }
 }
 
 #[tokio::test]
