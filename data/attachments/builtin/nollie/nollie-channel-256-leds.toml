@@ -1,0 +1,20 @@
+schema_version = 1
+id = "nollie-channel-256-leds"
+name = "Nollie Channel Strip - 256 LED"
+category = "strip"
+origin = "built_in"
+description = "Nollie Gen-2 channel strip"
+vendor = "Nollie"
+compatible_slots = []
+tags = [
+    "strip",
+]
+
+[default_size]
+width = 0.36
+height = 0.04
+
+[topology]
+type = "strip"
+count = 256
+direction = "left_to_right"

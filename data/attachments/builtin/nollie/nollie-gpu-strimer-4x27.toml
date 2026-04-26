@@ -1,0 +1,23 @@
+schema_version = 1
+id = "nollie-gpu-strimer-4x27"
+name = "Nollie GPU Dual 8 Pin Strimer - 108 LED"
+category = "strimer"
+origin = "built_in"
+description = "Nollie GPU dual 8-pin Strimer, 27x4 matrix"
+vendor = "Nollie"
+compatible_slots = []
+tags = [
+    "cable",
+    "matrix",
+]
+
+[default_size]
+width = 0.24
+height = 0.08
+
+[topology]
+type = "matrix"
+width = 27
+height = 4
+serpentine = false
+start_corner = "top_left"

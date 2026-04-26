@@ -46,6 +46,9 @@ fn load_builtins_embeds_generated_catalog() {
     );
     assert!(registry.get("lian-li-sl-infinity-fan").is_some());
     assert!(registry.get("corsair-ql-fan").is_some());
+    assert!(registry.get("nollie-atx-strimer").is_some());
+    assert!(registry.get("nollie-gpu-strimer-6x27").is_some());
+    assert!(registry.get("nollie-channel-630-leds").is_some());
 }
 
 #[test]

@@ -1035,11 +1035,11 @@ The Gen-1 query/update endianness asymmetry is intentional firmware behavior; do
 - [x] Add channel remap tables (Nollie16v3, Nollie32 main, Nollie32 ATX, Nollie32 GPU) as `pub const` arrays.
 - [x] Add group/marker algorithm with 340-LED cap.
 - [x] Add `NOLLIE_16_V3` and `NOLLIE_32` device descriptors.
-- [ ] Verify `UsbHidTransport` supports 1024-byte and 513-byte writes (already does per `crates/hypercolor-hal/src/transport/hid.rs`; add explicit test).
+- [x] Verify `UsbHidTransport` supports 1024-byte and 513-byte writes (already does per `crates/hypercolor-hal/src/transport/hid.rs`; add explicit test).
 
 **Phase 4 — Data + integration:**
 - [x] Split native Nollie SKUs into `data/drivers/vendors/nollie.toml`; keep Prism 8 under PrismRGB branding while routing it through the `nollie` driver.
-- [ ] Author 9 attachment fixtures under `data/attachments/builtin/nollie/` (§7.3).
+- [x] Author 9 attachment fixtures under `data/attachments/builtin/nollie/` (§7.3).
 - [x] Add `DeviceFamily::Nollie` variant to `hypercolor-types` and wire HAL discovery through the new family.
 - [ ] Update spec 20: re-scope to PrismRGB-exclusive silicon, move Prism 8 / Nollie 8 v2 sections to spec 49 or leave stubs pointing at spec 49.
 

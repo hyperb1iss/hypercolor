@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
+use hypercolor_hal::drivers::nollie::{
+    Nollie32Config, NollieModel, NollieProtocol, ProtocolVersion,
+};
 use hypercolor_hal::drivers::prismrgb::{PrismRgbModel, PrismRgbProtocol, PrismSConfig};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::transport::bulk::UsbBulkTransport;
@@ -254,6 +257,7 @@ impl UsbDevice {
 
 #[derive(Clone, Default)]
 pub struct UsbProtocolConfigStore {
+    nollie32: Arc<RwLock<HashMap<DeviceId, Nollie32Config>>>,
     prism_s: Arc<RwLock<HashMap<DeviceId, PrismSConfig>>>,
 }
 
@@ -268,13 +272,25 @@ impl UsbProtocolConfigStore {
         prism_s.insert(device_id, config);
     }
 
+    pub async fn set_nollie32_config(&self, device_id: DeviceId, config: Nollie32Config) {
+        let mut nollie32 = self.nollie32.write().await;
+        nollie32.insert(device_id, config);
+    }
+
     pub async fn prism_s_config(&self, device_id: DeviceId) -> Option<PrismSConfig> {
         let prism_s = self.prism_s.read().await;
         prism_s.get(&device_id).copied()
     }
 
+    pub async fn nollie32_config(&self, device_id: DeviceId) -> Option<Nollie32Config> {
+        let nollie32 = self.nollie32.read().await;
+        nollie32.get(&device_id).copied()
+    }
+
     pub async fn remove_device(&self, device_id: DeviceId) {
+        let mut nollie32 = self.nollie32.write().await;
         let mut prism_s = self.prism_s.write().await;
+        nollie32.remove(&device_id);
         prism_s.remove(&device_id);
     }
 }
@@ -312,6 +328,17 @@ impl UsbBackend {
         {
             return Box::new(
                 PrismRgbProtocol::new(PrismRgbModel::PrismS).with_prism_s_config(config),
+            );
+        }
+
+        if pending.info_template.model.as_deref() == Some("nollie_32")
+            && let Some(config) = self.protocol_configs.nollie32_config(device_id).await
+        {
+            return Box::new(
+                NollieProtocol::new(NollieModel::Nollie32 {
+                    protocol_version: ProtocolVersion::V2,
+                })
+                .with_nollie32_config(config),
             );
         }
 

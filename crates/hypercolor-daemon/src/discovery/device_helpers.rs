@@ -93,17 +93,23 @@ pub(super) async fn apply_dynamic_usb_protocol_config(
         return;
     };
 
-    if tracked.info.family != DeviceFamily::PrismRgb
-        || tracked.info.model.as_deref() != Some("prism_s")
-    {
+    let is_prism_s = tracked.info.family == DeviceFamily::PrismRgb
+        && tracked.info.model.as_deref() == Some("prism_s");
+    let is_nollie32 = tracked.info.family == DeviceFamily::Nollie
+        && tracked.info.model.as_deref() == Some("nollie_32");
+
+    if !is_prism_s && !is_nollie32 {
         runtime.usb_protocol_configs.remove_device(device_id).await;
         return;
     }
 
-    let prism_s_config = {
+    let (prism_s_config, nollie32_config) = {
         let registry = runtime.attachment_registry.read().await;
         let profiles = runtime.attachment_profiles.read().await;
-        profiles.prism_s_config_for_device(&tracked.info, &registry)
+        (
+            profiles.prism_s_config_for_device(&tracked.info, &registry),
+            profiles.nollie32_config_for_device(&tracked.info, &registry),
+        )
     };
 
     if let Some(config) = prism_s_config {
@@ -111,7 +117,16 @@ pub(super) async fn apply_dynamic_usb_protocol_config(
             .usb_protocol_configs
             .set_prism_s_config(device_id, config)
             .await;
-    } else {
+    }
+
+    if let Some(config) = nollie32_config {
+        runtime
+            .usb_protocol_configs
+            .set_nollie32_config(device_id, config)
+            .await;
+    }
+
+    if prism_s_config.is_none() && nollie32_config.is_none() {
         runtime.usb_protocol_configs.remove_device(device_id).await;
     }
 }

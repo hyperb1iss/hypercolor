@@ -432,6 +432,12 @@ fn normalize_outgoing_packet(data: &[u8], endpoint_packet_size: usize) -> Vec<u8
     data.to_vec()
 }
 
+#[doc(hidden)]
+#[must_use]
+pub fn normalize_outgoing_packet_for_testing(data: &[u8], endpoint_packet_size: usize) -> Vec<u8> {
+    normalize_outgoing_packet(data, endpoint_packet_size)
+}
+
 fn normalize_incoming_packet(data: &[u8], endpoint_packet_size: usize) -> Vec<u8> {
     if data.len() == endpoint_packet_size && endpoint_packet_size + 1 == HID_REPORT_SIZE {
         let mut report = Vec::with_capacity(HID_REPORT_SIZE);

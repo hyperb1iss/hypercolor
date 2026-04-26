@@ -1,5 +1,6 @@
 #![cfg(target_os = "linux")]
 
+use hypercolor_hal::transport::hid::normalize_outgoing_packet_for_testing;
 use hypercolor_hal::transport::hidraw::{
     encode_feature_report_packet, encode_feature_report_request_buffer,
     hidraw_usb_identity_for_testing, usb_paths_match_for_testing,
@@ -30,6 +31,21 @@ fn feature_report_request_buffer_leaves_hint_empty_when_unknown() {
     assert_eq!(buffer[0], 0x07);
     assert_eq!(buffer[1], 0x00);
     assert_eq!(buffer[2], 0x00);
+}
+
+#[test]
+fn hid_interrupt_normalization_preserves_large_reports_verbatim() {
+    let color_report = vec![0x40; 1024];
+    let settings_report = vec![0x80; 513];
+
+    assert_eq!(
+        normalize_outgoing_packet_for_testing(&color_report, 64),
+        color_report
+    );
+    assert_eq!(
+        normalize_outgoing_packet_for_testing(&settings_report, 64),
+        settings_report
+    );
 }
 
 #[test]

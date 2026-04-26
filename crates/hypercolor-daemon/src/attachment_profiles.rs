@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use hypercolor_core::attachment::AttachmentRegistry;
+use hypercolor_hal::drivers::nollie::{GpuCableType, Nollie32Config};
 use hypercolor_hal::drivers::prismrgb::{PrismSConfig, PrismSGpuCable};
 use hypercolor_types::attachment::{AttachmentSlot, DeviceAttachmentProfile};
 use hypercolor_types::device::{DeviceFamily, DeviceInfo};
@@ -170,6 +171,54 @@ impl AttachmentProfileStore {
         Some(config)
     }
 
+    #[must_use]
+    pub fn nollie32_config_for_device(
+        &self,
+        device: &DeviceInfo,
+        registry: &AttachmentRegistry,
+    ) -> Option<Nollie32Config> {
+        if device.family != DeviceFamily::Nollie || device.model.as_deref() != Some("nollie_32") {
+            return None;
+        }
+
+        let profile = self.get_or_default(device);
+        let mut config = Nollie32Config::default();
+
+        for binding in profile.bindings.iter().filter(|binding| binding.enabled) {
+            match binding.slot_id.as_str() {
+                "atx-strimer" => config.atx_cable_present = true,
+                "gpu-strimer" => {
+                    let Some(template) = registry.get(&binding.template_id) else {
+                        warn!(
+                            device_id = %device.id,
+                            template_id = %binding.template_id,
+                            "attachment profile references unknown Nollie32 template; skipping GPU binding"
+                        );
+                        continue;
+                    };
+
+                    let effective_led_count = binding.effective_led_count(template);
+                    config.gpu_cable_type = match effective_led_count {
+                        108 => GpuCableType::Dual8Pin,
+                        162 => GpuCableType::Triple8Pin,
+                        _ => {
+                            warn!(
+                                device_id = %device.id,
+                                template_id = %binding.template_id,
+                                effective_led_count,
+                                "attachment profile template does not match a supported Nollie32 GPU cable"
+                            );
+                            config.gpu_cable_type
+                        }
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        Some(config)
+    }
+
     /// Insert or replace a stored profile.
     pub fn update(&mut self, device_id: &str, profile: DeviceAttachmentProfile) {
         self.profiles.insert(device_id.to_owned(), profile);
@@ -257,6 +306,29 @@ mod tests {
         }
     }
 
+    fn nollie32_info() -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Nollie 32".to_owned(),
+            vendor: "Nollie".to_owned(),
+            family: DeviceFamily::Nollie,
+            model: Some("nollie_32".to_owned()),
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+                .with_protocol_id("nollie/nollie-32"),
+            zones: (1..=20)
+                .map(|index| ZoneInfo {
+                    name: format!("Channel {index}"),
+                    led_count: 256,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Grb,
+                })
+                .collect(),
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
+    }
+
     #[test]
     fn prism_s_config_defaults_to_legacy_full_topology_without_bindings() {
         let info = prism_s_info();
@@ -285,7 +357,7 @@ mod tests {
         profile.bindings = vec![
             AttachmentBinding {
                 slot_id: "atx-strimer".to_owned(),
-                template_id: "lian-li-atx-strimer".to_owned(),
+                template_id: "nollie-atx-strimer".to_owned(),
                 name: None,
                 enabled: true,
                 instances: 1,
@@ -358,6 +430,67 @@ mod tests {
         assert_eq!(
             config.gpu_cable,
             Some(hypercolor_hal::drivers::prismrgb::PrismSGpuCable::Dual8Pin)
+        );
+    }
+
+    #[test]
+    fn nollie32_config_defaults_to_bare_hub_without_bindings() {
+        let info = nollie32_info();
+        let store = AttachmentProfileStore::new(PathBuf::from("attachment-profiles-test.json"));
+        let mut registry = AttachmentRegistry::new();
+        registry
+            .load_builtins()
+            .expect("built-in attachments should load");
+
+        let config = store
+            .nollie32_config_for_device(&info, &registry)
+            .expect("Nollie32 config should be derived");
+
+        assert!(!config.atx_cable_present);
+        assert_eq!(
+            config.gpu_cable_type,
+            hypercolor_hal::drivers::nollie::GpuCableType::None
+        );
+    }
+
+    #[test]
+    fn nollie32_config_derives_cables_from_attachment_bindings() {
+        let info = nollie32_info();
+        let mut store = AttachmentProfileStore::new(PathBuf::from("attachment-profiles-test.json"));
+        let mut profile = info.default_attachment_profile();
+        profile.bindings = vec![
+            AttachmentBinding {
+                slot_id: "atx-strimer".to_owned(),
+                template_id: "lian-li-atx-strimer".to_owned(),
+                name: None,
+                enabled: true,
+                instances: 1,
+                led_offset: 0,
+            },
+            AttachmentBinding {
+                slot_id: "gpu-strimer".to_owned(),
+                template_id: "nollie-gpu-strimer-6x27".to_owned(),
+                name: None,
+                enabled: true,
+                instances: 1,
+                led_offset: 0,
+            },
+        ];
+        store.update(&info.id.to_string(), profile);
+
+        let mut registry = AttachmentRegistry::new();
+        registry
+            .load_builtins()
+            .expect("built-in attachments should load");
+
+        let config = store
+            .nollie32_config_for_device(&info, &registry)
+            .expect("Nollie32 config should be derived");
+
+        assert!(config.atx_cable_present);
+        assert_eq!(
+            config.gpu_cable_type,
+            hypercolor_hal::drivers::nollie::GpuCableType::Triple8Pin
         );
     }
 

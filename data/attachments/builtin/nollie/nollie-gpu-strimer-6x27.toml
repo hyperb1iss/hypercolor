@@ -1,0 +1,23 @@
+schema_version = 1
+id = "nollie-gpu-strimer-6x27"
+name = "Nollie GPU Triple 8 Pin Strimer - 162 LED"
+category = "strimer"
+origin = "built_in"
+description = "Nollie GPU triple 8-pin Strimer, 27x6 matrix"
+vendor = "Nollie"
+compatible_slots = []
+tags = [
+    "cable",
+    "matrix",
+]
+
+[default_size]
+width = 0.24
+height = 0.08
+
+[topology]
+type = "matrix"
+width = 27
+height = 6
+serpentine = false
+start_corner = "top_left"

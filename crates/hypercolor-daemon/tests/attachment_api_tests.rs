@@ -175,6 +175,41 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
     id
 }
 
+async fn insert_nollie32_test_device(state: &Arc<AppState>) -> DeviceId {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: "Nollie 32".to_owned(),
+        vendor: "Nollie".to_owned(),
+        family: DeviceFamily::Nollie,
+        model: Some("nollie_32".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+            .with_protocol_id("nollie/nollie-32"),
+        zones: (1..=20)
+            .map(|index| ZoneInfo {
+                name: format!("Channel {index}"),
+                led_count: 256,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Grb,
+            })
+            .collect(),
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 5_120,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let _ = state.device_registry.add(info).await;
+    id
+}
+
 async fn send_json(
     app: &axum::Router,
     method: &str,
@@ -689,6 +724,83 @@ async fn prism_8_channel_slots_accept_fan_templates() {
         update_json["data"]["bindings"][0]["template_id"],
         "generic-argb-fan-16-leds"
     );
+}
+
+#[tokio::test]
+async fn nollie32_attachment_slots_support_cable_profiles() {
+    let guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_nollie32_test_device(&state).await;
+
+    let get_response = send_empty(
+        &app,
+        "GET",
+        format!("/api/v1/devices/{device_id}/attachments"),
+    )
+    .await;
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    let slots = get_json["data"]["slots"]
+        .as_array()
+        .expect("slots should be an array");
+    assert!(slots.iter().any(|slot| slot["id"] == "atx-strimer"));
+    assert!(slots.iter().any(|slot| slot["id"] == "gpu-strimer"));
+
+    let gpu_only_response = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/preview"),
+        json!({
+            "bindings": [{
+                "slot_id": "gpu-strimer",
+                "template_id": "nollie-gpu-strimer-4x27",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(gpu_only_response.status(), StatusCode::OK);
+    let gpu_only_json = body_json(gpu_only_response).await;
+    assert_eq!(gpu_only_json["data"]["zones"][0]["led_start"], 5_120);
+    assert_eq!(gpu_only_json["data"]["zones"][0]["led_count"], 108);
+
+    let full_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [
+                {
+                    "slot_id": "atx-strimer",
+                    "template_id": "nollie-atx-strimer",
+                    "instances": 1,
+                    "led_offset": 0
+                },
+                {
+                    "slot_id": "gpu-strimer",
+                    "template_id": "nollie-gpu-strimer-6x27",
+                    "instances": 1,
+                    "led_offset": 0
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(full_response.status(), StatusCode::OK);
+    let full_json = body_json(full_response).await;
+    assert_eq!(
+        full_json["data"]["suggested_zones"][0]["template_id"],
+        "nollie-atx-strimer"
+    );
+    assert_eq!(
+        full_json["data"]["suggested_zones"][1]["template_id"],
+        "nollie-gpu-strimer-6x27"
+    );
+    assert_eq!(full_json["data"]["suggested_zones"][0]["led_start"], 5_120);
+    assert_eq!(full_json["data"]["suggested_zones"][1]["led_start"], 5_240);
+    assert!(guard.attachment_profiles_path().exists());
 }
 
 #[tokio::test]

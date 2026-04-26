@@ -1,0 +1,20 @@
+schema_version = 1
+id = "nollie-channel-126-leds"
+name = "Nollie Channel Strip - 126 LED"
+category = "strip"
+origin = "built_in"
+description = "Nollie 8 v2 channel strip"
+vendor = "Nollie"
+compatible_slots = []
+tags = [
+    "strip",
+]
+
+[default_size]
+width = 0.32
+height = 0.04
+
+[topology]
+type = "strip"
+count = 126
+direction = "left_to_right"

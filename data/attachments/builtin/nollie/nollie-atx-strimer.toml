@@ -1,0 +1,23 @@
+schema_version = 1
+id = "nollie-atx-strimer"
+name = "Nollie ATX Strimer - 120 LED"
+category = "strimer"
+origin = "built_in"
+description = "Nollie ATX Strimer, 20x6 matrix"
+vendor = "Nollie"
+compatible_slots = []
+tags = [
+    "cable",
+    "matrix",
+]
+
+[default_size]
+width = 0.24
+height = 0.08
+
+[topology]
+type = "matrix"
+width = 20
+height = 6
+serpentine = false
+start_corner = "top_left"

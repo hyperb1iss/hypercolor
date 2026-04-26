@@ -1,0 +1,20 @@
+schema_version = 1
+id = "nollie-channel-525-leds"
+name = "Nollie Channel Strip - 525 LED"
+category = "strip"
+origin = "built_in"
+description = "Nollie 1 legacy channel strip"
+vendor = "Nollie"
+compatible_slots = []
+tags = [
+    "strip",
+]
+
+[default_size]
+width = 0.42
+height = 0.04
+
+[topology]
+type = "strip"
+count = 525
+direction = "left_to_right"
