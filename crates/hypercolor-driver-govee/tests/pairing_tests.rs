@@ -101,7 +101,10 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     );
 
     host.credentials
-        .set_json("govee:account", serde_json::json!({ "api_key": "stored-key" }))
+        .set_json(
+            "govee:account",
+            serde_json::json!({ "api_key": "stored-key" }),
+        )
         .await
         .expect("credentials should store");
 
@@ -262,10 +265,7 @@ impl DriverHost for TestHost {
     }
 }
 
-async fn serve_once(
-    status: u16,
-    body: &'static str,
-) -> (String, tokio::task::JoinHandle<String>) {
+async fn serve_once(status: u16, body: &'static str) -> (String, tokio::task::JoinHandle<String>) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("test HTTP listener should bind");

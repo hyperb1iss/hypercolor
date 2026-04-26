@@ -9,11 +9,11 @@ use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability,
-    DiscoveryRequest, DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
-    DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
+    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
+    TrackedDeviceCtx,
 };
 use hypercolor_types::config::GoveeConfig;
 use serde_json::json;
@@ -213,7 +213,9 @@ impl PairingCapability for GoveeDriverFactory {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
-        host.credentials().remove(GOVEE_ACCOUNT_CREDENTIAL_KEY).await?;
+        host.credentials()
+            .remove(GOVEE_ACCOUNT_CREDENTIAL_KEY)
+            .await?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "govee").await;
 
         Ok(ClearPairingOutcome {

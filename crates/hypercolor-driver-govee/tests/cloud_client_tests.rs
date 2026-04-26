@@ -57,8 +57,11 @@ async fn list_v1_devices_rejects_invalid_api_key_status() {
 
 #[tokio::test]
 async fn list_v1_devices_rejects_non_success_api_code() {
-    let (base_url, _request) =
-        serve_once(200, r#"{"code":400,"message":"InvalidParameter","data":{}}"#).await;
+    let (base_url, _request) = serve_once(
+        200,
+        r#"{"code":400,"message":"InvalidParameter","data":{}}"#,
+    )
+    .await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
 
     let error = client
@@ -103,7 +106,8 @@ async fn v1_state_sends_device_query_and_parses_properties() {
 
 #[tokio::test]
 async fn v1_control_sends_command_body() {
-    let (base_url, request) = serve_once(200, r#"{"code":200,"message":"Success","data":{}}"#).await;
+    let (base_url, request) =
+        serve_once(200, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
 
     client
@@ -128,10 +132,7 @@ async fn v1_control_sends_command_body() {
     assert!(request.contains(r#""value":{"b":0,"g":64,"r":255}"#));
 }
 
-async fn serve_once(
-    status: u16,
-    body: &'static str,
-) -> (String, tokio::task::JoinHandle<String>) {
+async fn serve_once(status: u16, body: &'static str) -> (String, tokio::task::JoinHandle<String>) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("test HTTP listener should bind");

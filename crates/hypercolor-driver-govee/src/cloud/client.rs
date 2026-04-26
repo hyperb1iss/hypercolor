@@ -76,9 +76,7 @@ impl CloudClient {
             bail!("Govee API returned code {}: {message}", envelope.code);
         }
 
-        Ok(envelope
-            .data
-            .map_or_else(Vec::new, |data| data.devices))
+        Ok(envelope.data.map_or_else(Vec::new, |data| data.devices))
     }
 
     /// Query one device's cloud-reported state through Developer API v1.
