@@ -64,7 +64,7 @@ impl GoveeLanScanner {
 
 #[async_trait::async_trait]
 impl TransportScanner for GoveeLanScanner {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Govee LAN"
     }
 
@@ -226,7 +226,7 @@ fn fingerprint_for_mac(mac: &str) -> DeviceFingerprint {
 
 fn normalize_mac(mac: &str) -> String {
     mac.chars()
-        .filter(|ch| ch.is_ascii_hexdigit())
+        .filter(char::is_ascii_hexdigit)
         .collect::<String>()
         .to_ascii_lowercase()
 }
