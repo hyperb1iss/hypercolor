@@ -15,9 +15,10 @@ use hypercolor_driver_api::support::{
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
-    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    DiscoveryResult, DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
+    DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    TrackedDeviceCtx,
 };
 use hypercolor_types::config::HueConfig;
 
@@ -33,20 +34,14 @@ pub static DESCRIPTOR: DriverDescriptor =
 #[derive(Clone)]
 pub struct HueDriverFactory {
     credential_store: Arc<CredentialStore>,
-    config: HueConfig,
     mdns_enabled: bool,
 }
 
 impl HueDriverFactory {
     #[must_use]
-    pub fn new(
-        credential_store: Arc<CredentialStore>,
-        config: HueConfig,
-        mdns_enabled: bool,
-    ) -> Self {
+    pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
         Self {
             credential_store,
-            config,
             mdns_enabled,
         }
     }
@@ -57,9 +52,13 @@ impl NetworkDriverFactory for HueDriverFactory {
         &DESCRIPTOR
     }
 
-    fn build_backend(&self, _host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
+    fn build_backend(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
         Ok(Some(Box::new(HueBackend::with_mdns_enabled(
-            self.config.clone(),
+            config.parse_settings::<HueConfig>()?,
             Arc::clone(&self.credential_store),
             self.mdns_enabled,
         ))))
@@ -80,15 +79,17 @@ impl DiscoveryCapability for HueDriverFactory {
         &self,
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
+        config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
+        let config = config.parse_settings::<HueConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices("hue").await;
-        let known_bridges = resolve_hue_probe_bridges_from_sources(&self.config, &tracked_devices);
+        let known_bridges = resolve_hue_probe_bridges_from_sources(&config, &tracked_devices);
         let mut scanner = HueScanner::with_options(
             known_bridges,
             Arc::clone(&self.credential_store),
             request.timeout,
             request.mdns_enabled,
-            self.config.entertainment_config.clone(),
+            config.entertainment_config.clone(),
         );
         let devices = scanner
             .scan()

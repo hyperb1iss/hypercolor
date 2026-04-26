@@ -269,8 +269,7 @@ pub fn resolve_backends(
             DiscoveryBackend::Network(driver_id) => {
                 if !crate::network::driver_enabled(config, driver_id) {
                     if explicit_request {
-                        let config_flag =
-                            crate::network::driver_config_flag(driver_id).unwrap_or("unknown");
+                        let config_flag = crate::network::driver_config_flag(driver_id);
                         return Err(format!(
                             "Discovery backend '{driver_id}' is disabled by config ({config_flag}=false)"
                         ));

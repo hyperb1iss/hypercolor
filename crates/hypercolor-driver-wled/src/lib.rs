@@ -9,10 +9,10 @@ use hypercolor_core::device::wled::{
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDescriptor,
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView, DriverDescriptor,
     DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
 };
-use hypercolor_types::config::{HypercolorConfig, WledConfig, WledProtocolConfig};
+use hypercolor_types::config::{WledConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
 
 pub static DESCRIPTOR: DriverDescriptor =
@@ -20,13 +20,13 @@ pub static DESCRIPTOR: DriverDescriptor =
 
 #[derive(Clone)]
 pub struct WledDriverFactory {
-    config: HypercolorConfig,
+    mdns_enabled: bool,
 }
 
 impl WledDriverFactory {
     #[must_use]
-    pub fn new(config: HypercolorConfig) -> Self {
-        Self { config }
+    pub const fn new(mdns_enabled: bool) -> Self {
+        Self { mdns_enabled }
     }
 }
 
@@ -35,8 +35,16 @@ impl NetworkDriverFactory for WledDriverFactory {
         &DESCRIPTOR
     }
 
-    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(build_wled_backend(&self.config, host)?)))
+    fn build_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        Ok(Some(Box::new(build_wled_backend(
+            &config.parse_settings::<WledConfig>()?,
+            self.mdns_enabled,
+            host,
+        )?)))
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -50,12 +58,14 @@ impl DiscoveryCapability for WledDriverFactory {
         &self,
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
+        config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
+        let config = config.parse_settings::<WledConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices("wled").await;
         let cached_probe_ips = load_cached_probe_ips(host)?;
         let cached_targets = load_cached_probe_targets(host)?;
         let known_targets = resolve_wled_probe_targets_from_sources(
-            &self.config.wled,
+            &config,
             &tracked_devices,
             &cached_probe_ips,
             &cached_targets,
@@ -78,28 +88,31 @@ impl DiscoveryCapability for WledDriverFactory {
 /// # Errors
 ///
 /// Returns an error if cached probe data cannot be parsed.
-pub fn build_wled_backend(config: &HypercolorConfig, host: &dyn DriverHost) -> Result<WledBackend> {
-    let mut known_ips: HashSet<_> = config.wled.known_ips.iter().copied().collect();
+pub fn build_wled_backend(
+    config: &WledConfig,
+    mdns_enabled: bool,
+    host: &dyn DriverHost,
+) -> Result<WledBackend> {
+    let mut known_ips: HashSet<_> = config.known_ips.iter().copied().collect();
     known_ips.extend(load_cached_probe_ips(host)?);
 
     let mut resolved_known_ips: Vec<_> = known_ips.into_iter().collect();
     resolved_known_ips.sort_unstable();
 
-    let mut backend =
-        WledBackend::with_mdns_fallback(resolved_known_ips, config.discovery.mdns_enabled);
+    let mut backend = WledBackend::with_mdns_fallback(resolved_known_ips, mdns_enabled);
     for target in load_cached_probe_targets(host)? {
         let Some((device_id, ip, info)) = cached_wled_backend_seed(&target) else {
             continue;
         };
         backend.remember_device(device_id, ip, info);
     }
-    let protocol = match config.wled.default_protocol {
+    let protocol = match config.default_protocol {
         WledProtocolConfig::Ddp => WledProtocol::Ddp,
         WledProtocolConfig::E131 => WledProtocol::E131,
     };
     backend.set_protocol(protocol);
-    backend.set_realtime_http_enabled(config.wled.realtime_http_enabled);
-    backend.set_dedup_threshold(config.wled.dedup_threshold);
+    backend.set_realtime_http_enabled(config.realtime_http_enabled);
+    backend.set_dedup_threshold(config.dedup_threshold);
     Ok(backend)
 }
 

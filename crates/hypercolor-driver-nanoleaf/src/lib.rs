@@ -17,9 +17,10 @@ use hypercolor_driver_api::support::{
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
-    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    DiscoveryResult, DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
+    DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    TrackedDeviceCtx,
 };
 use hypercolor_types::config::NanoleafConfig;
 
@@ -35,20 +36,14 @@ pub static DESCRIPTOR: DriverDescriptor =
 #[derive(Clone)]
 pub struct NanoleafDriverFactory {
     credential_store: Arc<CredentialStore>,
-    config: NanoleafConfig,
     mdns_enabled: bool,
 }
 
 impl NanoleafDriverFactory {
     #[must_use]
-    pub fn new(
-        credential_store: Arc<CredentialStore>,
-        config: NanoleafConfig,
-        mdns_enabled: bool,
-    ) -> Self {
+    pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
         Self {
             credential_store,
-            config,
             mdns_enabled,
         }
     }
@@ -59,9 +54,13 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
         &DESCRIPTOR
     }
 
-    fn build_backend(&self, _host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
+    fn build_backend(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
         Ok(Some(Box::new(NanoleafBackend::with_mdns_enabled(
-            self.config.clone(),
+            config.parse_settings::<NanoleafConfig>()?,
             Arc::clone(&self.credential_store),
             self.mdns_enabled,
         ))))
@@ -82,10 +81,11 @@ impl DiscoveryCapability for NanoleafDriverFactory {
         &self,
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
+        config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
+        let config = config.parse_settings::<NanoleafConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices("nanoleaf").await;
-        let known_devices =
-            resolve_nanoleaf_probe_devices_from_sources(&self.config, &tracked_devices);
+        let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
         let mut scanner = NanoleafScanner::with_options(
             known_devices,
             Arc::clone(&self.credential_store),

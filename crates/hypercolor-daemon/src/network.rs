@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::device::net::CredentialStore;
-use hypercolor_driver_api::DriverHost;
+use hypercolor_driver_api::{DriverConfigView, DriverHost};
 #[cfg(feature = "hue")]
 use hypercolor_driver_hue::HueDriverFactory;
 #[cfg(feature = "nanoleaf")]
@@ -35,21 +35,19 @@ pub fn build_builtin_driver_registry(
     credential_store: Arc<CredentialStore>,
 ) -> Result<DriverRegistry> {
     let mut registry = DriverRegistry::new();
-    registry.register(WledDriverFactory::new(config.clone()))?;
+    registry.register(WledDriverFactory::new(config.discovery.mdns_enabled))?;
     #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
     let _ = &credential_store;
 
     #[cfg(feature = "hue")]
     registry.register(HueDriverFactory::new(
         Arc::clone(&credential_store),
-        config.hue.clone(),
         config.discovery.mdns_enabled,
     ))?;
 
     #[cfg(feature = "nanoleaf")]
     registry.register(NanoleafDriverFactory::new(
         credential_store,
-        config.nanoleaf.clone(),
         config.discovery.mdns_enabled,
     ))?;
 
@@ -59,23 +57,28 @@ pub fn build_builtin_driver_registry(
 /// Whether a built-in network driver is enabled by the active config.
 #[must_use]
 pub fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
-    match driver_id {
-        "wled" => config.discovery.wled_scan,
-        "hue" => config.discovery.hue_scan,
-        "nanoleaf" => config.discovery.nanoleaf_scan,
-        _ => true,
-    }
+    config
+        .drivers
+        .get(driver_id)
+        .map_or(true, |entry| entry.enabled)
 }
 
 /// Config key responsible for enabling a built-in network driver.
 #[must_use]
-pub fn driver_config_flag(driver_id: &str) -> Option<&'static str> {
-    match driver_id {
-        "wled" => Some("discovery.wled_scan"),
-        "hue" => Some("discovery.hue_scan"),
-        "nanoleaf" => Some("discovery.nanoleaf_scan"),
-        _ => None,
-    }
+pub fn driver_config_flag(driver_id: &str) -> String {
+    format!("drivers.{driver_id}.enabled")
+}
+
+/// Resolve the active config entry for a driver.
+#[must_use]
+pub fn driver_config_view<'a>(
+    config: &'a HypercolorConfig,
+    driver_id: &'a str,
+) -> Option<DriverConfigView<'a>> {
+    config
+        .drivers
+        .get(driver_id)
+        .map(|entry| DriverConfigView { driver_id, entry })
 }
 
 /// Register all enabled built-in network backends with the backend manager.
@@ -97,7 +100,10 @@ pub fn register_enabled_backends(
         let Some(driver) = registry.get(&driver_id) else {
             continue;
         };
-        let Some(backend) = driver.build_backend(host)? else {
+        let Some(config_view) = driver_config_view(config, &driver_id) else {
+            continue;
+        };
+        let Some(backend) = driver.build_backend(host, config_view)? else {
             continue;
         };
         backend_manager.register_backend(backend);

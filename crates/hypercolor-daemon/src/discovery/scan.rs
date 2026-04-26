@@ -8,9 +8,11 @@ use hypercolor_core::device::{
     BlocksScanner, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, SmBusScanner,
     TransportScanner, UsbScanner,
 };
-use hypercolor_driver_api::{DiscoveryRequest, DriverDiscoveredDevice, NetworkDriverFactory};
+use hypercolor_driver_api::{
+    DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, NetworkDriverFactory,
+};
 use hypercolor_network::DriverRegistry;
-use hypercolor_types::config::{HypercolorConfig, WledConfig};
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, WledConfig};
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use serde::Serialize;
@@ -237,6 +239,8 @@ fn load_cached_wled_probe_targets(path: &std::path::Path) -> Result<Vec<WledKnow
 
 struct NetworkDriverScanner {
     driver: Arc<dyn NetworkDriverFactory>,
+    driver_id: String,
+    config: DriverConfigEntry,
     host: Arc<DaemonDriverHost>,
     request: DiscoveryRequest,
 }
@@ -244,11 +248,15 @@ struct NetworkDriverScanner {
 impl NetworkDriverScanner {
     fn new(
         driver: Arc<dyn NetworkDriverFactory>,
+        driver_id: String,
+        config: DriverConfigEntry,
         host: Arc<DaemonDriverHost>,
         request: DiscoveryRequest,
     ) -> Self {
         Self {
             driver,
+            driver_id,
+            config,
             host,
             request,
         }
@@ -265,8 +273,12 @@ impl TransportScanner for NetworkDriverScanner {
         let Some(capability) = self.driver.discovery() else {
             return Ok(Vec::new());
         };
+        let config = DriverConfigView {
+            driver_id: &self.driver_id,
+            entry: &self.config,
+        };
         let result = capability
-            .discover(self.host.as_ref(), &self.request)
+            .discover(self.host.as_ref(), &self.request, config)
             .await?;
         Ok(result
             .devices
@@ -353,8 +365,15 @@ pub async fn execute_discovery_scan(
                     );
                     continue;
                 }
+                let Some(config_view) = network::driver_config_view(&config, &driver_id) else {
+                    warn!(driver_id, "skipping network driver without config entry");
+                    continue;
+                };
+                let driver_config = config_view.entry.clone();
                 orchestrator.add_scanner(Box::new(NetworkDriverScanner::new(
                     driver,
+                    driver_id,
+                    driver_config,
                     Arc::clone(&driver_host),
                     DiscoveryRequest {
                         timeout,

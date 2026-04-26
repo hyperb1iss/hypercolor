@@ -3,11 +3,12 @@ use async_trait::async_trait;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
     ClearPairingOutcome, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary, DiscoveryCapability,
-    DiscoveryRequest, DiscoveryResult, DriverCredentialStore, DriverDescriptor,
+    DiscoveryRequest, DiscoveryResult, DriverConfigView, DriverCredentialStore, DriverDescriptor,
     DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
     PairDeviceOutcome, PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
 };
 use hypercolor_network::{DriverRegistry, DriverRegistryError};
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 struct NullCredentialStore;
@@ -137,8 +138,9 @@ impl DiscoveryCapability for DiscoveryOnlyCapability {
         &self,
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
+        config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
-        let _ = (host, request);
+        let _ = (host, request, config);
         Ok(DiscoveryResult::default())
     }
 }
@@ -191,8 +193,12 @@ impl NetworkDriverFactory for DiscoveryOnlyDriver {
         &DISCOVERY_ONLY_DESCRIPTOR
     }
 
-    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = host;
+    fn build_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
         Ok(Some(Box::new(TestBackend)))
     }
 
@@ -216,8 +222,12 @@ impl NetworkDriverFactory for PairingOnlyDriver {
         &PAIRING_ONLY_DESCRIPTOR
     }
 
-    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = host;
+    fn build_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
         Ok(None)
     }
 
@@ -314,8 +324,12 @@ impl NetworkDriverFactory for MismatchedSchemaDriver {
         &MISMATCHED_DESCRIPTOR
     }
 
-    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = host;
+    fn build_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
         Ok(None)
     }
 }
@@ -348,8 +362,15 @@ fn drivers_can_build_backends_through_registry_lookup() {
     let driver = registry
         .get("discovery-only")
         .expect("driver should be returned");
+    let config = DriverConfigEntry::default();
     let backend = driver
-        .build_backend(&host)
+        .build_backend(
+            &host,
+            DriverConfigView {
+                driver_id: "discovery-only",
+                entry: &config,
+            },
+        )
         .expect("backend build should succeed")
         .expect("driver should return a backend");
 
