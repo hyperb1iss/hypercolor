@@ -9,7 +9,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::{DriverRegistry, DriverRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DriverModuleKind, DriverTransportKind};
 
 struct NullCredentialStore;
 
@@ -268,6 +268,31 @@ fn registry_lists_ids_in_deterministic_order() {
         registry.ids(),
         vec!["discovery-only".to_owned(), "pairing-only".to_owned()]
     );
+}
+
+#[test]
+fn registry_lists_module_descriptors_in_deterministic_order() {
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(PairingOnlyDriver)
+        .expect("pairing driver should register");
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("discovery driver should register");
+
+    let descriptors = registry.module_descriptors();
+
+    assert_eq!(descriptors[0].id, "discovery-only");
+    assert_eq!(descriptors[0].module_kind, DriverModuleKind::Network);
+    assert_eq!(
+        descriptors[0].transports,
+        vec![DriverTransportKind::Network]
+    );
+    assert!(descriptors[0].capabilities.discovery);
+    assert!(descriptors[0].capabilities.backend_factory);
+    assert_eq!(descriptors[1].id, "pairing-only");
+    assert!(descriptors[1].capabilities.pairing);
+    assert!(descriptors[1].capabilities.credentials);
 }
 
 #[test]

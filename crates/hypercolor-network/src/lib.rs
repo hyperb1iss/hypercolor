@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, NetworkDriverFactory};
+use hypercolor_types::device::DriverModuleDescriptor;
 use thiserror::Error;
 
 /// Registry of all compiled-in network drivers.
@@ -85,6 +86,15 @@ impl DriverRegistry {
         self.drivers
             .values()
             .map(|driver| driver.descriptor())
+            .collect()
+    }
+
+    /// Return all registered module descriptors in deterministic order.
+    #[must_use]
+    pub fn module_descriptors(&self) -> Vec<DriverModuleDescriptor> {
+        self.drivers
+            .values()
+            .map(|driver| driver.module_descriptor())
             .collect()
     }
 

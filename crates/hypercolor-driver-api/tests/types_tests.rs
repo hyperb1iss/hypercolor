@@ -8,7 +8,8 @@ use hypercolor_driver_api::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, DriverModuleKind,
+    DriverTransportKind, ZoneInfo,
 };
 
 #[test]
@@ -21,6 +22,23 @@ fn driver_descriptor_constructor_sets_expected_flags() {
     assert_eq!(descriptor.transport, DriverTransport::Network);
     assert!(descriptor.supports_discovery);
     assert!(descriptor.supports_pairing);
+}
+
+#[test]
+fn driver_descriptor_converts_to_module_descriptor() {
+    let descriptor =
+        DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
+
+    let module = descriptor.module_descriptor();
+
+    assert_eq!(module.id, "hue");
+    assert_eq!(module.display_name, "Philips Hue");
+    assert_eq!(module.module_kind, DriverModuleKind::Network);
+    assert_eq!(module.transports, vec![DriverTransportKind::Network]);
+    assert!(module.capabilities.discovery);
+    assert!(module.capabilities.pairing);
+    assert!(module.capabilities.backend_factory);
+    assert!(module.capabilities.credentials);
 }
 
 #[test]

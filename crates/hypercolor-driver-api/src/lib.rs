@@ -12,7 +12,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_core::device::{DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
-use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::device::{
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DriverCapabilitySet,
+    DriverModuleDescriptor, DriverModuleKind, DriverTransportKind,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -92,6 +95,40 @@ impl DriverDescriptor {
             supports_discovery,
             supports_pairing,
             schema_version,
+        }
+    }
+
+    /// Convert this driver-facing descriptor into the host-wide module
+    /// descriptor used by registry introspection.
+    #[must_use]
+    pub fn module_descriptor(&self) -> DriverModuleDescriptor {
+        DriverModuleDescriptor {
+            id: self.id.to_owned(),
+            display_name: self.display_name.to_owned(),
+            vendor_name: None,
+            module_kind: DriverModuleKind::Network,
+            transports: vec![self.transport.into()],
+            capabilities: DriverCapabilitySet {
+                config: false,
+                discovery: self.supports_discovery,
+                pairing: self.supports_pairing,
+                backend_factory: true,
+                protocol_catalog: false,
+                runtime_cache: self.supports_discovery,
+                credentials: self.supports_pairing,
+                presentation: false,
+            },
+            api_schema_version: self.schema_version,
+            config_version: 1,
+            default_enabled: true,
+        }
+    }
+}
+
+impl From<DriverTransport> for DriverTransportKind {
+    fn from(value: DriverTransport) -> Self {
+        match value {
+            DriverTransport::Network => Self::Network,
         }
     }
 }
@@ -418,6 +455,17 @@ pub trait PairingCapability: Send + Sync {
 pub trait NetworkDriverFactory: Send + Sync {
     /// Static metadata about the driver.
     fn descriptor(&self) -> &'static DriverDescriptor;
+
+    /// Host-wide module descriptor for this driver factory.
+    fn module_descriptor(&self) -> DriverModuleDescriptor {
+        let mut descriptor = self.descriptor().module_descriptor();
+        descriptor.capabilities.config = self.config().is_some();
+        descriptor.capabilities.discovery = self.discovery().is_some();
+        descriptor.capabilities.pairing = self.pairing().is_some();
+        descriptor.capabilities.runtime_cache = descriptor.capabilities.discovery;
+        descriptor.capabilities.credentials = descriptor.capabilities.pairing;
+        descriptor
+    }
 
     /// Config capability, if the driver exposes host-readable defaults or validation.
     fn config(&self) -> Option<&dyn DriverConfigProvider> {
