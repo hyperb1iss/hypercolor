@@ -315,6 +315,10 @@ impl SparkleFlinger {
             reason = "GPU-only parameters still present in the CPU-only build"
         )
     )]
+    #[allow(
+        clippy::ptr_arg,
+        reason = "GPU sampling appends zone results through the shared Vec buffer"
+    )]
     pub fn sample_zone_plan_into(
         &mut self,
         prepared_zones: &[PreparedZonePlan],
@@ -455,6 +459,10 @@ impl SparkleFlinger {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
+    )]
     pub(crate) fn read_back_current_output_surface_for_cpu_sampling(
         &mut self,
     ) -> Result<Option<PublishedSurface>> {

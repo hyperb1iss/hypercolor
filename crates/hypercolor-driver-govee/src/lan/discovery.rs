@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
@@ -156,6 +156,7 @@ pub fn build_device_info(device: &GoveeLanDevice) -> DeviceInfo {
         family: DeviceFamily::Govee,
         model: Some(device.sku.clone()),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count,
@@ -190,6 +191,7 @@ fn build_discovered_device(device: GoveeLanDevice) -> DiscoveredDevice {
 
     DiscoveredDevice {
         connection_type: ConnectionType::Network,
+        origin: info.origin.clone(),
         name: info.name.clone(),
         family: DeviceFamily::Govee,
         fingerprint: fingerprint_for_mac(&device.mac),

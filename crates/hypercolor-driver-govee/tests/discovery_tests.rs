@@ -10,7 +10,8 @@ use hypercolor_driver_govee::{
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    ZoneInfo,
 };
 
 #[test]
@@ -124,6 +125,7 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
     let mut devices = vec![hypercolor_driver_api::DriverDiscoveredDevice::from(
         hypercolor_core::device::DiscoveredDevice {
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
             name: build_device_info(&lan_device).name,
             family: DeviceFamily::Govee,
             fingerprint: DeviceFingerprint("net:govee:001122334455".to_owned()),
@@ -174,6 +176,7 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
             family: DeviceFamily::Govee,
             model: Some(sku.to_owned()),
             connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 1,

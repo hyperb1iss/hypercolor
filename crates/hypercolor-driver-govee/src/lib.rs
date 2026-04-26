@@ -20,7 +20,7 @@ use hypercolor_driver_api::{
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, ZoneInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, ZoneInfo,
 };
 use serde_json::json;
 use tracing::warn;
@@ -189,10 +189,7 @@ impl DiscoveryCapability for GoveeDriverFactory {
 
 #[async_trait]
 impl DriverRuntimeCacheProvider for GoveeDriverFactory {
-    async fn snapshot(
-        &self,
-        host: &dyn DriverHost,
-    ) -> Result<BTreeMap<String, serde_json::Value>> {
+    async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>> {
         let tracked_devices = host.discovery_state().tracked_devices("govee").await;
         let probe_devices =
             resolve_govee_probe_devices(&GoveeConfig::default(), &tracked_devices, &[]);
@@ -461,6 +458,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
         family: DeviceFamily::Govee,
         model: Some(device.model.clone()),
         connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count,

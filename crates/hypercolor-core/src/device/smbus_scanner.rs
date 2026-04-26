@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo, DeviceOrigin};
+use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo};
 
 use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
@@ -20,6 +20,8 @@ use hypercolor_hal::protocol::{Protocol, ProtocolZone, ResponseStatus};
 use hypercolor_hal::transport::Transport;
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::smbus::SmBusTransport;
+#[cfg(target_os = "linux")]
+use hypercolor_types::device::DeviceOrigin;
 #[cfg(target_os = "linux")]
 use hypercolor_types::device::{DeviceFamily, DeviceIdentifier};
 #[cfg(target_os = "linux")]
