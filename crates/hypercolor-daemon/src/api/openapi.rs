@@ -1,6 +1,8 @@
 #![allow(clippy::needless_for_each)]
 
+use utoipa::openapi::path::OperationBuilder;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::{HttpMethod, Response, Tag};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -90,13 +92,755 @@ use crate::api::{devices, drivers, effects, envelope, system};
         (name = "system", description = "Daemon identity, health, and status"),
         (name = "drivers", description = "Driver module inventory and capabilities"),
         (name = "devices", description = "Tracked device inventory"),
+        (name = "controls", description = "Generic control surfaces and typed value mutation"),
         (name = "effects", description = "Effect catalog and runtime control"),
+        (name = "displays", description = "Display devices, faces, and simulators"),
+        (name = "attachments", description = "Physical attachment templates and bindings"),
+        (name = "scenes", description = "Scene CRUD and activation"),
+        (name = "profiles", description = "Saved lighting profile snapshots"),
+        (name = "layouts", description = "Spatial layout CRUD and preview"),
+        (name = "library", description = "Favorites, presets, and playlists"),
+        (name = "settings", description = "Runtime settings and audio inputs"),
+        (name = "config", description = "Daemon configuration inspection and mutation"),
+        (name = "diagnostics", description = "Daemon diagnostics"),
+        (name = "websocket", description = "Realtime WebSocket endpoint"),
     ),
-    modifiers(&SecurityAddon)
+    modifiers(&SecurityAddon, &RouteCatalogAddon)
 )]
 pub(crate) struct ApiDoc;
 
 struct SecurityAddon;
+struct RouteCatalogAddon;
+
+#[derive(Clone, Copy)]
+pub struct RouteSpec {
+    pub method: &'static str,
+    pub path: &'static str,
+    pub operation_id: &'static str,
+    pub tag: &'static str,
+    summary: &'static str,
+    success_status: &'static str,
+}
+
+impl RouteSpec {
+    const fn get(
+        path: &'static str,
+        operation_id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self::new("get", path, operation_id, tag, summary)
+    }
+
+    const fn post(
+        path: &'static str,
+        operation_id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self::new("post", path, operation_id, tag, summary)
+    }
+
+    const fn put(
+        path: &'static str,
+        operation_id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self::new("put", path, operation_id, tag, summary)
+    }
+
+    const fn patch(
+        path: &'static str,
+        operation_id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self::new("patch", path, operation_id, tag, summary)
+    }
+
+    const fn delete(
+        path: &'static str,
+        operation_id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self::new("delete", path, operation_id, tag, summary)
+    }
+
+    const fn new(
+        method: &'static str,
+        path: &'static str,
+        operation_id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self {
+            method,
+            path,
+            operation_id,
+            tag,
+            summary,
+            success_status: "200",
+        }
+    }
+}
+
+pub const ROUTES: &[RouteSpec] = &[
+    RouteSpec::get(
+        "/health",
+        "health_check",
+        "system",
+        "Run daemon health check",
+    ),
+    RouteSpec::get(
+        "/api/v1/server",
+        "get_server",
+        "system",
+        "Get daemon server identity",
+    ),
+    RouteSpec::get(
+        "/api/v1/status",
+        "get_status",
+        "system",
+        "Get daemon status",
+    ),
+    RouteSpec::get(
+        "/api/v1/drivers",
+        "list_drivers",
+        "drivers",
+        "List driver modules",
+    ),
+    RouteSpec::get(
+        "/api/v1/system/sensors",
+        "get_sensors",
+        "system",
+        "List system sensors",
+    ),
+    RouteSpec::get(
+        "/api/v1/system/sensors/{label}",
+        "get_sensor",
+        "system",
+        "Get one system sensor",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices",
+        "list_devices",
+        "devices",
+        "List tracked devices",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/discover",
+        "discover_devices",
+        "devices",
+        "Start device discovery",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/metrics",
+        "list_device_metrics",
+        "devices",
+        "List device metrics",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/debug/queues",
+        "debug_output_queues",
+        "devices",
+        "Debug device output queues",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/debug/routing",
+        "debug_device_routing",
+        "devices",
+        "Debug device output routing",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/{id}",
+        "get_device",
+        "devices",
+        "Get one device",
+    ),
+    RouteSpec::put(
+        "/api/v1/devices/{id}",
+        "update_device",
+        "devices",
+        "Update one device",
+    ),
+    RouteSpec::delete(
+        "/api/v1/devices/{id}",
+        "delete_device",
+        "devices",
+        "Delete one device",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/{id}/controls",
+        "get_device_control_surface",
+        "controls",
+        "Get device control surface",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/{id}/attachments",
+        "get_attachments",
+        "devices",
+        "Get device attachments",
+    ),
+    RouteSpec::put(
+        "/api/v1/devices/{id}/attachments",
+        "update_attachments",
+        "devices",
+        "Update device attachments",
+    ),
+    RouteSpec::delete(
+        "/api/v1/devices/{id}/attachments",
+        "delete_attachments",
+        "devices",
+        "Delete device attachments",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/{id}/attachments/preview",
+        "preview_attachments",
+        "devices",
+        "Preview device attachments",
+    ),
+    RouteSpec::get(
+        "/api/v1/devices/{id}/logical-devices",
+        "list_device_logical_devices",
+        "devices",
+        "List logical devices for one physical device",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/{id}/logical-devices",
+        "create_logical_device",
+        "devices",
+        "Create logical device for one physical device",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/{id}/identify",
+        "identify_device",
+        "devices",
+        "Identify one device",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/{id}/zones/{zone_id}/identify",
+        "identify_zone",
+        "devices",
+        "Identify one device zone",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/{id}/attachments/{slot_id}/identify",
+        "identify_attachment",
+        "devices",
+        "Identify one attachment",
+    ),
+    RouteSpec::post(
+        "/api/v1/devices/{id}/pair",
+        "pair_device",
+        "devices",
+        "Pair one device",
+    ),
+    RouteSpec::delete(
+        "/api/v1/devices/{id}/pair",
+        "delete_pairing",
+        "devices",
+        "Delete one device pairing",
+    ),
+    RouteSpec::get(
+        "/api/v1/displays",
+        "list_displays",
+        "displays",
+        "List display devices",
+    ),
+    RouteSpec::get(
+        "/api/v1/displays/{id}/preview.jpg",
+        "get_display_preview",
+        "displays",
+        "Get display preview image",
+    ),
+    RouteSpec::get(
+        "/api/v1/displays/{id}/face",
+        "get_display_face",
+        "displays",
+        "Get display face assignment",
+    ),
+    RouteSpec::put(
+        "/api/v1/displays/{id}/face",
+        "set_display_face",
+        "displays",
+        "Set display face assignment",
+    ),
+    RouteSpec::delete(
+        "/api/v1/displays/{id}/face",
+        "delete_display_face",
+        "displays",
+        "Delete display face assignment",
+    ),
+    RouteSpec::patch(
+        "/api/v1/displays/{id}/face/controls",
+        "patch_display_face_controls",
+        "displays",
+        "Patch display face controls",
+    ),
+    RouteSpec::patch(
+        "/api/v1/displays/{id}/face/composition",
+        "patch_display_face_composition",
+        "displays",
+        "Patch display face composition",
+    ),
+    RouteSpec::get(
+        "/api/v1/simulators/displays",
+        "list_simulated_displays",
+        "displays",
+        "List simulated displays",
+    ),
+    RouteSpec::post(
+        "/api/v1/simulators/displays",
+        "create_simulated_display",
+        "displays",
+        "Create simulated display",
+    ),
+    RouteSpec::get(
+        "/api/v1/simulators/displays/{id}",
+        "get_simulated_display",
+        "displays",
+        "Get simulated display",
+    ),
+    RouteSpec::patch(
+        "/api/v1/simulators/displays/{id}",
+        "patch_simulated_display",
+        "displays",
+        "Patch simulated display",
+    ),
+    RouteSpec::delete(
+        "/api/v1/simulators/displays/{id}",
+        "delete_simulated_display",
+        "displays",
+        "Delete simulated display",
+    ),
+    RouteSpec::get(
+        "/api/v1/simulators/displays/{id}/frame",
+        "get_simulated_display_frame",
+        "displays",
+        "Get simulated display frame",
+    ),
+    RouteSpec::get(
+        "/api/v1/logical-devices",
+        "list_logical_devices",
+        "devices",
+        "List logical devices",
+    ),
+    RouteSpec::get(
+        "/api/v1/logical-devices/{id}",
+        "get_logical_device",
+        "devices",
+        "Get logical device",
+    ),
+    RouteSpec::put(
+        "/api/v1/logical-devices/{id}",
+        "update_logical_device",
+        "devices",
+        "Update logical device",
+    ),
+    RouteSpec::delete(
+        "/api/v1/logical-devices/{id}",
+        "delete_logical_device",
+        "devices",
+        "Delete logical device",
+    ),
+    RouteSpec::get(
+        "/api/v1/attachments/templates",
+        "list_templates",
+        "attachments",
+        "List attachment templates",
+    ),
+    RouteSpec::post(
+        "/api/v1/attachments/templates",
+        "create_template",
+        "attachments",
+        "Create attachment template",
+    ),
+    RouteSpec::get(
+        "/api/v1/attachments/templates/{id}",
+        "get_template",
+        "attachments",
+        "Get attachment template",
+    ),
+    RouteSpec::put(
+        "/api/v1/attachments/templates/{id}",
+        "update_template",
+        "attachments",
+        "Update attachment template",
+    ),
+    RouteSpec::delete(
+        "/api/v1/attachments/templates/{id}",
+        "delete_template",
+        "attachments",
+        "Delete attachment template",
+    ),
+    RouteSpec::get(
+        "/api/v1/attachments/categories",
+        "list_categories",
+        "attachments",
+        "List attachment categories",
+    ),
+    RouteSpec::get(
+        "/api/v1/attachments/vendors",
+        "list_vendors",
+        "attachments",
+        "List attachment vendors",
+    ),
+    RouteSpec::get("/api/v1/effects", "list_effects", "effects", "List effects"),
+    RouteSpec::get(
+        "/api/v1/effects/active",
+        "get_active_effect",
+        "effects",
+        "Get active effect",
+    ),
+    RouteSpec::patch(
+        "/api/v1/effects/current/controls",
+        "update_current_controls",
+        "effects",
+        "Update current effect controls",
+    ),
+    RouteSpec::put(
+        "/api/v1/effects/current/controls/{name}/binding",
+        "set_current_control_binding",
+        "effects",
+        "Set current effect control binding",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/current/reset",
+        "reset_controls",
+        "effects",
+        "Reset current effect controls",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/stop",
+        "stop_effect",
+        "effects",
+        "Stop active effect",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/rescan",
+        "rescan_effects",
+        "effects",
+        "Rescan effects",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/install",
+        "install_effect",
+        "effects",
+        "Install effect",
+    ),
+    RouteSpec::get(
+        "/api/v1/effects/{id}",
+        "get_effect",
+        "effects",
+        "Get effect",
+    ),
+    RouteSpec::get(
+        "/api/v1/effects/{id}/layout",
+        "get_effect_layout",
+        "effects",
+        "Get effect layout link",
+    ),
+    RouteSpec::put(
+        "/api/v1/effects/{id}/layout",
+        "set_effect_layout",
+        "effects",
+        "Set effect layout link",
+    ),
+    RouteSpec::delete(
+        "/api/v1/effects/{id}/layout",
+        "delete_effect_layout",
+        "effects",
+        "Delete effect layout link",
+    ),
+    RouteSpec::post(
+        "/api/v1/effects/{id}/apply",
+        "apply_effect",
+        "effects",
+        "Apply effect",
+    ),
+    RouteSpec::patch(
+        "/api/v1/effects/{id}/controls",
+        "update_effect_controls",
+        "effects",
+        "Update effect controls",
+    ),
+    RouteSpec::get("/api/v1/scenes", "list_scenes", "scenes", "List scenes"),
+    RouteSpec::post("/api/v1/scenes", "create_scene", "scenes", "Create scene"),
+    RouteSpec::get(
+        "/api/v1/scenes/active",
+        "get_active_scene",
+        "scenes",
+        "Get active scene",
+    ),
+    RouteSpec::post(
+        "/api/v1/scenes/deactivate",
+        "deactivate_scene",
+        "scenes",
+        "Deactivate active scene",
+    ),
+    RouteSpec::get("/api/v1/scenes/{id}", "get_scene", "scenes", "Get scene"),
+    RouteSpec::put(
+        "/api/v1/scenes/{id}",
+        "update_scene",
+        "scenes",
+        "Update scene",
+    ),
+    RouteSpec::delete(
+        "/api/v1/scenes/{id}",
+        "delete_scene",
+        "scenes",
+        "Delete scene",
+    ),
+    RouteSpec::post(
+        "/api/v1/scenes/{id}/activate",
+        "activate_scene",
+        "scenes",
+        "Activate scene",
+    ),
+    RouteSpec::get(
+        "/api/v1/profiles",
+        "list_profiles",
+        "profiles",
+        "List profiles",
+    ),
+    RouteSpec::post(
+        "/api/v1/profiles",
+        "create_profile",
+        "profiles",
+        "Create profile",
+    ),
+    RouteSpec::get(
+        "/api/v1/profiles/{id}",
+        "get_profile",
+        "profiles",
+        "Get profile",
+    ),
+    RouteSpec::put(
+        "/api/v1/profiles/{id}",
+        "update_profile",
+        "profiles",
+        "Update profile",
+    ),
+    RouteSpec::delete(
+        "/api/v1/profiles/{id}",
+        "delete_profile",
+        "profiles",
+        "Delete profile",
+    ),
+    RouteSpec::post(
+        "/api/v1/profiles/{id}/apply",
+        "apply_profile",
+        "profiles",
+        "Apply profile",
+    ),
+    RouteSpec::get("/api/v1/layouts", "list_layouts", "layouts", "List layouts"),
+    RouteSpec::post(
+        "/api/v1/layouts",
+        "create_layout",
+        "layouts",
+        "Create layout",
+    ),
+    RouteSpec::get(
+        "/api/v1/layouts/active",
+        "get_active_layout",
+        "layouts",
+        "Get active layout",
+    ),
+    RouteSpec::put(
+        "/api/v1/layouts/active/preview",
+        "preview_layout",
+        "layouts",
+        "Preview active layout",
+    ),
+    RouteSpec::get(
+        "/api/v1/layouts/{id}",
+        "get_layout",
+        "layouts",
+        "Get layout",
+    ),
+    RouteSpec::put(
+        "/api/v1/layouts/{id}",
+        "update_layout",
+        "layouts",
+        "Update layout",
+    ),
+    RouteSpec::delete(
+        "/api/v1/layouts/{id}",
+        "delete_layout",
+        "layouts",
+        "Delete layout",
+    ),
+    RouteSpec::post(
+        "/api/v1/layouts/{id}/apply",
+        "apply_layout",
+        "layouts",
+        "Apply layout",
+    ),
+    RouteSpec::get(
+        "/api/v1/library/favorites",
+        "list_favorites",
+        "library",
+        "List favorite effects",
+    ),
+    RouteSpec::post(
+        "/api/v1/library/favorites",
+        "add_favorite",
+        "library",
+        "Add favorite effect",
+    ),
+    RouteSpec::delete(
+        "/api/v1/library/favorites/{effect}",
+        "remove_favorite",
+        "library",
+        "Remove favorite effect",
+    ),
+    RouteSpec::get(
+        "/api/v1/library/presets",
+        "list_presets",
+        "library",
+        "List presets",
+    ),
+    RouteSpec::post(
+        "/api/v1/library/presets",
+        "create_preset",
+        "library",
+        "Create preset",
+    ),
+    RouteSpec::get(
+        "/api/v1/library/presets/{id}",
+        "get_preset",
+        "library",
+        "Get preset",
+    ),
+    RouteSpec::put(
+        "/api/v1/library/presets/{id}",
+        "update_preset",
+        "library",
+        "Update preset",
+    ),
+    RouteSpec::delete(
+        "/api/v1/library/presets/{id}",
+        "delete_preset",
+        "library",
+        "Delete preset",
+    ),
+    RouteSpec::post(
+        "/api/v1/library/presets/{id}/apply",
+        "apply_preset",
+        "library",
+        "Apply preset",
+    ),
+    RouteSpec::get(
+        "/api/v1/library/playlists",
+        "list_playlists",
+        "library",
+        "List playlists",
+    ),
+    RouteSpec::post(
+        "/api/v1/library/playlists",
+        "create_playlist",
+        "library",
+        "Create playlist",
+    ),
+    RouteSpec::get(
+        "/api/v1/library/playlists/active",
+        "get_active_playlist",
+        "library",
+        "Get active playlist",
+    ),
+    RouteSpec::post(
+        "/api/v1/library/playlists/stop",
+        "stop_playlist",
+        "library",
+        "Stop playlist",
+    ),
+    RouteSpec::get(
+        "/api/v1/library/playlists/{id}",
+        "get_playlist",
+        "library",
+        "Get playlist",
+    ),
+    RouteSpec::put(
+        "/api/v1/library/playlists/{id}",
+        "update_playlist",
+        "library",
+        "Update playlist",
+    ),
+    RouteSpec::delete(
+        "/api/v1/library/playlists/{id}",
+        "delete_playlist",
+        "library",
+        "Delete playlist",
+    ),
+    RouteSpec::post(
+        "/api/v1/library/playlists/{id}/activate",
+        "activate_playlist",
+        "library",
+        "Activate playlist",
+    ),
+    RouteSpec::get(
+        "/api/v1/audio/devices",
+        "list_audio_devices",
+        "settings",
+        "List audio input devices",
+    ),
+    RouteSpec::get(
+        "/api/v1/settings/brightness",
+        "get_brightness",
+        "settings",
+        "Get global brightness",
+    ),
+    RouteSpec::put(
+        "/api/v1/settings/brightness",
+        "set_brightness",
+        "settings",
+        "Set global brightness",
+    ),
+    RouteSpec::get(
+        "/api/v1/config",
+        "show_config",
+        "config",
+        "Show daemon config",
+    ),
+    RouteSpec::get(
+        "/api/v1/config/get",
+        "get_config_value",
+        "config",
+        "Get daemon config value",
+    ),
+    RouteSpec::post(
+        "/api/v1/config/set",
+        "set_config_value",
+        "config",
+        "Set daemon config value",
+    ),
+    RouteSpec::post(
+        "/api/v1/config/reset",
+        "reset_config_value",
+        "config",
+        "Reset daemon config value",
+    ),
+    RouteSpec::patch(
+        "/api/v1/control-surfaces/{surface_id}/values",
+        "apply_control_surface_values",
+        "controls",
+        "Apply control surface values",
+    ),
+    RouteSpec::post(
+        "/api/v1/diagnose",
+        "run_diagnostics",
+        "diagnostics",
+        "Run daemon diagnostics",
+    ),
+    RouteSpec::get(
+        "/api/v1/ws",
+        "ws_handler",
+        "websocket",
+        "Open realtime WebSocket stream",
+    ),
+];
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
@@ -115,6 +859,74 @@ impl Modify for SecurityAddon {
     }
 }
 
+impl Modify for RouteCatalogAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        for tag in [
+            "displays",
+            "controls",
+            "attachments",
+            "scenes",
+            "profiles",
+            "layouts",
+            "library",
+            "settings",
+            "config",
+            "diagnostics",
+            "websocket",
+        ] {
+            ensure_tag(openapi, tag);
+        }
+
+        for route in ROUTES {
+            let method = http_method(route.method);
+            if openapi
+                .paths
+                .get_path_operation(route.path, method.clone())
+                .is_none()
+            {
+                openapi
+                    .paths
+                    .add_path_operation(route.path, vec![method], operation(route));
+            }
+        }
+    }
+}
+
 pub(crate) fn router() -> SwaggerUi {
     SwaggerUi::new("/api/v1/docs").url("/api/v1/openapi.json", ApiDoc::openapi())
+}
+
+fn operation(route: &RouteSpec) -> utoipa::openapi::path::Operation {
+    OperationBuilder::new()
+        .tag(route.tag)
+        .summary(Some(route.summary))
+        .operation_id(Some(route.operation_id))
+        .response(
+            route.success_status,
+            Response::new(format!("{} response", route.summary)),
+        )
+        .response("400", Response::new("Bad request"))
+        .response("404", Response::new("Resource not found"))
+        .response("409", Response::new("State conflict"))
+        .response("422", Response::new("Validation error"))
+        .response("500", Response::new("Internal daemon error"))
+        .build()
+}
+
+fn http_method(method: &str) -> HttpMethod {
+    match method {
+        "get" => HttpMethod::Get,
+        "post" => HttpMethod::Post,
+        "put" => HttpMethod::Put,
+        "patch" => HttpMethod::Patch,
+        "delete" => HttpMethod::Delete,
+        _ => unreachable!("route catalog contains only supported HTTP methods"),
+    }
+}
+
+fn ensure_tag(openapi: &mut utoipa::openapi::OpenApi, name: &str) {
+    let tags = openapi.tags.get_or_insert_with(Vec::new);
+    if !tags.iter().any(|tag| tag.name == name) {
+        tags.push(Tag::new(name));
+    }
 }

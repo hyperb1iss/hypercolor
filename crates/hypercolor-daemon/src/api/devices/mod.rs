@@ -993,7 +993,7 @@ pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -
         )
 }
 
-async fn persist_device_settings_for(
+pub(crate) async fn persist_device_settings_for(
     state: &AppState,
     device_id: DeviceId,
     settings: &DeviceUserSettings,
@@ -1011,7 +1011,7 @@ async fn persist_device_settings_for(
     store.save().map_err(|error| error.to_string())
 }
 
-async fn sync_device_output_brightness(
+pub(crate) async fn sync_device_output_brightness(
     state: &AppState,
     device_id: DeviceId,
     settings: &DeviceUserSettings,
@@ -1020,7 +1020,7 @@ async fn sync_device_output_brightness(
     manager.set_device_output_brightness(device_id, settings.brightness);
 }
 
-fn publish_device_settings_changed(
+pub(crate) fn publish_device_settings_changed(
     state: &AppState,
     device_id: DeviceId,
     settings: &DeviceUserSettings,

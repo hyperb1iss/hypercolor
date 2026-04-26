@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
+use hypercolor_daemon::api::openapi::ROUTES;
 use hypercolor_daemon::api::{self, AppState};
 use tower::ServiceExt;
 
@@ -60,6 +62,35 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["paths"]["/api/v1/devices"].is_object());
     assert!(body["paths"]["/api/v1/effects"].is_object());
     assert!(body["paths"]["/api/v1/effects/{id}/apply"].is_object());
+
+    for route in ROUTES {
+        let operation = &body["paths"][route.path][route.method];
+        assert!(
+            operation.is_object(),
+            "missing OpenAPI operation {} {}",
+            route.method.to_uppercase(),
+            route.path
+        );
+        assert_eq!(
+            operation["operationId"],
+            route.operation_id,
+            "unexpected operationId for {} {}",
+            route.method.to_uppercase(),
+            route.path
+        );
+    }
+}
+
+#[test]
+fn route_catalog_operation_ids_are_unique() {
+    let mut operation_ids = BTreeSet::new();
+    for route in ROUTES {
+        assert!(
+            operation_ids.insert(route.operation_id),
+            "duplicate OpenAPI operationId {}",
+            route.operation_id
+        );
+    }
 }
 
 #[tokio::test]

@@ -8,6 +8,7 @@ pub mod access_log;
 pub mod attachments;
 pub mod config;
 pub mod control_values;
+pub mod controls;
 pub mod devices;
 pub mod diagnose;
 pub mod displays;
@@ -904,6 +905,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 .delete(devices::delete_device),
         )
         .route(
+            "/devices/{id}/controls",
+            axum::routing::get(controls::get_device_control_surface),
+        )
+        .route(
             "/devices/{id}/attachments",
             axum::routing::get(devices::get_attachments)
                 .put(devices::update_attachments)
@@ -1168,6 +1173,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/config/reset",
             axum::routing::post(config::reset_config_value),
+        )
+        // ── Control Surfaces ────────────────────────────────────────
+        .route(
+            "/control-surfaces/{surface_id}/values",
+            axum::routing::patch(controls::apply_control_surface_values),
         )
         // ── Diagnostics ──────────────────────────────────────────────
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
