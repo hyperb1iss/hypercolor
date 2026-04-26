@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
 use crate::device::discovery::{DiscoveryConnectBehavior, TransportScanner};
-use crate::device::net::{CredentialStore, Credentials, MdnsBrowser};
+use crate::device::net::{CredentialStore, MdnsBrowser};
 
 use super::bridge::{DEFAULT_HUE_API_PORT, HueBridgeClient};
 use super::types::{
@@ -333,15 +334,17 @@ async fn load_bridge_credentials(
     bridge_id: &str,
     ip: IpAddr,
 ) -> Option<(String, String)> {
-    let lookup_keys = [format!("hue:{bridge_id}"), format!("hue:ip:{ip}")];
-    for key in lookup_keys {
-        if let Some(Credentials::HueBridge {
-            api_key,
-            client_key,
-        }) = credential_store.get(&key).await
-        {
-            return Some((api_key, client_key));
-        }
+    for key in [format!("hue:{bridge_id}"), format!("hue:ip:{ip}")] {
+        let Some(credentials) = credential_store.get_json(&key).await else {
+            continue;
+        };
+        let Some(api_key) = credentials.get("api_key").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(client_key) = credentials.get("client_key").and_then(Value::as_str) else {
+            continue;
+        };
+        return Some((api_key.to_owned(), client_key.to_owned()));
     }
     None
 }

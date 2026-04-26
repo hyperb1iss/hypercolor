@@ -403,13 +403,22 @@ async fn load_bridge_credentials(
     ip: IpAddr,
 ) -> Option<(String, String)> {
     for key in [format!("hue:{bridge_id}"), format!("hue:ip:{ip}")] {
-        if let Some(crate::device::net::Credentials::HueBridge {
-            api_key,
-            client_key,
-        }) = credential_store.get(&key).await
-        {
-            return Some((api_key, client_key));
-        }
+        let Some(credentials) = credential_store.get_json(&key).await else {
+            continue;
+        };
+        let Some(api_key) = credentials
+            .get("api_key")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(client_key) = credentials
+            .get("client_key")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        return Some((api_key.to_owned(), client_key.to_owned()));
     }
     None
 }

@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
 use crate::device::discovery::{DiscoveryConnectBehavior, TransportScanner};
-use crate::device::net::{CredentialStore, Credentials, MdnsBrowser};
+use crate::device::net::{CredentialStore, MdnsBrowser};
 
 use super::fetch_device_info;
 use super::fetch_panel_layout;
@@ -335,9 +336,13 @@ pub(super) async fn load_auth_token(
         format!("nanoleaf:ip:{ip}"),
     ];
     for key in lookup_keys {
-        if let Some(Credentials::Nanoleaf { auth_token }) = credential_store.get(&key).await {
-            return Some(auth_token);
-        }
+        let Some(credentials) = credential_store.get_json(&key).await else {
+            continue;
+        };
+        let Some(auth_token) = credentials.get("auth_token").and_then(Value::as_str) else {
+            continue;
+        };
+        return Some(auth_token.to_owned());
     }
     None
 }

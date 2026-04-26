@@ -98,72 +98,12 @@ impl Credentials {
     }
 
     /// Build stored credentials from a driver-facing JSON payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a built-in credential payload is missing required
-    /// fields or is otherwise empty.
-    pub fn from_driver_json(key: &str, value: Value) -> Result<Self> {
+    #[must_use]
+    pub fn from_driver_json(key: &str, value: Value) -> Self {
         let backend_id = key.split(':').next().unwrap_or("custom");
-        match backend_id {
-            "hue" => {
-                let api_key = value
-                    .get("api_key")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .context("Hue credentials are missing api_key")?;
-                let client_key = value
-                    .get("client_key")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .context("Hue credentials are missing client_key")?;
-                Ok(Self::HueBridge {
-                    api_key,
-                    client_key,
-                })
-            }
-            "nanoleaf" => {
-                let auth_token = value
-                    .get("auth_token")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .context("Nanoleaf credentials are missing auth_token")?;
-                Ok(Self::Nanoleaf { auth_token })
-            }
-            "govee" => {
-                let api_key = value
-                    .get("api_key")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .context("Govee credentials are missing api_key")?;
-                Ok(Self::Govee { api_key })
-            }
-            "wled" => {
-                let username = value
-                    .get("username")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                let password = value
-                    .get("password")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                let token = value
-                    .get("token")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                if username.is_none() && password.is_none() && token.is_none() {
-                    bail!("WLED credentials require at least one configured field");
-                }
-                Ok(Self::Wled {
-                    username,
-                    password,
-                    token,
-                })
-            }
-            _ => Ok(Self::Custom {
-                backend_id: backend_id.to_owned(),
-                data: value,
-            }),
+        Self::Custom {
+            backend_id: backend_id.to_owned(),
+            data: value,
         }
     }
 }
@@ -256,10 +196,9 @@ impl CredentialStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the JSON payload is invalid for the credential key
-    /// or the encrypted payload cannot be persisted.
+    /// Returns an error if the encrypted payload cannot be persisted.
     pub async fn store_json(&self, key: &str, value: Value) -> Result<()> {
-        self.store(key, Credentials::from_driver_json(key, value)?)
+        self.store(key, Credentials::from_driver_json(key, value))
             .await
     }
 

@@ -121,11 +121,11 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
         .await?;
 
     assert_eq!(
-        store.get("hue:bridge-1").await,
-        Some(Credentials::HueBridge {
-            api_key: "api-key".to_owned(),
-            client_key: "client-key".to_owned(),
-        })
+        store.get_json("hue:bridge-1").await,
+        Some(serde_json::json!({
+            "api_key": "api-key",
+            "client_key": "client-key",
+        }))
     );
     assert_eq!(
         store.get_json("custom-driver:device-1").await,
@@ -139,21 +139,25 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
 }
 
 #[tokio::test]
-async fn credential_store_rejects_invalid_builtin_driver_json() -> TestResult {
+async fn credential_store_keeps_driver_json_opaque() -> TestResult {
     let tempdir = tempdir()?;
     let store = CredentialStore::open(tempdir.path()).await?;
 
-    let error = store
+    store
         .store_json("wled:strip", serde_json::json!({}))
-        .await
-        .expect_err("empty WLED credentials should be rejected");
+        .await?;
 
-    assert!(
-        error
-            .to_string()
-            .contains("WLED credentials require at least one configured field")
+    assert_eq!(
+        store.get_json("wled:strip").await,
+        Some(serde_json::json!({}))
     );
-    assert_eq!(store.get("wled:strip").await, None);
+    assert_eq!(
+        store.get("wled:strip").await,
+        Some(Credentials::Custom {
+            backend_id: "wled".to_owned(),
+            data: serde_json::json!({}),
+        })
+    );
 
     Ok(())
 }
