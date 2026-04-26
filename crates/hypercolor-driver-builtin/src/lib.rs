@@ -48,7 +48,10 @@ pub fn register_drivers(
     let _ = &credential_store;
 
     #[cfg(feature = "govee")]
-    registry.register(GoveeDriverFactory::new(GoveeConfig::default()))?;
+    registry.register(GoveeDriverFactory::with_credential_store(
+        GoveeConfig::default(),
+        Arc::clone(&credential_store),
+    ))?;
 
     #[cfg(feature = "hue")]
     registry.register(HueDriverFactory::new(

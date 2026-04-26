@@ -2,9 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{DeviceBackend, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
@@ -52,6 +54,7 @@ pub static DESCRIPTOR: DriverDescriptor =
 #[derive(Clone)]
 pub struct GoveeDriverFactory {
     config: GoveeConfig,
+    credential_store: Option<Arc<CredentialStore>>,
     cloud_base_url: Option<String>,
 }
 
@@ -60,6 +63,19 @@ impl GoveeDriverFactory {
     pub fn new(config: GoveeConfig) -> Self {
         Self {
             config,
+            credential_store: None,
+            cloud_base_url: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_credential_store(
+        config: GoveeConfig,
+        credential_store: Arc<CredentialStore>,
+    ) -> Self {
+        Self {
+            config,
+            credential_store: Some(credential_store),
             cloud_base_url: None,
         }
     }
@@ -68,6 +84,7 @@ impl GoveeDriverFactory {
     pub fn with_cloud_base_url(config: GoveeConfig, cloud_base_url: impl Into<String>) -> Self {
         Self {
             config,
+            credential_store: None,
             cloud_base_url: Some(cloud_base_url.into()),
         }
     }
@@ -99,6 +116,12 @@ impl NetworkDriverFactory for GoveeDriverFactory {
         config: DriverConfigView<'_>,
     ) -> Result<Option<Box<dyn DeviceBackend>>> {
         let mut backend = GoveeBackend::new(self.resolved_config(config)?);
+        if let Some(credential_store) = &self.credential_store {
+            backend = backend.with_credential_store(Arc::clone(credential_store));
+        }
+        if let Some(base_url) = &self.cloud_base_url {
+            backend = backend.with_cloud_base_url(base_url.clone());
+        }
         for device in load_cached_probe_devices(host)? {
             let (Some(sku), Some(mac)) = (device.sku, device.mac) else {
                 continue;

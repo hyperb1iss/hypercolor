@@ -5,12 +5,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{BackendInfo, DeviceBackend, HealthStatus, TransportScanner};
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;
 
 use crate::capabilities::{GoveeCapabilities, SkuProfile, fallback_profile, profile_for_sku};
+use crate::cloud::{CloudClient, V1Command, V1Device};
 use crate::lan::discovery::{GoveeKnownDevice, GoveeLanDevice, GoveeLanScanner, build_device_info};
 use crate::lan::protocol::{DEVICE_PORT, LanCommand, encode_command};
 use crate::lan::razer::{encode_razer_frame_base64, encode_razer_mode_base64};
@@ -19,13 +21,17 @@ pub struct GoveeBackend {
     config: GoveeConfig,
     devices: HashMap<DeviceId, GoveeDeviceState>,
     shared_socket: Option<Arc<UdpSocket>>,
+    credential_store: Option<Arc<CredentialStore>>,
+    cloud_base_url: Option<String>,
+    cloud_client: Option<CloudClient>,
 }
 
 #[derive(Clone)]
 struct GoveeDeviceState {
     info: DeviceInfo,
     profile: SkuProfile,
-    address: SocketAddr,
+    address: Option<SocketAddr>,
+    cloud_id: Option<String>,
     last_sent: Option<Vec<[u8; 3]>>,
     last_write_at: Option<Instant>,
     razer_enabled: bool,
@@ -38,7 +44,28 @@ impl GoveeBackend {
             config,
             devices: HashMap::new(),
             shared_socket: None,
+            credential_store: None,
+            cloud_base_url: None,
+            cloud_client: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_credential_store(mut self, credential_store: Arc<CredentialStore>) -> Self {
+        self.credential_store = Some(credential_store);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cloud_client(mut self, cloud_client: CloudClient) -> Self {
+        self.cloud_client = Some(cloud_client);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cloud_base_url(mut self, cloud_base_url: impl Into<String>) -> Self {
+        self.cloud_base_url = Some(cloud_base_url.into());
+        self
     }
 
     pub fn remember_device(&mut self, device: GoveeLanDevice) {
@@ -48,17 +75,42 @@ impl GoveeBackend {
     pub fn remember_device_at(&mut self, device: GoveeLanDevice, address: SocketAddr) {
         let info = build_device_info(&device);
         let profile = profile_for_sku(&device.sku).unwrap_or_else(|| fallback_profile(&device.sku));
-        self.devices.insert(
-            info.id,
-            GoveeDeviceState {
+        self.devices
+            .entry(info.id)
+            .and_modify(|state| {
+                state.info = info.clone();
+                state.profile = profile.clone();
+                state.address = Some(address);
+            })
+            .or_insert(GoveeDeviceState {
                 info,
                 profile,
-                address,
+                address: Some(address),
+                cloud_id: None,
                 last_sent: None,
                 last_write_at: None,
                 razer_enabled: false,
-            },
-        );
+            });
+    }
+
+    pub fn remember_cloud_device(&mut self, device: V1Device) {
+        let discovered = crate::build_cloud_discovered_device(device.clone());
+        let profile =
+            profile_for_sku(&device.model).unwrap_or_else(|| fallback_profile(&device.model));
+        self.devices
+            .entry(discovered.info.id)
+            .and_modify(|state| {
+                state.cloud_id = Some(device.device.clone());
+            })
+            .or_insert(GoveeDeviceState {
+                info: discovered.info,
+                profile,
+                address: None,
+                cloud_id: Some(device.device),
+                last_sent: None,
+                last_write_at: None,
+                razer_enabled: false,
+            });
     }
 
     async fn ensure_socket(&mut self) -> Result<Arc<UdpSocket>> {
@@ -79,8 +131,8 @@ impl GoveeBackend {
         let address = self
             .devices
             .get(id)
-            .map(|device| device.address)
-            .with_context(|| format!("Govee device {id} is not known"))?;
+            .and_then(|device| device.address)
+            .with_context(|| format!("Govee device {id} has no LAN address"))?;
         let payload = encode_command(&command)?;
         let socket = self.ensure_socket().await?;
         socket
@@ -91,6 +143,9 @@ impl GoveeBackend {
     }
 
     fn frame_interval(&self, device: &GoveeDeviceState) -> Duration {
+        if device.address.is_none() {
+            return Duration::from_secs(6);
+        }
         let fps = if device
             .profile
             .capabilities
@@ -102,6 +157,41 @@ impl GoveeBackend {
         }
         .max(1);
         Duration::from_millis(1000 / u64::from(fps))
+    }
+
+    async fn cloud_client(&self) -> Result<Option<CloudClient>> {
+        if let Some(client) = &self.cloud_client {
+            return Ok(Some(client.clone()));
+        }
+
+        let Some(store) = &self.credential_store else {
+            return Ok(None);
+        };
+        let Some(Credentials::Govee { api_key }) = store.get("govee:account").await else {
+            return Ok(None);
+        };
+
+        match &self.cloud_base_url {
+            Some(base_url) => CloudClient::with_base_url(api_key, base_url).map(Some),
+            None => CloudClient::new(api_key).map(Some),
+        }
+    }
+
+    async fn send_cloud_command(&self, id: &DeviceId, command: V1Command) -> Result<()> {
+        let device = self
+            .devices
+            .get(id)
+            .with_context(|| format!("Govee device {id} is not known"))?;
+        let cloud_id = device
+            .cloud_id
+            .as_deref()
+            .with_context(|| format!("Govee device {id} is not cloud-backed"))?;
+        let client = self
+            .cloud_client()
+            .await?
+            .context("Govee cloud credentials are not configured")?;
+        let model = device.info.model.as_deref().unwrap_or_default();
+        client.v1_control(model, cloud_id, command).await
     }
 }
 
@@ -147,6 +237,15 @@ impl DeviceBackend for GoveeBackend {
             infos.push(device.info);
         }
 
+        if let Some(client) = self.cloud_client().await? {
+            for device in client.list_v1_devices().await? {
+                self.remember_cloud_device(device);
+            }
+            infos.extend(self.devices.values().map(|device| device.info.clone()));
+            infos.sort_by_key(|info| info.id.to_string());
+            infos.dedup_by_key(|info| info.id);
+        }
+
         Ok(infos)
     }
 
@@ -159,7 +258,17 @@ impl DeviceBackend for GoveeBackend {
             bail!("Govee device {id} is not known");
         }
 
-        self.send_command(id, LanCommand::Turn { on: true }).await?;
+        if self
+            .devices
+            .get(id)
+            .and_then(|device| device.address)
+            .is_some()
+        {
+            self.send_command(id, LanCommand::Turn { on: true }).await?;
+        } else {
+            self.send_cloud_command(id, V1Command::Turn(true)).await?;
+            return Ok(());
+        }
         let should_enable_razer = self.devices.get(id).is_some_and(|device| {
             device
                 .profile
@@ -188,6 +297,7 @@ impl DeviceBackend for GoveeBackend {
             return Ok(());
         };
         let razer_enabled = device.razer_enabled;
+        let has_lan_address = device.address.is_some();
         if razer_enabled {
             self.send_command(
                 id,
@@ -198,8 +308,12 @@ impl DeviceBackend for GoveeBackend {
             .await?;
         }
         if self.config.power_off_on_disconnect {
-            self.send_command(id, LanCommand::Turn { on: false })
-                .await?;
+            if has_lan_address {
+                self.send_command(id, LanCommand::Turn { on: false })
+                    .await?;
+            } else {
+                self.send_cloud_command(id, V1Command::Turn(false)).await?;
+            }
         }
         if let Some(device) = self.devices.get_mut(id) {
             device.razer_enabled = false;
@@ -254,8 +368,25 @@ impl DeviceBackend for GoveeBackend {
                 self.send_command(id, LanCommand::Razer { pt }).await?;
             }
             LanCommand::ColorWc { red, green, blue } => {
-                self.send_command(id, LanCommand::ColorWc { red, green, blue })
+                if self
+                    .devices
+                    .get(id)
+                    .and_then(|device| device.address)
+                    .is_some()
+                {
+                    self.send_command(id, LanCommand::ColorWc { red, green, blue })
+                        .await?;
+                } else {
+                    self.send_cloud_command(
+                        id,
+                        V1Command::Color {
+                            r: red,
+                            g: green,
+                            b: blue,
+                        },
+                    )
                     .await?;
+                }
             }
             _ => unreachable!("Govee write_colors only emits color frame commands"),
         }
@@ -268,6 +399,17 @@ impl DeviceBackend for GoveeBackend {
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+        if self
+            .devices
+            .get(id)
+            .and_then(|device| device.address)
+            .is_none()
+        {
+            return self
+                .send_cloud_command(id, V1Command::Brightness(brightness))
+                .await;
+        }
+
         self.send_command(
             id,
             LanCommand::Brightness {
@@ -279,6 +421,9 @@ impl DeviceBackend for GoveeBackend {
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.devices.get(id).map(|device| {
+            if device.address.is_none() {
+                return 1;
+            }
             if device
                 .profile
                 .capabilities

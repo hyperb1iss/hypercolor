@@ -81,6 +81,9 @@ impl Credentials {
             Self::Nanoleaf { auth_token } => serde_json::json!({
                 "auth_token": auth_token,
             }),
+            Self::Govee { api_key } => serde_json::json!({
+                "api_key": api_key,
+            }),
             Self::Wled {
                 username,
                 password,
@@ -126,6 +129,14 @@ impl Credentials {
                     .map(ToOwned::to_owned)
                     .context("Nanoleaf credentials are missing auth_token")?;
                 Ok(Self::Nanoleaf { auth_token })
+            }
+            "govee" => {
+                let api_key = value
+                    .get("api_key")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .context("Govee credentials are missing api_key")?;
+                Ok(Self::Govee { api_key })
             }
             "wled" => {
                 let username = value
