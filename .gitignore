@@ -59,6 +59,9 @@ site/out/
 *.pdb
 .tmp
 
+# Distribution
+dist/
+
 # Claude vomit
 .agents/scheduled_tasks.lock
 .agents/settings.local.json
