@@ -2052,6 +2052,65 @@ async fn get_driver_controls_returns_module_control_surface() {
 }
 
 #[tokio::test]
+async fn get_driver_controls_returns_hue_and_nanoleaf_surfaces() {
+    let app = test_app();
+
+    let hue_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/hue/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(hue_response.status(), StatusCode::OK);
+    let hue = body_json(hue_response).await;
+    assert_eq!(hue["data"]["surface_id"], "driver:hue");
+    assert_eq!(hue["data"]["values"]["bridge_ips"]["kind"], "list");
+    assert_eq!(hue["data"]["values"]["use_cie_xy"]["kind"], "bool");
+    let hue_fields = hue["data"]["fields"]
+        .as_array()
+        .expect("Hue fields should be an array");
+    assert!(hue_fields.iter().any(|field| {
+        field["id"] == "bridge_ips" && field["apply_impact"] == "discovery_rescan"
+    }));
+    assert!(
+        hue_fields
+            .iter()
+            .any(|field| field["id"] == "use_cie_xy" && field["apply_impact"] == "backend_rebind")
+    );
+
+    let nanoleaf_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/nanoleaf/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(nanoleaf_response.status(), StatusCode::OK);
+    let nanoleaf = body_json(nanoleaf_response).await;
+    assert_eq!(nanoleaf["data"]["surface_id"], "driver:nanoleaf");
+    assert_eq!(nanoleaf["data"]["values"]["device_ips"]["kind"], "list");
+    assert_eq!(
+        nanoleaf["data"]["values"]["transition_time"]["kind"],
+        "integer"
+    );
+    let nanoleaf_fields = nanoleaf["data"]["fields"]
+        .as_array()
+        .expect("Nanoleaf fields should be an array");
+    assert!(nanoleaf_fields.iter().any(|field| {
+        field["id"] == "device_ips" && field["apply_impact"] == "discovery_rescan"
+    }));
+    assert!(nanoleaf_fields.iter().any(|field| {
+        field["id"] == "transition_time" && field["apply_impact"] == "backend_rebind"
+    }));
+}
+
+#[tokio::test]
 async fn get_unknown_driver_controls_returns_not_found() {
     let app = test_app();
 
