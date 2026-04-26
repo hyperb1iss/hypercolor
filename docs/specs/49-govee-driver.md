@@ -523,58 +523,38 @@ pub enum SkuFamily {
     RgbicOutdoor,
     RgbStrip,
     Bulb,
-    Bars,
-    String,
     Unknown,
 }
 ```
 
-### Seed table
-
-Phase 1 ships with these entries minimum. The table is extended as SKUs are validated:
+### Implemented tables
 
 ```rust
-pub static SKU_PROFILES: &[SkuProfile] = &[
-    SkuProfile {
-        sku: "H6163", family: SkuFamily::RgbicStrip,
-        capabilities: LAN | CLOUD | COLOR_RGB | COLOR_KELVIN | BRIGHTNESS | ON_OFF | SCENES_DYNAMIC,
-        lan_segment_count: None,
-        razer_led_count: None,
-        kelvin_range: Some((2000, 9000)),
-        name: "RGBIC Strip H6163",
-    },
-    SkuProfile {
-        sku: "H6199", family: SkuFamily::RgbicTvBacklight,
-        capabilities: CLOUD | COLOR_RGB | BRIGHTNESS | ON_OFF,
-        lan_segment_count: None,
-        razer_led_count: None,
-        kelvin_range: None,
-        name: "Immersion TV Backlight H6199",
-    },
-    SkuProfile {
-        sku: "H619A", family: SkuFamily::RgbicStrip,
-        capabilities: LAN | CLOUD | COLOR_RGB | COLOR_KELVIN | BRIGHTNESS | ON_OFF | SEGMENTS | SCENES_DYNAMIC | RAZER_STREAMING,
-        lan_segment_count: Some(10),
-        razer_led_count: Some(20),
-        kelvin_range: Some((2000, 9000)),
-        name: "RGBIC Pro Strip H619A",
-    },
-    // H6054, H6056, H619B, H619D, H6003, H6008, H7020, ...
-];
+pub static BASIC_LAN_SKUS: &[&str] = &[/* 188 whole-device LAN SKUs */];
+pub static CUSTOM_LAN_PROFILES: &[CustomLanProfile] = &[/* 78 LAN SKUs with feature/segment overrides */];
+pub static CLOUD_SUPPORTED_SKUS: &[&str] = &[/* 259 developer-platform lighting SKUs */];
 ```
+
+The LAN registry is translated from `Galorhallen/govee-local-api` v2.4.0 and currently covers 266 local-control SKUs. The cloud registry is refreshed from Govee's official supported-product page and includes lighting families `H60xx`, `H61xxx`, `H66xx`, `H68xx`, `H70xx`, and `H8xxx`. It intentionally excludes `H5xxx` sensors and `H71xx` appliances/heaters for this lighting driver pass.
+
+SKUs present only in `CLOUD_SUPPORTED_SKUS` resolve to a cloud-only profile with `CLOUD | ON_OFF`, no LAN capability, and no static segment count. Live `supportCmds` from cloud inventory refine brightness/control metadata per device.
 
 ### Lookups
 
 ```rust
-pub fn profile_for_sku(sku: &str) -> Option<&'static SkuProfile> { ... }
+pub fn profile_for_sku(sku: &str) -> Option<SkuProfile> { ... }
 pub fn fallback_profile(sku: &str) -> SkuProfile { ... }   // LAN + COLOR_RGB only, segments unknown
+pub const fn known_sku_count() -> usize { ... }             // LAN table count
+pub const fn known_cloud_sku_count() -> usize { ... }       // cloud table count
 ```
 
 Unknown SKUs fall back to `ON_OFF | BRIGHTNESS | COLOR_RGB | LAN`. The backend treats them as whole-device-only until cloud inventory, local capture, or a registry update fills in protocol-specific segment counts.
 
 ### Source of truth
 
-The initial table is translated from `Galorhallen/govee-local-api/src/govee_local_api/light_capabilities.py`. The translation is mechanical: Python `IntFlag` members map to `GoveeCapabilities` bits, and scene code lookups become a second companion table if Phase 4 needs them. License note: `govee-local-api` is Apache-2.0, compatible with Hypercolor's Apache-2.0 — attribution in a header comment is sufficient.
+The LAN table is translated from `Galorhallen/govee-local-api/src/govee_local_api/light_capabilities.py`. The translation is mechanical: Python `IntFlag` members map to `GoveeCapabilities` bits, and scene code lookups become a second companion table if Phase 4 needs them. License note: `govee-local-api` is Apache-2.0, compatible with Hypercolor's Apache-2.0.
+
+The cloud table follows Govee's official developer-platform supported product list. Because that page includes non-light devices, only lighting-oriented families are imported here until the driver grows appliance-safe capability routing.
 
 ---
 
@@ -989,11 +969,11 @@ Exit criteria:
 - LAN multicast discovery finds at least one real device on Bliss's network.
 - `colorwc` drives the device to correct colors from the Hypercolor UI.
 - `turn` + `brightness` work.
-- Capability registry seeded with top 6 SKUs.
+- Capability registry covers 266 LAN SKUs and 259 developer-platform lighting cloud SKUs.
 - Unit tests: LAN protocol encode/decode, capability lookups, scanner mock.
 - `just verify` passes.
 
-### Phase 2 — Capability registry completion (2 days)
+### Phase 2 — Capability registry completion (complete)
 
 - Port the rest of the `govee-local-api` SKU table. Target coverage: the full v2.4.0 light table.
 - Add `SkuFamily` routing for UI grouping.

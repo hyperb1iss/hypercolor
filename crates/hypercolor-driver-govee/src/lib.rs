@@ -35,7 +35,8 @@ use cloud::{CloudClient, V1Device};
 use lan::discovery::{GoveeLanScanner, profile_led_count, topology_for_family};
 
 pub use capabilities::{
-    GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_sku_count, profile_for_sku,
+    GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_cloud_sku_count,
+    known_sku_count, profile_for_sku,
 };
 pub use lan::discovery::{
     GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,

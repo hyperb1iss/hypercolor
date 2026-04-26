@@ -179,6 +179,35 @@ pub static CUSTOM_LAN_PROFILES: &[CustomLanProfile] = &[
     custom("H80C5", LOCAL_BASIC, 10),
 ];
 
+pub static CLOUD_SUPPORTED_SKUS: &[&str] = &[
+    "H6002", "H6003", "H6004", "H6006", "H6008", "H6009", "H600A", "H600D", "H6010", "H6011",
+    "H601A", "H601B", "H601C", "H601D", "H6020", "H6022", "H6038", "H6039", "H6042", "H6043",
+    "H6046", "H6047", "H6049", "H604A", "H604B", "H604C", "H604D", "H6050", "H6051", "H6052",
+    "H6054", "H6056", "H6057", "H6058", "H6059", "H605A", "H605B", "H605C", "H605D", "H6061",
+    "H6062", "H6063", "H6065", "H6066", "H6067", "H6069", "H606A", "H6071", "H6072", "H6073",
+    "H6075", "H6076", "H6078", "H6079", "H607C", "H6085", "H6086", "H6087", "H6088", "H6089",
+    "H608A", "H608B", "H608C", "H608D", "H6091", "H6092", "H6093", "H6097", "H6098", "H6099",
+    "H60A0", "H60A1", "H6104", "H6109", "H610A", "H610B", "H6110", "H6117", "H611A", "H611B",
+    "H611Z", "H6121", "H612A", "H612B", "H612C", "H612D", "H612E", "H612F", "H6135", "H6137",
+    "H613G", "H6141", "H6142", "H6143", "H6144", "H6148", "H6149", "H614A", "H614B", "H614C",
+    "H614E", "H6154", "H6159", "H615A", "H615B", "H615C", "H615D", "H615E", "H6160", "H6163",
+    "H6167", "H6168", "H6169", "H6172", "H6173", "H6175", "H6176", "H6182", "H6188", "H618A",
+    "H618C", "H618E", "H618F", "H6195", "H6198", "H6199", "H619A", "H619B", "H619C", "H619D",
+    "H619E", "H619Z", "H61A0", "H61A1", "H61A2", "H61A3", "H61A5", "H61A8", "H61A9", "H61B1",
+    "H61B2", "H61B3", "H61B5", "H61B6", "H61BA", "H61BC", "H61BE", "H61C2", "H61C3", "H61C5",
+    "H61D3", "H61D5", "H61E0", "H61E1", "H61E5", "H61E6", "H61F2", "H61F5", "H61F6", "H6601",
+    "H6602", "H6603", "H6604", "H6608", "H6609", "H6611", "H6630", "H6631", "H6640", "H6641",
+    "H6800", "H6810", "H6811", "H6820", "H6821", "H6822", "H6840", "H7005", "H7007", "H7008",
+    "H7012", "H7013", "H7014", "H7020", "H7021", "H7022", "H7028", "H7031", "H7032", "H7033",
+    "H7037", "H7038", "H7039", "H703A", "H703B", "H7041", "H7042", "H7050", "H7051", "H7052",
+    "H7053", "H7055", "H7057", "H7058", "H705A", "H705B", "H705C", "H705D", "H705E", "H705F",
+    "H7060", "H7061", "H7062", "H7063", "H7065", "H7066", "H7067", "H7068", "H7069", "H706A",
+    "H706B", "H706C", "H7070", "H7072", "H7075", "H7078", "H7086", "H70A1", "H70A2", "H70A3",
+    "H70B1", "H70B3", "H70B4", "H70B5", "H70C1", "H70C2", "H70C4", "H70C5", "H70C6", "H70C7",
+    "H70C8", "H70C9", "H70CB", "H70D1", "H70D2", "H70D3", "H801B", "H801C", "H8057", "H805A",
+    "H805B", "H805C", "H8069", "H8072", "H8076", "H807C", "H808A", "H80C4", "H80D1",
+];
+
 #[must_use]
 pub fn profile_for_sku(sku: &str) -> Option<SkuProfile> {
     if let Some(&known_sku) = BASIC_LAN_SKUS
@@ -188,10 +217,18 @@ pub fn profile_for_sku(sku: &str) -> Option<SkuProfile> {
         return Some(profile_from_parts(known_sku, LOCAL_BASIC, 0));
     }
 
-    CUSTOM_LAN_PROFILES
+    if let Some(profile) = CUSTOM_LAN_PROFILES
         .iter()
         .find(|profile| profile.sku.eq_ignore_ascii_case(sku))
         .map(|profile| profile_from_parts(profile.sku, profile.local_features, profile.segments))
+    {
+        return Some(profile);
+    }
+
+    CLOUD_SUPPORTED_SKUS
+        .iter()
+        .find(|known_sku| known_sku.eq_ignore_ascii_case(sku))
+        .map(|&known_sku| cloud_profile(known_sku))
 }
 
 #[must_use]
@@ -213,6 +250,11 @@ pub fn fallback_profile(_sku: &str) -> SkuProfile {
 #[must_use]
 pub const fn known_sku_count() -> usize {
     BASIC_LAN_SKUS.len() + CUSTOM_LAN_PROFILES.len()
+}
+
+#[must_use]
+pub const fn known_cloud_sku_count() -> usize {
+    CLOUD_SUPPORTED_SKUS.len()
 }
 
 const fn custom(sku: &'static str, local_features: u8, segments: u8) -> CustomLanProfile {
@@ -263,21 +305,22 @@ fn profile_from_parts(sku: &'static str, local_features: u8, segments: u8) -> Sk
     }
 }
 
-fn cloud_supported(sku: &str) -> bool {
-    matches!(
+fn cloud_profile(sku: &'static str) -> SkuProfile {
+    SkuProfile {
         sku,
-        "H6003"
-            | "H6008"
-            | "H6009"
-            | "H6054"
-            | "H6056"
-            | "H6163"
-            | "H6199"
-            | "H619A"
-            | "H619B"
-            | "H619D"
-            | "H7020"
-    )
+        family: family_for_sku(sku),
+        capabilities: GoveeCapabilities::CLOUD | GoveeCapabilities::ON_OFF,
+        lan_segment_count: None,
+        razer_led_count: razer_led_count(sku),
+        kelvin_range: None,
+        name: display_name(sku),
+    }
+}
+
+fn cloud_supported(sku: &str) -> bool {
+    CLOUD_SUPPORTED_SKUS
+        .iter()
+        .any(|known_sku| known_sku.eq_ignore_ascii_case(sku))
 }
 
 fn razer_led_count(sku: &str) -> Option<u8> {

@@ -163,7 +163,7 @@ async fn auth_summary_does_not_offer_pairing_for_lan_only_sku() {
     let host = TestHost::default();
     let info = build_device_info(&GoveeLanDevice {
         ip: "127.0.0.1".parse().expect("valid test IP"),
-        sku: "H70B1".to_owned(),
+        sku: "H70B6".to_owned(),
         mac: "001122334455".to_owned(),
         name: "LAN-only Govee".to_owned(),
         firmware_version: None,
@@ -171,7 +171,7 @@ async fn auth_summary_does_not_offer_pairing_for_lan_only_sku() {
     let state = DeviceState::Known;
     let metadata = HashMap::from([
         ("ip".to_owned(), "127.0.0.1".to_owned()),
-        ("sku".to_owned(), "H70B1".to_owned()),
+        ("sku".to_owned(), "H70B6".to_owned()),
     ]);
     let context = tracked_context_with_metadata(&info, &state, &metadata);
 
