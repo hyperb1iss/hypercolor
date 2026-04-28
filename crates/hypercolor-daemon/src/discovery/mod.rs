@@ -305,7 +305,10 @@ pub fn resolve_targets(
         match target.kind() {
             DiscoveryTargetKind::Driver => {
                 let driver_id = target.as_str();
-                if !crate::network::driver_enabled(config, driver_id) {
+                let enabled = driver_registry.get(driver_id).is_some_and(|driver| {
+                    crate::network::module_enabled(config, &driver.module_descriptor())
+                });
+                if !enabled {
                     if explicit_request {
                         let config_flag = crate::network::driver_config_flag(driver_id);
                         return Err(format!(
@@ -383,14 +386,73 @@ impl Drop for DiscoveryFlagGuard {
 mod tests {
     use super::{DiscoveryTarget, default_timeout, normalize_timeout_ms, resolve_targets};
     use crate::api::AppState;
+    use hypercolor_driver_api::{
+        DeviceBackend, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
+        DriverDescriptor, DriverModule, DriverTransport,
+    };
+    use hypercolor_network::DriverModuleRegistry;
     use hypercolor_types::config::HypercolorConfig;
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, ZoneInfo,
     };
 
     fn builtin_registry() -> AppState {
         AppState::new()
+    }
+
+    struct DefaultDisabledDiscoveryDriver;
+
+    static DEFAULT_DISABLED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+        "default-disabled",
+        "Default Disabled",
+        DriverTransport::Network,
+        true,
+        false,
+    );
+
+    impl DriverModule for DefaultDisabledDiscoveryDriver {
+        fn descriptor(&self) -> &'static DriverDescriptor {
+            &DEFAULT_DISABLED_DESCRIPTOR
+        }
+
+        fn module_descriptor(&self) -> DriverModuleDescriptor {
+            let mut descriptor = self.descriptor().module_descriptor();
+            descriptor.default_enabled = false;
+            descriptor
+        }
+
+        fn build_output_backend(
+            &self,
+            host: &dyn hypercolor_driver_api::DriverHost,
+            config: DriverConfigView<'_>,
+        ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
+            let _ = (host, config);
+            Ok(None)
+        }
+
+        fn has_output_backend(&self) -> bool {
+            false
+        }
+
+        fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+            Some(self)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveryCapability for DefaultDisabledDiscoveryDriver {
+        async fn discover(
+            &self,
+            host: &dyn hypercolor_driver_api::DriverHost,
+            request: &DiscoveryRequest,
+            config: DriverConfigView<'_>,
+        ) -> anyhow::Result<DiscoveryResult> {
+            let _ = (host, request, config);
+            Ok(DiscoveryResult {
+                devices: Vec::new(),
+            })
+        }
     }
 
     fn expected_default_targets(state: &AppState) -> Vec<DiscoveryTarget> {
@@ -471,6 +533,39 @@ mod tests {
         let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("wled must fail");
         assert!(error.contains("disabled"));
+    }
+
+    #[test]
+    fn resolve_targets_honors_driver_default_enabled_flag() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(DefaultDisabledDiscoveryDriver)
+            .expect("driver should register");
+        let cfg = HypercolorConfig::default();
+
+        let resolved =
+            resolve_targets(None, &cfg, &registry).expect("default targets should resolve");
+
+        assert!(
+            !resolved
+                .iter()
+                .any(|target| target.as_str() == "default-disabled")
+        );
+    }
+
+    #[test]
+    fn resolve_targets_rejects_explicit_default_disabled_driver() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(DefaultDisabledDiscoveryDriver)
+            .expect("driver should register");
+        let cfg = HypercolorConfig::default();
+        let requested = vec!["default-disabled".to_owned()];
+
+        let error = resolve_targets(Some(&requested), &cfg, &registry)
+            .expect_err("default-disabled driver must fail");
+
+        assert!(error.contains("drivers.default-disabled.enabled=false"));
     }
 
     #[test]
