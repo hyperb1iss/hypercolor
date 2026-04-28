@@ -15,6 +15,7 @@ from hypercolor.exceptions import (
     HypercolorNotFoundError,
     HypercolorValidationError,
 )
+from hypercolor.models.control import ControlSurface
 from hypercolor.models.effect import ActiveEffect, Effect
 
 
@@ -29,6 +30,23 @@ def _envelope(data: object) -> bytes:
             },
         }
     )
+
+
+def _control_surface(
+    surface_id: str, values: dict[str, object] | None = None
+) -> dict[str, object]:
+    return {
+        "surface_id": surface_id,
+        "scope": {"kind": "device", "device_id": "keyboard", "driver_id": "test"},
+        "schema_version": 1,
+        "revision": 4,
+        "groups": [],
+        "fields": [],
+        "actions": [],
+        "values": values or {},
+        "availability": {},
+        "action_availability": {},
+    }
 
 
 @respx.mock
@@ -437,13 +455,7 @@ async def test_get_control_surfaces_uses_pythonic_filters(client: HypercolorClie
             content=_envelope(
                 {
                     "surfaces": [
-                        {
-                            "id": "device:keyboard",
-                            "title": "Keyboard",
-                            "revision": 4,
-                            "groups": [],
-                            "values": {},
-                        }
+                        _control_surface("device:keyboard"),
                     ]
                 }
             ),
@@ -458,7 +470,8 @@ async def test_get_control_surfaces_uses_pythonic_filters(client: HypercolorClie
     assert route.called
     assert route.calls[0].request.url.params["device_id"] == "keyboard/main"
     assert route.calls[0].request.url.params["include_driver"] == "true"
-    assert surfaces[0]["id"] == "device:keyboard"
+    assert isinstance(surfaces[0], ControlSurface)
+    assert surfaces[0].id == "device:keyboard"
 
 
 @respx.mock
@@ -470,13 +483,10 @@ async def test_get_device_controls_quotes_generated_path_parameters(
         return_value=httpx.Response(
             200,
             content=_envelope(
-                {
-                    "id": "device:keyboard/main",
-                    "title": "Keyboard",
-                    "revision": 4,
-                    "groups": [],
-                    "values": {"brightness": {"kind": "integer", "value": 88}},
-                }
+                _control_surface(
+                    "device:keyboard/main",
+                    {"brightness": {"kind": "integer", "value": 88}},
+                )
             ),
         )
     )
@@ -484,8 +494,8 @@ async def test_get_device_controls_quotes_generated_path_parameters(
     surface = await client.get_device_controls("keyboard/main")
 
     assert route.called
-    assert surface["id"] == "device:keyboard/main"
-    assert surface["values"]["brightness"]["value"] == 88
+    assert surface.id == "device:keyboard/main"
+    assert surface.values["brightness"] == 88
 
 
 @respx.mock
@@ -525,7 +535,8 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
         ],
         "expected_revision": 4,
     }
-    assert result["revision"] == 5
+    assert result.revision == 5
+    assert result.values["brightness"] == 88
 
 
 @respx.mock
@@ -541,7 +552,8 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
                     "surface_id": "device:keyboard",
                     "action_id": "identify",
                     "status": "completed",
-                    "message": "Identifying keyboard",
+                    "revision": 5,
+                    "result": {"kind": "string", "value": "Identifying keyboard"},
                 }
             ),
         )
@@ -560,7 +572,8 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
             "color": {"kind": "color_rgb", "value": [128, 255, 234]},
         }
     }
-    assert result["status"] == "completed"
+    assert result.status == "completed"
+    assert result.result == "Identifying keyboard"
 
 
 @respx.mock

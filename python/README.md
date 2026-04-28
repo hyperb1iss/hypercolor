@@ -89,16 +89,16 @@ async def main() -> None:
         surface = await client.get_device_controls("keyboard")
 
         await client.set_control_values(
-            surface["id"],
+            surface.id,
             {
                 "enabled": True,
                 "brightness": 88,
             },
-            expected_revision=surface["revision"],
+            expected_revision=surface.revision,
         )
 
         await client.invoke_control_action(
-            surface["id"],
+            surface.id,
             "identify",
             {"duration_ms": 750},
         )

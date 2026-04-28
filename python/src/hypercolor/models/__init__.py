@@ -23,6 +23,7 @@ from .common import (
     Pagination,
     TransitionSpec,
 )
+from .control import ControlActionResult, ControlApplyResult, ControlSurface
 from .device import Device, DeviceUpdate, Zone
 from .effect import (
     ActiveEffect,
@@ -51,7 +52,10 @@ __all__ = [
     "AudioLevels",
     "BrightnessUpdate",
     "ConfigMutationResult",
+    "ControlActionResult",
+    "ControlApplyResult",
     "ControlDefinition",
+    "ControlSurface",
     "ControlUpdateResult",
     "Device",
     "DeviceUpdate",

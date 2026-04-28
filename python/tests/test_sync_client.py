@@ -69,4 +69,5 @@ def test_sync_client_delegates_control_values() -> None:
     finally:
         client.close()
 
-    assert result["revision"] == 2
+    assert result.revision == 2
+    assert result.values["enabled"] is True

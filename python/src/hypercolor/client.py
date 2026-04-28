@@ -86,6 +86,7 @@ from .models.common import (
     MutationResult,
     TransitionSpec,
 )
+from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
 from .models.effect import (
     ActiveEffect,
@@ -327,7 +328,7 @@ class HypercolorClient:
         device_id: str | None = None,
         driver_id: str | None = None,
         include_driver: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ControlSurface]:
         """List control surfaces for a selected device or driver."""
         kwargs = generated_list_control_surfaces._get_kwargs()
         params = _drop_none(
@@ -343,18 +344,24 @@ class HypercolorClient:
         surfaces = payload.get("surfaces") if isinstance(payload, dict) else None
         if not isinstance(surfaces, list):
             return []
-        return [dict(surface) for surface in surfaces if isinstance(surface, Mapping)]
+        return [
+            self._convert(surface, ControlSurface)
+            for surface in surfaces
+            if isinstance(surface, Mapping)
+        ]
 
-    async def get_device_controls(self, device_id: str) -> dict[str, Any]:
+    async def get_device_controls(self, device_id: str) -> ControlSurface:
         """Return a device control surface."""
-        return await self._generated_payload(
+        return await self._generated_model(
             generated_get_device_control_surface._get_kwargs(device_id),
+            ControlSurface,
         )
 
-    async def get_driver_controls(self, driver_id: str) -> dict[str, Any]:
+    async def get_driver_controls(self, driver_id: str) -> ControlSurface:
         """Return a driver control surface."""
-        return await self._generated_payload(
+        return await self._generated_model(
             generated_get_driver_control_surface._get_kwargs(driver_id),
+            ControlSurface,
         )
 
     async def set_control_values(
@@ -364,7 +371,7 @@ class HypercolorClient:
         *,
         dry_run: bool = False,
         expected_revision: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> ControlApplyResult:
         """Apply one or more control values to a control surface."""
         body = _control_changes_request(
             surface_id,
@@ -372,11 +379,12 @@ class HypercolorClient:
             dry_run=dry_run,
             expected_revision=expected_revision,
         )
-        return await self._generated_payload(
+        return await self._generated_model(
             generated_apply_control_surface_values._get_kwargs(
                 surface_id,
                 body=body,
             ),
+            ControlApplyResult,
         )
 
     async def invoke_control_action(
@@ -384,17 +392,18 @@ class HypercolorClient:
         surface_id: str,
         action_id: str,
         input: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ControlActionResult:
         """Invoke a control-surface action."""
         body = InvokeControlActionRequest()
         if input is not None:
             body["input"] = {str(key): _control_api_value(value) for key, value in input.items()}
-        return await self._generated_payload(
+        return await self._generated_model(
             generated_invoke_control_surface_action._get_kwargs(
                 surface_id,
                 action_id,
                 body=body,
             ),
+            ControlActionResult,
         )
 
     async def stop_effect(self) -> MutationResult:
@@ -763,11 +772,23 @@ def _normalize_payload(value: Any) -> Any:
         return value
 
     normalized = {key: _normalize_payload(item) for key, item in value.items()}
+    if "field_id" in normalized and isinstance(normalized.get("value"), dict):
+        normalized["value"] = _control_value(normalized["value"])
+    if "field_id" in normalized and isinstance(normalized.get("attempted_value"), dict):
+        normalized["attempted_value"] = _control_value(normalized["attempted_value"])
+    if isinstance(normalized.get("result"), dict):
+        normalized["result"] = _control_value(normalized["result"])
     if "control_type" in normalized and "name" in normalized and "default_value" in normalized:
         normalized.setdefault("label", normalized["name"])
         normalized.setdefault("type", _legacy_control_type(normalized["control_type"]))
         normalized.setdefault("default", _control_value(normalized["default_value"]))
-    for key in ("control_values", "active_control_values", "applied_controls", "applied"):
+    for key in (
+        "control_values",
+        "active_control_values",
+        "applied_controls",
+        "applied",
+        "values",
+    ):
         if isinstance(normalized.get(key), dict):
             normalized[key] = {
                 str(item_key): _control_value(item_value)
@@ -778,6 +799,8 @@ def _normalize_payload(value: Any) -> Any:
 
 def _control_value(value: Any) -> Any:
     if not isinstance(value, dict) or len(value) != 1:
+        if isinstance(value, dict) and isinstance(value.get("kind"), str):
+            return _normalize_payload(value.get("value"))
         return _normalize_payload(value)
     key, item = next(iter(value.items()))
     if key not in {"float", "integer", "boolean", "color", "gradient", "enum", "text", "rect"}:

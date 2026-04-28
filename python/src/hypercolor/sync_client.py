@@ -18,6 +18,7 @@ from .models.common import (
     MutationResult,
     TransitionSpec,
 )
+from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
 from .models.effect import (
     ActiveEffect,
@@ -145,7 +146,7 @@ class SyncHypercolorClient:
         device_id: str | None = None,
         driver_id: str | None = None,
         include_driver: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ControlSurface]:
         return self._run(
             self._client.get_control_surfaces(
                 device_id=device_id,
@@ -154,10 +155,10 @@ class SyncHypercolorClient:
             )
         )
 
-    def get_device_controls(self, device_id: str) -> dict[str, Any]:
+    def get_device_controls(self, device_id: str) -> ControlSurface:
         return self._run(self._client.get_device_controls(device_id))
 
-    def get_driver_controls(self, driver_id: str) -> dict[str, Any]:
+    def get_driver_controls(self, driver_id: str) -> ControlSurface:
         return self._run(self._client.get_driver_controls(driver_id))
 
     def set_control_values(
@@ -167,7 +168,7 @@ class SyncHypercolorClient:
         *,
         dry_run: bool = False,
         expected_revision: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> ControlApplyResult:
         return self._run(
             self._client.set_control_values(
                 surface_id,
@@ -182,7 +183,7 @@ class SyncHypercolorClient:
         surface_id: str,
         action_id: str,
         input: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ControlActionResult:
         return self._run(self._client.invoke_control_action(surface_id, action_id, input))
 
     def stop_effect(self) -> MutationResult:
