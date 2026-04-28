@@ -47,7 +47,6 @@ use tracing::warn;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
@@ -56,6 +55,7 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{
     EffectErrorFallbackPolicy, HypercolorConfig, McpConfig, RenderAccelerationMode,

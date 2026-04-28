@@ -224,7 +224,7 @@ fn default_env_filter(log_level: &str) -> String {
     // mdns_sd's internal parser logs ERROR for every malformed mDNS response on
     // the network (Apple devices with curly-quote hostnames, truncated packets,
     // etc.). These are unactionable noise; our own mDNS code in
-    // hypercolor_core::device::net::mdns still logs normally.
+    // Hypercolor's mDNS wrapper still logs normally.
     const MDNS_SQUELCH: &str = "mdns_sd::service_daemon=off";
 
     if normalized == "debug" {

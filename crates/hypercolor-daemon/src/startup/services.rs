@@ -16,7 +16,6 @@ use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
-use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, SmBusBackend, UsbBackend,
     UsbProtocolConfigStore,
@@ -34,6 +33,7 @@ use hypercolor_core::input::screen::{CaptureConfig as ScreenCaptureConfig, Monit
 use hypercolor_core::input::{InputManager, InteractionInput, SensorPoller};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DriverTransportKind;
