@@ -369,11 +369,14 @@ pub struct ControlSurfaceDocument {
     pub actions: Vec<ControlActionDescriptor>,
     pub values: ControlValueMap,
     pub availability: ControlAvailabilityMap,
+    pub action_availability: ControlActionAvailabilityMap,
 }
 ```
 
 `revision` changes whenever descriptors, availability, or current values
 change. The UI can use it for caching and optimistic reconciliation.
+`availability` is keyed by field ID. `action_availability` is keyed by action
+ID and defaults to an empty map for older payloads.
 
 ### 7.3 Surface IDs
 
@@ -732,6 +735,8 @@ pub struct ApplyControlChangesRequest {
     pub dry_run: bool,
 }
 ```
+
+`dry_run` defaults to `false` when omitted by clients.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1108,6 +1113,20 @@ API errors should use the existing response envelope and include typed control
 errors in `data` or an equivalent structured error field. Clients should not
 parse human text to learn whether a value was out of range or unavailable.
 
+Current structured `error.details.kind` values include:
+
+- `control_surface_revision_conflict`
+- `control_surface_mismatch`
+- `empty_control_changes`
+- `duplicate_control_field`
+- `unknown_control_field`
+- `control_value_type_mismatch`
+- `control_value_out_of_range`
+- `invalid_control_value`
+- `driver_control_validation_failed`
+- `driver_device_control_validation_failed`
+- `control_action_failed`
+
 ---
 
 ## 14. WebSocket Events
@@ -1135,6 +1154,11 @@ pub enum ControlSurfaceEvent {
         surface_id: ControlSurfaceId,
         revision: ControlSurfaceRevision,
         availability: ControlAvailabilityMap,
+    },
+    ActionAvailabilityChanged {
+        surface_id: ControlSurfaceId,
+        revision: ControlSurfaceRevision,
+        availability: ControlActionAvailabilityMap,
     },
     ActionProgress {
         surface_id: ControlSurfaceId,
