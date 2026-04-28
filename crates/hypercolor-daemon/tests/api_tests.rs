@@ -164,11 +164,11 @@ impl DriverModule for ActionTestDriver {
         &ACTION_TEST_DRIVER
     }
 
-    fn has_backend_factory(&self) -> bool {
+    fn has_output_backend(&self) -> bool {
         false
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         _host: &dyn DriverHost,
         _config: DriverConfigView<'_>,
@@ -294,11 +294,11 @@ impl DriverModule for RescanTestDriver {
         &RESCAN_TEST_DRIVER
     }
 
-    fn has_backend_factory(&self) -> bool {
+    fn has_output_backend(&self) -> bool {
         false
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         _host: &dyn DriverHost,
         _config: DriverConfigView<'_>,
@@ -413,11 +413,11 @@ impl DriverModule for UnsupportedImpactTestDriver {
         &UNSUPPORTED_IMPACT_TEST_DRIVER
     }
 
-    fn has_backend_factory(&self) -> bool {
+    fn has_output_backend(&self) -> bool {
         false
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         _host: &dyn DriverHost,
         _config: DriverConfigView<'_>,
@@ -2107,7 +2107,7 @@ async fn list_drivers_returns_registered_module_descriptors() {
         serde_json::json!(["network"])
     );
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
-    assert_eq!(wled["descriptor"]["capabilities"]["backend_factory"], true);
+    assert_eq!(wled["descriptor"]["capabilities"]["output_backend"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["controls"], true);
     assert_eq!(wled["presentation"]["label"], "WLED");
     assert_eq!(wled["enabled"], true);
@@ -2132,7 +2132,7 @@ async fn list_drivers_returns_registered_module_descriptors() {
         true
     );
     assert_eq!(
-        nollie["descriptor"]["capabilities"]["backend_factory"],
+        nollie["descriptor"]["capabilities"]["output_backend"],
         false
     );
     assert_eq!(nollie["descriptor"]["capabilities"]["controls"], false);

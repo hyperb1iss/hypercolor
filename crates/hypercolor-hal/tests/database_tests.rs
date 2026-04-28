@@ -941,7 +941,7 @@ fn module_descriptors_group_hal_protocols_by_family() {
     assert_eq!(nollie.module_kind, DriverModuleKind::Hal);
     assert_eq!(nollie.transports, vec![DriverTransportKind::Usb]);
     assert!(nollie.capabilities.protocol_catalog);
-    assert!(!nollie.capabilities.backend_factory);
+    assert!(!nollie.capabilities.output_backend);
     assert!(nollie.default_enabled);
 
     let asus = modules

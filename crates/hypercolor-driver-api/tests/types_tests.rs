@@ -43,7 +43,7 @@ fn driver_descriptor_converts_to_module_descriptor() {
     assert_eq!(module.transports, vec![DriverTransportKind::Network]);
     assert!(module.capabilities.discovery);
     assert!(module.capabilities.pairing);
-    assert!(module.capabilities.backend_factory);
+    assert!(module.capabilities.output_backend);
     assert!(!module.capabilities.runtime_cache);
     assert!(module.capabilities.credentials);
     assert!(!module.capabilities.controls);
@@ -173,7 +173,7 @@ impl DriverModule for ControlOnlyDriver {
         &CONTROL_ONLY_DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: hypercolor_driver_api::DriverConfigView<'_>,
@@ -186,7 +186,7 @@ impl DriverModule for ControlOnlyDriver {
         Some(&ControlOnlyProvider)
     }
 
-    fn has_backend_factory(&self) -> bool {
+    fn has_output_backend(&self) -> bool {
         false
     }
 }
@@ -199,7 +199,7 @@ fn driver_module_advertises_control_provider_capability() {
     assert!(!module.capabilities.discovery);
     assert!(!module.capabilities.pairing);
     assert!(!module.capabilities.credentials);
-    assert!(!module.capabilities.backend_factory);
+    assert!(!module.capabilities.output_backend);
     assert!(!module.capabilities.runtime_cache);
 }
 

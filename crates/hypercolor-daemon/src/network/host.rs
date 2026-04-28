@@ -390,7 +390,7 @@ impl BackendRebindActions for DaemonDriverHost {
             driver_id,
             entry: &config_entry,
         };
-        let Some(backend) = driver.build_backend(self, config_view)? else {
+        let Some(backend) = driver.build_output_backend(self, config_view)? else {
             return Ok(());
         };
 

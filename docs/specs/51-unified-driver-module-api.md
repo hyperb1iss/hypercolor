@@ -503,7 +503,7 @@ pub struct DriverCapabilitySet {
     pub config: bool,
     pub discovery: bool,
     pub pairing: bool,
-    pub backend_factory: bool,
+    pub output_backend: bool,
     pub protocol_catalog: bool,
     pub runtime_cache: bool,
     pub credentials: bool,
@@ -581,7 +581,7 @@ pub trait DriverModule: Send + Sync {
         None
     }
 
-    fn backend_factory(&self) -> Option<&dyn DriverBackendFactory> {
+    fn output_backend(&self) -> Option<&dyn DriverBackendFactory> {
         None
     }
 
@@ -720,7 +720,7 @@ Pairing is optional. Most HAL modules will not implement it.
 
 ```rust
 pub trait DriverBackendFactory: Send + Sync {
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
@@ -930,7 +930,7 @@ DriverModuleDescriptor {
     capabilities: DriverCapabilitySet {
         config: true,
         discovery: true,
-        backend_factory: true,
+        output_backend: true,
         runtime_cache: true,
         presentation: true,
         ..DriverCapabilitySet::empty()
@@ -1217,7 +1217,7 @@ Response:
         "config": true,
         "discovery": false,
         "pairing": false,
-        "backend_factory": false,
+        "output_backend": false,
         "protocol_catalog": true,
         "runtime_cache": false,
         "credentials": false,

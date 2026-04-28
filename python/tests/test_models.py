@@ -84,7 +84,7 @@ def test_driver_model_decodes_protocol_catalog() -> None:
                 "config": False,
                 "discovery": True,
                 "pairing": False,
-                "backend_factory": False,
+                "output_backend": False,
                 "protocol_catalog": True,
                 "runtime_cache": False,
                 "credentials": False,

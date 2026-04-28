@@ -263,7 +263,7 @@ impl DriverModule for DiscoveryOnlyDriver {
         &DISCOVERY_ONLY_DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
@@ -292,7 +292,7 @@ impl DriverModule for PairingOnlyDriver {
         &PAIRING_ONLY_DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
@@ -321,7 +321,7 @@ impl DriverModule for ControlOnlyDriver {
         &CONTROL_ONLY_DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
@@ -334,7 +334,7 @@ impl DriverModule for ControlOnlyDriver {
         Some(&ControlOnlyCapability)
     }
 
-    fn has_backend_factory(&self) -> bool {
+    fn has_output_backend(&self) -> bool {
         false
     }
 }
@@ -392,7 +392,7 @@ fn registry_lists_module_descriptors_in_deterministic_order() {
         vec![DriverTransportKind::Network]
     );
     assert!(descriptors[0].capabilities.discovery);
-    assert!(descriptors[0].capabilities.backend_factory);
+    assert!(descriptors[0].capabilities.output_backend);
     assert_eq!(descriptors[1].id, "pairing-only");
     assert!(descriptors[1].capabilities.pairing);
     assert!(descriptors[1].capabilities.credentials);
@@ -451,7 +451,7 @@ fn registry_filters_control_surface_drivers() {
     assert!(control_descriptor.capabilities.controls);
     assert!(!control_descriptor.capabilities.discovery);
     assert!(!control_descriptor.capabilities.pairing);
-    assert!(!control_descriptor.capabilities.backend_factory);
+    assert!(!control_descriptor.capabilities.output_backend);
 }
 
 #[test]
@@ -483,7 +483,7 @@ impl DriverModule for MismatchedSchemaDriver {
         &MISMATCHED_DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
@@ -511,7 +511,7 @@ fn registry_rejects_schema_version_mismatch() {
 }
 
 #[test]
-fn drivers_can_build_backends_through_registry_lookup() {
+fn drivers_can_build_output_backends_through_registry_lookup() {
     let host = NullHost::new();
     let mut registry = DriverModuleRegistry::new();
     registry
@@ -523,7 +523,7 @@ fn drivers_can_build_backends_through_registry_lookup() {
         .expect("driver should be returned");
     let config = DriverConfigEntry::default();
     let backend = driver
-        .build_backend(
+        .build_output_backend(
             &host,
             DriverConfigView {
                 driver_id: "discovery-only",

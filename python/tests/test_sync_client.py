@@ -53,7 +53,7 @@ def test_sync_client_delegates_driver_inventory() -> None:
                                         "config": False,
                                         "discovery": True,
                                         "pairing": False,
-                                        "backend_factory": False,
+                                        "output_backend": False,
                                         "protocol_catalog": True,
                                         "runtime_cache": False,
                                         "credentials": False,

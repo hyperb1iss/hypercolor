@@ -110,7 +110,7 @@ fn driver_list_response_deserializes_daemon_data() {
                     "config": false,
                     "discovery": true,
                     "pairing": false,
-                    "backend_factory": true,
+                    "output_backend": true,
                     "protocol_catalog": false,
                     "runtime_cache": false,
                     "credentials": false,

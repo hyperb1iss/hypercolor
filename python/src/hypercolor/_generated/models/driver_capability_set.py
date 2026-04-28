@@ -16,7 +16,7 @@ class DriverCapabilitySet:
     """Capability flags exposed by a driver module.
 
     Attributes:
-        backend_factory (bool): Builds an output backend.
+        output_backend (bool): Builds an output backend.
         config (bool): Exposes driver-scoped configuration.
         credentials (bool): Stores credentials or authorization material.
         discovery (bool): Discovers devices.
@@ -27,7 +27,7 @@ class DriverCapabilitySet:
         controls (bool | Unset): Exposes typed dynamic control surfaces.
     """
 
-    backend_factory: bool
+    output_backend: bool
     config: bool
     credentials: bool
     discovery: bool
@@ -39,7 +39,7 @@ class DriverCapabilitySet:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        backend_factory = self.backend_factory
+        output_backend = self.output_backend
 
         config = self.config
 
@@ -61,7 +61,7 @@ class DriverCapabilitySet:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "backend_factory": backend_factory,
+                "output_backend": output_backend,
                 "config": config,
                 "credentials": credentials,
                 "discovery": discovery,
@@ -79,7 +79,7 @@ class DriverCapabilitySet:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        backend_factory = d.pop("backend_factory")
+        output_backend = d.pop("output_backend")
 
         config = d.pop("config")
 
@@ -98,7 +98,7 @@ class DriverCapabilitySet:
         controls = d.pop("controls", UNSET)
 
         driver_capability_set = cls(
-            backend_factory=backend_factory,
+            output_backend=output_backend,
             config=config,
             credentials=credentials,
             discovery=discovery,

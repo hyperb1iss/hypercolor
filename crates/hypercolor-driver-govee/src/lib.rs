@@ -133,7 +133,7 @@ impl DriverModule for GoveeDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,

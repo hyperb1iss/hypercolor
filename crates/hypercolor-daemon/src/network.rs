@@ -205,7 +205,7 @@ pub fn register_enabled_backends(
             driver_id: &driver_id,
             entry: &config_entry,
         };
-        let Some(backend) = driver.build_backend(host, config_view)? else {
+        let Some(backend) = driver.build_output_backend(host, config_view)? else {
             continue;
         };
         backend_manager.register_backend(backend);

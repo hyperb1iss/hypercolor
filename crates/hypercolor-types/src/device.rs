@@ -402,7 +402,7 @@ pub struct DriverCapabilitySet {
     pub pairing: bool,
 
     /// Builds an output backend.
-    pub backend_factory: bool,
+    pub output_backend: bool,
 
     /// Contributes protocols to a shared backend.
     pub protocol_catalog: bool,
@@ -429,7 +429,7 @@ impl DriverCapabilitySet {
             config: false,
             discovery: false,
             pairing: false,
-            backend_factory: false,
+            output_backend: false,
             protocol_catalog: false,
             runtime_cache: false,
             credentials: false,

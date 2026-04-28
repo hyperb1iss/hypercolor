@@ -155,7 +155,7 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
                                     "config": False,
                                     "discovery": True,
                                     "pairing": False,
-                                    "backend_factory": False,
+                                    "output_backend": False,
                                     "protocol_catalog": True,
                                     "runtime_cache": False,
                                     "credentials": False,

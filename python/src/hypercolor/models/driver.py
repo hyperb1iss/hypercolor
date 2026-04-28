@@ -24,7 +24,7 @@ class DriverCapabilitySet(msgspec.Struct, kw_only=True):
     config: bool
     discovery: bool
     pairing: bool
-    backend_factory: bool
+    output_backend: bool
     protocol_catalog: bool
     runtime_cache: bool
     credentials: bool

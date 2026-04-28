@@ -126,7 +126,7 @@ impl HalModuleAccumulator {
                 config: false,
                 discovery: false,
                 pairing: false,
-                backend_factory: false,
+                output_backend: false,
                 protocol_catalog: true,
                 runtime_cache: false,
                 credentials: false,

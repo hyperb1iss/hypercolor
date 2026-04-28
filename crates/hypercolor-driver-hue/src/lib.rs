@@ -90,7 +90,7 @@ impl DriverModule for HueDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         _host: &dyn DriverHost,
         config: DriverConfigView<'_>,

@@ -134,7 +134,7 @@ impl DriverDescriptor {
                 config: false,
                 discovery: self.supports_discovery,
                 pairing: self.supports_pairing,
-                backend_factory: true,
+                output_backend: true,
                 protocol_catalog: false,
                 runtime_cache: false,
                 credentials: self.supports_pairing,
@@ -706,7 +706,7 @@ pub trait DriverModule: Send + Sync {
         descriptor.capabilities.pairing = self.pairing().is_some();
         descriptor.capabilities.runtime_cache = self.runtime_cache().is_some();
         descriptor.capabilities.credentials = descriptor.capabilities.pairing;
-        descriptor.capabilities.backend_factory = self.has_backend_factory();
+        descriptor.capabilities.output_backend = self.has_output_backend();
         descriptor.capabilities.controls = self.controls().is_some();
         descriptor
     }
@@ -717,7 +717,7 @@ pub trait DriverModule: Send + Sync {
     }
 
     /// Whether this driver contributes a runtime backend for color output.
-    fn has_backend_factory(&self) -> bool {
+    fn has_output_backend(&self) -> bool {
         true
     }
 
@@ -728,7 +728,7 @@ pub trait DriverModule: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if backend construction fails.
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
