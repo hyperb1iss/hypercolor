@@ -10,12 +10,12 @@ use std::sync::{Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use hypercolor_core::device::DiscoveryConnectBehavior;
-use hypercolor_core::device::wled::{
+use hypercolor_core::device::{DeviceBackend, TransportScanner};
+use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
     build_ddp_frame, universes_needed,
 };
-use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_types::device::DeviceId;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::UdpSocket;
@@ -602,8 +602,8 @@ fn parse_wled_info_basic() {
         "palcount": 71
     });
 
-    let info = hypercolor_core::device::wled::backend::parse_wled_info(&json)
-        .expect("should parse valid info");
+    let info =
+        hypercolor_driver_wled::backend::parse_wled_info(&json).expect("should parse valid info");
 
     assert_eq!(info.firmware_version, "0.15.3");
     assert_eq!(info.build_id, 2_312_050);
@@ -645,8 +645,8 @@ fn parse_wled_info_rgbw_device() {
         "palcount": 20
     });
 
-    let info = hypercolor_core::device::wled::backend::parse_wled_info(&json)
-        .expect("should parse RGBW info");
+    let info =
+        hypercolor_driver_wled::backend::parse_wled_info(&json).expect("should parse RGBW info");
 
     assert!(info.rgbw, "should be RGBW");
     assert_eq!(info.led_count, 60);
@@ -660,7 +660,7 @@ fn parse_wled_info_missing_ver_fails() {
         "name": "Bad Device"
     });
 
-    let result = hypercolor_core::device::wled::backend::parse_wled_info(&json);
+    let result = hypercolor_driver_wled::backend::parse_wled_info(&json);
     assert!(result.is_err(), "missing 'ver' should fail");
 }
 
@@ -671,7 +671,7 @@ fn parse_wled_info_with_defaults() {
         "ver": "0.10.0"
     });
 
-    let info = hypercolor_core::device::wled::backend::parse_wled_info(&json)
+    let info = hypercolor_driver_wled::backend::parse_wled_info(&json)
         .expect("should parse with defaults");
 
     assert_eq!(info.firmware_version, "0.10.0");
@@ -709,8 +709,8 @@ fn parse_wled_segments() {
         ]
     });
 
-    let segments = hypercolor_core::device::wled::backend::parse_wled_segments(&json)
-        .expect("should parse segments");
+    let segments =
+        hypercolor_driver_wled::backend::parse_wled_segments(&json).expect("should parse segments");
 
     assert_eq!(segments.len(), 2);
 
@@ -735,7 +735,7 @@ fn parse_wled_segments_missing_seg_array_fails() {
         "bri": 255
     });
 
-    let result = hypercolor_core::device::wled::backend::parse_wled_segments(&json);
+    let result = hypercolor_driver_wled::backend::parse_wled_segments(&json);
     assert!(result.is_err(), "missing 'seg' array should fail");
 }
 
@@ -756,7 +756,7 @@ fn parse_wled_live_receiver_config_e131() {
         }
     });
 
-    let config = hypercolor_core::device::wled::backend::parse_wled_live_receiver_config(&json)
+    let config = hypercolor_driver_wled::backend::parse_wled_live_receiver_config(&json)
         .expect("parse live config")
         .expect("live config present");
 
@@ -783,7 +783,7 @@ fn parse_wled_live_receiver_config_missing_live_returns_none() {
         }
     });
 
-    let config = hypercolor_core::device::wled::backend::parse_wled_live_receiver_config(&json)
+    let config = hypercolor_driver_wled::backend::parse_wled_live_receiver_config(&json)
         .expect("parse config");
 
     assert!(config.is_none(), "missing live block should return none");
@@ -800,7 +800,7 @@ fn ddp_receiver_config_mismatches_ignore_e131_fields() {
         dmx_mode: Some(4),
     };
 
-    let mismatches = hypercolor_core::device::wled::backend::wled_receiver_config_mismatches(
+    let mismatches = hypercolor_driver_wled::backend::wled_receiver_config_mismatches(
         &config,
         WledProtocol::Ddp,
         WledColorFormat::Rgb,
@@ -824,7 +824,7 @@ fn e131_receiver_config_mismatches_report_port_and_mode() {
         dmx_mode: Some(4),
     };
 
-    let mismatches = hypercolor_core::device::wled::backend::wled_receiver_config_mismatches(
+    let mismatches = hypercolor_driver_wled::backend::wled_receiver_config_mismatches(
         &config,
         WledProtocol::E131,
         WledColorFormat::Rgbw,

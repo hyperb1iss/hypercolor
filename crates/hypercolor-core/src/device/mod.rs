@@ -23,7 +23,6 @@ mod traits;
 pub mod usb_backend;
 pub mod usb_hotplug;
 pub mod usb_scanner;
-pub mod wled;
 
 pub use blocks::{BlocksBackend, BlocksScanner};
 pub use discovery::{

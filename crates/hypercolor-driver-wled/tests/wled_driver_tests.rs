@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
-use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_driver_api::{
     DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory, TrackedDeviceCtx,
 };
 use hypercolor_driver_wled::{
-    WledConfig, WledDriverFactory, WledProtocolConfig, resolve_wled_probe_ips_from_sources,
-    resolve_wled_probe_targets_from_sources, wled_device_control_surface,
-    wled_driver_control_surface,
+    WledConfig, WledDriverFactory, WledKnownTarget, WledProtocolConfig,
+    resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
+    wled_device_control_surface, wled_driver_control_surface,
 };
 use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue, ControlValueMap};
 use hypercolor_types::device::{

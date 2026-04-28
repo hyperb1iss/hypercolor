@@ -26,9 +26,8 @@ use anyhow::{Context, Result, bail};
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
-use crate::device::discovery::TransportScanner;
-use crate::device::traits::{BackendInfo, DeviceBackend};
-use crate::types::device::{DeviceId, DeviceInfo};
+use hypercolor_core::device::{BackendInfo, DeviceBackend, TransportScanner};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use cache::{build_device_info, wled_fingerprint};
 use health::{
@@ -96,7 +95,7 @@ impl WledBackend {
     /// Create a new WLED backend with known device IPs for discovery.
     ///
     /// These IPs are probed via HTTP during `discover()`. For
-    /// zero-config discovery, use the [`WledScanner`](super::super::scanner::WledScanner)
+    /// zero-config discovery, use the [`WledScanner`](crate::scanner::WledScanner)
     /// which uses mDNS.
     #[must_use]
     pub fn new(known_ips: Vec<IpAddr>) -> Self {
@@ -284,7 +283,7 @@ impl DeviceBackend for WledBackend {
             .collect();
 
         if candidates.is_empty() && self.mdns_fallback {
-            let mut scanner = super::scanner::WledScanner::with_timeout(Duration::from_secs(2));
+            let mut scanner = crate::scanner::WledScanner::with_timeout(Duration::from_secs(2));
             match scanner.scan().await {
                 Ok(scanner_devices) => {
                     for device in scanner_devices {

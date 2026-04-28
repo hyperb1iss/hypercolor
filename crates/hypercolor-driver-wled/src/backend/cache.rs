@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::types::device::{
+use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };

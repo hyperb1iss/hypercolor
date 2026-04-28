@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
-use crate::device::net::MdnsBrowser;
-use crate::types::device::{
+use hypercolor_core::device::net::MdnsBrowser;
+use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };

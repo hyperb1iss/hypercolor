@@ -17,11 +17,11 @@ use serde::Deserialize;
 use tokio::net::UdpSocket;
 
 use super::cache::WledDeviceInfo;
-use crate::device::wled::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame};
-use crate::device::wled::e131::{
+use crate::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame};
+use crate::e131::{
     E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131_PRIORITY, E131Packet, E131SequenceTracker,
 };
-use crate::types::device::DeviceId;
+use hypercolor_types::device::DeviceId;
 
 /// Interval between mandatory keepalive frames. Frames closer together
 /// than this may be suppressed by [`WledDevice::send_frame`] dedup.

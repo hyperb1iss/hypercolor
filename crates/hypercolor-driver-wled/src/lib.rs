@@ -1,9 +1,15 @@
+pub mod backend;
+mod ddp;
+mod e131;
+mod scanner;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::IpAddr;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
@@ -23,7 +29,16 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::DeviceId;
 use serde::{Deserialize, Serialize};
 
-pub use hypercolor_core::device::wled::WledScanner;
+pub use backend::{
+    WledBackend, WledColorFormat, WledDevice, WledDeviceInfo, WledLiveReceiverConfig, WledProtocol,
+    WledSegmentInfo,
+};
+pub use ddp::{DdpPacket, DdpSequence, build_ddp_frame};
+pub use e131::{
+    E131_PIXELS_PER_UNIVERSE_RGB, E131_PIXELS_PER_UNIVERSE_RGBW, E131Packet, E131SequenceTracker,
+    universes_needed,
+};
+pub use scanner::{WledKnownTarget, WledScanner};
 
 pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
@@ -40,6 +55,38 @@ const DEVICE_FIELD_LED_COUNT: &str = "led_count";
 const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
 const DEVICE_FIELD_DEDUP_THRESHOLD: &str = "dedup_threshold";
 const DEVICE_FIELD_RGBW: &str = "rgbw";
+
+static WLED_INFO_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| error.to_string())
+});
+
+fn wled_info_http_client() -> Result<&'static reqwest::Client> {
+    WLED_INFO_HTTP_CLIENT
+        .as_ref()
+        .map_err(|error| anyhow!("Failed to build shared WLED HTTP client: {error}"))
+}
+
+async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
+    let url = format!("http://{ip}/json/info");
+    let client = wled_info_http_client()?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("HTTP request to {url} failed"))?;
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .with_context(|| format!("Failed to parse JSON from {url}"))?;
+
+    backend::parse_wled_info(&json)
+}
 
 /// Default protocol for WLED realtime streaming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
