@@ -11,7 +11,7 @@ use crate::types::device::{
     DeviceState,
 };
 
-use super::discovery::DiscoveryConnectBehavior;
+use super::DiscoveryConnectBehavior;
 use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;

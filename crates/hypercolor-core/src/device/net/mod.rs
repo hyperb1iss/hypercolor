@@ -1,10 +1,3 @@
-//! Shared network-device infrastructure.
-//!
-//! This module holds reusable helpers shared by network-native backends such
-//! as WLED, Hue, and Nanoleaf.
+//! Compatibility re-export for native network-driver utilities.
 
-mod credentials;
-mod mdns;
-
-pub use credentials::{CredentialStore, Credentials};
-pub use mdns::{MdnsBrowser, MdnsService};
+pub use hypercolor_driver_api::{CredentialStore, Credentials, MdnsBrowser, MdnsService};

@@ -21,11 +21,9 @@ pub mod usb_hotplug;
 pub mod usb_scanner;
 
 pub use blocks::{BlocksBackend, BlocksScanner};
-pub use discovery::{
-    DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress,
-    DiscoveryReport, ScannerScanReport, TransportScanner,
-};
+pub use discovery::{DiscoveryOrchestrator, DiscoveryProgress, DiscoveryReport, ScannerScanReport};
 pub use discovery_server::discover_servers;
+pub use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, SegmentRange,

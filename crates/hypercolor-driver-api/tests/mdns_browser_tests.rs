@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use hypercolor_core::device::net::MdnsBrowser;
+use hypercolor_driver_api::MdnsBrowser;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::time::timeout;
 

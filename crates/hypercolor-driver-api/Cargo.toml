@@ -13,13 +13,18 @@ workspace = true
 
 [dependencies]
 hypercolor-types = { workspace = true }
-hypercolor-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 utoipa = { workspace = true }
+tokio = { workspace = true }
+mdns-sd = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }

@@ -23,12 +23,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+pub mod backend;
+pub mod discovery;
+pub mod net;
 pub mod validation;
 
-pub use hypercolor_core::device::net::{CredentialStore, Credentials, MdnsBrowser, MdnsService};
-pub use hypercolor_core::device::{
-    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner,
-};
+pub use backend::{BackendInfo, DeviceBackend, HealthStatus};
+pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+pub use net::{CredentialStore, Credentials, MdnsBrowser, MdnsService};
 
 /// Current driver API schema version. Bump this on any breaking change to
 /// the [`DriverHost`] trait, [`DriverDescriptor`] fields, or related types.
@@ -732,9 +734,9 @@ const fn bool_true() -> bool {
 pub mod support {
     use std::collections::HashMap;
     use std::net::IpAddr;
+    use std::path::PathBuf;
 
     use anyhow::Result;
-    use hypercolor_core::config::ConfigManager;
     use tracing::warn;
 
     use crate::CredentialStore;
@@ -749,7 +751,32 @@ pub mod support {
     /// Returns an error when the configured data directory or credential file
     /// cannot be initialized.
     pub fn open_default_credential_store_blocking() -> Result<CredentialStore> {
-        CredentialStore::open_blocking(&ConfigManager::data_dir())
+        CredentialStore::open_blocking(&default_data_dir())
+    }
+
+    fn default_data_dir() -> PathBuf {
+        const APP_DIR: &str = "hypercolor";
+
+        #[cfg(target_os = "linux")]
+        {
+            std::env::var("XDG_DATA_HOME")
+                .map_or_else(
+                    |_| {
+                        dirs::home_dir()
+                            .expect("HOME must be set")
+                            .join(".local/share")
+                    },
+                    PathBuf::from,
+                )
+                .join(APP_DIR)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            dirs::data_local_dir()
+                .expect("data directory must be resolvable")
+                .join(APP_DIR)
+        }
     }
 
     /// Best-effort immediate activation after pairing.

@@ -34,9 +34,9 @@ use tracing::{debug, info, trace, warn};
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
-use super::discovery::TransportScanner;
 use super::traits::{BackendInfo, DeviceBackend};
 use super::usb_scanner::UsbScanner;
+use super::{DiscoveredDevice, TransportScanner};
 use crate::attachment::AttachmentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -1724,9 +1724,7 @@ fn fps_from_frame_interval(frame_interval: Duration) -> Option<u32> {
     Some(u32::try_from(frames_per_second).unwrap_or(u32::MAX))
 }
 
-fn pending_from_discovered(
-    discovered: &super::discovery::DiscoveredDevice,
-) -> Option<PendingUsbDevice> {
+fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingUsbDevice> {
     let vendor_id = parse_u16_hex(discovered.metadata.get("vendor_id")?)?;
     let product_id = parse_u16_hex(discovered.metadata.get("product_id")?)?;
     let descriptor = hypercolor_hal::database::ProtocolDatabase::lookup_with_firmware(

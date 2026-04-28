@@ -14,9 +14,9 @@ use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
 use tracing::{debug, trace, warn};
 
-use super::discovery::{DiscoveredDevice, TransportScanner};
 use super::smbus_scanner::SmBusScanner;
 use super::traits::{BackendInfo, DeviceBackend};
+use super::{DiscoveredDevice, TransportScanner};
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;

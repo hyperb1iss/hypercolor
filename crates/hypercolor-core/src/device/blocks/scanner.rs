@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tracing::debug;
 
-use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,

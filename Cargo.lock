@@ -4408,7 +4408,6 @@ dependencies = [
 name = "hypercolor-core"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "arc-swap",
  "ashpd",
@@ -4424,6 +4423,7 @@ dependencies = [
  "futures-util",
  "gif 0.14.2",
  "gleam",
+ "hypercolor-driver-api",
  "hypercolor-hal",
  "hypercolor-types",
  "libpulse-binding",
@@ -4433,7 +4433,6 @@ dependencies = [
  "nusb",
  "nvml-wrapper",
  "pipewire",
- "rand 0.10.1",
  "realfft",
  "reqwest 0.12.28",
  "rustfft",
@@ -4519,12 +4518,17 @@ dependencies = [
 name = "hypercolor-driver-api"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
- "hypercolor-core",
+ "dirs",
  "hypercolor-types",
+ "mdns-sd",
+ "rand 0.10.1",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
  "utoipa",
 ]

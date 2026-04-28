@@ -10,7 +10,7 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint,
 };
 
-use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 /// USB transport scanner that discovers HAL-backed devices by VID/PID.
 pub struct UsbScanner {

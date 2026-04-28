@@ -18,9 +18,8 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::spatial::LedTopology;
 
-use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
 use super::traits::{BackendInfo, DeviceBackend};
-use crate::device::TransportScanner;
+use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use crate::effect::{EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────

@@ -8,106 +8,13 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use hypercolor_driver_api::{DiscoveredDevice, TransportScanner};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-use crate::types::device::{
-    ConnectionType, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
-};
+use crate::types::device::{DeviceFingerprint, DeviceId};
 
 use super::registry::DeviceRegistry;
-
-// ── TransportScanner ─────────────────────────────────────────────────────
-
-/// A single-transport device scanner.
-///
-/// Implemented by transport-specific scanners (USB, mDNS, UDP broadcast).
-/// Each scanner probes one transport and returns all currently reachable
-/// devices.
-#[async_trait::async_trait]
-pub trait TransportScanner: Send + Sync {
-    /// Human-readable scanner name (for logging and diagnostics).
-    fn name(&self) -> &str;
-
-    /// Run a one-shot scan and return all currently reachable devices.
-    ///
-    /// Implementations should complete within the discovery time budget for
-    /// their transport:
-    ///
-    /// | Transport | Target | Maximum |
-    /// |-----------|--------|---------|
-    /// | USB HID   | <100ms | 500ms   |
-    /// | mDNS      | 3s     | 10s     |
-    /// | UDP bcast | 3s     | 5s      |
-    /// # Errors
-    ///
-    /// Returns an error if the transport is inaccessible or the scan
-    /// encounters an unrecoverable failure.
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>>;
-}
-
-/// Whether a discovered device should trigger an immediate lifecycle connect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiscoveryConnectBehavior {
-    /// Safe to auto-connect as soon as discovery sees the device.
-    AutoConnect,
-
-    /// Keep the device visible in inventory, but defer auto-connect until a
-    /// later discovery pass upgrades it to `AutoConnect`.
-    Deferred,
-}
-
-impl DiscoveryConnectBehavior {
-    /// Whether this behavior should emit a connect action on discovery.
-    #[must_use]
-    pub const fn should_auto_connect(self) -> bool {
-        matches!(self, Self::AutoConnect)
-    }
-
-    /// Merge two behaviors, preserving the more capable auto-connect mode.
-    #[must_use]
-    pub const fn merge(self, other: Self) -> Self {
-        if matches!(self, Self::AutoConnect) || matches!(other, Self::AutoConnect) {
-            Self::AutoConnect
-        } else {
-            Self::Deferred
-        }
-    }
-}
-
-// ── DiscoveredDevice ─────────────────────────────────────────────────────
-
-/// Raw discovery result from a single scanner.
-///
-/// Contains enough information to construct or update a [`DeviceInfo`]
-/// after enrichment and deduplication by the orchestrator.
-#[derive(Debug, Clone)]
-pub struct DiscoveredDevice {
-    /// How this device connects to the host.
-    pub connection_type: ConnectionType,
-
-    /// Driver ownership and output routing metadata.
-    pub origin: DeviceOrigin,
-
-    /// Preliminary device name (from mDNS, USB descriptor, etc.).
-    pub name: String,
-
-    /// Device family, if identifiable from the transport layer.
-    pub family: DeviceFamily,
-
-    /// Stable identity fingerprint for deduplication.
-    pub fingerprint: DeviceFingerprint,
-
-    /// Whether discovery should trigger an immediate lifecycle connect.
-    pub connect_behavior: DiscoveryConnectBehavior,
-
-    /// Pre-built device info ready for registry insertion.
-    pub info: DeviceInfo,
-
-    /// Additional metadata from the scanner (firmware version, LED count, etc.).
-    pub metadata: HashMap<String, String>,
-}
 
 // ── DiscoveryReport ──────────────────────────────────────────────────────
 

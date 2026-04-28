@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo};
 
-use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 #[cfg(target_os = "linux")]
 use anyhow::anyhow;
