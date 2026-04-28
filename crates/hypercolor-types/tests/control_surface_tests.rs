@@ -337,4 +337,26 @@ fn apply_request_response_and_events_roundtrip() {
     let event_json = serde_json::to_value(&event).expect("serialize event");
     assert_eq!(event_json["kind"], "action_progress");
     assert_eq!(event_json["status"], "running");
+
+    let action_availability = ControlSurfaceEvent::ActionAvailabilityChanged {
+        surface_id: "device:abc".to_owned(),
+        revision: 5,
+        availability: BTreeMap::from([(
+            "identify".to_owned(),
+            ControlAvailability {
+                state: ControlAvailabilityState::Disabled,
+                reason: Some("Device is offline".to_owned()),
+            },
+        )]),
+    };
+    let action_availability_json =
+        serde_json::to_value(&action_availability).expect("serialize action availability event");
+    assert_eq!(
+        action_availability_json["kind"],
+        "action_availability_changed"
+    );
+    assert_eq!(
+        action_availability_json["availability"]["identify"]["state"],
+        "disabled"
+    );
 }

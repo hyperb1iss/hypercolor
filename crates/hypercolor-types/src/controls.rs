@@ -932,6 +932,18 @@ pub enum ControlSurfaceEvent {
         availability: ControlAvailabilityMap,
     },
 
+    /// Action availability changed.
+    ActionAvailabilityChanged {
+        /// Surface that changed.
+        surface_id: ControlSurfaceId,
+
+        /// New revision.
+        revision: ControlSurfaceRevision,
+
+        /// Current action availability.
+        availability: ControlActionAvailabilityMap,
+    },
+
     /// Action progress changed.
     ActionProgress {
         /// Surface that owns the action.
