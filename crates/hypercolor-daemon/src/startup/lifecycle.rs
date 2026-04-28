@@ -639,9 +639,10 @@ impl DaemonState {
                         event = hotplug_rx.recv() => {
                             let run_usb_scan = match event {
                                 Ok(UsbHotplugEvent::Arrived { vendor_id, product_id, descriptor }) => {
+                                    let driver_id = descriptor.driver_id();
                                     if crate::network::hal_driver_enabled(
                                         &config,
-                                        descriptor.family.id().as_ref(),
+                                        driver_id.as_ref(),
                                     ) {
                                         info!(
                                             vendor_id,
@@ -654,7 +655,7 @@ impl DaemonState {
                                         debug!(
                                             vendor_id,
                                             product_id,
-                                            driver_id = %descriptor.family.id(),
+                                            driver_id = %driver_id,
                                             device = descriptor.name,
                                             "Ignoring USB hotplug arrival for disabled HAL driver"
                                         );
