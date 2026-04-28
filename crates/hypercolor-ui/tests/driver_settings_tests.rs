@@ -6,7 +6,8 @@ mod api;
 mod driver_settings;
 
 use hypercolor_types::device::{
-    DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverTransportKind,
+    DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
+    DriverTransportKind,
 };
 
 use api::{DriverListResponse, DriverSummary};
@@ -34,6 +35,14 @@ fn driver(
             api_schema_version: 1,
             config_version: 1,
             default_enabled: true,
+        },
+        presentation: DriverPresentation {
+            label: display_name.to_string(),
+            short_label: None,
+            accent_rgb: None,
+            secondary_rgb: None,
+            icon: None,
+            default_device_class: None,
         },
         enabled: true,
         config_key: format!("drivers.{id}"),
@@ -112,6 +121,10 @@ fn driver_list_response_deserializes_daemon_data() {
                 "config_version": 1,
                 "default_enabled": true
             },
+            "presentation": {
+                "label": "Test Network",
+                "accent_rgb": [128, 255, 234]
+            },
             "enabled": true,
             "config_key": "drivers.testnet",
             "protocols": [{
@@ -131,6 +144,11 @@ fn driver_list_response_deserializes_daemon_data() {
 
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].descriptor.id, "testnet");
+    assert_eq!(response.items[0].presentation.label, "Test Network");
+    assert_eq!(
+        response.items[0].presentation.accent_rgb,
+        Some([128, 255, 234])
+    );
     assert_eq!(response.items[0].config_key, "drivers.testnet");
     assert_eq!(response.items[0].protocols[0].protocol_id, "testnet/proto");
     assert_eq!(response.items[0].protocols[0].route_backend_id, "network");

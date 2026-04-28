@@ -2,7 +2,9 @@
 
 use serde::Deserialize;
 
-use hypercolor_types::device::{DriverModuleDescriptor, DriverProtocolDescriptor};
+use hypercolor_types::device::{
+    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
+};
 
 use super::client;
 
@@ -14,6 +16,7 @@ pub struct DriverListResponse {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct DriverSummary {
     pub descriptor: DriverModuleDescriptor,
+    pub presentation: DriverPresentation,
     pub enabled: bool,
     pub config_key: String,
     #[serde(default)]

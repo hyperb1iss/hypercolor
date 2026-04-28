@@ -1,4 +1,4 @@
-use hypercolor_types::device::{DriverModuleDescriptor, DriverTransportKind};
+use hypercolor_types::device::DriverTransportKind;
 
 use crate::api::DriverSummary;
 
@@ -14,35 +14,37 @@ pub fn discovery_driver_settings(drivers: &[DriverSummary]) -> Vec<DiscoveryDriv
     drivers
         .iter()
         .filter(|driver| driver.descriptor.capabilities.discovery)
-        .map(|driver| discovery_driver_setting(&driver.descriptor, &driver.config_key))
+        .map(discovery_driver_setting)
         .collect()
 }
 
-fn discovery_driver_setting(
-    descriptor: &DriverModuleDescriptor,
-    config_key: &str,
-) -> DiscoveryDriverSetting {
+fn discovery_driver_setting(driver: &DriverSummary) -> DiscoveryDriverSetting {
+    let descriptor = &driver.descriptor;
+    let label = &driver.presentation.label;
+
     DiscoveryDriverSetting {
         id: descriptor.id.clone(),
-        label: format!("{} Scan", descriptor.display_name),
-        description: discovery_description(descriptor),
-        key: format!("{config_key}.enabled"),
+        label: format!("{label} Scan"),
+        description: discovery_description(
+            label,
+            descriptor.capabilities.pairing,
+            &descriptor.transports,
+        ),
+        key: format!("{}.enabled", driver.config_key),
     }
 }
 
-fn discovery_description(descriptor: &DriverModuleDescriptor) -> String {
-    let transports = transport_summary(&descriptor.transports);
+fn discovery_description(
+    label: &str,
+    supports_pairing: bool,
+    transports: &[DriverTransportKind],
+) -> String {
+    let transports = transport_summary(transports);
 
-    if descriptor.capabilities.pairing {
-        format!(
-            "Discover and pair {} devices over {transports}",
-            descriptor.display_name
-        )
+    if supports_pairing {
+        format!("Discover and pair {label} devices over {transports}")
     } else {
-        format!(
-            "Discover {} devices over {transports}",
-            descriptor.display_name
-        )
+        format!("Discover {label} devices over {transports}")
     }
 }
 
