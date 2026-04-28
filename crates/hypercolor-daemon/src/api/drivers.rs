@@ -70,7 +70,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
                 .controls
                 .then(|| format!("/api/v1/drivers/{}/controls", descriptor.id));
             let protocols = if descriptor.capabilities.protocol_catalog {
-                network::protocol_descriptors(&descriptor.id)
+                network::protocol_descriptors(state.driver_registry.as_ref(), &descriptor.id)
             } else {
                 Vec::new()
             };

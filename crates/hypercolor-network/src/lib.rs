@@ -2,7 +2,7 @@
 //!
 //! This crate owns host-side lookup and capability filtering for compiled-in
 //! driver modules. Concrete drivers live in separate crates so the daemon can
-//! dispatch discovery, pairing, and backend construction without
+//! dispatch discovery, pairing, protocol catalogs, and backend construction without
 //! backend-specific branching.
 
 use std::collections::BTreeMap;
@@ -124,6 +124,16 @@ impl DriverModuleRegistry {
         self.drivers
             .values()
             .filter(|driver| driver.controls().is_some())
+            .map(Arc::clone)
+            .collect()
+    }
+
+    /// Return all drivers that advertise protocol catalog capability.
+    #[must_use]
+    pub fn protocol_catalog_drivers(&self) -> Vec<Arc<dyn DriverModule>> {
+        self.drivers
+            .values()
+            .filter(|driver| driver.protocol_catalog().is_some())
             .map(Arc::clone)
             .collect()
     }

@@ -1,11 +1,12 @@
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverTransport, PairDeviceRequest,
-    PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
-    ValidatedControlChanges, support,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverProtocolCatalog, DriverTransport,
+    PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
+    PairingFlowKind, ValidatedControlChanges, support,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::controls::{
@@ -15,7 +16,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, DriverModuleKind,
-    DriverTransportKind, ZoneInfo,
+    DriverProtocolDescriptor, DriverTransportKind, ZoneInfo,
 };
 
 #[test]
@@ -191,6 +192,62 @@ impl DriverModule for ControlOnlyDriver {
     }
 }
 
+struct ProtocolOnlyCatalog;
+
+static PROTOCOL_ONLY_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock::new(|| {
+    vec![DriverProtocolDescriptor {
+        driver_id: "protocol-only".to_owned(),
+        protocol_id: "protocol-only/example".to_owned(),
+        display_name: "Protocol Only Example".to_owned(),
+        vendor_id: Some(0x1234),
+        product_id: Some(0x5678),
+        family_id: "protocol-only".to_owned(),
+        model_id: None,
+        transport: DriverTransportKind::Usb,
+        route_backend_id: "usb".to_owned(),
+        presentation: None,
+    }]
+});
+
+impl DriverProtocolCatalog for ProtocolOnlyCatalog {
+    fn descriptors(&self) -> &[DriverProtocolDescriptor] {
+        PROTOCOL_ONLY_DESCRIPTORS.as_slice()
+    }
+}
+
+struct ProtocolOnlyDriver;
+
+static PROTOCOL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "protocol-only",
+    "Protocol Only",
+    DriverTransport::Usb,
+    false,
+    false,
+);
+
+impl DriverModule for ProtocolOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PROTOCOL_ONLY_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: hypercolor_driver_api::DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<Box<dyn hypercolor_driver_api::DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
+        Some(&ProtocolOnlyCatalog)
+    }
+}
+
 #[test]
 fn driver_module_advertises_control_provider_capability() {
     let module = ControlOnlyDriver.module_descriptor();
@@ -201,6 +258,21 @@ fn driver_module_advertises_control_provider_capability() {
     assert!(!module.capabilities.credentials);
     assert!(!module.capabilities.output_backend);
     assert!(!module.capabilities.runtime_cache);
+}
+
+#[test]
+fn driver_module_advertises_protocol_catalog_capability() {
+    let module = ProtocolOnlyDriver.module_descriptor();
+    let catalog = ProtocolOnlyDriver
+        .protocol_catalog()
+        .expect("protocol catalog should be present");
+
+    assert!(module.capabilities.protocol_catalog);
+    assert!(!module.capabilities.output_backend);
+    assert_eq!(
+        catalog.descriptors()[0].protocol_id,
+        "protocol-only/example"
+    );
 }
 
 #[test]

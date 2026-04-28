@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -7,11 +8,14 @@ use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTransport,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverProtocolCatalog, DriverRuntimeActions,
+    DriverTransport,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::{DeviceId, DeviceInfo, DriverTransportKind};
+use hypercolor_types::device::{
+    DeviceId, DeviceInfo, DriverProtocolDescriptor, DriverTransportKind,
+};
 
 #[test]
 fn default_app_state_registers_builtin_network_drivers() {
@@ -276,6 +280,75 @@ impl DriverModule for ConfiglessDriver {
             id: "external-backend",
         })))
     }
+}
+
+struct ProtocolCatalogDriver;
+
+static PROTOCOL_CATALOG_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "protocol-catalog",
+    "Protocol Catalog",
+    DriverTransport::Usb,
+    false,
+    false,
+);
+
+static PROTOCOL_CATALOG_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> =
+    LazyLock::new(|| {
+        vec![DriverProtocolDescriptor {
+            driver_id: "protocol-catalog".to_owned(),
+            protocol_id: "protocol-catalog/example".to_owned(),
+            display_name: "Protocol Catalog Example".to_owned(),
+            vendor_id: Some(0x1234),
+            product_id: Some(0x5678),
+            family_id: "protocol-catalog".to_owned(),
+            model_id: None,
+            transport: DriverTransportKind::Usb,
+            route_backend_id: "usb".to_owned(),
+            presentation: None,
+        }]
+    });
+
+impl DriverProtocolCatalog for ProtocolCatalogDriver {
+    fn descriptors(&self) -> &[DriverProtocolDescriptor] {
+        PROTOCOL_CATALOG_DESCRIPTORS.as_slice()
+    }
+}
+
+impl DriverModule for ProtocolCatalogDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PROTOCOL_CATALOG_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
+        Some(self)
+    }
+}
+
+#[test]
+fn protocol_descriptors_use_driver_catalog_before_hal_catalog() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ProtocolCatalogDriver)
+        .expect("protocol catalog driver should register");
+
+    let protocols = network::protocol_descriptors(&registry, "protocol-catalog");
+
+    assert_eq!(protocols.len(), 1);
+    assert_eq!(protocols[0].protocol_id, "protocol-catalog/example");
+    assert_eq!(protocols[0].route_backend_id, "usb");
 }
 
 #[test]

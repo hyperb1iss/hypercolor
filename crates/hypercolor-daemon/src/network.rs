@@ -132,7 +132,18 @@ pub fn device_presentation(
 
 /// Protocol descriptors for one driver module.
 #[must_use]
-pub fn protocol_descriptors(driver_id: &str) -> Vec<DriverProtocolDescriptor> {
+pub fn protocol_descriptors(
+    registry: &DriverModuleRegistry,
+    driver_id: &str,
+) -> Vec<DriverProtocolDescriptor> {
+    if let Some(driver) = registry.get(driver_id)
+        && let Some(catalog) = driver.protocol_catalog()
+    {
+        let mut descriptors = catalog.descriptors().to_vec();
+        descriptors.sort_by(|left, right| left.protocol_id.cmp(&right.protocol_id));
+        return descriptors;
+    }
+
     ProtocolDatabase::protocol_descriptors_for_driver(driver_id)
 }
 

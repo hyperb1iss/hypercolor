@@ -17,7 +17,7 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverTransportKind,
+    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverTransportKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -693,6 +693,12 @@ pub trait DriverRuntimeCacheProvider: Send + Sync {
     async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>>;
 }
 
+/// Driver capability for exposing protocol descriptors to the host.
+pub trait DriverProtocolCatalog: Send + Sync {
+    /// Return value-shaped protocol descriptors owned by this driver.
+    fn descriptors(&self) -> &[DriverProtocolDescriptor];
+}
+
 /// Capability root for one modular driver.
 pub trait DriverModule: Send + Sync {
     /// Static metadata about the driver.
@@ -707,6 +713,7 @@ pub trait DriverModule: Send + Sync {
         descriptor.capabilities.runtime_cache = self.runtime_cache().is_some();
         descriptor.capabilities.credentials = descriptor.capabilities.pairing;
         descriptor.capabilities.output_backend = self.has_output_backend();
+        descriptor.capabilities.protocol_catalog = self.protocol_catalog().is_some();
         descriptor.capabilities.controls = self.controls().is_some();
         descriptor
     }
@@ -746,6 +753,11 @@ pub trait DriverModule: Send + Sync {
 
     /// Control-surface capability, if supported.
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        None
+    }
+
+    /// Protocol catalog capability, if this driver exposes host-readable protocols.
+    fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
         None
     }
 

@@ -5,8 +5,9 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
-    DriverHost, DriverModule, DriverRuntimeActions, DriverTransport, PairDeviceOutcome,
-    PairDeviceRequest, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
+    DriverHost, DriverModule, DriverProtocolCatalog, DriverRuntimeActions, DriverTransport,
+    PairDeviceOutcome, PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
@@ -14,7 +15,10 @@ use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo, DriverModuleKind, DriverTransportKind};
+use hypercolor_types::device::{
+    DeviceId, DeviceInfo, DriverModuleKind, DriverProtocolDescriptor, DriverTransportKind,
+};
+use std::sync::LazyLock;
 
 struct NullCredentialStore;
 
@@ -339,6 +343,62 @@ impl DriverModule for ControlOnlyDriver {
     }
 }
 
+struct ProtocolOnlyCatalog;
+
+static PROTOCOL_ONLY_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock::new(|| {
+    vec![DriverProtocolDescriptor {
+        driver_id: "protocol-only".to_owned(),
+        protocol_id: "protocol-only/example".to_owned(),
+        display_name: "Protocol Only Example".to_owned(),
+        vendor_id: None,
+        product_id: None,
+        family_id: "protocol-only".to_owned(),
+        model_id: None,
+        transport: DriverTransportKind::Usb,
+        route_backend_id: "usb".to_owned(),
+        presentation: None,
+    }]
+});
+
+impl DriverProtocolCatalog for ProtocolOnlyCatalog {
+    fn descriptors(&self) -> &[DriverProtocolDescriptor] {
+        PROTOCOL_ONLY_DESCRIPTORS.as_slice()
+    }
+}
+
+struct ProtocolOnlyDriver;
+
+static PROTOCOL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "protocol-only",
+    "Protocol Only",
+    DriverTransport::Usb,
+    false,
+    false,
+);
+
+impl DriverModule for ProtocolOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PROTOCOL_ONLY_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
+        Some(&ProtocolOnlyCatalog)
+    }
+}
+
 #[test]
 fn registry_rejects_duplicate_ids() {
     let mut registry = DriverModuleRegistry::new();
@@ -452,6 +512,32 @@ fn registry_filters_control_surface_drivers() {
     assert!(!control_descriptor.capabilities.discovery);
     assert!(!control_descriptor.capabilities.pairing);
     assert!(!control_descriptor.capabilities.output_backend);
+}
+
+#[test]
+fn registry_filters_protocol_catalog_drivers() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("discovery driver should register");
+    registry
+        .register(ProtocolOnlyDriver)
+        .expect("protocol driver should register");
+
+    let protocol_ids = registry
+        .protocol_catalog_drivers()
+        .into_iter()
+        .map(|driver| driver.descriptor().id.to_owned())
+        .collect::<Vec<_>>();
+    let descriptor = registry
+        .module_descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.id == "protocol-only")
+        .expect("protocol descriptor should be present");
+
+    assert_eq!(protocol_ids, vec!["protocol-only".to_owned()]);
+    assert!(descriptor.capabilities.protocol_catalog);
+    assert!(!descriptor.capabilities.output_backend);
 }
 
 #[test]
