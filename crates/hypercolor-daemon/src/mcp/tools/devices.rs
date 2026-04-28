@@ -13,7 +13,7 @@ pub(super) fn build_get_devices() -> ToolDefinition {
     ToolDefinition {
         name: "get_devices".into(),
         title: "List RGB Devices".into(),
-        description: "Enumerate all known RGB devices with their connection status, backend type, LED count, and zone configuration.".into(),
+        description: "Enumerate all known RGB devices with their connection status, driver origin, output backend, LED count, and zone configuration.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -22,6 +22,14 @@ pub(super) fn build_get_devices() -> ToolDefinition {
                     "enum": ["all", "connected", "disconnected"],
                     "default": "all",
                     "description": "Filter by connection status"
+                },
+                "driver_id": {
+                    "type": "string",
+                    "description": "Optional driver module id filter, such as wled, hue, nanoleaf, asus, or nollie"
+                },
+                "backend_id": {
+                    "type": "string",
+                    "description": "Optional output backend id filter, such as usb, smbus, wled, hue, or nanoleaf"
                 }
             }
         }),
@@ -126,6 +134,14 @@ pub(super) async fn handle_get_devices_with_state(
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("all");
+    let driver_filter = params
+        .get("driver_id")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    let backend_filter = params
+        .get("backend_id")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
 
     let devices = state.device_registry.list().await;
     let filtered = devices
@@ -134,6 +150,16 @@ pub(super) async fn handle_get_devices_with_state(
             "connected" => device.state.is_renderable(),
             "disconnected" => !device.state.is_renderable(),
             _ => true,
+        })
+        .filter(|device| {
+            driver_filter
+                .as_deref()
+                .is_none_or(|expected| device.info.driver_id().to_ascii_lowercase() == expected)
+        })
+        .filter(|device| {
+            backend_filter.as_deref().is_none_or(|expected| {
+                device.info.output_backend_id().to_ascii_lowercase() == expected
+            })
         })
         .collect::<Vec<_>>();
 
@@ -149,16 +175,7 @@ pub(super) async fn handle_get_devices_with_state(
     let payload = filtered
         .iter()
         .map(|device| {
-            json!({
-                "id": device.info.id.to_string(),
-                "name": device.info.name,
-                "vendor": device.info.vendor,
-                "family": format!("{}", device.info.family),
-                "connection_type": format!("{:?}", device.info.connection_type),
-                "state": device.state.variant_name(),
-                "led_count": device.info.total_led_count(),
-                "zones": device.info.zones.len()
-            })
+            crate::mcp::device_payload::inventory_device_payload(state, &device.info, &device.state)
         })
         .collect::<Vec<_>>();
 

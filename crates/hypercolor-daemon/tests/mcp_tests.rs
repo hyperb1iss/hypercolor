@@ -1084,6 +1084,49 @@ fn resource_definitions_are_readable() {
     assert!(read_resource("hypercolor://nope").is_none());
 }
 
+#[tokio::test]
+async fn mcp_device_inventory_exposes_driver_origin_and_presentation() {
+    let state = Arc::new(fresh_app_state());
+    let device_id = insert_test_display_device(&state, "Case Display").await;
+
+    let resource = read_resource_with_state("hypercolor://devices", state.as_ref())
+        .await
+        .expect("devices resource should exist");
+    let resource_device = &resource["devices"][0];
+    assert_eq!(resource_device["id"], device_id.to_string());
+    assert_eq!(resource_device["backend"], "usb");
+    assert_eq!(resource_device["origin"]["driver_id"], "wled");
+    assert_eq!(resource_device["origin"]["backend_id"], "usb");
+    assert_eq!(resource_device["origin"]["transport"], "usb");
+    assert_eq!(resource_device["presentation"]["label"], "WLED");
+
+    let filtered = execute_tool_with_state(
+        "get_devices",
+        &json!({
+            "driver_id": "wled",
+            "backend_id": "usb",
+            "status": "disconnected"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("get_devices should support driver and backend filters");
+    assert_eq!(filtered["summary"]["total"], 1);
+    assert_eq!(filtered["devices"][0]["origin"]["driver_id"], "wled");
+
+    let filtered_out = execute_tool_with_state(
+        "get_devices",
+        &json!({
+            "driver_id": "hue",
+            "backend_id": "usb"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("get_devices should handle unmatched filters");
+    assert_eq!(filtered_out["summary"]["total"], 0);
+}
+
 #[test]
 fn prompt_definitions_and_messages_are_valid() {
     let prompts = build_prompt_definitions();

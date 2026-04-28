@@ -8,6 +8,8 @@ pub mod prompts;
 pub mod resources;
 pub mod tools;
 
+mod device_payload;
+
 use std::future::ready;
 use std::sync::Arc;
 use std::time::Duration;

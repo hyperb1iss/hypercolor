@@ -37,7 +37,7 @@ pub fn build_resource_definitions() -> Vec<ResourceDefinition> {
         ResourceDefinition {
             uri: "hypercolor://devices".into(),
             name: "Device Inventory".into(),
-            description: "Full inventory of all known RGB devices with connection status, backend type, LED count, zone configuration, and connection details. Updates when devices connect/disconnect.".into(),
+            description: "Full inventory of all known RGB devices with connection status, driver origin, output backend, LED count, zone configuration, and connection details. Updates when devices connect/disconnect.".into(),
             mime_type: "application/json".into(),
             priority: 0.7,
         },
@@ -262,16 +262,7 @@ async fn read_devices_with_state(state: &AppState) -> Value {
     let payload = devices
         .iter()
         .map(|device| {
-            json!({
-                "id": device.info.id.to_string(),
-                "name": device.info.name,
-                "vendor": device.info.vendor,
-                "family": format!("{}", device.info.family),
-                "connection_type": format!("{:?}", device.info.connection_type),
-                "state": device.state.variant_name(),
-                "led_count": device.info.total_led_count(),
-                "zones": device.info.zones.len()
-            })
+            super::device_payload::inventory_device_payload(state, &device.info, &device.state)
         })
         .collect::<Vec<_>>();
 
