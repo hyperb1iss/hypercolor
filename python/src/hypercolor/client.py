@@ -9,6 +9,17 @@ from typing import Any, Self, TypeVar
 import httpx
 import msgspec
 
+from ._generated.api.devices import list_devices as generated_list_devices
+from ._generated.api.effects import (
+    get_active_effect as generated_get_active_effect,
+    get_effect as generated_get_effect,
+    list_effects as generated_list_effects,
+)
+from ._generated.api.system import (
+    get_status as generated_get_status,
+    health_check as generated_health_check,
+)
+from ._generated.types import UNSET
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
 from .exceptions import (
     ApiErrorDetails,
@@ -45,6 +56,7 @@ from .models.system import HealthStatus, SystemState
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
+_DEVICE_FILTERS = {"offset", "limit", "status", "backend", "q"}
 
 
 class HypercolorClient:
@@ -67,7 +79,7 @@ class HypercolorClient:
         self.base_url = f"http://{host}:{port}{API_PREFIX}"
         self.ws_url = f"ws://{host}:{port}{WS_PATH}"
         self._client = httpx.AsyncClient(
-            base_url=self.base_url,
+            base_url=self.root_url,
             timeout=timeout,
             headers=self._auth_headers(),
             transport=transport,
@@ -91,13 +103,19 @@ class HypercolorClient:
 
     async def health(self) -> HealthStatus:
         """Run the daemon health check."""
-        response = await self._raw_request("GET", f"{self.root_url}/health")
-        return self._convert(response, HealthStatus)
+        return await self._generated_model(
+            generated_health_check._get_kwargs(),
+            HealthStatus,
+            envelope=False,
+        )
 
     async def get_status(self) -> SystemState:
         """Return the current daemon status snapshot."""
 
-        return await self._request_model("GET", "/status", SystemState)
+        return await self._generated_model(
+            generated_get_status._get_kwargs(),
+            SystemState,
+        )
 
     async def get_state(self) -> SystemState:
         """Backward-compatible alias for :meth:`get_status`."""
@@ -126,7 +144,18 @@ class HypercolorClient:
 
     async def get_devices(self, **filters: Any) -> list[Device]:
         """List devices."""
-        return await self._request_items("GET", "/devices", Device, params=filters)
+        if any(key not in _DEVICE_FILTERS for key in filters):
+            return await self._request_items("GET", "/devices", Device, params=filters)
+        return await self._generated_items(
+            generated_list_devices._get_kwargs(
+                offset=_generated_param(filters.get("offset")),
+                limit=_generated_param(filters.get("limit")),
+                status=_generated_param(filters.get("status")),
+                backend=_generated_param(filters.get("backend")),
+                q=_generated_param(filters.get("q")),
+            ),
+            Device,
+        )
 
     async def get_device(self, device_id: str) -> Device:
         """Fetch a single device."""
@@ -165,16 +194,27 @@ class HypercolorClient:
 
     async def get_effects(self, **filters: Any) -> list[EffectSummary]:
         """List available effects."""
-        return await self._request_items("GET", "/effects", EffectSummary, params=filters)
+        if filters:
+            return await self._request_items("GET", "/effects", EffectSummary, params=filters)
+        return await self._generated_items(
+            generated_list_effects._get_kwargs(),
+            EffectSummary,
+        )
 
     async def get_effect(self, effect_id: str) -> Effect:
         """Fetch a single effect with controls."""
-        return await self._request_model("GET", f"/effects/{effect_id}", Effect)
+        return await self._generated_model(
+            generated_get_effect._get_kwargs(effect_id),
+            Effect,
+        )
 
     async def get_active_effect(self) -> ActiveEffect | None:
         """Return the currently active effect if one exists."""
         try:
-            return await self._request_model("GET", "/effects/active", ActiveEffect)
+            return await self._generated_model(
+                generated_get_active_effect._get_kwargs(),
+                ActiveEffect,
+            )
         except HypercolorNotFoundError:
             return None
 
@@ -274,6 +314,51 @@ class HypercolorClient:
 
         return await self._request_model("GET", "/audio/devices", AudioDevices)
 
+    async def _generated_model(
+        self,
+        kwargs: Mapping[str, Any],
+        model_type: type[ModelT],
+        *,
+        envelope: bool = True,
+    ) -> ModelT:
+        payload = await self._generated_payload(kwargs, envelope=envelope)
+        return self._convert(payload, model_type)
+
+    async def _generated_items(
+        self,
+        kwargs: Mapping[str, Any],
+        item_type: type[ModelT],
+    ) -> list[ModelT]:
+        data = await self._generated_payload(kwargs)
+        items = data["items"] if isinstance(data, dict) else []
+        return [self._convert(item, item_type) for item in items]
+
+    async def _generated_payload(
+        self,
+        kwargs: Mapping[str, Any],
+        *,
+        envelope: bool = True,
+    ) -> Any:
+        response = await self._generated_request(kwargs)
+        payload = self._unwrap_data(response) if envelope else response
+        return _normalize_payload(payload)
+
+    async def _generated_request(self, kwargs: Mapping[str, Any]) -> Any:
+        try:
+            response = await self._client.request(**kwargs)
+            response.raise_for_status()
+        except httpx.ConnectError as exc:
+            raise HypercolorConnectionError("Failed to connect to the Hypercolor daemon") from exc
+        except httpx.TimeoutException as exc:
+            raise HypercolorConnectionError("Hypercolor request timed out") from exc
+        except httpx.HTTPStatusError as exc:
+            raise self._map_http_error(exc) from exc
+
+        try:
+            return msgspec.json.decode(response.content)
+        except msgspec.DecodeError:
+            return response.text
+
     async def set_audio_device(
         self,
         device_id: str,
@@ -329,9 +414,10 @@ class HypercolorClient:
         params: Mapping[str, Any] | None = None,
     ) -> Any:
         try:
+            request_path = _request_path(path)
             response = await self._client.request(
                 method,
-                path,
+                request_path,
                 json=body,
                 params=_drop_none(params or {}),
             )
@@ -367,14 +453,17 @@ class HypercolorClient:
     @staticmethod
     def _map_http_error(exc: httpx.HTTPStatusError) -> Exception:
         response = exc.response
-        error = _decode_error_details(response)
+        return HypercolorClient._map_response_error(response.status_code, response.content)
+
+    @staticmethod
+    def _map_response_error(status_code: int, content: bytes) -> Exception:
+        error = _decode_error_details(content)
         message = (
             error.message
             if error is not None
-            else f"Hypercolor API request failed with {response.status_code}"
+            else f"Hypercolor API request failed with {status_code}"
         )
 
-        status = response.status_code
         error_type: type[
             HypercolorApiError
             | HypercolorAuthenticationError
@@ -385,26 +474,26 @@ class HypercolorClient:
             | HypercolorUnavailableError
             | HypercolorValidationError
         ]
-        if status == 401:
+        if status_code == 401:
             error_type = HypercolorAuthenticationError
-        elif status == 404:
+        elif status_code == 404:
             error_type = HypercolorNotFoundError
-        elif status == 409:
+        elif status_code == 409:
             error_type = HypercolorConflictError
-        elif status == 422:
+        elif status_code == 422:
             error_type = HypercolorValidationError
-        elif status == 429:
+        elif status_code == 429:
             error_type = HypercolorRateLimitError
-        elif status == 503:
+        elif status_code == 503:
             error_type = HypercolorUnavailableError
         else:
             error_type = HypercolorApiError
-        return _instantiate_error(error_type, message, error, response.status_code)
+        return _instantiate_error(error_type, message, error, status_code)
 
 
-def _decode_error_details(response: httpx.Response) -> ApiErrorDetails | None:
+def _decode_error_details(content: bytes) -> ApiErrorDetails | None:
     try:
-        payload = msgspec.json.decode(response.content)
+        payload = msgspec.json.decode(content)
     except msgspec.DecodeError:
         return None
 
@@ -425,6 +514,57 @@ def _decode_error_details(response: httpx.Response) -> ApiErrorDetails | None:
 
 def _drop_none(data: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value is not None}
+
+
+def _generated_param(value: Any) -> Any:
+    return UNSET if value is None else value
+
+
+def _request_path(path: str) -> str:
+    if path.startswith(("http://", "https://")) or path.startswith(API_PREFIX):
+        return path
+    return f"{API_PREFIX}{path}"
+
+
+def _normalize_payload(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_normalize_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    normalized = {key: _normalize_payload(item) for key, item in value.items()}
+    if "control_type" in normalized and "name" in normalized and "default_value" in normalized:
+        normalized.setdefault("label", normalized["name"])
+        normalized.setdefault("type", _legacy_control_type(normalized["control_type"]))
+        normalized.setdefault("default", _control_value(normalized["default_value"]))
+    for key in ("control_values", "active_control_values", "applied_controls", "applied"):
+        if isinstance(normalized.get(key), dict):
+            normalized[key] = {
+                str(item_key): _control_value(item_value)
+                for item_key, item_value in normalized[key].items()
+            }
+    return normalized
+
+
+def _control_value(value: Any) -> Any:
+    if not isinstance(value, dict) or len(value) != 1:
+        return _normalize_payload(value)
+    key, item = next(iter(value.items()))
+    if key not in {"float", "integer", "boolean", "color", "gradient", "enum", "text", "rect"}:
+        return _normalize_payload(value)
+    return _normalize_payload(item)
+
+
+def _legacy_control_type(control_type: Any) -> str:
+    return {
+        "color_picker": "color",
+        "dropdown": "select",
+        "gradient_editor": "gradient",
+        "rect": "rect",
+        "slider": "number",
+        "text_input": "text",
+        "toggle": "boolean",
+    }.get(str(control_type), str(control_type))
 
 
 def _to_json_mapping(value: TransitionSpec | Mapping[str, Any] | None) -> dict[str, Any] | None:

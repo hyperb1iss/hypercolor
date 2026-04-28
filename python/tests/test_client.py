@@ -118,15 +118,15 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
                     "controls": [
                         {
                             "id": "speed",
-                            "label": "Speed",
-                            "type": "number",
+                            "name": "Speed",
+                            "control_type": "slider",
                             "min": 0,
                             "max": 100,
                             "step": 1,
-                            "default": 40,
+                            "default_value": {"integer": 40},
                         }
                     ],
-                    "control_values": {"speed": 72},
+                    "control_values": {"speed": {"integer": 72}},
                     "active_preset_id": None,
                 }
             ),
@@ -138,6 +138,9 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
     assert isinstance(effect, ActiveEffect)
     assert effect.state == "running"
     assert effect.control_values["speed"] == 72
+    assert effect.controls[0].label == "Speed"
+    assert effect.controls[0].type == "number"
+    assert effect.controls[0].default == 40
 
 
 @respx.mock
@@ -347,16 +350,16 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
                     "controls": [
                         {
                             "id": "effectSpeed",
-                            "label": "Animation Speed",
-                            "type": "number",
+                            "name": "Animation Speed",
+                            "control_type": "slider",
                             "min": 0,
                             "max": 100,
                             "step": 1,
-                            "default": 40,
+                            "default_value": {"integer": 40},
                         }
                     ],
-                    "presets": [{"name": "Default", "is_default": True}],
-                    "active_control_values": {"effectSpeed": 40},
+                    "presets": [{"name": "Default", "controls": {"effectSpeed": {"integer": 40}}}],
+                    "active_control_values": {"effectSpeed": {"integer": 40}},
                 }
             ),
         )
@@ -367,6 +370,7 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
     assert isinstance(effect, Effect)
     assert effect.controls[0].label == "Animation Speed"
     assert effect.active_control_values == {"effectSpeed": 40}
+    assert effect.presets[0].name == "Default"
 
 
 @respx.mock
