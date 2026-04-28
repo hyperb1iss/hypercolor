@@ -120,9 +120,10 @@ impl DaemonClient {
         &self,
         query: ControlSurfaceQuery<'_>,
     ) -> Result<Vec<ControlSurfaceDocument>> {
-        let response: ControlSurfaceListResponse =
-            self.get_data(&control_surface_list_path(query)).await?;
-        Ok(response.surfaces)
+        let response: Option<ControlSurfaceListResponse> = self
+            .get_optional_data(&control_surface_list_path(query))
+            .await?;
+        Ok(response.map_or_else(Vec::new, |response| response.surfaces))
     }
 
     /// Fetch device-owned and optional driver-owned control surfaces.
@@ -309,6 +310,22 @@ impl DaemonClient {
             // Some endpoints return the data directly
             Ok(serde_json::from_value(envelope)?)
         }
+    }
+
+    async fn get_optional_data<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to connect to daemon at {url}"))?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        response_data(response).await.map(Some)
     }
 
     async fn post_data<Req, Res>(&self, path: &str, body: &Req) -> Result<Res>

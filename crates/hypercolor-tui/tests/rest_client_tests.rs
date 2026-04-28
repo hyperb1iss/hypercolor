@@ -310,6 +310,22 @@ async fn control_surface_list_encodes_device_query() {
 }
 
 #[tokio::test]
+async fn control_surface_list_returns_empty_for_missing_device_surface() {
+    let router = Router::new().route(
+        "/api/v1/control-surfaces",
+        get(|| async { StatusCode::NOT_FOUND }),
+    );
+
+    let client = client_for(spawn_server(router).await);
+    let surfaces = client
+        .get_device_control_surfaces("missing-device", true)
+        .await
+        .expect("missing device controls should be empty");
+
+    assert!(surfaces.is_empty());
+}
+
+#[tokio::test]
 async fn control_surface_mutations_encode_path_ids_and_payloads() {
     let captured_patch = Arc::new(Mutex::new(None::<Value>));
     let captured_action = Arc::new(Mutex::new(None::<Value>));
