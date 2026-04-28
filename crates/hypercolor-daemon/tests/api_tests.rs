@@ -2630,6 +2630,18 @@ async fn patch_driver_control_surface_rejects_stale_revision() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["error"]["details"]["kind"],
+        "control_surface_revision_conflict"
+    );
+    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
+    assert_eq!(json["error"]["details"]["expected_revision"], 1);
+    assert!(
+        json["error"]["details"]["current_revision"]
+            .as_u64()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -7405,6 +7417,16 @@ async fn patch_device_control_surface_rejects_stale_revision() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "conflict");
+    assert_eq!(
+        json["error"]["details"]["kind"],
+        "control_surface_revision_conflict"
+    );
+    assert_eq!(
+        json["error"]["details"]["surface_id"],
+        format!("device:{device_id}")
+    );
+    assert_eq!(json["error"]["details"]["expected_revision"], revision);
+    assert_eq!(json["error"]["details"]["current_revision"], revision + 1);
 }
 
 #[tokio::test]

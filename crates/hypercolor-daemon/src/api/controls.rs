@@ -252,9 +252,7 @@ pub async fn apply_control_surface_values(
     if let Some(expected) = body.expected_revision
         && expected != previous_revision
     {
-        return ApiError::conflict(format!(
-            "Control surface revision conflict: expected {expected}, current {previous_revision}"
-        ));
+        return control_revision_conflict(&surface_id, expected, previous_revision);
     }
 
     let normalized = match normalize_device_control_changes(&body.changes) {
@@ -546,6 +544,18 @@ fn publish_action_progress(state: &AppState, result: &ControlActionResult) {
         ));
 }
 
+fn control_revision_conflict(surface_id: &str, expected: u64, current: u64) -> Response {
+    ApiError::conflict_with_details(
+        format!("Control surface revision conflict: expected {expected}, current {current}"),
+        serde_json::json!({
+            "kind": "control_surface_revision_conflict",
+            "surface_id": surface_id,
+            "expected_revision": expected,
+            "current_revision": current,
+        }),
+    )
+}
+
 fn host_identify_request(input: ControlValueMap) -> ControlApiResult<devices::IdentifyRequest> {
     let mut duration_ms = None;
     let mut color = None;
@@ -601,9 +611,7 @@ async fn apply_driver_control_surface_values(
     if let Some(expected) = body.expected_revision
         && expected != previous_revision
     {
-        return ApiError::conflict(format!(
-            "Control surface revision conflict: expected {expected}, current {previous_revision}"
-        ));
+        return control_revision_conflict(&surface_id, expected, previous_revision);
     }
 
     let config_view = DriverConfigView {
@@ -719,9 +727,7 @@ async fn apply_driver_device_control_surface_values(
     if let Some(expected) = body.expected_revision
         && expected != previous_revision
     {
-        return ApiError::conflict(format!(
-            "Control surface revision conflict: expected {expected}, current {previous_revision}"
-        ));
+        return control_revision_conflict(&surface_id, expected, previous_revision);
     }
     let target = ControlApplyTarget::Device { device: &device };
     let validated = match provider

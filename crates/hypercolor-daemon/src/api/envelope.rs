@@ -187,9 +187,25 @@ impl ApiError {
         Self::build(ErrorCode::Conflict, message.into(), None)
     }
 
+    /// 409 Conflict with details.
+    pub fn conflict_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Response {
+        Self::build(ErrorCode::Conflict, message.into(), Some(details))
+    }
+
     /// 422 Validation Error.
     pub fn validation(message: impl Into<String>) -> Response {
         Self::build(ErrorCode::ValidationError, message.into(), None)
+    }
+
+    /// 422 Validation Error with details.
+    pub fn validation_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Response {
+        Self::build(ErrorCode::ValidationError, message.into(), Some(details))
     }
 
     /// 500 Internal Error.
