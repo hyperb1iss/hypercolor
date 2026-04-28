@@ -223,10 +223,10 @@ pub async fn apply_control_surface_values(
     Json(body): Json<ApplyControlChangesRequest>,
 ) -> Response {
     if body.surface_id != surface_id {
-        return ApiError::validation("Request surface_id must match the route surface id");
+        return control_surface_mismatch(&surface_id, &body.surface_id);
     }
     if body.changes.is_empty() {
-        return ApiError::validation("At least one control change is required");
+        return empty_control_changes(&surface_id);
     }
 
     if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
@@ -552,6 +552,27 @@ fn control_revision_conflict(surface_id: &str, expected: u64, current: u64) -> R
             "surface_id": surface_id,
             "expected_revision": expected,
             "current_revision": current,
+        }),
+    )
+}
+
+fn control_surface_mismatch(route_surface_id: &str, body_surface_id: &str) -> Response {
+    ApiError::validation_with_details(
+        "Request surface_id must match the route surface id",
+        serde_json::json!({
+            "kind": "control_surface_mismatch",
+            "route_surface_id": route_surface_id,
+            "body_surface_id": body_surface_id,
+        }),
+    )
+}
+
+fn empty_control_changes(surface_id: &str) -> Response {
+    ApiError::validation_with_details(
+        "At least one control change is required",
+        serde_json::json!({
+            "kind": "empty_control_changes",
+            "surface_id": surface_id,
         }),
     )
 }

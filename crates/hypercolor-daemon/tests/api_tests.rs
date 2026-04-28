@@ -7528,6 +7528,51 @@ async fn patch_device_control_surface_rejects_route_body_surface_mismatch() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(json["error"]["details"]["kind"], "control_surface_mismatch");
+    assert_eq!(
+        json["error"]["details"]["route_surface_id"],
+        format!("device:{device_id}")
+    );
+    assert_eq!(
+        json["error"]["details"]["body_surface_id"],
+        "device:not-the-route"
+    );
+}
+
+#[tokio::test]
+async fn patch_device_control_surface_rejects_empty_changes_with_details() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let body = serde_json::json!({
+        "surface_id": format!("device:{device_id}"),
+        "dry_run": false,
+        "changes": []
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/values"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(json["error"]["details"]["kind"], "empty_control_changes");
+    assert_eq!(
+        json["error"]["details"]["surface_id"],
+        format!("device:{device_id}")
+    );
 }
 
 #[tokio::test]
