@@ -229,7 +229,7 @@ fn render_surface_list(response: &Value, ctx: &OutputContext) -> Result<()> {
     Ok(())
 }
 
-fn render_surface(surface: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_surface(surface: &Value, ctx: &OutputContext) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(surface)?,
         OutputFormat::Plain => println!("{}", extract_str(surface, "surface_id")),
@@ -254,7 +254,7 @@ fn render_surface(surface: &Value, ctx: &OutputContext) -> Result<()> {
     Ok(())
 }
 
-fn render_apply_response(response: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_apply_response(response: &Value, ctx: &OutputContext) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain | OutputFormat::Table => {
@@ -275,7 +275,7 @@ fn render_apply_response(response: &Value, ctx: &OutputContext) -> Result<()> {
     Ok(())
 }
 
-fn render_action_response(response: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_action_response(response: &Value, ctx: &OutputContext) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain | OutputFormat::Table => {
@@ -338,7 +338,7 @@ fn action_rows(surface: &Value, ctx: &OutputContext) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn assignments_to_changes(assignments: &[String]) -> Result<Vec<Value>> {
+pub(crate) fn assignments_to_changes(assignments: &[String]) -> Result<Vec<Value>> {
     assignments
         .iter()
         .map(|assignment| {
@@ -348,7 +348,7 @@ fn assignments_to_changes(assignments: &[String]) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn assignments_to_map(assignments: &[String]) -> Result<Map<String, Value>> {
+pub(crate) fn assignments_to_map(assignments: &[String]) -> Result<Map<String, Value>> {
     let mut input = Map::new();
     for assignment in assignments {
         let (field_id, value) = parse_assignment(assignment)?;

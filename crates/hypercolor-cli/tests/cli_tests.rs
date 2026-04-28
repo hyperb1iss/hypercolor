@@ -162,6 +162,42 @@ fn build_cmd() -> clap::Command {
                 ),
         )
         .subcommand(
+            Command::new("drivers")
+                .about("Driver module inventory and controls")
+                .subcommand_required(true)
+                .subcommand(Command::new("list").about("List registered driver modules"))
+                .subcommand(
+                    Command::new("controls")
+                        .about("Show driver controls")
+                        .arg(Arg::new("driver").required(true)),
+                )
+                .subcommand(
+                    Command::new("set-control")
+                        .about("Apply a driver control value")
+                        .arg(Arg::new("driver").required(true))
+                        .arg(Arg::new("field").required(true))
+                        .arg(Arg::new("value").required(true))
+                        .arg(Arg::new("expected-revision").long("expected-revision"))
+                        .arg(
+                            Arg::new("dry-run")
+                                .long("dry-run")
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("action")
+                        .about("Invoke a driver control action")
+                        .arg(Arg::new("driver").required(true))
+                        .arg(Arg::new("action").required(true))
+                        .arg(
+                            Arg::new("input")
+                                .long("input")
+                                .short('i')
+                                .action(ArgAction::Append),
+                        ),
+                ),
+        )
+        .subcommand(
             Command::new("effects")
                 .about("Effect browsing and control")
                 .subcommand_required(true)
@@ -658,6 +694,70 @@ fn parse_controls_action_with_input() {
     assert_eq!(
         action.get_one::<String>("action").map(String::as_str),
         Some("identify")
+    );
+}
+
+#[test]
+fn parse_drivers_set_control() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "drivers",
+            "set-control",
+            "wled",
+            "default_protocol",
+            "enum:ddp",
+            "--expected-revision",
+            "3",
+            "--dry-run",
+        ])
+        .expect("drivers set-control should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, set) = sub.subcommand().expect("should have set-control");
+    assert_eq!(
+        set.get_one::<String>("driver").map(String::as_str),
+        Some("wled")
+    );
+    assert_eq!(
+        set.get_one::<String>("field").map(String::as_str),
+        Some("default_protocol")
+    );
+    assert_eq!(
+        set.get_one::<String>("value").map(String::as_str),
+        Some("enum:ddp")
+    );
+    assert_eq!(
+        set.get_one::<String>("expected-revision")
+            .map(String::as_str),
+        Some("3")
+    );
+    assert!(set.get_flag("dry-run"));
+}
+
+#[test]
+fn parse_drivers_action_with_input() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "drivers",
+            "action",
+            "wled",
+            "rescan",
+            "--input",
+            "force=bool:true",
+        ])
+        .expect("drivers action should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, action) = sub.subcommand().expect("should have action");
+    assert_eq!(
+        action.get_one::<String>("driver").map(String::as_str),
+        Some("wled")
+    );
+    assert_eq!(
+        action.get_one::<String>("action").map(String::as_str),
+        Some("rescan")
     );
 }
 

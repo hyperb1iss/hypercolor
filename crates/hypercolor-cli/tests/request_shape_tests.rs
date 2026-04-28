@@ -6,12 +6,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, State};
 use axum::http::Uri;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use tokio::sync::{Mutex, oneshot};
 
 type SharedBody = Arc<Mutex<Option<serde_json::Value>>>;
 type SharedUri = Arc<Mutex<Option<String>>>;
+type SharedRequest = (SharedUri, SharedBody);
 
 async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
@@ -154,6 +155,116 @@ async fn controls_show_full_driver_device_surface_fetches_surface_by_id() -> Res
     assert_eq!(
         captured_uri.lock().await.as_deref(),
         Some("/api/v1/control-surfaces/driver%3Awled%3Adevice%3ADesk%20Strip")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn drivers_set_control_targets_driver_surface() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces/{surface_id}/values",
+            patch(capture_control_patch),
+        )
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &[
+            "drivers",
+            "set-control",
+            "wled",
+            "default_protocol",
+            "enum:ddp",
+            "--expected-revision",
+            "3",
+            "--dry-run",
+        ],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/control-surfaces/driver%3Awled/values")
+    );
+    assert_eq!(
+        captured_body
+            .lock()
+            .await
+            .clone()
+            .context("server did not capture control patch request body")?,
+        serde_json::json!({
+            "surface_id": "driver:wled",
+            "changes": [{
+                "field_id": "default_protocol",
+                "value": {
+                    "kind": "enum",
+                    "value": "ddp"
+                }
+            }],
+            "dry_run": true,
+            "expected_revision": 3
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn drivers_action_targets_driver_surface() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            post(capture_control_action),
+        )
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &[
+            "drivers",
+            "action",
+            "wled",
+            "rescan",
+            "--input",
+            "force=bool:true",
+        ],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/control-surfaces/driver%3Awled/actions/rescan")
+    );
+    assert_eq!(
+        captured_body
+            .lock()
+            .await
+            .clone()
+            .context("server did not capture control action request body")?,
+        serde_json::json!({
+            "input": {
+                "force": {
+                    "kind": "bool",
+                    "value": true
+                }
+            }
+        })
     );
 
     Ok(())
@@ -344,6 +455,54 @@ async fn capture_scene_deactivate(
             "activated": true,
             "scene": "Default",
         },
+    }))
+}
+
+async fn capture_control_patch(
+    Path(surface_id): Path<String>,
+    State((captured_uri, captured_body)): State<SharedRequest>,
+    uri: Uri,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    assert_eq!(surface_id, "driver:wled");
+    *captured_uri.lock().await = Some(uri.to_string());
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "surface_id": "driver:wled",
+            "previous_revision": 3,
+            "revision": 4,
+            "accepted": ["default_protocol"],
+            "rejected": [],
+            "impacts": [],
+            "values": {
+                "default_protocol": {
+                    "kind": "enum",
+                    "value": "ddp"
+                }
+            }
+        }
+    }))
+}
+
+async fn capture_control_action(
+    Path((surface_id, action_id)): Path<(String, String)>,
+    State((captured_uri, captured_body)): State<SharedRequest>,
+    uri: Uri,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    assert_eq!(surface_id, "driver:wled");
+    assert_eq!(action_id, "rescan");
+    *captured_uri.lock().await = Some(uri.to_string());
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "surface_id": "driver:wled",
+            "action_id": "rescan",
+            "status": "completed",
+            "result": null,
+            "revision": 4
+        }
     }))
 }
 

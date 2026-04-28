@@ -137,12 +137,16 @@ pub enum Commands {
     #[command(display_order = 11)]
     Controls(commands::controls::ControlsArgs),
 
-    /// Spatial LED layout configuration
+    /// Driver module inventory and controls
     #[command(display_order = 12)]
+    Drivers(commands::drivers::DriversArgs),
+
+    /// Spatial LED layout configuration
+    #[command(display_order = 13)]
     Layouts(commands::layouts::LayoutsArgs),
 
     /// Audio input device selection
-    #[command(display_order = 13)]
+    #[command(display_order = 14)]
     Audio(commands::audio::AudioArgs),
 
     // ── Library ───────────────────────────────────────────────
@@ -229,6 +233,7 @@ async fn main() -> Result<()> {
         Commands::Status(args) => commands::status::execute(args, &client, &ctx).await,
         Commands::Devices(args) => commands::devices::execute(args, &client, &ctx).await,
         Commands::Controls(args) => commands::controls::execute(args, &client, &ctx).await,
+        Commands::Drivers(args) => commands::drivers::execute(args, &client, &ctx).await,
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
         Commands::Profiles(args) => commands::profiles::execute(args, &client, &ctx).await,
