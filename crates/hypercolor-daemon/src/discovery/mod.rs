@@ -136,44 +136,85 @@ pub struct DiscoveryRuntime {
     pub task_spawner: Handle,
 }
 
-/// Discovery backends currently implemented in runtime scans.
+/// Discovery target kind used by the scanner builder.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DiscoveryBackend {
-    Driver(String),
+pub(super) enum DiscoveryBackendKind {
+    Driver,
     Usb,
     SmBus,
     Blocks,
+}
+
+/// Opaque discovery target resolved from driver modules and host transports.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DiscoveryBackend {
+    id: String,
+    kind: DiscoveryBackendKind,
+    preserves_renderable_on_miss: bool,
 }
 
 impl DiscoveryBackend {
     /// Create a driver-backed discovery target.
     #[must_use]
     pub fn driver(id: impl Into<String>) -> Self {
-        Self::Driver(id.into())
+        Self {
+            id: id.into(),
+            kind: DiscoveryBackendKind::Driver,
+            preserves_renderable_on_miss: false,
+        }
+    }
+
+    /// Create the host USB discovery target.
+    #[must_use]
+    pub fn usb() -> Self {
+        Self {
+            id: "usb".to_owned(),
+            kind: DiscoveryBackendKind::Usb,
+            preserves_renderable_on_miss: false,
+        }
+    }
+
+    /// Create the host SMBus discovery target.
+    #[must_use]
+    pub fn smbus() -> Self {
+        Self {
+            id: "smbus".to_owned(),
+            kind: DiscoveryBackendKind::SmBus,
+            preserves_renderable_on_miss: true,
+        }
+    }
+
+    /// Create the host Blocks bridge discovery target.
+    #[must_use]
+    pub fn blocks() -> Self {
+        Self {
+            id: "blocks".to_owned(),
+            kind: DiscoveryBackendKind::Blocks,
+            preserves_renderable_on_miss: false,
+        }
     }
 
     /// Stable backend identifier used in request/response payloads.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        match self {
-            Self::Driver(id) => id.as_str(),
-            Self::Usb => "usb",
-            Self::SmBus => "smbus",
-            Self::Blocks => "blocks",
-        }
+        &self.id
     }
 
     /// Whether a missed device should remain renderable after a clean scan.
     #[must_use]
     pub fn preserves_renderable_on_discovery_miss(&self) -> bool {
-        matches!(self, Self::SmBus)
+        self.preserves_renderable_on_miss
+    }
+
+    pub(super) const fn kind(&self) -> &DiscoveryBackendKind {
+        &self.kind
     }
 
     fn parse(raw: &str, registry: &DriverModuleRegistry) -> Option<Self> {
         match raw {
-            "usb" => Some(Self::Usb),
-            "smbus" => Some(Self::SmBus),
-            "blocks" => Some(Self::Blocks),
+            "usb" => Some(Self::usb()),
+            "smbus" => Some(Self::smbus()),
+            "blocks" => Some(Self::blocks()),
             _ => registry
                 .get(raw)
                 .filter(|driver| driver.discovery().is_some())
@@ -188,7 +229,7 @@ impl DiscoveryBackend {
             .into_iter()
             .map(|driver| Self::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
-        backends.extend([Self::Usb, Self::SmBus, Self::Blocks]);
+        backends.extend([Self::usb(), Self::smbus(), Self::blocks()]);
         backends
     }
 }
@@ -261,8 +302,9 @@ pub fn resolve_backends(
             continue;
         }
 
-        match &backend {
-            DiscoveryBackend::Driver(driver_id) => {
+        match backend.kind() {
+            DiscoveryBackendKind::Driver => {
+                let driver_id = backend.as_str();
                 if !crate::network::driver_enabled(config, driver_id) {
                     if explicit_request {
                         let config_flag = crate::network::driver_config_flag(driver_id);
@@ -273,7 +315,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
-            DiscoveryBackend::Blocks => {
+            DiscoveryBackendKind::Blocks => {
                 if !config.discovery.blocks_scan {
                     if explicit_request {
                         return Err(
@@ -284,7 +326,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
-            DiscoveryBackend::Usb => {
+            DiscoveryBackendKind::Usb => {
                 if crate::network::enabled_hal_driver_ids(config).is_empty() {
                     if explicit_request {
                         return Err(
@@ -294,7 +336,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
-            DiscoveryBackend::SmBus => {
+            DiscoveryBackendKind::SmBus => {
                 if crate::network::enabled_hal_driver_ids_for_transport(
                     config,
                     &DriverTransportKind::Smbus,
@@ -359,9 +401,9 @@ mod tests {
             .map(|driver| DiscoveryBackend::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
         backends.extend([
-            DiscoveryBackend::Usb,
-            DiscoveryBackend::SmBus,
-            DiscoveryBackend::Blocks,
+            DiscoveryBackend::usb(),
+            DiscoveryBackend::smbus(),
+            DiscoveryBackend::blocks(),
         ]);
         backends
     }
@@ -477,9 +519,9 @@ mod tests {
 
     #[test]
     fn discovery_backend_transient_miss_policy_is_backend_owned() {
-        assert!(DiscoveryBackend::SmBus.preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryBackend::Usb.preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryBackend::Blocks.preserves_renderable_on_discovery_miss());
+        assert!(DiscoveryBackend::smbus().preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryBackend::usb().preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryBackend::blocks().preserves_renderable_on_discovery_miss());
         assert!(!DiscoveryBackend::driver("wled").preserves_renderable_on_discovery_miss());
     }
 

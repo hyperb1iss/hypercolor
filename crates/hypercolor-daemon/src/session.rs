@@ -246,7 +246,7 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        vec![DiscoveryBackend::Usb, DiscoveryBackend::SmBus],
+        vec![DiscoveryBackend::usb(), DiscoveryBackend::smbus()],
         discovery::default_timeout(),
     )
     .await

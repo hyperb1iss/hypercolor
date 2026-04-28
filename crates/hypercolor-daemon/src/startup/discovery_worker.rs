@@ -147,7 +147,7 @@ impl DiscoveryWorkerContext {
     pub(super) async fn run_usb_hotplug_scan(&self) {
         self.run_scan_if_idle(
             Arc::clone(&self.config_manager.get()),
-            vec![DiscoveryBackend::Usb],
+            vec![DiscoveryBackend::usb()],
             "Skipping USB hotplug scan; discovery already in progress",
         )
         .await;

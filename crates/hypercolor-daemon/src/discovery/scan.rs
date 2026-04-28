@@ -24,7 +24,7 @@ use super::device_helpers::{
     device_ref_for_tracked, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
-use super::{DiscoveryBackend, DiscoveryRuntime, DiscoveryScannerResult};
+use super::{DiscoveryBackend, DiscoveryBackendKind, DiscoveryRuntime, DiscoveryScannerResult};
 use crate::network::{self, DaemonDriverHost};
 
 use hypercolor_core::device::ScannerScanReport;
@@ -216,8 +216,9 @@ pub async fn execute_discovery_scan(
 
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     for backend in backends {
-        match backend {
-            DiscoveryBackend::Driver(driver_id) => {
+        match backend.kind() {
+            DiscoveryBackendKind::Driver => {
+                let driver_id = backend.as_str().to_owned();
                 let Some(driver) = driver_registry.get(&driver_id) else {
                     warn!(driver_id, "skipping unknown discovery driver");
                     continue;
@@ -238,15 +239,15 @@ pub async fn execute_discovery_scan(
                     },
                 )));
             }
-            DiscoveryBackend::Usb => {
+            DiscoveryBackendKind::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
                     network::enabled_hal_driver_ids(&config),
                 )));
             }
-            DiscoveryBackend::SmBus => {
+            DiscoveryBackendKind::SmBus => {
                 orchestrator.add_scanner(Box::new(SmBusScanner::new()));
             }
-            DiscoveryBackend::Blocks => {
+            DiscoveryBackendKind::Blocks => {
                 let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
                     hypercolor_core::device::BlocksBackend::default_socket_path,
                     std::path::PathBuf::from,

@@ -480,7 +480,7 @@ async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss()
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         Arc::new(HypercolorConfig::default()),
-        vec![DiscoveryBackend::SmBus],
+        vec![DiscoveryBackend::smbus()],
         Duration::from_millis(50),
     )
     .await;
