@@ -223,10 +223,7 @@ pub async fn execute_discovery_scan(
                     continue;
                 };
                 if driver.discovery().is_none() {
-                    warn!(
-                        driver_id,
-                        "skipping driver without discovery capability"
-                    );
+                    warn!(driver_id, "skipping driver without discovery capability");
                     continue;
                 }
                 let driver_config = network::driver_config_entry(&config, &driver_id);

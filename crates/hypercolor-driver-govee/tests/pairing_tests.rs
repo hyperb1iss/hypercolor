@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceAuthState, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
-    DriverModule, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
+    DeviceAuthState, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
+    DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
 };
 use hypercolor_driver_govee::{GoveeDriverModule, GoveeLanDevice, build_device_info};
 use hypercolor_types::config::GoveeConfig;
