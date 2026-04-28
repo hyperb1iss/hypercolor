@@ -4,8 +4,10 @@ mod host;
 
 use std::collections::BTreeSet;
 
-use anyhow::Result;
-use hypercolor_core::device::BackendManager;
+use anyhow::{Context, Result};
+use hypercolor_core::device::{
+    BackendManager, BlocksBackend, SmBusBackend, UsbBackend, UsbProtocolConfigStore,
+};
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_hal::ProtocolDatabase;
 use hypercolor_network::DriverModuleRegistry;
@@ -149,6 +151,44 @@ pub fn register_enabled_backends(
         };
         backend_manager.register_backend(backend);
     }
+
+    Ok(())
+}
+
+/// Register every enabled physical/output backend behind the driver boundary.
+///
+/// # Errors
+///
+/// Returns an error if a driver module backend cannot be constructed.
+pub fn register_enabled_device_backends(
+    backend_manager: &mut BackendManager,
+    registry: &DriverModuleRegistry,
+    host: &dyn DriverHost,
+    config: &HypercolorConfig,
+    usb_protocol_configs: UsbProtocolConfigStore,
+) -> Result<()> {
+    register_enabled_backends(backend_manager, registry, host, config)
+        .context("failed to register driver module backends")?;
+
+    if config.discovery.blocks_scan {
+        let socket_path = config
+            .discovery
+            .blocks_socket_path
+            .as_ref()
+            .map_or_else(BlocksBackend::default_socket_path, std::path::PathBuf::from);
+        backend_manager.register_backend(Box::new(BlocksBackend::new(socket_path)));
+    }
+
+    if !enabled_hal_driver_ids_for_transport(config, &DriverTransportKind::Smbus).is_empty() {
+        backend_manager.register_backend(Box::new(SmBusBackend::new()));
+    }
+
+    backend_manager.register_backend(Box::new(
+        UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
+            usb_protocol_configs,
+            enabled_hal_driver_ids(config),
+        ),
+    ));
 
     Ok(())
 }

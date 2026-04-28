@@ -17,8 +17,7 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, SmBusBackend, UsbBackend,
-    UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
@@ -36,7 +35,6 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::DriverTransportKind;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
@@ -423,33 +421,14 @@ impl DaemonState {
                 Arc::clone(&simulated_display_runtime),
             )));
             backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
-            network::register_enabled_backends(
+            network::register_enabled_device_backends(
                 &mut backend_manager_inner,
                 driver_registry.as_ref(),
                 driver_host.as_ref(),
                 config,
+                usb_protocol_configs.clone(),
             )
-            .context("failed to register built-in network backends")?;
-            if config.discovery.blocks_scan {
-                let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
-                    hypercolor_core::device::BlocksBackend::default_socket_path,
-                    std::path::PathBuf::from,
-                );
-                backend_manager_inner.register_backend(Box::new(
-                    hypercolor_core::device::BlocksBackend::new(socket_path),
-                ));
-            }
-            if !network::enabled_hal_driver_ids_for_transport(config, &DriverTransportKind::Smbus)
-                .is_empty()
-            {
-                backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
-            }
-            backend_manager_inner.register_backend(Box::new(
-                UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
-                    usb_protocol_configs.clone(),
-                    network::enabled_hal_driver_ids(config),
-                ),
-            ));
+            .context("failed to register enabled device backends")?;
         }
         info!("Device backends registered");
 
