@@ -101,6 +101,15 @@ fn device_info_total_led_count() {
 }
 
 #[test]
+fn device_info_exposes_driver_and_output_backend_separately() {
+    let mut info = sample_device_info();
+    info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb);
+
+    assert_eq!(info.driver_id(), "nollie");
+    assert_eq!(info.output_backend_id(), "usb");
+}
+
+#[test]
 fn device_info_serde_round_trip() {
     let info = sample_device_info();
     let json = serde_json::to_string_pretty(&info).expect("serialize");

@@ -88,9 +88,9 @@ Current state:
 - Built-in registration now flows through driver crates, but
   `hypercolor-driver-api` still re-exports several native boundary traits from
   `hypercolor-core`.
-- `DeviceInfo::backend_id()` now reads explicit `DeviceOrigin` routing metadata,
-  but older callers still treat backend strings as the main routing vocabulary.
-- Discovery metadata uses ad hoc `"backend_id"` strings to override routing.
+- `DeviceInfo` exposes driver ownership and output routing as separate helpers:
+  `driver_id()` and `output_backend_id()`.
+- Discovery metadata no longer carries ad hoc `"backend_id"` routing overrides.
 - HAL protocol descriptors live behind `ProtocolDatabase`, while network
   drivers live behind `DriverRegistry`.
 - Runtime session state now stores driver runtime caches by driver id.
@@ -847,7 +847,6 @@ Routing should use this priority:
 
 1. `DiscoveredDevice.origin.backend_id`
 2. persisted registry origin for the same fingerprint
-3. legacy metadata key `"backend_id"` during migration only
 
 Routes must not depend on `DeviceFamily`.
 
@@ -1610,7 +1609,6 @@ Work:
 - persist origin in registry metadata
 - update lifecycle actions to carry origin or resolved backend ID from origin
 - keep runtime routing sourced from `DeviceOrigin`
-- keep metadata `"backend_id"` fallback during migration
 
 Verify:
 

@@ -129,12 +129,6 @@ impl DeviceInfo {
     pub fn output_backend_id(&self) -> &str {
         &self.origin.backend_id
     }
-
-    /// Output backend responsible for writing frames to this device.
-    #[must_use]
-    pub fn backend_id(&self) -> &str {
-        self.output_backend_id()
-    }
 }
 
 // ── DeviceCapabilities ────────────────────────────────────────────────────

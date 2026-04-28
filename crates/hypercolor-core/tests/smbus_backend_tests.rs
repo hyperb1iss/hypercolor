@@ -284,7 +284,6 @@ fn discovered_smbus_device(device_id: DeviceId) -> DiscoveredDevice {
             },
         },
         metadata: [
-            ("backend_id".to_owned(), "smbus".to_owned()),
             ("bus_path".to_owned(), "/dev/i2c-9".to_owned()),
             ("smbus_address".to_owned(), "0x71".to_owned()),
             ("controller_kind".to_owned(), "dram".to_owned()),

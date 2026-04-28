@@ -26,9 +26,6 @@ use crate::transport::Transport;
 use crate::transport::smbus::SmBusTransport;
 
 #[cfg(target_os = "linux")]
-const ASUS_SMBUS_BACKEND_ID: &str = "smbus";
-
-#[cfg(target_os = "linux")]
 const ASUS_MOTHERBOARD_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
     (0x40, SmBusControllerKind::Motherboard),
     (0x4E, SmBusControllerKind::Motherboard),
@@ -443,7 +440,6 @@ async fn probe_with_transport(
     );
 
     let mut metadata = HashMap::new();
-    metadata.insert("backend_id".to_owned(), ASUS_SMBUS_BACKEND_ID.to_owned());
     metadata.insert("bus_path".to_owned(), bus_path.to_owned());
     metadata.insert("smbus_address".to_owned(), format!("0x{address:02X}"));
     metadata.insert(
