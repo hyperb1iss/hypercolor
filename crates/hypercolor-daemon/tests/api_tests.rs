@@ -13,14 +13,13 @@ use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
-    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory,
-    ValidatedControlChanges,
+    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
+    DriverTransport, NetworkDriverFactory, ValidatedControlChanges,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

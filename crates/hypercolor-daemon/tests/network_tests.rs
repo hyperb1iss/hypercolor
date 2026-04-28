@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
+use hypercolor_core::device::BackendManager;
 use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
-    DriverConfigView, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost,
-    DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
+    BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
 };
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};

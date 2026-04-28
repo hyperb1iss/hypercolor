@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,

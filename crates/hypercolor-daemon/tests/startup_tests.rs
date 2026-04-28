@@ -14,7 +14,6 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
-use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
@@ -22,6 +21,7 @@ use hypercolor_daemon::startup::{
     default_config, install_signal_handlers, load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, RenderAccelerationMode,
