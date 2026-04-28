@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
-use hypercolor_driver_api::DriverTrackedDevice;
+use hypercolor_driver_api::{DriverTrackedDevice, TrackedDeviceCtx};
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    GoveeKnownDevice, build_cloud_discovered_device, build_device_info, merge_cloud_inventory,
-    parse_scan_response, resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
+    GoveeKnownDevice, build_cloud_discovered_device, build_device_info,
+    govee_device_control_surface, merge_cloud_inventory, parse_scan_response,
+    resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
 };
 use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::controls::{ControlAccess, ControlSurfaceScope, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -165,6 +167,100 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
         Some(&"color".to_owned())
     );
     assert!(devices[0].connect_behavior.should_auto_connect());
+}
+
+#[test]
+fn govee_device_control_surface_exposes_lan_metadata() {
+    let tracked = tracked_govee_device("10.0.0.5", "H619A", "001122334455");
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let surface = govee_device_control_surface(&device);
+
+    assert_eq!(
+        surface.surface_id,
+        format!("driver:govee:device:{}", tracked.info.id)
+    );
+    assert_eq!(
+        surface.scope,
+        ControlSurfaceScope::Device {
+            device_id: tracked.info.id,
+            driver_id: "govee".to_owned(),
+        }
+    );
+    assert!(surface.revision > 0);
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "ip" && field.access == ControlAccess::ReadOnly)
+    );
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "razer_streaming" && field.access == ControlAccess::ReadOnly)
+    );
+    assert_eq!(
+        surface.values["ip"],
+        ControlValue::IpAddress("10.0.0.5".to_owned())
+    );
+    assert_eq!(
+        surface.values["sku"],
+        ControlValue::String("H619A".to_owned())
+    );
+    assert_eq!(
+        surface.values["mac"],
+        ControlValue::MacAddress("001122334455".to_owned())
+    );
+    assert_eq!(surface.values["razer_streaming"], ControlValue::Bool(true));
+    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Integer(10));
+}
+
+#[test]
+fn govee_device_control_surface_exposes_cloud_metadata() {
+    let discovered = build_cloud_discovered_device(V1Device {
+        device: "AA:BB:CC:DD:EE:FF".to_owned(),
+        model: "H6163".to_owned(),
+        device_name: "Cloud Strip".to_owned(),
+        controllable: true,
+        retrievable: false,
+        support_cmds: vec!["turn".to_owned(), "brightness".to_owned()],
+        properties: None,
+    });
+    let device = TrackedDeviceCtx {
+        device_id: discovered.info.id,
+        info: &discovered.info,
+        metadata: Some(&discovered.metadata),
+        current_state: &DeviceState::Known,
+    };
+
+    let surface = govee_device_control_surface(&device);
+
+    assert_eq!(
+        surface.values["cloud_device_id"],
+        ControlValue::String("AA:BB:CC:DD:EE:FF".to_owned())
+    );
+    assert_eq!(
+        surface.values["cloud_controllable"],
+        ControlValue::Bool(true)
+    );
+    assert_eq!(
+        surface.values["cloud_retrievable"],
+        ControlValue::Bool(false)
+    );
+    assert_eq!(
+        surface.values["cloud_support_cmds"],
+        ControlValue::List(vec![
+            ControlValue::String("turn".to_owned()),
+            ControlValue::String("brightness".to_owned()),
+        ])
+    );
 }
 
 fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {

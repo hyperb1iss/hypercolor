@@ -1,22 +1,30 @@
 //! Govee network driver.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, CredentialStore, DeviceAuthState, DeviceAuthSummary, DeviceBackend,
-    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult,
-    DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, TransportScanner,
+    ClearPairingOutcome, ControlApplyTarget, CredentialStore, DeviceAuthState, DeviceAuthSummary,
+    DeviceBackend, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
+    DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule, DriverRuntimeCacheProvider,
+    DriverTrackedDevice, DriverTransport, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
+    TrackedDeviceCtx, TransportScanner, ValidatedControlChanges,
 };
-use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
+use hypercolor_types::controls::{
+    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
+    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
+    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
+    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
+    ControlValueType, ControlVisibility,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, ZoneInfo,
@@ -42,6 +50,21 @@ pub use lan::discovery::{
 };
 
 const GOVEE_ACCOUNT_CREDENTIAL_KEY: &str = "govee:account";
+const FIELD_KNOWN_IPS: &str = "known_ips";
+const FIELD_POWER_OFF_ON_DISCONNECT: &str = "power_off_on_disconnect";
+const FIELD_LAN_STATE_FPS: &str = "lan_state_fps";
+const FIELD_RAZER_FPS: &str = "razer_fps";
+const DEVICE_FIELD_IP: &str = "ip";
+const DEVICE_FIELD_SKU: &str = "sku";
+const DEVICE_FIELD_MAC: &str = "mac";
+const DEVICE_FIELD_CLOUD_DEVICE_ID: &str = "cloud_device_id";
+const DEVICE_FIELD_CLOUD_CONTROLLABLE: &str = "cloud_controllable";
+const DEVICE_FIELD_CLOUD_RETRIEVABLE: &str = "cloud_retrievable";
+const DEVICE_FIELD_CLOUD_SUPPORT_CMDS: &str = "cloud_support_cmds";
+const DEVICE_FIELD_FIRMWARE_VERSION: &str = "firmware_version";
+const DEVICE_FIELD_LED_COUNT: &str = "led_count";
+const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
+const DEVICE_FIELD_RAZER_STREAMING: &str = "razer_streaming";
 const GOVEE_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Open the Govee Home app.",
     "Go to Profile, Settings, Apply for API Key.",
@@ -147,8 +170,115 @@ impl DriverModule for GoveeDriverModule {
         Some(self)
     }
 
+    fn config(&self) -> Option<&dyn DriverConfigProvider> {
+        Some(self)
+    }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
+
     fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
+    }
+}
+
+impl DriverConfigProvider for GoveeDriverModule {
+    fn default_config(&self) -> DriverConfigEntry {
+        DriverConfigEntry::enabled(govee_config_settings(&self.config))
+    }
+
+    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+        let config = DriverConfigView {
+            driver_id: DESCRIPTOR.id,
+            entry: config,
+        }
+        .parse_settings::<GoveeConfig>()?;
+        validate_govee_config(&config)
+    }
+}
+
+#[async_trait]
+impl DriverControlProvider for GoveeDriverModule {
+    async fn driver_surface(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        Ok(Some(govee_driver_control_surface(
+            &self.resolved_config(config)?,
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        _host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+    ) -> Result<Option<ControlSurfaceDocument>> {
+        Ok(Some(govee_device_control_surface(device)))
+    }
+
+    async fn validate_changes(
+        &self,
+        _host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> Result<ValidatedControlChanges> {
+        validate_govee_driver_changes(target, changes)
+    }
+
+    async fn apply_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> Result<ApplyControlChangesResponse> {
+        let ControlApplyTarget::Driver { driver_id, config } = target else {
+            bail!("Govee controls do not expose device-scoped apply");
+        };
+        if *driver_id != DESCRIPTOR.id {
+            bail!("Govee controls cannot apply to driver '{driver_id}'");
+        }
+
+        let mut values = govee_control_values(&config.parse_settings::<GoveeConfig>()?);
+        for change in &changes.changes {
+            values.insert(change.field_id.clone(), change.value.clone());
+        }
+
+        if let Some(control_host) = host.control_host() {
+            control_host
+                .driver_config_store()
+                .save_driver_values(DESCRIPTOR.id, values.clone())
+                .await?;
+            if changes.impacts.contains(&ApplyImpact::BackendRebind) {
+                control_host
+                    .backend_rebind()
+                    .rebind_backend(DESCRIPTOR.id)
+                    .await?;
+            }
+            if changes.impacts.contains(&ApplyImpact::DiscoveryRescan) {
+                control_host
+                    .lifecycle()
+                    .rescan_driver(DESCRIPTOR.id)
+                    .await?;
+            }
+        }
+
+        Ok(govee_apply_response(
+            format!("driver:{}", DESCRIPTOR.id),
+            changes,
+            values,
+        ))
+    }
+
+    async fn invoke_action(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        _input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        bail!("Govee control action '{action_id}' is not implemented");
     }
 }
 
@@ -529,6 +659,568 @@ fn merge_cloud_metadata(
 ) {
     for (key, value) in cloud_metadata {
         device.metadata.entry(key).or_insert(value);
+    }
+}
+
+#[must_use]
+pub fn govee_driver_control_surface(config: &GoveeConfig) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}", DESCRIPTOR.id),
+        ControlSurfaceScope::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.push(ControlGroupDescriptor {
+        id: "connection".to_owned(),
+        label: "Connection".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Connection,
+        ordering: 0,
+    });
+    document.groups.push(ControlGroupDescriptor {
+        id: "output".to_owned(),
+        label: "Output".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Output,
+        ordering: 10,
+    });
+    document.fields = govee_driver_control_fields();
+    document.values = govee_control_values(config);
+    document.availability = document
+        .fields
+        .iter()
+        .map(|field| {
+            (
+                field.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
+    document
+}
+
+#[must_use]
+pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
+        ControlSurfaceScope::Device {
+            device_id: device.device_id,
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.extend([
+        ControlGroupDescriptor {
+            id: "connection".to_owned(),
+            label: "Connection".to_owned(),
+            description: None,
+            kind: ControlGroupKind::Connection,
+            ordering: 0,
+        },
+        ControlGroupDescriptor {
+            id: "cloud".to_owned(),
+            label: "Cloud".to_owned(),
+            description: None,
+            kind: ControlGroupKind::Advanced,
+            ordering: 10,
+        },
+        ControlGroupDescriptor {
+            id: "diagnostics".to_owned(),
+            label: "Diagnostics".to_owned(),
+            description: None,
+            kind: ControlGroupKind::Diagnostics,
+            ordering: 20,
+        },
+    ]);
+
+    push_govee_metadata_field(
+        &mut document,
+        device,
+        DEVICE_FIELD_IP,
+        "IP Address",
+        "connection",
+        ControlValueType::IpAddress,
+        ControlValue::IpAddress,
+        0,
+    );
+    push_govee_metadata_field(
+        &mut document,
+        device,
+        DEVICE_FIELD_SKU,
+        "SKU",
+        "connection",
+        string_value_type(),
+        ControlValue::String,
+        10,
+    );
+    push_govee_metadata_field(
+        &mut document,
+        device,
+        DEVICE_FIELD_MAC,
+        "MAC",
+        "connection",
+        ControlValueType::MacAddress,
+        ControlValue::MacAddress,
+        20,
+    );
+    push_govee_metadata_field(
+        &mut document,
+        device,
+        DEVICE_FIELD_CLOUD_DEVICE_ID,
+        "Cloud Device ID",
+        "cloud",
+        string_value_type(),
+        ControlValue::String,
+        0,
+    );
+    push_govee_metadata_bool_field(
+        &mut document,
+        device,
+        DEVICE_FIELD_CLOUD_CONTROLLABLE,
+        "Cloud Controllable",
+        "cloud",
+        10,
+    );
+    push_govee_metadata_bool_field(
+        &mut document,
+        device,
+        DEVICE_FIELD_CLOUD_RETRIEVABLE,
+        "Cloud Retrievable",
+        "cloud",
+        20,
+    );
+    push_govee_support_cmds_field(&mut document, device);
+
+    if let Some(version) = &device.info.firmware_version {
+        push_govee_readonly_field(
+            &mut document,
+            DEVICE_FIELD_FIRMWARE_VERSION,
+            "Firmware",
+            "diagnostics",
+            string_value_type(),
+            ControlValue::String(version.clone()),
+            0,
+        );
+    }
+    push_govee_readonly_field(
+        &mut document,
+        DEVICE_FIELD_LED_COUNT,
+        "LED Count",
+        "diagnostics",
+        integer_value_type(0, None),
+        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        10,
+    );
+    push_govee_readonly_field(
+        &mut document,
+        DEVICE_FIELD_MAX_FPS,
+        "Max FPS",
+        "diagnostics",
+        integer_value_type(0, None),
+        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        20,
+    );
+    let sku = device
+        .metadata
+        .and_then(|metadata| metadata.get(DEVICE_FIELD_SKU))
+        .or(device.info.model.as_ref())
+        .map(String::as_str);
+    if let Some(profile) = sku.and_then(profile_for_sku) {
+        push_govee_readonly_field(
+            &mut document,
+            DEVICE_FIELD_RAZER_STREAMING,
+            "Razer Streaming",
+            "diagnostics",
+            ControlValueType::Bool,
+            ControlValue::Bool(
+                profile
+                    .capabilities
+                    .contains(GoveeCapabilities::RAZER_STREAMING),
+            ),
+            30,
+        );
+    }
+
+    document.availability = document
+        .fields
+        .iter()
+        .map(|field| {
+            (
+                field.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
+    document.revision = govee_control_revision(&document.values);
+    document
+}
+
+fn validate_govee_driver_changes(
+    target: &ControlApplyTarget<'_>,
+    changes: &[ControlChange],
+) -> Result<ValidatedControlChanges> {
+    let ControlApplyTarget::Driver { driver_id, .. } = target else {
+        bail!("Govee controls do not expose device-scoped fields");
+    };
+    if *driver_id != DESCRIPTOR.id {
+        bail!("Govee controls cannot validate driver '{driver_id}'");
+    }
+
+    let fields = govee_driver_control_fields()
+        .into_iter()
+        .map(|field| (field.id.clone(), field))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut impacts = Vec::new();
+
+    for change in changes {
+        if !seen.insert(change.field_id.as_str()) {
+            bail!("duplicate Govee control field: {}", change.field_id);
+        }
+        let field = fields
+            .get(&change.field_id)
+            .ok_or_else(|| anyhow!("unknown Govee control field: {}", change.field_id))?;
+        field
+            .value_type
+            .validate_value(&change.value)
+            .with_context(|| format!("invalid Govee control field: {}", change.field_id))?;
+        if change.field_id == FIELD_KNOWN_IPS {
+            validate_control_ip_list("Govee known IP", &change.value)?;
+        }
+        push_unique_impact(&mut impacts, field.apply_impact.clone());
+    }
+
+    Ok(ValidatedControlChanges {
+        changes: changes.to_vec(),
+        impacts,
+    })
+}
+
+fn validate_control_ip_list(label: &str, value: &ControlValue) -> Result<()> {
+    let ControlValue::List(values) = value else {
+        return Ok(());
+    };
+    for value in values {
+        if let ControlValue::IpAddress(raw) = value {
+            let ip = raw
+                .parse::<IpAddr>()
+                .with_context(|| format!("invalid {label}: {raw}"))?;
+            validate_ip(ip).with_context(|| format!("invalid {label}: {ip}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_govee_config(config: &GoveeConfig) -> Result<()> {
+    for ip in &config.known_ips {
+        validate_ip(*ip).with_context(|| format!("invalid Govee known IP: {ip}"))?;
+    }
+    if config.lan_state_fps == 0 {
+        bail!("Govee LAN state FPS must be greater than zero");
+    }
+    if config.razer_fps == 0 {
+        bail!("Govee Razer FPS must be greater than zero");
+    }
+    Ok(())
+}
+
+fn govee_driver_control_fields() -> Vec<ControlFieldDescriptor> {
+    vec![
+        govee_driver_field(
+            FIELD_KNOWN_IPS,
+            "Known IPs",
+            Some("connection"),
+            ControlValueType::List {
+                item_type: Box::new(ControlValueType::IpAddress),
+                min_items: None,
+                max_items: Some(64),
+            },
+            ApplyImpact::DiscoveryRescan,
+            0,
+        ),
+        govee_driver_field(
+            FIELD_POWER_OFF_ON_DISCONNECT,
+            "Power Off On Disconnect",
+            Some("output"),
+            ControlValueType::Bool,
+            ApplyImpact::BackendRebind,
+            10,
+        ),
+        govee_driver_field(
+            FIELD_LAN_STATE_FPS,
+            "LAN State FPS",
+            Some("output"),
+            ControlValueType::Integer {
+                min: Some(1),
+                max: Some(60),
+                step: Some(1),
+            },
+            ApplyImpact::BackendRebind,
+            20,
+        ),
+        govee_driver_field(
+            FIELD_RAZER_FPS,
+            "Razer FPS",
+            Some("output"),
+            ControlValueType::Integer {
+                min: Some(1),
+                max: Some(60),
+                step: Some(1),
+            },
+            ApplyImpact::BackendRebind,
+            30,
+        ),
+    ]
+}
+
+fn govee_driver_field(
+    id: &str,
+    label: &str,
+    group_id: Option<&str>,
+    value_type: ControlValueType,
+    apply_impact: ApplyImpact,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: group_id.map(str::to_owned),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadWrite,
+        persistence: ControlPersistence::DriverConfig,
+        apply_impact,
+        visibility: ControlVisibility::Standard,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
+fn push_govee_metadata_field(
+    document: &mut ControlSurfaceDocument,
+    device: &TrackedDeviceCtx<'_>,
+    id: &str,
+    label: &str,
+    group_id: &str,
+    value_type: ControlValueType,
+    value: impl FnOnce(String) -> ControlValue,
+    ordering: i32,
+) {
+    let Some(raw) = device
+        .metadata
+        .and_then(|metadata| metadata.get(id))
+        .filter(|value| !value.is_empty())
+        .cloned()
+    else {
+        return;
+    };
+    push_govee_readonly_field(
+        document,
+        id,
+        label,
+        group_id,
+        value_type,
+        value(raw),
+        ordering,
+    );
+}
+
+fn push_govee_metadata_bool_field(
+    document: &mut ControlSurfaceDocument,
+    device: &TrackedDeviceCtx<'_>,
+    id: &str,
+    label: &str,
+    group_id: &str,
+    ordering: i32,
+) {
+    let Some(raw) = device
+        .metadata
+        .and_then(|metadata| metadata.get(id))
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let value = raw.parse::<bool>().unwrap_or_default();
+    push_govee_readonly_field(
+        document,
+        id,
+        label,
+        group_id,
+        ControlValueType::Bool,
+        ControlValue::Bool(value),
+        ordering,
+    );
+}
+
+fn push_govee_support_cmds_field(
+    document: &mut ControlSurfaceDocument,
+    device: &TrackedDeviceCtx<'_>,
+) {
+    let Some(raw) = device
+        .metadata
+        .and_then(|metadata| metadata.get(DEVICE_FIELD_CLOUD_SUPPORT_CMDS))
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let commands = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(|command| ControlValue::String(command.to_owned()))
+        .collect::<Vec<_>>();
+    push_govee_readonly_field(
+        document,
+        DEVICE_FIELD_CLOUD_SUPPORT_CMDS,
+        "Cloud Commands",
+        "cloud",
+        ControlValueType::List {
+            item_type: Box::new(string_value_type()),
+            min_items: None,
+            max_items: Some(64),
+        },
+        ControlValue::List(commands),
+        30,
+    );
+}
+
+fn push_govee_readonly_field(
+    document: &mut ControlSurfaceDocument,
+    id: &str,
+    label: &str,
+    group_id: &str,
+    value_type: ControlValueType,
+    value: ControlValue,
+    ordering: i32,
+) {
+    document.fields.push(ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: Some(group_id.to_owned()),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadOnly,
+        persistence: ControlPersistence::RuntimeOnly,
+        apply_impact: ApplyImpact::None,
+        visibility: ControlVisibility::Diagnostics,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    });
+    document.values.insert(id.to_owned(), value);
+}
+
+const fn integer_value_type(min: i64, max: Option<i64>) -> ControlValueType {
+    ControlValueType::Integer {
+        min: Some(min),
+        max,
+        step: Some(1),
+    }
+}
+
+fn string_value_type() -> ControlValueType {
+    ControlValueType::String {
+        min_len: None,
+        max_len: None,
+        pattern: None,
+    }
+}
+
+fn govee_apply_response(
+    surface_id: String,
+    changes: ValidatedControlChanges,
+    values: ControlValueMap,
+) -> ApplyControlChangesResponse {
+    ApplyControlChangesResponse {
+        surface_id,
+        previous_revision: 0,
+        revision: 0,
+        accepted: changes
+            .changes
+            .into_iter()
+            .map(|change| AppliedControlChange {
+                field_id: change.field_id,
+                value: change.value,
+            })
+            .collect(),
+        rejected: Vec::new(),
+        impacts: changes.impacts,
+        values,
+    }
+}
+
+fn govee_config_settings(config: &GoveeConfig) -> BTreeMap<String, serde_json::Value> {
+    BTreeMap::from([
+        (
+            FIELD_KNOWN_IPS.to_owned(),
+            serde_json::json!(config.known_ips),
+        ),
+        (
+            FIELD_POWER_OFF_ON_DISCONNECT.to_owned(),
+            serde_json::json!(config.power_off_on_disconnect),
+        ),
+        (
+            FIELD_LAN_STATE_FPS.to_owned(),
+            serde_json::json!(config.lan_state_fps),
+        ),
+        (
+            FIELD_RAZER_FPS.to_owned(),
+            serde_json::json!(config.razer_fps),
+        ),
+    ])
+}
+
+fn govee_control_values(config: &GoveeConfig) -> ControlValueMap {
+    ControlValueMap::from([
+        (
+            FIELD_KNOWN_IPS.to_owned(),
+            ControlValue::List(
+                config
+                    .known_ips
+                    .iter()
+                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .collect(),
+            ),
+        ),
+        (
+            FIELD_POWER_OFF_ON_DISCONNECT.to_owned(),
+            ControlValue::Bool(config.power_off_on_disconnect),
+        ),
+        (
+            FIELD_LAN_STATE_FPS.to_owned(),
+            ControlValue::Integer(i64::from(config.lan_state_fps)),
+        ),
+        (
+            FIELD_RAZER_FPS.to_owned(),
+            ControlValue::Integer(i64::from(config.razer_fps)),
+        ),
+    ])
+}
+
+fn govee_control_revision(values: &ControlValueMap) -> u64 {
+    values
+        .iter()
+        .flat_map(|(key, value)| [key.as_bytes(), format!("{value:?}").as_bytes()].concat())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
+    if !impacts.contains(&impact) {
+        impacts.push(impact);
     }
 }
 
