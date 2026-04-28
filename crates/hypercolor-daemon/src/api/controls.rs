@@ -57,6 +57,7 @@ pub async fn list_control_surfaces(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ControlSurfaceListQuery>,
 ) -> Response {
+    let selected_surface = query.device_id.is_some() || query.driver_id.is_some();
     let mut surfaces = Vec::new();
 
     if let Some(device_id_or_name) = query.device_id.as_deref() {
@@ -94,16 +95,12 @@ pub async fn list_control_surfaces(
     if let Some(driver_id) = query.driver_id.as_deref() {
         match driver_control_surface_document(&state, driver_id).await {
             Ok(Some(surface)) => surfaces.push(surface),
-            Ok(None) => {
-                return ApiError::not_found(format!(
-                    "Driver does not expose controls: {driver_id}"
-                ));
-            }
+            Ok(None) => {}
             Err(response) => return response,
         }
     }
 
-    if surfaces.is_empty() {
+    if !selected_surface {
         return ApiError::validation("Query must select at least one control surface");
     }
 
