@@ -966,7 +966,7 @@ impl OutputQueue {
 /// one payload per device to a non-blocking output queue.
 #[derive(Default)]
 pub struct BackendManager {
-    /// Registered backends, keyed by `BackendInfo.id` (e.g., `"wled"`, `"usb"`).
+    /// Registered backends, keyed by `BackendInfo.id`.
     backends: HashMap<String, BackendHandle>,
 
     /// Maps spatial layout `DeviceZone.device_id` strings to `(backend_id, DeviceId)`.

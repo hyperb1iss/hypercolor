@@ -1,8 +1,7 @@
 //! Core device backend and plugin traits.
 //!
-//! Every hardware protocol (WLED/DDP, USB HID, Philips Hue)
-//! implements [`DeviceBackend`] for communication and [`DevicePlugin`] for
-//! lifecycle registration with the engine.
+//! Device backends implement [`DeviceBackend`] for communication and
+//! [`DevicePlugin`] for lifecycle registration with the engine.
 
 use anyhow::Result;
 

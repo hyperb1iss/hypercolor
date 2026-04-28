@@ -1,4 +1,4 @@
-//! `SMBus` backend for ASUS Aura ENE controllers.
+//! `SMBus` backend for HAL-managed controllers.
 
 use std::cmp::min;
 use std::collections::HashMap;

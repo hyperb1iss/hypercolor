@@ -56,7 +56,7 @@ pub fn build_prompt_definitions() -> Vec<PromptDefinition> {
             arguments: vec![
                 PromptArgument {
                     name: "issue".into(),
-                    description: "Description of the problem (e.g., 'WLED strip not responding', 'colors look wrong', 'low frame rate')".into(),
+                    description: "Description of the problem (e.g., 'network strip not responding', 'colors look wrong', 'low frame rate')".into(),
                     required: true,
                 },
                 PromptArgument {

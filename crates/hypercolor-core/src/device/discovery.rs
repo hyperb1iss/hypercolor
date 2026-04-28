@@ -78,9 +78,9 @@ pub struct DiscoveryProgress {
 ///
 /// # Deduplication
 ///
-/// The same physical device may be reported by multiple scanners (e.g., a
-/// WLED device found via both mDNS and UDP broadcast). The orchestrator
-/// deduplicates using [`DeviceFingerprint`], keeping the richest metadata.
+/// The same physical device may be reported by multiple scanners through
+/// different probe paths. The orchestrator deduplicates using
+/// [`DeviceFingerprint`], keeping the richest metadata.
 pub struct DiscoveryOrchestrator {
     /// Registered scanners, one per transport.
     scanners: Vec<Box<dyn TransportScanner>>,
