@@ -36,9 +36,11 @@ pub struct InvokeControlActionRequest {
 pub async fn fetch_control_surfaces(
     query: ControlSurfaceListQuery<'_>,
 ) -> Result<Vec<ControlSurfaceDocument>, String> {
-    let response: ControlSurfaceListResponse =
-        client::fetch_json(&control_surface_list_url(query)).await?;
-    Ok(response.surfaces)
+    let response: Option<ControlSurfaceListResponse> =
+        client::fetch_json_optional(&control_surface_list_url(query)).await?;
+    Ok(response
+        .map(|response| response.surfaces)
+        .unwrap_or_default())
 }
 
 /// Fetch device, driver-owned device, and optional driver-level surfaces.
