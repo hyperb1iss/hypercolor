@@ -42,6 +42,18 @@ pub const DRIVER_API_SCHEMA_VERSION: u32 = 1;
 pub enum DriverTransport {
     /// A driver that communicates with devices over IP networking.
     Network,
+    /// A driver that owns USB transport or protocol handling.
+    Usb,
+    /// A driver that owns local SMBus/I2C transport or protocol handling.
+    Smbus,
+    /// A driver that communicates with devices over MIDI.
+    Midi,
+    /// A driver that communicates over a host serial transport.
+    Serial,
+    /// A driver that talks to an out-of-process bridge.
+    Bridge,
+    /// A driver that exposes in-process or synthetic devices.
+    Virtual,
 }
 
 /// Static metadata about a modular driver.
@@ -116,7 +128,7 @@ impl DriverDescriptor {
             id: self.id.to_owned(),
             display_name: self.display_name.to_owned(),
             vendor_name: None,
-            module_kind: DriverModuleKind::Network,
+            module_kind: self.transport.module_kind(),
             transports: vec![self.transport.into()],
             capabilities: DriverCapabilitySet {
                 config: false,
@@ -136,10 +148,28 @@ impl DriverDescriptor {
     }
 }
 
+impl DriverTransport {
+    #[must_use]
+    pub const fn module_kind(self) -> DriverModuleKind {
+        match self {
+            Self::Network => DriverModuleKind::Network,
+            Self::Usb | Self::Smbus | Self::Midi | Self::Serial => DriverModuleKind::Hal,
+            Self::Bridge => DriverModuleKind::Bridge,
+            Self::Virtual => DriverModuleKind::Virtual,
+        }
+    }
+}
+
 impl From<DriverTransport> for DriverTransportKind {
     fn from(value: DriverTransport) -> Self {
         match value {
             DriverTransport::Network => Self::Network,
+            DriverTransport::Usb => Self::Usb,
+            DriverTransport::Smbus => Self::Smbus,
+            DriverTransport::Midi => Self::Midi,
+            DriverTransport::Serial => Self::Serial,
+            DriverTransport::Bridge => Self::Bridge,
+            DriverTransport::Virtual => Self::Virtual,
         }
     }
 }

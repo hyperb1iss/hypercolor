@@ -312,6 +312,13 @@ fn driver_transport_kind_round_trips_custom_transport() {
 }
 
 #[test]
+fn driver_transport_kind_preserves_bridge_connections() {
+    let transport = DriverTransportKind::from(ConnectionType::Bridge);
+
+    assert_eq!(transport, DriverTransportKind::Bridge);
+}
+
+#[test]
 fn device_origin_separates_driver_from_backend() {
     let origin =
         DeviceOrigin::new("nollie", "usb", DriverTransportKind::Usb).with_protocol_id("nollie32");

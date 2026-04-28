@@ -332,6 +332,9 @@ pub enum DriverModuleKind {
     /// Driver contributes hardware protocol descriptors to a shared transport.
     Hal,
 
+    /// Driver communicates through an out-of-process bridge service.
+    Bridge,
+
     /// Driver is provided by the host process.
     Host,
 
@@ -358,6 +361,9 @@ pub enum DriverTransportKind {
     /// Host serial transport.
     Serial,
 
+    /// Out-of-process bridge transport.
+    Bridge,
+
     /// In-process or synthetic transport.
     Virtual,
 
@@ -372,7 +378,7 @@ impl From<ConnectionType> for DriverTransportKind {
             ConnectionType::SmBus => Self::Smbus,
             ConnectionType::Network => Self::Network,
             ConnectionType::Bluetooth => Self::Custom("bluetooth".to_owned()),
-            ConnectionType::Bridge => Self::Custom("bridge".to_owned()),
+            ConnectionType::Bridge => Self::Bridge,
         }
     }
 }

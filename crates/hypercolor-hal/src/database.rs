@@ -147,8 +147,9 @@ const fn transport_sort_key(transport: &DriverTransportKind) -> u8 {
         DriverTransportKind::Smbus => 2,
         DriverTransportKind::Midi => 3,
         DriverTransportKind::Serial => 4,
-        DriverTransportKind::Virtual => 5,
-        DriverTransportKind::Custom(_) => 6,
+        DriverTransportKind::Bridge => 5,
+        DriverTransportKind::Virtual => 6,
+        DriverTransportKind::Custom(_) => 7,
     }
 }
 
@@ -187,6 +188,7 @@ const fn route_backend_id(transport: &DriverTransportKind) -> &'static str {
         DriverTransportKind::Network => "network",
         DriverTransportKind::Smbus => "smbus",
         DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => "usb",
+        DriverTransportKind::Bridge => "bridge",
         DriverTransportKind::Virtual => "virtual",
         DriverTransportKind::Custom(_) => "custom",
     }

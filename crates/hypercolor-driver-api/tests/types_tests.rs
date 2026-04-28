@@ -49,6 +49,50 @@ fn driver_descriptor_converts_to_module_descriptor() {
     assert!(!module.capabilities.controls);
 }
 
+#[test]
+fn driver_descriptor_maps_non_network_transports() {
+    let cases = [
+        (
+            DriverTransport::Usb,
+            DriverModuleKind::Hal,
+            DriverTransportKind::Usb,
+        ),
+        (
+            DriverTransport::Smbus,
+            DriverModuleKind::Hal,
+            DriverTransportKind::Smbus,
+        ),
+        (
+            DriverTransport::Midi,
+            DriverModuleKind::Hal,
+            DriverTransportKind::Midi,
+        ),
+        (
+            DriverTransport::Serial,
+            DriverModuleKind::Hal,
+            DriverTransportKind::Serial,
+        ),
+        (
+            DriverTransport::Bridge,
+            DriverModuleKind::Bridge,
+            DriverTransportKind::Bridge,
+        ),
+        (
+            DriverTransport::Virtual,
+            DriverModuleKind::Virtual,
+            DriverTransportKind::Virtual,
+        ),
+    ];
+
+    for (transport, module_kind, transport_kind) in cases {
+        let descriptor = DriverDescriptor::new("test", "Test", transport, true, false);
+        let module = descriptor.module_descriptor();
+
+        assert_eq!(module.module_kind, module_kind);
+        assert_eq!(module.transports, vec![transport_kind]);
+    }
+}
+
 struct ControlOnlyProvider;
 
 #[async_trait]
