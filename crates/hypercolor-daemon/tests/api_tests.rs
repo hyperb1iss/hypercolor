@@ -998,6 +998,46 @@ async fn config_set_driver_registry_key_updates_driver_config() {
 }
 
 #[tokio::test]
+async fn config_set_driver_registry_key_rejects_non_routable_ip() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"drivers.wled.known_ips","value":"[\"127.0.0.1\"]"}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("invalid WLED known IP")
+    );
+    assert!(
+        !config_path.exists(),
+        "invalid driver config should not be persisted"
+    );
+}
+
+#[tokio::test]
 async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");

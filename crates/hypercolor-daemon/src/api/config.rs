@@ -109,6 +109,9 @@ pub async fn set_config_value(
             ));
         }
     };
+    if let Err(error) = validate_driver_config_scope(&state, Some(&key), &updated) {
+        return ApiError::validation(error);
+    }
 
     manager.update(updated);
     if let Err(e) = manager.save() {
@@ -191,6 +194,9 @@ pub async fn reset_config_value(
         Ok(cfg) => cfg,
         Err(e) => return ApiError::internal(format!("Failed to build reset config: {e}")),
     };
+    if let Err(error) = validate_driver_config_scope(&state, normalized_key.as_deref(), &updated) {
+        return ApiError::validation(error);
+    }
 
     manager.update(updated);
     if let Err(e) = manager.save() {
@@ -222,6 +228,36 @@ fn config_snapshot(state: &AppState) -> HypercolorConfig {
     } else {
         HypercolorConfig::default()
     }
+}
+
+fn validate_driver_config_scope(
+    state: &AppState,
+    key: Option<&str>,
+    config: &HypercolorConfig,
+) -> Result<(), String> {
+    let driver_ids = match key {
+        None | Some("drivers") => state.driver_registry.ids(),
+        Some(value) => value
+            .strip_prefix("drivers.")
+            .and_then(|rest| rest.split('.').next())
+            .filter(|driver_id| !driver_id.is_empty())
+            .map_or_else(Vec::new, |driver_id| vec![driver_id.to_owned()]),
+    };
+
+    for driver_id in driver_ids {
+        let Some(driver) = state.driver_registry.get(&driver_id) else {
+            continue;
+        };
+        let Some(provider) = driver.config() else {
+            continue;
+        };
+        let entry = config.drivers.get(&driver_id).cloned().unwrap_or_default();
+        provider.validate_config(&entry).map_err(|error| {
+            format!("Config update failed validation for 'drivers.{driver_id}': {error}")
+        })?;
+    }
+
+    Ok(())
 }
 
 fn normalize_config_key(key: &str) -> String {
