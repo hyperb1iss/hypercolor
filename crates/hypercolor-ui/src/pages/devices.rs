@@ -16,7 +16,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
-use crate::style_utils::filter_chips;
+use crate::style_utils::{device_accent_colors, filter_chips};
 use crate::toasts;
 
 // ── LocalStorage keys + helpers ─────────────────────────────────────────────
@@ -59,14 +59,22 @@ const STATUS_CHIPS: &[(&str, &str)] = &[
     ("disabled", "255, 99, 99"),
 ];
 
-const BACKEND_CHIPS: &[(&str, &str)] = &[
-    ("all", "225, 53, 255"),
-    ("razer", "225, 53, 255"),
-    ("wled", "128, 255, 234"),
-    ("corsair", "255, 153, 255"),
-    ("hue", "255, 183, 77"),
-    ("nanoleaf", "100, 220, 160"),
-];
+fn backend_filter_options(devices: &[DeviceSummary]) -> Vec<(String, String)> {
+    let mut backends = devices
+        .iter()
+        .map(|device| device.backend.trim().to_lowercase())
+        .filter(|backend| !backend.is_empty())
+        .collect::<Vec<_>>();
+    backends.sort();
+    backends.dedup();
+
+    let mut options = vec![("all".to_string(), "225, 53, 255".to_string())];
+    options.extend(backends.into_iter().map(|backend| {
+        let rgb = device_accent_colors(&backend).0;
+        (backend, rgb)
+    }));
+    options
+}
 
 // ── Page component ──────────────────────────────────────────────────────────
 
@@ -238,6 +246,13 @@ pub fn DevicesPage() -> impl IntoView {
         }
         count
     });
+    let backend_filter_options = Memo::new(move |_| {
+        ctx.devices_resource
+            .get()
+            .and_then(|r| r.ok())
+            .map(|devices| backend_filter_options(&devices))
+            .unwrap_or_else(|| vec![("all".to_string(), "225, 53, 255".to_string())])
+    });
 
     let _close_listener = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Escape" {
@@ -332,7 +347,32 @@ pub fn DevicesPage() -> impl IntoView {
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Backend"</div>
                                     <div class="flex gap-1 flex-wrap">
-                                        {filter_chips(BACKEND_CHIPS, backend_filter, set_backend_filter)}
+                                        {move || backend_filter_options.get().into_iter().map(|(label, rgb)| {
+                                            let chip_label = label.clone();
+                                            let selected_label = label.clone();
+                                            let next_label = label.clone();
+                                            let active_style = format!(
+                                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); \
+                                                 box-shadow: 0 0 8px rgba({rgb}, 0.15)"
+                                            );
+                                            let inactive_style = format!(
+                                                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
+                                            );
+                                            let is_active = Memo::new(move |_| backend_filter.get() == selected_label);
+                                            view! {
+                                                <button
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all"
+                                                    style=move || if is_active.get() {
+                                                        active_style.clone()
+                                                    } else {
+                                                        inactive_style.clone()
+                                                    }
+                                                    on:click=move |_| set_backend_filter.set(next_label.clone())
+                                                >
+                                                    {chip_label}
+                                                </button>
+                                            }
+                                        }).collect_view()}
                                     </div>
                                 </div>
                                 {move || (active_filter_count.get() > 0).then(|| view! {
