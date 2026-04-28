@@ -5,11 +5,13 @@ use hypercolor_driver_api::{DriverTrackedDevice, TrackedDeviceCtx};
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
     GoveeKnownDevice, build_cloud_discovered_device, build_device_info,
-    govee_device_control_surface, merge_cloud_inventory, parse_scan_response,
-    resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
+    govee_device_control_surface, govee_driver_control_surface, merge_cloud_inventory,
+    parse_scan_response, resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
 };
 use hypercolor_types::config::GoveeConfig;
-use hypercolor_types::controls::{ControlAccess, ControlSurfaceScope, ControlValue};
+use hypercolor_types::controls::{
+    ControlAccess, ControlPersistence, ControlSurfaceScope, ControlValue,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
@@ -49,7 +51,7 @@ fn build_device_info_uses_validated_razer_count_only() {
 
     let info = build_device_info(&device);
 
-    assert_eq!(info.family, DeviceFamily::Govee);
+    assert_eq!(info.family, DeviceFamily::new_static("govee", "Govee"));
     assert_eq!(info.model.as_deref(), Some("H619A"));
     assert_eq!(info.total_led_count(), 20);
     assert_eq!(info.capabilities.max_fps, 25);
@@ -129,7 +131,7 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
             name: build_device_info(&lan_device).name,
-            family: DeviceFamily::Govee,
+            family: DeviceFamily::new_static("govee", "Govee"),
             fingerprint: DeviceFingerprint("net:govee:001122334455".to_owned()),
             connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
             info: build_device_info(&lan_device),
@@ -167,6 +169,47 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
         Some(&"color".to_owned())
     );
     assert!(devices[0].connect_behavior.should_auto_connect());
+}
+
+#[test]
+fn govee_driver_control_surface_exposes_config_fields() {
+    let config = GoveeConfig {
+        known_ips: vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9))],
+        power_off_on_disconnect: true,
+        lan_state_fps: 7,
+        razer_fps: 25,
+    };
+
+    let surface = govee_driver_control_surface(&config);
+
+    assert_eq!(surface.surface_id, "driver:govee");
+    assert_eq!(
+        surface.scope,
+        ControlSurfaceScope::Driver {
+            driver_id: "govee".to_owned(),
+        }
+    );
+    assert!(surface.fields.iter().any(|field| {
+        field.id == "known_ips"
+            && field.access == ControlAccess::ReadWrite
+            && field.persistence == ControlPersistence::DriverConfig
+    }));
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "razer_fps" && field.access == ControlAccess::ReadWrite)
+    );
+    assert_eq!(
+        surface.values["known_ips"],
+        ControlValue::List(vec![ControlValue::IpAddress("10.0.0.9".to_owned())])
+    );
+    assert_eq!(
+        surface.values["power_off_on_disconnect"],
+        ControlValue::Bool(true)
+    );
+    assert_eq!(surface.values["lan_state_fps"], ControlValue::Integer(7));
+    assert_eq!(surface.values["razer_fps"], ControlValue::Integer(25));
 }
 
 #[test]
@@ -269,7 +312,7 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
             id: DeviceId::new(),
             name: "Desk Govee".to_owned(),
             vendor: "Govee".to_owned(),
-            family: DeviceFamily::Govee,
+            family: DeviceFamily::new_static("govee", "Govee"),
             model: Some(sku.to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
