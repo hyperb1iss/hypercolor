@@ -577,6 +577,36 @@ fn empty_control_changes(surface_id: &str) -> Response {
     )
 }
 
+fn driver_control_validation_failed(surface_id: &str, driver_id: &str, detail: &str) -> Response {
+    ApiError::validation_with_details(
+        format!("Invalid driver controls: {detail}"),
+        serde_json::json!({
+            "kind": "driver_control_validation_failed",
+            "surface_id": surface_id,
+            "driver_id": driver_id,
+            "detail": detail,
+        }),
+    )
+}
+
+fn driver_device_control_validation_failed(
+    surface_id: &str,
+    driver_id: &str,
+    device_id: DeviceId,
+    detail: &str,
+) -> Response {
+    ApiError::validation_with_details(
+        format!("Invalid device controls: {detail}"),
+        serde_json::json!({
+            "kind": "driver_device_control_validation_failed",
+            "surface_id": surface_id,
+            "driver_id": driver_id,
+            "device_id": device_id,
+            "detail": detail,
+        }),
+    )
+}
+
 fn host_identify_request(input: ControlValueMap) -> ControlApiResult<devices::IdentifyRequest> {
     let mut duration_ms = None;
     let mut color = None;
@@ -648,7 +678,9 @@ async fn apply_driver_control_surface_values(
         .await
     {
         Ok(changes) => changes,
-        Err(error) => return ApiError::validation(format!("Invalid driver controls: {error}")),
+        Err(error) => {
+            return driver_control_validation_failed(&surface_id, &driver_id, &error.to_string());
+        }
     };
     if let Err(error) = ensure_driver_level_impacts_supported(&driver_id, &validated.impacts) {
         return ApiError::internal(format!(
@@ -756,7 +788,14 @@ async fn apply_driver_device_control_surface_values(
         .await
     {
         Ok(changes) => changes,
-        Err(error) => return ApiError::validation(format!("Invalid device controls: {error}")),
+        Err(error) => {
+            return driver_device_control_validation_failed(
+                &surface_id,
+                &driver_id,
+                device_id,
+                &error.to_string(),
+            );
+        }
     };
 
     if body.dry_run {

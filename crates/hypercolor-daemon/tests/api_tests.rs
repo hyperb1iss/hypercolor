@@ -2491,6 +2491,18 @@ async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(
+        json["error"]["details"]["kind"],
+        "driver_control_validation_failed"
+    );
+    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
+    assert_eq!(json["error"]["details"]["driver_id"], "wled");
+    assert!(
+        json["error"]["details"]["detail"]
+            .as_str()
+            .expect("error detail should be a string")
+            .contains("invalid WLED known IP")
+    );
     assert!(
         json["error"]["message"]
             .as_str()
@@ -2506,6 +2518,49 @@ async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
             .is_none(),
         "invalid known IPs should not be persisted"
     );
+}
+
+#[tokio::test]
+async fn patch_driver_owned_device_control_surface_reports_validation_target() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let surface_id = format!("driver:wled:device:{device_id}");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": surface_id,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "protocol",
+                                "value": { "kind": "enum", "value": "bogus" }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(
+        json["error"]["details"]["kind"],
+        "driver_device_control_validation_failed"
+    );
+    assert_eq!(json["error"]["details"]["surface_id"], surface_id);
+    assert_eq!(json["error"]["details"]["driver_id"], "wled");
+    assert_eq!(json["error"]["details"]["device_id"], device_id.to_string());
 }
 
 #[tokio::test]
