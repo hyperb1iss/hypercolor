@@ -4470,7 +4470,6 @@ dependencies = [
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
- "hypercolor-driver-wled",
  "hypercolor-hal",
  "hypercolor-leptos-ext",
  "hypercolor-network",

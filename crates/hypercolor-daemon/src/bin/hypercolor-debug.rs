@@ -1,13 +1,22 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypercolor_core::device::{
-    DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, SmBusScanner,
-    UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
+    DeviceRegistry, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport,
+    SmBusScanner, TransportScanner, UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
 };
-use hypercolor_driver_wled::WledScanner;
+use hypercolor_driver_api::support::open_default_credential_store_blocking;
+use hypercolor_driver_api::{
+    DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveredDevice,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice,
+    NetworkDriverFactory,
+};
+use hypercolor_network::DriverRegistry;
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::DeviceInfo;
+use serde_json::Value;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -80,6 +89,15 @@ fn init_tracing(log_level: &str) {
 
 async fn run_detect(args: DetectArgs) -> Result<()> {
     let registry = DeviceRegistry::new();
+    let config = HypercolorConfig::default();
+    let credential_store = Arc::new(
+        open_default_credential_store_blocking()
+            .context("failed to open network credential store")?,
+    );
+    let driver_registry =
+        hypercolor_daemon::network::build_builtin_driver_registry(&config, credential_store)
+            .context("failed to build debug driver registry")?;
+    let driver_host = Arc::new(DebugDriverHost);
     let discovery_timeout = Duration::from_millis(args.timeout_ms.max(100));
     let periodic_backends = normalize_backends(&args.backends);
     if periodic_backends.is_empty() {
@@ -109,6 +127,9 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
 
     run_scan(
         &registry,
+        &driver_registry,
+        Arc::clone(&driver_host),
+        &config,
         &periodic_backends,
         &args,
         discovery_timeout,
@@ -139,6 +160,9 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
             _ = ticker.tick() => {
                 run_scan(
                     &registry,
+                    &driver_registry,
+                    Arc::clone(&driver_host),
+                    &config,
                     &periodic_backends,
                     &args,
                     discovery_timeout,
@@ -151,6 +175,9 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
                         log_hotplug_event(&event);
                         run_scan(
                             &registry,
+                            &driver_registry,
+                            Arc::clone(&driver_host),
+                            &config,
                             &[DebugBackend::Usb],
                             &args,
                             discovery_timeout,
@@ -234,6 +261,9 @@ fn log_hotplug_event(event: &UsbHotplugEvent) {
 
 async fn run_scan(
     registry: &DeviceRegistry,
+    driver_registry: &DriverRegistry,
+    driver_host: Arc<DebugDriverHost>,
+    config: &HypercolorConfig,
     backends: &[DebugBackend],
     _args: &DetectArgs,
     timeout: Duration,
@@ -244,9 +274,14 @@ async fn run_scan(
         match backend {
             DebugBackend::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
             DebugBackend::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
-            DebugBackend::Wled => {
-                orchestrator.add_scanner(Box::new(WledScanner::with_timeout(timeout)));
-            }
+            DebugBackend::Wled => add_network_scanner(
+                &mut orchestrator,
+                driver_registry,
+                Arc::clone(&driver_host),
+                config,
+                "wled",
+                timeout,
+            )?,
         }
     }
 
@@ -328,6 +363,139 @@ fn normalize_backends(backends: &[DebugBackend]) -> Vec<DebugBackend> {
 
 fn backend_hint(info: &DeviceInfo) -> &str {
     info.backend_id()
+}
+
+fn add_network_scanner(
+    orchestrator: &mut DiscoveryOrchestrator,
+    driver_registry: &DriverRegistry,
+    host: Arc<DebugDriverHost>,
+    config: &HypercolorConfig,
+    driver_id: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let driver = driver_registry
+        .get(driver_id)
+        .with_context(|| format!("debug network driver '{driver_id}' is not registered"))?;
+    let driver_config = hypercolor_daemon::network::driver_config_entry(config, driver_id);
+    orchestrator.add_scanner(Box::new(DebugNetworkScanner {
+        driver,
+        driver_id: driver_id.to_owned(),
+        config: driver_config,
+        host,
+        request: DiscoveryRequest {
+            timeout,
+            mdns_enabled: config.discovery.mdns_enabled,
+        },
+    }));
+    Ok(())
+}
+
+struct DebugNetworkScanner {
+    driver: Arc<dyn NetworkDriverFactory>,
+    driver_id: String,
+    config: DriverConfigEntry,
+    host: Arc<DebugDriverHost>,
+    request: DiscoveryRequest,
+}
+
+#[async_trait::async_trait]
+impl TransportScanner for DebugNetworkScanner {
+    fn name(&self) -> &str {
+        self.driver.descriptor().display_name
+    }
+
+    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+        let Some(capability) = self.driver.discovery() else {
+            return Ok(Vec::new());
+        };
+        let config = DriverConfigView {
+            driver_id: &self.driver_id,
+            entry: &self.config,
+        };
+        let result = capability
+            .discover(self.host.as_ref(), &self.request, config)
+            .await?;
+        Ok(result
+            .devices
+            .into_iter()
+            .map(driver_discovered_to_device)
+            .collect())
+    }
+}
+
+fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevice {
+    DiscoveredDevice {
+        connection_type: device.info.connection_type,
+        origin: device.info.origin.clone(),
+        name: device.info.name.clone(),
+        family: device.info.family.clone(),
+        fingerprint: device.fingerprint,
+        connect_behavior: device.connect_behavior,
+        info: device.info,
+        metadata: device.metadata,
+    }
+}
+
+struct DebugDriverHost;
+
+#[async_trait::async_trait]
+impl DriverCredentialStore for DebugDriverHost {
+    async fn get_json(&self, _key: &str) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    async fn set_json(&self, _key: &str, _value: Value) -> Result<()> {
+        Ok(())
+    }
+
+    async fn remove(&self, _key: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverRuntimeActions for DebugDriverHost {
+    async fn activate_device(
+        &self,
+        _device_id: hypercolor_types::device::DeviceId,
+        _backend_id: &str,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        _device_id: hypercolor_types::device::DeviceId,
+        _backend_id: &str,
+        _will_retry: bool,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverDiscoveryState for DebugDriverHost {
+    async fn tracked_devices(&self, _driver_id: &str) -> Vec<DriverTrackedDevice> {
+        Vec::new()
+    }
+
+    fn load_cached_json(&self, _driver_id: &str, _key: &str) -> Result<Option<Value>> {
+        Ok(None)
+    }
+}
+
+impl DriverHost for DebugDriverHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        self
+    }
+
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        self
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        self
+    }
 }
 
 fn timestamp_now() -> String {
