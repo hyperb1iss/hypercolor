@@ -55,16 +55,22 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
                     <div class="h-16 rounded-lg bg-surface-overlay/20 animate-pulse" />
                 }>
                     {move || match surfaces_resource.get() {
-                        Some(Ok(surfaces)) if surfaces.is_empty() => view! {
-                            <p class="text-[10px] text-fg-tertiary/50">"No dynamic controls exposed."</p>
-                        }.into_any(),
-                        Some(Ok(surfaces)) => view! {
-                            <div class="space-y-3">
-                                {surfaces.into_iter().map(|surface| {
-                                    render_surface(surface, surfaces_resource)
-                                }).collect_view()}
-                            </div>
-                        }.into_any(),
+                        Some(Ok(surfaces)) => {
+                            let surfaces = visible_control_surfaces(surfaces);
+                            if surfaces.is_empty() {
+                                view! {
+                                    <p class="text-[10px] text-fg-tertiary/50">"No dynamic controls exposed."</p>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <div class="space-y-3">
+                                        {surfaces.into_iter().map(|surface| {
+                                            render_surface(surface, surfaces_resource)
+                                        }).collect_view()}
+                                    </div>
+                                }.into_any()
+                            }
+                        },
                         Some(Err(error)) => view! {
                             <div class="rounded-lg border border-edge-subtle/70 bg-surface-overlay/20 px-3 py-2">
                                 <div class="text-[10px] text-fg-tertiary/60">{error}</div>
@@ -84,8 +90,8 @@ fn render_surface(
     surface: ControlSurfaceDocument,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
 ) -> impl IntoView {
-    let field_count = surface.fields.len();
-    let action_count = surface.actions.len();
+    let field_count = visible_field_count(&surface);
+    let action_count = visible_action_count(&surface);
     let title = surface_title(&surface);
     let subtitle = format!(
         "{field_count} fields · {action_count} actions · rev {}",
@@ -110,6 +116,33 @@ fn render_surface(
             </div>
         </section>
     }
+}
+
+fn visible_control_surfaces(surfaces: Vec<ControlSurfaceDocument>) -> Vec<ControlSurfaceDocument> {
+    surfaces
+        .into_iter()
+        .filter(surface_has_visible_items)
+        .collect()
+}
+
+fn surface_has_visible_items(surface: &ControlSurfaceDocument) -> bool {
+    visible_field_count(surface) > 0 || visible_action_count(surface) > 0
+}
+
+fn visible_field_count(surface: &ControlSurfaceDocument) -> usize {
+    surface
+        .fields
+        .iter()
+        .filter(|field| !field_is_hidden(surface, field))
+        .count()
+}
+
+fn visible_action_count(surface: &ControlSurfaceDocument) -> usize {
+    surface
+        .actions
+        .iter()
+        .filter(|action| !action_is_hidden(surface, action))
+        .count()
 }
 
 #[derive(Clone)]
