@@ -36,6 +36,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::device::DriverTransportKind;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
@@ -438,7 +439,9 @@ impl DaemonState {
                     hypercolor_core::device::BlocksBackend::new(socket_path),
                 ));
             }
-            if network::hal_driver_enabled(config, "asus") {
+            if !network::enabled_hal_driver_ids_for_transport(config, &DriverTransportKind::Smbus)
+                .is_empty()
+            {
                 backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
             }
             backend_manager_inner.register_backend(Box::new(
