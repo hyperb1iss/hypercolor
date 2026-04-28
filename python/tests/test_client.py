@@ -215,6 +215,31 @@ async def test_apply_effect(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/effects/aurora/apply").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "effect": {"id": "aurora", "name": "Aurora"},
+                    "applied_controls": {},
+                    "layout": {"resolved": False, "applied": False},
+                    "transition": {"type": "cut", "duration_ms": 0},
+                }
+            ),
+        )
+    )
+
+    result = await client.apply_effect("aurora")
+
+    assert route.called
+    assert route.calls[0].request.content == b""
+    assert "content-type" not in route.calls[0].request.headers
+    assert result.effect.id == "aurora"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_set_brightness_uses_generated_route_with_body(
     client: HypercolorClient,
 ) -> None:

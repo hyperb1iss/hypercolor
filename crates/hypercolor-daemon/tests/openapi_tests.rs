@@ -62,6 +62,10 @@ async fn openapi_json_is_served_with_expected_paths() {
     assert!(body["paths"]["/api/v1/devices"].is_object());
     assert!(body["paths"]["/api/v1/effects"].is_object());
     assert!(body["paths"]["/api/v1/effects/{id}/apply"].is_object());
+    assert_ne!(
+        body["paths"]["/api/v1/effects/{id}/apply"]["post"]["requestBody"]["required"],
+        true
+    );
     assert!(body["paths"]["/api/v1/control-surfaces"].is_object());
     assert!(body["components"]["schemas"]["ControlSurfaceDocument"].is_object());
     assert!(body["components"]["schemas"]["ApplyControlChangesRequest"].is_object());

@@ -48,7 +48,6 @@ from ._generated.api.system import (
     health_check as generated_health_check,
 )
 from ._generated.models.apply_effect_request import ApplyEffectRequest
-from ._generated.models.apply_effect_request_controls import ApplyEffectRequestControls
 from ._generated.models.apply_profile_request import ApplyProfileRequest
 from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
@@ -291,8 +290,16 @@ class HypercolorClient:
                 "transition": _to_json_mapping(transition),
             }
         )
+        kwargs = (
+            generated_apply_effect._get_kwargs(
+                effect_id,
+                body=ApplyEffectRequest.from_dict(body),
+            )
+            if body
+            else generated_apply_effect._get_kwargs(effect_id)
+        )
         return await self._generated_model(
-            _apply_effect_kwargs(effect_id, body or None),
+            kwargs,
             ApplyEffectResult,
         )
 
@@ -435,7 +442,7 @@ class HypercolorClient:
 
     async def _generated_request(self, kwargs: Mapping[str, Any]) -> Any:
         try:
-            response = await self._client.request(**kwargs)
+            response = await self._client.request(**_drop_unset_json_body(kwargs))
             response.raise_for_status()
         except httpx.ConnectError as exc:
             raise HypercolorConnectionError("Failed to connect to the Hypercolor daemon") from exc
@@ -597,21 +604,19 @@ def _generated_param(value: Any) -> Any:
     return UNSET if value is None else value
 
 
-def _apply_effect_kwargs(
-    effect_id: str,
-    body: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    if body is not None:
-        return generated_apply_effect._get_kwargs(
-            effect_id,
-            body=ApplyEffectRequest.from_dict(body),
-        )
-    request = generated_apply_effect._get_kwargs(
-        effect_id,
-        body=ApplyEffectRequest(controls=ApplyEffectRequestControls()),
-    )
-    request.pop("json", None)
-    request.pop("headers", None)
+def _drop_unset_json_body(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    request = dict(kwargs)
+    if request.get("json") is not UNSET:
+        return request
+
+    request.pop("json")
+    headers = dict(request.get("headers") or {})
+    if headers.get("Content-Type") == "application/json":
+        headers.pop("Content-Type")
+    if headers:
+        request["headers"] = headers
+    else:
+        request.pop("headers", None)
     return request
 
 

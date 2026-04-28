@@ -454,7 +454,7 @@ pub async fn delete_effect_layout(
     post,
     path = "/api/v1/effects/{id}/apply",
     params(("id" = String, Path, description = "Effect id or name")),
-    request_body = ApplyEffectRequest,
+    request_body = Option<ApplyEffectRequest>,
     responses(
         (
             status = 200,

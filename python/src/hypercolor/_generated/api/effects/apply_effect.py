@@ -9,13 +9,13 @@ from ...client import AuthenticatedClient, Client
 from ...models.api_error_response import ApiErrorResponse
 from ...models.api_response_apply_effect_response import ApiResponseApplyEffectResponse
 from ...models.apply_effect_request import ApplyEffectRequest
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: ApplyEffectRequest,
+    body: ApplyEffectRequest | None | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -26,7 +26,10 @@ def _get_kwargs(
         ),
     }
 
-    _kwargs["json"] = body.to_dict()
+    if isinstance(body, ApplyEffectRequest):
+        _kwargs["json"] = body.to_dict()
+    else:
+        _kwargs["json"] = body
 
     headers["Content-Type"] = "application/json"
 
@@ -83,13 +86,13 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest,
+    body: ApplyEffectRequest | None | Unset = UNSET,
 ) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
         id (str):
-        body (ApplyEffectRequest):
+        body (ApplyEffectRequest | None | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,13 +118,13 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest,
+    body: ApplyEffectRequest | None | Unset = UNSET,
 ) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
         id (str):
-        body (ApplyEffectRequest):
+        body (ApplyEffectRequest | None | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -142,13 +145,13 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest,
+    body: ApplyEffectRequest | None | Unset = UNSET,
 ) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
         id (str):
-        body (ApplyEffectRequest):
+        body (ApplyEffectRequest | None | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -172,13 +175,13 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest,
+    body: ApplyEffectRequest | None | Unset = UNSET,
 ) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
     """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
 
     Args:
         id (str):
-        body (ApplyEffectRequest):
+        body (ApplyEffectRequest | None | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
