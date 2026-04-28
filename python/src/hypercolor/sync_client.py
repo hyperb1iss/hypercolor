@@ -139,6 +139,52 @@ class SyncHypercolorClient:
     def update_controls(self, controls: Mapping[str, Any]) -> ControlUpdateResult:
         return self._run(self._client.update_controls(controls))
 
+    def get_control_surfaces(
+        self,
+        *,
+        device_id: str | None = None,
+        driver_id: str | None = None,
+        include_driver: bool = False,
+    ) -> list[dict[str, Any]]:
+        return self._run(
+            self._client.get_control_surfaces(
+                device_id=device_id,
+                driver_id=driver_id,
+                include_driver=include_driver,
+            )
+        )
+
+    def get_device_controls(self, device_id: str) -> dict[str, Any]:
+        return self._run(self._client.get_device_controls(device_id))
+
+    def get_driver_controls(self, driver_id: str) -> dict[str, Any]:
+        return self._run(self._client.get_driver_controls(driver_id))
+
+    def set_control_values(
+        self,
+        surface_id: str,
+        values: Mapping[str, Any],
+        *,
+        dry_run: bool = False,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        return self._run(
+            self._client.set_control_values(
+                surface_id,
+                values,
+                dry_run=dry_run,
+                expected_revision=expected_revision,
+            )
+        )
+
+    def invoke_control_action(
+        self,
+        surface_id: str,
+        action_id: str,
+        input: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._run(self._client.invoke_control_action(surface_id, action_id, input))
+
     def stop_effect(self) -> MutationResult:
         return self._run(self._client.stop_effect())
 

@@ -6,13 +6,17 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.invoke_control_action_request import InvokeControlActionRequest
 from ...types import Response
 
 
 def _get_kwargs(
     surface_id: str,
     action_id: str,
+    *,
+    body: InvokeControlActionRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
@@ -22,6 +26,11 @@ def _get_kwargs(
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -68,12 +77,14 @@ def sync_detailed(
     action_id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: InvokeControlActionRequest,
 ) -> Response[Any]:
     """Invoke control surface action
 
     Args:
         surface_id (str):
         action_id (str):
+        body (InvokeControlActionRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -86,6 +97,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         surface_id=surface_id,
         action_id=action_id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -100,12 +112,14 @@ async def asyncio_detailed(
     action_id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: InvokeControlActionRequest,
 ) -> Response[Any]:
     """Invoke control surface action
 
     Args:
         surface_id (str):
         action_id (str):
+        body (InvokeControlActionRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -118,6 +132,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         surface_id=surface_id,
         action_id=action_id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)

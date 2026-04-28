@@ -904,13 +904,15 @@ pub const ROUTES: &[RouteSpec] = &[
         "apply_control_surface_values",
         "controls",
         "Apply control surface values",
-    ),
+    )
+    .with_request_body("ApplyControlChangesRequest", true),
     RouteSpec::post(
         "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
         "invoke_control_surface_action",
         "controls",
         "Invoke control surface action",
-    ),
+    )
+    .with_request_body("InvokeControlActionRequest", true),
     RouteSpec::post(
         "/api/v1/diagnose",
         "run_diagnostics",

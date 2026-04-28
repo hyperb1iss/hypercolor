@@ -430,6 +430,141 @@ async def test_update_controls_raises_validation_error(client: HypercolorClient)
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_get_control_surfaces_uses_pythonic_filters(client: HypercolorClient) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/control-surfaces").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surfaces": [
+                        {
+                            "id": "device:keyboard",
+                            "title": "Keyboard",
+                            "revision": 4,
+                            "groups": [],
+                            "values": {},
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    surfaces = await client.get_control_surfaces(
+        device_id="keyboard/main",
+        include_driver=True,
+    )
+
+    assert route.called
+    assert route.calls[0].request.url.params["device_id"] == "keyboard/main"
+    assert route.calls[0].request.url.params["include_driver"] == "true"
+    assert surfaces[0]["id"] == "device:keyboard"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_device_controls_quotes_generated_path_parameters(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices/keyboard%2Fmain/controls").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "id": "device:keyboard/main",
+                    "title": "Keyboard",
+                    "revision": 4,
+                    "groups": [],
+                    "values": {"brightness": {"kind": "integer", "value": 88}},
+                }
+            ),
+        )
+    )
+
+    surface = await client.get_device_controls("keyboard/main")
+
+    assert route.called
+    assert surface["id"] == "device:keyboard/main"
+    assert surface["values"]["brightness"]["value"] == 88
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_set_control_values_converts_python_values(client: HypercolorClient) -> None:
+    route = respx.patch(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/values"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "previous_revision": 4,
+                    "revision": 5,
+                    "accepted": [],
+                    "rejected": [],
+                    "impacts": [],
+                    "values": {"brightness": {"kind": "integer", "value": 88}},
+                }
+            ),
+        )
+    )
+
+    result = await client.set_control_values(
+        "device:keyboard",
+        {"brightness": 88, "enabled": True},
+        expected_revision=4,
+    )
+
+    assert route.called
+    assert json.loads(route.calls[0].request.content) == {
+        "surface_id": "device:keyboard",
+        "changes": [
+            {"field_id": "brightness", "value": {"kind": "integer", "value": 88}},
+            {"field_id": "enabled", "value": {"kind": "bool", "value": True}},
+        ],
+        "expected_revision": 4,
+    }
+    assert result["revision"] == 5
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_invoke_control_action_converts_input(client: HypercolorClient) -> None:
+    route = respx.post(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/actions/identify"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "action_id": "identify",
+                    "status": "completed",
+                    "message": "Identifying keyboard",
+                }
+            ),
+        )
+    )
+
+    result = await client.invoke_control_action(
+        "device:keyboard",
+        "identify",
+        {"duration_ms": 750, "color": {"kind": "color_rgb", "value": [128, 255, 234]}},
+    )
+
+    assert route.called
+    assert json.loads(route.calls[0].request.content) == {
+        "input": {
+            "duration_ms": {"kind": "integer", "value": 750},
+            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+        }
+    }
+    assert result["status"] == "completed"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_health(client: HypercolorClient) -> None:
     respx.get("http://hyperia.test:9420/health").mock(
         return_value=httpx.Response(

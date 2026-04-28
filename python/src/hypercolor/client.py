@@ -10,6 +10,13 @@ import httpx
 import msgspec
 
 from ._generated.api.config import set_config_value as generated_set_config_value
+from ._generated.api.controls import (
+    apply_control_surface_values as generated_apply_control_surface_values,
+    get_device_control_surface as generated_get_device_control_surface,
+    get_driver_control_surface as generated_get_driver_control_surface,
+    invoke_control_surface_action as generated_invoke_control_surface_action,
+    list_control_surfaces as generated_list_control_surfaces,
+)
 from ._generated.api.devices import (
     discover_devices as generated_discover_devices,
     get_device as generated_get_device,
@@ -47,10 +54,12 @@ from ._generated.api.system import (
     get_status as generated_get_status,
     health_check as generated_health_check,
 )
+from ._generated.models.apply_control_changes_request import ApplyControlChangesRequest
 from ._generated.models.apply_effect_request import ApplyEffectRequest
 from ._generated.models.apply_profile_request import ApplyProfileRequest
 from ._generated.models.discover_request import DiscoverRequest
 from ._generated.models.identify_request import IdentifyRequest
+from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
 from ._generated.models.set_brightness_request import SetBrightnessRequest
 from ._generated.models.set_config_request import SetConfigRequest
 from ._generated.models.update_current_controls_request import UpdateCurrentControlsRequest
@@ -310,6 +319,82 @@ class HypercolorClient:
                 body=UpdateCurrentControlsRequest.from_dict({"controls": dict(controls)}),
             ),
             ControlUpdateResult,
+        )
+
+    async def get_control_surfaces(
+        self,
+        *,
+        device_id: str | None = None,
+        driver_id: str | None = None,
+        include_driver: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List control surfaces for a selected device or driver."""
+        kwargs = generated_list_control_surfaces._get_kwargs()
+        params = _drop_none(
+            {
+                "device_id": device_id,
+                "driver_id": driver_id,
+                "include_driver": include_driver if include_driver else None,
+            }
+        )
+        if params:
+            kwargs["params"] = params
+        payload = await self._generated_payload(kwargs)
+        surfaces = payload.get("surfaces") if isinstance(payload, dict) else None
+        if not isinstance(surfaces, list):
+            return []
+        return [dict(surface) for surface in surfaces if isinstance(surface, Mapping)]
+
+    async def get_device_controls(self, device_id: str) -> dict[str, Any]:
+        """Return a device control surface."""
+        return await self._generated_payload(
+            generated_get_device_control_surface._get_kwargs(device_id),
+        )
+
+    async def get_driver_controls(self, driver_id: str) -> dict[str, Any]:
+        """Return a driver control surface."""
+        return await self._generated_payload(
+            generated_get_driver_control_surface._get_kwargs(driver_id),
+        )
+
+    async def set_control_values(
+        self,
+        surface_id: str,
+        values: Mapping[str, Any],
+        *,
+        dry_run: bool = False,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Apply one or more control values to a control surface."""
+        body = _control_changes_request(
+            surface_id,
+            values,
+            dry_run=dry_run,
+            expected_revision=expected_revision,
+        )
+        return await self._generated_payload(
+            generated_apply_control_surface_values._get_kwargs(
+                surface_id,
+                body=body,
+            ),
+        )
+
+    async def invoke_control_action(
+        self,
+        surface_id: str,
+        action_id: str,
+        input: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Invoke a control-surface action."""
+        body = InvokeControlActionRequest()
+        if input is not None:
+            body["input"] = {str(key): _control_api_value(value) for key, value in input.items()}
+        return await self._generated_payload(
+            generated_invoke_control_surface_action._get_kwargs(
+                surface_id,
+                action_id,
+                body=body,
+            ),
         )
 
     async def stop_effect(self) -> MutationResult:
@@ -618,6 +703,51 @@ def _drop_unset_json_body(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     else:
         request.pop("headers", None)
     return request
+
+
+def _control_changes_request(
+    surface_id: str,
+    values: Mapping[str, Any],
+    *,
+    dry_run: bool,
+    expected_revision: int | None,
+) -> ApplyControlChangesRequest:
+    body: dict[str, Any] = {
+        "surface_id": surface_id,
+        "changes": [
+            {"field_id": str(field_id), "value": _control_api_value(value)}
+            for field_id, value in values.items()
+        ],
+    }
+    if dry_run:
+        body["dry_run"] = True
+    if expected_revision is not None:
+        body["expected_revision"] = expected_revision
+    return ApplyControlChangesRequest.from_dict(body)
+
+
+def _control_api_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        if "kind" in value:
+            result = {str(key): item for key, item in value.items()}
+        else:
+            result = {
+                "kind": "object",
+                "value": {str(key): _control_api_value(item) for key, item in value.items()},
+            }
+    elif isinstance(value, list):
+        result = {"kind": "list", "value": [_control_api_value(item) for item in value]}
+    elif value is None:
+        result = {"kind": "null"}
+    elif isinstance(value, bool):
+        result = {"kind": "bool", "value": value}
+    elif isinstance(value, int):
+        result = {"kind": "integer", "value": value}
+    elif isinstance(value, float):
+        result = {"kind": "float", "value": value}
+    else:
+        result = {"kind": "string", "value": str(value)}
+    return result
 
 
 def _request_path(path: str) -> str:
