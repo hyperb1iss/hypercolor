@@ -399,6 +399,93 @@ impl DriverControlProvider for RescanTestDriver {
     }
 }
 
+static UNSUPPORTED_IMPACT_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "unsupported_impact_test",
+    "Unsupported Impact Test",
+    DriverTransport::Network,
+    false,
+    false,
+);
+
+struct UnsupportedImpactTestDriver;
+
+impl NetworkDriverFactory for UnsupportedImpactTestDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &UNSUPPORTED_IMPACT_TEST_DRIVER
+    }
+
+    fn has_backend_factory(&self) -> bool {
+        false
+    }
+
+    fn build_backend(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
+        Ok(None)
+    }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverControlProvider for UnsupportedImpactTestDriver {
+    async fn driver_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        Ok(Some(ControlSurfaceDocument::empty(
+            "driver:unsupported_impact_test",
+            ControlSurfaceScope::Driver {
+                driver_id: "unsupported_impact_test".to_owned(),
+            },
+        )))
+    }
+
+    async fn device_surface(
+        &self,
+        _host: &dyn DriverHost,
+        _device: &hypercolor_driver_api::TrackedDeviceCtx<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> anyhow::Result<ValidatedControlChanges> {
+        Ok(ValidatedControlChanges {
+            changes: changes.to_vec(),
+            impacts: vec![ApplyImpact::TopologyRebuild],
+        })
+    }
+
+    async fn apply_changes(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        _changes: ValidatedControlChanges,
+    ) -> anyhow::Result<ApplyControlChangesResponse> {
+        bail!("unsupported impact test driver should fail before apply")
+    }
+
+    async fn invoke_action(
+        &self,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
+        action_id: &str,
+        _input: ControlValueMap,
+    ) -> anyhow::Result<ControlActionResult> {
+        bail!("unexpected unsupported impact test action: {action_id}")
+    }
+}
+
 struct DisconnectRecordingBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
@@ -2705,6 +2792,63 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
     })
     .await
     .expect("timed out waiting for driver discovery rescan");
+}
+
+#[tokio::test]
+async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() {
+    let (mut state, dir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(dir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(UnsupportedImpactTestDriver)
+        .expect("test unsupported impact driver should register");
+    let registry = Arc::new(registry);
+
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_registry = Arc::clone(&registry);
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_config_manager(Some(manager))
+            .with_driver_registry(registry),
+    );
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:unsupported_impact_test/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:unsupported_impact_test",
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "topology",
+                                "value": { "kind": "bool", "value": true }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("unsupported driver-level control impact")
+    );
 }
 
 #[tokio::test]
