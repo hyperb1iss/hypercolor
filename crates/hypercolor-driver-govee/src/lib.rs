@@ -291,7 +291,7 @@ impl DiscoveryCapability for GoveeDriverModule {
         config: DriverConfigView<'_>,
     ) -> Result<DiscoveryResult> {
         let config = self.resolved_config(config)?;
-        let tracked_devices = host.discovery_state().tracked_devices("govee").await;
+        let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let cached_devices = load_cached_probe_devices(host)?;
         let known_devices =
             resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
@@ -319,7 +319,7 @@ impl DiscoveryCapability for GoveeDriverModule {
 #[async_trait]
 impl DriverRuntimeCacheProvider for GoveeDriverModule {
     async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>> {
-        let tracked_devices = host.discovery_state().tracked_devices("govee").await;
+        let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let probe_devices =
             resolve_govee_probe_devices(&GoveeConfig::default(), &tracked_devices, &[]);
 
