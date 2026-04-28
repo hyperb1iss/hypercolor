@@ -11,6 +11,9 @@ use crate::protocol::Protocol;
 
 const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
 const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
+const ATX_STRIMER_LEDS: usize = 120;
+const GPU_DUAL_STRIMER_LEDS: usize = 108;
+const GPU_TRIPLE_STRIMER_LEDS: usize = 162;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolRuntimeConfig {
@@ -39,6 +42,38 @@ impl ProtocolRuntimeConfig {
                 })
                 .with_nollie32_config(config),
             ),
+        }
+    }
+
+    #[must_use]
+    pub const fn atx_attachment_leds(self) -> usize {
+        match self {
+            Self::PrismS(config) => {
+                if config.atx_present {
+                    ATX_STRIMER_LEDS
+                } else {
+                    0
+                }
+            }
+            Self::Nollie32(config) => {
+                if config.atx_cable_present {
+                    ATX_STRIMER_LEDS
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn gpu_attachment_leds(self) -> usize {
+        match self {
+            Self::PrismS(config) => match config.gpu_cable {
+                Some(PrismSGpuCable::Dual8Pin) => GPU_DUAL_STRIMER_LEDS,
+                Some(PrismSGpuCable::Triple8Pin) => GPU_TRIPLE_STRIMER_LEDS,
+                None => 0,
+            },
+            Self::Nollie32(config) => config.gpu_cable_type.led_count(),
         }
     }
 }

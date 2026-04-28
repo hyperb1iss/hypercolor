@@ -90,14 +90,10 @@ async fn prism_s_config_defaults_to_legacy_full_topology_without_bindings() {
             .await
     );
 
-    let ProtocolRuntimeConfig::PrismS(config) = stored_config(&configs, info.id).await else {
-        panic!("Prism S config should be stored");
-    };
-    assert!(config.atx_present);
-    assert_eq!(
-        config.gpu_cable,
-        Some(hypercolor_hal::drivers::prismrgb::PrismSGpuCable::Triple8Pin)
-    );
+    let config = stored_config(&configs, info.id).await;
+    assert_eq!(config.protocol_id(), "prismrgb/prism-s");
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
 }
 
 #[tokio::test]
@@ -131,14 +127,10 @@ async fn prism_s_config_derives_dual_gpu_from_attachment_binding() {
             .await
     );
 
-    let ProtocolRuntimeConfig::PrismS(config) = stored_config(&configs, info.id).await else {
-        panic!("Prism S config should be stored");
-    };
-    assert!(config.atx_present);
-    assert_eq!(
-        config.gpu_cable,
-        Some(hypercolor_hal::drivers::prismrgb::PrismSGpuCable::Dual8Pin)
-    );
+    let config = stored_config(&configs, info.id).await;
+    assert_eq!(config.protocol_id(), "prismrgb/prism-s");
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 108);
 }
 
 #[tokio::test]
@@ -174,14 +166,10 @@ async fn prism_s_config_supports_gpu_only_profiles() {
             .await
     );
 
-    let ProtocolRuntimeConfig::PrismS(config) = stored_config(&configs, info.id).await else {
-        panic!("Prism S config should be stored");
-    };
-    assert!(!config.atx_present);
-    assert_eq!(
-        config.gpu_cable,
-        Some(hypercolor_hal::drivers::prismrgb::PrismSGpuCable::Dual8Pin)
-    );
+    let config = stored_config(&configs, info.id).await;
+    assert_eq!(config.protocol_id(), "prismrgb/prism-s");
+    assert_eq!(config.atx_attachment_leds(), 0);
+    assert_eq!(config.gpu_attachment_leds(), 108);
 }
 
 #[tokio::test]
@@ -197,14 +185,10 @@ async fn nollie32_config_defaults_to_bare_hub_without_bindings() {
             .await
     );
 
-    let ProtocolRuntimeConfig::Nollie32(config) = stored_config(&configs, info.id).await else {
-        panic!("Nollie32 config should be stored");
-    };
-    assert!(!config.atx_cable_present);
-    assert_eq!(
-        config.gpu_cable_type,
-        hypercolor_hal::drivers::nollie::GpuCableType::None
-    );
+    let config = stored_config(&configs, info.id).await;
+    assert_eq!(config.protocol_id(), "nollie/nollie-32");
+    assert_eq!(config.atx_attachment_leds(), 0);
+    assert_eq!(config.gpu_attachment_leds(), 0);
 }
 
 #[tokio::test]
@@ -238,14 +222,10 @@ async fn nollie32_config_derives_cables_from_attachment_bindings() {
             .await
     );
 
-    let ProtocolRuntimeConfig::Nollie32(config) = stored_config(&configs, info.id).await else {
-        panic!("Nollie32 config should be stored");
-    };
-    assert!(config.atx_cable_present);
-    assert_eq!(
-        config.gpu_cable_type,
-        hypercolor_hal::drivers::nollie::GpuCableType::Triple8Pin
-    );
+    let config = stored_config(&configs, info.id).await;
+    assert_eq!(config.protocol_id(), "nollie/nollie-32");
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
 }
 
 #[tokio::test]

@@ -93,6 +93,10 @@ fn prism_s_runtime_config_defaults_without_bindings() {
 
     assert!(config.atx_present);
     assert_eq!(config.gpu_cable, Some(PrismSGpuCable::Triple8Pin));
+
+    let config = ProtocolRuntimeConfig::PrismS(config);
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
 }
 
 #[test]
@@ -110,6 +114,10 @@ fn prism_s_runtime_config_derives_gpu_cable_from_binding_led_count() {
 
     assert!(!config.atx_present);
     assert_eq!(config.gpu_cable, Some(PrismSGpuCable::Dual8Pin));
+
+    let config = ProtocolRuntimeConfig::PrismS(config);
+    assert_eq!(config.atx_attachment_leds(), 0);
+    assert_eq!(config.gpu_attachment_leds(), 108);
 }
 
 #[test]
@@ -130,6 +138,10 @@ fn nollie32_runtime_config_derives_cable_flags() {
 
     assert!(config.atx_cable_present);
     assert_eq!(config.gpu_cable_type, GpuCableType::Triple8Pin);
+
+    let config = ProtocolRuntimeConfig::Nollie32(config);
+    assert_eq!(config.atx_attachment_leds(), 120);
+    assert_eq!(config.gpu_attachment_leds(), 162);
 }
 
 #[test]
