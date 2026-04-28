@@ -1,5 +1,6 @@
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::device::UsbProtocolConfigStore;
+use hypercolor_hal::protocol_config::ProtocolRuntimeConfig;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot, DeviceAttachmentProfile};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
@@ -66,6 +67,16 @@ fn attachment_registry() -> AttachmentRegistry {
     registry
 }
 
+async fn stored_config(
+    configs: &UsbProtocolConfigStore,
+    device_id: DeviceId,
+) -> ProtocolRuntimeConfig {
+    configs
+        .config(device_id)
+        .await
+        .expect("protocol runtime config should be stored")
+}
+
 #[tokio::test]
 async fn prism_s_config_defaults_to_legacy_full_topology_without_bindings() {
     let info = prism_s_info();
@@ -79,10 +90,9 @@ async fn prism_s_config_defaults_to_legacy_full_topology_without_bindings() {
             .await
     );
 
-    let config = configs
-        .prism_s_config(info.id)
-        .await
-        .expect("Prism S config should be stored");
+    let ProtocolRuntimeConfig::PrismS(config) = stored_config(&configs, info.id).await else {
+        panic!("Prism S config should be stored");
+    };
     assert!(config.atx_present);
     assert_eq!(
         config.gpu_cable,
@@ -121,10 +131,9 @@ async fn prism_s_config_derives_dual_gpu_from_attachment_binding() {
             .await
     );
 
-    let config = configs
-        .prism_s_config(info.id)
-        .await
-        .expect("Prism S config should be stored");
+    let ProtocolRuntimeConfig::PrismS(config) = stored_config(&configs, info.id).await else {
+        panic!("Prism S config should be stored");
+    };
     assert!(config.atx_present);
     assert_eq!(
         config.gpu_cable,
@@ -165,10 +174,9 @@ async fn prism_s_config_supports_gpu_only_profiles() {
             .await
     );
 
-    let config = configs
-        .prism_s_config(info.id)
-        .await
-        .expect("Prism S config should be stored");
+    let ProtocolRuntimeConfig::PrismS(config) = stored_config(&configs, info.id).await else {
+        panic!("Prism S config should be stored");
+    };
     assert!(!config.atx_present);
     assert_eq!(
         config.gpu_cable,
@@ -189,10 +197,9 @@ async fn nollie32_config_defaults_to_bare_hub_without_bindings() {
             .await
     );
 
-    let config = configs
-        .nollie32_config(info.id)
-        .await
-        .expect("Nollie32 config should be stored");
+    let ProtocolRuntimeConfig::Nollie32(config) = stored_config(&configs, info.id).await else {
+        panic!("Nollie32 config should be stored");
+    };
     assert!(!config.atx_cable_present);
     assert_eq!(
         config.gpu_cable_type,
@@ -231,10 +238,9 @@ async fn nollie32_config_derives_cables_from_attachment_bindings() {
             .await
     );
 
-    let config = configs
-        .nollie32_config(info.id)
-        .await
-        .expect("Nollie32 config should be stored");
+    let ProtocolRuntimeConfig::Nollie32(config) = stored_config(&configs, info.id).await else {
+        panic!("Nollie32 config should be stored");
+    };
     assert!(config.atx_cable_present);
     assert_eq!(
         config.gpu_cable_type,
@@ -258,6 +264,5 @@ async fn attachment_profile_config_ignores_non_usb_protocol_devices() {
             .apply_attachment_profile(info.id, &info, &profile, &registry)
             .await
     );
-    assert!(configs.prism_s_config(info.id).await.is_none());
-    assert!(configs.nollie32_config(info.id).await.is_none());
+    assert!(configs.config(info.id).await.is_none());
 }

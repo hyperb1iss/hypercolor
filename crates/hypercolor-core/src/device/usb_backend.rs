@@ -9,13 +9,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
-use hypercolor_hal::drivers::nollie::{
-    GpuCableType, Nollie32Config, NollieModel, NollieProtocol, ProtocolVersion,
-};
-use hypercolor_hal::drivers::prismrgb::{
-    PrismRgbModel, PrismRgbProtocol, PrismSConfig, PrismSGpuCable,
-};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::protocol_config::{
+    ProtocolRuntimeConfig, runtime_config_for_attachment_profile,
+};
 use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
@@ -41,8 +38,6 @@ use crate::attachment::AttachmentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
-const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
-const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsbActorMetricsSnapshot {
@@ -263,8 +258,7 @@ impl UsbDevice {
 
 #[derive(Clone, Default)]
 pub struct UsbProtocolConfigStore {
-    nollie32: Arc<RwLock<HashMap<DeviceId, Nollie32Config>>>,
-    prism_s: Arc<RwLock<HashMap<DeviceId, PrismSConfig>>>,
+    configs: Arc<RwLock<HashMap<DeviceId, ProtocolRuntimeConfig>>>,
 }
 
 impl UsbProtocolConfigStore {
@@ -273,31 +267,19 @@ impl UsbProtocolConfigStore {
         Self::default()
     }
 
-    pub async fn set_prism_s_config(&self, device_id: DeviceId, config: PrismSConfig) {
-        let mut prism_s = self.prism_s.write().await;
-        prism_s.insert(device_id, config);
+    pub async fn set_config(&self, device_id: DeviceId, config: ProtocolRuntimeConfig) {
+        let mut configs = self.configs.write().await;
+        configs.insert(device_id, config);
     }
 
-    pub async fn set_nollie32_config(&self, device_id: DeviceId, config: Nollie32Config) {
-        let mut nollie32 = self.nollie32.write().await;
-        nollie32.insert(device_id, config);
-    }
-
-    pub async fn prism_s_config(&self, device_id: DeviceId) -> Option<PrismSConfig> {
-        let prism_s = self.prism_s.read().await;
-        prism_s.get(&device_id).copied()
-    }
-
-    pub async fn nollie32_config(&self, device_id: DeviceId) -> Option<Nollie32Config> {
-        let nollie32 = self.nollie32.read().await;
-        nollie32.get(&device_id).copied()
+    pub async fn config(&self, device_id: DeviceId) -> Option<ProtocolRuntimeConfig> {
+        let configs = self.configs.read().await;
+        configs.get(&device_id).copied()
     }
 
     pub async fn remove_device(&self, device_id: DeviceId) {
-        let mut nollie32 = self.nollie32.write().await;
-        let mut prism_s = self.prism_s.write().await;
-        nollie32.remove(&device_id);
-        prism_s.remove(&device_id);
+        let mut configs = self.configs.write().await;
+        configs.remove(&device_id);
     }
 
     pub async fn apply_attachment_profile(
@@ -307,95 +289,28 @@ impl UsbProtocolConfigStore {
         profile: &DeviceAttachmentProfile,
         registry: &AttachmentRegistry,
     ) -> bool {
-        let prism_s_config = prism_s_config_for_attachment_profile(device, profile, registry);
-        let nollie32_config = nollie32_config_for_attachment_profile(device, profile, registry);
+        let Some(config) = runtime_config_for_attachment_profile(device, profile, |binding| {
+            registry
+                .get(&binding.template_id)
+                .map(|template| binding.effective_led_count(template))
+        }) else {
+            return false;
+        };
 
-        if let Some(config) = prism_s_config {
-            self.set_prism_s_config(device_id, config).await;
-        }
-
-        if let Some(config) = nollie32_config {
-            self.set_nollie32_config(device_id, config).await;
-        }
-
-        prism_s_config.is_some() || nollie32_config.is_some()
+        self.set_config(device_id, config).await;
+        true
     }
 }
 
-fn prism_s_config_for_attachment_profile(
-    device: &DeviceInfo,
-    profile: &DeviceAttachmentProfile,
-    registry: &AttachmentRegistry,
-) -> Option<PrismSConfig> {
-    if !has_protocol(device, PRISM_S_PROTOCOL_ID) {
-        return None;
+impl UsbBackend {
+    async fn configured_protocol(
+        &self,
+        protocol_id: &str,
+        device_id: DeviceId,
+    ) -> Option<Box<dyn Protocol>> {
+        let config = self.protocol_configs.config(device_id).await?;
+        (config.protocol_id() == protocol_id).then(|| config.build_protocol())
     }
-
-    let has_enabled_bindings = profile.bindings.iter().any(|binding| binding.enabled);
-    if !has_enabled_bindings {
-        return Some(PrismSConfig::default());
-    }
-
-    let mut config = PrismSConfig {
-        atx_present: false,
-        gpu_cable: None,
-    };
-
-    for binding in profile.bindings.iter().filter(|binding| binding.enabled) {
-        match binding.slot_id.as_str() {
-            "atx-strimer" => config.atx_present = true,
-            "gpu-strimer" => {
-                let Some(template) = registry.get(&binding.template_id) else {
-                    continue;
-                };
-
-                config.gpu_cable = match binding.effective_led_count(template) {
-                    108 => Some(PrismSGpuCable::Dual8Pin),
-                    162 => Some(PrismSGpuCable::Triple8Pin),
-                    _ => config.gpu_cable,
-                };
-            }
-            _ => {}
-        }
-    }
-
-    Some(config)
-}
-
-fn nollie32_config_for_attachment_profile(
-    device: &DeviceInfo,
-    profile: &DeviceAttachmentProfile,
-    registry: &AttachmentRegistry,
-) -> Option<Nollie32Config> {
-    if !has_protocol(device, NOLLIE32_PROTOCOL_ID) {
-        return None;
-    }
-
-    let mut config = Nollie32Config::default();
-
-    for binding in profile.bindings.iter().filter(|binding| binding.enabled) {
-        match binding.slot_id.as_str() {
-            "atx-strimer" => config.atx_cable_present = true,
-            "gpu-strimer" => {
-                let Some(template) = registry.get(&binding.template_id) else {
-                    continue;
-                };
-
-                config.gpu_cable_type = match binding.effective_led_count(template) {
-                    108 => GpuCableType::Dual8Pin,
-                    162 => GpuCableType::Triple8Pin,
-                    _ => config.gpu_cable_type,
-                };
-            }
-            _ => {}
-        }
-    }
-
-    Some(config)
-}
-
-fn has_protocol(device: &DeviceInfo, protocol_id: &str) -> bool {
-    device.origin.protocol_id.as_deref() == Some(protocol_id)
 }
 
 /// Core USB backend for HAL-managed device families.
@@ -439,23 +354,11 @@ impl UsbBackend {
         pending: &PendingUsbDevice,
         device_id: DeviceId,
     ) -> Box<dyn Protocol> {
-        if pending.descriptor.protocol.id == PRISM_S_PROTOCOL_ID
-            && let Some(config) = self.protocol_configs.prism_s_config(device_id).await
+        if let Some(protocol) = self
+            .configured_protocol(pending.descriptor.protocol.id, device_id)
+            .await
         {
-            return Box::new(
-                PrismRgbProtocol::new(PrismRgbModel::PrismS).with_prism_s_config(config),
-            );
-        }
-
-        if pending.descriptor.protocol.id == NOLLIE32_PROTOCOL_ID
-            && let Some(config) = self.protocol_configs.nollie32_config(device_id).await
-        {
-            return Box::new(
-                NollieProtocol::new(NollieModel::Nollie32 {
-                    protocol_version: ProtocolVersion::V2,
-                })
-                .with_nollie32_config(config),
-            );
+            return protocol;
         }
 
         (pending.descriptor.protocol.build)()

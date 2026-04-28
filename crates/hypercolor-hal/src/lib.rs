@@ -6,6 +6,7 @@
 pub mod database;
 pub mod drivers;
 pub mod protocol;
+pub mod protocol_config;
 pub mod registry;
 pub mod transport;
 
@@ -13,5 +14,6 @@ pub use database::ProtocolDatabase;
 pub use protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
 };
+pub use protocol_config::{ProtocolRuntimeConfig, runtime_config_for_attachment_profile};
 pub use registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
 pub use transport::{Transport, TransportError};
