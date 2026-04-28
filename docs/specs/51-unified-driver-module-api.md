@@ -38,11 +38,11 @@
 
 ## 1. Overview
 
-Hypercolor currently has two driver worlds:
+Hypercolor started this track with two driver worlds:
 
 - Network drivers such as WLED, Hue, and Nanoleaf are modular crates with a
-  `NetworkDriverFactory`, discovery and pairing capabilities, config slices,
-  and daemon host services.
+  `DriverModule` implementation, discovery and pairing capabilities, config
+  slices, and daemon host services.
 - HAL drivers such as Nollie, PrismRGB, Lian Li, ASUS, Corsair, Razer, QMK,
   and Dygma are protocol descriptors inside `hypercolor-hal`, discovered
   through static VID/PID databases and routed through shared output backends
@@ -53,8 +53,8 @@ credentials, mDNS, HTTP probing, and sometimes one backend per vendor. HAL
 devices usually share transports and only need to contribute protocol
 descriptors, topology, capabilities, and model-specific config.
 
-The problem is not that their internals differ. The problem is that Hypercolor
-does not yet have one clean vocabulary above those internals.
+The problem was not that their internals differ. The problem was that
+Hypercolor needed one clean vocabulary above those internals.
 
 This spec introduces a unified **driver module** layer. A driver module is the
 unit of extension, metadata, config, and capability discovery. Some modules
@@ -603,8 +603,8 @@ pub trait DriverModule: Send + Sync {
 }
 ```
 
-This replaces `NetworkDriverFactory` as the top-level concept. Existing network
-drivers can implement it directly or through an adapter during migration.
+This replaced the old network-only extension point as the top-level concept.
+Existing network drivers now implement `DriverModule` directly.
 
 ### 9.2 Config Provider
 
@@ -983,22 +983,12 @@ DeviceOrigin {
 }
 ```
 
-### 12.4 Compatibility Adapter
+### 12.4 Migration Status
 
-During migration, `NetworkDriverFactory` can be adapted:
-
-```rust
-pub struct NetworkDriverModuleAdapter<T> {
-    inner: T,
-}
-
-impl<T: NetworkDriverFactory> DriverModule for NetworkDriverModuleAdapter<T> {
-    // descriptor, discovery, pairing, backend_factory delegate to inner
-}
-```
-
-This allows the unified registry to land without rewriting every driver crate
-at once.
+The first-pass implementation skipped the temporary adapter layer and moved WLED,
+Hue, and Nanoleaf directly to `DriverModule`. That kept the final API cleaner:
+there is no legacy adapter layer, and all built-in network drivers now share
+the same module boundary as future extension points.
 
 ---
 
@@ -1573,7 +1563,7 @@ Work:
 
 - introduce `DriverModule`
 - introduce `DriverModuleRegistry`
-- adapt existing `NetworkDriverFactory` through compatibility adapter
+- port existing network drivers directly to `DriverModule`
 - keep existing network driver tests green
 
 Verify:
