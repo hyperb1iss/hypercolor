@@ -216,6 +216,9 @@ pub fn register_enabled_driver_output_backends(
         if !module_enabled(config, &descriptor) {
             continue;
         }
+        if !descriptor.capabilities.output_backend {
+            continue;
+        }
 
         let config_entry = driver_config_entry(config, &driver_id);
         let config_view = DriverConfigView {

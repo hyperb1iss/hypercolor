@@ -283,6 +283,35 @@ impl DriverModule for ConfiglessDriver {
     }
 }
 
+struct CapabilityOnlyDriver;
+
+static CAPABILITY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "capability-only",
+    "Capability Only",
+    DriverTransport::Network,
+    false,
+    false,
+);
+
+impl DriverModule for CapabilityOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &CAPABILITY_ONLY_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
+        panic!("capability-only drivers should not build output backends");
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+}
+
 struct ProtocolCatalogDriver;
 
 static PROTOCOL_CATALOG_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
@@ -458,6 +487,27 @@ fn register_enabled_driver_output_backends_skips_config_disabled_driver() {
         &config,
     )
     .expect("disabled driver should be skipped cleanly");
+
+    assert!(backend_manager.backend_ids().is_empty());
+}
+
+#[test]
+fn register_enabled_driver_output_backends_skips_capability_only_driver() {
+    let host = NullHost::new();
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(CapabilityOnlyDriver)
+        .expect("capability-only driver should register");
+    let config = HypercolorConfig::default();
+    let mut backend_manager = BackendManager::new();
+
+    network::register_enabled_driver_output_backends(
+        &mut backend_manager,
+        &registry,
+        &host,
+        &config,
+    )
+    .expect("capability-only driver should be skipped cleanly");
 
     assert!(backend_manager.backend_ids().is_empty());
 }
