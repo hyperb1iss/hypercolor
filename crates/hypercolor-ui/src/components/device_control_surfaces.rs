@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlObjectField, ControlSurfaceDocument,
-    ControlValue as DynamicControlValue, ControlValueMap, ControlValueType,
+    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlObjectField,
+    ControlSurfaceDocument, ControlValue as DynamicControlValue, ControlValueMap, ControlValueType,
 };
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -91,8 +91,7 @@ fn render_surface(
         "{field_count} fields · {action_count} actions · rev {}",
         surface.revision
     );
-    let fields = surface.fields.clone();
-    let actions = surface.actions.clone();
+    let groups = grouped_surface_items(&surface);
 
     view! {
         <section class="rounded-lg border border-edge-subtle/45 bg-surface-overlay/20 overflow-hidden">
@@ -105,11 +104,157 @@ fn render_surface(
                 </div>
             </div>
             <div class="divide-y divide-edge-subtle/30">
-                {fields.into_iter().map(|field| {
-                    render_field(surface.clone(), field, surfaces_resource)
+                {groups.into_iter().map(|group| {
+                    render_group(surface.clone(), group, surfaces_resource)
                 }).collect_view()}
-                {actions.into_iter().map(|action| {
-                    render_action(surface.clone(), action, surfaces_resource)
+            </div>
+        </section>
+    }
+}
+
+#[derive(Clone)]
+struct ControlSurfaceSection {
+    id: Option<String>,
+    label: Option<String>,
+    description: Option<String>,
+    ordering: i32,
+    items: Vec<ControlSurfaceItem>,
+}
+
+#[derive(Clone)]
+enum ControlSurfaceItem {
+    Field(ControlFieldDescriptor),
+    Action(ControlActionDescriptor),
+}
+
+impl ControlSurfaceItem {
+    fn ordering(&self) -> i32 {
+        match self {
+            Self::Field(field) => field.ordering,
+            Self::Action(action) => action.ordering,
+        }
+    }
+
+    fn group_id(&self) -> Option<&str> {
+        match self {
+            Self::Field(field) => field.group_id.as_deref(),
+            Self::Action(action) => action.group_id.as_deref(),
+        }
+    }
+}
+
+fn grouped_surface_items(surface: &ControlSurfaceDocument) -> Vec<ControlSurfaceSection> {
+    let mut groups = surface.groups.clone();
+    groups.sort_by(|left, right| {
+        left.ordering
+            .cmp(&right.ordering)
+            .then_with(|| left.label.cmp(&right.label))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut sections = groups
+        .into_iter()
+        .map(section_from_group)
+        .collect::<Vec<_>>();
+    let mut ungrouped = ControlSurfaceSection {
+        id: None,
+        label: None,
+        description: None,
+        ordering: i32::MAX,
+        items: Vec::new(),
+    };
+
+    let mut items = surface
+        .fields
+        .iter()
+        .filter(|field| !field_is_hidden(surface, field))
+        .cloned()
+        .map(ControlSurfaceItem::Field)
+        .chain(
+            surface
+                .actions
+                .iter()
+                .filter(|action| !action_is_hidden(surface, action))
+                .cloned()
+                .map(ControlSurfaceItem::Action),
+        )
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| left.ordering().cmp(&right.ordering()));
+
+    for item in items {
+        let Some(group_id) = item.group_id() else {
+            ungrouped.items.push(item);
+            continue;
+        };
+        if let Some(section) = sections
+            .iter_mut()
+            .find(|section| section.id.as_deref() == Some(group_id))
+        {
+            section.items.push(item);
+        } else {
+            ungrouped.items.push(item);
+        }
+    }
+
+    sections.retain(|section| !section.items.is_empty());
+    if !ungrouped.items.is_empty() {
+        sections.push(ungrouped);
+    }
+    sections.sort_by(|left, right| {
+        left.ordering
+            .cmp(&right.ordering)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    sections
+}
+
+fn section_from_group(group: ControlGroupDescriptor) -> ControlSurfaceSection {
+    ControlSurfaceSection {
+        id: Some(group.id),
+        label: Some(group.label),
+        description: group.description,
+        ordering: group.ordering,
+        items: Vec::new(),
+    }
+}
+
+fn field_is_hidden(surface: &ControlSurfaceDocument, field: &ControlFieldDescriptor) -> bool {
+    surface
+        .availability
+        .get(&field.id)
+        .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
+}
+
+fn action_is_hidden(surface: &ControlSurfaceDocument, action: &ControlActionDescriptor) -> bool {
+    surface
+        .action_availability
+        .get(&action.id)
+        .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
+}
+
+fn render_group(
+    surface: ControlSurfaceDocument,
+    group: ControlSurfaceSection,
+    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+) -> impl IntoView {
+    let label = group.label.clone();
+    let description = group.description.clone();
+    let items = group.items.clone();
+
+    view! {
+        <section>
+            {label.map(|label| view! {
+                <div class="px-3 py-2 bg-surface-sunken/20 border-b border-edge-subtle/25">
+                    <div class="text-[9px] font-semibold uppercase text-fg-tertiary/70">{label}</div>
+                    {description.map(|text| view! {
+                        <div class="mt-0.5 text-[9px] leading-snug text-fg-tertiary/45">{text}</div>
+                    })}
+                </div>
+            })}
+            <div class="divide-y divide-edge-subtle/30">
+                {items.into_iter().map(|item| match item {
+                    ControlSurfaceItem::Field(field) => render_field(surface.clone(), field, surfaces_resource).into_any(),
+                    ControlSurfaceItem::Action(action) => render_action(surface.clone(), action, surfaces_resource).into_any(),
                 }).collect_view()}
             </div>
         </section>
@@ -123,13 +268,14 @@ fn render_field(
 ) -> impl IntoView {
     let field_id = field.id.clone();
     let current_value = surface.values.get(&field_id).cloned();
-    let availability = surface
-        .availability
-        .get(&field_id)
+    let availability = surface.availability.get(&field_id).cloned();
+    let availability_state = availability
+        .as_ref()
         .map(|availability| availability.state)
         .unwrap_or(ControlAvailabilityState::Available);
+    let availability_reason = availability.and_then(|availability| availability.reason);
     let editable = field.access != ControlAccess::ReadOnly
-        && availability == ControlAvailabilityState::Available;
+        && availability_state == ControlAvailabilityState::Available;
     let field_label = field.label.clone();
     let description = field.description.clone();
     let value_view = render_field_editor(
@@ -147,6 +293,9 @@ fn render_field(
                 <div class="text-[11px] text-fg-secondary font-medium truncate">{field_label}</div>
                 {description.map(|text| view! {
                     <div class="text-[9px] text-fg-tertiary/45 leading-snug mt-0.5">{text}</div>
+                })}
+                {availability_reason.map(|text| view! {
+                    <div class="text-[9px] text-yellow-200/65 leading-snug mt-0.5">{text}</div>
                 })}
             </div>
             <div class="shrink-0 min-w-[120px] flex justify-end">{value_view}</div>
