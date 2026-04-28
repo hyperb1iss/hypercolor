@@ -371,7 +371,7 @@ impl DriverControlProvider for RescanTestDriver {
         changes: ValidatedControlChanges,
     ) -> anyhow::Result<ApplyControlChangesResponse> {
         Ok(ApplyControlChangesResponse {
-            surface_id: "driver:rescan_test".to_owned(),
+            surface_id: "driver:provider_typo".to_owned(),
             previous_revision: 0,
             revision: 0,
             accepted: changes

@@ -668,6 +668,7 @@ async fn apply_driver_control_surface_values(
             "Applied driver controls for {driver_id}, but dynamic impact handling failed: {error}"
         ));
     }
+    response.surface_id = surface_id;
     response.previous_revision = previous_revision;
     response.revision = driver_control_revision(&updated_entry);
     response.values = driver_surface_values(provider, state, &driver_id, &updated_entry).await;
@@ -755,6 +756,7 @@ async fn apply_driver_device_control_surface_values(
         .await
     {
         Ok(mut response) => {
+            response.surface_id = surface_id;
             let refreshed = provider
                 .device_surface(state.driver_host.as_ref(), &device)
                 .await
