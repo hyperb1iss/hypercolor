@@ -8,7 +8,6 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::use_debounce_fn_with_arg;
 
-use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::control_panel::ControlDropdownDismissHandlers;
@@ -23,6 +22,7 @@ use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState};
 use crate::layout_page_state::{LayoutPageState, PerLayoutState};
 use crate::storage;
 use crate::toasts;
+use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 // Panel size defaults and constraints

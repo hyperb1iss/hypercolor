@@ -5,7 +5,6 @@ use leptos_icons::Icon;
 use leptos_router::hooks::use_params_map;
 use leptos_use::use_debounce_fn;
 
-use hypercolor_leptos_ext::events::document as browser_document;
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::components::calibration_guide::CalibrationGuide;
@@ -19,6 +18,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::toasts;
+use hypercolor_leptos_ext::events::document as browser_document;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 

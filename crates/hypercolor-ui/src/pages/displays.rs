@@ -9,7 +9,6 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_use::{use_debounce_fn, use_debounce_fn_with_arg};
 
-use hypercolor_leptos_ext::events::{Input, document as browser_document};
 use crate::api;
 use crate::app::{DisplaysContext, EffectsContext, WsContext};
 use crate::components::control_panel::ControlPanel;
@@ -20,6 +19,7 @@ use crate::display_preview_state::{use_display_face_resource, use_display_previe
 use crate::icons::*;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::toasts;
+use hypercolor_leptos_ext::events::{Input, document as browser_document};
 use hypercolor_types::scene::{
     DisplayFaceBlendMode, RenderGroupRole, SceneKind, SceneMutationMode,
 };

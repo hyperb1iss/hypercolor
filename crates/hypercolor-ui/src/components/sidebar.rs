@@ -8,8 +8,6 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_location;
 use leptos_use::use_throttle_fn_with_arg;
 
-use hypercolor_leptos_ext::events::Input;
-use hypercolor_leptos_ext::prelude::random_unit;
 use crate::api;
 use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
@@ -20,6 +18,8 @@ use crate::icons::*;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 use crate::storage;
 use crate::style_utils::category_accent_rgb;
+use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::prelude::random_unit;
 
 // ── Sidebar Component ──────────────────────────────────────────────────────
 

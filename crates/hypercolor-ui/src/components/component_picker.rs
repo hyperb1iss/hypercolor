@@ -68,11 +68,9 @@ fn install_outside_click_handler(set_open: WriteSignal<bool>) {
         doc,
         ev::mousedown,
         move |ev: leptos::ev::MouseEvent| {
-            let inside = ev
-                .target()
-                .is_some_and(|target| {
-                    target_closest(Some(target), ".component-picker, .component-picker-panel")
-                });
+            let inside = ev.target().is_some_and(|target| {
+                target_closest(Some(target), ".component-picker, .component-picker-panel")
+            });
 
             if !inside {
                 set_open.set(false);

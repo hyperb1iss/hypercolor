@@ -54,10 +54,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
 
     let on_change = move |ev: web_sys::Event| {
         let event = Change::from_event(ev);
-        let Some(file) = event
-            .files()
-            .and_then(|files| files.get(0))
-        else {
+        let Some(file) = event.files().and_then(|files| files.get(0)) else {
             return;
         };
 

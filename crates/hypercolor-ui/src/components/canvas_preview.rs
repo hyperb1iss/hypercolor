@@ -288,13 +288,11 @@ pub fn CanvasPreview(
                                 }
 
                                 if let Some(telemetry) = preview_telemetry {
-                                    let arrival_to_present_ms =
-                                        latest_frame_received_at.borrow().map_or(
-                                            0.0,
-                                            |received_at_ms| {
-                                                (raf_time_ms - received_at_ms).max(0.0)
-                                            },
-                                        );
+                                    let arrival_to_present_ms = latest_frame_received_at
+                                        .borrow()
+                                        .map_or(0.0, |received_at_ms| {
+                                            (raf_time_ms - received_at_ms).max(0.0)
+                                        });
                                     let next_telemetry = PreviewPresenterTelemetry {
                                         runtime_mode: mode,
                                         present_fps: quantize_present_fps(next_present_fps),
@@ -306,7 +304,8 @@ pub fn CanvasPreview(
                                     };
                                     let previous_telemetry =
                                         last_published_telemetry.borrow().clone();
-                                    let last_published_at_ms = *last_telemetry_published_at.borrow();
+                                    let last_published_at_ms =
+                                        *last_telemetry_published_at.borrow();
                                     if should_publish_preview_telemetry(
                                         &previous_telemetry,
                                         &next_telemetry,
@@ -337,9 +336,7 @@ pub fn CanvasPreview(
             move || scheduler.schedule()
         });
 
-        presenter_scheduler_handle
-            .borrow_mut()
-            .replace(scheduler);
+        presenter_scheduler_handle.borrow_mut().replace(scheduler);
         *schedule_present.borrow_mut() = Some(schedule);
     }
 

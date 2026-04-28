@@ -449,12 +449,10 @@ fn install_click_outside_handler(
             if expanded_picker_id.get_untracked().is_none() {
                 return;
             }
-            let inside = ev
-                .target()
-                .is_some_and(|target| {
-                    target_closest(Some(target.clone()), ".color-picker-popover")
-                        || target_closest(Some(target), ".swatch-glow")
-                });
+            let inside = ev.target().is_some_and(|target| {
+                target_closest(Some(target.clone()), ".color-picker-popover")
+                    || target_closest(Some(target), ".swatch-glow")
+            });
 
             if !inside {
                 set_expanded.set(None);
