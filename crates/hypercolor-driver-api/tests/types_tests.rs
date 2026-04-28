@@ -133,7 +133,7 @@ impl NetworkDriverFactory for ControlOnlyDriver {
         &self,
         host: &dyn DriverHost,
         config: hypercolor_driver_api::DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn hypercolor_core::device::DeviceBackend>>> {
+    ) -> anyhow::Result<Option<Box<dyn hypercolor_driver_api::DeviceBackend>>> {
         let _ = (host, config);
         Ok(None)
     }
