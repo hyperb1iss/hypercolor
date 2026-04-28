@@ -763,50 +763,12 @@ const fn bool_true() -> bool {
 pub mod support {
     use std::collections::HashMap;
     use std::net::IpAddr;
-    use std::path::PathBuf;
 
-    use anyhow::Result;
     use tracing::warn;
 
-    use crate::CredentialStore;
     use crate::DriverHost;
     use crate::validation::{validate_ip, validate_port};
     use hypercolor_types::device::DeviceId;
-
-    /// Open the daemon's default credential store for native built-in drivers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the configured data directory or credential file
-    /// cannot be initialized.
-    pub fn open_default_credential_store_blocking() -> Result<CredentialStore> {
-        CredentialStore::open_blocking(&default_data_dir())
-    }
-
-    fn default_data_dir() -> PathBuf {
-        const APP_DIR: &str = "hypercolor";
-
-        #[cfg(target_os = "linux")]
-        {
-            std::env::var("XDG_DATA_HOME")
-                .map_or_else(
-                    |_| {
-                        dirs::home_dir()
-                            .expect("HOME must be set")
-                            .join(".local/share")
-                    },
-                    PathBuf::from,
-                )
-                .join(APP_DIR)
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            dirs::data_local_dir()
-                .expect("data directory must be resolvable")
-                .join(APP_DIR)
-        }
-    }
 
     /// Best-effort immediate activation after pairing.
     pub async fn activate_if_requested(

@@ -206,15 +206,6 @@ impl NanoleafScanner {
     }
 }
 
-impl Default for NanoleafScanner {
-    fn default() -> Self {
-        let credential_store =
-            hypercolor_driver_api::support::open_default_credential_store_blocking()
-                .expect("default Nanoleaf scanner should open credential store");
-        Self::new(Arc::new(credential_store))
-    }
-}
-
 #[async_trait::async_trait]
 impl TransportScanner for NanoleafScanner {
     fn name(&self) -> &'static str {

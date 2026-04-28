@@ -23,7 +23,6 @@ tokio = { workspace = true }
 mdns-sd = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
-dirs = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

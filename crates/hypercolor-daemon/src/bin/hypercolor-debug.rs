@@ -3,14 +3,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport,
     SmBusScanner, TransportScanner, UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
 };
-use hypercolor_driver_api::support::open_default_credential_store_blocking;
 use hypercolor_driver_api::{
-    DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveredDevice,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
+    CredentialStore, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
+    DriverDiscoveredDevice, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
+    DriverTrackedDevice,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -90,7 +91,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
     let registry = DeviceRegistry::new();
     let config = HypercolorConfig::default();
     let credential_store = Arc::new(
-        open_default_credential_store_blocking()
+        CredentialStore::open_blocking(&ConfigManager::data_dir())
             .context("failed to open network credential store")?,
     );
     let driver_registry =
