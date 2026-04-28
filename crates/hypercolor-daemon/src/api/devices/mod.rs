@@ -50,14 +50,14 @@ pub use pairing::{
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateDeviceRequest {
     pub name: Option<String>,
     pub enabled: Option<bool>,
     pub brightness: Option<u8>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct IdentifyRequest {
     pub duration_ms: Option<u64>,
     pub color: Option<String>,

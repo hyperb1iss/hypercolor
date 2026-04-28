@@ -49,6 +49,13 @@ from ._generated.api.system import (
 )
 from ._generated.models.apply_effect_request import ApplyEffectRequest
 from ._generated.models.apply_effect_request_controls import ApplyEffectRequestControls
+from ._generated.models.apply_profile_request import ApplyProfileRequest
+from ._generated.models.discover_request import DiscoverRequest
+from ._generated.models.identify_request import IdentifyRequest
+from ._generated.models.set_brightness_request import SetBrightnessRequest
+from ._generated.models.set_config_request import SetConfigRequest
+from ._generated.models.update_current_controls_request import UpdateCurrentControlsRequest
+from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.types import UNSET
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
 from .exceptions import (
@@ -156,9 +163,8 @@ class HypercolorClient:
     async def set_brightness(self, brightness: int) -> BrightnessUpdate:
         """Set the global daemon brightness."""
         return await self._generated_model(
-            _with_json(
-                generated_set_brightness._get_kwargs(),
-                {"brightness": brightness},
+            generated_set_brightness._get_kwargs(
+                body=SetBrightnessRequest(brightness=brightness),
             ),
             BrightnessUpdate,
         )
@@ -199,7 +205,10 @@ class HypercolorClient:
     async def update_device(self, device_id: str, **fields: Any) -> Device:
         """Update device configuration."""
         return await self._generated_model(
-            _with_json(generated_update_device._get_kwargs(device_id), fields),
+            generated_update_device._get_kwargs(
+                device_id,
+                body=UpdateDeviceRequest.from_dict(fields),
+            ),
             Device,
         )
 
@@ -210,8 +219,13 @@ class HypercolorClient:
     ) -> DiscoverResult:
         """Trigger a device discovery scan."""
         body = _drop_none({"backends": backends, "timeout_ms": timeout_ms})
+        kwargs = (
+            generated_discover_devices._get_kwargs(body=DiscoverRequest.from_dict(body))
+            if body
+            else generated_discover_devices._get_kwargs()
+        )
         return await self._generated_model(
-            _with_json(generated_discover_devices._get_kwargs(), body or None),
+            kwargs,
             DiscoverResult,
         )
 
@@ -224,8 +238,16 @@ class HypercolorClient:
     ) -> IdentifyResult:
         """Flash a device for identification."""
         body = _drop_none({"duration_ms": duration_ms, "color": color})
+        kwargs = (
+            generated_identify_device._get_kwargs(
+                device_id,
+                body=IdentifyRequest.from_dict(body),
+            )
+            if body
+            else generated_identify_device._get_kwargs(device_id)
+        )
         return await self._generated_model(
-            _with_json(generated_identify_device._get_kwargs(device_id), body or None),
+            kwargs,
             IdentifyResult,
         )
 
@@ -277,9 +299,8 @@ class HypercolorClient:
     async def update_controls(self, controls: Mapping[str, Any]) -> ControlUpdateResult:
         """Update controls on the active effect."""
         return await self._generated_model(
-            _with_json(
-                generated_update_current_controls._get_kwargs(),
-                {"controls": dict(controls)},
+            generated_update_current_controls._get_kwargs(
+                body=UpdateCurrentControlsRequest.from_dict({"controls": dict(controls)}),
             ),
             ControlUpdateResult,
         )
@@ -338,8 +359,16 @@ class HypercolorClient:
     ) -> ApplyProfileResult:
         """Apply a saved profile."""
         body = _drop_none({"transition": _to_json_mapping(transition)})
+        kwargs = (
+            generated_apply_profile._get_kwargs(
+                profile_id,
+                body=ApplyProfileRequest.from_dict(body),
+            )
+            if body
+            else generated_apply_profile._get_kwargs(profile_id)
+        )
         return await self._generated_model(
-            _with_json(generated_apply_profile._get_kwargs(profile_id), body or None),
+            kwargs,
             ApplyProfileResult,
         )
 
@@ -429,13 +458,12 @@ class HypercolorClient:
         """Persist the selected audio input device."""
 
         return await self._generated_model(
-            _with_json(
-                generated_set_config_value._get_kwargs(),
-                {
-                    "key": "audio.device",
-                    "value": json.dumps(device_id),
-                    "live": live,
-                },
+            generated_set_config_value._get_kwargs(
+                body=SetConfigRequest(
+                    key="audio.device",
+                    value=json.dumps(device_id),
+                    live=live,
+                ),
             ),
             ConfigMutationResult,
         )
@@ -569,27 +597,22 @@ def _generated_param(value: Any) -> Any:
     return UNSET if value is None else value
 
 
-def _with_json(
-    kwargs: Mapping[str, Any],
-    body: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    request = dict(kwargs)
-    if body is not None:
-        request["json"] = body
-    return request
-
-
 def _apply_effect_kwargs(
     effect_id: str,
     body: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    if body is not None:
+        return generated_apply_effect._get_kwargs(
+            effect_id,
+            body=ApplyEffectRequest.from_dict(body),
+        )
     request = generated_apply_effect._get_kwargs(
         effect_id,
         body=ApplyEffectRequest(controls=ApplyEffectRequestControls()),
     )
     request.pop("json", None)
     request.pop("headers", None)
-    return _with_json(request, body)
+    return request
 
 
 def _request_path(path: str) -> str:

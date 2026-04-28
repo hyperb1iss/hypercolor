@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::Response;
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use hypercolor_types::config::HypercolorConfig;
 
@@ -14,7 +15,7 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::discovery;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct DiscoverRequest {
     pub backends: Option<Vec<String>>,
     pub timeout_ms: Option<u64>,

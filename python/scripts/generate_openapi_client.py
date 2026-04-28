@@ -24,6 +24,7 @@ def main() -> None:
         temp_dir = Path(temp_dir_raw)
         spec_path = Path(args.spec) if args.spec else export_openapi(temp_dir)
         validate_json(spec_path)
+        spec_path = prepare_generator_spec(spec_path, temp_dir)
         output_path = temp_dir / "client"
         run(
             [
@@ -80,6 +81,29 @@ def export_openapi(temp_dir: Path) -> Path:
 def validate_json(path: Path) -> None:
     with path.open(encoding="utf-8") as spec_file:
         json.load(spec_file)
+
+
+def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
+    with path.open(encoding="utf-8") as spec_file:
+        spec = json.load(spec_file)
+
+    schemas = spec.get("components", {}).get("schemas", {})
+    for name in (
+        "ControlApplyError",
+        "ControlOwner",
+        "ControlSurfaceEvent",
+        "ControlSurfaceScope",
+    ):
+        schema = schemas.get(name)
+        if isinstance(schema, dict):
+            schemas[name] = {
+                "type": "object",
+                "description": schema.get("description", f"{name} payload"),
+            }
+
+    generator_spec = temp_dir / "openapi-python-client.json"
+    generator_spec.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    return generator_spec
 
 
 def replace_generated(source: Path) -> None:

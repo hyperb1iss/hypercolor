@@ -7,6 +7,7 @@ use axum::extract::{Query, State};
 use axum::response::Response;
 use serde::Deserialize;
 use tracing::{info, warn};
+use utoipa::ToSchema;
 
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
@@ -22,7 +23,7 @@ pub struct GetConfigQuery {
     pub key: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SetConfigRequest {
     pub key: String,
     pub value: String,

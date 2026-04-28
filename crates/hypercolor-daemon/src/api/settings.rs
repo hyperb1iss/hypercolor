@@ -16,6 +16,7 @@ use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::input::audio::linux;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -40,7 +41,7 @@ pub struct BrightnessSettingsResponse {
     pub brightness: u8,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SetBrightnessRequest {
     pub brightness: u8,
 }

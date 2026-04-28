@@ -12,6 +12,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -46,7 +47,7 @@ pub struct UpdateProfileRequest {
     pub brightness: Option<u8>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ApplyProfileRequest {
     pub transition_ms: Option<u32>,
 }

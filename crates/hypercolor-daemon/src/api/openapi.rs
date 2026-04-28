@@ -2,13 +2,16 @@
 
 use utoipa::openapi::path::OperationBuilder;
 use utoipa::openapi::path::{Parameter, ParameterBuilder, ParameterIn};
+use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::{ObjectBuilder, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::openapi::{HttpMethod, Required, Response, Tag};
+use utoipa::openapi::{Content, HttpMethod, Ref, Required, Response, Tag};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{controls, devices, drivers, effects, envelope, system};
+use crate::api::{
+    config, controls, devices, drivers, effects, envelope, profiles, settings, system,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -43,6 +46,13 @@ use crate::api::{controls, devices, drivers, effects, envelope, system};
             envelope::ApiResponse<effects::EffectDetailResponse>,
             envelope::ApiResponse<effects::ActiveEffectResponse>,
             envelope::ApiResponse<effects::ApplyEffectResponse>,
+            devices::UpdateDeviceRequest,
+            devices::IdentifyRequest,
+            devices::DiscoverRequest,
+            effects::UpdateCurrentControlsRequest,
+            profiles::ApplyProfileRequest,
+            settings::SetBrightnessRequest,
+            config::SetConfigRequest,
             system::SystemStatus,
             system::RenderLoopStatus,
             system::LatestFrameStatus,
@@ -155,6 +165,13 @@ pub struct RouteSpec {
     pub tag: &'static str,
     summary: &'static str,
     success_status: &'static str,
+    request_body: Option<RequestBodySpec>,
+}
+
+#[derive(Clone, Copy)]
+struct RequestBodySpec {
+    schema: &'static str,
+    required: bool,
 }
 
 impl RouteSpec {
@@ -217,7 +234,13 @@ impl RouteSpec {
             tag,
             summary,
             success_status: "200",
+            request_body: None,
         }
+    }
+
+    const fn with_request_body(mut self, schema: &'static str, required: bool) -> Self {
+        self.request_body = Some(RequestBodySpec { schema, required });
+        self
     }
 }
 
@@ -275,7 +298,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "discover_devices",
         "devices",
         "Start device discovery",
-    ),
+    )
+    .with_request_body("DiscoverRequest", false),
     RouteSpec::get(
         "/api/v1/devices/metrics",
         "list_device_metrics",
@@ -305,7 +329,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "update_device",
         "devices",
         "Update one device",
-    ),
+    )
+    .with_request_body("UpdateDeviceRequest", true),
     RouteSpec::delete(
         "/api/v1/devices/{id}",
         "delete_device",
@@ -359,7 +384,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "identify_device",
         "devices",
         "Identify one device",
-    ),
+    )
+    .with_request_body("IdentifyRequest", false),
     RouteSpec::post(
         "/api/v1/devices/{id}/zones/{zone_id}/identify",
         "identify_zone",
@@ -540,7 +566,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "update_current_controls",
         "effects",
         "Update current effect controls",
-    ),
+    )
+    .with_request_body("UpdateCurrentControlsRequest", true),
     RouteSpec::put(
         "/api/v1/effects/current/controls/{name}/binding",
         "set_current_control_binding",
@@ -675,7 +702,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "apply_profile",
         "profiles",
         "Apply profile",
-    ),
+    )
+    .with_request_body("ApplyProfileRequest", false),
     RouteSpec::get("/api/v1/layouts", "list_layouts", "layouts", "List layouts"),
     RouteSpec::post(
         "/api/v1/layouts",
@@ -838,7 +866,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "set_brightness",
         "settings",
         "Set global brightness",
-    ),
+    )
+    .with_request_body("SetBrightnessRequest", true),
     RouteSpec::get(
         "/api/v1/config",
         "show_config",
@@ -856,7 +885,8 @@ pub const ROUTES: &[RouteSpec] = &[
         "set_config_value",
         "config",
         "Set daemon config value",
-    ),
+    )
+    .with_request_body("SetConfigRequest", true),
     RouteSpec::post(
         "/api/v1/config/reset",
         "reset_config_value",
@@ -971,8 +1001,25 @@ fn operation(route: &RouteSpec) -> utoipa::openapi::path::Operation {
     for parameter in path_parameters(route.path) {
         builder = builder.parameter(parameter);
     }
+    if let Some(request_body) = route.request_body {
+        builder = builder.request_body(Some(json_request_body(request_body)));
+    }
 
     builder.build()
+}
+
+fn json_request_body(spec: RequestBodySpec) -> utoipa::openapi::request_body::RequestBody {
+    RequestBodyBuilder::new()
+        .required(Some(if spec.required {
+            Required::True
+        } else {
+            Required::False
+        }))
+        .content(
+            "application/json",
+            Content::new(Some(Ref::from_schema_name(spec.schema))),
+        )
+        .build()
 }
 
 fn path_parameters(path: &str) -> Vec<Parameter> {

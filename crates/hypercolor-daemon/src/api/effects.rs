@@ -125,8 +125,9 @@ impl ActiveEffectResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateCurrentControlsRequest {
+    #[schema(value_type = Object)]
     pub controls: Option<serde_json::Value>,
 }
 

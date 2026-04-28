@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.driver_module_descriptor import DriverModuleDescriptor
@@ -20,11 +22,15 @@ class DriverSummary:
         config_key (str):
         descriptor (DriverModuleDescriptor): Stable module descriptor for native and future Wasm driver registries.
         enabled (bool):
+        control_surface_id (None | str | Unset):
+        control_surface_path (None | str | Unset):
     """
 
     config_key: str
     descriptor: DriverModuleDescriptor
     enabled: bool
+    control_surface_id: None | str | Unset = UNSET
+    control_surface_path: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,6 +39,18 @@ class DriverSummary:
         descriptor = self.descriptor.to_dict()
 
         enabled = self.enabled
+
+        control_surface_id: None | str | Unset
+        if isinstance(self.control_surface_id, Unset):
+            control_surface_id = UNSET
+        else:
+            control_surface_id = self.control_surface_id
+
+        control_surface_path: None | str | Unset
+        if isinstance(self.control_surface_path, Unset):
+            control_surface_path = UNSET
+        else:
+            control_surface_path = self.control_surface_path
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -43,6 +61,10 @@ class DriverSummary:
                 "enabled": enabled,
             }
         )
+        if control_surface_id is not UNSET:
+            field_dict["control_surface_id"] = control_surface_id
+        if control_surface_path is not UNSET:
+            field_dict["control_surface_path"] = control_surface_path
 
         return field_dict
 
@@ -57,10 +79,34 @@ class DriverSummary:
 
         enabled = d.pop("enabled")
 
+        def _parse_control_surface_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        control_surface_id = _parse_control_surface_id(
+            d.pop("control_surface_id", UNSET)
+        )
+
+        def _parse_control_surface_path(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        control_surface_path = _parse_control_surface_path(
+            d.pop("control_surface_path", UNSET)
+        )
+
         driver_summary = cls(
             config_key=config_key,
             descriptor=descriptor,
             enabled=enabled,
+            control_surface_id=control_surface_id,
+            control_surface_path=control_surface_path,
         )
 
         driver_summary.additional_properties = d
