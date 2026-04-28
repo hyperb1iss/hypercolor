@@ -2,9 +2,9 @@
 
 use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::controls::{
-    ControlAccess, ControlActionDescriptor, ControlAvailabilityState, ControlChange,
-    ControlFieldDescriptor, ControlSurfaceDocument, ControlValue as DynamicControlValue,
-    ControlValueType,
+    ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
+    ControlChange, ControlFieldDescriptor, ControlObjectField, ControlSurfaceDocument,
+    ControlValue as DynamicControlValue, ControlValueMap, ControlValueType,
 };
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -415,35 +415,337 @@ fn render_action(
         .unwrap_or(ControlAvailabilityState::Available);
     let enabled = state == ControlAvailabilityState::Available;
     let label = action.label.clone();
+    let description = action.description.clone();
+    let confirmation = action.confirmation.clone();
+    let confirmation_level = confirmation.as_ref().map(|confirmation| confirmation.level);
+    let confirmation_message = confirmation
+        .as_ref()
+        .map(|confirmation| confirmation.message.clone());
+    let confirmation_message_for_click = confirmation_message.clone();
+    let input_fields = action.input_fields.clone();
+    let (input_values, set_input_values) = signal(default_action_input_values(&input_fields));
+    let (confirmation_armed, set_confirmation_armed) = signal(false);
+    let button_label = Memo::new(move |_| {
+        if confirmation.is_some() && confirmation_armed.get() {
+            "Confirm".to_string()
+        } else {
+            "Run".to_string()
+        }
+    });
 
     view! {
-        <div class="px-3 py-2.5 flex items-center gap-3">
-            <div class="min-w-0 flex-1">
-                <div class="text-[11px] text-fg-secondary font-medium truncate">{label}</div>
-                <div class="text-[9px] text-fg-tertiary/45 font-mono">{format!("{state:?}")}</div>
-            </div>
-            <button
-                class="px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press flex items-center gap-1
-                       bg-surface-hover/45 text-fg-secondary hover:text-accent disabled:opacity-45 disabled:pointer-events-none"
-                disabled=!enabled
-                on:click=move |_| {
-                    let surface_id = surface.surface_id.clone();
-                    let action_id = action_id.clone();
-                    leptos::task::spawn_local(async move {
-                        match api::invoke_control_action(&surface_id, &action_id, Default::default()).await {
-                            Ok(_) => {
-                                toasts::toast_success("Action sent");
-                                surfaces_resource.refetch();
-                            }
-                            Err(error) => toasts::toast_error(&format!("Action failed: {error}")),
+        <div class="px-3 py-2.5 space-y-2">
+            <div class="flex items-start gap-3">
+                <div class="min-w-0 flex-1">
+                    <div class="text-[11px] text-fg-secondary font-medium truncate">{label}</div>
+                    {description.map(|text| view! {
+                        <div class="text-[9px] text-fg-tertiary/45 leading-snug mt-0.5">{text}</div>
+                    })}
+                    <div class="text-[9px] text-fg-tertiary/45 font-mono mt-0.5">{format!("{state:?}")}</div>
+                </div>
+                <button
+                    class=move || action_button_class(enabled, confirmation_level, confirmation_armed.get())
+                    disabled=!enabled
+                    on:click=move |_| {
+                        let surface_id = surface.surface_id.clone();
+                        let action_id = action_id.clone();
+                        if let Some(message) = confirmation_message_for_click.clone()
+                            && !confirmation_armed.get_untracked()
+                        {
+                            set_confirmation_armed.set(true);
+                            toasts::toast_info(&message);
+                            return;
                         }
-                    });
-                }
-            >
-                <Icon icon=LuPlay width="10px" height="10px" />
-                "Run"
-            </button>
+                        let input = input_values.get_untracked();
+                        leptos::task::spawn_local(async move {
+                            match api::invoke_control_action(&surface_id, &action_id, input).await {
+                                Ok(_) => {
+                                    toasts::toast_success("Action sent");
+                                    set_confirmation_armed.set(false);
+                                    surfaces_resource.refetch();
+                                }
+                                Err(error) => {
+                                    set_confirmation_armed.set(false);
+                                    toasts::toast_error(&format!("Action failed: {error}"));
+                                }
+                            }
+                        });
+                    }
+                >
+                    <Icon icon=if confirmation_level == Some(ActionConfirmationLevel::Destructive) { LuTriangleAlert } else { LuPlay } width="10px" height="10px" />
+                    {move || button_label.get()}
+                </button>
+            </div>
+            {confirmation_message.map(|message| view! {
+                <div class=confirmation_class(confirmation_level)>
+                    <Icon icon=LuTriangleAlert width="10px" height="10px" />
+                    <span>{message}</span>
+                </div>
+            })}
+            {(!input_fields.is_empty()).then(|| view! {
+                <div class="grid gap-2">
+                    {input_fields.into_iter().map(|field| {
+                        render_action_input(field, input_values, set_input_values, enabled)
+                    }).collect_view()}
+                </div>
+            })}
         </div>
+    }
+}
+
+fn render_action_input(
+    field: ControlObjectField,
+    input_values: ReadSignal<ControlValueMap>,
+    set_input_values: WriteSignal<ControlValueMap>,
+    enabled: bool,
+) -> AnyView {
+    let label = if field.required {
+        format!("{} *", field.label)
+    } else {
+        field.label.clone()
+    };
+    let field_id = field.id.clone();
+    let editor = render_action_input_editor(field, input_values, set_input_values, enabled);
+
+    view! {
+        <label class="flex items-center gap-2">
+            <span class="min-w-[84px] max-w-[120px] truncate text-[9px] text-fg-tertiary/60">{label}</span>
+            <div class="flex-1 min-w-0">{editor}</div>
+            <span class="sr-only">{field_id}</span>
+        </label>
+    }
+    .into_any()
+}
+
+fn render_action_input_editor(
+    field: ControlObjectField,
+    input_values: ReadSignal<ControlValueMap>,
+    set_input_values: WriteSignal<ControlValueMap>,
+    enabled: bool,
+) -> AnyView {
+    let field_id = field.id.clone();
+    match field.value_type.clone() {
+        ControlValueType::Bool => {
+            let value_field = field_id.clone();
+            let change_field = field_id.clone();
+            view! {
+                <input
+                    type="checkbox"
+                    class="w-4 h-4 rounded border-edge-subtle accent-cyan-300"
+                    prop:checked=move || {
+                        let values = input_values.get();
+                        matches!(values.get(&value_field), Some(DynamicControlValue::Bool(true)))
+                    }
+                    disabled=!enabled
+                    on:change=move |ev| {
+                        if let Some(next) = Change::from_event(ev).checked() {
+                            set_action_input_value(
+                                set_input_values,
+                                change_field.clone(),
+                                DynamicControlValue::Bool(next),
+                            );
+                        }
+                    }
+                />
+            }
+            .into_any()
+        }
+        ControlValueType::Integer { .. } => render_action_number_input(
+            NumberEditorKind::Integer,
+            field_id,
+            input_values,
+            set_input_values,
+            enabled,
+        )
+        .into_any(),
+        ControlValueType::Float { .. } => render_action_number_input(
+            NumberEditorKind::Float,
+            field_id,
+            input_values,
+            set_input_values,
+            enabled,
+        )
+        .into_any(),
+        ControlValueType::DurationMs { .. } => render_action_number_input(
+            NumberEditorKind::DurationMs,
+            field_id,
+            input_values,
+            set_input_values,
+            enabled,
+        )
+        .into_any(),
+        ControlValueType::Enum { options } => {
+            let value_field = field_id.clone();
+            let change_field = field_id.clone();
+            view! {
+                <select
+                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] text-fg-secondary
+                           focus:outline-none focus:border-accent-muted disabled:opacity-50"
+                    prop:value=move || {
+                        let values = input_values.get();
+                        enum_text(values.get(&value_field))
+                    }
+                    disabled=!enabled
+                    on:change=move |ev| {
+                        if let Some(raw) = Change::from_event(ev).value_string() {
+                            set_action_input_value(
+                                set_input_values,
+                                change_field.clone(),
+                                DynamicControlValue::Enum(raw),
+                            );
+                        }
+                    }
+                >
+                    {options.into_iter().map(|option| view! {
+                        <option value=option.value>{option.label}</option>
+                    }).collect_view()}
+                </select>
+            }
+            .into_any()
+        }
+        ControlValueType::String { .. }
+        | ControlValueType::Secret
+        | ControlValueType::IpAddress
+        | ControlValueType::MacAddress
+        | ControlValueType::ColorRgb
+        | ControlValueType::ColorRgba => render_action_text_input(
+            text_editor_kind(&field.value_type),
+            field_id,
+            input_values,
+            set_input_values,
+            enabled,
+        )
+        .into_any(),
+        _ => view! {
+            <span class="text-[9px] text-fg-tertiary/45">"Unsupported input"</span>
+        }
+        .into_any(),
+    }
+}
+
+fn render_action_number_input(
+    kind: NumberEditorKind,
+    field_id: String,
+    input_values: ReadSignal<ControlValueMap>,
+    set_input_values: WriteSignal<ControlValueMap>,
+    enabled: bool,
+) -> impl IntoView {
+    let value_field = field_id.clone();
+    let change_field = field_id.clone();
+    view! {
+        <input
+            type="number"
+            class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] font-mono text-fg-secondary
+                   focus:outline-none focus:border-accent-muted disabled:opacity-50"
+            prop:value=move || {
+                let values = input_values.get();
+                number_text(values.get(&value_field))
+            }
+            disabled=!enabled
+            on:change=move |ev| {
+                let Some(raw) = Change::from_event(ev).value_string() else {
+                    return;
+                };
+                let parsed = match parse_number_value(kind, &raw) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        toasts::toast_error(&error);
+                        return;
+                    }
+                };
+                set_action_input_value(set_input_values, change_field.clone(), parsed);
+            }
+        />
+    }
+}
+
+fn render_action_text_input(
+    kind: TextEditorKind,
+    field_id: String,
+    input_values: ReadSignal<ControlValueMap>,
+    set_input_values: WriteSignal<ControlValueMap>,
+    enabled: bool,
+) -> impl IntoView {
+    let value_field = field_id.clone();
+    let change_field = field_id.clone();
+    view! {
+        <input
+            type=if matches!(kind, TextEditorKind::Secret) { "password" } else { "text" }
+            class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] font-mono text-fg-secondary
+                   focus:outline-none focus:border-accent-muted disabled:opacity-50"
+            prop:value=move || {
+                let values = input_values.get();
+                value_text(values.get(&value_field))
+            }
+            disabled=!enabled
+            on:change=move |ev| {
+                if let Some(raw) = Change::from_event(ev).value_string() {
+                    set_action_input_value(
+                        set_input_values,
+                        change_field.clone(),
+                        text_value(kind, raw),
+                    );
+                }
+            }
+        />
+    }
+}
+
+fn set_action_input_value(
+    set_input_values: WriteSignal<ControlValueMap>,
+    field_id: String,
+    value: DynamicControlValue,
+) {
+    set_input_values.update(|values| {
+        values.insert(field_id, value);
+    });
+}
+
+fn default_action_input_values(fields: &[ControlObjectField]) -> ControlValueMap {
+    fields
+        .iter()
+        .filter_map(|field| {
+            field
+                .default_value
+                .clone()
+                .map(|value| (field.id.clone(), value))
+        })
+        .collect()
+}
+
+fn action_button_class(
+    enabled: bool,
+    confirmation_level: Option<ActionConfirmationLevel>,
+    armed: bool,
+) -> &'static str {
+    if !enabled {
+        return "px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press flex items-center gap-1 bg-surface-hover/45 text-fg-secondary disabled:opacity-45 disabled:pointer-events-none";
+    }
+
+    match (confirmation_level, armed) {
+        (Some(ActionConfirmationLevel::Destructive), true) => {
+            "px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press flex items-center gap-1 bg-red-500/15 text-red-300 hover:text-red-200"
+        }
+        (Some(ActionConfirmationLevel::HardwarePersistent), true)
+        | (Some(ActionConfirmationLevel::Normal), true)
+        | (Some(ActionConfirmationLevel::Destructive), false) => {
+            "px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press flex items-center gap-1 bg-yellow-500/10 text-yellow-200 hover:text-yellow-100"
+        }
+        _ => {
+            "px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press flex items-center gap-1 bg-surface-hover/45 text-fg-secondary hover:text-accent"
+        }
+    }
+}
+
+fn confirmation_class(level: Option<ActionConfirmationLevel>) -> &'static str {
+    match level {
+        Some(ActionConfirmationLevel::Destructive) => {
+            "flex items-center gap-1.5 text-[9px] text-red-300/75"
+        }
+        Some(ActionConfirmationLevel::HardwarePersistent) => {
+            "flex items-center gap-1.5 text-[9px] text-yellow-200/75"
+        }
+        _ => "flex items-center gap-1.5 text-[9px] text-fg-tertiary/55",
     }
 }
 
