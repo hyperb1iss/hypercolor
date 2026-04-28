@@ -124,6 +124,11 @@ impl CredentialStore {
         self.get(key).await.map(Credentials::into_driver_json)
     }
 
+    /// Retrieve credentials as a driver-scoped JSON payload.
+    pub async fn get_driver_json(&self, driver_id: &str, key: &str) -> Option<Value> {
+        self.get_json(&scoped_credential_key(driver_id, key)).await
+    }
+
     /// Store or replace credentials for one key.
     ///
     /// # Errors
@@ -148,6 +153,19 @@ impl CredentialStore {
             .await
     }
 
+    /// Store or replace a driver-scoped JSON credential payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the encrypted payload cannot be persisted.
+    pub async fn store_driver_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
+        self.store(
+            &scoped_credential_key(driver_id, key),
+            Credentials::new(driver_id, value),
+        )
+        .await
+    }
+
     /// Remove credentials for one key if present.
     ///
     /// # Errors
@@ -160,6 +178,15 @@ impl CredentialStore {
             cache.clone()
         };
         self.persist_snapshot(&snapshot).await
+    }
+
+    /// Remove a driver-scoped credential payload if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the encrypted payload cannot be persisted.
+    pub async fn remove_driver(&self, driver_id: &str, key: &str) -> Result<()> {
+        self.remove(&scoped_credential_key(driver_id, key)).await
     }
 
     /// List all stored credential keys in deterministic order.
@@ -190,6 +217,10 @@ impl CredentialStore {
 
         Ok(())
     }
+}
+
+fn scoped_credential_key(driver_id: &str, key: &str) -> String {
+    format!("{driver_id}:{key}")
 }
 
 fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {

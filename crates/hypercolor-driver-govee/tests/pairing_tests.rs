@@ -42,7 +42,7 @@ async fn pair_validates_and_stores_account_api_key() {
     assert!(host.runtime.activated.load(Ordering::SeqCst));
     assert_eq!(
         host.credentials
-            .get_json("govee:account")
+            .get_json("govee", "account")
             .await
             .expect("stored credentials should read"),
         Some(serde_json::json!({ "api_key": "test-key" }))
@@ -71,7 +71,7 @@ async fn pair_rejects_missing_api_key_without_network_call() {
     assert_eq!(outcome.auth_state, DeviceAuthState::Open);
     assert_eq!(
         host.credentials
-            .get_json("govee:account")
+            .get_json("govee", "account")
             .await
             .expect("credentials should read"),
         None
@@ -102,7 +102,8 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
 
     host.credentials
         .set_json(
-            "govee:account",
+            "govee",
+            "account",
             serde_json::json!({ "api_key": "stored-key" }),
         )
         .await
@@ -126,7 +127,7 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     assert!(host.runtime.disconnected.load(Ordering::SeqCst));
     assert_eq!(
         host.credentials
-            .get_json("govee:account")
+            .get_json("govee", "account")
             .await
             .expect("credentials should read"),
         None
@@ -229,17 +230,28 @@ struct TestCredentialStore {
 
 #[async_trait]
 impl DriverCredentialStore for TestCredentialStore {
-    async fn get_json(&self, key: &str) -> Result<Option<Value>> {
-        Ok(self.values.lock().await.get(key).cloned())
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
+        Ok(self
+            .values
+            .lock()
+            .await
+            .get(&format!("{driver_id}:{key}"))
+            .cloned())
     }
 
-    async fn set_json(&self, key: &str, value: Value) -> Result<()> {
-        self.values.lock().await.insert(key.to_owned(), value);
+    async fn set_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
+        self.values
+            .lock()
+            .await
+            .insert(format!("{driver_id}:{key}"), value);
         Ok(())
     }
 
-    async fn remove(&self, key: &str) -> Result<()> {
-        self.values.lock().await.remove(key);
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
+        self.values
+            .lock()
+            .await
+            .remove(&format!("{driver_id}:{key}"));
         Ok(())
     }
 }

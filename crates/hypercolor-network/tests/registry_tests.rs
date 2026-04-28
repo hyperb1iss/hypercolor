@@ -20,18 +20,18 @@ struct NullCredentialStore;
 
 #[async_trait]
 impl DriverCredentialStore for NullCredentialStore {
-    async fn get_json(&self, key: &str) -> Result<Option<serde_json::Value>> {
-        let _ = key;
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
         Ok(None)
     }
 
-    async fn set_json(&self, key: &str, value: serde_json::Value) -> Result<()> {
-        let _ = (key, value);
+    async fn set_json(&self, driver_id: &str, key: &str, value: serde_json::Value) -> Result<()> {
+        let _ = (driver_id, key, value);
         Ok(())
     }
 
-    async fn remove(&self, key: &str) -> Result<()> {
-        let _ = key;
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
+        let _ = (driver_id, key);
         Ok(())
     }
 }

@@ -253,17 +253,28 @@ struct TestCredentialStore {
 
 #[async_trait]
 impl DriverCredentialStore for TestCredentialStore {
-    async fn get_json(&self, key: &str) -> Result<Option<Value>> {
-        Ok(self.values.lock().await.get(key).cloned())
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
+        Ok(self
+            .values
+            .lock()
+            .await
+            .get(&format!("{driver_id}:{key}"))
+            .cloned())
     }
 
-    async fn set_json(&self, key: &str, value: Value) -> Result<()> {
-        self.values.lock().await.insert(key.to_owned(), value);
+    async fn set_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
+        self.values
+            .lock()
+            .await
+            .insert(format!("{driver_id}:{key}"), value);
         Ok(())
     }
 
-    async fn remove(&self, key: &str) -> Result<()> {
-        self.values.lock().await.remove(key);
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
+        self.values
+            .lock()
+            .await
+            .remove(&format!("{driver_id}:{key}"));
         Ok(())
     }
 }

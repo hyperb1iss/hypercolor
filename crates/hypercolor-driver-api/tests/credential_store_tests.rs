@@ -136,6 +136,45 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
 }
 
 #[tokio::test]
+async fn credential_store_scopes_driver_json_payloads() -> TestResult {
+    let tempdir = tempdir()?;
+    let store = CredentialStore::open(tempdir.path()).await?;
+
+    store
+        .store_driver_json(
+            "alpha",
+            "account",
+            serde_json::json!({ "api_key": "alpha-key" }),
+        )
+        .await?;
+    store
+        .store_driver_json(
+            "beta",
+            "account",
+            serde_json::json!({ "api_key": "beta-key" }),
+        )
+        .await?;
+
+    assert_eq!(
+        store.get_driver_json("alpha", "account").await,
+        Some(serde_json::json!({ "api_key": "alpha-key" }))
+    );
+    assert_eq!(
+        store.get_driver_json("beta", "account").await,
+        Some(serde_json::json!({ "api_key": "beta-key" }))
+    );
+
+    store.remove_driver("alpha", "account").await?;
+    assert_eq!(store.get_driver_json("alpha", "account").await, None);
+    assert_eq!(
+        store.get_driver_json("beta", "account").await,
+        Some(serde_json::json!({ "api_key": "beta-key" }))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn credential_store_keeps_driver_json_opaque() -> TestResult {
     let tempdir = tempdir()?;
     let store = CredentialStore::open(tempdir.path()).await?;

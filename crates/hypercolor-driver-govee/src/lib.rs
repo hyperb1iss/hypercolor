@@ -49,7 +49,7 @@ pub use lan::discovery::{
     GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,
 };
 
-const GOVEE_ACCOUNT_CREDENTIAL_KEY: &str = "govee:account";
+const GOVEE_ACCOUNT_CREDENTIAL_KEY: &str = "account";
 const FIELD_KNOWN_IPS: &str = "known_ips";
 const FIELD_POWER_OFF_ON_DISCONNECT: &str = "power_off_on_disconnect";
 const FIELD_LAN_STATE_FPS: &str = "lan_state_fps";
@@ -340,7 +340,7 @@ impl PairingCapability for GoveeDriverModule {
     ) -> Option<DeviceAuthSummary> {
         match host
             .credentials()
-            .get_json(GOVEE_ACCOUNT_CREDENTIAL_KEY)
+            .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
             .await
         {
             Ok(Some(_)) => Some(DeviceAuthSummary {
@@ -367,7 +367,7 @@ impl PairingCapability for GoveeDriverModule {
     ) -> Result<PairDeviceOutcome> {
         if host
             .credentials()
-            .get_json(GOVEE_ACCOUNT_CREDENTIAL_KEY)
+            .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
             .await?
             .is_some()
         {
@@ -400,7 +400,11 @@ impl PairingCapability for GoveeDriverModule {
             .list_v1_devices()
             .await?;
         host.credentials()
-            .set_json(GOVEE_ACCOUNT_CREDENTIAL_KEY, json!({ "api_key": api_key }))
+            .set_json(
+                DESCRIPTOR.id,
+                GOVEE_ACCOUNT_CREDENTIAL_KEY,
+                json!({ "api_key": api_key }),
+            )
             .await?;
 
         let activated =
@@ -426,7 +430,7 @@ impl PairingCapability for GoveeDriverModule {
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
         host.credentials()
-            .remove(GOVEE_ACCOUNT_CREDENTIAL_KEY)
+            .remove(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
             .await?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "govee").await;
 
@@ -641,7 +645,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
 async fn account_api_key(host: &dyn DriverHost) -> Result<Option<String>> {
     Ok(host
         .credentials()
-        .get_json(GOVEE_ACCOUNT_CREDENTIAL_KEY)
+        .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
         .await?
         .and_then(|value| {
             value

@@ -331,12 +331,9 @@ pub(super) async fn load_auth_token(
     device_key: &str,
     ip: IpAddr,
 ) -> Option<String> {
-    let lookup_keys = [
-        format!("nanoleaf:{device_key}"),
-        format!("nanoleaf:ip:{ip}"),
-    ];
+    let lookup_keys = [device_key.to_owned(), format!("ip:{ip}")];
     for key in lookup_keys {
-        let Some(credentials) = credential_store.get_json(&key).await else {
+        let Some(credentials) = credential_store.get_driver_json("nanoleaf", &key).await else {
             continue;
         };
         let Some(auth_token) = credentials.get("auth_token").and_then(Value::as_str) else {

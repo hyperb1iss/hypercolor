@@ -433,8 +433,8 @@ async fn load_bridge_credentials(
     bridge_id: &str,
     ip: IpAddr,
 ) -> Option<(String, String)> {
-    for key in [format!("hue:{bridge_id}"), format!("hue:ip:{ip}")] {
-        let Some(credentials) = credential_store.get_json(&key).await else {
+    for key in [bridge_id.to_owned(), format!("ip:{ip}")] {
+        let Some(credentials) = credential_store.get_driver_json("hue", &key).await else {
             continue;
         };
         let Some(api_key) = credentials

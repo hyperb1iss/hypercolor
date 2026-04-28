@@ -892,11 +892,11 @@ pub async fn pair_hue_bridge_at_ip(
 
     if let Some(identity) = bridge_identity.as_ref() {
         credential_store
-            .store_json(&format!("hue:{}", identity.bridge_id), credentials.clone())
+            .store_driver_json(DESCRIPTOR.id, &identity.bridge_id, credentials.clone())
             .await?;
     }
     credential_store
-        .store_json(&format!("hue:ip:{bridge_ip}"), credentials)
+        .store_driver_json(DESCRIPTOR.id, &format!("ip:{bridge_ip}"), credentials)
         .await?;
 
     Ok(Some(StoredHuePairingResult {
@@ -912,10 +912,10 @@ pub async fn pair_hue_bridge_at_ip(
 fn hue_credential_keys(metadata: Option<&HashMap<String, String>>) -> Vec<String> {
     let mut keys = Vec::new();
     if let Some(bridge_id) = metadata_value(metadata, "bridge_id") {
-        push_lookup_key(&mut keys, format!("hue:{bridge_id}"));
+        push_lookup_key(&mut keys, bridge_id.to_owned());
     }
     if let Some(ip) = metadata_value(metadata, "ip") {
-        push_lookup_key(&mut keys, format!("hue:ip:{ip}"));
+        push_lookup_key(&mut keys, format!("ip:{ip}"));
     }
     keys
 }
@@ -925,7 +925,7 @@ async fn hue_credentials_present(
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<bool> {
     for key in hue_credential_keys(metadata) {
-        let Some(credentials) = credential_store.get_json(&key).await? else {
+        let Some(credentials) = credential_store.get_json(DESCRIPTOR.id, &key).await? else {
             continue;
         };
         if credentials
@@ -948,7 +948,7 @@ async fn clear_hue_credentials(
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<()> {
     for key in hue_credential_keys(metadata) {
-        credential_store.remove(&key).await?;
+        credential_store.remove(DESCRIPTOR.id, &key).await?;
     }
     Ok(())
 }

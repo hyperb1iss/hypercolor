@@ -410,26 +410,26 @@ impl ValidatedControlChanges {
 /// Driver-facing credential store abstraction.
 #[async_trait]
 pub trait DriverCredentialStore: Send + Sync {
-    /// Retrieve a JSON credential payload for one key.
+    /// Retrieve a JSON credential payload for one driver-scoped key.
     ///
     /// # Errors
     ///
     /// Returns an error if the credential store is unavailable.
-    async fn get_json(&self, key: &str) -> Result<Option<serde_json::Value>>;
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>>;
 
-    /// Persist a JSON credential payload for one key.
+    /// Persist a JSON credential payload for one driver-scoped key.
     ///
     /// # Errors
     ///
     /// Returns an error if persistence fails.
-    async fn set_json(&self, key: &str, value: serde_json::Value) -> Result<()>;
+    async fn set_json(&self, driver_id: &str, key: &str, value: serde_json::Value) -> Result<()>;
 
-    /// Remove any credential payload for one key.
+    /// Remove any credential payload for one driver-scoped key.
     ///
     /// # Errors
     ///
     /// Returns an error if persistence fails.
-    async fn remove(&self, key: &str) -> Result<()>;
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()>;
 }
 
 /// Narrow lifecycle actions exposed to drivers.

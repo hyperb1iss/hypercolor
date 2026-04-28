@@ -1057,13 +1057,10 @@ pub async fn pair_nanoleaf_device_at_ip(
         "auth_token": pair_result.auth_token,
     });
     credential_store
-        .store_json(
-            &format!("nanoleaf:{}", pair_result.device_key),
-            credentials.clone(),
-        )
+        .store_driver_json(DESCRIPTOR.id, &pair_result.device_key, credentials.clone())
         .await?;
     credential_store
-        .store_json(&format!("nanoleaf:ip:{device_ip}"), credentials)
+        .store_driver_json(DESCRIPTOR.id, &format!("ip:{device_ip}"), credentials)
         .await?;
 
     Ok(Some(StoredNanoleafPairingResult {
@@ -1075,10 +1072,10 @@ pub async fn pair_nanoleaf_device_at_ip(
 fn nanoleaf_credential_keys(metadata: Option<&HashMap<String, String>>) -> Vec<String> {
     let mut keys = Vec::new();
     if let Some(device_key) = metadata_value(metadata, "device_key") {
-        push_lookup_key(&mut keys, format!("nanoleaf:{device_key}"));
+        push_lookup_key(&mut keys, device_key.to_owned());
     }
     if let Some(ip) = metadata_value(metadata, "ip") {
-        push_lookup_key(&mut keys, format!("nanoleaf:ip:{ip}"));
+        push_lookup_key(&mut keys, format!("ip:{ip}"));
     }
     keys
 }
@@ -1088,7 +1085,7 @@ async fn nanoleaf_credentials_present(
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<bool> {
     for key in nanoleaf_credential_keys(metadata) {
-        let Some(credentials) = credential_store.get_json(&key).await? else {
+        let Some(credentials) = credential_store.get_json(DESCRIPTOR.id, &key).await? else {
             continue;
         };
         if credentials
@@ -1107,7 +1104,7 @@ async fn clear_nanoleaf_credentials(
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<()> {
     for key in nanoleaf_credential_keys(metadata) {
-        credential_store.remove(&key).await?;
+        credential_store.remove(DESCRIPTOR.id, &key).await?;
     }
     Ok(())
 }

@@ -198,7 +198,7 @@ impl GoveeBackend {
             return Ok(None);
         };
         let Some(api_key) = store
-            .get_json("govee:account")
+            .get_driver_json("govee", "account")
             .await
             .and_then(|value| {
                 value

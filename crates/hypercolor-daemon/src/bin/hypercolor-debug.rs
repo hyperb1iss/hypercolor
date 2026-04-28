@@ -463,15 +463,15 @@ struct DebugDriverHost;
 
 #[async_trait::async_trait]
 impl DriverCredentialStore for DebugDriverHost {
-    async fn get_json(&self, _key: &str) -> Result<Option<Value>> {
+    async fn get_json(&self, _driver_id: &str, _key: &str) -> Result<Option<Value>> {
         Ok(None)
     }
 
-    async fn set_json(&self, _key: &str, _value: Value) -> Result<()> {
+    async fn set_json(&self, _driver_id: &str, _key: &str, _value: Value) -> Result<()> {
         Ok(())
     }
 
-    async fn remove(&self, _key: &str) -> Result<()> {
+    async fn remove(&self, _driver_id: &str, _key: &str) -> Result<()> {
         Ok(())
     }
 }

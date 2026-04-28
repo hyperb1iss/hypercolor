@@ -181,16 +181,18 @@ impl DaemonDriverHost {
 
 #[async_trait]
 impl DriverCredentialStore for DaemonDriverHost {
-    async fn get_json(&self, key: &str) -> Result<Option<Value>> {
-        Ok(self.credential_store.get_json(key).await)
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
+        Ok(self.credential_store.get_driver_json(driver_id, key).await)
     }
 
-    async fn set_json(&self, key: &str, value: Value) -> Result<()> {
-        self.credential_store.store_json(key, value).await
+    async fn set_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
+        self.credential_store
+            .store_driver_json(driver_id, key, value)
+            .await
     }
 
-    async fn remove(&self, key: &str) -> Result<()> {
-        self.credential_store.remove(key).await
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
+        self.credential_store.remove_driver(driver_id, key).await
     }
 }
 
