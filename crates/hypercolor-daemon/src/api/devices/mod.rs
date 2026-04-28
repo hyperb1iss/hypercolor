@@ -140,6 +140,7 @@ pub struct ListDevicesQuery {
     pub limit: Option<usize>,
     pub status: Option<String>,
     pub backend: Option<String>,
+    pub driver: Option<String>,
     pub q: Option<String>,
 }
 
@@ -161,7 +162,8 @@ enum ResolveDeviceError {
         ("offset" = Option<usize>, Query, description = "Number of devices to skip"),
         ("limit" = Option<usize>, Query, description = "Maximum number of devices to return"),
         ("status" = Option<String>, Query, description = "Filter by device status"),
-        ("backend" = Option<String>, Query, description = "Filter by backend family"),
+        ("backend" = Option<String>, Query, description = "Filter by output backend route"),
+        ("driver" = Option<String>, Query, description = "Filter by owning driver module"),
         ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search")
     ),
     responses(
@@ -199,6 +201,12 @@ pub async fn list_devices(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase);
+    let driver_filter = query
+        .driver
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
     let query_filter = query
         .q
         .as_deref()
@@ -215,8 +223,13 @@ pub async fn list_devices(
         })
         .filter(|tracked| {
             backend_filter.as_deref().is_none_or(|expected| {
-                format!("{}", tracked.info.family).to_ascii_lowercase() == *expected
+                tracked.info.output_backend_id().to_ascii_lowercase() == *expected
             })
+        })
+        .filter(|tracked| {
+            driver_filter
+                .as_deref()
+                .is_none_or(|expected| tracked.info.driver_id().to_ascii_lowercase() == *expected)
         })
         .filter(|tracked| {
             query_filter.as_deref().is_none_or(|needle| {

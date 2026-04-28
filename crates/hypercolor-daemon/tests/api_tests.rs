@@ -8382,6 +8382,7 @@ async fn list_devices_supports_filters() {
     let state = Arc::new(isolated_state());
     let _first_id = insert_test_device(&state, "Desk Strip").await;
     let second_id = insert_test_device(&state, "Ceiling Panel").await;
+    let _smbus_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
     let _ = state
         .device_registry
         .set_state(&second_id, DeviceState::Disabled)
@@ -8404,6 +8405,7 @@ async fn list_devices_supports_filters() {
     assert_eq!(disabled_json["data"]["items"][0]["name"], "Ceiling Panel");
 
     let query_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/devices?backend=wled&q=desk")
@@ -8416,6 +8418,35 @@ async fn list_devices_supports_filters() {
     let query_json = body_json(query_response).await;
     assert_eq!(query_json["data"]["pagination"]["total"], 1);
     assert_eq!(query_json["data"]["items"][0]["name"], "Desk Strip");
+
+    let backend_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices?backend=smbus")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(backend_response.status(), StatusCode::OK);
+    let backend_json = body_json(backend_response).await;
+    assert_eq!(backend_json["data"]["pagination"]["total"], 1);
+    assert_eq!(backend_json["data"]["items"][0]["name"], "Aura GPU");
+
+    let driver_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices?driver=asus")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(driver_response.status(), StatusCode::OK);
+    let driver_json = body_json(driver_response).await;
+    assert_eq!(driver_json["data"]["pagination"]["total"], 1);
+    assert_eq!(driver_json["data"]["items"][0]["backend"], "smbus");
 }
 
 #[tokio::test]
