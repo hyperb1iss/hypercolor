@@ -151,8 +151,8 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
         family: DeviceFamily::PrismRgb,
         model: Some("prism_8".to_owned()),
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
-            .with_protocol_id("prismrgb/prism-8"),
+        origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+            .with_protocol_id("nollie/prism-8"),
         zones: vec![ZoneInfo {
             name: "Channel 1".to_owned(),
             led_count: 126,
@@ -724,6 +724,40 @@ async fn prism_8_channel_slots_accept_fan_templates() {
         update_json["data"]["bindings"][0]["template_id"],
         "generic-argb-fan-16-leds"
     );
+}
+
+#[tokio::test]
+async fn prism_8_accepts_driver_scoped_templates() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_prism_8_test_device(&state).await;
+    let template_id = "nollie-scoped-prism-fan";
+    let mut template = user_strip_template(template_id, "Nollie Scoped Prism Fan", 16);
+    template["category"] = json!("fan");
+    template["compatible_slots"] = json!([{
+        "families": ["nollie"],
+        "models": ["prism_8"],
+        "slots": ["channel-1"]
+    }]);
+    let create_response = send_json(&app, "POST", "/api/v1/attachments/templates", template).await;
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "channel-1",
+                "template_id": template_id,
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

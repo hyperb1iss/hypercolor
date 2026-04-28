@@ -449,7 +449,6 @@ fn validate_attachment_bindings(
         .iter()
         .map(|slot| (slot.id.as_str(), slot))
         .collect::<HashMap<_, _>>();
-    let family = device.family.id();
     let mut resolved = Vec::with_capacity(bindings.len());
 
     for (index, binding) in bindings.iter().enumerate() {
@@ -489,7 +488,7 @@ fn validate_attachment_bindings(
                 "template '{template_id}' is not allowed for slot '{slot_id}'"
             )));
         }
-        if !template.supports_slot(&family, device.model.as_deref(), slot_id) {
+        if !template_supports_device_slot(template, device, slot_id) {
             return Err(ApiError::validation(format!(
                 "template '{template_id}' is not compatible with {} slot '{slot_id}'",
                 device.name
@@ -527,6 +526,34 @@ fn validate_attachment_bindings(
 
     validate_attachment_overlaps(&resolved)?;
     Ok(resolved)
+}
+
+fn template_supports_device_slot(
+    template: &AttachmentTemplate,
+    device: &DeviceInfo,
+    slot_id: &str,
+) -> bool {
+    device_attachment_compatibility_ids(device)
+        .iter()
+        .any(|controller_id| {
+            template.supports_slot(controller_id, device.model.as_deref(), slot_id)
+        })
+}
+
+fn device_attachment_compatibility_ids(device: &DeviceInfo) -> Vec<String> {
+    let mut ids = Vec::with_capacity(3);
+    push_unique_id(&mut ids, device.origin.driver_id.as_str().to_owned());
+    if let Some(protocol_id) = device.origin.protocol_id.as_deref() {
+        push_unique_id(&mut ids, protocol_id.to_owned());
+    }
+    push_unique_id(&mut ids, device.family.id().into_owned());
+    ids
+}
+
+fn push_unique_id(ids: &mut Vec<String>, id: String) {
+    if !ids.iter().any(|existing| existing == &id) {
+        ids.push(id);
+    }
 }
 
 #[expect(
