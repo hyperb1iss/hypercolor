@@ -185,12 +185,12 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
 @respx.mock
 @pytest.mark.asyncio
 async def test_apply_effect(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/effects/aurora/apply").mock(
+    route = respx.post("http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/apply").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
                 {
-                    "effect": {"id": "aurora", "name": "Aurora"},
+                    "effect": {"id": "aurora/main", "name": "Aurora"},
                     "applied_controls": {"effectSpeed": 70},
                     "layout": {
                         "associated_layout_id": "desk",
@@ -203,13 +203,127 @@ async def test_apply_effect(client: HypercolorClient) -> None:
         )
     )
 
-    result = await client.apply_effect("aurora", controls={"effectSpeed": 70})
+    result = await client.apply_effect("aurora/main", controls={"effectSpeed": 70})
 
     assert route.called
+    assert json.loads(route.calls[0].request.content) == {"controls": {"effectSpeed": 70}}
     assert result.effect.name == "Aurora"
     assert result.applied_controls["effectSpeed"] == 70
     assert result.layout is not None
     assert result.layout["associated_layout_id"] == "desk"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_set_brightness_uses_generated_route_with_body(
+    client: HypercolorClient,
+) -> None:
+    route = respx.put("http://hyperia.test:9420/api/v1/settings/brightness").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope({"brightness": 42}),
+        )
+    )
+
+    result = await client.set_brightness(42)
+
+    assert route.called
+    assert json.loads(route.calls[0].request.content) == {"brightness": 42}
+    assert result.brightness == 42
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_identify_device_quotes_generated_path_parameters(
+    client: HypercolorClient,
+) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/devices/desk%2Flight/identify").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "device_id": "desk/light",
+                    "identifying": True,
+                    "duration_ms": 750,
+                }
+            ),
+        )
+    )
+
+    result = await client.identify_device("desk/light", duration_ms=750, color="#80ffea")
+
+    assert route.called
+    assert json.loads(route.calls[0].request.content) == {
+        "duration_ms": 750,
+        "color": "#80ffea",
+    }
+    assert result.device_id == "desk/light"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_discover_devices_omits_empty_body(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/devices/discover").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope({"scan_id": "scan_1", "status": "running"}),
+        )
+    )
+
+    result = await client.discover_devices()
+
+    assert route.called
+    assert route.calls[0].request.content == b""
+    assert result.scan_id == "scan_1"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_stop_effect_uses_generated_route(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/effects/stop").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope({"stopped": True}),
+        )
+    )
+
+    result = await client.stop_effect()
+
+    assert route.called
+    assert result.stopped is True
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_apply_profile_quotes_generated_path_parameters(
+    client: HypercolorClient,
+) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/profiles/movie%2Fnight/apply").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "profile": {
+                        "id": "movie/night",
+                        "name": "Movie Night",
+                    },
+                    "applied": True,
+                    "transition": {"type": "fade", "duration_ms": 500},
+                }
+            ),
+        )
+    )
+
+    result = await client.apply_profile(
+        "movie/night",
+        transition={"type": "fade", "duration_ms": 500},
+    )
+
+    assert route.called
+    assert json.loads(route.calls[0].request.content) == {
+        "transition": {"type": "fade", "duration_ms": 500}
+    }
+    assert result.profile.id == "movie/night"
 
 
 @respx.mock

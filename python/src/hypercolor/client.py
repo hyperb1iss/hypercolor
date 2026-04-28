@@ -9,14 +9,21 @@ from typing import Any, Self, TypeVar
 import httpx
 import msgspec
 
+from ._generated.api.config import set_config_value as generated_set_config_value
 from ._generated.api.devices import (
+    discover_devices as generated_discover_devices,
     get_device as generated_get_device,
+    identify_device as generated_identify_device,
     list_devices as generated_list_devices,
+    update_device as generated_update_device,
 )
 from ._generated.api.effects import (
+    apply_effect as generated_apply_effect,
     get_active_effect as generated_get_active_effect,
     get_effect as generated_get_effect,
     list_effects as generated_list_effects,
+    stop_effect as generated_stop_effect,
+    update_current_controls as generated_update_current_controls,
 )
 from ._generated.api.layouts import (
     apply_layout as generated_apply_layout,
@@ -24,6 +31,7 @@ from ._generated.api.layouts import (
     list_layouts as generated_list_layouts,
 )
 from ._generated.api.profiles import (
+    apply_profile as generated_apply_profile,
     get_profile as generated_get_profile,
     list_profiles as generated_list_profiles,
 )
@@ -31,11 +39,16 @@ from ._generated.api.scenes import (
     activate_scene as generated_activate_scene,
     list_scenes as generated_list_scenes,
 )
-from ._generated.api.settings import list_audio_devices as generated_list_audio_devices
+from ._generated.api.settings import (
+    list_audio_devices as generated_list_audio_devices,
+    set_brightness as generated_set_brightness,
+)
 from ._generated.api.system import (
     get_status as generated_get_status,
     health_check as generated_health_check,
 )
+from ._generated.models.apply_effect_request import ApplyEffectRequest
+from ._generated.models.apply_effect_request_controls import ApplyEffectRequestControls
 from ._generated.types import UNSET
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
 from .exceptions import (
@@ -142,11 +155,12 @@ class HypercolorClient:
 
     async def set_brightness(self, brightness: int) -> BrightnessUpdate:
         """Set the global daemon brightness."""
-        return await self._request_model(
-            "PUT",
-            "/settings/brightness",
+        return await self._generated_model(
+            _with_json(
+                generated_set_brightness._get_kwargs(),
+                {"brightness": brightness},
+            ),
             BrightnessUpdate,
-            body={"brightness": brightness},
         )
 
     async def pause_rendering(self) -> MutationResult:
@@ -184,7 +198,10 @@ class HypercolorClient:
 
     async def update_device(self, device_id: str, **fields: Any) -> Device:
         """Update device configuration."""
-        return await self._request_model("PUT", f"/devices/{device_id}", Device, body=fields)
+        return await self._generated_model(
+            _with_json(generated_update_device._get_kwargs(device_id), fields),
+            Device,
+        )
 
     async def discover_devices(
         self,
@@ -193,8 +210,9 @@ class HypercolorClient:
     ) -> DiscoverResult:
         """Trigger a device discovery scan."""
         body = _drop_none({"backends": backends, "timeout_ms": timeout_ms})
-        return await self._request_model(
-            "POST", "/devices/discover", DiscoverResult, body=body or None
+        return await self._generated_model(
+            _with_json(generated_discover_devices._get_kwargs(), body or None),
+            DiscoverResult,
         )
 
     async def identify_device(
@@ -206,11 +224,9 @@ class HypercolorClient:
     ) -> IdentifyResult:
         """Flash a device for identification."""
         body = _drop_none({"duration_ms": duration_ms, "color": color})
-        return await self._request_model(
-            "POST",
-            f"/devices/{device_id}/identify",
+        return await self._generated_model(
+            _with_json(generated_identify_device._get_kwargs(device_id), body or None),
             IdentifyResult,
-            body=body or None,
         )
 
     async def get_effects(self, **filters: Any) -> list[EffectSummary]:
@@ -253,26 +269,28 @@ class HypercolorClient:
                 "transition": _to_json_mapping(transition),
             }
         )
-        return await self._request_model(
-            "POST",
-            f"/effects/{effect_id}/apply",
+        return await self._generated_model(
+            _apply_effect_kwargs(effect_id, body or None),
             ApplyEffectResult,
-            body=body or None,
         )
 
     async def update_controls(self, controls: Mapping[str, Any]) -> ControlUpdateResult:
         """Update controls on the active effect."""
-        return await self._request_model(
-            "PATCH",
-            "/effects/current/controls",
+        return await self._generated_model(
+            _with_json(
+                generated_update_current_controls._get_kwargs(),
+                {"controls": dict(controls)},
+            ),
             ControlUpdateResult,
-            body={"controls": dict(controls)},
         )
 
     async def stop_effect(self) -> MutationResult:
         """Stop the currently active effect."""
 
-        return await self._request_model("POST", "/effects/stop", MutationResult)
+        return await self._generated_model(
+            generated_stop_effect._get_kwargs(),
+            MutationResult,
+        )
 
     async def get_layouts(self) -> list[LayoutSummary]:
         """List layouts."""
@@ -320,11 +338,9 @@ class HypercolorClient:
     ) -> ApplyProfileResult:
         """Apply a saved profile."""
         body = _drop_none({"transition": _to_json_mapping(transition)})
-        return await self._request_model(
-            "POST",
-            f"/profiles/{profile_id}/apply",
+        return await self._generated_model(
+            _with_json(generated_apply_profile._get_kwargs(profile_id), body or None),
             ApplyProfileResult,
-            body=body or None,
         )
 
     async def get_scenes(self, **filters: Any) -> list[Scene]:
@@ -412,29 +428,17 @@ class HypercolorClient:
     ) -> ConfigMutationResult:
         """Persist the selected audio input device."""
 
-        return await self._request_model(
-            "POST",
-            "/config/set",
+        return await self._generated_model(
+            _with_json(
+                generated_set_config_value._get_kwargs(),
+                {
+                    "key": "audio.device",
+                    "value": json.dumps(device_id),
+                    "live": live,
+                },
+            ),
             ConfigMutationResult,
-            body={
-                "key": "audio.device",
-                "value": json.dumps(device_id),
-                "live": live,
-            },
         )
-
-    async def _request_model(
-        self,
-        method: str,
-        path: str,
-        model_type: type[ModelT],
-        *,
-        body: Mapping[str, Any] | None = None,
-        params: Mapping[str, Any] | None = None,
-    ) -> ModelT:
-        response = await self._raw_request(method, path, body=body, params=params)
-        data = self._unwrap_data(response)
-        return self._convert(data, model_type)
 
     async def _request_items(
         self,
@@ -563,6 +567,29 @@ def _drop_none(data: Mapping[str, Any]) -> dict[str, Any]:
 
 def _generated_param(value: Any) -> Any:
     return UNSET if value is None else value
+
+
+def _with_json(
+    kwargs: Mapping[str, Any],
+    body: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    request = dict(kwargs)
+    if body is not None:
+        request["json"] = body
+    return request
+
+
+def _apply_effect_kwargs(
+    effect_id: str,
+    body: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    request = generated_apply_effect._get_kwargs(
+        effect_id,
+        body=ApplyEffectRequest(controls=ApplyEffectRequestControls()),
+    )
+    request.pop("json", None)
+    request.pop("headers", None)
+    return _with_json(request, body)
 
 
 def _request_path(path: str) -> str:
