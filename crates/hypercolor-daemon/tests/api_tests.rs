@@ -6992,6 +6992,11 @@ async fn get_device_controls_returns_host_control_surface() {
     assert_eq!(data["values"]["enabled"]["value"], true);
     assert_eq!(data["values"]["brightness"]["kind"], "float");
     assert_eq!(data["values"]["brightness"]["value"], 1.0);
+    assert_eq!(data["availability"]["name"]["state"], "available");
+    assert_eq!(
+        data["action_availability"]["identify"]["state"],
+        "available"
+    );
 
     let fields = data["fields"]
         .as_array()

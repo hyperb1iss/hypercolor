@@ -983,6 +983,19 @@ pub(crate) fn device_control_surface(
             )
         })
         .collect();
+    document.action_availability = document
+        .actions
+        .iter()
+        .map(|action| {
+            (
+                action.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
     document
 }
 
