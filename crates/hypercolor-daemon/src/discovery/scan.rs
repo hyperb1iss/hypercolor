@@ -24,7 +24,7 @@ use super::device_helpers::{
     device_ref_for_tracked, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
-use super::{DiscoveryBackend, DiscoveryBackendKind, DiscoveryRuntime, DiscoveryScannerResult};
+use super::{DiscoveryRuntime, DiscoveryScannerResult, DiscoveryTarget, DiscoveryTargetKind};
 use crate::network::{self, DaemonDriverHost};
 
 use hypercolor_core::device::ScannerScanReport;
@@ -32,7 +32,7 @@ use hypercolor_core::device::ScannerScanReport;
 /// Detailed discovery scan result for reverse-engineering workflows.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveryScanResult {
-    /// Backends that were scanned.
+    /// Public discovery target identifiers that were scanned.
     pub backends: Vec<String>,
 
     /// Effective timeout used for the scan.
@@ -66,7 +66,7 @@ pub async fn execute_discovery_scan_if_idle(
     driver_registry: Arc<DriverModuleRegistry>,
     driver_host: Arc<DaemonDriverHost>,
     config: Arc<HypercolorConfig>,
-    backends: Vec<DiscoveryBackend>,
+    targets: Vec<DiscoveryTarget>,
     timeout: Duration,
 ) -> Option<DiscoveryScanResult> {
     if runtime
@@ -88,7 +88,7 @@ pub async fn execute_discovery_scan_if_idle(
             driver_registry,
             driver_host,
             config,
-            backends,
+            targets,
             timeout,
         )
         .await,
@@ -169,33 +169,33 @@ pub async fn execute_discovery_scan(
     driver_registry: Arc<DriverModuleRegistry>,
     driver_host: Arc<DaemonDriverHost>,
     config: Arc<HypercolorConfig>,
-    backends: Vec<DiscoveryBackend>,
+    targets: Vec<DiscoveryTarget>,
     timeout: Duration,
 ) -> DiscoveryScanResult {
     let _flag_guard = super::DiscoveryFlagGuard {
         flag: Arc::clone(&runtime.in_progress),
     };
-    let backend_names = super::backend_names(&backends);
-    let scanned_backend_ids = backend_names.iter().cloned().collect::<HashSet<_>>();
-    let transient_miss_backend_ids = backends
+    let target_names = super::target_names(&targets);
+    let scanned_target_ids = target_names.iter().cloned().collect::<HashSet<_>>();
+    let transient_miss_target_ids = targets
         .iter()
-        .filter(|backend| backend.preserves_renderable_on_discovery_miss())
-        .map(|backend| backend.as_str().to_owned())
+        .filter(|target| target.preserves_renderable_on_discovery_miss())
+        .map(|target| target.as_str().to_owned())
         .collect::<HashSet<_>>();
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
 
     runtime
         .event_bus
         .publish(HypercolorEvent::DeviceDiscoveryStarted {
-            backends: backend_names.clone(),
+            backends: target_names.clone(),
         });
     info!(
-        backends = ?backend_names,
+        targets = ?target_names,
         timeout_ms,
         "starting discovery scan"
     );
 
-    if backends.is_empty() {
+    if targets.is_empty() {
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscoveryCompleted {
@@ -203,7 +203,7 @@ pub async fn execute_discovery_scan(
                 duration_ms: 0,
             });
         return DiscoveryScanResult {
-            backends: backend_names,
+            backends: target_names,
             timeout_ms,
             new_devices: Vec::new(),
             reappeared_devices: Vec::new(),
@@ -215,10 +215,10 @@ pub async fn execute_discovery_scan(
     }
 
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
-    for backend in backends {
-        match backend.kind() {
-            DiscoveryBackendKind::Driver => {
-                let driver_id = backend.as_str().to_owned();
+    for target in targets {
+        match target.kind() {
+            DiscoveryTargetKind::Driver => {
+                let driver_id = target.as_str().to_owned();
                 let Some(driver) = driver_registry.get(&driver_id) else {
                     warn!(driver_id, "skipping unknown discovery driver");
                     continue;
@@ -239,15 +239,15 @@ pub async fn execute_discovery_scan(
                     },
                 )));
             }
-            DiscoveryBackendKind::Usb => {
+            DiscoveryTargetKind::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
                     network::enabled_hal_driver_ids(&config),
                 )));
             }
-            DiscoveryBackendKind::SmBus => {
+            DiscoveryTargetKind::SmBus => {
                 orchestrator.add_scanner(Box::new(SmBusScanner::new()));
             }
-            DiscoveryBackendKind::Blocks => {
+            DiscoveryTargetKind::Blocks => {
                 let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
                     hypercolor_core::device::BlocksBackend::default_socket_path,
                     std::path::PathBuf::from,
@@ -266,7 +266,7 @@ pub async fn execute_discovery_scan(
                 duration_ms: 0,
             });
         return DiscoveryScanResult {
-            backends: backend_names,
+            backends: target_names,
             timeout_ms,
             new_devices: Vec::new(),
             reappeared_devices: Vec::new(),
@@ -310,7 +310,7 @@ pub async fn execute_discovery_scan(
     let mut scoped_registry_ids = HashSet::new();
     for tracked in runtime.device_registry.list().await {
         let backend_id = tracked.info.output_backend_id().to_owned();
-        if scanned_backend_ids.contains(&backend_id) {
+        if scanned_target_ids.contains(&backend_id) {
             scoped_registry_ids.insert(tracked.info.id);
         }
     }
@@ -323,8 +323,8 @@ pub async fn execute_discovery_scan(
     if ignored_out_of_scope > 0 {
         debug!(
             ignored_out_of_scope,
-            backends = ?backend_names,
-            "ignoring vanished devices outside the active discovery backend scope"
+            targets = ?target_names,
+            "ignoring vanished devices outside the active discovery target scope"
         );
     }
 
@@ -335,7 +335,7 @@ pub async fn execute_discovery_scan(
             .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
             .collect::<Vec<_>>();
         warn!(
-            backends = ?backend_names,
+            targets = ?target_names,
             failed_scanners = ?failed_scanners,
             "discovery scan was incomplete; preserving existing device mappings"
         );
@@ -357,8 +357,7 @@ pub async fn execute_discovery_scan(
             vanished_ids.insert(id);
         }
     }
-    retain_transient_backend_devices(&runtime, &transient_miss_backend_ids, &mut vanished_ids)
-        .await;
+    retain_transient_target_devices(&runtime, &transient_miss_target_ids, &mut vanished_ids).await;
 
     let mut vanished_ids: Vec<DeviceId> = vanished_ids.into_iter().collect();
     vanished_ids.sort_by_key(DeviceId::as_uuid);
@@ -405,7 +404,7 @@ pub async fn execute_discovery_scan(
         "Discovery scan completed"
     );
     info!(
-        backends = ?backend_names,
+        targets = ?target_names,
         found = found.len(),
         vanished = vanished_devices.len(),
         total_known = report.total_known,
@@ -420,7 +419,7 @@ pub async fn execute_discovery_scan(
     }
 
     DiscoveryScanResult {
-        backends: backend_names,
+        backends: target_names,
         timeout_ms,
         new_devices,
         reappeared_devices,
@@ -431,12 +430,12 @@ pub async fn execute_discovery_scan(
     }
 }
 
-async fn retain_transient_backend_devices(
+async fn retain_transient_target_devices(
     runtime: &DiscoveryRuntime,
-    transient_miss_backend_ids: &HashSet<String>,
+    transient_miss_target_ids: &HashSet<String>,
     vanished_ids: &mut HashSet<DeviceId>,
 ) {
-    if vanished_ids.is_empty() || transient_miss_backend_ids.is_empty() {
+    if vanished_ids.is_empty() || transient_miss_target_ids.is_empty() {
         return;
     }
 
@@ -450,7 +449,7 @@ async fn retain_transient_backend_devices(
             continue;
         }
 
-        if !transient_miss_backend_ids.contains(tracked.info.output_backend_id()) {
+        if !transient_miss_target_ids.contains(tracked.info.output_backend_id()) {
             continue;
         }
 

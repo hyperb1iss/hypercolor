@@ -138,7 +138,7 @@ pub struct DiscoveryRuntime {
 
 /// Discovery target kind used by the scanner builder.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum DiscoveryBackendKind {
+pub(super) enum DiscoveryTargetKind {
     Driver,
     Usb,
     SmBus,
@@ -147,19 +147,19 @@ pub(super) enum DiscoveryBackendKind {
 
 /// Opaque discovery target resolved from driver modules and host transports.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DiscoveryBackend {
+pub struct DiscoveryTarget {
     id: String,
-    kind: DiscoveryBackendKind,
+    kind: DiscoveryTargetKind,
     preserves_renderable_on_miss: bool,
 }
 
-impl DiscoveryBackend {
+impl DiscoveryTarget {
     /// Create a driver-backed discovery target.
     #[must_use]
     pub fn driver(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            kind: DiscoveryBackendKind::Driver,
+            kind: DiscoveryTargetKind::Driver,
             preserves_renderable_on_miss: false,
         }
     }
@@ -169,7 +169,7 @@ impl DiscoveryBackend {
     pub fn usb() -> Self {
         Self {
             id: "usb".to_owned(),
-            kind: DiscoveryBackendKind::Usb,
+            kind: DiscoveryTargetKind::Usb,
             preserves_renderable_on_miss: false,
         }
     }
@@ -179,7 +179,7 @@ impl DiscoveryBackend {
     pub fn smbus() -> Self {
         Self {
             id: "smbus".to_owned(),
-            kind: DiscoveryBackendKind::SmBus,
+            kind: DiscoveryTargetKind::SmBus,
             preserves_renderable_on_miss: true,
         }
     }
@@ -189,12 +189,12 @@ impl DiscoveryBackend {
     pub fn blocks() -> Self {
         Self {
             id: "blocks".to_owned(),
-            kind: DiscoveryBackendKind::Blocks,
+            kind: DiscoveryTargetKind::Blocks,
             preserves_renderable_on_miss: false,
         }
     }
 
-    /// Stable backend identifier used in request/response payloads.
+    /// Stable discovery target identifier used in request/response payloads.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.id
@@ -206,7 +206,7 @@ impl DiscoveryBackend {
         self.preserves_renderable_on_miss
     }
 
-    pub(super) const fn kind(&self) -> &DiscoveryBackendKind {
+    pub(super) const fn kind(&self) -> &DiscoveryTargetKind {
         &self.kind
     }
 
@@ -222,15 +222,15 @@ impl DiscoveryBackend {
         }
     }
 
-    /// All backend identifiers compiled into this daemon binary.
+    /// All discovery targets compiled into this daemon binary.
     fn all(registry: &DriverModuleRegistry) -> Vec<Self> {
-        let mut backends = registry
+        let mut targets = registry
             .discovery_drivers()
             .into_iter()
             .map(|driver| Self::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
-        backends.extend([Self::usb(), Self::smbus(), Self::blocks()]);
-        backends
+        targets.extend([Self::usb(), Self::smbus(), Self::blocks()]);
+        targets
     }
 }
 
@@ -247,39 +247,39 @@ pub fn normalize_timeout_ms(timeout_ms: Option<u64>) -> Duration {
     Duration::from_millis(raw.clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS))
 }
 
-/// Resolve and validate requested discovery backends against configuration.
+/// Resolve and validate requested discovery targets against configuration.
 ///
-/// Returns backend identifiers in a deterministic order with duplicates removed.
+/// Returns target identifiers in a deterministic order with duplicates removed.
 ///
 /// # Errors
 ///
-/// Returns an error when an unknown backend is requested or when a requested
-/// backend is disabled by configuration.
-pub fn resolve_backends(
+/// Returns an error when an unknown target is requested or when a requested
+/// target is disabled by configuration.
+pub fn resolve_targets(
     requested: Option<&[String]>,
     config: &HypercolorConfig,
     driver_registry: &DriverModuleRegistry,
-) -> Result<Vec<DiscoveryBackend>, String> {
+) -> Result<Vec<DiscoveryTarget>, String> {
     let includes_all = requested.is_some_and(|raw| {
         raw.iter()
             .any(|item| item.trim().eq_ignore_ascii_case("all"))
     });
     let explicit_request = requested.is_some_and(|raw| !raw.is_empty()) && !includes_all;
-    let compiled_backends = DiscoveryBackend::all(driver_registry);
-    let all_backends: Vec<String> = compiled_backends
+    let compiled_targets = DiscoveryTarget::all(driver_registry);
+    let all_targets: Vec<String> = compiled_targets
         .iter()
-        .map(|backend| backend.as_str().to_owned())
+        .map(|target| target.as_str().to_owned())
         .collect();
     let mut candidates: Vec<String> = match requested {
         Some(raw) if !raw.is_empty() => raw.to_vec(),
-        _ => all_backends.clone(),
+        _ => all_targets.clone(),
     };
 
     if candidates
         .iter()
         .any(|item| item.trim().eq_ignore_ascii_case("all"))
     {
-        candidates = all_backends;
+        candidates = all_targets;
     }
 
     let mut out = Vec::new();
@@ -287,56 +287,56 @@ pub fn resolve_backends(
 
     for candidate in candidates {
         let normalized = candidate.trim().to_ascii_lowercase();
-        let supported: Vec<&str> = compiled_backends
+        let supported: Vec<&str> = compiled_targets
             .iter()
-            .map(DiscoveryBackend::as_str)
+            .map(DiscoveryTarget::as_str)
             .collect();
-        let backend = DiscoveryBackend::parse(&normalized, driver_registry).ok_or_else(|| {
+        let target = DiscoveryTarget::parse(&normalized, driver_registry).ok_or_else(|| {
             format!(
-                "Unknown discovery backend '{candidate}'. Supported backends: {}",
+                "Unknown discovery target '{candidate}'. Supported targets: {}",
                 supported.join(", ")
             )
         })?;
 
-        if !seen.insert(backend.clone()) {
+        if !seen.insert(target.clone()) {
             continue;
         }
 
-        match backend.kind() {
-            DiscoveryBackendKind::Driver => {
-                let driver_id = backend.as_str();
+        match target.kind() {
+            DiscoveryTargetKind::Driver => {
+                let driver_id = target.as_str();
                 if !crate::network::driver_enabled(config, driver_id) {
                     if explicit_request {
                         let config_flag = crate::network::driver_config_flag(driver_id);
                         return Err(format!(
-                            "Discovery backend '{driver_id}' is disabled by config ({config_flag}=false)"
+                            "Discovery target '{driver_id}' is disabled by config ({config_flag}=false)"
                         ));
                     }
                     continue;
                 }
             }
-            DiscoveryBackendKind::Blocks => {
+            DiscoveryTargetKind::Blocks => {
                 if !config.discovery.blocks_scan {
                     if explicit_request {
                         return Err(
-                            "Discovery backend 'blocks' is disabled by config (discovery.blocks_scan=false)"
+                            "Discovery target 'blocks' is disabled by config (discovery.blocks_scan=false)"
                                 .to_owned(),
                         );
                     }
                     continue;
                 }
             }
-            DiscoveryBackendKind::Usb => {
+            DiscoveryTargetKind::Usb => {
                 if crate::network::enabled_hal_driver_ids(config).is_empty() {
                     if explicit_request {
                         return Err(
-                            "Discovery backend 'usb' has no enabled HAL driver modules".to_owned()
+                            "Discovery target 'usb' has no enabled HAL driver modules".to_owned()
                         );
                     }
                     continue;
                 }
             }
-            DiscoveryBackendKind::SmBus => {
+            DiscoveryTargetKind::SmBus => {
                 if crate::network::enabled_hal_driver_ids_for_transport(
                     config,
                     &DriverTransportKind::Smbus,
@@ -345,7 +345,7 @@ pub fn resolve_backends(
                 {
                     if explicit_request {
                         return Err(
-                            "Discovery backend 'smbus' has no enabled SMBus HAL driver modules"
+                            "Discovery target 'smbus' has no enabled SMBus HAL driver modules"
                                 .to_owned(),
                         );
                     }
@@ -354,18 +354,18 @@ pub fn resolve_backends(
             }
         }
 
-        out.push(backend);
+        out.push(target);
     }
 
     Ok(out)
 }
 
-/// Render backend enum values as stable string identifiers.
+/// Render discovery targets as stable string identifiers.
 #[must_use]
-pub fn backend_names(backends: &[DiscoveryBackend]) -> Vec<String> {
-    backends
+pub fn target_names(targets: &[DiscoveryTarget]) -> Vec<String> {
+    targets
         .iter()
-        .map(|backend| backend.as_str().to_owned())
+        .map(|target| target.as_str().to_owned())
         .collect()
 }
 
@@ -381,7 +381,7 @@ impl Drop for DiscoveryFlagGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiscoveryBackend, default_timeout, normalize_timeout_ms, resolve_backends};
+    use super::{DiscoveryTarget, default_timeout, normalize_timeout_ms, resolve_targets};
     use crate::api::AppState;
     use hypercolor_types::config::HypercolorConfig;
     use hypercolor_types::device::{
@@ -393,19 +393,19 @@ mod tests {
         AppState::new()
     }
 
-    fn expected_default_backends(state: &AppState) -> Vec<DiscoveryBackend> {
-        let mut backends = state
+    fn expected_default_targets(state: &AppState) -> Vec<DiscoveryTarget> {
+        let mut targets = state
             .driver_registry
             .discovery_drivers()
             .into_iter()
-            .map(|driver| DiscoveryBackend::driver(driver.descriptor().id))
+            .map(|driver| DiscoveryTarget::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
-        backends.extend([
-            DiscoveryBackend::usb(),
-            DiscoveryBackend::smbus(),
-            DiscoveryBackend::blocks(),
+        targets.extend([
+            DiscoveryTarget::usb(),
+            DiscoveryTarget::smbus(),
+            DiscoveryTarget::blocks(),
         ]);
-        backends
+        targets
     }
 
     fn device_info_with_origin(origin: DeviceOrigin) -> DeviceInfo {
@@ -441,26 +441,26 @@ mod tests {
     }
 
     #[test]
-    fn resolve_backends_defaults_to_all() {
+    fn resolve_targets_defaults_to_all() {
         let state = builtin_registry();
         let cfg = HypercolorConfig::default();
-        let resolved = resolve_backends(None, &cfg, state.driver_registry.as_ref())
-            .expect("default backends should resolve");
-        assert_eq!(resolved, expected_default_backends(&state));
+        let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
+            .expect("default targets should resolve");
+        assert_eq!(resolved, expected_default_targets(&state));
     }
 
     #[test]
-    fn resolve_backends_rejects_unknown_values() {
+    fn resolve_targets_rejects_unknown_values() {
         let state = builtin_registry();
         let cfg = HypercolorConfig::default();
         let requested = vec!["unknown".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("unknown must fail");
-        assert!(error.contains("Unknown discovery backend"));
+        assert!(error.contains("Unknown discovery target"));
     }
 
     #[test]
-    fn resolve_backends_rejects_disabled_wled() {
+    fn resolve_targets_rejects_disabled_wled() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.drivers
@@ -468,13 +468,13 @@ mod tests {
             .expect("wled config should exist")
             .enabled = false;
         let requested = vec!["wled".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("wled must fail");
         assert!(error.contains("disabled"));
     }
 
     #[test]
-    fn resolve_backends_rejects_disabled_nanoleaf() {
+    fn resolve_targets_rejects_disabled_nanoleaf() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.drivers
@@ -482,13 +482,13 @@ mod tests {
             .expect("nanoleaf config should exist")
             .enabled = false;
         let requested = vec!["nanoleaf".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("nanoleaf must fail");
         assert!(error.contains("disabled"));
     }
 
     #[test]
-    fn resolve_backends_rejects_disabled_hue() {
+    fn resolve_targets_rejects_disabled_hue() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.drivers
@@ -496,13 +496,13 @@ mod tests {
             .expect("hue config should exist")
             .enabled = false;
         let requested = vec!["hue".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("hue must fail");
         assert!(error.contains("disabled"));
     }
 
     #[test]
-    fn resolve_backends_rejects_disabled_smbus_hal_driver() {
+    fn resolve_targets_rejects_disabled_smbus_hal_driver() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.drivers.insert(
@@ -512,32 +512,32 @@ mod tests {
             ),
         );
         let requested = vec!["smbus".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("smbus must fail when all SMBus HAL modules are disabled");
         assert!(error.contains("no enabled SMBus HAL driver modules"));
     }
 
     #[test]
-    fn discovery_backend_transient_miss_policy_is_backend_owned() {
-        assert!(DiscoveryBackend::smbus().preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryBackend::usb().preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryBackend::blocks().preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryBackend::driver("wled").preserves_renderable_on_discovery_miss());
+    fn discovery_target_transient_miss_policy_is_target_owned() {
+        assert!(DiscoveryTarget::smbus().preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryTarget::usb().preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryTarget::blocks().preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryTarget::driver("wled").preserves_renderable_on_discovery_miss());
     }
 
     #[test]
-    fn resolve_backends_keeps_wled_when_mdns_is_disabled() {
+    fn resolve_targets_keeps_wled_when_mdns_is_disabled() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.mdns_enabled = false;
 
-        let resolved = resolve_backends(None, &cfg, state.driver_registry.as_ref())
+        let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
             .expect("wled should still resolve");
-        assert_eq!(resolved, expected_default_backends(&state));
+        assert_eq!(resolved, expected_default_targets(&state));
     }
 
     #[test]
-    fn backend_id_for_device_uses_device_origin() {
+    fn output_backend_id_for_device_uses_device_origin() {
         let info =
             device_info_with_origin(DeviceOrigin::native("ableton", "usb", ConnectionType::Usb));
 

@@ -32,12 +32,12 @@ pub async fn discover_devices(
         |manager| Arc::clone(&manager.get()),
     );
     let requested_backends = body.as_ref().and_then(|request| request.backends.as_ref());
-    let resolved_backends = match discovery::resolve_backends(
+    let resolved_targets = match discovery::resolve_targets(
         requested_backends.map(Vec::as_slice),
         config.as_ref(),
         state.driver_registry.as_ref(),
     ) {
-        Ok(backends) => backends,
+        Ok(targets) => targets,
         Err(error) => return ApiError::validation(error),
     };
     let timeout = discovery::normalize_timeout_ms(body.as_ref().and_then(|b| b.timeout_ms));
@@ -52,7 +52,7 @@ pub async fn discover_devices(
     }
 
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());
-    let backend_names = discovery::backend_names(&resolved_backends);
+    let target_names = discovery::target_names(&resolved_targets);
     if wait_for_completion {
         let runtime = state.driver_host.discovery_runtime();
         let result = discovery::execute_discovery_scan(
@@ -60,7 +60,7 @@ pub async fn discover_devices(
             Arc::clone(&state.driver_registry),
             Arc::clone(&state.driver_host),
             config,
-            resolved_backends,
+            resolved_targets,
             timeout,
         )
         .await;
@@ -80,7 +80,7 @@ pub async fn discover_devices(
             Arc::clone(&state_for_task.driver_registry),
             Arc::clone(&state_for_task.driver_host),
             config,
-            resolved_backends,
+            resolved_targets,
             timeout,
         )
         .await;
@@ -89,7 +89,7 @@ pub async fn discover_devices(
     ApiResponse::accepted(serde_json::json!({
         "scan_id": scan_id,
         "status": "scanning",
-        "backends": backend_names,
+        "backends": target_names,
         "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
     }))
 }

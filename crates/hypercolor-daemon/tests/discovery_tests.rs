@@ -18,7 +18,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
-    DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, execute_discovery_scan_if_idle,
+    DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
     sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
@@ -417,7 +417,7 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         Arc::new(config),
-        vec![DiscoveryBackend::driver("wled")],
+        vec![DiscoveryTarget::driver("wled")],
         Duration::from_millis(50),
     )
     .await;
@@ -479,7 +479,7 @@ async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss()
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         Arc::new(HypercolorConfig::default()),
-        vec![DiscoveryBackend::smbus()],
+        vec![DiscoveryTarget::smbus()],
         Duration::from_millis(50),
     )
     .await;

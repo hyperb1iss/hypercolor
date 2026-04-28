@@ -349,7 +349,7 @@ impl DriverLifecycleActions for DaemonDriverHost {
         let driver_registry = Arc::clone(&self.driver_registry);
         let driver_host = Arc::new(self.clone());
         let config = self.current_config();
-        let backends = vec![discovery::DiscoveryBackend::driver(driver_id.clone())];
+        let targets = vec![discovery::DiscoveryTarget::driver(driver_id.clone())];
 
         task_spawner.spawn(async move {
             if discovery::execute_discovery_scan_if_idle(
@@ -357,7 +357,7 @@ impl DriverLifecycleActions for DaemonDriverHost {
                 driver_registry,
                 driver_host,
                 config,
-                backends,
+                targets,
                 discovery::default_timeout(),
             )
             .await

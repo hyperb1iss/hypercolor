@@ -14,7 +14,7 @@ use hypercolor_types::scene::SceneId;
 
 use crate::api::AppState;
 use crate::device_metrics::spawn_device_metrics_collector;
-use crate::discovery::{self, DiscoveryBackend};
+use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
@@ -591,12 +591,12 @@ impl DaemonState {
             scene_transactions: self.scene_transactions.clone(),
         };
 
-        let initial_backends =
-            match discovery::resolve_backends(None, &config, self.driver_registry.as_ref()) {
-                Ok(backends) => backends,
+        let initial_targets =
+            match discovery::resolve_targets(None, &config, self.driver_registry.as_ref()) {
+                Ok(targets) => targets,
                 Err(error) => {
-                    warn!(error = %error, "Initial discovery backend resolution failed");
-                    Vec::<DiscoveryBackend>::new()
+                    warn!(error = %error, "Initial discovery target resolution failed");
+                    Vec::<DiscoveryTarget>::new()
                 }
             };
         let scan_interval =
@@ -622,7 +622,7 @@ impl DaemonState {
             worker
                 .run_scan_if_idle(
                     Arc::clone(&config),
-                    initial_backends,
+                    initial_targets,
                     "Skipping initial discovery scan; scan already in progress",
                 )
                 .await;

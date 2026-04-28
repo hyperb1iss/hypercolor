@@ -26,7 +26,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
-use crate::discovery::{self, DiscoveryBackend};
+use crate::discovery::{self, DiscoveryTarget};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
@@ -92,10 +92,10 @@ impl DiscoveryWorkerContext {
     pub(super) async fn run_scan_if_idle(
         &self,
         config: Arc<HypercolorConfig>,
-        backends: Vec<DiscoveryBackend>,
+        targets: Vec<DiscoveryTarget>,
         busy_log: &'static str,
     ) {
-        if backends.is_empty() {
+        if targets.is_empty() {
             return;
         }
 
@@ -113,7 +113,7 @@ impl DiscoveryWorkerContext {
             Arc::clone(&self.driver_registry),
             Arc::clone(&self.driver_host),
             config,
-            backends,
+            targets,
             discovery::default_timeout(),
         )
         .await;
@@ -121,24 +121,21 @@ impl DiscoveryWorkerContext {
 
     pub(super) async fn run_periodic_scan(&self) {
         let latest_config = Arc::clone(&self.config_manager.get());
-        let backends = match discovery::resolve_backends(
-            None,
-            &latest_config,
-            self.driver_registry.as_ref(),
-        ) {
-            Ok(backends) => backends,
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    "Periodic discovery backend resolution failed; skipping interval"
-                );
-                return;
-            }
-        };
+        let targets =
+            match discovery::resolve_targets(None, &latest_config, self.driver_registry.as_ref()) {
+                Ok(targets) => targets,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "Periodic discovery target resolution failed; skipping interval"
+                    );
+                    return;
+                }
+            };
 
         self.run_scan_if_idle(
             latest_config,
-            backends,
+            targets,
             "Skipping periodic discovery scan; scan already in progress",
         )
         .await;
@@ -147,7 +144,7 @@ impl DiscoveryWorkerContext {
     pub(super) async fn run_usb_hotplug_scan(&self) {
         self.run_scan_if_idle(
             Arc::clone(&self.config_manager.get()),
-            vec![DiscoveryBackend::usb()],
+            vec![DiscoveryTarget::usb()],
             "Skipping USB hotplug scan; discovery already in progress",
         )
         .await;
@@ -163,12 +160,12 @@ impl DiscoveryWorkerContext {
             if unmapped_by_driver.is_empty() {
                 return;
             }
-            let backends = unmapped_by_driver
+            let targets = unmapped_by_driver
                 .keys()
                 .cloned()
-                .map(DiscoveryBackend::driver)
+                .map(DiscoveryTarget::driver)
                 .collect::<Vec<_>>();
-            let drivers = discovery::backend_names(&backends);
+            let drivers = discovery::target_names(&targets);
             let unmapped_layout_device_ids = unmapped_by_driver
                 .values()
                 .flatten()
@@ -191,7 +188,7 @@ impl DiscoveryWorkerContext {
 
             self.run_scan_if_idle(
                 Arc::clone(&latest_config),
-                backends,
+                targets,
                 "Skipping startup network recovery scan; discovery already in progress",
             )
             .await;

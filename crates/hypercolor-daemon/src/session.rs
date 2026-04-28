@@ -15,7 +15,7 @@ use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
 
-use crate::discovery::{self, DiscoveryBackend, DiscoveryRuntime};
+use crate::discovery::{self, DiscoveryRuntime, DiscoveryTarget};
 use crate::network::DaemonDriverHost;
 
 const FADE_STEP_MS: u64 = 16;
@@ -246,7 +246,7 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        vec![DiscoveryBackend::usb(), DiscoveryBackend::smbus()],
+        vec![DiscoveryTarget::usb(), DiscoveryTarget::smbus()],
         discovery::default_timeout(),
     )
     .await
@@ -272,10 +272,10 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
 async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
     let config_guard = runtime.config_manager.get();
     let config = Arc::clone(&*config_guard);
-    let backends = match discovery::resolve_backends(None, &config, &runtime.driver_registry) {
-        Ok(backends) => backends,
+    let targets = match discovery::resolve_targets(None, &config, &runtime.driver_registry) {
+        Ok(targets) => targets,
         Err(error) => {
-            warn!(%error, "Failed to resolve backends for output reconnect scan");
+            warn!(%error, "Failed to resolve discovery targets for output reconnect scan");
             return;
         }
     };
@@ -285,7 +285,7 @@ async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        backends,
+        targets,
         discovery::default_timeout(),
     )
     .await
