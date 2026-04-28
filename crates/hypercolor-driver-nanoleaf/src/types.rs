@@ -5,7 +5,7 @@ use std::net::IpAddr;
 
 use serde::Deserialize;
 
-use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,

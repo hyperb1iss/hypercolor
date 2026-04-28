@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,

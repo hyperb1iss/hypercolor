@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
@@ -18,6 +17,7 @@ use hypercolor_driver_api::{
     DriverDiscoveredDevice, DriverHost, DriverRuntimeCacheProvider, DriverTrackedDevice,
     DriverTransport, NetworkDriverFactory, TrackedDeviceCtx, ValidatedControlChanges,
 };
+use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,

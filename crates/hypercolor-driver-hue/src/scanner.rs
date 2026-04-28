@@ -13,7 +13,7 @@ use tracing::warn;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::net::{CredentialStore, MdnsBrowser};
-use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 use super::bridge::{DEFAULT_HUE_API_PORT, HueBridgeClient};
 use super::types::{

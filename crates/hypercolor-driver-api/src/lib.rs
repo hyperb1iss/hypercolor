@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use hypercolor_core::device::{DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionResult, ControlChange,
@@ -25,6 +24,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 pub mod validation;
+
+pub use hypercolor_core::device::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner,
+};
 
 /// Current driver API schema version. Bump this on any breaking change to
 /// the [`DriverHost`] trait, [`DriverDescriptor`] fields, or related types.

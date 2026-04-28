@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail};
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
-use hypercolor_core::device::{BackendInfo, DeviceBackend, TransportScanner};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, TransportScanner};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use cache::{build_device_info, wled_fingerprint};

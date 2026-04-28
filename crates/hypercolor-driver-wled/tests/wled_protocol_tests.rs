@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
-use hypercolor_core::device::DiscoveryConnectBehavior;
-use hypercolor_core::device::{DeviceBackend, TransportScanner};
+use hypercolor_driver_api::DiscoveryConnectBehavior;
+use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,

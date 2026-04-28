@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use hypercolor_core::device::net::CredentialStore;
-use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::scanner::{NanoleafKnownDevice, NanoleafScanner, load_auth_token};

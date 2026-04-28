@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider, DriverDescriptor,
     DriverDiscoveredDevice, DriverHost, DriverTransport, NetworkDriverFactory, PairDeviceRequest,
     PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
     ValidatedControlChanges, support,
 };
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
