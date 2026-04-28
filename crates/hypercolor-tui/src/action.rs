@@ -129,6 +129,11 @@ pub enum Action {
         device_id: String,
         result: Arc<ControlActionResult>,
     },
+    /// One dynamic control surface was refreshed after a mutation or action.
+    DeviceControlSurfaceRefreshed {
+        device_id: String,
+        surface: Arc<ControlSurfaceDocument>,
+    },
     /// Dynamic control-surface action failed for one device.
     DeviceControlActionFailed {
         device_id: String,

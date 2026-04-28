@@ -651,7 +651,8 @@ impl App {
             Action::DeviceControlSurfacesUpdated { .. }
             | Action::DeviceControlSurfacesFailed { .. }
             | Action::DeviceControlChangeApplied { .. }
-            | Action::DeviceControlChangeFailed { .. } => {}
+            | Action::DeviceControlChangeFailed { .. }
+            | Action::DeviceControlSurfaceRefreshed { .. } => {}
             Action::DeviceControlActionInvoked { result, .. } => {
                 self.notification = Some((
                     Notification {
@@ -899,7 +900,7 @@ impl App {
                 surface_id,
                 action_id,
             } => {
-                self.spawn_command({
+                self.spawn_actions({
                     let client = self.client.clone();
                     let device_id = device_id.clone();
                     let surface_id = surface_id.clone();
@@ -909,16 +910,35 @@ impl App {
                             .invoke_control_action(&surface_id, &action_id, BTreeMap::default())
                             .await
                         {
-                            Ok(result) => Ok(Action::DeviceControlActionInvoked {
-                                device_id,
-                                result: Arc::new(result),
-                            }),
-                            Err(error) => Ok(Action::DeviceControlActionFailed {
+                            Ok(result) => {
+                                let refreshed_surface_id = result.surface_id.clone();
+                                let mut actions = vec![Action::DeviceControlActionInvoked {
+                                    device_id: device_id.clone(),
+                                    result: Arc::new(result),
+                                }];
+                                match client.get_control_surface(&refreshed_surface_id).await {
+                                    Ok(surface) => {
+                                        actions.push(Action::DeviceControlSurfaceRefreshed {
+                                            device_id,
+                                            surface: Arc::new(surface),
+                                        });
+                                    }
+                                    Err(error) => {
+                                        tracing::debug!(
+                                            %refreshed_surface_id,
+                                            %error,
+                                            "Failed to refresh dynamic control surface after action"
+                                        );
+                                    }
+                                }
+                                Ok(actions)
+                            }
+                            Err(error) => Ok(vec![Action::DeviceControlActionFailed {
                                 device_id,
                                 surface_id,
                                 action_id,
                                 error: error.to_string(),
-                            }),
+                            }]),
                         }
                     }
                 });
@@ -976,6 +996,7 @@ impl App {
                 | Action::DeviceControlChangeApplied { .. }
                 | Action::DeviceControlChangeFailed { .. }
                 | Action::DeviceControlActionInvoked { .. }
+                | Action::DeviceControlSurfaceRefreshed { .. }
                 | Action::DeviceControlActionFailed { .. }
                 | Action::SimulatedDisplaysUpdated(_)
                 | Action::FavoritesUpdated(_)
