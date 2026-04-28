@@ -579,6 +579,8 @@ impl App {
                 self.state.devices.clone_from(devices.as_ref());
                 self.sync_daemon_device_summary();
             }
+            Action::DeviceControlSurfacesUpdated { .. }
+            | Action::DeviceControlSurfacesFailed { .. } => {}
             Action::SimulatedDisplaysUpdated(simulators) => {
                 self.simulator_preview
                     .simulators
@@ -662,6 +664,7 @@ impl App {
             | Action::ToggleFavorite(_)
             | Action::UpdateControl(_, _)
             | Action::ResetControls
+            | Action::LoadDeviceControls(_)
                 if !self.is_connected() =>
             {
                 self.notify_not_connected();
@@ -745,6 +748,24 @@ impl App {
                     }
                 });
             }
+            Action::LoadDeviceControls(device_id) => {
+                self.spawn_command({
+                    let client = self.client.clone();
+                    let id = device_id.clone();
+                    async move {
+                        match client.get_device_control_surfaces(&id, true).await {
+                            Ok(surfaces) => Ok(Action::DeviceControlSurfacesUpdated {
+                                device_id: id,
+                                surfaces: Arc::new(surfaces),
+                            }),
+                            Err(error) => Ok(Action::DeviceControlSurfacesFailed {
+                                device_id: id,
+                                error: error.to_string(),
+                            }),
+                        }
+                    }
+                });
+            }
 
             // ── Notifications ───────────────────────────────
             Action::Notify(notif) => {
@@ -793,6 +814,8 @@ impl App {
                 | Action::DaemonReconnecting
                 | Action::EffectsUpdated(_)
                 | Action::DevicesUpdated(_)
+                | Action::DeviceControlSurfacesUpdated { .. }
+                | Action::DeviceControlSurfacesFailed { .. }
                 | Action::SimulatedDisplaysUpdated(_)
                 | Action::FavoritesUpdated(_)
                 | Action::CanvasFrameReceived(_)

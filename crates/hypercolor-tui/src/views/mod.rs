@@ -1,9 +1,11 @@
 //! TUI views — top-level screen components.
 
 mod dashboard;
+mod device_manager;
 mod effect_browser;
 
 pub use dashboard::DashboardView;
+pub use device_manager::DeviceManagerView;
 pub use effect_browser::EffectBrowserView;
 
 use crate::component::Component;
@@ -18,5 +20,6 @@ pub fn create_screens() -> Vec<(ScreenId, Box<dyn Component>)> {
     vec![
         (ScreenId::Dashboard, Box::new(DashboardView::new())),
         (ScreenId::EffectBrowser, Box::new(EffectBrowserView::new())),
+        (ScreenId::DeviceManager, Box::new(DeviceManagerView::new())),
     ]
 }

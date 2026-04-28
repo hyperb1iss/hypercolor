@@ -8,6 +8,7 @@ use crate::state::{
     CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary, Notification,
     PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
 };
+use hypercolor_types::controls::ControlSurfaceDocument;
 
 /// Every state change in the TUI flows through an Action.
 #[derive(Debug, Clone)]
@@ -47,6 +48,13 @@ pub enum Action {
     EffectsUpdated(Arc<Vec<EffectSummary>>),
     /// Device list refreshed.
     DevicesUpdated(Arc<Vec<DeviceSummary>>),
+    /// Dynamic control surfaces refreshed for one device.
+    DeviceControlSurfacesUpdated {
+        device_id: String,
+        surfaces: Arc<Vec<ControlSurfaceDocument>>,
+    },
+    /// Dynamic control-surface fetch failed for one device.
+    DeviceControlSurfacesFailed { device_id: String, error: String },
     /// Virtual display simulator list refreshed.
     SimulatedDisplaysUpdated(Arc<Vec<SimulatedDisplaySummary>>),
     /// Favorites list refreshed.
@@ -86,6 +94,8 @@ pub enum Action {
     ApplyEffectPreset(String, HashMap<String, ControlValue>),
     /// Reset all controls to defaults.
     ResetControls,
+    /// Fetch dynamic control surfaces for a device.
+    LoadDeviceControls(String),
 
     // ── UI State ────────────────────────────────────────────
     /// Toggle the help overlay.
