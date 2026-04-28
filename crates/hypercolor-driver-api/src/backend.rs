@@ -19,6 +19,18 @@ pub struct BackendInfo {
     pub description: String,
 }
 
+/// Cloneable hot-path output lane for one connected device.
+#[async_trait::async_trait]
+pub trait DeviceFrameSink: Send + Sync {
+    /// Push shared LED color data to this device's output lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device output lane is no longer available or
+    /// the driver has observed an asynchronous transport failure.
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()>;
+}
+
 /// Core device communication trait.
 #[async_trait::async_trait]
 pub trait DeviceBackend: Send + Sync {
@@ -76,6 +88,13 @@ pub trait DeviceBackend: Send + Sync {
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<()> {
         self.write_colors(id, colors.as_slice()).await
+    }
+
+    /// Return a cloneable hot-path frame sink for a connected device.
+    #[must_use]
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        let _ = id;
+        None
     }
 
     /// Push a JPEG-compressed display frame to a connected device, if supported.

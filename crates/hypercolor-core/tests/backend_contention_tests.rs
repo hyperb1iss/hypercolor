@@ -9,17 +9,23 @@
 
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
+use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::event::ZoneColors;
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+};
+use tokio::sync::Notify;
 
 // ── ContentionMockBackend ───────────────────────────────────────────────────
 //
@@ -48,6 +54,133 @@ struct WriteRecord {
     first_pixel: [u8; 3],
     /// Total LED count in the payload.
     len: usize,
+}
+
+struct BlockingFrameSink {
+    delay: Duration,
+    entered: Arc<AtomicBool>,
+    write_count: Arc<AtomicUsize>,
+    entered_notify: Arc<Notify>,
+    write_notify: Arc<Notify>,
+}
+
+impl BlockingFrameSink {
+    fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            entered: Arc::new(AtomicBool::new(false)),
+            write_count: Arc::new(AtomicUsize::new(0)),
+            entered_notify: Arc::new(Notify::new()),
+            write_notify: Arc::new(Notify::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for BlockingFrameSink {
+    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        self.entered.store(true, Ordering::Release);
+        self.entered_notify.notify_waiters();
+
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
+
+        self.write_count.fetch_add(1, Ordering::AcqRel);
+        self.write_notify.notify_waiters();
+        Ok(())
+    }
+}
+
+struct MultiDeviceSinkBackend {
+    backend_id: String,
+    devices: Vec<DeviceId>,
+    sinks: HashMap<DeviceId, Arc<BlockingFrameSink>>,
+    fallback_count: Arc<AtomicUsize>,
+}
+
+impl MultiDeviceSinkBackend {
+    fn new(
+        backend_id: impl Into<String>,
+        slow_device: DeviceId,
+        fast_device: DeviceId,
+        slow_delay: Duration,
+    ) -> Self {
+        let fallback_count = Arc::new(AtomicUsize::new(0));
+        let slow_sink = Arc::new(BlockingFrameSink::new(slow_delay));
+        let fast_sink = Arc::new(BlockingFrameSink::new(Duration::ZERO));
+
+        let mut sinks = HashMap::new();
+        sinks.insert(slow_device, slow_sink);
+        sinks.insert(fast_device, fast_sink);
+
+        Self {
+            backend_id: backend_id.into(),
+            devices: vec![slow_device, fast_device],
+            sinks,
+            fallback_count,
+        }
+    }
+
+    fn sink(&self, device_id: DeviceId) -> Arc<BlockingFrameSink> {
+        Arc::clone(
+            self.sinks
+                .get(&device_id)
+                .expect("test sink should be registered"),
+        )
+    }
+
+    fn fallback_count(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.fallback_count)
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for MultiDeviceSinkBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: self.backend_id.clone(),
+            name: "Multi Device Sink Backend".to_owned(),
+            description: "Exposes per-device frame sinks for contention tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(self
+            .devices
+            .iter()
+            .map(|device_id| test_device_info(*device_id, &self.backend_id))
+            .collect())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if self.sinks.contains_key(id) {
+            Ok(())
+        } else {
+            bail!("unexpected device id {id}");
+        }
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        self.fallback_count.fetch_add(1, Ordering::AcqRel);
+        let Some(sink) = self.sinks.get(id) else {
+            bail!("unexpected device id {id}");
+        };
+        if !sink.delay.is_zero() {
+            tokio::time::sleep(sink.delay).await;
+        }
+        Ok(())
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.sinks
+            .get(id)
+            .map(|sink| Arc::clone(sink) as Arc<dyn DeviceFrameSink>)
+    }
 }
 
 impl ContentionMockBackend {
@@ -204,6 +337,172 @@ async fn build_manager_with_backends(
 
 fn u8_tag(value: usize) -> u8 {
     u8::try_from(value).expect("test tag must fit in u8")
+}
+
+fn test_device_info(device_id: DeviceId, backend_id: &str) -> DeviceInfo {
+    DeviceInfo {
+        id: device_id,
+        name: format!("sink-device-{device_id}"),
+        vendor: "hypercolor-test".to_owned(),
+        family: DeviceFamily::named("Contention"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("contention", backend_id.to_owned(), ConnectionType::Network),
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 4,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 4,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    }
+}
+
+fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+    SpatialLayout {
+        id: "contention-layout".into(),
+        name: "Contention Layout".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones,
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn make_zone(id: &str, device_id: &str) -> DeviceZone {
+    DeviceZone {
+        id: id.into(),
+        name: id.into(),
+        device_id: device_id.into(),
+        zone_name: None,
+        position: NormalizedPosition { x: 0.5, y: 0.5 },
+        size: NormalizedPosition { x: 1.0, y: 1.0 },
+        rotation: 0.0,
+        scale: 1.0,
+        brightness: Some(1.0),
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 4,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+    }
+}
+
+async fn wait_for_flag(flag: &AtomicBool, notify: &Notify, timeout: Duration) {
+    if flag.load(Ordering::Acquire) {
+        return;
+    }
+
+    tokio::time::timeout(timeout, notify.notified())
+        .await
+        .expect("flag should be set before timeout");
+    assert!(flag.load(Ordering::Acquire));
+}
+
+async fn wait_for_count(count: &AtomicUsize, notify: &Notify, expected: usize, timeout: Duration) {
+    if count.load(Ordering::Acquire) >= expected {
+        return;
+    }
+
+    tokio::time::timeout(timeout, notify.notified())
+        .await
+        .expect("write count should reach expected value before timeout");
+    assert!(count.load(Ordering::Acquire) >= expected);
+}
+
+// ── Scenario 0: Same-backend device sinks do not contend ───────────────────
+
+#[tokio::test]
+async fn same_backend_frame_sinks_do_not_block_each_other() {
+    const SLOW_DELAY: Duration = Duration::from_millis(250);
+
+    let mut manager = BackendManager::new();
+    let slow_device = DeviceId::new();
+    let fast_device = DeviceId::new();
+    let backend = MultiDeviceSinkBackend::new("sink-lanes", slow_device, fast_device, SLOW_DELAY);
+    let slow_sink = backend.sink(slow_device);
+    let fast_sink = backend.sink(fast_device);
+    let fallback_count = backend.fallback_count();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .connect_device("sink-lanes", slow_device, "sink:slow")
+        .await
+        .expect("slow device should connect");
+    manager
+        .connect_device("sink-lanes", fast_device, "sink:fast")
+        .await
+        .expect("fast device should connect");
+
+    let layout = make_layout(vec![
+        make_zone("slow-zone", "sink:slow"),
+        make_zone("fast-zone", "sink:fast"),
+    ]);
+    let frame = vec![
+        ZoneColors {
+            zone_id: "slow-zone".into(),
+            colors: vec![[0x10, 0, 0]; 4],
+        },
+        ZoneColors {
+            zone_id: "fast-zone".into(),
+            colors: vec![[0, 0x20, 0]; 4],
+        },
+    ];
+
+    let stats = manager.write_frame(&frame, &layout).await;
+    assert_eq!(stats.devices_written, 2);
+    assert!(stats.errors.is_empty());
+
+    wait_for_flag(
+        &slow_sink.entered,
+        &slow_sink.entered_notify,
+        Duration::from_millis(100),
+    )
+    .await;
+    wait_for_count(
+        &fast_sink.write_count,
+        &fast_sink.write_notify,
+        1,
+        Duration::from_millis(100),
+    )
+    .await;
+
+    assert_eq!(
+        fallback_count.load(Ordering::Acquire),
+        0,
+        "frame writes should use device sinks, not the backend mutex path"
+    );
+    assert_eq!(slow_sink.write_count.load(Ordering::Acquire), 0);
+
+    wait_for_count(
+        &slow_sink.write_count,
+        &slow_sink.write_notify,
+        1,
+        SLOW_DELAY * 2,
+    )
+    .await;
 }
 
 // ── Scenario 1: Concurrent writes to different backends ─────────────────────

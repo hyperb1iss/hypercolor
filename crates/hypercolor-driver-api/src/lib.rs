@@ -28,7 +28,7 @@ pub mod discovery;
 pub mod net;
 pub mod validation;
 
-pub use backend::{BackendInfo, DeviceBackend, HealthStatus};
+pub use backend::{BackendInfo, DeviceBackend, DeviceFrameSink, HealthStatus};
 pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 pub use net::{CredentialStore, Credentials, MdnsBrowser, MdnsService};
 

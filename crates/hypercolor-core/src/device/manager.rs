@@ -25,9 +25,10 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, Z
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneAttachment};
 
-use super::traits::DeviceBackend;
+use super::traits::{DeviceBackend, DeviceFrameSink};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
+type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
 type BackendDeviceKey = (String, DeviceId);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
@@ -139,6 +140,12 @@ impl BackendIo {
                     self.backend_id
                 )
             })
+    }
+
+    /// Clone the hot-path frame sink for a connected device, if the backend exposes one.
+    pub async fn frame_sink(&self, device_id: DeviceId) -> Option<DeviceFrameSinkHandle> {
+        let backend = self.backend.lock().await;
+        backend.frame_sink(&device_id)
     }
 
     /// Disconnect a device from the backend.
@@ -712,6 +719,7 @@ impl OutputQueue {
         backend_id: String,
         device_id: DeviceId,
         backend: BackendHandle,
+        frame_sink: Option<DeviceFrameSinkHandle>,
         target_fps: u32,
     ) -> Self {
         let (tx, mut rx) = watch::channel(None::<Arc<FramePayload>>);
@@ -768,7 +776,11 @@ impl OutputQueue {
                     );
                 }
 
-                let result = {
+                let result = if let Some(frame_sink) = frame_sink.as_ref() {
+                    frame_sink
+                        .write_colors_shared(Arc::clone(&frame.colors))
+                        .await
+                } else {
                     let mut backend = backend.lock().await;
                     backend
                         .write_colors_shared(&device_id, Arc::clone(&frame.colors))
@@ -979,6 +991,9 @@ pub struct BackendManager {
     /// Per-target latest-frame output queues.
     output_queues: HashMap<BackendDeviceKey, OutputQueue>,
 
+    /// Per-target output lanes that bypass backend-wide locks on the frame hot path.
+    device_frame_sinks: HashMap<BackendDeviceKey, DeviceFrameSinkHandle>,
+
     /// Reusable per-device color staging for steady-state frame routing.
     device_staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
 
@@ -1115,6 +1130,8 @@ impl BackendManager {
         // They are lazily recreated on the next frame.
         self.output_queues
             .retain(|(queued_backend_id, _), _| queued_backend_id != &backend_id);
+        self.device_frame_sinks
+            .retain(|(sink_backend_id, _), _| sink_backend_id != &backend_id);
         self.device_staging
             .retain(|(staged_backend_id, _), _| staged_backend_id != &backend_id);
         self.device_fps_cache
@@ -1229,8 +1246,10 @@ impl BackendManager {
             bail!("backend '{backend_id}' is not registered");
         };
         let target_fps = io.connect_with_refresh(device_id).await?;
+        let frame_sink = io.frame_sink(device_id).await;
         self.device_fps_cache
             .insert((backend_id.to_owned(), device_id), target_fps);
+        self.set_device_frame_sink(backend_id, device_id, frame_sink);
 
         self.map_device(
             layout_device_id.to_owned(),
@@ -1420,6 +1439,22 @@ impl BackendManager {
     ) {
         self.device_fps_cache
             .insert((backend_id.to_owned(), device_id), target_fps);
+    }
+
+    /// Cache a backend-provided hot-path frame sink for a physical device.
+    pub fn set_device_frame_sink(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        frame_sink: Option<DeviceFrameSinkHandle>,
+    ) {
+        let key = (backend_id.to_owned(), device_id);
+        self.output_queues.remove(&key);
+        if let Some(frame_sink) = frame_sink {
+            self.device_frame_sinks.insert(key, frame_sink);
+        } else {
+            self.device_frame_sinks.remove(&key);
+        }
     }
 
     /// Suppress queued frame writes for a specific physical device.
@@ -1736,6 +1771,7 @@ impl BackendManager {
 
     fn remove_device_target_state(&mut self, key: &BackendDeviceKey) {
         self.output_queues.remove(key);
+        self.device_frame_sinks.remove(key);
         self.device_staging.remove(key);
         self.device_fps_cache.remove(key);
         self.direct_control_locks.remove(key);
@@ -2062,8 +2098,9 @@ impl BackendManager {
     fn ensure_output_queue_for_key(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
         if !self.output_queues.contains_key(key) {
             let backend = self.backends.get(key.0.as_str())?.clone();
+            let frame_sink = self.device_frame_sinks.get(key).cloned();
             let target_fps = self.device_fps_cache.get(key).copied().unwrap_or(60);
-            let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, target_fps);
+            let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, frame_sink, target_fps);
             self.output_queues.insert(key.clone(), queue);
         }
 

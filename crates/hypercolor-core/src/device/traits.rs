@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-pub use hypercolor_driver_api::{BackendInfo, DeviceBackend, HealthStatus};
+pub use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink, HealthStatus};
 
 // ── DevicePlugin ─────────────────────────────────────────────────────────
 

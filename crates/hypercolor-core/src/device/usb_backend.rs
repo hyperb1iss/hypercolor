@@ -3,7 +3,7 @@
 use std::cmp::min;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,7 @@ use tracing::{debug, info, trace, warn};
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
-use super::traits::{BackendInfo, DeviceBackend};
+use super::traits::{BackendInfo, DeviceBackend, DeviceFrameSink};
 use super::usb_scanner::UsbScanner;
 use super::{DiscoveredDevice, TransportScanner};
 use crate::attachment::AttachmentRegistry;
@@ -121,6 +121,7 @@ struct UsbDevice {
     display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
     command_tx: mpsc::UnboundedSender<UsbDeviceCommand>,
     actor_task: Option<JoinHandle<()>>,
+    active: Arc<AtomicBool>,
     last_async_error: Arc<StdMutex<Option<String>>>,
     info_template: DeviceInfo,
     frame_diagnostics_emitted: bool,
@@ -163,6 +164,15 @@ impl UsbDevice {
             .send_replace(Some(Arc::new(UsbFramePayload { colors })));
     }
 
+    fn frame_sink(&self, device_id: DeviceId) -> Arc<dyn DeviceFrameSink> {
+        Arc::new(UsbFrameSink {
+            device_id,
+            frame_tx: self.frame_tx.clone(),
+            active: Arc::clone(&self.active),
+            last_async_error: Arc::clone(&self.last_async_error),
+        })
+    }
+
     fn queue_display_frame(&self, payload: Arc<OwnedDisplayFramePayload>) {
         self.display_tx
             .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
@@ -196,6 +206,7 @@ impl UsbDevice {
     }
 
     async fn shutdown(&mut self, device_id: DeviceId) -> Result<()> {
+        self.active.store(false, Ordering::Release);
         let Some(actor_task) = self.actor_task.take() else {
             if let Some(error) = self.last_async_error()? {
                 bail!("{error}");
@@ -252,6 +263,38 @@ impl UsbDevice {
             .lock()
             .map_err(|_| anyhow!("USB device async error state lock poisoned"))?;
         *slot = Some(error);
+        Ok(())
+    }
+}
+
+struct UsbFrameSink {
+    device_id: DeviceId,
+    frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
+    active: Arc<AtomicBool>,
+    last_async_error: Arc<StdMutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for UsbFrameSink {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        if !self.active.load(Ordering::Acquire) {
+            bail!(
+                "USB device actor is not running for device {}",
+                self.device_id
+            );
+        }
+
+        if let Some(error) = self
+            .last_async_error
+            .lock()
+            .map_err(|_| anyhow!("USB device async error state lock poisoned"))?
+            .clone()
+        {
+            bail!("{error}");
+        }
+
+        self.frame_tx
+            .send_replace(Some(Arc::new(UsbFramePayload { colors })));
         Ok(())
     }
 }
@@ -1394,6 +1437,7 @@ impl DeviceBackend for UsbBackend {
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
         let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
         let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let active = Arc::new(AtomicBool::new(true));
         let last_async_error = Arc::new(StdMutex::new(None));
 
         if let Some(keepalive) = protocol.keepalive() {
@@ -1428,6 +1472,7 @@ impl DeviceBackend for UsbBackend {
                 display_tx,
                 command_tx,
                 actor_task: Some(actor_task),
+                active,
                 last_async_error,
                 info_template: pending.info_template,
                 frame_diagnostics_emitted: false,
@@ -1570,6 +1615,10 @@ impl DeviceBackend for UsbBackend {
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.connected.get(id).and_then(|device| device.target_fps)
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.connected.get(id).map(|device| device.frame_sink(*id))
     }
 }
 
