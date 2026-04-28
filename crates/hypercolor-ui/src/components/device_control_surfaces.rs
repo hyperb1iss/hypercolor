@@ -40,7 +40,9 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
                             overrides.insert(surface.surface_id.clone(), surface);
                         });
                     }
-                    Err(error) => toasts::toast_error(&format!("Control refresh failed: {error}")),
+                    Err(error) => {
+                        leptos::logging::warn!("Control surface refresh failed: {error}");
+                    }
                 }
             });
         }
