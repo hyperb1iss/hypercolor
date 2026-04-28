@@ -667,7 +667,9 @@ fn render_action(
     action: ControlActionDescriptor,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
 ) -> impl IntoView {
+    let ws_ctx = expect_context::<WsContext>();
     let action_id = action.id.clone();
+    let surface_id = surface.surface_id.clone();
     let state = surface
         .action_availability
         .get(&action_id)
@@ -685,6 +687,26 @@ fn render_action(
     let input_fields = action.input_fields.clone();
     let (input_values, set_input_values) = signal(default_action_input_values(&input_fields));
     let (confirmation_armed, set_confirmation_armed) = signal(false);
+    let progress_surface_id = surface_id.clone();
+    let progress_action_id = action_id.clone();
+    let action_progress = Memo::new(move |_| {
+        ws_ctx
+            .last_control_surface_event
+            .get()
+            .and_then(|event| {
+                let matches_action = event.kind == "action_progress"
+                    && event.surface_id == progress_surface_id
+                    && event.action_id.as_deref() == Some(progress_action_id.as_str());
+                matches_action.then_some(event)
+            })
+            .map(|event| {
+                let status = event.status.unwrap_or_else(|| "running".to_string());
+                match event.progress {
+                    Some(progress) => format!("{status} · {}%", (progress * 100.0).round()),
+                    None => status,
+                }
+            })
+    });
     let button_label = Memo::new(move |_| {
         if confirmation.is_some() && confirmation_armed.get() {
             "Confirm".to_string()
@@ -702,12 +724,15 @@ fn render_action(
                         <div class="text-[9px] text-fg-tertiary/45 leading-snug mt-0.5">{text}</div>
                     })}
                     <div class="text-[9px] text-fg-tertiary/45 font-mono mt-0.5">{format!("{state:?}")}</div>
+                    {move || action_progress.get().map(|text| view! {
+                        <div class="text-[9px] text-accent/70 font-mono mt-0.5">{text}</div>
+                    })}
                 </div>
                 <button
                     class=move || action_button_class(enabled, confirmation_level, confirmation_armed.get())
                     disabled=!enabled
                     on:click=move |_| {
-                        let surface_id = surface.surface_id.clone();
+                        let surface_id = surface_id.clone();
                         let action_id = action_id.clone();
                         if let Some(message) = confirmation_message_for_click.clone()
                             && !confirmation_armed.get_untracked()

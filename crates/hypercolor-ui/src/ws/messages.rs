@@ -194,12 +194,15 @@ pub struct EffectErrorHint {
     pub fallback: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
     pub event_type: String,
     pub kind: String,
     pub surface_id: String,
     pub revision: Option<u64>,
+    pub action_id: Option<String>,
+    pub status: Option<String>,
+    pub progress: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,6 +406,23 @@ pub(crate) fn extract_control_surface_event_hint(
             .to_owned(),
         surface_id,
         revision: data.get("revision").and_then(serde_json::Value::as_u64),
+        action_id: data
+            .get("action_id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        status: data
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        progress: data
+            .get("progress")
+            .and_then(serde_json::Value::as_f64)
+            .map(|progress| {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    progress.clamp(0.0, 1.0) as f32
+                }
+            }),
     })
 }
 
