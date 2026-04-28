@@ -29,7 +29,7 @@ pub struct ListTemplatesQuery {
     pub vendor: Option<String>,
     pub origin: Option<String>,
     pub q: Option<String>,
-    pub family: Option<String>,
+    pub controller_id: Option<String>,
     pub model: Option<String>,
     pub slot_id: Option<String>,
     pub led_min: Option<u32>,
@@ -285,7 +285,7 @@ fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, Response> 
         query: query.q.clone(),
         led_min: query.led_min,
         led_max: query.led_max,
-        family: query.family.clone(),
+        controller_ids: query.controller_id.iter().cloned().collect(),
         model: query.model.clone(),
         slot_id: query.slot_id.clone(),
     })

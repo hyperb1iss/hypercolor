@@ -22,7 +22,7 @@ fn sample_template(id: &str, origin: AttachmentOrigin) -> AttachmentTemplate {
             direction: hypercolor_types::spatial::Winding::Clockwise,
         },
         compatible_slots: vec![AttachmentCompatibility {
-            families: vec!["prismrgb".to_owned()],
+            families: vec!["nollie".to_owned()],
             models: vec!["prism_8".to_owned()],
             slots: vec!["channel-1".to_owned()],
         }],
@@ -97,7 +97,7 @@ fn list_filters_by_vendor_category_and_query() {
 }
 
 #[test]
-fn compatible_with_uses_slot_family_model_and_led_budget() {
+fn compatible_with_uses_controller_model_slot_and_led_budget() {
     let mut registry = AttachmentRegistry::new();
     registry
         .register(sample_template("sample-ring", AttachmentOrigin::BuiltIn))
@@ -114,9 +114,34 @@ fn compatible_with_uses_slot_family_model_and_led_budget() {
         })
         .expect("register large built-in");
 
-    let compatible = registry.compatible_with("prismrgb", Some("prism_8"), "channel-1", 20);
+    let compatible =
+        registry.compatible_with(&["nollie".to_owned()], Some("prism_8"), "channel-1", 20);
     assert_eq!(compatible.len(), 1);
     assert_eq!(compatible[0].id, "sample-ring");
+}
+
+#[test]
+fn list_filters_by_controller_ids() {
+    let mut registry = AttachmentRegistry::new();
+    registry
+        .register(sample_template("sample-ring", AttachmentOrigin::BuiltIn))
+        .expect("register built-in");
+
+    let matched = registry.list(&TemplateFilter {
+        controller_ids: vec!["nollie".to_owned(), "nollie/prism-8".to_owned()],
+        model: Some("prism_8".to_owned()),
+        slot_id: Some("channel-1".to_owned()),
+        ..TemplateFilter::default()
+    });
+    assert_eq!(matched.len(), 1);
+
+    let missed = registry.list(&TemplateFilter {
+        controller_ids: vec!["prismrgb".to_owned()],
+        model: Some("prism_8".to_owned()),
+        slot_id: Some("channel-1".to_owned()),
+        ..TemplateFilter::default()
+    });
+    assert!(missed.is_empty());
 }
 
 #[test]

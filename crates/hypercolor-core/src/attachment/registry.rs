@@ -20,7 +20,7 @@ pub struct TemplateFilter {
     pub query: Option<String>,
     pub led_min: Option<u32>,
     pub led_max: Option<u32>,
-    pub family: Option<String>,
+    pub controller_ids: Vec<String>,
     pub model: Option<String>,
     pub slot_id: Option<String>,
 }
@@ -216,7 +216,7 @@ impl AttachmentRegistry {
     #[must_use]
     pub fn compatible_with(
         &self,
-        family: &str,
+        controller_ids: &[String],
         model: Option<&str>,
         slot_id: &str,
         max_leds: u32,
@@ -225,7 +225,12 @@ impl AttachmentRegistry {
             .templates
             .values()
             .filter(|template| template.led_count() <= max_leds)
-            .filter(|template| template.supports_slot(family, model, slot_id))
+            .filter(|template| {
+                controller_ids.is_empty()
+                    || controller_ids
+                        .iter()
+                        .any(|controller_id| template.supports_slot(controller_id, model, slot_id))
+            })
             .collect();
         templates.sort_by(|left, right| {
             left.name
@@ -388,7 +393,7 @@ fn template_matches_filter(template: &AttachmentTemplate, filter: &TemplateFilte
 
     matches_compatibility_filter(
         template,
-        filter.family.as_deref(),
+        &filter.controller_ids,
         filter.model.as_deref(),
         filter.slot_id.as_deref(),
     )
@@ -407,11 +412,11 @@ fn template_matches_query(template: &AttachmentTemplate, needle: &str) -> bool {
 
 fn matches_compatibility_filter(
     template: &AttachmentTemplate,
-    family: Option<&str>,
+    controller_ids: &[String],
     model: Option<&str>,
     slot_id: Option<&str>,
 ) -> bool {
-    if family.is_none() && model.is_none() && slot_id.is_none() {
+    if controller_ids.is_empty() && model.is_none() && slot_id.is_none() {
         return true;
     }
 
@@ -420,10 +425,18 @@ fn matches_compatibility_filter(
     }
 
     template.compatible_slots.iter().any(|matcher| {
-        value_matches_filter(&matcher.families, family)
+        values_match_filter(&matcher.families, controller_ids)
             && value_matches_filter(&matcher.models, model)
             && value_matches_filter(&matcher.slots, slot_id)
     })
+}
+
+fn values_match_filter(filters: &[String], values: &[String]) -> bool {
+    filters.is_empty()
+        || values.is_empty()
+        || values
+            .iter()
+            .any(|value| filters.iter().any(|filter| filter == value))
 }
 
 fn value_matches_filter(filters: &[String], value: Option<&str>) -> bool {
