@@ -15,7 +15,7 @@ use crate::screen::ScreenId;
 use crate::state::AppState;
 
 pub use audio_strip::AudioStrip;
-pub use status_bar::StatusBar;
+pub use status_bar::{StatusBar, StatusBarHit};
 pub use title_bar::TitleBar;
 
 /// Owns all persistent chrome components and manages the frame layout.

@@ -1,7 +1,9 @@
 //! Device manager view for generic dynamic control surfaces.
 
+use std::cell::Cell as StdCell;
+
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use hypercolor_types::controls::{
     ControlActionDescriptor, ControlAvailabilityState, ControlFieldDescriptor,
     ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
@@ -34,6 +36,10 @@ pub struct DeviceManagerView {
     surfaces: Vec<ControlSurfaceDocument>,
     loading_device_id: Option<String>,
     error: Option<String>,
+    devices_rect: StdCell<Rect>,
+    devices_scroll: StdCell<usize>,
+    controls_rect: StdCell<Rect>,
+    controls_scroll: StdCell<usize>,
 }
 
 impl Default for DeviceManagerView {
@@ -54,6 +60,10 @@ impl DeviceManagerView {
             surfaces: Vec::new(),
             loading_device_id: None,
             error: None,
+            devices_rect: StdCell::new(Rect::default()),
+            devices_scroll: StdCell::new(0),
+            controls_rect: StdCell::new(Rect::default()),
+            controls_scroll: StdCell::new(0),
         }
     }
 
@@ -79,21 +89,31 @@ impl DeviceManagerView {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM));
 
-        let rows = self.devices.iter().enumerate().map(|(index, device)| {
-            let selected = index == self.selected_device;
-            let marker = if selected { "\u{25B8}" } else { " " };
-            let style = if selected {
-                Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(BASE_WHITE)
-            };
-            Row::new(vec![
-                Cell::from(marker).style(style),
-                Cell::from(device.name.clone()).style(style),
-                Cell::from(device.state.clone()).style(Style::default().fg(DIM_GRAY)),
-                Cell::from(device.led_count.to_string()).style(Style::default().fg(CORAL)),
-            ])
-        });
+        let visible_rows = area.height.saturating_sub(3);
+        let offset = self.visible_device_offset(usize::from(visible_rows));
+        self.devices_scroll.set(offset);
+
+        let rows = self
+            .devices
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(usize::from(visible_rows))
+            .map(|(index, device)| {
+                let selected = index == self.selected_device;
+                let marker = if selected { "\u{25B8}" } else { " " };
+                let style = if selected {
+                    Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(BASE_WHITE)
+                };
+                Row::new(vec![
+                    Cell::from(marker).style(style),
+                    Cell::from(device.name.clone()).style(style),
+                    Cell::from(device.state.clone()).style(Style::default().fg(DIM_GRAY)),
+                    Cell::from(device.led_count.to_string()).style(Style::default().fg(CORAL)),
+                ])
+            });
 
         let table = Table::new(
             rows,
@@ -166,7 +186,80 @@ impl DeviceManagerView {
         }
 
         let lines = control_surface_lines(&self.surfaces, usize::from(inner.width));
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        let max_scroll = lines.len().saturating_sub(usize::from(inner.height));
+        let scroll = self.controls_scroll.get().min(max_scroll);
+        self.controls_scroll.set(scroll);
+        let visible_lines = lines
+            .into_iter()
+            .skip(scroll)
+            .take(usize::from(inner.height))
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(visible_lines).wrap(Wrap { trim: false }),
+            inner,
+        );
+    }
+
+    fn visible_device_offset(&self, visible_rows: usize) -> usize {
+        if visible_rows == 0 || self.devices.len() <= visible_rows {
+            return 0;
+        }
+        let mut offset = self.devices_scroll.get();
+        if self.selected_device < offset {
+            offset = self.selected_device;
+        } else if self.selected_device >= offset + visible_rows {
+            offset = self
+                .selected_device
+                .saturating_sub(visible_rows.saturating_sub(1));
+        }
+        offset.min(self.devices.len().saturating_sub(visible_rows))
+    }
+
+    fn select_device(&mut self, index: usize) -> Option<Action> {
+        if index >= self.devices.len() {
+            return None;
+        }
+        self.selected_device = index;
+        self.controls_scroll.set(0);
+        self.request_selected_controls()
+    }
+
+    fn move_device_down(&mut self, steps: usize) -> Option<Action> {
+        if self.devices.is_empty() {
+            return None;
+        }
+        let index = (self.selected_device + steps).min(self.devices.len().saturating_sub(1));
+        self.select_device(index)
+    }
+
+    fn move_device_up(&mut self, steps: usize) -> Option<Action> {
+        if self.devices.is_empty() {
+            return None;
+        }
+        self.select_device(self.selected_device.saturating_sub(steps))
+    }
+
+    fn device_index_at(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.devices_rect.get();
+        if !rect_contains(area, col, row) {
+            return None;
+        }
+        let first_row = area.y.saturating_add(2);
+        if row < first_row {
+            return None;
+        }
+        let index = self.devices_scroll.get() + usize::from(row - first_row);
+        (index < self.devices.len()).then_some(index)
+    }
+
+    fn scroll_controls_down(&self, steps: usize) {
+        self.controls_scroll
+            .set(self.controls_scroll.get().saturating_add(steps));
+    }
+
+    fn scroll_controls_up(&self, steps: usize) {
+        self.controls_scroll
+            .set(self.controls_scroll.get().saturating_sub(steps));
     }
 }
 
@@ -178,27 +271,54 @@ impl Component for DeviceManagerView {
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.devices.is_empty() {
-                    self.selected_device =
-                        (self.selected_device + 1).min(self.devices.len().saturating_sub(1));
-                    return Ok(self.request_selected_controls());
-                }
-                Ok(None)
+            KeyCode::Char('j') | KeyCode::Down => Ok(self.move_device_down(1)),
+            KeyCode::Char('k') | KeyCode::Up => Ok(self.move_device_up(1)),
+            KeyCode::PageDown => {
+                self.scroll_controls_down(5);
+                Ok(Some(Action::Render))
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if !self.devices.is_empty() {
-                    self.selected_device = self.selected_device.saturating_sub(1);
-                    return Ok(self.request_selected_controls());
-                }
-                Ok(None)
+            KeyCode::PageUp => {
+                self.scroll_controls_up(5);
+                Ok(Some(Action::Render))
+            }
+            KeyCode::Home => {
+                self.controls_scroll.set(0);
+                Ok(Some(Action::Render))
+            }
+            KeyCode::End => {
+                self.scroll_controls_down(usize::MAX / 2);
+                Ok(Some(Action::Render))
             }
             KeyCode::Char('r') | KeyCode::Enter => Ok(self.request_selected_controls()),
             _ => Ok(None),
         }
     }
 
-    fn handle_mouse_event(&mut self, _mouse: MouseEvent) -> Result<Option<Action>> {
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        let col = mouse.column;
+        let row = mouse.row;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(index) = self.device_index_at(col, row) {
+                    return Ok(self.select_device(index).or(Some(Action::Render)));
+                }
+            }
+            MouseEventKind::ScrollDown if rect_contains(self.devices_rect.get(), col, row) => {
+                return Ok(self.move_device_down(1).or(Some(Action::Render)));
+            }
+            MouseEventKind::ScrollUp if rect_contains(self.devices_rect.get(), col, row) => {
+                return Ok(self.move_device_up(1).or(Some(Action::Render)));
+            }
+            MouseEventKind::ScrollDown if rect_contains(self.controls_rect.get(), col, row) => {
+                self.scroll_controls_down(3);
+                return Ok(Some(Action::Render));
+            }
+            MouseEventKind::ScrollUp if rect_contains(self.controls_rect.get(), col, row) => {
+                self.scroll_controls_up(3);
+                return Ok(Some(Action::Render));
+            }
+            _ => {}
+        }
         Ok(None)
     }
 
@@ -210,6 +330,8 @@ impl Component for DeviceManagerView {
                     self.selected_device = 0;
                     self.surfaces.clear();
                     self.loaded_device_id = None;
+                    self.devices_scroll.set(0);
+                    self.controls_scroll.set(0);
                     return Ok(None);
                 }
                 self.selected_device = self
@@ -231,6 +353,7 @@ impl Component for DeviceManagerView {
                     self.loading_device_id = None;
                     self.error = None;
                     self.surfaces.clone_from(surfaces);
+                    self.controls_scroll.set(0);
                 }
             }
             Action::DeviceControlSurfacesFailed { device_id, error } => {
@@ -242,6 +365,7 @@ impl Component for DeviceManagerView {
                     self.loading_device_id = None;
                     self.surfaces.clear();
                     self.error = Some(error.clone());
+                    self.controls_scroll.set(0);
                 }
             }
             _ => {}
@@ -257,6 +381,8 @@ impl Component for DeviceManagerView {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
             .areas(area);
+        self.devices_rect.set(devices);
+        self.controls_rect.set(controls);
         self.render_devices(frame, devices);
         self.render_controls(frame, controls);
     }
@@ -488,4 +614,8 @@ fn truncate(value: &str, max_len: usize) -> String {
     } else {
         "\u{2026}".to_string()
     }
+}
+
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
 }

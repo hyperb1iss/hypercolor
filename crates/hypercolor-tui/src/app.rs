@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
@@ -225,9 +225,7 @@ impl App {
                 }
                 Event::Mouse(mouse) => {
                     self.bump_activity();
-                    if let Some(screen) = self.screens.get_mut(&self.active_screen)
-                        && let Ok(Some(action)) = screen.handle_mouse_event(mouse)
-                    {
+                    if let Some(action) = self.handle_mouse_event(mouse) {
                         let _ = self.action_tx.send(action);
                     }
                 }
@@ -405,6 +403,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => return Some(Action::ToggleHelp),
+            KeyCode::Char('$') => return Some(Action::OpenDonate),
             KeyCode::Char('T' | 't') => return Some(Action::ToggleThemePicker),
             KeyCode::Char('M' | 'm') => return Some(Action::CycleMotionSensitivity),
             KeyCode::Char('Z' | 'z') => return Some(Action::ToggleFullscreenPreview),
@@ -433,6 +432,75 @@ impl App {
         }
 
         None
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if self.view.fullscreen_preview {
+            return match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
+                    Some(Action::ToggleFullscreenPreview)
+                }
+                _ => None,
+            };
+        }
+
+        if self.theme_picker.is_some() {
+            return match mouse.kind {
+                MouseEventKind::Down(MouseButton::Right) => Some(Action::ToggleThemePicker),
+                _ => None,
+            };
+        }
+
+        if self.view.help_visible {
+            return match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
+                    Some(Action::ToggleHelp)
+                }
+                _ => None,
+            };
+        }
+
+        if let Some(action) = self.handle_chrome_mouse_event(mouse) {
+            return Some(action);
+        }
+
+        self.screens
+            .get_mut(&self.active_screen)
+            .and_then(|screen| screen.handle_mouse_event(mouse).ok().flatten())
+    }
+
+    fn handle_chrome_mouse_event(&self, mouse: MouseEvent) -> Option<Action> {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return None;
+        }
+
+        let hit = crate::chrome::StatusBar::hit_test(
+            self.status_bar_area(),
+            mouse.column,
+            mouse.row,
+            self.active_screen,
+            self.available_screens(),
+            self.state.show_donate,
+        )?;
+
+        match hit {
+            crate::chrome::StatusBarHit::Screen(screen) => Some(Action::SwitchScreen(screen)),
+            crate::chrome::StatusBarHit::Sponsor => Some(Action::OpenDonate),
+            crate::chrome::StatusBarHit::Help => Some(Action::ToggleHelp),
+        }
+    }
+
+    fn status_bar_area(&self) -> Rect {
+        let area = self.last_frame_area;
+        if area.height == 0 {
+            return Rect::default();
+        }
+        Rect::new(
+            area.x,
+            area.y + area.height.saturating_sub(1),
+            area.width,
+            1,
+        )
     }
 
     /// Process a single action, updating state and forwarding to components.
@@ -1104,6 +1172,9 @@ impl App {
             ("Z".to_string(), "Fullscreen preview".to_string()),
             ("Esc".to_string(), "Go back".to_string()),
         ];
+        if self.state.show_donate {
+            bindings.push(("$".to_string(), "Sponsor project".to_string()));
+        }
         bindings.extend(self.available_screens().iter().copied().map(|screen| {
             (
                 screen.key_hint().to_ascii_lowercase().to_string(),

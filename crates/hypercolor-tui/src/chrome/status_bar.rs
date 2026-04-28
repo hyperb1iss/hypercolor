@@ -13,6 +13,14 @@ use crate::screen::ScreenId;
 use crate::state::AppState;
 use crate::theme;
 
+/// Interactive region hit by a status-bar mouse click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusBarHit {
+    Screen(ScreenId),
+    Sponsor,
+    Help,
+}
+
 /// Stateless status bar renderer.
 pub struct StatusBar;
 
@@ -49,6 +57,46 @@ impl StatusBar {
         let paragraph = Paragraph::new(line).style(Style::default().bg(theme::bg_panel()));
 
         frame.render_widget(paragraph, area);
+    }
+
+    /// Resolve a terminal cell in the status bar to the action-sized region
+    /// rendered at that position.
+    #[must_use]
+    pub fn hit_test(
+        area: Rect,
+        col: u16,
+        row: u16,
+        active_screen: ScreenId,
+        available_screens: &[ScreenId],
+        show_donate: bool,
+    ) -> Option<StatusBarHit> {
+        if area.height == 0
+            || area.width == 0
+            || row != area.y
+            || col < area.x
+            || col >= area.x + area.width
+        {
+            return None;
+        }
+
+        let wide = area.width > 100;
+        let right_len = nav_hints_width(active_screen, available_screens, show_donate, wide);
+        let Ok(right_len_u16) = u16::try_from(right_len) else {
+            return None;
+        };
+        let start = area
+            .x
+            .saturating_add(area.width.saturating_sub(right_len_u16));
+        if col < start || usize::from(col - start) >= right_len {
+            return None;
+        }
+
+        hit_test_nav_hints(
+            usize::from(col - start),
+            available_screens,
+            show_donate,
+            wide,
+        )
     }
 }
 
@@ -177,6 +225,49 @@ fn build_nav_hints(
     spans.push(Span::styled("help", Style::default().fg(muted)));
     spans.push(Span::raw(" "));
     spans
+}
+
+fn nav_hints_width(active: ScreenId, screens: &[ScreenId], show_donate: bool, wide: bool) -> usize {
+    build_nav_hints(active, screens, show_donate, wide)
+        .iter()
+        .map(Span::width)
+        .sum()
+}
+
+fn hit_test_nav_hints(
+    col: usize,
+    screens: &[ScreenId],
+    show_donate: bool,
+    wide: bool,
+) -> Option<StatusBarHit> {
+    let mut cursor = 0usize;
+
+    for (idx, &screen) in screens.iter().enumerate() {
+        if idx > 0 {
+            cursor += 3;
+        }
+        let width = screen.label().len();
+        if col >= cursor && col < cursor + width {
+            return Some(StatusBarHit::Screen(screen));
+        }
+        cursor += width;
+    }
+
+    if show_donate {
+        cursor += 3;
+        let sponsor_width = if wide {
+            Span::raw("\u{2665} Sponsor").width()
+        } else {
+            Span::raw("\u{2665}").width()
+        };
+        if col >= cursor && col < cursor + sponsor_width {
+            return Some(StatusBarHit::Sponsor);
+        }
+        cursor += sponsor_width;
+    }
+
+    cursor += 3;
+    (col >= cursor && col < cursor + "?help".len()).then_some(StatusBarHit::Help)
 }
 
 /// Render text with a per-character gradient (Neon Cyan → Electric Purple).

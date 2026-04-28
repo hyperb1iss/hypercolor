@@ -412,6 +412,49 @@ impl EffectBrowserView {
         }
     }
 
+    fn move_effect_down(&mut self, steps: usize) {
+        if self.effects.is_empty() {
+            return;
+        }
+        let new = (self.selected_index + steps).min(self.effects.len().saturating_sub(1));
+        if new != self.selected_index {
+            self.selected_index = new;
+            self.selected_preset = 0;
+            self.sync_controls_to_selection();
+        }
+    }
+
+    fn move_effect_up(&mut self, steps: usize) {
+        let new = self.selected_index.saturating_sub(steps);
+        if new != self.selected_index {
+            self.selected_index = new;
+            self.selected_preset = 0;
+            self.sync_controls_to_selection();
+        }
+    }
+
+    fn activate_control_by_mouse(&mut self, col: u16, row: u16) -> Option<Action> {
+        if let Some(action) = self.set_slider_by_mouse(col, row) {
+            return Some(action);
+        }
+
+        let ctrl_idx = self.selected_control;
+        let ctrl_type = self
+            .selected_effect()
+            .and_then(|effect| effect.controls.get(ctrl_idx))
+            .map(|control| control.control_type.clone());
+
+        match ctrl_type.as_deref() {
+            Some("toggle") => self.toggle_bool(ctrl_idx),
+            Some("dropdown") => self.cycle_dropdown(ctrl_idx, true),
+            Some("color") => {
+                self.open_color_picker();
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Set a slider value by mapping mouse column to normalized [0, 1].
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     fn set_slider_by_mouse(&mut self, col: u16, row: u16) -> Option<Action> {
@@ -563,34 +606,22 @@ impl EffectBrowserView {
 
     fn handle_list_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Down => {
-                if !self.effects.is_empty() {
-                    let new = (self.selected_index + 1).min(self.effects.len().saturating_sub(1));
-                    if new != self.selected_index {
-                        self.selected_index = new;
-                        self.selected_preset = 0;
-                        self.sync_controls_to_selection();
-                    }
-                }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.move_effect_down(1);
                 None
             }
-            KeyCode::Up => {
-                let new = self.selected_index.saturating_sub(1);
-                if new != self.selected_index {
-                    self.selected_index = new;
-                    self.selected_preset = 0;
-                    self.sync_controls_to_selection();
-                }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.move_effect_up(1);
                 None
             }
-            KeyCode::Home => {
+            KeyCode::Char('g') | KeyCode::Home => {
                 self.selected_index = 0;
                 self.selected_preset = 0;
                 self.scroll_offset.set(0);
                 self.sync_controls_to_selection();
                 None
             }
-            KeyCode::End => {
+            KeyCode::Char('G') | KeyCode::End => {
                 if !self.effects.is_empty() {
                     self.selected_index = self.effects.len().saturating_sub(1);
                     self.selected_preset = 0;
@@ -599,18 +630,11 @@ impl EffectBrowserView {
                 None
             }
             KeyCode::PageDown => {
-                if !self.effects.is_empty() {
-                    self.selected_index =
-                        (self.selected_index + 10).min(self.effects.len().saturating_sub(1));
-                    self.selected_preset = 0;
-                    self.sync_controls_to_selection();
-                }
+                self.move_effect_down(10);
                 None
             }
             KeyCode::PageUp => {
-                self.selected_index = self.selected_index.saturating_sub(10);
-                self.selected_preset = 0;
-                self.sync_controls_to_selection();
+                self.move_effect_up(10);
                 None
             }
             KeyCode::Char('/') => {
@@ -629,14 +653,14 @@ impl EffectBrowserView {
 
     fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 let count = self.selected_effect().map_or(0, |e| e.presets.len());
                 if count > 0 {
                     self.selected_preset = (self.selected_preset + 1).min(count.saturating_sub(1));
                 }
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_preset = self.selected_preset.saturating_sub(1);
                 None
             }
@@ -662,15 +686,17 @@ impl EffectBrowserView {
                 self.focus_pane = FocusPane::List;
                 None
             }
-            KeyCode::Left => self
+            KeyCode::Char('h') | KeyCode::Left => self
                 .next_preview_source(false)
                 .map(Action::SetPreviewSource),
-            KeyCode::Right => self.next_preview_source(true).map(Action::SetPreviewSource),
-            KeyCode::Home => {
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.next_preview_source(true).map(Action::SetPreviewSource)
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
                 self.selected_preset = 0;
                 None
             }
-            KeyCode::End => {
+            KeyCode::Char('G') | KeyCode::End => {
                 let count = self.selected_effect().map_or(0, |e| e.presets.len());
                 if count > 0 {
                     self.selected_preset = count.saturating_sub(1);
@@ -689,16 +715,16 @@ impl EffectBrowserView {
         }
 
         match key.code {
-            KeyCode::Down => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 self.selected_control =
                     (self.selected_control + 1).min(ctrl_count.saturating_sub(1));
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_control = self.selected_control.saturating_sub(1);
                 None
             }
-            KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 let idx = self.selected_control;
                 let ctrl_type = self
                     .selected_effect()
@@ -710,7 +736,7 @@ impl EffectBrowserView {
                     _ => None,
                 }
             }
-            KeyCode::Right => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 let idx = self.selected_control;
                 let ctrl_type = self
                     .selected_effect()
@@ -738,11 +764,11 @@ impl EffectBrowserView {
                     _ => None,
                 }
             }
-            KeyCode::Home => {
+            KeyCode::Char('g') | KeyCode::Home => {
                 self.selected_control = 0;
                 None
             }
-            KeyCode::End => {
+            KeyCode::Char('G') | KeyCode::End => {
                 self.selected_control = ctrl_count.saturating_sub(1);
                 None
             }
@@ -1490,8 +1516,7 @@ impl Component for EffectBrowserView {
                 } else if rect_contains(controls_r, col, row) {
                     self.focus_pane = FocusPane::Controls;
                     self.select_control_at_row(row);
-                    // Click-to-set slider value
-                    if let Some(action) = self.set_slider_by_mouse(col, row) {
+                    if let Some(action) = self.activate_control_by_mouse(col, row) {
                         return Ok(Some(action));
                     }
                 }
@@ -1506,22 +1531,17 @@ impl Component for EffectBrowserView {
             }
             MouseEventKind::ScrollDown => {
                 if rect_contains(list_r, col, row) {
-                    if !self.effects.is_empty() {
-                        let new =
-                            (self.selected_index + 1).min(self.effects.len().saturating_sub(1));
-                        if new != self.selected_index {
-                            self.selected_index = new;
-                            self.selected_preset = 0;
-                            self.sync_controls_to_selection();
-                        }
-                    }
+                    self.focus_pane = FocusPane::List;
+                    self.move_effect_down(3);
                 } else if rect_contains(controls_r, col, row) {
+                    self.focus_pane = FocusPane::Controls;
                     let ctrl_count = self.selected_effect().map_or(0, |e| e.controls.len());
                     if ctrl_count > 0 {
                         self.selected_control =
                             (self.selected_control + 1).min(ctrl_count.saturating_sub(1));
                     }
                 } else if rect_contains(preview_r, col, row) {
+                    self.focus_pane = FocusPane::Preview;
                     let count = self.selected_effect().map_or(0, |e| e.presets.len());
                     if count > 0 {
                         self.selected_preset =
@@ -1531,17 +1551,25 @@ impl Component for EffectBrowserView {
             }
             MouseEventKind::ScrollUp => {
                 if rect_contains(list_r, col, row) {
-                    let new = self.selected_index.saturating_sub(1);
-                    if new != self.selected_index {
-                        self.selected_index = new;
-                        self.selected_preset = 0;
-                        self.sync_controls_to_selection();
-                    }
+                    self.focus_pane = FocusPane::List;
+                    self.move_effect_up(3);
                 } else if rect_contains(controls_r, col, row) {
+                    self.focus_pane = FocusPane::Controls;
                     self.selected_control = self.selected_control.saturating_sub(1);
                 } else if rect_contains(preview_r, col, row) {
+                    self.focus_pane = FocusPane::Preview;
                     self.selected_preset = self.selected_preset.saturating_sub(1);
                 }
+            }
+            MouseEventKind::ScrollLeft if rect_contains(preview_r, col, row) => {
+                self.focus_pane = FocusPane::Preview;
+                return Ok(self
+                    .next_preview_source(false)
+                    .map(Action::SetPreviewSource));
+            }
+            MouseEventKind::ScrollRight if rect_contains(preview_r, col, row) => {
+                self.focus_pane = FocusPane::Preview;
+                return Ok(self.next_preview_source(true).map(Action::SetPreviewSource));
             }
             _ => {}
         }

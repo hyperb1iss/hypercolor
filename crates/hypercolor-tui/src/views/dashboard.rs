@@ -3,7 +3,7 @@
 use std::cell::Cell as StdCell;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -57,6 +57,8 @@ pub struct DashboardView {
     /// Component trait so App can overlay the live ratatui-image protocol
     /// (Kitty/Sixel/halfblocks) on top.
     preview_inner: StdCell<Option<Rect>>,
+    devices_rect: StdCell<Rect>,
+    actions_rect: StdCell<Rect>,
 }
 
 impl Default for DashboardView {
@@ -82,6 +84,8 @@ impl DashboardView {
             connection_status: ConnectionStatus::default(),
             disconnect_reason: None,
             preview_inner: StdCell::new(None),
+            devices_rect: StdCell::new(Rect::default()),
+            actions_rect: StdCell::new(Rect::default()),
         }
     }
 
@@ -665,6 +669,38 @@ impl Component for DashboardView {
         if self.v_split.handle_mouse(&mouse) || self.h_split.handle_mouse(&mouse) {
             return Ok(Some(Action::Render));
         }
+
+        let col = mouse.column;
+        let row = mouse.row;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(action) = self.quick_action_at(col, row) {
+                    return Ok(Some(action));
+                }
+
+                if let Some(index) = self.device_index_at(col, row)
+                    && index != self.selected_device
+                {
+                    self.selected_device = index;
+                    return Ok(Some(Action::Render));
+                }
+            }
+            MouseEventKind::ScrollDown if rect_contains(self.devices_rect.get(), col, row) => {
+                if !self.devices.is_empty() {
+                    self.selected_device =
+                        (self.selected_device + 1).min(self.devices.len().saturating_sub(1));
+                    return Ok(Some(Action::Render));
+                }
+            }
+            MouseEventKind::ScrollUp if rect_contains(self.devices_rect.get(), col, row) => {
+                if !self.devices.is_empty() {
+                    self.selected_device = self.selected_device.saturating_sub(1);
+                    return Ok(Some(Action::Render));
+                }
+            }
+            _ => {}
+        }
+
         Ok(None)
     }
 
@@ -729,6 +765,9 @@ impl Component for DashboardView {
         // Horizontal split: effect panel / preview panel
         let [effect_area, preview_area] = self.h_split.layout(top_area);
 
+        self.devices_rect.set(devices_area);
+        self.actions_rect.set(actions_area);
+
         self.render_effect_panel(frame, effect_area);
         self.render_preview_panel(frame, preview_area);
         self.render_devices_table(frame, devices_area);
@@ -756,6 +795,39 @@ impl Component for DashboardView {
     }
 }
 
+impl DashboardView {
+    fn quick_action_at(&self, col: u16, row: u16) -> Option<Action> {
+        let area = self.actions_rect.get();
+        if !rect_contains(area, col, row) || row != area.y.saturating_add(1) {
+            return None;
+        }
+
+        let mut cursor = area.x.saturating_add(2);
+        for fav_id in self.favorites.iter().take(5) {
+            let label_width = u16::try_from(4 + self.favorite_name(fav_id).chars().count()).ok()?;
+            if col >= cursor && col < cursor.saturating_add(label_width) {
+                return Some(Action::ApplyEffect(fav_id.clone()));
+            }
+            cursor = cursor.saturating_add(label_width).saturating_add(2);
+        }
+        None
+    }
+
+    fn device_index_at(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.devices_rect.get();
+        if !rect_contains(area, col, row) {
+            return None;
+        }
+
+        let first_row = area.y.saturating_add(2);
+        if row < first_row {
+            return None;
+        }
+        let index = usize::from(row - first_row);
+        (index < self.devices.len()).then_some(index)
+    }
+}
+
 /// Truncate a string to fit within `max_len` characters, appending `…` if needed.
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -765,4 +837,8 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         "\u{2026}".to_string()
     }
+}
+
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
 }
