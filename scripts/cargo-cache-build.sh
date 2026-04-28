@@ -20,6 +20,21 @@ TOOLCHAIN_DIR="$CACHE_ROOT/toolchain"
 
 mkdir -p "$CARGO_TARGET_DIR" "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
 
+prune_stale_turbojpeg_cmake_cache() {
+  [ -d "$CARGO_TARGET_DIR" ] || return 0
+
+  local cache_path stale_root
+  while IFS= read -r -d '' cache_path; do
+    if grep -Eq '^(CMAKE_INSTALL_PREFIX:PATH=/opt/libjpeg-turbo|ENABLE_SHARED:BOOL=ON|REQUIRE_SIMD:BOOL=OFF)$' "$cache_path"; then
+      stale_root="${cache_path%/out/build/CMakeCache.txt}"
+      echo "[cargo-cache] pruning stale turbojpeg CMake cache: $stale_root"
+      rm -rf "$stale_root"
+    fi
+  done < <(find "$CARGO_TARGET_DIR" -path '*/build/turbojpeg-sys-*/out/build/CMakeCache.txt' -print0)
+}
+
+prune_stale_turbojpeg_cmake_cache
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
