@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_core::device::net::CredentialStore;
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
     push_lookup_key,

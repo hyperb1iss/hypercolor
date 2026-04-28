@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use hypercolor_core::device::net::CredentialStore;
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory};
 use hypercolor_driver_hue::{
     HueConfig, HueDriverFactory, hue_driver_control_surface, resolve_hue_probe_bridges_from_sources,

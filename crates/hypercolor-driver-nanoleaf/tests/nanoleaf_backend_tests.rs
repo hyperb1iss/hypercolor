@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use hypercolor_core::device::net::CredentialStore;
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_nanoleaf::{

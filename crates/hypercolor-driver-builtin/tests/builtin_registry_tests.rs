@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hypercolor_core::device::net::CredentialStore;
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_builtin::build_driver_registry;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;

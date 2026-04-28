@@ -11,8 +11,7 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::net::{CredentialStore, MdnsBrowser};
+use hypercolor_driver_api::{CredentialStore, MdnsBrowser};
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 use super::fetch_device_info;
@@ -209,9 +208,9 @@ impl NanoleafScanner {
 
 impl Default for NanoleafScanner {
     fn default() -> Self {
-        let store_dir = ConfigManager::data_dir();
-        let credential_store = CredentialStore::open_blocking(&store_dir)
-            .expect("default Nanoleaf scanner should open credential store");
+        let credential_store =
+            hypercolor_driver_api::support::open_default_credential_store_blocking()
+                .expect("default Nanoleaf scanner should open credential store");
         Self::new(Arc::new(credential_store))
     }
 }

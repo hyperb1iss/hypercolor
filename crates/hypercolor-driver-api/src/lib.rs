@@ -25,6 +25,7 @@ use utoipa::ToSchema;
 
 pub mod validation;
 
+pub use hypercolor_core::device::net::{CredentialStore, Credentials, MdnsBrowser, MdnsService};
 pub use hypercolor_core::device::{
     BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner,
 };
@@ -732,11 +733,24 @@ pub mod support {
     use std::collections::HashMap;
     use std::net::IpAddr;
 
+    use anyhow::Result;
+    use hypercolor_core::config::ConfigManager;
     use tracing::warn;
 
+    use crate::CredentialStore;
     use crate::DriverHost;
     use crate::validation::{validate_ip, validate_port};
     use hypercolor_types::device::DeviceId;
+
+    /// Open the daemon's default credential store for native built-in drivers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured data directory or credential file
+    /// cannot be initialized.
+    pub fn open_default_credential_store_blocking() -> Result<CredentialStore> {
+        CredentialStore::open_blocking(&ConfigManager::data_dir())
+    }
 
     /// Best-effort immediate activation after pairing.
     pub async fn activate_if_requested(
