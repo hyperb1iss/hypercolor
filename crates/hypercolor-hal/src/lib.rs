@@ -3,6 +3,7 @@
 //! `hypercolor-hal` separates pure protocol encoding from transport I/O and
 //! provides a static USB device descriptor database.
 
+pub mod attachment_profile;
 pub mod database;
 pub mod drivers;
 pub mod protocol;
@@ -10,6 +11,7 @@ pub mod protocol_config;
 pub mod registry;
 pub mod transport;
 
+pub use attachment_profile::{effective_attachment_slots, normalize_attachment_profile_slots};
 pub use database::ProtocolDatabase;
 pub use protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
