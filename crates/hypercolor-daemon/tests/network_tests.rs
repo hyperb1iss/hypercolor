@@ -279,7 +279,7 @@ impl DriverModule for ConfiglessDriver {
 }
 
 #[test]
-fn register_enabled_backends_uses_default_config_for_configless_driver() {
+fn register_enabled_driver_output_backends_uses_default_config_for_configless_driver() {
     let host = NullHost::new();
     let mut registry = DriverModuleRegistry::new();
     registry
@@ -288,14 +288,19 @@ fn register_enabled_backends_uses_default_config_for_configless_driver() {
     let config = HypercolorConfig::default();
     let mut backend_manager = BackendManager::new();
 
-    network::register_enabled_backends(&mut backend_manager, &registry, &host, &config)
-        .expect("configless driver should register a backend");
+    network::register_enabled_driver_output_backends(
+        &mut backend_manager,
+        &registry,
+        &host,
+        &config,
+    )
+    .expect("configless driver should register a backend");
 
     assert_eq!(backend_manager.backend_ids(), vec!["external-backend"]);
 }
 
 #[test]
-fn register_enabled_backends_skips_config_disabled_driver() {
+fn register_enabled_driver_output_backends_skips_config_disabled_driver() {
     let host = NullHost::new();
     let mut registry = DriverModuleRegistry::new();
     registry
@@ -308,8 +313,13 @@ fn register_enabled_backends_skips_config_disabled_driver() {
     );
     let mut backend_manager = BackendManager::new();
 
-    network::register_enabled_backends(&mut backend_manager, &registry, &host, &config)
-        .expect("disabled driver should be skipped cleanly");
+    network::register_enabled_driver_output_backends(
+        &mut backend_manager,
+        &registry,
+        &host,
+        &config,
+    )
+    .expect("disabled driver should be skipped cleanly");
 
     assert!(backend_manager.backend_ids().is_empty());
 }

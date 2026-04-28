@@ -179,12 +179,12 @@ pub fn driver_config_entry(config: &HypercolorConfig, driver_id: &str) -> Driver
     config.drivers.get(driver_id).cloned().unwrap_or_default()
 }
 
-/// Register all enabled driver backends with the backend manager.
+/// Register all enabled driver output backends with the backend manager.
 ///
 /// # Errors
 ///
 /// Returns an error if backend construction fails.
-pub fn register_enabled_backends(
+pub fn register_enabled_driver_output_backends(
     backend_manager: &mut BackendManager,
     registry: &DriverModuleRegistry,
     host: &dyn DriverHost,
@@ -226,8 +226,8 @@ pub fn register_enabled_device_backends(
     config: &HypercolorConfig,
     usb_protocol_configs: UsbProtocolConfigStore,
 ) -> Result<()> {
-    register_enabled_backends(backend_manager, registry, host, config)
-        .context("failed to register driver module backends")?;
+    register_enabled_driver_output_backends(backend_manager, registry, host, config)
+        .context("failed to register driver module output backends")?;
 
     if config.discovery.blocks_scan {
         let socket_path = config
