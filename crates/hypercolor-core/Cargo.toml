@@ -12,10 +12,8 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-hue = ["dep:webrtc-dtls", "dep:webrtc-util"]
-nanoleaf = []
 nvidia = ["dep:nvml-wrapper"]
-default = ["hue", "nanoleaf"]
+default = []
 servo = ["dep:servo", "dep:dpi", "dep:gleam"]
 
 [dependencies]
@@ -43,8 +41,6 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
-webrtc-dtls = { workspace = true, optional = true }
-webrtc-util = { workspace = true, optional = true }
 cpal = { workspace = true }
 device_query = { workspace = true }
 evdev = { workspace = true }

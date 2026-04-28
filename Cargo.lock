@@ -4450,8 +4450,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "webrtc-dtls",
- "webrtc-util",
  "zbus",
  "zerocopy",
 ]
