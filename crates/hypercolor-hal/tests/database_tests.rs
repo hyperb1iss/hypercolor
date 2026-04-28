@@ -881,3 +881,27 @@ fn module_descriptors_group_hal_protocols_by_family() {
         .expect("Dygma module descriptor should exist");
     assert_eq!(dygma.transports, vec![DriverTransportKind::Serial]);
 }
+
+#[test]
+fn protocol_descriptors_expose_hal_catalog_entries() {
+    let protocols = ProtocolDatabase::protocol_descriptors_for_driver("nollie");
+    let nollie_8 = protocols
+        .iter()
+        .find(|protocol| protocol.protocol_id == "nollie/nollie-8-v2")
+        .expect("Nollie 8 V2 protocol descriptor should exist");
+
+    assert_eq!(nollie_8.driver_id, "nollie");
+    assert_eq!(nollie_8.display_name, "Nollie 8 v2");
+    assert_eq!(nollie_8.family_id, "nollie");
+    assert_eq!(nollie_8.transport, DriverTransportKind::Usb);
+    assert_eq!(nollie_8.route_backend_id, "usb");
+    assert_eq!(nollie_8.vendor_id, Some(NOLLIE_VENDOR_ID));
+    assert_eq!(nollie_8.product_id, Some(PID_NOLLIE_8_V2));
+
+    let asus = ProtocolDatabase::protocol_descriptors_for_driver("asus");
+    assert!(asus.iter().any(|protocol| {
+        protocol.protocol_id == "asus/aura-smbus"
+            && protocol.transport == DriverTransportKind::Smbus
+            && protocol.route_backend_id == "smbus"
+    }));
+}

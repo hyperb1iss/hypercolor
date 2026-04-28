@@ -2140,6 +2140,14 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(nollie["descriptor"]["capabilities"]["controls"], false);
     assert_eq!(nollie["enabled"], true);
     assert_eq!(nollie["config_key"], "drivers.nollie");
+    let nollie_protocols = nollie["protocols"]
+        .as_array()
+        .expect("Nollie HAL module should include protocols");
+    assert!(nollie_protocols.iter().any(|protocol| {
+        protocol["protocol_id"] == "nollie/nollie-8-v2"
+            && protocol["transport"] == "usb"
+            && protocol["route_backend_id"] == "usb"
+    }));
     assert!(nollie.get("control_surface_id").is_none());
     assert!(nollie.get("control_surface_path").is_none());
 }

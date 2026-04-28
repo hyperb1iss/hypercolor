@@ -4,12 +4,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use hypercolor_types::device::{
-    DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverTransportKind,
+    DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor,
+    DriverTransportKind,
 };
 
 pub use crate::registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
 
 use crate::drivers::{asus, corsair, dygma, lianli, nollie, prismrgb, push2, qmk, razer};
+use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
 static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     let mut descriptors = Vec::new();
@@ -61,6 +63,32 @@ static MODULE_DESCRIPTORS: LazyLock<Vec<DriverModuleDescriptor>> = LazyLock::new
         .into_values()
         .map(HalModuleAccumulator::into_descriptor)
         .collect()
+});
+
+static PROTOCOL_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock::new(|| {
+    let mut descriptors = DEVICE_DESCRIPTORS
+        .iter()
+        .map(protocol_descriptor)
+        .collect::<Vec<_>>();
+    descriptors.push(DriverProtocolDescriptor {
+        driver_id: "asus".to_owned(),
+        protocol_id: ASUS_AURA_SMBUS_PROTOCOL_ID.to_owned(),
+        display_name: "ASUS Aura SMBus".to_owned(),
+        vendor_id: None,
+        product_id: None,
+        family_id: "asus".to_owned(),
+        model_id: None,
+        transport: DriverTransportKind::Smbus,
+        route_backend_id: "smbus".to_owned(),
+        presentation: None,
+    });
+    descriptors.sort_by(|left, right| {
+        left.driver_id
+            .cmp(&right.driver_id)
+            .then_with(|| left.protocol_id.cmp(&right.protocol_id))
+            .then_with(|| left.product_id.cmp(&right.product_id))
+    });
+    descriptors
 });
 
 struct HalModuleAccumulator {
@@ -135,6 +163,32 @@ const fn transport_kind(transport: TransportType) -> DriverTransportKind {
         TransportType::UsbMidi { .. } => DriverTransportKind::Midi,
         TransportType::UsbSerial { .. } => DriverTransportKind::Serial,
         TransportType::I2cSmBus { .. } => DriverTransportKind::Smbus,
+    }
+}
+
+fn protocol_descriptor(descriptor: &DeviceDescriptor) -> DriverProtocolDescriptor {
+    let transport = transport_kind(descriptor.transport);
+    DriverProtocolDescriptor {
+        driver_id: descriptor.driver_id().into_owned(),
+        protocol_id: descriptor.protocol.id.to_owned(),
+        display_name: descriptor.name.to_owned(),
+        vendor_id: Some(descriptor.vendor_id),
+        product_id: Some(descriptor.product_id),
+        family_id: descriptor.family.id().into_owned(),
+        model_id: None,
+        route_backend_id: route_backend_id(&transport).to_owned(),
+        transport,
+        presentation: None,
+    }
+}
+
+const fn route_backend_id(transport: &DriverTransportKind) -> &'static str {
+    match transport {
+        DriverTransportKind::Network => "network",
+        DriverTransportKind::Smbus => "smbus",
+        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => "usb",
+        DriverTransportKind::Virtual => "virtual",
+        DriverTransportKind::Custom(_) => "custom",
     }
 }
 
@@ -236,5 +290,21 @@ impl ProtocolDatabase {
     #[must_use]
     pub fn module_descriptors() -> &'static [DriverModuleDescriptor] {
         MODULE_DESCRIPTORS.as_slice()
+    }
+
+    /// All HAL protocol descriptors in deterministic order.
+    #[must_use]
+    pub fn protocol_descriptors() -> &'static [DriverProtocolDescriptor] {
+        PROTOCOL_DESCRIPTORS.as_slice()
+    }
+
+    /// HAL protocol descriptors owned by one driver module.
+    #[must_use]
+    pub fn protocol_descriptors_for_driver(driver_id: &str) -> Vec<DriverProtocolDescriptor> {
+        PROTOCOL_DESCRIPTORS
+            .iter()
+            .filter(|descriptor| descriptor.driver_id == driver_id)
+            .cloned()
+            .collect()
     }
 }

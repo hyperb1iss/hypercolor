@@ -121,6 +121,7 @@ use crate::api::{
             hypercolor_types::device::DeviceClassHint,
             hypercolor_types::device::DriverPresentation,
             hypercolor_types::device::DriverModuleDescriptor,
+            hypercolor_types::device::DriverProtocolDescriptor,
             hypercolor_types::server::ServerIdentity,
             hypercolor_types::effect::GradientStop,
             hypercolor_types::effect::ControlType,

@@ -10,7 +10,9 @@ use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_hal::ProtocolDatabase;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::{DriverModuleDescriptor, DriverTransportKind};
+use hypercolor_types::device::{
+    DriverModuleDescriptor, DriverProtocolDescriptor, DriverTransportKind,
+};
 
 pub use host::DaemonDriverHost;
 pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin_driver_module_registry;
@@ -65,6 +67,12 @@ pub fn module_descriptors(registry: &DriverModuleRegistry) -> Vec<DriverModuleDe
     descriptors.extend(hal_module_descriptors().iter().cloned());
     descriptors.sort_by(|left, right| left.id.cmp(&right.id));
     descriptors
+}
+
+/// Protocol descriptors for one driver module.
+#[must_use]
+pub fn protocol_descriptors(driver_id: &str) -> Vec<DriverProtocolDescriptor> {
+    ProtocolDatabase::protocol_descriptors_for_driver(driver_id)
 }
 
 /// Ensure config entries exist for HAL-backed driver modules.

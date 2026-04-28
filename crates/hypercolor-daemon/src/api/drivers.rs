@@ -8,7 +8,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::DriverModuleDescriptor;
+use hypercolor_types::device::{DriverModuleDescriptor, DriverProtocolDescriptor};
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
@@ -24,6 +24,8 @@ pub struct DriverSummary {
     pub descriptor: DriverModuleDescriptor,
     pub enabled: bool,
     pub config_key: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub protocols: Vec<DriverProtocolDescriptor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control_surface_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,11 +66,17 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
                 .capabilities
                 .controls
                 .then(|| format!("/api/v1/drivers/{}/controls", descriptor.id));
+            let protocols = descriptor
+                .capabilities
+                .protocol_catalog
+                .then(|| network::protocol_descriptors(&descriptor.id))
+                .unwrap_or_default();
 
             DriverSummary {
                 descriptor,
                 enabled,
                 config_key,
+                protocols,
                 control_surface_id,
                 control_surface_path,
             }

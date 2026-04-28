@@ -515,6 +515,44 @@ pub struct DriverModuleDescriptor {
     pub default_enabled: bool,
 }
 
+/// Protocol descriptor contributed by a driver module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DriverProtocolDescriptor {
+    /// Driver module that owns this protocol.
+    pub driver_id: String,
+
+    /// Stable protocol implementation identifier.
+    pub protocol_id: String,
+
+    /// Human-readable protocol or device label.
+    pub display_name: String,
+
+    /// USB vendor ID when the protocol maps to a concrete USB device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_id: Option<u16>,
+
+    /// USB product ID when the protocol maps to a concrete USB device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<u16>,
+
+    /// Stable device family identifier.
+    pub family_id: String,
+
+    /// Optional model identifier exposed by a driver-specific catalog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+
+    /// Transport category used by this protocol.
+    pub transport: DriverTransportKind,
+
+    /// Output backend ID that should route devices using this protocol.
+    pub route_backend_id: String,
+
+    /// Optional presentation override for devices using this protocol.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<DriverPresentation>,
+}
+
 /// Origin metadata that separates device ownership from output routing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceOrigin {
