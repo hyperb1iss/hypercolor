@@ -25,7 +25,7 @@ use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
 use hypercolor_types::device::{
     ConnectionType, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DeviceUserSettings,
+    DeviceUserSettings, DriverPresentation,
 };
 use hypercolor_types::event::HypercolorEvent;
 
@@ -85,6 +85,7 @@ pub struct DeviceSummary {
     pub name: String,
     pub backend: String,
     pub origin: DeviceOrigin,
+    pub presentation: DriverPresentation,
     pub status: String,
     pub brightness: u8,
     pub firmware_version: Option<String>,
@@ -880,6 +881,7 @@ pub(super) async fn summarize_device_for_response(
         name: info.name.clone(),
         backend: info.output_backend_id().to_owned(),
         origin: info.origin.clone(),
+        presentation: crate::network::device_presentation(state.driver_registry.as_ref(), info),
         status: device_state.variant_name().to_lowercase(),
         brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),

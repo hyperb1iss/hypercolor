@@ -13,7 +13,8 @@ use hypercolor_hal::ProtocolDatabase;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    DriverModuleDescriptor, DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceInfo, DriverModuleDescriptor, DriverPresentation,
+    DriverProtocolDescriptor, DriverTransportKind,
 };
 
 pub use host::DaemonDriverHost;
@@ -69,6 +70,64 @@ pub fn module_descriptors(registry: &DriverModuleRegistry) -> Vec<DriverModuleDe
     descriptors.extend(hal_module_descriptors().iter().cloned());
     descriptors.sort_by(|left, right| left.id.cmp(&right.id));
     descriptors
+}
+
+/// Module descriptor for one known driver module.
+#[must_use]
+pub fn module_descriptor(
+    registry: &DriverModuleRegistry,
+    driver_id: &str,
+) -> Option<DriverModuleDescriptor> {
+    registry
+        .get(driver_id)
+        .map(|driver| driver.module_descriptor())
+        .or_else(|| {
+            hal_module_descriptors()
+                .iter()
+                .find(|descriptor| descriptor.id == driver_id)
+                .cloned()
+        })
+}
+
+/// Presentation metadata derived from a driver module descriptor.
+#[must_use]
+pub fn descriptor_presentation(descriptor: &DriverModuleDescriptor) -> DriverPresentation {
+    DriverPresentation {
+        label: descriptor.display_name.clone(),
+        short_label: None,
+        accent_rgb: None,
+        secondary_rgb: None,
+        icon: None,
+        default_device_class: None,
+    }
+}
+
+/// Presentation metadata for a known driver module.
+#[must_use]
+pub fn module_presentation(
+    registry: &DriverModuleRegistry,
+    driver_id: &str,
+) -> Option<DriverPresentation> {
+    module_descriptor(registry, driver_id).map(|descriptor| descriptor_presentation(&descriptor))
+}
+
+/// Presentation metadata for a concrete device, with a local fallback.
+#[must_use]
+pub fn device_presentation(
+    registry: &DriverModuleRegistry,
+    device: &DeviceInfo,
+) -> DriverPresentation {
+    module_presentation(registry, device.driver_id()).unwrap_or_else(|| DriverPresentation {
+        label: device.family.to_string(),
+        short_label: None,
+        accent_rgb: None,
+        secondary_rgb: None,
+        icon: None,
+        default_device_class: device
+            .capabilities
+            .has_display
+            .then_some(DeviceClassHint::Display),
+    })
 }
 
 /// Protocol descriptors for one driver module.

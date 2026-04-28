@@ -8,7 +8,9 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DriverModuleDescriptor, DriverProtocolDescriptor};
+use hypercolor_types::device::{
+    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
+};
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
@@ -22,6 +24,7 @@ pub struct DriverListResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DriverSummary {
     pub descriptor: DriverModuleDescriptor,
+    pub presentation: DriverPresentation,
     pub enabled: bool,
     pub config_key: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -73,6 +76,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
             };
 
             DriverSummary {
+                presentation: network::descriptor_presentation(&descriptor),
                 descriptor,
                 enabled,
                 config_key,

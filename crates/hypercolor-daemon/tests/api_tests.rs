@@ -2112,6 +2112,7 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["backend_factory"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["controls"], true);
+    assert_eq!(wled["presentation"]["label"], "WLED");
     assert_eq!(wled["enabled"], true);
     assert_eq!(wled["config_key"], "drivers.wled");
     assert_eq!(wled["control_surface_id"], "driver:wled");
@@ -2138,6 +2139,7 @@ async fn list_drivers_returns_registered_module_descriptors() {
         false
     );
     assert_eq!(nollie["descriptor"]["capabilities"]["controls"], false);
+    assert_eq!(nollie["presentation"]["label"], "Nollie");
     assert_eq!(nollie["enabled"], true);
     assert_eq!(nollie["config_key"], "drivers.nollie");
     let nollie_protocols = nollie["protocols"]
@@ -8473,6 +8475,7 @@ async fn get_device_includes_explicit_origin_metadata() {
     assert_eq!(device["origin"]["backend_id"], "smbus");
     assert_eq!(device["origin"]["transport"], "smbus");
     assert_eq!(device["origin"]["protocol_id"], "asus/aura-smbus");
+    assert_eq!(device["presentation"]["label"], "ASUS");
 }
 
 #[tokio::test]
