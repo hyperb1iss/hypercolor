@@ -301,7 +301,6 @@ async fn build_discovered_device(
     let panel_ids = panel_ids_from_layout(panels.as_slice());
 
     let mut metadata = HashMap::new();
-    metadata.insert("backend_id".to_owned(), "nanoleaf".to_owned());
     metadata.insert("ip".to_owned(), candidate.ip.to_string());
     metadata.insert("api_port".to_owned(), candidate.port.to_string());
     metadata.insert("device_key".to_owned(), device_key.clone());

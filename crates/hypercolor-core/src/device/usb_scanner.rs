@@ -139,7 +139,6 @@ impl TransportScanner for UsbScanner {
             );
 
             let mut metadata = HashMap::new();
-            metadata.insert("backend_id".to_owned(), "usb".to_owned());
             metadata.insert("vendor_id".to_owned(), format!("0x{vendor_id:04X}"));
             metadata.insert("product_id".to_owned(), format!("0x{product_id:04X}"));
             if let Some(serial) = usb.serial_number() {

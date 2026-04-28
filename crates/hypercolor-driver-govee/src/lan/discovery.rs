@@ -180,7 +180,6 @@ pub fn build_device_info(device: &GoveeLanDevice) -> DeviceInfo {
 fn build_discovered_device(device: GoveeLanDevice) -> DiscoveredDevice {
     let info = build_device_info(&device);
     let mut metadata = HashMap::from([
-        ("backend_id".to_owned(), "govee".to_owned()),
         ("ip".to_owned(), device.ip.to_string()),
         ("sku".to_owned(), device.sku.clone()),
         ("mac".to_owned(), device.mac.clone()),

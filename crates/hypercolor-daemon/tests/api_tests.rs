@@ -1913,7 +1913,6 @@ async fn insert_test_hue_bridge_device(
     };
     let fingerprint = DeviceFingerprint(format!("hue:{bridge_id}"));
     let mut metadata = std::collections::HashMap::new();
-    metadata.insert("backend_id".to_owned(), "hue".to_owned());
     metadata.insert("bridge_id".to_owned(), bridge_id.to_owned());
     metadata.insert("ip".to_owned(), ip.to_owned());
     metadata.insert("api_port".to_owned(), api_port.to_string());
@@ -1960,7 +1959,6 @@ async fn insert_test_nanoleaf_device(
     };
     let fingerprint = DeviceFingerprint(format!("nanoleaf:{device_key}"));
     let mut metadata = std::collections::HashMap::new();
-    metadata.insert("backend_id".to_owned(), "nanoleaf".to_owned());
     metadata.insert("device_key".to_owned(), device_key.to_owned());
     metadata.insert("ip".to_owned(), ip.to_owned());
     metadata.insert("api_port".to_owned(), api_port.to_string());
@@ -2000,7 +1998,6 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
     };
     let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
     let mut metadata = std::collections::HashMap::new();
-    metadata.insert("backend_id".to_owned(), "smbus".to_owned());
     metadata.insert("smbus_address".to_owned(), "0x40".to_owned());
     state
         .device_registry

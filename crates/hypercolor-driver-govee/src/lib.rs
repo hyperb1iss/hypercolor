@@ -612,7 +612,6 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
     };
 
     let mut metadata = HashMap::from([
-        ("backend_id".to_owned(), "govee".to_owned()),
         ("sku".to_owned(), device.model),
         ("cloud_device_id".to_owned(), device.device),
         (

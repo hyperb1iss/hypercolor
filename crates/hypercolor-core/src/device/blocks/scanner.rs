@@ -107,7 +107,6 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
     };
 
     let mut metadata = HashMap::new();
-    metadata.insert("backend_id".to_owned(), "blocks".to_owned());
     metadata.insert("uid".to_owned(), dev.uid.to_string());
     metadata.insert("serial".to_owned(), dev.serial.clone());
     metadata.insert("block_type".to_owned(), dev.block_type.clone());

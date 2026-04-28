@@ -365,7 +365,6 @@ fn build_discovered_payload(
     connect_behavior: DiscoveryConnectBehavior,
 ) -> HueDiscoveredBridge {
     let mut metadata = HashMap::new();
-    metadata.insert("backend_id".to_owned(), "hue".to_owned());
     metadata.insert("ip".to_owned(), candidate.ip.to_string());
     metadata.insert("api_port".to_owned(), candidate.api_port.to_string());
     metadata.insert("bridge_id".to_owned(), bridge_id.to_owned());

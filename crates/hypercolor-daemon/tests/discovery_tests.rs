@@ -443,7 +443,6 @@ async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss()
     let info = smbus_device_info("ASUS Aura DRAM (SMBus 0x71)");
     let fingerprint = DeviceFingerprint("smbus:/dev/i2c-999:71".to_owned());
     let mut metadata = HashMap::new();
-    metadata.insert("backend_id".to_owned(), "smbus".to_owned());
     metadata.insert("bus_path".to_owned(), "/dev/i2c-999".to_owned());
     metadata.insert("smbus_address".to_owned(), "0x71".to_owned());
 
@@ -623,9 +622,8 @@ async fn sync_active_layout_connectivity_keeps_layout_inactive_devices_disconnec
     let device_registry = DeviceRegistry::new();
     let info = mock_device_info();
     let fingerprint = DeviceFingerprint("mock:layout-device".to_owned());
-    let metadata = HashMap::from([("backend_id".to_owned(), "mock".to_owned())]);
     let device_id = device_registry
-        .add_with_fingerprint_and_metadata(info.clone(), fingerprint, metadata)
+        .add_with_fingerprint(info.clone(), fingerprint)
         .await;
     assert_eq!(device_id, info.id);
 
@@ -667,9 +665,8 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
     let device_registry = DeviceRegistry::new();
     let info = mock_device_info();
     let fingerprint = DeviceFingerprint("mock:layout-device".to_owned());
-    let metadata = HashMap::from([("backend_id".to_owned(), "mock".to_owned())]);
     let device_id = device_registry
-        .add_with_fingerprint_and_metadata(info.clone(), fingerprint.clone(), metadata)
+        .add_with_fingerprint(info.clone(), fingerprint.clone())
         .await;
     assert_eq!(device_id, info.id);
 

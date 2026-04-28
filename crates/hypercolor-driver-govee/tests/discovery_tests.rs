@@ -136,7 +136,6 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
             connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
             info: build_device_info(&lan_device),
             metadata: HashMap::from([
-                ("backend_id".to_owned(), "govee".to_owned()),
                 ("ip".to_owned(), "10.0.0.8".to_owned()),
                 ("sku".to_owned(), "H619A".to_owned()),
                 ("mac".to_owned(), "001122334455".to_owned()),
