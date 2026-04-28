@@ -25,6 +25,14 @@ from .common import (
 )
 from .control import ControlActionResult, ControlApplyResult, ControlSurface
 from .device import Device, DeviceUpdate, Zone
+from .driver import (
+    Driver,
+    DriverCapabilitySet,
+    DriverModuleDescriptor,
+    DriverPresentation,
+    DriverProtocolDescriptor,
+    TransportKind,
+)
 from .effect import (
     ActiveEffect,
     ApplyEffectResult,
@@ -60,6 +68,11 @@ __all__ = [
     "Device",
     "DeviceUpdate",
     "DiscoverResult",
+    "Driver",
+    "DriverCapabilitySet",
+    "DriverModuleDescriptor",
+    "DriverPresentation",
+    "DriverProtocolDescriptor",
     "Effect",
     "EffectSummary",
     "FrequencyRange",
@@ -86,5 +99,6 @@ __all__ = [
     "SpectrumSnapshot",
     "SystemState",
     "TransitionSpec",
+    "TransportKind",
     "Zone",
 ]

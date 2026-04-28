@@ -5,6 +5,7 @@ from __future__ import annotations
 import msgspec
 
 from hypercolor.models.device import Device
+from hypercolor.models.driver import Driver
 from hypercolor.models.effect import Effect
 
 
@@ -70,3 +71,49 @@ def test_effect_model_decodes() -> None:
     assert effect.id == "aurora"
     assert effect.active_control_values == {"effectSpeed": 70}
     assert effect.presets[0].is_default is True
+
+
+def test_driver_model_decodes_protocol_catalog() -> None:
+    payload = {
+        "descriptor": {
+            "id": "nollie",
+            "display_name": "Nollie",
+            "module_kind": "hal",
+            "transports": ["usb"],
+            "capabilities": {
+                "config": False,
+                "discovery": True,
+                "pairing": False,
+                "backend_factory": False,
+                "protocol_catalog": True,
+                "runtime_cache": False,
+                "credentials": False,
+                "presentation": True,
+                "controls": False,
+            },
+            "api_schema_version": 1,
+            "config_version": 1,
+            "default_enabled": True,
+        },
+        "enabled": True,
+        "config_key": "drivers.nollie",
+        "protocols": [
+            {
+                "driver_id": "nollie",
+                "protocol_id": "nollie_8",
+                "display_name": "Nollie 8",
+                "vendor_id": 0x2E8A,
+                "product_id": 0x0008,
+                "family_id": "nollie",
+                "transport": "usb",
+                "route_backend_id": "usb",
+                "presentation": {"label": "Nollie 8", "icon": "grid"},
+            }
+        ],
+    }
+
+    driver = msgspec.convert(payload, type=Driver)
+
+    assert driver.descriptor.capabilities.protocol_catalog is True
+    assert driver.protocols[0].protocol_id == "nollie_8"
+    assert driver.protocols[0].vendor_id == 0x2E8A

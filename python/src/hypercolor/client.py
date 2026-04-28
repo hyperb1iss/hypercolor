@@ -24,6 +24,7 @@ from ._generated.api.devices import (
     list_devices as generated_list_devices,
     update_device as generated_update_device,
 )
+from ._generated.api.drivers import list_drivers as generated_list_drivers
 from ._generated.api.effects import (
     apply_effect as generated_apply_effect,
     get_active_effect as generated_get_active_effect,
@@ -88,6 +89,7 @@ from .models.common import (
 )
 from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
+from .models.driver import Driver
 from .models.effect import (
     ActiveEffect,
     ApplyEffectResult,
@@ -258,6 +260,13 @@ class HypercolorClient:
         return await self._generated_model(
             kwargs,
             IdentifyResult,
+        )
+
+    async def get_drivers(self) -> list[Driver]:
+        """List registered driver modules."""
+        return await self._generated_items(
+            generated_list_drivers._get_kwargs(),
+            Driver,
         )
 
     async def get_effects(self, **filters: Any) -> list[EffectSummary]:

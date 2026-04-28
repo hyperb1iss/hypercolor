@@ -16,6 +16,7 @@ from hypercolor.exceptions import (
     HypercolorValidationError,
 )
 from hypercolor.models.control import ControlSurface
+from hypercolor.models.driver import Driver
 from hypercolor.models.effect import ActiveEffect, Effect
 
 
@@ -133,6 +134,64 @@ async def test_get_device_quotes_generated_path_parameters(client: HypercolorCli
 
     assert route.called
     assert device.id == "keyboard/main"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/drivers").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [
+                        {
+                            "descriptor": {
+                                "id": "nollie",
+                                "display_name": "Nollie",
+                                "module_kind": "hal",
+                                "transports": ["usb"],
+                                "capabilities": {
+                                    "config": False,
+                                    "discovery": True,
+                                    "pairing": False,
+                                    "backend_factory": False,
+                                    "protocol_catalog": True,
+                                    "runtime_cache": False,
+                                    "credentials": False,
+                                    "presentation": True,
+                                    "controls": False,
+                                },
+                                "api_schema_version": 1,
+                                "config_version": 1,
+                                "default_enabled": True,
+                            },
+                            "enabled": True,
+                            "config_key": "drivers.nollie",
+                            "protocols": [
+                                {
+                                    "driver_id": "nollie",
+                                    "protocol_id": "nollie_8",
+                                    "display_name": "Nollie 8",
+                                    "vendor_id": 0x2E8A,
+                                    "product_id": 0x0008,
+                                    "family_id": "nollie",
+                                    "transport": "usb",
+                                    "route_backend_id": "usb",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    drivers = await client.get_drivers()
+
+    assert route.called
+    assert isinstance(drivers[0], Driver)
+    assert drivers[0].protocols[0].protocol_id == "nollie_8"
 
 
 @respx.mock
