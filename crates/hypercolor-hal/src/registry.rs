@@ -1,5 +1,6 @@
 //! Generic descriptor and transport types shared by driver registries.
 
+use std::borrow::Cow;
 use std::fmt;
 
 use hypercolor_types::device::DeviceFamily;
@@ -50,6 +51,49 @@ pub struct DeviceDescriptor {
 
     /// Optional firmware-based disambiguation predicate.
     pub firmware_predicate: Option<fn(&str) -> bool>,
+}
+
+impl DeviceDescriptor {
+    /// Driver module that owns this protocol descriptor.
+    #[must_use]
+    pub fn driver_id(&self) -> Cow<'_, str> {
+        if matches!(self.family, DeviceFamily::Custom(_)) {
+            return self.family.id();
+        }
+
+        self.protocol.id.split_once('/').map_or_else(
+            || self.family.id(),
+            |(driver_id, _)| Cow::Borrowed(driver_id),
+        )
+    }
+
+    /// Human-readable driver module name.
+    #[must_use]
+    pub fn driver_display_name(&self) -> Cow<'_, str> {
+        let driver_id = self.driver_id();
+        if driver_id.as_ref() == self.family.id().as_ref() {
+            Cow::Borrowed(self.family.vendor_name())
+        } else {
+            Cow::Owned(titleize_driver_id(driver_id.as_ref()))
+        }
+    }
+}
+
+fn titleize_driver_id(driver_id: &str) -> String {
+    driver_id
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first
+                    .to_uppercase()
+                    .chain(chars.flat_map(char::to_lowercase))
+                    .collect()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Transport mechanism for a descriptor.

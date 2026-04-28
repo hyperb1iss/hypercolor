@@ -47,9 +47,9 @@ static KNOWN_VID_PIDS: LazyLock<Vec<(u16, u16)>> = LazyLock::new(|| {
 static MODULE_DESCRIPTORS: LazyLock<Vec<DriverModuleDescriptor>> = LazyLock::new(|| {
     let mut modules = BTreeMap::<String, HalModuleAccumulator>::new();
     for descriptor in DEVICE_DESCRIPTORS.iter() {
-        let id = descriptor.family.id().into_owned();
+        let id = descriptor.driver_id().into_owned();
         let entry = modules.entry(id.clone()).or_insert_with(|| {
-            HalModuleAccumulator::new(id, descriptor.family.vendor_name().to_owned())
+            HalModuleAccumulator::new(id, descriptor.driver_display_name().into_owned())
         });
         entry.add_transport(transport_kind(descriptor.transport));
     }
@@ -163,7 +163,7 @@ impl ProtocolDatabase {
     /// Lookup a descriptor by `(VID, PID)`, firmware string, and optional
     /// enabled driver module IDs.
     ///
-    /// When `enabled_driver_ids` is provided, descriptors whose family ID is
+    /// When `enabled_driver_ids` is provided, descriptors whose driver ID is
     /// absent are ignored.
     #[must_use]
     pub fn lookup_with_firmware_for_driver_ids(
@@ -174,7 +174,7 @@ impl ProtocolDatabase {
     ) -> Option<&'static DeviceDescriptor> {
         let candidates = MAP_BY_VID_PID.get(&(vendor_id, product_id))?;
         let driver_enabled = |descriptor: &DeviceDescriptor| {
-            enabled_driver_ids.is_none_or(|ids| ids.contains(descriptor.family.id().as_ref()))
+            enabled_driver_ids.is_none_or(|ids| ids.contains(descriptor.driver_id().as_ref()))
         };
 
         if let Some(firmware) = firmware {

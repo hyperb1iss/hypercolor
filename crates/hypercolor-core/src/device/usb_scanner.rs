@@ -81,7 +81,7 @@ impl UsbScanner {
             family: descriptor.family.clone(),
             model: descriptor_model_id(descriptor),
             connection_type: ConnectionType::Usb,
-            origin: DeviceOrigin::native(descriptor.family.id(), "usb", ConnectionType::Usb)
+            origin: DeviceOrigin::native(descriptor.driver_id(), "usb", ConnectionType::Usb)
                 .with_protocol_id(descriptor.protocol.id),
             zones,
             firmware_version: Some(hex_version(usb.device_version())),

@@ -98,6 +98,7 @@ fn lookup_returns_prism_8_descriptor() {
 
     assert_eq!(descriptor.name, "PrismRGB Prism 8");
     assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(descriptor.driver_id(), "nollie");
     assert_eq!(descriptor.protocol.id, "nollie/prism-8");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -809,6 +810,16 @@ fn lookup_filters_by_enabled_hal_driver_ids() {
     )
     .expect("enabled Nollie descriptor should resolve");
     assert_eq!(enabled.family, DeviceFamily::Nollie);
+
+    let prism_8 = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+        PRISM_VENDOR_ID,
+        PID_PRISM_8,
+        None,
+        Some(&nollie_only),
+    )
+    .expect("Nollie-owned Prism 8 descriptor should resolve");
+    assert_eq!(prism_8.family, DeviceFamily::PrismRgb);
+    assert_eq!(prism_8.driver_id(), "nollie");
 
     let disabled = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
         NOLLIE_VENDOR_ID,
