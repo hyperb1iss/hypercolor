@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::bridge::HueBridgeClient;
@@ -60,7 +61,7 @@ pub struct HueBackend {
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
     discovered: HashMap<DeviceId, HueDiscoveredBridge>,
-    bridges: HashMap<DeviceId, HueBridgeState>,
+    bridges: HashMap<DeviceId, Arc<Mutex<HueBridgeState>>>,
 }
 
 struct HueBridgeState {
@@ -149,6 +150,56 @@ impl HueBackend {
         resolved.sort_by_key(|bridge| bridge.ip);
         resolved
     }
+
+    async fn write_bridge_colors(
+        id: &DeviceId,
+        bridge: &Arc<Mutex<HueBridgeState>>,
+        colors: &[[u8; 3]],
+    ) -> Result<()> {
+        let mut bridge = bridge.lock().await;
+
+        let expected_led_count =
+            usize::try_from(bridge.info.total_led_count()).unwrap_or(usize::MAX);
+        if colors.len() != expected_led_count {
+            let should_warn = bridge
+                .last_size_mismatch_warn_at
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+            if should_warn {
+                warn!(
+                    device_id = %id,
+                    expected_led_count,
+                    actual_led_count = colors.len(),
+                    "Hue frame size mismatch; collapsing or padding to match entertainment channels"
+                );
+                bridge.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        let collapsed = collapse_channel_colors(
+            bridge.entertainment_config.channels.as_slice(),
+            colors,
+            bridge.brightness,
+        );
+        let cie_colors = collapsed
+            .iter()
+            .zip(bridge.channel_gamuts.iter().copied())
+            .map(|(color, gamut)| rgb_to_cie_xyb(color[0], color[1], color[2], &gamut))
+            .collect::<Vec<CieXyb>>();
+
+        bridge.stream.send_frame(cie_colors.as_slice()).await
+    }
+}
+
+struct HueFrameSink {
+    device_id: DeviceId,
+    bridge: Arc<Mutex<HueBridgeState>>,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for HueFrameSink {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        HueBackend::write_bridge_colors(&self.device_id, &self.bridge, colors.as_slice()).await
+    }
 }
 
 #[expect(
@@ -184,7 +235,10 @@ impl DeviceBackend for HueBackend {
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        Ok(self.bridges.get(id).map(|bridge| bridge.info.clone()))
+        let Some(bridge) = self.bridges.get(id) else {
+            return Ok(None);
+        };
+        Ok(Some(bridge.lock().await.info.clone()))
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
@@ -293,30 +347,26 @@ impl DeviceBackend for HueBackend {
             },
         );
 
-        self.bridges.insert(
-            *id,
-            HueBridgeState {
-                bridge_id: bridge_identity.bridge_id.clone(),
-                ip: discovered.ip,
-                api_port: discovered.api_port,
-                client,
-                stream,
-                entertainment_config,
-                channel_gamuts,
-                info,
-                brightness: u8::MAX,
-                last_size_mismatch_warn_at: None,
-            },
-        );
+        let channels = entertainment_config.channels.len();
+        let bridge = HueBridgeState {
+            bridge_id: bridge_identity.bridge_id.clone(),
+            ip: discovered.ip,
+            api_port: discovered.api_port,
+            client,
+            stream,
+            entertainment_config,
+            channel_gamuts,
+            info,
+            brightness: u8::MAX,
+            last_size_mismatch_warn_at: None,
+        };
+        self.bridges.insert(*id, Arc::new(Mutex::new(bridge)));
 
         info!(
             device_id = %id,
             bridge_id = %bridge_identity.bridge_id,
             ip = %discovered.ip,
-            channels = self
-                .bridges
-                .get(id)
-                .map_or(0, |bridge| bridge.entertainment_config.channels.len()),
+            channels,
             "Connected to Hue bridge"
         );
         Ok(())
@@ -326,6 +376,7 @@ impl DeviceBackend for HueBackend {
         let Some(bridge) = self.bridges.remove(id) else {
             bail!("Hue bridge {id} is not connected");
         };
+        let bridge = bridge.lock().await;
 
         let close_result = bridge.stream.close().await;
         let stop_result = bridge
@@ -349,51 +400,31 @@ impl DeviceBackend for HueBackend {
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let bridge = self
             .bridges
-            .get_mut(id)
+            .get(id)
             .with_context(|| format!("Hue bridge {id} is not connected"))?;
-
-        let expected_led_count =
-            usize::try_from(bridge.info.total_led_count()).unwrap_or(usize::MAX);
-        if colors.len() != expected_led_count {
-            let should_warn = bridge
-                .last_size_mismatch_warn_at
-                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-            if should_warn {
-                warn!(
-                    device_id = %id,
-                    expected_led_count,
-                    actual_led_count = colors.len(),
-                    "Hue frame size mismatch; collapsing or padding to match entertainment channels"
-                );
-                bridge.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        let collapsed = collapse_channel_colors(
-            bridge.entertainment_config.channels.as_slice(),
-            colors,
-            bridge.brightness,
-        );
-        let cie_colors = collapsed
-            .iter()
-            .zip(bridge.channel_gamuts.iter().copied())
-            .map(|(color, gamut)| rgb_to_cie_xyb(color[0], color[1], color[2], &gamut))
-            .collect::<Vec<CieXyb>>();
-
-        bridge.stream.send_frame(cie_colors.as_slice()).await
+        Self::write_bridge_colors(id, bridge, colors).await
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
         let bridge = self
             .bridges
-            .get_mut(id)
+            .get(id)
             .with_context(|| format!("Hue bridge {id} is not connected"))?;
-        bridge.brightness = brightness;
+        bridge.lock().await.brightness = brightness;
         Ok(())
     }
 
     fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
         Some(50)
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.bridges.get(id).map(|bridge| {
+            Arc::new(HueFrameSink {
+                device_id: *id,
+                bridge: Arc::clone(bridge),
+            }) as Arc<dyn DeviceFrameSink>
+        })
     }
 }
 
