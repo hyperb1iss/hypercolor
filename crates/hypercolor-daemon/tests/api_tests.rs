@@ -7436,37 +7436,63 @@ async fn patch_device_control_surface_rejects_invalid_payloads() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let cases = [
-        serde_json::json!([
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            },
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.5 }
-            }
-        ]),
-        serde_json::json!([
-            {
-                "field_id": "unknown",
-                "value": { "kind": "bool", "value": true }
-            }
-        ]),
-        serde_json::json!([
-            {
-                "field_id": "brightness",
-                "value": { "kind": "string", "value": "bright" }
-            }
-        ]),
-        serde_json::json!([
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 1.25 }
-            }
-        ]),
+        (
+            serde_json::json!([
+                {
+                    "field_id": "brightness",
+                    "value": { "kind": "float", "value": 0.25 }
+                },
+                {
+                    "field_id": "brightness",
+                    "value": { "kind": "float", "value": 0.5 }
+                }
+            ]),
+            "duplicate_control_field",
+            "brightness",
+        ),
+        (
+            serde_json::json!([
+                {
+                    "field_id": "unknown",
+                    "value": { "kind": "bool", "value": true }
+                }
+            ]),
+            "unknown_control_field",
+            "unknown",
+        ),
+        (
+            serde_json::json!([
+                {
+                    "field_id": "brightness",
+                    "value": { "kind": "string", "value": "bright" }
+                }
+            ]),
+            "control_value_type_mismatch",
+            "brightness",
+        ),
+        (
+            serde_json::json!([
+                {
+                    "field_id": "brightness",
+                    "value": { "kind": "float", "value": 1.25 }
+                }
+            ]),
+            "control_value_out_of_range",
+            "brightness",
+        ),
+        (
+            serde_json::json!([
+                {
+                    "field_id": "name",
+                    "value": { "kind": "string", "value": "   " }
+                }
+            ]),
+            "invalid_control_value",
+            "name",
+        ),
     ];
 
-    for changes in cases {
+    for (changes, kind, field_id) in cases {
         let body = serde_json::json!({
             "surface_id": format!("device:{device_id}"),
             "dry_run": false,
@@ -7491,6 +7517,8 @@ async fn patch_device_control_surface_rejects_invalid_payloads() {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let json = body_json(response).await;
         assert_eq!(json["error"]["code"], "validation_error");
+        assert_eq!(json["error"]["details"]["kind"], kind);
+        assert_eq!(json["error"]["details"]["field_id"], field_id);
     }
 }
 

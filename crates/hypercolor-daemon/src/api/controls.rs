@@ -1099,17 +1099,15 @@ fn normalize_device_control_changes(
 
     for change in changes {
         if !seen.insert(change.field_id.as_str()) {
-            return Err(Box::new(ApiError::validation(format!(
-                "Duplicate control field: {}",
-                change.field_id
-            ))));
+            return Err(Box::new(duplicate_control_field(&change.field_id)));
         }
 
         match (change.field_id.as_str(), &change.value) {
             (DEVICE_FIELD_NAME, ControlValue::String(value)) => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
-                    return Err(Box::new(ApiError::validation(
+                    return Err(Box::new(invalid_control_value(
+                        &change.field_id,
                         "Device name must not be empty",
                     )));
                 }
@@ -1128,7 +1126,8 @@ fn normalize_device_control_changes(
             }
             (DEVICE_FIELD_BRIGHTNESS, ControlValue::Float(value)) => {
                 if !(0.0..=1.0).contains(value) {
-                    return Err(Box::new(ApiError::validation(
+                    return Err(Box::new(out_of_range_control_value(
+                        &change.field_id,
                         "Device brightness must be between 0.0 and 1.0",
                     )));
                 }
@@ -1137,16 +1136,10 @@ fn normalize_device_control_changes(
                 push_unique_impact(&mut impacts, ApplyImpact::Live);
             }
             (DEVICE_FIELD_NAME | DEVICE_FIELD_ENABLED | DEVICE_FIELD_BRIGHTNESS, _) => {
-                return Err(Box::new(ApiError::validation(format!(
-                    "Invalid value type for control field: {}",
-                    change.field_id
-                ))));
+                return Err(Box::new(type_mismatch_control_value(&change.field_id)));
             }
             _ => {
-                return Err(Box::new(ApiError::validation(format!(
-                    "Unknown control field: {}",
-                    change.field_id
-                ))));
+                return Err(Box::new(unknown_control_field(&change.field_id)));
             }
         }
     }
@@ -1158,6 +1151,56 @@ fn normalize_device_control_changes(
         accepted,
         impacts,
     })
+}
+
+fn duplicate_control_field(field_id: &str) -> Response {
+    ApiError::validation_with_details(
+        format!("Duplicate control field: {field_id}"),
+        serde_json::json!({
+            "kind": "duplicate_control_field",
+            "field_id": field_id,
+        }),
+    )
+}
+
+fn unknown_control_field(field_id: &str) -> Response {
+    ApiError::validation_with_details(
+        format!("Unknown control field: {field_id}"),
+        serde_json::json!({
+            "kind": "unknown_control_field",
+            "field_id": field_id,
+        }),
+    )
+}
+
+fn type_mismatch_control_value(field_id: &str) -> Response {
+    ApiError::validation_with_details(
+        format!("Invalid value type for control field: {field_id}"),
+        serde_json::json!({
+            "kind": "control_value_type_mismatch",
+            "field_id": field_id,
+        }),
+    )
+}
+
+fn invalid_control_value(field_id: &str, message: &str) -> Response {
+    ApiError::validation_with_details(
+        message,
+        serde_json::json!({
+            "kind": "invalid_control_value",
+            "field_id": field_id,
+        }),
+    )
+}
+
+fn out_of_range_control_value(field_id: &str, message: &str) -> Response {
+    ApiError::validation_with_details(
+        message,
+        serde_json::json!({
+            "kind": "control_value_out_of_range",
+            "field_id": field_id,
+        }),
+    )
 }
 
 fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
