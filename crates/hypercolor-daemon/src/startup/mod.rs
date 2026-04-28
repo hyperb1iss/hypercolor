@@ -28,7 +28,7 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
@@ -118,7 +118,7 @@ pub struct DaemonState {
     pub driver_host: Arc<DaemonDriverHost>,
 
     /// Registry of compiled-in network drivers and capabilities.
-    pub driver_registry: Arc<DriverRegistry>,
+    pub driver_registry: Arc<DriverModuleRegistry>,
 
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,

@@ -32,7 +32,7 @@ use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
@@ -2736,7 +2736,7 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
 #[tokio::test]
 async fn invoke_driver_control_surface_action_publishes_progress_event() {
     let mut state = isolated_state();
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(ActionTestDriver)
         .expect("test action driver should register");
@@ -2815,7 +2815,7 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
             .expect("config manager should be created"),
     );
     let discoveries = Arc::new(AtomicUsize::new(0));
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(RescanTestDriver::new(Arc::clone(&discoveries)))
         .expect("test rescan driver should register");
@@ -2880,7 +2880,7 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
     );
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(UnsupportedImpactTestDriver)
         .expect("test unsupported impact driver should register");

@@ -10,7 +10,7 @@ use hypercolor_core::device::{
 use hypercolor_driver_api::{
     DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, NetworkDriverFactory,
 };
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
@@ -63,7 +63,7 @@ pub struct DiscoveryScanResult {
 /// Returns `None` when another caller is already scanning.
 pub async fn execute_discovery_scan_if_idle(
     runtime: DiscoveryRuntime,
-    driver_registry: Arc<DriverRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
     driver_host: Arc<DaemonDriverHost>,
     config: Arc<HypercolorConfig>,
     backends: Vec<DiscoveryBackend>,
@@ -166,7 +166,7 @@ fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevi
 #[allow(clippy::too_many_lines)]
 pub async fn execute_discovery_scan(
     runtime: DiscoveryRuntime,
-    driver_registry: Arc<DriverRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
     driver_host: Arc<DaemonDriverHost>,
     config: Arc<HypercolorConfig>,
     backends: Vec<DiscoveryBackend>,

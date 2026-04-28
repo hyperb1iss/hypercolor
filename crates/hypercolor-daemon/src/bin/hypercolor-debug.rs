@@ -13,7 +13,7 @@ use hypercolor_driver_api::{
     DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice,
     NetworkDriverFactory,
 };
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::DeviceInfo;
 use serde_json::Value;
@@ -95,7 +95,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
             .context("failed to open network credential store")?,
     );
     let driver_registry =
-        hypercolor_daemon::network::build_builtin_driver_registry(&config, credential_store)
+        hypercolor_daemon::network::build_builtin_driver_module_registry(&config, credential_store)
             .context("failed to build debug driver registry")?;
     let driver_host = Arc::new(DebugDriverHost);
     let discovery_timeout = Duration::from_millis(args.timeout_ms.max(100));
@@ -261,7 +261,7 @@ fn log_hotplug_event(event: &UsbHotplugEvent) {
 
 async fn run_scan(
     registry: &DeviceRegistry,
-    driver_registry: &DriverRegistry,
+    driver_registry: &DriverModuleRegistry,
     driver_host: Arc<DebugDriverHost>,
     config: &HypercolorConfig,
     backends: &[DebugBackend],
@@ -353,7 +353,7 @@ fn print_scanner_report(report: &ScannerScanReport) {
 
 fn normalize_backends(
     backends: &[String],
-    driver_registry: &DriverRegistry,
+    driver_registry: &DriverModuleRegistry,
 ) -> Result<Vec<DebugBackend>> {
     let mut out = Vec::with_capacity(backends.len());
     for backend in backends
@@ -393,7 +393,7 @@ fn backend_hint(info: &DeviceInfo) -> &str {
 
 fn add_network_scanner(
     orchestrator: &mut DiscoveryOrchestrator,
-    driver_registry: &DriverRegistry,
+    driver_registry: &DriverModuleRegistry,
     host: Arc<DebugDriverHost>,
     config: &HypercolorConfig,
     driver_id: &str,

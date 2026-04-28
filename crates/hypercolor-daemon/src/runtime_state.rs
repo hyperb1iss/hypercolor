@@ -13,7 +13,7 @@ use tracing::warn;
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_driver_api::DriverHost;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::scene::{RenderGroup, SceneId};
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
@@ -127,7 +127,7 @@ pub fn load_driver_cached_json(
 
 /// Collect all driver-owned runtime cache payloads.
 pub async fn collect_driver_runtime_cache(
-    driver_registry: &DriverRegistry,
+    driver_registry: &DriverModuleRegistry,
     host: &dyn DriverHost,
 ) -> BTreeMap<String, BTreeMap<String, Value>> {
     let mut cache = BTreeMap::new();

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{GoveeConfig, HypercolorConfig};
 
 #[cfg(feature = "govee")]
@@ -18,18 +18,18 @@ use hypercolor_driver_hue::HueDriverFactory;
 use hypercolor_driver_nanoleaf::NanoleafDriverFactory;
 use hypercolor_driver_wled::WledDriverFactory;
 
-/// Build the compiled-in driver registry for this process.
+/// Build the compiled-in driver module registry for this process.
 ///
 /// # Errors
 ///
 /// Returns an error if two built-in drivers collide or advertise an unsupported
 /// driver API schema version.
-pub fn build_driver_registry(
+pub fn build_driver_module_registry(
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
-) -> Result<DriverRegistry> {
-    let mut registry = DriverRegistry::new();
-    register_drivers(&mut registry, config, credential_store)?;
+) -> Result<DriverModuleRegistry> {
+    let mut registry = DriverModuleRegistry::new();
+    register_driver_modules(&mut registry, config, credential_store)?;
     Ok(registry)
 }
 
@@ -38,8 +38,8 @@ pub fn build_driver_registry(
 /// # Errors
 ///
 /// Returns an error if a built-in driver registration fails.
-pub fn register_drivers(
-    registry: &mut DriverRegistry,
+pub fn register_driver_modules(
+    registry: &mut DriverModuleRegistry,
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
 ) -> Result<()> {

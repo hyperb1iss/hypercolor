@@ -1,4 +1,4 @@
-//! Network driver registry and orchestration primitives.
+//! Driver module registry and orchestration primitives.
 //!
 //! This crate owns the host-side registry for modular network drivers. It does
 //! not contain driver implementations; it provides the lookup and capability
@@ -12,13 +12,13 @@ use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, Network
 use hypercolor_types::device::DriverModuleDescriptor;
 use thiserror::Error;
 
-/// Registry of all compiled-in network drivers.
+/// Registry of all compiled-in network driver modules.
 #[derive(Default)]
-pub struct DriverRegistry {
+pub struct DriverModuleRegistry {
     drivers: BTreeMap<String, Arc<dyn NetworkDriverFactory>>,
 }
 
-impl DriverRegistry {
+impl DriverModuleRegistry {
     /// Create an empty registry.
     #[must_use]
     pub fn new() -> Self {
@@ -31,7 +31,7 @@ impl DriverRegistry {
     ///
     /// Returns an error if another driver is already registered with the same
     /// descriptor ID.
-    pub fn register<D>(&mut self, driver: D) -> Result<(), DriverRegistryError>
+    pub fn register<D>(&mut self, driver: D) -> Result<(), DriverModuleRegistryError>
     where
         D: NetworkDriverFactory + 'static,
     {
@@ -48,12 +48,12 @@ impl DriverRegistry {
     pub fn register_shared(
         &mut self,
         driver: Arc<dyn NetworkDriverFactory>,
-    ) -> Result<(), DriverRegistryError> {
+    ) -> Result<(), DriverModuleRegistryError> {
         let descriptor = driver.descriptor();
         let id = descriptor.id.to_owned();
 
         if descriptor.schema_version != DRIVER_API_SCHEMA_VERSION {
-            return Err(DriverRegistryError::SchemaVersionMismatch {
+            return Err(DriverModuleRegistryError::SchemaVersionMismatch {
                 id,
                 expected: DRIVER_API_SCHEMA_VERSION,
                 found: descriptor.schema_version,
@@ -61,7 +61,7 @@ impl DriverRegistry {
         }
 
         if self.drivers.contains_key(&id) {
-            return Err(DriverRegistryError::DuplicateDriverId { id });
+            return Err(DriverModuleRegistryError::DuplicateDriverId { id });
         }
 
         self.drivers.insert(id, driver);
@@ -129,9 +129,9 @@ impl DriverRegistry {
     }
 }
 
-/// Errors produced by the driver registry.
+/// Errors produced by the driver module registry.
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum DriverRegistryError {
+pub enum DriverModuleRegistryError {
     /// A second driver tried to register the same ID.
     #[error("duplicate driver id: {id}")]
     DuplicateDriverId { id: String },

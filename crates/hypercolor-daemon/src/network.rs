@@ -1,4 +1,4 @@
-//! Built-in network driver registry and host adapters.
+//! Built-in driver module registry and host adapters.
 
 mod host;
 
@@ -8,12 +8,12 @@ use anyhow::Result;
 use hypercolor_core::device::BackendManager;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_hal::ProtocolDatabase;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{DriverModuleDescriptor, DriverTransportKind};
 
 pub use host::DaemonDriverHost;
-pub use hypercolor_driver_builtin::build_driver_registry as build_builtin_driver_registry;
+pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin_driver_module_registry;
 
 /// Whether a network driver is enabled by the active config.
 #[must_use]
@@ -57,7 +57,7 @@ pub fn hal_module_descriptors() -> &'static [DriverModuleDescriptor] {
 
 /// Module descriptors for all driver modules known by this daemon.
 #[must_use]
-pub fn module_descriptors(registry: &DriverRegistry) -> Vec<DriverModuleDescriptor> {
+pub fn module_descriptors(registry: &DriverModuleRegistry) -> Vec<DriverModuleDescriptor> {
     let mut descriptors = registry
         .module_descriptors()
         .into_iter()
@@ -117,7 +117,7 @@ pub fn driver_config_entry(config: &HypercolorConfig, driver_id: &str) -> Driver
 /// Returns an error if backend construction fails.
 pub fn register_enabled_backends(
     backend_manager: &mut BackendManager,
-    registry: &DriverRegistry,
+    registry: &DriverModuleRegistry,
     host: &dyn DriverHost,
     config: &HypercolorConfig,
 ) -> Result<()> {

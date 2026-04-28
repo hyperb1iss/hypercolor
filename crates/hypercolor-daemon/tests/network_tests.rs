@@ -9,7 +9,7 @@ use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
     DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
 };
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DriverTransportKind};
 
@@ -281,7 +281,7 @@ impl NetworkDriverFactory for ConfiglessDriver {
 #[test]
 fn register_enabled_backends_uses_default_config_for_configless_driver() {
     let host = NullHost::new();
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(ConfiglessDriver)
         .expect("configless driver should register");
@@ -297,7 +297,7 @@ fn register_enabled_backends_uses_default_config_for_configless_driver() {
 #[test]
 fn register_enabled_backends_skips_config_disabled_driver() {
     let host = NullHost::new();
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(ConfiglessDriver)
         .expect("configless driver should register");

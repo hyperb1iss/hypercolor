@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::session::{SessionWatcher, SleepPolicy};
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
 
@@ -62,7 +62,7 @@ struct SessionRuntime {
     power_tx: watch::Sender<OutputPowerState>,
     discovery_runtime: DiscoveryRuntime,
     driver_host: Arc<DaemonDriverHost>,
-    driver_registry: Arc<DriverRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
 }
 
 impl SessionController {
@@ -73,7 +73,7 @@ impl SessionController {
         power_tx: watch::Sender<OutputPowerState>,
         discovery_runtime: DiscoveryRuntime,
         driver_host: Arc<DaemonDriverHost>,
-        driver_registry: Arc<DriverRegistry>,
+        driver_registry: Arc<DriverModuleRegistry>,
     ) -> Self {
         let session_config = config_manager.get().session.clone();
         let watcher = SessionWatcher::start(&session_config);

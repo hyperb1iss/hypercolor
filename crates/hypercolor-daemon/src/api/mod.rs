@@ -56,7 +56,7 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{
     EffectErrorFallbackPolicy, HypercolorConfig, McpConfig, RenderAccelerationMode,
 };
@@ -183,7 +183,7 @@ pub struct AppState {
     pub driver_host: Arc<DaemonDriverHost>,
 
     /// Registry of compiled-in network drivers and capabilities.
-    pub driver_registry: Arc<DriverRegistry>,
+    pub driver_registry: Arc<DriverModuleRegistry>,
 
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
@@ -410,7 +410,7 @@ impl AppState {
         let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         let driver_registry = Arc::new(
-            network::build_builtin_driver_registry(
+            network::build_builtin_driver_module_registry(
                 &HypercolorConfig::default(),
                 Arc::clone(&credential_store),
             )

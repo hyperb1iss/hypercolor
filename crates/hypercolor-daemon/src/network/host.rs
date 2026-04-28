@@ -20,7 +20,7 @@ use hypercolor_driver_api::{
     DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
     DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice,
 };
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
 use hypercolor_types::device::DeviceId;
@@ -59,7 +59,7 @@ pub struct DaemonDriverHost {
     runtime_state_path: PathBuf,
     usb_protocol_configs: UsbProtocolConfigStore,
     credential_store: Arc<CredentialStore>,
-    driver_registry: Arc<DriverRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
     discovery_in_progress: Arc<AtomicBool>,
     scene_transactions: SceneTransactionQueue,
     config_manager: Option<Arc<ConfigManager>>,
@@ -86,7 +86,7 @@ impl DaemonDriverHost {
         runtime_state_path: PathBuf,
         usb_protocol_configs: UsbProtocolConfigStore,
         credential_store: Arc<CredentialStore>,
-        driver_registry: Arc<DriverRegistry>,
+        driver_registry: Arc<DriverModuleRegistry>,
         discovery_in_progress: Arc<AtomicBool>,
         scene_transactions: SceneTransactionQueue,
         config_manager: Option<Arc<ConfigManager>>,
@@ -124,7 +124,7 @@ impl DaemonDriverHost {
     }
 
     #[must_use]
-    pub fn with_driver_registry(&self, driver_registry: Arc<DriverRegistry>) -> Self {
+    pub fn with_driver_registry(&self, driver_registry: Arc<DriverModuleRegistry>) -> Self {
         let mut host = self.clone();
         host.driver_registry = driver_registry;
         host

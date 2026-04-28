@@ -8,7 +8,7 @@ use hypercolor_driver_api::{
     DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
     PairDeviceRequest, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_network::{DriverRegistry, DriverRegistryError};
+use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
@@ -341,7 +341,7 @@ impl NetworkDriverFactory for ControlOnlyDriver {
 
 #[test]
 fn registry_rejects_duplicate_ids() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(DiscoveryOnlyDriver)
         .expect("first registration should succeed");
@@ -351,7 +351,7 @@ fn registry_rejects_duplicate_ids() {
 
     assert_eq!(
         error,
-        DriverRegistryError::DuplicateDriverId {
+        DriverModuleRegistryError::DuplicateDriverId {
             id: "discovery-only".to_owned()
         }
     );
@@ -359,7 +359,7 @@ fn registry_rejects_duplicate_ids() {
 
 #[test]
 fn registry_lists_ids_in_deterministic_order() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(PairingOnlyDriver)
         .expect("pairing driver should register");
@@ -375,7 +375,7 @@ fn registry_lists_ids_in_deterministic_order() {
 
 #[test]
 fn registry_lists_module_descriptors_in_deterministic_order() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(PairingOnlyDriver)
         .expect("pairing driver should register");
@@ -400,7 +400,7 @@ fn registry_lists_module_descriptors_in_deterministic_order() {
 
 #[test]
 fn registry_filters_discovery_and_pairing_drivers() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(PairingOnlyDriver)
         .expect("pairing driver should register");
@@ -425,7 +425,7 @@ fn registry_filters_discovery_and_pairing_drivers() {
 
 #[test]
 fn registry_filters_control_surface_drivers() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(PairingOnlyDriver)
         .expect("pairing driver should register");
@@ -456,7 +456,7 @@ fn registry_filters_control_surface_drivers() {
 
 #[test]
 fn registry_can_return_registered_driver() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(DiscoveryOnlyDriver)
         .expect("driver should register");
@@ -495,14 +495,14 @@ impl NetworkDriverFactory for MismatchedSchemaDriver {
 
 #[test]
 fn registry_rejects_schema_version_mismatch() {
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     let error = registry
         .register(MismatchedSchemaDriver)
         .expect_err("mismatched schema should fail");
 
     assert_eq!(
         error,
-        DriverRegistryError::SchemaVersionMismatch {
+        DriverModuleRegistryError::SchemaVersionMismatch {
             id: "mismatch".to_owned(),
             expected: DRIVER_API_SCHEMA_VERSION,
             found: u32::MAX,
@@ -513,7 +513,7 @@ fn registry_rejects_schema_version_mismatch() {
 #[test]
 fn drivers_can_build_backends_through_registry_lookup() {
     let host = NullHost::new();
-    let mut registry = DriverRegistry::new();
+    let mut registry = DriverModuleRegistry::new();
     registry
         .register(DiscoveryOnlyDriver)
         .expect("driver should register");

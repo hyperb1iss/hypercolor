@@ -25,7 +25,7 @@ use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -41,7 +41,7 @@ use tokio::sync::{Mutex, RwLock};
 struct TestDiscoveryRuntime {
     runtime: DiscoveryRuntime,
     driver_host: Arc<DaemonDriverHost>,
-    driver_registry: Arc<DriverRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
 }
 
 impl std::ops::Deref for TestDiscoveryRuntime {
@@ -297,7 +297,7 @@ fn make_runtime(
         task_spawner: tokio::runtime::Handle::current(),
     };
     let driver_registry = Arc::new(
-        network::build_builtin_driver_registry(
+        network::build_builtin_driver_module_registry(
             &HypercolorConfig::default(),
             Arc::clone(&runtime.credential_store),
         )

@@ -19,7 +19,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
@@ -45,7 +45,7 @@ pub(super) struct DiscoveryWorkerContext {
     pub(super) event_bus: Arc<HypercolorBus>,
     pub(super) config_manager: Arc<ConfigManager>,
     pub(super) driver_host: Arc<DaemonDriverHost>,
-    pub(super) driver_registry: Arc<DriverRegistry>,
+    pub(super) driver_registry: Arc<DriverModuleRegistry>,
     pub(super) spatial_engine: Arc<RwLock<SpatialEngine>>,
     pub(super) scene_manager: Arc<RwLock<SceneManager>>,
     pub(super) layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,

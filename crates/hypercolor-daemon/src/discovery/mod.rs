@@ -20,7 +20,7 @@ use hypercolor_core::device::{
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_network::DriverRegistry;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DriverTransportKind};
 use hypercolor_types::spatial::SpatialLayout;
@@ -169,7 +169,7 @@ impl DiscoveryBackend {
         matches!(self, Self::SmBus)
     }
 
-    fn parse(raw: &str, registry: &DriverRegistry) -> Option<Self> {
+    fn parse(raw: &str, registry: &DriverModuleRegistry) -> Option<Self> {
         match raw {
             "usb" => Some(Self::Usb),
             "smbus" => Some(Self::SmBus),
@@ -182,7 +182,7 @@ impl DiscoveryBackend {
     }
 
     /// All backend identifiers compiled into this daemon binary.
-    fn all(registry: &DriverRegistry) -> Vec<Self> {
+    fn all(registry: &DriverModuleRegistry) -> Vec<Self> {
         let mut backends = registry
             .discovery_drivers()
             .into_iter()
@@ -217,7 +217,7 @@ pub fn normalize_timeout_ms(timeout_ms: Option<u64>) -> Duration {
 pub fn resolve_backends(
     requested: Option<&[String]>,
     config: &HypercolorConfig,
-    driver_registry: &DriverRegistry,
+    driver_registry: &DriverModuleRegistry,
 ) -> Result<Vec<DiscoveryBackend>, String> {
     let includes_all = requested.is_some_and(|raw| {
         raw.iter()
