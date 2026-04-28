@@ -50,6 +50,28 @@ with SyncHypercolorClient() as client:
     print(client.get_status().global_brightness)
 ```
 
+## Drivers
+
+Driver inventory includes module capabilities, config keys, optional control
+surface paths, and protocol catalogs for HAL-backed modules.
+
+```python
+import asyncio
+
+from hypercolor import HypercolorClient
+
+
+async def main() -> None:
+    async with HypercolorClient() as client:
+        for driver in await client.get_drivers():
+            if driver.descriptor.capabilities.protocol_catalog:
+                print(driver.descriptor.display_name)
+                print([protocol.display_name for protocol in driver.protocols])
+
+
+asyncio.run(main())
+```
+
 ## Effects
 
 ```python

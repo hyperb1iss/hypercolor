@@ -20,6 +20,7 @@ from .models.common import (
 )
 from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
+from .models.driver import Driver
 from .models.effect import (
     ActiveEffect,
     ApplyEffectResult,
@@ -116,6 +117,9 @@ class SyncHypercolorClient:
         return self._run(
             self._client.identify_device(device_id, duration_ms=duration_ms, color=color)
         )
+
+    def get_drivers(self) -> list[Driver]:
+        return self._run(self._client.get_drivers())
 
     def get_effects(self, **filters: Any) -> list[EffectSummary]:
         return self._run(self._client.get_effects(**filters))

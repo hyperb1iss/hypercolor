@@ -34,6 +34,70 @@ def test_sync_client_delegates_health() -> None:
     assert result.status == "healthy"
 
 
+def test_sync_client_delegates_driver_inventory() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/drivers"
+        return httpx.Response(
+            200,
+            content=msgspec.json.encode(
+                {
+                    "data": {
+                        "items": [
+                            {
+                                "descriptor": {
+                                    "id": "nollie",
+                                    "display_name": "Nollie",
+                                    "module_kind": "hal",
+                                    "transports": ["usb"],
+                                    "capabilities": {
+                                        "config": False,
+                                        "discovery": True,
+                                        "pairing": False,
+                                        "backend_factory": False,
+                                        "protocol_catalog": True,
+                                        "runtime_cache": False,
+                                        "credentials": False,
+                                        "presentation": True,
+                                        "controls": False,
+                                    },
+                                    "api_schema_version": 1,
+                                    "config_version": 1,
+                                    "default_enabled": True,
+                                },
+                                "enabled": True,
+                                "config_key": "drivers.nollie",
+                                "protocols": [
+                                    {
+                                        "driver_id": "nollie",
+                                        "protocol_id": "nollie_8",
+                                        "display_name": "Nollie 8",
+                                        "family_id": "nollie",
+                                        "transport": "usb",
+                                        "route_backend_id": "usb",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_123",
+                        "timestamp": "2026-03-08T00:00:00Z",
+                    },
+                }
+            ),
+        )
+
+    client = SyncHypercolorClient(transport=httpx.MockTransport(handler))
+    try:
+        result = client.get_drivers()
+    finally:
+        client.close()
+
+    assert result[0].descriptor.id == "nollie"
+    assert result[0].protocols[0].route_backend_id == "usb"
+
+
 def test_sync_client_delegates_control_values() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.raw_path == b"/api/v1/control-surfaces/device%3Akeyboard/values"
