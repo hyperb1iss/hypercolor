@@ -140,6 +140,12 @@ impl DaemonClient {
         .await
     }
 
+    /// Fetch one control surface by stable surface ID.
+    pub async fn get_control_surface(&self, surface_id: &str) -> Result<ControlSurfaceDocument> {
+        self.get_data(&format!("/control-surfaces/{}", path_segment(surface_id)))
+            .await
+    }
+
     /// Fetch one driver-level control surface through the direct endpoint.
     pub async fn get_driver_control_surface(
         &self,

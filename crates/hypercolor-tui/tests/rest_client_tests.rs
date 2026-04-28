@@ -326,6 +326,55 @@ async fn control_surface_list_returns_empty_for_missing_device_surface() {
 }
 
 #[tokio::test]
+async fn get_control_surface_encodes_full_surface_id() {
+    let captured_uri = Arc::new(Mutex::new(None::<String>));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces/{surface_id}",
+            get(
+                |Path(surface_id): Path<String>,
+                 State(captured_uri): State<Arc<Mutex<Option<String>>>>,
+                 uri: Uri| async move {
+                    assert_eq!(surface_id, "driver:wled:device:Desk Strip");
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    Json(json!({
+                        "data": {
+                            "surface_id": "driver:wled:device:Desk Strip",
+                            "scope": {
+                                "device": {
+                                    "device_id": "00000000-0000-0000-0000-000000000001",
+                                    "driver_id": "wled"
+                                }
+                            },
+                            "schema_version": 1,
+                            "revision": 7,
+                            "groups": [],
+                            "fields": [],
+                            "actions": [],
+                            "values": {},
+                            "availability": {},
+                            "action_availability": {}
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured_uri));
+
+    let client = client_for(spawn_server(router).await);
+    let surface = client
+        .get_control_surface("driver:wled:device:Desk Strip")
+        .await
+        .expect("fetch control surface");
+
+    assert_eq!(surface.surface_id, "driver:wled:device:Desk Strip");
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/control-surfaces/driver%3Awled%3Adevice%3ADesk%20Strip")
+    );
+}
+
+#[tokio::test]
 async fn control_surface_mutations_encode_path_ids_and_payloads() {
     let captured_patch = Arc::new(Mutex::new(None::<Value>));
     let captured_action = Arc::new(Mutex::new(None::<Value>));
