@@ -1,7 +1,14 @@
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use hypercolor_driver_api::{CredentialStore, Credentials};
 use tempfile::tempdir;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+const STORE_FILE_NAME: &str = "credentials.json.enc";
+const SEED_FILE_NAME: &str = ".credential_seed";
+const TEST_SEED: [u8; 32] = [0xA5; 32];
+const TEST_NONCE: [u8; 12] = [0x5A; 12];
 
 #[tokio::test]
 async fn credential_store_round_trips_and_reopens() -> TestResult {
@@ -157,6 +164,57 @@ async fn credential_store_keeps_driver_json_opaque() -> TestResult {
 }
 
 #[tokio::test]
+async fn credential_store_migrates_opaque_payloads_from_existing_store() -> TestResult {
+    let tempdir = tempdir()?;
+    write_encrypted_store(
+        tempdir.path(),
+        &serde_json::json!({
+            "alpha:bridge-1": {
+                "api_key": "api-key",
+                "client_key": "client-key"
+            },
+            "beta:panel-1": {
+                "auth_token": "panel-token"
+            }
+        }),
+    )?;
+
+    let store = CredentialStore::open(tempdir.path()).await?;
+
+    assert_eq!(
+        store.get("alpha:bridge-1").await,
+        Some(Credentials::new(
+            "alpha",
+            serde_json::json!({
+                "api_key": "api-key",
+                "client_key": "client-key"
+            })
+        ))
+    );
+    assert_eq!(
+        store.get_json("beta:panel-1").await,
+        Some(serde_json::json!({
+            "auth_token": "panel-token"
+        }))
+    );
+
+    let normalized = decrypt_store(tempdir.path())?;
+    assert_eq!(
+        normalized["alpha:bridge-1"]["backend_id"],
+        serde_json::json!("alpha")
+    );
+    assert_eq!(
+        normalized["alpha:bridge-1"]["data"],
+        serde_json::json!({
+            "api_key": "api-key",
+            "client_key": "client-key"
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn credential_store_keeps_plaintext_out_of_encrypted_file() -> TestResult {
     let tempdir = tempdir()?;
     let store = CredentialStore::open(tempdir.path()).await?;
@@ -183,4 +241,29 @@ async fn credential_store_keeps_plaintext_out_of_encrypted_file() -> TestResult 
     );
 
     Ok(())
+}
+
+fn write_encrypted_store(root: &std::path::Path, value: &serde_json::Value) -> TestResult {
+    std::fs::write(root.join(SEED_FILE_NAME), TEST_SEED)?;
+    let cipher = Aes256Gcm::new_from_slice(&TEST_SEED).expect("test key length is valid");
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&TEST_NONCE),
+            serde_json::to_vec_pretty(value)?.as_ref(),
+        )
+        .expect("test payload should encrypt");
+    let mut payload = Vec::with_capacity(TEST_NONCE.len() + ciphertext.len());
+    payload.extend_from_slice(&TEST_NONCE);
+    payload.extend_from_slice(&ciphertext);
+    std::fs::write(root.join(STORE_FILE_NAME), payload)?;
+    Ok(())
+}
+
+fn decrypt_store(root: &std::path::Path) -> TestResult<serde_json::Value> {
+    let payload = std::fs::read(root.join(STORE_FILE_NAME))?;
+    let cipher = Aes256Gcm::new_from_slice(&TEST_SEED).expect("test key length is valid");
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&payload[..12]), &payload[12..])
+        .expect("test payload should decrypt");
+    Ok(serde_json::from_slice(&plaintext)?)
 }

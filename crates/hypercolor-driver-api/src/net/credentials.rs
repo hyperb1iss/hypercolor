@@ -79,7 +79,10 @@ impl CredentialStore {
         let key = load_or_create_seed_blocking(&seed_path)?;
         let cipher = Aes256Gcm::new_from_slice(&key)
             .map_err(|error| anyhow!("failed to construct credential cipher: {error}"))?;
-        let cache = load_cache_blocking(&cipher, &store_path)?;
+        let (cache, migrated) = load_cache_blocking(&cipher, &store_path)?;
+        if migrated {
+            persist_snapshot_blocking(&cipher, &store_path, &cache)?;
+        }
 
         Ok(Self {
             store_path,
@@ -104,13 +107,19 @@ impl CredentialStore {
         let key = load_or_create_seed(&seed_path).await?;
         let cipher = Aes256Gcm::new_from_slice(&key)
             .map_err(|error| anyhow!("failed to construct credential cipher: {error}"))?;
-        let cache = load_cache(&cipher, &store_path).await?;
-
-        Ok(Self {
+        let (cache, migrated) = load_cache(&cipher, &store_path).await?;
+        let store = Self {
             store_path,
             cipher,
             cache: RwLock::new(cache),
-        })
+        };
+
+        if migrated {
+            let snapshot = store.cache.read().await.clone();
+            store.persist_snapshot(&snapshot).await?;
+        }
+
+        Ok(store)
     }
 
     /// Retrieve credentials for one key.
@@ -169,18 +178,7 @@ impl CredentialStore {
     }
 
     async fn persist_snapshot(&self, snapshot: &HashMap<String, Credentials>) -> Result<()> {
-        let plaintext =
-            serde_json::to_vec_pretty(snapshot).context("failed to serialize credentials")?;
-        let nonce_bytes = rand::random::<[u8; NONCE_BYTES]>();
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = self
-            .cipher
-            .encrypt(nonce, plaintext.as_ref())
-            .map_err(|error| anyhow!("failed to encrypt credential store: {error}"))?;
-
-        let mut payload = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
-        payload.extend_from_slice(&nonce_bytes);
-        payload.extend_from_slice(&ciphertext);
+        let payload = encrypt_snapshot(&self.cipher, snapshot)?;
 
         let tmp_path = temp_store_path(&self.store_path);
         fs::write(&tmp_path, payload).await.with_context(|| {
@@ -253,15 +251,15 @@ async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
 fn load_cache_blocking(
     cipher: &Aes256Gcm,
     store_path: &Path,
-) -> Result<HashMap<String, Credentials>> {
+) -> Result<(HashMap<String, Credentials>, bool)> {
     if !store_path.exists() {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), false));
     }
 
     let payload = std::fs::read(store_path)
         .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
     if payload.is_empty() {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), false));
     }
     if payload.len() <= NONCE_BYTES {
         bail!("credential store {} is truncated", store_path.display());
@@ -272,24 +270,22 @@ fn load_cache_blocking(
         .decrypt(nonce, &payload[NONCE_BYTES..])
         .map_err(|error| anyhow!("failed to decrypt credential store: {error}"))?;
 
-    serde_json::from_slice(&plaintext).with_context(|| {
-        format!(
-            "failed to deserialize credential store {}",
-            store_path.display()
-        )
-    })
+    deserialize_cache(&plaintext, store_path)
 }
 
-async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Credentials>> {
+async fn load_cache(
+    cipher: &Aes256Gcm,
+    store_path: &Path,
+) -> Result<(HashMap<String, Credentials>, bool)> {
     if !store_path.exists() {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), false));
     }
 
     let payload = fs::read(store_path)
         .await
         .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
     if payload.is_empty() {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), false));
     }
     if payload.len() <= NONCE_BYTES {
         bail!("credential store {} is truncated", store_path.display());
@@ -300,12 +296,72 @@ async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<Str
         .decrypt(nonce, &payload[NONCE_BYTES..])
         .map_err(|error| anyhow!("failed to decrypt credential store: {error}"))?;
 
-    serde_json::from_slice(&plaintext).with_context(|| {
+    deserialize_cache(&plaintext, store_path)
+}
+
+fn deserialize_cache(
+    plaintext: &[u8],
+    store_path: &Path,
+) -> Result<(HashMap<String, Credentials>, bool)> {
+    let raw: HashMap<String, Value> = serde_json::from_slice(plaintext).with_context(|| {
         format!(
             "failed to deserialize credential store {}",
             store_path.display()
         )
-    })
+    })?;
+
+    let mut migrated = false;
+    let mut cache = HashMap::with_capacity(raw.len());
+    for (key, value) in raw {
+        if let Ok(credentials) = serde_json::from_value::<Credentials>(value.clone()) {
+            cache.insert(key, credentials);
+        } else {
+            migrated = true;
+            cache.insert(key.clone(), Credentials::from_driver_json(&key, value));
+        }
+    }
+
+    Ok((cache, migrated))
+}
+
+fn persist_snapshot_blocking(
+    cipher: &Aes256Gcm,
+    store_path: &Path,
+    snapshot: &HashMap<String, Credentials>,
+) -> Result<()> {
+    let payload = encrypt_snapshot(cipher, snapshot)?;
+    let tmp_path = temp_store_path(store_path);
+    std::fs::write(&tmp_path, payload).with_context(|| {
+        format!(
+            "failed to write temporary credential store {}",
+            tmp_path.display()
+        )
+    })?;
+    std::fs::rename(&tmp_path, store_path).with_context(|| {
+        format!(
+            "failed to replace credential store {}",
+            store_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn encrypt_snapshot(
+    cipher: &Aes256Gcm,
+    snapshot: &HashMap<String, Credentials>,
+) -> Result<Vec<u8>> {
+    let plaintext =
+        serde_json::to_vec_pretty(snapshot).context("failed to serialize credentials")?;
+    let nonce_bytes = rand::random::<[u8; NONCE_BYTES]>();
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_ref())
+        .map_err(|error| anyhow!("failed to encrypt credential store: {error}"))?;
+
+    let mut payload = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext);
+    Ok(payload)
 }
 
 fn temp_store_path(store_path: &Path) -> PathBuf {
