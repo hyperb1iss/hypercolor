@@ -143,27 +143,11 @@ async fn execute_show(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    if let Some((_, device_id)) = parse_driver_device_surface_target(&args.target) {
+    if is_driver_device_surface(&args.target) {
         let response = client
-            .get(&format!(
-                "/control-surfaces?device_id={}",
-                urlencoded(device_id)
-            ))
+            .get(&format!("/control-surfaces/{}", urlencoded(&args.target)))
             .await?;
-        let surface = response
-            .get("surfaces")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|surface| {
-                surface
-                    .get("surface_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|surface_id| surface_id == args.target)
-            })
-            .cloned()
-            .with_context(|| format!("Control surface not found: {}", args.target))?;
-        return render_surface(&surface, ctx);
+        return render_surface(&response, ctx);
     }
 
     let path = if args.driver || is_bare_driver_surface(&args.target) {
@@ -576,6 +560,9 @@ fn is_bare_device_surface(target: &str) -> bool {
     target.starts_with("device:")
 }
 
-fn parse_driver_device_surface_target(target: &str) -> Option<(&str, &str)> {
-    target.strip_prefix("driver:")?.split_once(":device:")
+fn is_driver_device_surface(target: &str) -> bool {
+    target
+        .strip_prefix("driver:")
+        .and_then(|target| target.split_once(":device:"))
+        .is_some_and(|(driver_id, device_id)| !driver_id.is_empty() && !device_id.is_empty())
 }

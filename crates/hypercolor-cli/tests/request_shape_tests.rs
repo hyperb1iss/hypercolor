@@ -109,33 +109,34 @@ async fn effects_activate_serializes_scalar_params_and_default_cut_transition() 
 }
 
 #[tokio::test]
-async fn controls_show_full_driver_device_surface_queries_by_device_id() -> Result<()> {
+async fn controls_show_full_driver_device_surface_fetches_surface_by_id() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/control-surfaces",
+            "/api/v1/control-surfaces/{surface_id}",
             get(
-                |State(captured_uri): State<SharedUri>, uri: Uri| async move {
+                |Path(surface_id): Path<String>,
+                 State(captured_uri): State<SharedUri>,
+                 uri: Uri| async move {
+                    assert_eq!(surface_id, "driver:wled:device:Desk Strip");
                     *captured_uri.lock().await = Some(uri.to_string());
                     Json(serde_json::json!({
                         "data": {
-                            "surfaces": [{
-                                "surface_id": "driver:wled:device:Desk Strip",
-                                "scope": {
-                                    "device": {
-                                        "device_id": "00000000-0000-0000-0000-000000000001",
-                                        "driver_id": "wled"
-                                    }
-                                },
-                                "schema_version": 1,
-                                "revision": 7,
-                                "groups": [],
-                                "fields": [],
-                                "actions": [],
-                                "values": {},
-                                "availability": {},
-                                "action_availability": {}
-                            }]
+                            "surface_id": "driver:wled:device:Desk Strip",
+                            "scope": {
+                                "device": {
+                                    "device_id": "00000000-0000-0000-0000-000000000001",
+                                    "driver_id": "wled"
+                                }
+                            },
+                            "schema_version": 1,
+                            "revision": 7,
+                            "groups": [],
+                            "fields": [],
+                            "actions": [],
+                            "values": {},
+                            "availability": {},
+                            "action_availability": {}
                         }
                     }))
                 },
@@ -152,7 +153,7 @@ async fn controls_show_full_driver_device_surface_queries_by_device_id() -> Resu
 
     assert_eq!(
         captured_uri.lock().await.as_deref(),
-        Some("/api/v1/control-surfaces?device_id=Desk%20Strip")
+        Some("/api/v1/control-surfaces/driver%3Awled%3Adevice%3ADesk%20Strip")
     );
 
     Ok(())
