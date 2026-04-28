@@ -30,10 +30,11 @@ use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
-    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
-    ControlValueType, ControlVisibility,
+    ControlActionDescriptor, ControlActionResult, ControlActionStatus, ControlAvailability,
+    ControlAvailabilityExpr, ControlAvailabilityState, ControlChange, ControlFieldDescriptor,
+    ControlGroupDescriptor, ControlGroupKind, ControlOwner, ControlPersistence,
+    ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
+    ControlVisibility,
 };
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -70,6 +71,7 @@ const DEVICE_FIELD_FIRMWARE_VERSION: &str = "firmware_version";
 const DEVICE_FIELD_LED_COUNT: &str = "led_count";
 const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
 const DEVICE_FIELD_STATE: &str = "state";
+const DEVICE_ACTION_REFRESH_TOPOLOGY: &str = "refresh_topology";
 
 static NANOLEAF_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -360,12 +362,43 @@ impl DriverControlProvider for NanoleafDriverModule {
 
     async fn invoke_action(
         &self,
-        _host: &dyn DriverHost,
-        _target: &ControlApplyTarget<'_>,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
         action_id: &str,
-        _input: ControlValueMap,
+        input: ControlValueMap,
     ) -> Result<ControlActionResult> {
-        bail!("unknown Nanoleaf control action: {action_id}")
+        if action_id != DEVICE_ACTION_REFRESH_TOPOLOGY {
+            bail!("unknown Nanoleaf control action: {action_id}");
+        }
+        if !input.is_empty() {
+            bail!("Nanoleaf refresh topology does not accept input");
+        }
+        let ControlApplyTarget::Device { device } = target else {
+            bail!("Nanoleaf refresh topology requires a device target");
+        };
+        if device.info.origin.driver_id != DESCRIPTOR.id {
+            bail!(
+                "Nanoleaf refresh topology cannot target device owned by '{}'",
+                device.info.origin.driver_id
+            );
+        }
+
+        let control_host = host
+            .control_host()
+            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+        let scheduled = control_host
+            .lifecycle()
+            .reconnect_device(device.device_id, device.info.backend_id())
+            .await?;
+        let surface = nanoleaf_device_control_surface(device);
+
+        Ok(ControlActionResult {
+            surface_id: surface.surface_id,
+            action_id: action_id.to_owned(),
+            status: ControlActionStatus::Accepted,
+            result: Some(ControlValue::Bool(scheduled)),
+            revision: surface.revision,
+        })
     }
 }
 
@@ -558,6 +591,21 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             ControlValue::String(device.current_state.to_string()),
         ),
     ]);
+    document.actions.push(ControlActionDescriptor {
+        id: DEVICE_ACTION_REFRESH_TOPOLOGY.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: Some("diagnostics".to_owned()),
+        label: "Refresh Topology".to_owned(),
+        description: Some("Reconnect and reload the Nanoleaf panel layout".to_owned()),
+        input_fields: Vec::new(),
+        result_type: Some(ControlValueType::Bool),
+        confirmation: None,
+        apply_impact: ApplyImpact::DeviceReconnect,
+        availability: ControlAvailabilityExpr::Always,
+        ordering: 100,
+    });
 
     document.availability = document
         .fields
@@ -572,6 +620,13 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             )
         })
         .collect();
+    document.action_availability.insert(
+        DEVICE_ACTION_REFRESH_TOPOLOGY.to_owned(),
+        ControlAvailability {
+            state: ControlAvailabilityState::Available,
+            reason: None,
+        },
+    );
     document.revision = nanoleaf_device_control_revision(device, &document.values);
     document
 }

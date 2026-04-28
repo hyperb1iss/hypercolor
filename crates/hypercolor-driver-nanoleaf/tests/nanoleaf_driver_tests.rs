@@ -1,20 +1,31 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::Result;
+use async_trait::async_trait;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
-    DriverConfigProvider, DriverModule, DriverTrackedDevice, TrackedDeviceCtx,
+    BackendRebindActions, DeviceControlStore, DriverConfigProvider, DriverControlHost,
+    DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
+    DriverLifecycleActions, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
+    TrackedDeviceCtx,
 };
 use hypercolor_driver_nanoleaf::{
     NanoleafConfig, NanoleafDriverModule, nanoleaf_device_control_surface,
     nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
 };
-use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue};
+use hypercolor_types::controls::{
+    ApplyImpact, ControlAccess, ControlActionStatus, ControlSurfaceEvent, ControlValue,
+    ControlValueMap,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
+use serde_json::Value;
+use tokio::sync::Mutex;
 
 fn tracked_nanoleaf_device() -> DriverTrackedDevice {
     DriverTrackedDevice {
@@ -187,4 +198,225 @@ fn nanoleaf_device_control_surface_exposes_tracked_metadata() {
         surface.values["state"],
         ControlValue::String("Known".to_owned())
     );
+    let refresh = surface
+        .actions
+        .iter()
+        .find(|action| action.id == "refresh_topology")
+        .expect("refresh topology action should be exposed");
+    assert_eq!(refresh.apply_impact, ApplyImpact::DeviceReconnect);
+    assert!(refresh.input_fields.is_empty());
+    assert_eq!(
+        surface.action_availability["refresh_topology"].state,
+        hypercolor_types::controls::ControlAvailabilityState::Available
+    );
+}
+
+#[tokio::test]
+async fn nanoleaf_refresh_topology_action_schedules_device_reconnect() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let module = NanoleafDriverModule::new(
+        Arc::new(
+            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+        ),
+        false,
+    );
+    let tracked = tracked_nanoleaf_device();
+    let host = TestHost::default();
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let result = module
+        .controls()
+        .expect("Nanoleaf should expose controls")
+        .invoke_action(
+            &host,
+            &hypercolor_driver_api::ControlApplyTarget::Device { device: &device },
+            "refresh_topology",
+            ControlValueMap::new(),
+        )
+        .await
+        .expect("refresh topology action should invoke");
+
+    assert_eq!(result.status, ControlActionStatus::Accepted);
+    assert_eq!(result.result, Some(ControlValue::Bool(true)));
+    assert!(host.control.lifecycle.reconnected.load(Ordering::SeqCst));
+}
+
+#[derive(Default)]
+struct TestCredentialStore {
+    values: Mutex<HashMap<String, Value>>,
+}
+
+#[async_trait]
+impl DriverCredentialStore for TestCredentialStore {
+    async fn get_json(&self, key: &str) -> Result<Option<Value>> {
+        Ok(self.values.lock().await.get(key).cloned())
+    }
+
+    async fn set_json(&self, key: &str, value: Value) -> Result<()> {
+        self.values.lock().await.insert(key.to_owned(), value);
+        Ok(())
+    }
+
+    async fn remove(&self, key: &str) -> Result<()> {
+        self.values.lock().await.remove(key);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct TestRuntimeActions;
+
+#[async_trait]
+impl DriverRuntimeActions for TestRuntimeActions {
+    async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
+        let _ = (device_id, backend_id);
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        device_id: DeviceId,
+        backend_id: &str,
+        will_retry: bool,
+    ) -> Result<bool> {
+        let _ = (device_id, backend_id, will_retry);
+        Ok(false)
+    }
+}
+
+#[derive(Default)]
+struct TestDiscoveryState;
+
+#[async_trait]
+impl DriverDiscoveryState for TestDiscoveryState {
+    async fn tracked_devices(&self, driver_id: &str) -> Vec<DriverTrackedDevice> {
+        let _ = driver_id;
+        Vec::new()
+    }
+
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
+        Ok(None)
+    }
+}
+
+#[derive(Default)]
+struct TestLifecycleActions {
+    reconnected: AtomicBool,
+}
+
+#[async_trait]
+impl DriverLifecycleActions for TestLifecycleActions {
+    async fn reconnect_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
+        let _ = (device_id, backend_id);
+        self.reconnected.store(true, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    async fn rescan_driver(&self, driver_id: &str) -> Result<()> {
+        let _ = driver_id;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct TestControlHost {
+    lifecycle: TestLifecycleActions,
+}
+
+#[async_trait]
+impl DriverControlStore for TestControlHost {
+    async fn load_driver_values(&self, driver_id: &str) -> Result<ControlValueMap> {
+        let _ = driver_id;
+        Ok(ControlValueMap::new())
+    }
+
+    async fn save_driver_values(&self, driver_id: &str, values: ControlValueMap) -> Result<()> {
+        let _ = (driver_id, values);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DeviceControlStore for TestControlHost {
+    async fn load_device_values(&self, device_id: DeviceId) -> Result<ControlValueMap> {
+        let _ = device_id;
+        Ok(ControlValueMap::new())
+    }
+
+    async fn save_device_values(&self, device_id: DeviceId, values: ControlValueMap) -> Result<()> {
+        let _ = (device_id, values);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BackendRebindActions for TestControlHost {
+    async fn rebind_backend(&self, driver_id: &str) -> Result<()> {
+        let _ = driver_id;
+        Ok(())
+    }
+}
+
+impl DriverControlHost for TestControlHost {
+    fn driver_config_store(&self) -> &dyn DriverControlStore {
+        self
+    }
+
+    fn device_config_store(&self) -> &dyn DeviceControlStore {
+        self
+    }
+
+    fn lifecycle(&self) -> &dyn DriverLifecycleActions {
+        &self.lifecycle
+    }
+
+    fn backend_rebind(&self) -> &dyn BackendRebindActions {
+        self
+    }
+
+    fn publish_control_event(&self, event: ControlSurfaceEvent) {
+        let _ = event;
+    }
+}
+
+struct TestHost {
+    credentials: TestCredentialStore,
+    runtime: TestRuntimeActions,
+    discovery: TestDiscoveryState,
+    control: TestControlHost,
+}
+
+impl Default for TestHost {
+    fn default() -> Self {
+        Self {
+            credentials: TestCredentialStore::default(),
+            runtime: TestRuntimeActions,
+            discovery: TestDiscoveryState,
+            control: TestControlHost::default(),
+        }
+    }
+}
+
+impl DriverHost for TestHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        &self.credentials
+    }
+
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        &self.runtime
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        &self.discovery
+    }
+
+    fn control_host(&self) -> Option<&dyn DriverControlHost> {
+        Some(&self.control)
+    }
 }
