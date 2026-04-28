@@ -232,6 +232,8 @@ fn prism_8_channel_slots_allow_fan_attachments() {
     let device = DeviceInfo {
         name: "Prism 8".into(),
         model: Some("prism_8".into()),
+        origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+            .with_protocol_id("nollie/prism-8"),
         zones: vec![ZoneInfo {
             name: "Channel 1".into(),
             led_count: 126,
