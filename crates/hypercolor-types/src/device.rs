@@ -674,23 +674,6 @@ impl DeviceFamily {
             ),
         }
     }
-
-    /// Backend service identifier for device routing.
-    ///
-    /// Network-native families (WLED, Hue) return their specific backend ID.
-    /// All HAL-managed USB/serial families return `"usb"`.
-    #[must_use]
-    pub fn backend_id(&self) -> &'static str {
-        match self {
-            Self::Wled => "wled",
-            Self::Hue => "hue",
-            Self::Nanoleaf => "nanoleaf",
-            Self::Govee => "govee",
-            Self::Roli => "blocks",
-            Self::Custom(_) => "custom",
-            _ => "usb",
-        }
-    }
 }
 
 impl fmt::Display for DeviceFamily {
