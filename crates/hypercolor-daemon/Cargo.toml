@@ -30,6 +30,7 @@ hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-hal = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false }
+hypercolor-driver-wled = { workspace = true }
 hypercolor-network = { workspace = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }

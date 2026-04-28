@@ -3,9 +3,7 @@ use std::net::IpAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_core::device::wled::{
-    WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol, WledScanner,
-};
+use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
@@ -24,6 +22,8 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::DeviceId;
 use serde::{Deserialize, Serialize};
+
+pub use hypercolor_core::device::wled::WledScanner;
 
 pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);

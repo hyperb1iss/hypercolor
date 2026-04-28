@@ -2,11 +2,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, SmBusScanner,
     UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
 };
+use hypercolor_driver_wled::WledScanner;
 use hypercolor_types::device::DeviceInfo;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
