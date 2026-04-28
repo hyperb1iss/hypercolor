@@ -11,9 +11,9 @@ use hypercolor_driver_wled::{
 };
 use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue, ControlValueMap};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, ZoneInfo,
 };
 
 fn tracked_wled_device(ip: &str, hostname: &str, name: &str) -> DriverTrackedDevice {
@@ -112,7 +112,19 @@ fn wled_module_advertises_control_surface_capability() {
     assert!(descriptor.capabilities.controls);
     assert!(descriptor.capabilities.discovery);
     assert!(descriptor.capabilities.output_backend);
+    assert!(descriptor.capabilities.presentation);
     assert!(descriptor.capabilities.runtime_cache);
+
+    let presentation = WledDriverModule::new(false)
+        .presentation()
+        .expect("WLED should expose presentation metadata")
+        .presentation();
+    assert_eq!(presentation.label, "WLED");
+    assert_eq!(presentation.accent_rgb, Some([255, 106, 193]));
+    assert_eq!(
+        presentation.default_device_class,
+        Some(DeviceClassHint::Controller)
+    );
 }
 
 #[test]

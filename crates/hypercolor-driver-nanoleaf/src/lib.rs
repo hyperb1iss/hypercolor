@@ -22,9 +22,9 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
-    TrackedDeviceCtx, ValidatedControlChanges,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, DriverTransport,
+    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -36,6 +36,7 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
     ControlVisibility,
 };
+use hypercolor_types::device::{DeviceClassHint, DriverPresentation};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -247,6 +248,23 @@ impl DriverModule for NanoleafDriverModule {
 
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(self)
+    }
+
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(self)
+    }
+}
+
+impl DriverPresentationProvider for NanoleafDriverModule {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "Nanoleaf".to_owned(),
+            short_label: Some("Nano".to_owned()),
+            accent_rgb: Some([128, 255, 234]),
+            secondary_rgb: Some([225, 53, 255]),
+            icon: Some("panel-top".to_owned()),
+            default_device_class: Some(DeviceClassHint::Light),
+        }
     }
 }
 

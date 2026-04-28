@@ -2109,7 +2109,13 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["output_backend"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["controls"], true);
+    assert_eq!(wled["descriptor"]["capabilities"]["presentation"], true);
     assert_eq!(wled["presentation"]["label"], "WLED");
+    assert_eq!(
+        wled["presentation"]["accent_rgb"],
+        serde_json::json!([255, 106, 193])
+    );
+    assert_eq!(wled["presentation"]["default_device_class"], "controller");
     assert_eq!(wled["enabled"], true);
     assert_eq!(wled["config_key"], "drivers.wled");
     assert_eq!(wled["control_surface_id"], "driver:wled");

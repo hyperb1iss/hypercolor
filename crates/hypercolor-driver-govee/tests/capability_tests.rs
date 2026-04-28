@@ -1,6 +1,28 @@
+use hypercolor_driver_api::DriverModule;
 use hypercolor_driver_govee::{
-    GoveeCapabilities, known_cloud_sku_count, known_sku_count, profile_for_sku,
+    GoveeCapabilities, GoveeDriverModule, known_cloud_sku_count, known_sku_count, profile_for_sku,
 };
+use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::device::DeviceClassHint;
+
+#[test]
+fn govee_module_advertises_presentation_metadata() {
+    let module = GoveeDriverModule::new(GoveeConfig::default());
+    let descriptor = module.module_descriptor();
+
+    assert!(descriptor.capabilities.presentation);
+
+    let presentation = module
+        .presentation()
+        .expect("Govee should expose presentation metadata")
+        .presentation();
+    assert_eq!(presentation.label, "Govee");
+    assert_eq!(presentation.accent_rgb, Some([80, 250, 123]));
+    assert_eq!(
+        presentation.default_device_class,
+        Some(DeviceClassHint::Light)
+    );
+}
 
 #[test]
 fn h6163_is_basic_lan_not_streaming() {

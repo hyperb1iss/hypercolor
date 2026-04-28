@@ -12,10 +12,11 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, CredentialStore, DeviceAuthState, DeviceAuthSummary,
     DeviceBackend, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
     DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule, DriverRuntimeCacheProvider,
-    DriverTrackedDevice, DriverTransport, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
-    TrackedDeviceCtx, TransportScanner, ValidatedControlChanges,
+    DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, TransportScanner,
+    ValidatedControlChanges,
 };
 use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
@@ -26,8 +27,8 @@ use hypercolor_types::controls::{
     ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation, ZoneInfo,
 };
 use serde_json::json;
 use tracing::warn;
@@ -178,8 +179,25 @@ impl DriverModule for GoveeDriverModule {
         Some(self)
     }
 
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(self)
+    }
+
     fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
+    }
+}
+
+impl DriverPresentationProvider for GoveeDriverModule {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "Govee".to_owned(),
+            short_label: Some("Govee".to_owned()),
+            accent_rgb: Some([80, 250, 123]),
+            secondary_rgb: Some([255, 106, 193]),
+            icon: Some("lightbulb".to_owned()),
+            default_device_class: Some(DeviceClassHint::Light),
+        }
     }
 }
 

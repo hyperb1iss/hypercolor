@@ -21,8 +21,8 @@ use hypercolor_types::controls::{
     ControlValueMap,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -84,6 +84,31 @@ fn resolve_nanoleaf_probe_devices_merges_tracked_metadata() {
     assert_eq!(tracked.device_id, "nanoleaf-shapes");
     assert_eq!(tracked.name, "Shapes");
     assert_eq!(tracked.model, "NL42");
+}
+
+#[test]
+fn nanoleaf_module_advertises_presentation_metadata() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let module = NanoleafDriverModule::new(
+        Arc::new(
+            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+        ),
+        false,
+    );
+
+    let descriptor = module.module_descriptor();
+    assert!(descriptor.capabilities.presentation);
+
+    let presentation = module
+        .presentation()
+        .expect("Nanoleaf should expose presentation metadata")
+        .presentation();
+    assert_eq!(presentation.label, "Nanoleaf");
+    assert_eq!(presentation.icon.as_deref(), Some("panel-top"));
+    assert_eq!(
+        presentation.default_device_class,
+        Some(DeviceClassHint::Light)
+    );
 }
 
 #[test]

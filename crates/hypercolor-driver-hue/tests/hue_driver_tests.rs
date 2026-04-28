@@ -14,8 +14,8 @@ use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlAvailabilityState, ControlSurfaceScope, ControlValue,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 
 fn tracked_hue_device() -> DriverTrackedDevice {
@@ -80,6 +80,31 @@ fn resolve_hue_probe_bridges_merges_tracked_metadata() {
     assert_eq!(tracked.bridge_id, "bridge-123");
     assert_eq!(tracked.name, "Studio Bridge");
     assert_eq!(tracked.model_id, "BSB002");
+}
+
+#[test]
+fn hue_module_advertises_presentation_metadata() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let module = HueDriverModule::new(
+        Arc::new(
+            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+        ),
+        false,
+    );
+
+    let descriptor = module.module_descriptor();
+    assert!(descriptor.capabilities.presentation);
+
+    let presentation = module
+        .presentation()
+        .expect("Hue should expose presentation metadata")
+        .presentation();
+    assert_eq!(presentation.label, "Philips Hue");
+    assert_eq!(presentation.short_label.as_deref(), Some("Hue"));
+    assert_eq!(
+        presentation.default_device_class,
+        Some(DeviceClassHint::Light)
+    );
 }
 
 #[test]

@@ -14,8 +14,9 @@ use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
     DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverRuntimeCacheProvider,
-    DriverTrackedDevice, DriverTransport, TrackedDeviceCtx, ValidatedControlChanges,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -26,7 +27,7 @@ use hypercolor_types::controls::{
     ControlGroupKind, ControlOwner, ControlPersistence, ControlSurfaceDocument,
     ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType, ControlVisibility,
 };
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceClassHint, DeviceId, DriverPresentation};
 use serde::{Deserialize, Serialize};
 
 pub use backend::{
@@ -179,8 +180,25 @@ impl DriverModule for WledDriverModule {
         Some(self)
     }
 
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(self)
+    }
+
     fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
         Some(self)
+    }
+}
+
+impl DriverPresentationProvider for WledDriverModule {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "WLED".to_owned(),
+            short_label: Some("WLED".to_owned()),
+            accent_rgb: Some([255, 106, 193]),
+            secondary_rgb: Some([128, 255, 234]),
+            icon: Some("lightbulb".to_owned()),
+            default_device_class: Some(DeviceClassHint::Controller),
+        }
     }
 }
 

@@ -21,9 +21,9 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
-    TrackedDeviceCtx, ValidatedControlChanges,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, DriverTransport,
+    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -34,6 +34,7 @@ use hypercolor_types::controls::{
     ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
     ControlValueType, ControlVisibility,
 };
+use hypercolor_types::device::{DeviceClassHint, DriverPresentation};
 
 pub use backend::{HueBackend, HueConfig};
 pub use bridge::{DEFAULT_HUE_API_PORT, DEFAULT_HUE_STREAM_PORT, HueBridgeClient, HueNupnpBridge};
@@ -116,6 +117,23 @@ impl DriverModule for HueDriverModule {
 
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(self)
+    }
+
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(self)
+    }
+}
+
+impl DriverPresentationProvider for HueDriverModule {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "Philips Hue".to_owned(),
+            short_label: Some("Hue".to_owned()),
+            accent_rgb: Some([241, 250, 140]),
+            secondary_rgb: Some([225, 53, 255]),
+            icon: Some("bridge".to_owned()),
+            default_device_class: Some(DeviceClassHint::Light),
+        }
     }
 }
 
