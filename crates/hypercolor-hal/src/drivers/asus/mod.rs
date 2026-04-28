@@ -3,6 +3,7 @@
 pub mod devices;
 pub mod protocol;
 pub mod smbus;
+pub mod smbus_probe;
 pub mod types;
 
 pub use devices::{
@@ -25,6 +26,10 @@ pub use smbus::{
     encode_ene_transaction, ene_byte_swap, ene_direct_color_writes, ene_dram_remap_sequence,
     ene_permute_color, ene_read_register_range, ene_write_register, ene_write_register_block,
     lookup_ene_firmware_variant, simple_gpu_magic, supports_mode_14,
+};
+pub use smbus_probe::{
+    AuraSmBusProbeError, SmBusControllerKind, SmBusProbe, build_aura_smbus_protocol,
+    dram_capable_pci_id, probe_asus_smbus_devices_in_root, resolve_parent_pci_id_from_sysfs_path,
 };
 pub use types::{
     ASUS_VID, AURA_DIRECT_LED_CHUNK, AURA_DIRECT_LED_MAX, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN,

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use hypercolor_hal::drivers::asus::AuraSmBusProtocol;
+use hypercolor_hal::drivers::asus::build_aura_smbus_protocol;
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::transport::smbus::SmBusTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
@@ -249,7 +249,7 @@ async fn connect_pending_device(
     transport_factory: &SmBusTransportFactory,
 ) -> Result<ConnectedSmBusDevice> {
     let transport = transport_factory(&pending.bus_path, pending.address)?;
-    let protocol: Box<dyn Protocol> = Box::new(AuraSmBusProtocol::new());
+    let protocol = build_aura_smbus_protocol();
     run_init_sequence(
         protocol.as_ref(),
         transport.as_ref(),
