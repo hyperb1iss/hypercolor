@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "hypercolor-debug",
     version,
-    about = "Local backend debug tools for discovery and USB hotplug"
+    about = "Local discovery target debug tools for discovery and USB hotplug"
 )]
 struct DebugCli {
     /// Log level (trace, debug, info, warn, error).
@@ -41,7 +41,7 @@ enum DebugCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DebugBackend {
+enum DebugTarget {
     SmBus,
     Usb,
     Driver(String),
@@ -49,9 +49,9 @@ enum DebugBackend {
 
 #[derive(Debug, Args)]
 struct DetectArgs {
-    /// Backends to scan (repeat or comma-separate values).
+    /// Discovery targets to scan (repeat or comma-separate values).
     #[arg(long, value_delimiter = ',', default_values_t = ["usb".to_owned(), "smbus".to_owned()])]
-    backends: Vec<String>,
+    targets: Vec<String>,
 
     /// Periodic scan interval in seconds.
     #[arg(long, default_value_t = 5)]
@@ -98,12 +98,12 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
             .context("failed to build debug driver registry")?;
     let driver_host = Arc::new(DebugDriverHost);
     let discovery_timeout = Duration::from_millis(args.timeout_ms.max(100));
-    let periodic_backends = normalize_backends(&args.backends, &driver_registry)?;
-    if periodic_backends.is_empty() {
-        anyhow::bail!("no backends selected");
+    let periodic_targets = normalize_targets(&args.targets, &driver_registry)?;
+    if periodic_targets.is_empty() {
+        anyhow::bail!("no discovery targets selected");
     }
 
-    let hotplug_enabled = !args.no_hotplug && periodic_backends.contains(&DebugBackend::Usb);
+    let hotplug_enabled = !args.no_hotplug && periodic_targets.contains(&DebugTarget::Usb);
     let hotplug_monitor = hotplug_enabled.then(|| UsbHotplugMonitor::new(256));
     let mut hotplug_rx = hotplug_monitor.as_ref().map(UsbHotplugMonitor::subscribe);
     let mut hotplug_task = if let Some(monitor) = hotplug_monitor.as_ref() {
@@ -117,7 +117,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
     };
 
     info!(
-        backends = ?periodic_backends,
+        targets = ?periodic_targets,
         interval_secs = args.interval_secs.max(1),
         timeout_ms = discovery_timeout.as_millis(),
         hotplug = hotplug_enabled,
@@ -129,7 +129,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
         &driver_registry,
         Arc::clone(&driver_host),
         &config,
-        &periodic_backends,
+        &periodic_targets,
         &args,
         discovery_timeout,
         "initial",
@@ -162,7 +162,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
                     &driver_registry,
                     Arc::clone(&driver_host),
                     &config,
-                    &periodic_backends,
+                    &periodic_targets,
                     &args,
                     discovery_timeout,
                     "periodic",
@@ -177,7 +177,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
                             &driver_registry,
                             Arc::clone(&driver_host),
                             &config,
-                            &[DebugBackend::Usb],
+                            &[DebugTarget::Usb],
                             &args,
                             discovery_timeout,
                             "usb-hotplug",
@@ -263,17 +263,17 @@ async fn run_scan(
     driver_registry: &DriverModuleRegistry,
     driver_host: Arc<DebugDriverHost>,
     config: &HypercolorConfig,
-    backends: &[DebugBackend],
+    targets: &[DebugTarget],
     _args: &DetectArgs,
     timeout: Duration,
     trigger: &str,
 ) -> Result<()> {
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
-    for backend in backends {
-        match backend {
-            DebugBackend::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
-            DebugBackend::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
-            DebugBackend::Driver(driver_id) => add_driver_scanner(
+    for target in targets {
+        match target {
+            DebugTarget::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
+            DebugTarget::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
+            DebugTarget::Driver(driver_id) => add_driver_scanner(
                 &mut orchestrator,
                 driver_registry,
                 Arc::clone(&driver_host),
@@ -308,10 +308,10 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
     for id in &report.new_devices {
         if let Some(tracked) = registry.get(id).await {
             println!(
-                "  + {} [{}] backend_hint={}",
+                "  + {} [{}] output_backend={}",
                 tracked.info.name,
                 id,
-                backend_hint(&tracked.info),
+                output_backend_id(&tracked.info),
             );
         }
     }
@@ -319,10 +319,10 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
     for id in &report.reappeared_devices {
         if let Some(tracked) = registry.get(id).await {
             println!(
-                "  ~ {} [{}] backend_hint={}",
+                "  ~ {} [{}] output_backend={}",
                 tracked.info.name,
                 id,
-                backend_hint(&tracked.info),
+                output_backend_id(&tracked.info),
             );
         }
     }
@@ -350,41 +350,41 @@ fn print_scanner_report(report: &ScannerScanReport) {
     }
 }
 
-fn normalize_backends(
-    backends: &[String],
+fn normalize_targets(
+    targets: &[String],
     driver_registry: &DriverModuleRegistry,
-) -> Result<Vec<DebugBackend>> {
-    let mut out = Vec::with_capacity(backends.len());
-    for backend in backends
+) -> Result<Vec<DebugTarget>> {
+    let mut out = Vec::with_capacity(targets.len());
+    for target in targets
         .iter()
-        .map(|backend| backend.trim().to_ascii_lowercase())
+        .map(|target| target.trim().to_ascii_lowercase())
     {
-        let backend = match backend.as_str() {
-            "smbus" => DebugBackend::SmBus,
-            "usb" => DebugBackend::Usb,
+        let target = match target.as_str() {
+            "smbus" => DebugTarget::SmBus,
+            "usb" => DebugTarget::Usb,
             driver_id => {
                 let Some(driver) = driver_registry.get(driver_id) else {
                     let mut supported = vec!["smbus".to_owned(), "usb".to_owned()];
                     supported.extend(driver_registry.ids());
                     anyhow::bail!(
-                        "unknown backend '{driver_id}'. Supported backends: {}",
+                        "unknown discovery target '{driver_id}'. Supported targets: {}",
                         supported.join(", ")
                     );
                 };
                 if driver.discovery().is_none() {
                     anyhow::bail!("driver '{driver_id}' does not support discovery");
                 }
-                DebugBackend::Driver(driver_id.to_owned())
+                DebugTarget::Driver(driver_id.to_owned())
             }
         };
-        if !out.contains(&backend) {
-            out.push(backend);
+        if !out.contains(&target) {
+            out.push(target);
         }
     }
     Ok(out)
 }
 
-fn backend_hint(info: &DeviceInfo) -> &str {
+fn output_backend_id(info: &DeviceInfo) -> &str {
     info.output_backend_id()
 }
 
