@@ -339,7 +339,7 @@ pub trait NetworkDriverFactory: Send + Sync {
         None
     }
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
@@ -510,7 +510,7 @@ for driver_id in registry.ids() {
     if !config.enabled {
         continue;
     }
-    let Some(backend) = driver.build_backend(host, config)? else {
+    let Some(backend) = driver.build_output_backend(host, config)? else {
         continue;
     };
     backend_manager.register_backend(backend);

@@ -192,7 +192,7 @@ The driver boundary should be capability-based.
 pub trait NetworkDriverFactory: Send + Sync {
     fn descriptor(&self) -> &'static DriverDescriptor;
 
-    fn build_backend(
+    fn build_output_backend(
         &self,
         host: &DriverHost,
     ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>>;

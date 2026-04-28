@@ -167,7 +167,7 @@ registry.register(GoveeDriverFactory::new(
 ))?;
 ```
 
-`driver_enabled` and `driver_config_flag` also grow `"govee"` arms pointing at `discovery.govee_scan`. The driver backend is constructed through `build_backend` like the others.
+`driver_enabled` and `driver_config_flag` also grow `"govee"` arms pointing at `discovery.govee_scan`. The driver backend is constructed through `build_output_backend` like the others.
 
 ---
 
