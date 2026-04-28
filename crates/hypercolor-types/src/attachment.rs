@@ -157,9 +157,9 @@ impl Default for AttachmentCanvasSize {
 /// entries at all, it is considered globally compatible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AttachmentCompatibility {
-    /// Controller family identifiers, such as `prismrgb`.
+    /// Controller driver or protocol identifiers, such as `nollie`.
     #[serde(default)]
-    pub families: Vec<String>,
+    pub controller_ids: Vec<String>,
     /// Optional model identifiers, such as `prism_s`.
     #[serde(default)]
     pub models: Vec<String>,
@@ -173,11 +173,11 @@ impl AttachmentCompatibility {
     #[must_use]
     pub fn matches(
         &self,
-        controller_family: &str,
+        controller_id: &str,
         controller_model: Option<&str>,
         slot_id: &str,
     ) -> bool {
-        matches_filter(&self.families, controller_family)
+        matches_filter(&self.controller_ids, controller_id)
             && matches_optional_filter(&self.models, controller_model)
             && matches_filter(&self.slots, slot_id)
     }
@@ -237,7 +237,7 @@ impl AttachmentTemplate {
     #[must_use]
     pub fn supports_slot(
         &self,
-        controller_family: &str,
+        controller_id: &str,
         controller_model: Option<&str>,
         slot_id: &str,
     ) -> bool {
@@ -245,7 +245,7 @@ impl AttachmentTemplate {
             || self
                 .compatible_slots
                 .iter()
-                .any(|matcher| matcher.matches(controller_family, controller_model, slot_id))
+                .any(|matcher| matcher.matches(controller_id, controller_model, slot_id))
     }
 }
 

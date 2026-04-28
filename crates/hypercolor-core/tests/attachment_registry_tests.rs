@@ -22,7 +22,7 @@ fn sample_template(id: &str, origin: AttachmentOrigin) -> AttachmentTemplate {
             direction: hypercolor_types::spatial::Winding::Clockwise,
         },
         compatible_slots: vec![AttachmentCompatibility {
-            families: vec!["nollie".to_owned()],
+            controller_ids: vec!["nollie".to_owned()],
             models: vec!["prism_8".to_owned()],
             slots: vec!["channel-1".to_owned()],
         }],

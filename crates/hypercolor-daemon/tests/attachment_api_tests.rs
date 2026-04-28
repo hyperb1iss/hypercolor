@@ -736,7 +736,7 @@ async fn prism_8_accepts_driver_scoped_templates() {
     let mut template = user_strip_template(template_id, "Nollie Scoped Prism Fan", 16);
     template["category"] = json!("fan");
     template["compatible_slots"] = json!([{
-        "families": ["nollie"],
+        "controller_ids": ["nollie"],
         "models": ["prism_8"],
         "slots": ["channel-1"]
     }]);

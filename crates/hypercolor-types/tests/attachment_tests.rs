@@ -26,7 +26,7 @@ fn sample_template() -> AttachmentTemplateManifest {
                 start_corner: Corner::TopLeft,
             },
             compatible_slots: vec![AttachmentCompatibility {
-                families: vec!["prismrgb".into()],
+                controller_ids: vec!["prismrgb".into()],
                 models: vec!["prism_s".into()],
                 slots: vec!["gpu-strimer".into()],
             }],
@@ -262,9 +262,9 @@ fn prism_8_channel_slots_allow_fan_attachments() {
 }
 
 #[test]
-fn attachment_compatibility_matches_family_model_and_slot() {
+fn attachment_compatibility_matches_controller_model_and_slot() {
     let compatibility = AttachmentCompatibility {
-        families: vec!["prismrgb".into()],
+        controller_ids: vec!["prismrgb".into()],
         models: vec!["prism_s".into()],
         slots: vec!["gpu-strimer".into()],
     };

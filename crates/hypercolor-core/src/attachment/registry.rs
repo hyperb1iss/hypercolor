@@ -425,7 +425,7 @@ fn matches_compatibility_filter(
     }
 
     template.compatible_slots.iter().any(|matcher| {
-        values_match_filter(&matcher.families, controller_ids)
+        values_match_filter(&matcher.controller_ids, controller_ids)
             && value_matches_filter(&matcher.models, model)
             && value_matches_filter(&matcher.slots, slot_id)
     })
