@@ -143,6 +143,29 @@ async fn execute_show(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
+    if let Some((_, device_id)) = parse_driver_device_surface_target(&args.target) {
+        let response = client
+            .get(&format!(
+                "/control-surfaces?device_id={}",
+                urlencoded(device_id)
+            ))
+            .await?;
+        let surface = response
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| {
+                surface
+                    .get("surface_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|surface_id| surface_id == args.target)
+            })
+            .cloned()
+            .with_context(|| format!("Control surface not found: {}", args.target))?;
+        return render_surface(&surface, ctx);
+    }
+
     let path = if args.driver || is_bare_driver_surface(&args.target) {
         let driver = args.target.strip_prefix("driver:").unwrap_or(&args.target);
         format!("/drivers/{}/controls", urlencoded(driver))
@@ -551,4 +574,8 @@ fn is_bare_driver_surface(target: &str) -> bool {
 
 fn is_bare_device_surface(target: &str) -> bool {
     target.starts_with("device:")
+}
+
+fn parse_driver_device_surface_target(target: &str) -> Option<(&str, &str)> {
+    target.strip_prefix("driver:")?.split_once(":device:")
 }

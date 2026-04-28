@@ -5,10 +5,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, State};
-use axum::{Json, Router, routing::post};
+use axum::http::Uri;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use tokio::sync::{Mutex, oneshot};
 
 type SharedBody = Arc<Mutex<Option<serde_json::Value>>>;
+type SharedUri = Arc<Mutex<Option<String>>>;
 
 async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
@@ -100,6 +103,56 @@ async fn effects_activate_serializes_scalar_params_and_default_cut_transition() 
             "type": "cut",
             "duration_ms": 0,
         })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn controls_show_full_driver_device_surface_queries_by_device_id() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces",
+            get(
+                |State(captured_uri): State<SharedUri>, uri: Uri| async move {
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    Json(serde_json::json!({
+                        "data": {
+                            "surfaces": [{
+                                "surface_id": "driver:wled:device:Desk Strip",
+                                "scope": {
+                                    "device": {
+                                        "device_id": "00000000-0000-0000-0000-000000000001",
+                                        "driver_id": "wled"
+                                    }
+                                },
+                                "schema_version": 1,
+                                "revision": 7,
+                                "groups": [],
+                                "fields": [],
+                                "actions": [],
+                                "values": {},
+                                "availability": {},
+                                "action_availability": {}
+                            }]
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(port, &["controls", "show", "driver:wled:device:Desk Strip"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/control-surfaces?device_id=Desk%20Strip")
     );
 
     Ok(())
