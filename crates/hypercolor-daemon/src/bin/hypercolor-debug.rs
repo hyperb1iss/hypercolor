@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport,
     SmBusScanner, TransportScanner, UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
@@ -41,18 +41,18 @@ enum DebugCommand {
     Detect(DetectArgs),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DebugBackend {
     SmBus,
     Usb,
-    Wled,
+    Network(String),
 }
 
 #[derive(Debug, Args)]
 struct DetectArgs {
     /// Backends to scan (repeat or comma-separate values).
-    #[arg(long, value_enum, value_delimiter = ',', default_values_t = [DebugBackend::Usb, DebugBackend::SmBus])]
-    backends: Vec<DebugBackend>,
+    #[arg(long, value_delimiter = ',', default_values_t = ["usb".to_owned(), "smbus".to_owned()])]
+    backends: Vec<String>,
 
     /// Periodic scan interval in seconds.
     #[arg(long, default_value_t = 5)]
@@ -99,7 +99,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
             .context("failed to build debug driver registry")?;
     let driver_host = Arc::new(DebugDriverHost);
     let discovery_timeout = Duration::from_millis(args.timeout_ms.max(100));
-    let periodic_backends = normalize_backends(&args.backends);
+    let periodic_backends = normalize_backends(&args.backends, &driver_registry)?;
     if periodic_backends.is_empty() {
         anyhow::bail!("no backends selected");
     }
@@ -274,12 +274,12 @@ async fn run_scan(
         match backend {
             DebugBackend::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
             DebugBackend::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
-            DebugBackend::Wled => add_network_scanner(
+            DebugBackend::Network(driver_id) => add_network_scanner(
                 &mut orchestrator,
                 driver_registry,
                 Arc::clone(&driver_host),
                 config,
-                "wled",
+                driver_id,
                 timeout,
             )?,
         }
@@ -351,14 +351,40 @@ fn print_scanner_report(report: &ScannerScanReport) {
     }
 }
 
-fn normalize_backends(backends: &[DebugBackend]) -> Vec<DebugBackend> {
+fn normalize_backends(
+    backends: &[String],
+    driver_registry: &DriverRegistry,
+) -> Result<Vec<DebugBackend>> {
     let mut out = Vec::with_capacity(backends.len());
-    for backend in backends {
-        if !out.contains(backend) {
-            out.push(*backend);
+    for backend in backends
+        .iter()
+        .map(|backend| backend.trim().to_ascii_lowercase())
+    {
+        let backend = match backend.as_str() {
+            "smbus" => DebugBackend::SmBus,
+            "usb" => DebugBackend::Usb,
+            network_driver_id => {
+                let Some(driver) = driver_registry.get(network_driver_id) else {
+                    let mut supported = vec!["smbus".to_owned(), "usb".to_owned()];
+                    supported.extend(driver_registry.ids());
+                    anyhow::bail!(
+                        "unknown backend '{network_driver_id}'. Supported backends: {}",
+                        supported.join(", ")
+                    );
+                };
+                if driver.discovery().is_none() {
+                    anyhow::bail!(
+                        "network driver '{network_driver_id}' does not support discovery"
+                    );
+                }
+                DebugBackend::Network(network_driver_id.to_owned())
+            }
+        };
+        if !out.contains(&backend) {
+            out.push(backend);
         }
     }
-    out
+    Ok(out)
 }
 
 fn backend_hint(info: &DeviceInfo) -> &str {
