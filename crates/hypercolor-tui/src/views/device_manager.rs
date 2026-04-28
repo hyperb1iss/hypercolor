@@ -277,13 +277,13 @@ impl DeviceManagerView {
     }
 
     fn selected_control_key(&self) -> Option<ControlKey> {
-        self.editable_control_targets()
+        self.interactive_control_targets()
             .get(self.selected_control)
-            .map(EditableControlTarget::key)
+            .map(InteractiveControlTarget::key)
     }
 
     fn select_control_next(&mut self) -> Option<Action> {
-        let count = self.editable_control_targets().len();
+        let count = self.interactive_control_targets().len();
         if count == 0 {
             return None;
         }
@@ -292,7 +292,7 @@ impl DeviceManagerView {
     }
 
     fn select_control_prev(&mut self) -> Option<Action> {
-        let count = self.editable_control_targets().len();
+        let count = self.interactive_control_targets().len();
         if count == 0 {
             return None;
         }
@@ -307,40 +307,72 @@ impl DeviceManagerView {
     fn apply_selected_control_delta(&self, direction: i8) -> Option<Action> {
         let device_id = self.selected_device()?.id.clone();
         let target = self
-            .editable_control_targets()
+            .interactive_control_targets()
             .get(self.selected_control)
             .cloned()?;
-        let value = next_control_value(&target.value_type, &target.value, direction)?;
-        Some(Action::ApplyDeviceControlChange {
-            device_id,
-            surface_id: target.surface_id,
-            expected_revision: target.revision,
-            field_id: target.field_id,
-            value,
-        })
+        match target.kind {
+            InteractiveControlKind::Field {
+                field_id,
+                value_type,
+                value,
+            } => {
+                let value = next_control_value(&value_type, &value, direction)?;
+                Some(Action::ApplyDeviceControlChange {
+                    device_id,
+                    surface_id: target.surface_id,
+                    expected_revision: target.revision,
+                    field_id,
+                    value,
+                })
+            }
+            InteractiveControlKind::Action { action_id } if direction >= 0 => {
+                Some(Action::InvokeDeviceControlAction {
+                    device_id,
+                    surface_id: target.surface_id,
+                    action_id,
+                })
+            }
+            InteractiveControlKind::Action { .. } => None,
+        }
     }
 
-    fn editable_control_targets(&self) -> Vec<EditableControlTarget> {
+    fn interactive_control_targets(&self) -> Vec<InteractiveControlTarget> {
         self.surfaces
             .iter()
             .flat_map(|surface| {
-                surface
+                let fields = surface
                     .fields
                     .iter()
                     .filter(|field| {
                         field.access == ControlAccess::ReadWrite
-                            && !field_is_hidden(surface, field)
+                            && field_is_available(surface, field)
                             && surface.values.contains_key(&field.id)
                     })
                     .filter_map(|field| {
-                        Some(EditableControlTarget {
+                        Some(InteractiveControlTarget {
                             surface_id: surface.surface_id.clone(),
                             revision: surface.revision,
-                            field_id: field.id.clone(),
-                            value_type: field.value_type.clone(),
-                            value: surface.values.get(&field.id)?.clone(),
+                            kind: InteractiveControlKind::Field {
+                                field_id: field.id.clone(),
+                                value_type: field.value_type.clone(),
+                                value: surface.values.get(&field.id)?.clone(),
+                            },
                         })
+                    });
+                let actions = surface
+                    .actions
+                    .iter()
+                    .filter(|action| {
+                        action.input_fields.is_empty() && action_is_available(surface, action)
                     })
+                    .map(|action| InteractiveControlTarget {
+                        surface_id: surface.surface_id.clone(),
+                        revision: surface.revision,
+                        kind: InteractiveControlKind::Action {
+                            action_id: action.id.clone(),
+                        },
+                    });
+                fields.chain(actions).collect::<Vec<_>>()
             })
             .collect()
     }
@@ -447,7 +479,7 @@ impl Component for DeviceManagerView {
                     self.surfaces.clone_from(surfaces);
                     self.selected_control = self
                         .selected_control
-                        .min(self.editable_control_targets().len().saturating_sub(1));
+                        .min(self.interactive_control_targets().len().saturating_sub(1));
                     self.controls_scroll.set(0);
                 }
             }
@@ -481,10 +513,28 @@ impl Component for DeviceManagerView {
                     self.error = None;
                     self.selected_control = self
                         .selected_control
-                        .min(self.editable_control_targets().len().saturating_sub(1));
+                        .min(self.interactive_control_targets().len().saturating_sub(1));
                 }
             }
             Action::DeviceControlChangeFailed {
+                device_id, error, ..
+            } => {
+                if self
+                    .selected_device()
+                    .is_some_and(|device| &device.id == device_id)
+                {
+                    self.error = Some(error.clone());
+                }
+            }
+            Action::DeviceControlActionInvoked { device_id, .. } => {
+                if self
+                    .selected_device()
+                    .is_some_and(|device| &device.id == device_id)
+                {
+                    self.error = None;
+                }
+            }
+            Action::DeviceControlActionFailed {
                 device_id, error, ..
             } => {
                 if self
@@ -527,27 +577,52 @@ impl Component for DeviceManagerView {
 }
 
 #[derive(Clone)]
-struct EditableControlTarget {
+struct InteractiveControlTarget {
     surface_id: String,
     revision: u64,
-    field_id: String,
-    value_type: ControlValueType,
-    value: ControlValue,
+    kind: InteractiveControlKind,
 }
 
-impl EditableControlTarget {
+impl InteractiveControlTarget {
     fn key(&self) -> ControlKey {
-        ControlKey {
-            surface_id: self.surface_id.clone(),
-            field_id: self.field_id.clone(),
+        match &self.kind {
+            InteractiveControlKind::Field { field_id, .. } => ControlKey {
+                surface_id: self.surface_id.clone(),
+                item_id: field_id.clone(),
+                kind: ControlKeyKind::Field,
+            },
+            InteractiveControlKind::Action { action_id } => ControlKey {
+                surface_id: self.surface_id.clone(),
+                item_id: action_id.clone(),
+                kind: ControlKeyKind::Action,
+            },
         }
     }
+}
+
+#[derive(Clone)]
+enum InteractiveControlKind {
+    Field {
+        field_id: String,
+        value_type: ControlValueType,
+        value: ControlValue,
+    },
+    Action {
+        action_id: String,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
 struct ControlKey {
     surface_id: String,
-    field_id: String,
+    item_id: String,
+    kind: ControlKeyKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlKeyKind {
+    Field,
+    Action,
 }
 
 fn control_surface_lines(
@@ -641,7 +716,8 @@ fn append_items(
     for field in fields {
         let key = ControlKey {
             surface_id: surface.surface_id.clone(),
-            field_id: field.id.clone(),
+            item_id: field.id.clone(),
+            kind: ControlKeyKind::Field,
         };
         let selected = selected.is_some_and(|selected| selected == &key);
         let marker = if selected { "\u{25B8} " } else { "  " };
@@ -669,9 +745,25 @@ fn append_items(
     }
 
     for action in actions {
+        let key = ControlKey {
+            surface_id: surface.surface_id.clone(),
+            item_id: action.id.clone(),
+            kind: ControlKeyKind::Action,
+        };
+        let selected = selected.is_some_and(|selected| selected == &key);
+        let marker = if selected { "\u{25B8} " } else { "  " };
+        let style = if selected {
+            Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+        } else if action.input_fields.is_empty() {
+            Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(BASE_WHITE)
+        };
         lines.push(Line::from(vec![
-            Span::styled("    \u{25B9} ", Style::default().fg(CORAL)),
-            Span::styled(action.label.clone(), Style::default().fg(BASE_WHITE)),
+            Span::styled("  ", Style::default()),
+            Span::styled(marker, Style::default().fg(NEON_CYAN)),
+            Span::styled("\u{25B9} ", Style::default().fg(CORAL)),
+            Span::styled(action.label.clone(), style),
         ]));
     }
 }
@@ -749,11 +841,25 @@ fn field_is_hidden(surface: &ControlSurfaceDocument, field: &ControlFieldDescrip
         .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
 }
 
+fn field_is_available(surface: &ControlSurfaceDocument, field: &ControlFieldDescriptor) -> bool {
+    surface
+        .availability
+        .get(&field.id)
+        .is_none_or(|availability| availability.state == ControlAvailabilityState::Available)
+}
+
 fn action_is_hidden(surface: &ControlSurfaceDocument, action: &ControlActionDescriptor) -> bool {
     surface
         .action_availability
         .get(&action.id)
         .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
+}
+
+fn action_is_available(surface: &ControlSurfaceDocument, action: &ControlActionDescriptor) -> bool {
+    surface
+        .action_availability
+        .get(&action.id)
+        .is_none_or(|availability| availability.state == ControlAvailabilityState::Available)
 }
 
 fn surface_title(surface: &ControlSurfaceDocument) -> String {

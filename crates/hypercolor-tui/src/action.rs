@@ -9,7 +9,8 @@ use crate::state::{
     PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
 };
 use hypercolor_types::controls::{
-    ApplyControlChangesResponse, ControlSurfaceDocument, ControlValue as DynamicControlValue,
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
+    ControlValue as DynamicControlValue,
 };
 
 /// Every state change in the TUI flows through an Action.
@@ -115,6 +116,24 @@ pub enum Action {
     DeviceControlChangeFailed {
         device_id: String,
         surface_id: String,
+        error: String,
+    },
+    /// Invoke one zero-input dynamic action for a device surface.
+    InvokeDeviceControlAction {
+        device_id: String,
+        surface_id: String,
+        action_id: String,
+    },
+    /// Dynamic control-surface action completed for one device.
+    DeviceControlActionInvoked {
+        device_id: String,
+        result: Arc<ControlActionResult>,
+    },
+    /// Dynamic control-surface action failed for one device.
+    DeviceControlActionFailed {
+        device_id: String,
+        surface_id: String,
+        action_id: String,
         error: String,
     },
 

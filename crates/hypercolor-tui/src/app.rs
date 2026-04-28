@@ -1,6 +1,6 @@
 //! App — the central coordinator and main event loop.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -652,6 +652,26 @@ impl App {
             | Action::DeviceControlSurfacesFailed { .. }
             | Action::DeviceControlChangeApplied { .. }
             | Action::DeviceControlChangeFailed { .. } => {}
+            Action::DeviceControlActionInvoked { result, .. } => {
+                self.notification = Some((
+                    Notification {
+                        message: format!("Action completed: {}", result.action_id),
+                        level: NotificationLevel::Success,
+                    },
+                    Instant::now(),
+                ));
+            }
+            Action::DeviceControlActionFailed {
+                action_id, error, ..
+            } => {
+                self.notification = Some((
+                    Notification {
+                        message: format!("Action failed: {action_id}: {error}"),
+                        level: NotificationLevel::Error,
+                    },
+                    Instant::now(),
+                ));
+            }
             Action::SimulatedDisplaysUpdated(simulators) => {
                 self.simulator_preview
                     .simulators
@@ -737,6 +757,7 @@ impl App {
             | Action::ResetControls
             | Action::LoadDeviceControls(_)
             | Action::ApplyDeviceControlChange { .. }
+            | Action::InvokeDeviceControlAction { .. }
                 if !self.is_connected() =>
             {
                 self.notify_not_connected();
@@ -873,6 +894,35 @@ impl App {
                     }
                 });
             }
+            Action::InvokeDeviceControlAction {
+                device_id,
+                surface_id,
+                action_id,
+            } => {
+                self.spawn_command({
+                    let client = self.client.clone();
+                    let device_id = device_id.clone();
+                    let surface_id = surface_id.clone();
+                    let action_id = action_id.clone();
+                    async move {
+                        match client
+                            .invoke_control_action(&surface_id, &action_id, BTreeMap::default())
+                            .await
+                        {
+                            Ok(result) => Ok(Action::DeviceControlActionInvoked {
+                                device_id,
+                                result: Arc::new(result),
+                            }),
+                            Err(error) => Ok(Action::DeviceControlActionFailed {
+                                device_id,
+                                surface_id,
+                                action_id,
+                                error: error.to_string(),
+                            }),
+                        }
+                    }
+                });
+            }
 
             // ── Notifications ───────────────────────────────
             Action::Notify(notif) => {
@@ -925,6 +975,8 @@ impl App {
                 | Action::DeviceControlSurfacesFailed { .. }
                 | Action::DeviceControlChangeApplied { .. }
                 | Action::DeviceControlChangeFailed { .. }
+                | Action::DeviceControlActionInvoked { .. }
+                | Action::DeviceControlActionFailed { .. }
                 | Action::SimulatedDisplaysUpdated(_)
                 | Action::FavoritesUpdated(_)
                 | Action::CanvasFrameReceived(_)
