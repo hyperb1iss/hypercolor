@@ -5,8 +5,9 @@ use std::cell::Cell as StdCell;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use hypercolor_types::controls::{
-    ControlActionDescriptor, ControlAvailabilityState, ControlFieldDescriptor,
+    ControlAccess, ControlActionDescriptor, ControlAvailabilityState, ControlFieldDescriptor,
     ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
+    ControlValueType,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -32,6 +33,7 @@ pub struct DeviceManagerView {
     action_tx: Option<UnboundedSender<Action>>,
     devices: Vec<DeviceSummary>,
     selected_device: usize,
+    selected_control: usize,
     loaded_device_id: Option<String>,
     surfaces: Vec<ControlSurfaceDocument>,
     loading_device_id: Option<String>,
@@ -56,6 +58,7 @@ impl DeviceManagerView {
             action_tx: None,
             devices: Vec::new(),
             selected_device: 0,
+            selected_control: 0,
             loaded_device_id: None,
             surfaces: Vec::new(),
             loading_device_id: None,
@@ -185,7 +188,9 @@ impl DeviceManagerView {
             return;
         }
 
-        let lines = control_surface_lines(&self.surfaces, usize::from(inner.width));
+        let selected = self.selected_control_key();
+        let lines =
+            control_surface_lines(&self.surfaces, usize::from(inner.width), selected.as_ref());
         if lines.is_empty() {
             frame.render_widget(
                 Paragraph::new("No dynamic controls exposed.").style(Style::default().fg(DIM_GRAY)),
@@ -229,6 +234,7 @@ impl DeviceManagerView {
         }
         self.selected_device = index;
         self.controls_scroll.set(0);
+        self.selected_control = 0;
         self.request_selected_controls()
     }
 
@@ -269,6 +275,75 @@ impl DeviceManagerView {
         self.controls_scroll
             .set(self.controls_scroll.get().saturating_sub(steps));
     }
+
+    fn selected_control_key(&self) -> Option<ControlKey> {
+        self.editable_control_targets()
+            .get(self.selected_control)
+            .map(EditableControlTarget::key)
+    }
+
+    fn select_control_next(&mut self) -> Option<Action> {
+        let count = self.editable_control_targets().len();
+        if count == 0 {
+            return None;
+        }
+        self.selected_control = (self.selected_control + 1) % count;
+        Some(Action::Render)
+    }
+
+    fn select_control_prev(&mut self) -> Option<Action> {
+        let count = self.editable_control_targets().len();
+        if count == 0 {
+            return None;
+        }
+        self.selected_control = if self.selected_control == 0 {
+            count - 1
+        } else {
+            self.selected_control - 1
+        };
+        Some(Action::Render)
+    }
+
+    fn apply_selected_control_delta(&self, direction: i8) -> Option<Action> {
+        let device_id = self.selected_device()?.id.clone();
+        let target = self
+            .editable_control_targets()
+            .get(self.selected_control)
+            .cloned()?;
+        let value = next_control_value(&target.value_type, &target.value, direction)?;
+        Some(Action::ApplyDeviceControlChange {
+            device_id,
+            surface_id: target.surface_id,
+            expected_revision: target.revision,
+            field_id: target.field_id,
+            value,
+        })
+    }
+
+    fn editable_control_targets(&self) -> Vec<EditableControlTarget> {
+        self.surfaces
+            .iter()
+            .flat_map(|surface| {
+                surface
+                    .fields
+                    .iter()
+                    .filter(|field| {
+                        field.access == ControlAccess::ReadWrite
+                            && !field_is_hidden(surface, field)
+                            && surface.values.contains_key(&field.id)
+                    })
+                    .filter_map(|field| {
+                        Some(EditableControlTarget {
+                            surface_id: surface.surface_id.clone(),
+                            revision: surface.revision,
+                            field_id: field.id.clone(),
+                            value_type: field.value_type.clone(),
+                            value: surface.values.get(&field.id)?.clone(),
+                        })
+                    })
+            })
+            .collect()
+    }
 }
 
 impl Component for DeviceManagerView {
@@ -281,6 +356,12 @@ impl Component for DeviceManagerView {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => Ok(self.move_device_down(1)),
             KeyCode::Char('k') | KeyCode::Up => Ok(self.move_device_up(1)),
+            KeyCode::Tab => Ok(self.select_control_next()),
+            KeyCode::BackTab => Ok(self.select_control_prev()),
+            KeyCode::Char('h') | KeyCode::Left => Ok(self.apply_selected_control_delta(-1)),
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => {
+                Ok(self.apply_selected_control_delta(1))
+            }
             KeyCode::PageDown => {
                 self.scroll_controls_down(5);
                 Ok(Some(Action::Render))
@@ -297,7 +378,10 @@ impl Component for DeviceManagerView {
                 self.scroll_controls_down(usize::MAX / 2);
                 Ok(Some(Action::Render))
             }
-            KeyCode::Char('r') | KeyCode::Enter => Ok(self.request_selected_controls()),
+            KeyCode::Char('r') => Ok(self.request_selected_controls()),
+            KeyCode::Enter => Ok(self
+                .apply_selected_control_delta(1)
+                .or_else(|| self.request_selected_controls())),
             _ => Ok(None),
         }
     }
@@ -361,6 +445,9 @@ impl Component for DeviceManagerView {
                     self.loading_device_id = None;
                     self.error = None;
                     self.surfaces.clone_from(surfaces);
+                    self.selected_control = self
+                        .selected_control
+                        .min(self.editable_control_targets().len().saturating_sub(1));
                     self.controls_scroll.set(0);
                 }
             }
@@ -372,6 +459,7 @@ impl Component for DeviceManagerView {
                     self.loaded_device_id = Some(device_id.clone());
                     self.loading_device_id = None;
                     self.surfaces.clear();
+                    self.selected_control = 0;
                     self.error = Some(error.clone());
                     self.controls_scroll.set(0);
                 }
@@ -391,6 +479,9 @@ impl Component for DeviceManagerView {
                     surface.revision = response.revision;
                     surface.values.clone_from(&response.values);
                     self.error = None;
+                    self.selected_control = self
+                        .selected_control
+                        .min(self.editable_control_targets().len().saturating_sub(1));
                 }
             }
             Action::DeviceControlChangeFailed {
@@ -435,7 +526,35 @@ impl Component for DeviceManagerView {
     }
 }
 
-fn control_surface_lines(surfaces: &[ControlSurfaceDocument], width: usize) -> Vec<Line<'static>> {
+#[derive(Clone)]
+struct EditableControlTarget {
+    surface_id: String,
+    revision: u64,
+    field_id: String,
+    value_type: ControlValueType,
+    value: ControlValue,
+}
+
+impl EditableControlTarget {
+    fn key(&self) -> ControlKey {
+        ControlKey {
+            surface_id: self.surface_id.clone(),
+            field_id: self.field_id.clone(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ControlKey {
+    surface_id: String,
+    field_id: String,
+}
+
+fn control_surface_lines(
+    surfaces: &[ControlSurfaceDocument],
+    width: usize,
+    selected: Option<&ControlKey>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for surface in surfaces {
         if !surface_has_visible_items(surface) {
@@ -455,9 +574,9 @@ fn control_surface_lines(surfaces: &[ControlSurfaceDocument], width: usize) -> V
         let mut groups = surface.groups.clone();
         groups.sort_by_key(|group| group.ordering);
         for group in groups {
-            append_group_lines(surface, &group, width, &mut lines);
+            append_group_lines(surface, &group, width, selected, &mut lines);
         }
-        append_ungrouped_lines(surface, width, &mut lines);
+        append_ungrouped_lines(surface, width, selected, &mut lines);
     }
     lines
 }
@@ -477,6 +596,7 @@ fn append_group_lines(
     surface: &ControlSurfaceDocument,
     group: &ControlGroupDescriptor,
     width: usize,
+    selected: Option<&ControlKey>,
     lines: &mut Vec<Line<'static>>,
 ) {
     let fields = fields_for_group(surface, Some(&group.id));
@@ -491,12 +611,13 @@ fn append_group_lines(
             .fg(ELECTRIC_PURPLE)
             .add_modifier(Modifier::BOLD),
     )));
-    append_items(surface, fields, actions, width, lines);
+    append_items(surface, fields, actions, width, selected, lines);
 }
 
 fn append_ungrouped_lines(
     surface: &ControlSurfaceDocument,
     width: usize,
+    selected: Option<&ControlKey>,
     lines: &mut Vec<Line<'static>>,
 ) {
     let known_groups = surface
@@ -506,7 +627,7 @@ fn append_ungrouped_lines(
         .collect::<Vec<_>>();
     let fields = fields_without_known_group(surface, &known_groups);
     let actions = actions_without_known_group(surface, &known_groups);
-    append_items(surface, fields, actions, width, lines);
+    append_items(surface, fields, actions, width, selected, lines);
 }
 
 fn append_items(
@@ -514,18 +635,33 @@ fn append_items(
     fields: Vec<&ControlFieldDescriptor>,
     actions: Vec<&ControlActionDescriptor>,
     width: usize,
+    selected: Option<&ControlKey>,
     lines: &mut Vec<Line<'static>>,
 ) {
     for field in fields {
+        let key = ControlKey {
+            surface_id: surface.surface_id.clone(),
+            field_id: field.id.clone(),
+        };
+        let selected = selected.is_some_and(|selected| selected == &key);
+        let marker = if selected { "\u{25B8} " } else { "  " };
+        let label_style = if selected {
+            Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+        } else if field.access == ControlAccess::ReadWrite {
+            Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(BASE_WHITE)
+        };
         let value = surface
             .values
             .get(&field.id)
             .map_or_else(|| "-".to_string(), control_value_summary);
         lines.push(Line::from(vec![
-            Span::styled("    ", Style::default()),
+            Span::styled("  ", Style::default()),
+            Span::styled(marker, Style::default().fg(NEON_CYAN)),
             Span::styled(
                 truncate(&field.label, width.saturating_sub(18)),
-                Style::default().fg(BASE_WHITE),
+                label_style,
             ),
             Span::styled("  ", Style::default()),
             Span::styled(value, Style::default().fg(ELECTRIC_YELLOW)),
@@ -653,6 +789,61 @@ fn control_value_summary(value: &ControlValue) -> String {
         ControlValue::List(values) => format!("{} items", values.len()),
         ControlValue::Object(values) => format!("{} fields", values.len()),
     }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn next_control_value(
+    value_type: &ControlValueType,
+    current: &ControlValue,
+    direction: i8,
+) -> Option<ControlValue> {
+    match (value_type, current) {
+        (ControlValueType::Bool, ControlValue::Bool(value)) => Some(ControlValue::Bool(!value)),
+        (ControlValueType::Integer { min, max, step }, ControlValue::Integer(value)) => {
+            let delta = step.unwrap_or(1).abs().max(1);
+            let next = if direction < 0 {
+                value.saturating_sub(delta)
+            } else {
+                value.saturating_add(delta)
+            };
+            Some(ControlValue::Integer(clamp_i64(next, *min, *max)))
+        }
+        (ControlValueType::Float { min, max, step }, ControlValue::Float(value)) => {
+            let delta = step.unwrap_or(1.0).abs().max(f64::EPSILON);
+            let next = if direction < 0 {
+                value - delta
+            } else {
+                value + delta
+            };
+            Some(ControlValue::Float(clamp_f64(next, *min, *max)))
+        }
+        (ControlValueType::Enum { options }, ControlValue::Enum(value)) => {
+            if options.is_empty() {
+                return None;
+            }
+            let current = options
+                .iter()
+                .position(|option| option.value == *value)
+                .unwrap_or_default();
+            let next = if direction < 0 {
+                current.checked_sub(1).unwrap_or(options.len() - 1)
+            } else {
+                (current + 1) % options.len()
+            };
+            Some(ControlValue::Enum(options[next].value.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn clamp_i64(value: i64, min: Option<i64>, max: Option<i64>) -> i64 {
+    let value = min.map_or(value, |min| value.max(min));
+    max.map_or(value, |max| value.min(max))
+}
+
+fn clamp_f64(value: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+    let value = min.map_or(value, |min| value.max(min));
+    max.map_or(value, |max| value.min(max))
 }
 
 fn truncate(value: &str, max_len: usize) -> String {

@@ -1209,7 +1209,7 @@ impl App {
             ("?".to_string(), "Toggle help".to_string()),
             ("T".to_string(), "Theme picker".to_string()),
             ("M".to_string(), "Motion sensitivity".to_string()),
-            ("Tab".to_string(), "Switch pane in browser".to_string()),
+            ("Tab".to_string(), "Switch pane / control".to_string()),
             ("Z".to_string(), "Fullscreen preview".to_string()),
             ("Esc".to_string(), "Go back".to_string()),
         ];
