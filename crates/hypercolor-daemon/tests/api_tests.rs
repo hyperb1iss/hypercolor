@@ -2311,6 +2311,30 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
 }
 
 #[tokio::test]
+async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(state);
+    let surface_id = format!("driver:wled:device:{device_id}");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], surface_id);
+    assert_eq!(json["data"]["scope"]["device"]["driver_id"], "wled");
+    assert_eq!(json["data"]["values"]["led_count"]["value"], 60);
+}
+
+#[tokio::test]
 async fn patch_driver_owned_device_control_surface_persists_values() {
     let (state, tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
@@ -9393,7 +9417,10 @@ async fn pair_device_route_pairs_hue_by_device_id() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "configured");
 
     assert_eq!(
-        state.credential_store.get_json("hue:test-bridge").await,
+        state
+            .credential_store
+            .get_driver_json("hue", "test-bridge")
+            .await,
         Some(serde_json::json!({
             "api_key": "test-api-key",
             "client_key": "00112233445566778899aabbccddeeff",
@@ -9509,7 +9536,10 @@ async fn pair_device_route_pairs_nanoleaf_by_device_id() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "configured");
 
     assert_eq!(
-        state.credential_store.get_json("nanoleaf:serial42").await,
+        state
+            .credential_store
+            .get_driver_json("nanoleaf", "serial42")
+            .await,
         Some(serde_json::json!({
             "auth_token": "nanoleaf-token",
         }))
@@ -9527,8 +9557,9 @@ async fn delete_pairing_removes_hue_credentials() {
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
         .credential_store
-        .store_json(
-            "hue:test-bridge",
+        .store_driver_json(
+            "hue",
+            "test-bridge",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",
@@ -9538,8 +9569,9 @@ async fn delete_pairing_removes_hue_credentials() {
         .expect("store Hue credentials");
     state
         .credential_store
-        .store_json(
-            "hue:ip:10.0.0.5",
+        .store_driver_json(
+            "hue",
+            "ip:10.0.0.5",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",
@@ -9564,8 +9596,20 @@ async fn delete_pairing_removes_hue_credentials() {
     assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(json["data"]["status"], "unpaired");
     assert_eq!(json["data"]["device"]["auth"]["state"], "required");
-    assert_eq!(state.credential_store.get("hue:test-bridge").await, None);
-    assert_eq!(state.credential_store.get("hue:ip:10.0.0.5").await, None);
+    assert_eq!(
+        state
+            .credential_store
+            .get_driver_json("hue", "test-bridge")
+            .await,
+        None
+    );
+    assert_eq!(
+        state
+            .credential_store
+            .get_driver_json("hue", "ip:10.0.0.5")
+            .await,
+        None
+    );
 }
 
 #[cfg(feature = "nanoleaf")]
@@ -9578,8 +9622,9 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
             .await;
     state
         .credential_store
-        .store_json(
-            "nanoleaf:serial42",
+        .store_driver_json(
+            "nanoleaf",
+            "serial42",
             serde_json::json!({
                 "auth_token": "auth-token",
             }),
@@ -9588,8 +9633,9 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
         .expect("store Nanoleaf credentials");
     state
         .credential_store
-        .store_json(
-            "nanoleaf:ip:10.0.0.8",
+        .store_driver_json(
+            "nanoleaf",
+            "ip:10.0.0.8",
             serde_json::json!({
                 "auth_token": "auth-token",
             }),
@@ -9613,9 +9659,18 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
     assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(json["data"]["status"], "unpaired");
     assert_eq!(json["data"]["device"]["auth"]["state"], "required");
-    assert_eq!(state.credential_store.get("nanoleaf:serial42").await, None);
     assert_eq!(
-        state.credential_store.get("nanoleaf:ip:10.0.0.8").await,
+        state
+            .credential_store
+            .get_driver_json("nanoleaf", "serial42")
+            .await,
+        None
+    );
+    assert_eq!(
+        state
+            .credential_store
+            .get_driver_json("nanoleaf", "ip:10.0.0.8")
+            .await,
         None
     );
 }

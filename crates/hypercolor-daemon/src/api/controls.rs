@@ -119,6 +119,48 @@ pub async fn get_driver_control_surface(
     }
 }
 
+/// `GET /api/v1/control-surfaces/:surface_id` - Return one control surface by
+/// its stable surface ID.
+pub async fn get_control_surface(
+    State(state): State<Arc<AppState>>,
+    Path(surface_id): Path<String>,
+) -> Response {
+    if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
+        let Some(tracked) = state.device_registry.get(&device_id).await else {
+            return ApiError::not_found(format!("Control surface not found: {surface_id}"));
+        };
+        if tracked.info.driver_id() != driver_id {
+            return ApiError::not_found(format!("Control surface not found: {surface_id}"));
+        }
+        return match driver_device_control_surface(&state, &tracked.info, tracked.state).await {
+            Ok(Some(surface)) => ApiResponse::ok(surface),
+            Ok(None) => ApiError::not_found(format!("Control surface not found: {surface_id}")),
+            Err(response) => response,
+        };
+    }
+
+    if let Some(driver_id) = parse_driver_surface_id(&surface_id) {
+        return match driver_control_surface_document(&state, &driver_id).await {
+            Ok(Some(surface)) => ApiResponse::ok(surface),
+            Ok(None) => ApiError::not_found(format!("Control surface not found: {surface_id}")),
+            Err(response) => response,
+        };
+    }
+
+    if let Some(device_id) = parse_device_surface_id(&surface_id) {
+        let Some(tracked) = state.device_registry.get(&device_id).await else {
+            return ApiError::not_found(format!("Control surface not found: {surface_id}"));
+        };
+        return ApiResponse::ok(device_control_surface(
+            &tracked.info,
+            &tracked.user_settings,
+            tracked.revision,
+        ));
+    }
+
+    ApiError::not_found(format!("Control surface not found: {surface_id}"))
+}
+
 async fn driver_control_surface_document(
     state: &AppState,
     driver_id: &str,
