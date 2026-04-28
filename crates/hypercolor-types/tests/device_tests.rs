@@ -464,13 +464,14 @@ fn device_family_serde_round_trip() {
 }
 
 #[test]
-fn device_family_deserializes_legacy_variants() {
-    let family: DeviceFamily = serde_json::from_str(r#""Wled""#).expect("legacy unit variant");
-    assert_eq!(family, DeviceFamily::new_static("wled", "WLED"));
+fn device_family_rejects_non_object_payloads() {
+    let error = serde_json::from_str::<DeviceFamily>(r#""Wled""#)
+        .expect_err("family strings should not deserialize");
+    assert!(error.is_data());
 
-    let family: DeviceFamily =
-        serde_json::from_str(r#"{"Custom":"PrismRGB"}"#).expect("legacy custom variant");
-    assert_eq!(family, DeviceFamily::named("PrismRGB"));
+    let error = serde_json::from_str::<DeviceFamily>(r#"{"Custom":"PrismRGB"}"#)
+        .expect_err("family custom maps should not deserialize");
+    assert!(error.is_data());
 }
 
 // ── Color ─────────────────────────────────────────────────────────────────
