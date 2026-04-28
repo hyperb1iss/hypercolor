@@ -24,9 +24,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tokio::net::UdpSocket;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, TransportScanner};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink, TransportScanner};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use cache::{build_device_info, wled_fingerprint};
@@ -64,7 +65,7 @@ pub struct WledBackend {
     mdns_fallback: bool,
 
     /// Connected devices, keyed by `DeviceId`.
-    devices: HashMap<DeviceId, WledDevice>,
+    devices: HashMap<DeviceId, Arc<Mutex<WledDevice>>>,
 
     /// Maps `DeviceId` to IP for lookup during connect.
     device_ips: HashMap<DeviceId, IpAddr>,
@@ -154,6 +155,7 @@ impl WledBackend {
     pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
         self.devices
             .get(id)
+            .and_then(|device| device.try_lock().ok())
             .and_then(|device| device.socket.local_addr().ok())
     }
 
@@ -162,6 +164,7 @@ impl WledBackend {
     pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
         self.devices
             .get(id)
+            .and_then(|device| device.try_lock().ok())
             .map(|device| device.e131_start_universe)
     }
 
@@ -184,13 +187,11 @@ impl WledBackend {
         Ok(socket)
     }
 
-    async fn ensure_device_ready_for_output(&mut self, id: &DeviceId) -> Result<()> {
-        let realtime_http_enabled = self.realtime_http_enabled;
-        let device = self
-            .devices
-            .get_mut(id)
-            .with_context(|| format!("WLED device {id} is not connected"))?;
-
+    async fn ensure_device_ready_for_output(
+        id: &DeviceId,
+        device: &mut WledDevice,
+        realtime_http_enabled: bool,
+    ) -> Result<()> {
         if device.stream_initialized {
             return Ok(());
         }
@@ -223,6 +224,41 @@ impl WledBackend {
 
         device.stream_initialized = true;
         Ok(())
+    }
+
+    async fn write_device_colors(
+        id: &DeviceId,
+        device: &Arc<Mutex<WledDevice>>,
+        colors: &[[u8; 3]],
+        realtime_http_enabled: bool,
+    ) -> Result<()> {
+        let mut device = device.lock().await;
+        Self::ensure_device_ready_for_output(id, &mut device, realtime_http_enabled).await?;
+        let expected_led_count = usize::from(device.led_count);
+
+        if colors.len() != expected_led_count {
+            let should_warn = device
+                .last_size_mismatch_warn_at
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+
+            if should_warn {
+                warn!(
+                    device_id = %id,
+                    expected_led_count,
+                    actual_led_count = colors.len(),
+                    "WLED frame size mismatch; truncating or padding to match device"
+                );
+                device.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        let wire_format = match device.protocol {
+            WledProtocol::Ddp => device.ddp_wire_format(),
+            WledProtocol::E131 => device.color_format,
+        };
+        let pixel_data = encode_colors(colors, wire_format, expected_led_count);
+
+        device.send_frame(&pixel_data).await
     }
 
     fn allocate_e131_start_universe(
@@ -260,6 +296,25 @@ impl WledBackend {
             .with_context(|| format!("Unknown WLED device {id}"))?;
 
         probe_device_reachable(ip).await
+    }
+}
+
+struct WledFrameSink {
+    device_id: DeviceId,
+    device: Arc<Mutex<WledDevice>>,
+    realtime_http_enabled: bool,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for WledFrameSink {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        WledBackend::write_device_colors(
+            &self.device_id,
+            &self.device,
+            colors.as_slice(),
+            self.realtime_http_enabled,
+        )
+        .await
     }
 }
 
@@ -417,12 +472,13 @@ impl DeviceBackend for WledBackend {
             "Connected to WLED device"
         );
 
-        self.devices.insert(*id, device);
+        self.devices.insert(*id, Arc::new(Mutex::new(device)));
         Ok(())
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(mut device) = self.devices.remove(id) {
+        if let Some(device) = self.devices.remove(id) {
+            let mut device = device.lock().await;
             if device.last_sent_pixels.is_some()
                 && let Err(error) = clear_device(&mut device).await
             {
@@ -451,46 +507,32 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        self.ensure_device_ready_for_output(id).await?;
         let device = self
             .devices
-            .get_mut(id)
+            .get(id)
             .with_context(|| format!("WLED device {id} is not connected"))?;
-        let expected_led_count = usize::from(device.led_count);
-
-        if colors.len() != expected_led_count {
-            let should_warn = device
-                .last_size_mismatch_warn_at
-                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-
-            if should_warn {
-                warn!(
-                    device_id = %id,
-                    expected_led_count,
-                    actual_led_count = colors.len(),
-                    "WLED frame size mismatch; truncating or padding to match device"
-                );
-                device.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        let wire_format = match device.protocol {
-            WledProtocol::Ddp => device.ddp_wire_format(),
-            WledProtocol::E131 => device.color_format,
-        };
-        let pixel_data = encode_colors(colors, wire_format, expected_led_count);
-
-        device.send_frame(&pixel_data).await
+        Self::write_device_colors(id, device, colors, self.realtime_http_enabled).await
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         self.devices
             .get(id)
+            .and_then(|device| device.try_lock().ok())
             .map(|device| device.info.negotiated_target_fps())
             .or_else(|| {
                 self.device_infos
                     .get(id)
                     .map(WledDeviceInfo::negotiated_target_fps)
             })
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.devices.get(id).map(|device| {
+            Arc::new(WledFrameSink {
+                device_id: *id,
+                device: Arc::clone(device),
+                realtime_http_enabled: self.realtime_http_enabled,
+            }) as Arc<dyn DeviceFrameSink>
+        })
     }
 }
