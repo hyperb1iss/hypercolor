@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_driver_api::{
-    DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory, TrackedDeviceCtx,
+    DriverConfigProvider, DriverModule, DriverTrackedDevice, TrackedDeviceCtx,
 };
 use hypercolor_driver_wled::{
-    WledConfig, WledDriverFactory, WledKnownTarget, WledProtocolConfig,
+    WledConfig, WledDriverModule, WledKnownTarget, WledProtocolConfig,
     resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
     wled_device_control_surface, wled_driver_control_surface,
 };
@@ -106,8 +106,8 @@ fn resolve_probe_targets_prefers_tracked_metadata() {
 }
 
 #[test]
-fn wled_factory_advertises_control_surface_capability() {
-    let descriptor = WledDriverFactory::new(false).module_descriptor();
+fn wled_module_advertises_control_surface_capability() {
+    let descriptor = WledDriverModule::new(false).module_descriptor();
 
     assert!(descriptor.capabilities.controls);
     assert!(descriptor.capabilities.discovery);
@@ -117,8 +117,8 @@ fn wled_factory_advertises_control_surface_capability() {
 
 #[test]
 fn wled_config_validation_rejects_non_routable_known_ips() {
-    let factory = WledDriverFactory::new(false);
-    let mut config = factory
+    let module = WledDriverModule::new(false);
+    let mut config = module
         .config()
         .expect("WLED should expose config provider")
         .default_config();
@@ -126,7 +126,7 @@ fn wled_config_validation_rejects_non_routable_known_ips() {
         .settings
         .insert("known_ips".to_owned(), serde_json::json!(["127.0.0.1"]));
 
-    let error = factory
+    let error = module
         .validate_config(&config)
         .expect_err("loopback known IP should be rejected");
     assert!(error.to_string().contains("invalid WLED known IP"));

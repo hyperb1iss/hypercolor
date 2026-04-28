@@ -5,7 +5,7 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
-    DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    DriverHost, DriverModule, DriverRuntimeActions, DriverTransport, PairDeviceOutcome,
     PairDeviceRequest, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
@@ -258,7 +258,7 @@ static DISCOVERY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     false,
 );
 
-impl NetworkDriverFactory for DiscoveryOnlyDriver {
+impl DriverModule for DiscoveryOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &DISCOVERY_ONLY_DESCRIPTOR
     }
@@ -287,7 +287,7 @@ static PAIRING_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     true,
 );
 
-impl NetworkDriverFactory for PairingOnlyDriver {
+impl DriverModule for PairingOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &PAIRING_ONLY_DESCRIPTOR
     }
@@ -316,7 +316,7 @@ static CONTROL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     false,
 );
 
-impl NetworkDriverFactory for ControlOnlyDriver {
+impl DriverModule for ControlOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &CONTROL_ONLY_DESCRIPTOR
     }
@@ -478,7 +478,7 @@ static MISMATCHED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::with_schema_v
     u32::MAX,
 );
 
-impl NetworkDriverFactory for MismatchedSchemaDriver {
+impl DriverModule for MismatchedSchemaDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &MISMATCHED_DESCRIPTOR
     }

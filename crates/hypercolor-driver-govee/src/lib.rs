@@ -6,16 +6,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use hypercolor_core::device::net::CredentialStore;
-use hypercolor_core::device::{DeviceBackend, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    ClearPairingOutcome, CredentialStore, DeviceAuthState, DeviceAuthSummary, DeviceBackend,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult,
+    DriverConfigView, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, TransportScanner,
 };
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{
@@ -53,13 +52,13 @@ pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("govee", "Govee", DriverTransport::Network, true, true);
 
 #[derive(Clone)]
-pub struct GoveeDriverFactory {
+pub struct GoveeDriverModule {
     config: GoveeConfig,
     credential_store: Option<Arc<CredentialStore>>,
     cloud_base_url: Option<String>,
 }
 
-impl GoveeDriverFactory {
+impl GoveeDriverModule {
     #[must_use]
     pub fn new(config: GoveeConfig) -> Self {
         Self {
@@ -106,7 +105,7 @@ impl GoveeDriverFactory {
     }
 }
 
-impl NetworkDriverFactory for GoveeDriverFactory {
+impl DriverModule for GoveeDriverModule {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &DESCRIPTOR
     }
@@ -154,7 +153,7 @@ impl NetworkDriverFactory for GoveeDriverFactory {
 }
 
 #[async_trait]
-impl DiscoveryCapability for GoveeDriverFactory {
+impl DiscoveryCapability for GoveeDriverModule {
     async fn discover(
         &self,
         host: &dyn DriverHost,
@@ -188,7 +187,7 @@ impl DiscoveryCapability for GoveeDriverFactory {
 }
 
 #[async_trait]
-impl DriverRuntimeCacheProvider for GoveeDriverFactory {
+impl DriverRuntimeCacheProvider for GoveeDriverModule {
     async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>> {
         let tracked_devices = host.discovery_state().tracked_devices("govee").await;
         let probe_devices =
@@ -203,7 +202,7 @@ impl DriverRuntimeCacheProvider for GoveeDriverFactory {
 }
 
 #[async_trait]
-impl PairingCapability for GoveeDriverFactory {
+impl PairingCapability for GoveeDriverModule {
     async fn auth_summary(
         &self,
         host: &dyn DriverHost,

@@ -5,9 +5,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     DeviceAuthState, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
-    NetworkDriverFactory, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
+    DriverModule, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
 };
-use hypercolor_driver_govee::{GoveeDriverFactory, GoveeLanDevice, build_device_info};
+use hypercolor_driver_govee::{GoveeDriverModule, GoveeLanDevice, build_device_info};
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use serde_json::Value;
@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 async fn pair_validates_and_stores_account_api_key() {
     let body = r#"{"code":200,"message":"Success","data":{"devices":[]}}"#;
     let (base_url, request) = serve_once(200, body).await;
-    let factory = GoveeDriverFactory::with_cloud_base_url(GoveeConfig::default(), base_url);
+    let factory = GoveeDriverModule::with_cloud_base_url(GoveeConfig::default(), base_url);
     let host = TestHost::with_activation(true);
     let info = test_device_info();
     let state = DeviceState::Known;
@@ -54,7 +54,7 @@ async fn pair_validates_and_stores_account_api_key() {
 
 #[tokio::test]
 async fn pair_rejects_missing_api_key_without_network_call() {
-    let factory = GoveeDriverFactory::new(GoveeConfig::default());
+    let factory = GoveeDriverModule::new(GoveeConfig::default());
     let host = TestHost::default();
     let info = test_device_info();
     let state = DeviceState::Known;
@@ -80,7 +80,7 @@ async fn pair_rejects_missing_api_key_without_network_call() {
 
 #[tokio::test]
 async fn auth_summary_and_clear_credentials_use_account_key() {
-    let factory = GoveeDriverFactory::new(GoveeConfig::default());
+    let factory = GoveeDriverModule::new(GoveeConfig::default());
     let host = TestHost::default();
     let info = test_device_info();
     let state = DeviceState::Known;
@@ -135,7 +135,7 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
 
 #[tokio::test]
 async fn auth_summary_requires_pairing_for_cloud_only_inventory() {
-    let factory = GoveeDriverFactory::new(GoveeConfig::default());
+    let factory = GoveeDriverModule::new(GoveeConfig::default());
     let host = TestHost::default();
     let info = test_device_info();
     let state = DeviceState::Known;
@@ -159,7 +159,7 @@ async fn auth_summary_requires_pairing_for_cloud_only_inventory() {
 
 #[tokio::test]
 async fn auth_summary_does_not_offer_pairing_for_lan_only_sku() {
-    let factory = GoveeDriverFactory::new(GoveeConfig::default());
+    let factory = GoveeDriverModule::new(GoveeConfig::default());
     let host = TestHost::default();
     let info = build_device_info(&GoveeLanDevice {
         ip: "127.0.0.1".parse().expect("valid test IP"),

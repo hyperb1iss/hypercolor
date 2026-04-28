@@ -3,9 +3,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory};
+use hypercolor_driver_api::{DriverConfigProvider, DriverModule, DriverTrackedDevice};
 use hypercolor_driver_hue::{
-    HueConfig, HueDriverFactory, hue_driver_control_surface, resolve_hue_probe_bridges_from_sources,
+    HueConfig, HueDriverModule, hue_driver_control_surface, resolve_hue_probe_bridges_from_sources,
 };
 use hypercolor_types::controls::{ApplyImpact, ControlValue};
 use hypercolor_types::device::{
@@ -74,13 +74,13 @@ fn resolve_hue_probe_bridges_merges_tracked_metadata() {
 #[test]
 fn hue_config_validation_rejects_non_routable_bridge_ips() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let factory = HueDriverFactory::new(
+    let module = HueDriverModule::new(
         Arc::new(
             CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
         ),
         false,
     );
-    let mut config = factory
+    let mut config = module
         .config()
         .expect("Hue should expose config provider")
         .default_config();
@@ -88,7 +88,7 @@ fn hue_config_validation_rejects_non_routable_bridge_ips() {
         .settings
         .insert("bridge_ips".to_owned(), serde_json::json!(["127.0.0.1"]));
 
-    let error = factory
+    let error = module
         .validate_config(&config)
         .expect_err("loopback bridge IP should be rejected");
     assert!(error.to_string().contains("invalid Hue bridge IP"));

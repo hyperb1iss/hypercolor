@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverTransport, NetworkDriverFactory, PairDeviceRequest,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverTransport, PairDeviceRequest,
     PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
     ValidatedControlChanges, support,
 };
@@ -124,7 +124,7 @@ static CONTROL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     false,
 );
 
-impl NetworkDriverFactory for ControlOnlyDriver {
+impl DriverModule for ControlOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &CONTROL_ONLY_DESCRIPTOR
     }
@@ -148,7 +148,7 @@ impl NetworkDriverFactory for ControlOnlyDriver {
 }
 
 #[test]
-fn network_driver_factory_advertises_control_provider_capability() {
+fn driver_module_advertises_control_provider_capability() {
     let module = ControlOnlyDriver.module_descriptor();
 
     assert!(module.capabilities.controls);

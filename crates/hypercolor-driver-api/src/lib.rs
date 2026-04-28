@@ -663,12 +663,12 @@ pub trait DriverRuntimeCacheProvider: Send + Sync {
     async fn snapshot(&self, host: &dyn DriverHost) -> Result<BTreeMap<String, serde_json::Value>>;
 }
 
-/// Factory and capability root for one modular network driver.
-pub trait NetworkDriverFactory: Send + Sync {
+/// Capability root for one modular driver.
+pub trait DriverModule: Send + Sync {
     /// Static metadata about the driver.
     fn descriptor(&self) -> &'static DriverDescriptor;
 
-    /// Host-wide module descriptor for this driver factory.
+    /// Host-wide module descriptor for this driver module.
     fn module_descriptor(&self) -> DriverModuleDescriptor {
         let mut descriptor = self.descriptor().module_descriptor();
         descriptor.capabilities.config = self.config().is_some();

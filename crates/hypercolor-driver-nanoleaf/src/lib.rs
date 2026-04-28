@@ -22,7 +22,7 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    DriverHost, DriverModule, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
     PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
@@ -199,12 +199,12 @@ async fn fetch_panel_layout(
 }
 
 #[derive(Clone)]
-pub struct NanoleafDriverFactory {
+pub struct NanoleafDriverModule {
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
 }
 
-impl NanoleafDriverFactory {
+impl NanoleafDriverModule {
     #[must_use]
     pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
         Self {
@@ -214,7 +214,7 @@ impl NanoleafDriverFactory {
     }
 }
 
-impl NetworkDriverFactory for NanoleafDriverFactory {
+impl DriverModule for NanoleafDriverModule {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &DESCRIPTOR
     }
@@ -249,7 +249,7 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
 }
 
 #[async_trait]
-impl DiscoveryCapability for NanoleafDriverFactory {
+impl DiscoveryCapability for NanoleafDriverModule {
     async fn discover(
         &self,
         host: &dyn DriverHost,
@@ -276,7 +276,7 @@ impl DiscoveryCapability for NanoleafDriverFactory {
     }
 }
 
-impl DriverConfigProvider for NanoleafDriverFactory {
+impl DriverConfigProvider for NanoleafDriverModule {
     fn default_config(&self) -> DriverConfigEntry {
         DriverConfigEntry::enabled(BTreeMap::from([
             (FIELD_DEVICE_IPS.to_owned(), serde_json::json!([])),
@@ -298,7 +298,7 @@ impl DriverConfigProvider for NanoleafDriverFactory {
 }
 
 #[async_trait]
-impl DriverControlProvider for NanoleafDriverFactory {
+impl DriverControlProvider for NanoleafDriverModule {
     async fn driver_surface(
         &self,
         _host: &dyn DriverHost,
@@ -798,7 +798,7 @@ fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
 }
 
 #[async_trait]
-impl PairingCapability for NanoleafDriverFactory {
+impl PairingCapability for NanoleafDriverModule {
     async fn auth_summary(
         &self,
         host: &dyn DriverHost,

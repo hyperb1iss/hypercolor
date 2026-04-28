@@ -8,14 +8,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, NetworkDriverFactory};
+use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, DriverModule};
 use hypercolor_types::device::DriverModuleDescriptor;
 use thiserror::Error;
 
 /// Registry of all compiled-in network driver modules.
 #[derive(Default)]
 pub struct DriverModuleRegistry {
-    drivers: BTreeMap<String, Arc<dyn NetworkDriverFactory>>,
+    drivers: BTreeMap<String, Arc<dyn DriverModule>>,
 }
 
 impl DriverModuleRegistry {
@@ -25,7 +25,7 @@ impl DriverModuleRegistry {
         Self::default()
     }
 
-    /// Register a concrete driver factory.
+    /// Register a concrete driver module.
     ///
     /// # Errors
     ///
@@ -33,12 +33,12 @@ impl DriverModuleRegistry {
     /// descriptor ID.
     pub fn register<D>(&mut self, driver: D) -> Result<(), DriverModuleRegistryError>
     where
-        D: NetworkDriverFactory + 'static,
+        D: DriverModule + 'static,
     {
         self.register_shared(Arc::new(driver))
     }
 
-    /// Register a shared driver factory.
+    /// Register a shared driver module.
     ///
     /// # Errors
     ///
@@ -47,7 +47,7 @@ impl DriverModuleRegistry {
     /// match [`DRIVER_API_SCHEMA_VERSION`].
     pub fn register_shared(
         &mut self,
-        driver: Arc<dyn NetworkDriverFactory>,
+        driver: Arc<dyn DriverModule>,
     ) -> Result<(), DriverModuleRegistryError> {
         let descriptor = driver.descriptor();
         let id = descriptor.id.to_owned();
@@ -70,7 +70,7 @@ impl DriverModuleRegistry {
 
     /// Retrieve one driver by its stable ID.
     #[must_use]
-    pub fn get(&self, id: &str) -> Option<Arc<dyn NetworkDriverFactory>> {
+    pub fn get(&self, id: &str) -> Option<Arc<dyn DriverModule>> {
         self.drivers.get(id).map(Arc::clone)
     }
 
@@ -100,7 +100,7 @@ impl DriverModuleRegistry {
 
     /// Return all drivers that advertise discovery capability.
     #[must_use]
-    pub fn discovery_drivers(&self) -> Vec<Arc<dyn NetworkDriverFactory>> {
+    pub fn discovery_drivers(&self) -> Vec<Arc<dyn DriverModule>> {
         self.drivers
             .values()
             .filter(|driver| driver.discovery().is_some())
@@ -110,7 +110,7 @@ impl DriverModuleRegistry {
 
     /// Return all drivers that advertise pairing capability.
     #[must_use]
-    pub fn pairing_drivers(&self) -> Vec<Arc<dyn NetworkDriverFactory>> {
+    pub fn pairing_drivers(&self) -> Vec<Arc<dyn DriverModule>> {
         self.drivers
             .values()
             .filter(|driver| driver.pairing().is_some())
@@ -120,7 +120,7 @@ impl DriverModuleRegistry {
 
     /// Return all drivers that advertise control-surface capability.
     #[must_use]
-    pub fn control_drivers(&self) -> Vec<Arc<dyn NetworkDriverFactory>> {
+    pub fn control_drivers(&self) -> Vec<Arc<dyn DriverModule>> {
         self.drivers
             .values()
             .filter(|driver| driver.controls().is_some())

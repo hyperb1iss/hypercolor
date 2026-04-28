@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,

@@ -10,8 +10,7 @@ use hypercolor_core::device::{
 use hypercolor_driver_api::support::open_default_credential_store_blocking;
 use hypercolor_driver_api::{
     DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveredDevice,
-    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice,
-    NetworkDriverFactory,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -417,7 +416,7 @@ fn add_network_scanner(
 }
 
 struct DebugNetworkScanner {
-    driver: Arc<dyn NetworkDriverFactory>,
+    driver: Arc<dyn DriverModule>,
     driver_id: String,
     config: DriverConfigEntry,
     host: Arc<DebugDriverHost>,

@@ -14,8 +14,8 @@ use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
     DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverRuntimeCacheProvider, DriverTrackedDevice,
-    DriverTransport, NetworkDriverFactory, TrackedDeviceCtx, ValidatedControlChanges,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverRuntimeCacheProvider,
+    DriverTrackedDevice, DriverTransport, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -139,18 +139,18 @@ const fn default_dedup_threshold() -> u8 {
 }
 
 #[derive(Clone)]
-pub struct WledDriverFactory {
+pub struct WledDriverModule {
     mdns_enabled: bool,
 }
 
-impl WledDriverFactory {
+impl WledDriverModule {
     #[must_use]
     pub const fn new(mdns_enabled: bool) -> Self {
         Self { mdns_enabled }
     }
 }
 
-impl NetworkDriverFactory for WledDriverFactory {
+impl DriverModule for WledDriverModule {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &DESCRIPTOR
     }
@@ -185,7 +185,7 @@ impl NetworkDriverFactory for WledDriverFactory {
 }
 
 #[async_trait]
-impl DiscoveryCapability for WledDriverFactory {
+impl DiscoveryCapability for WledDriverModule {
     async fn discover(
         &self,
         host: &dyn DriverHost,
@@ -215,7 +215,7 @@ impl DiscoveryCapability for WledDriverFactory {
     }
 }
 
-impl DriverConfigProvider for WledDriverFactory {
+impl DriverConfigProvider for WledDriverModule {
     fn default_config(&self) -> DriverConfigEntry {
         DriverConfigEntry::enabled(BTreeMap::from([
             (FIELD_KNOWN_IPS.to_owned(), serde_json::json!([])),
@@ -245,7 +245,7 @@ impl DriverConfigProvider for WledDriverFactory {
 }
 
 #[async_trait]
-impl DriverControlProvider for WledDriverFactory {
+impl DriverControlProvider for WledDriverModule {
     async fn driver_surface(
         &self,
         host: &dyn DriverHost,
@@ -919,7 +919,7 @@ fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
 }
 
 #[async_trait]
-impl DriverRuntimeCacheProvider for WledDriverFactory {
+impl DriverRuntimeCacheProvider for WledDriverModule {
     async fn snapshot(
         &self,
         host: &dyn DriverHost,

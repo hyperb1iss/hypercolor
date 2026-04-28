@@ -8,7 +8,7 @@ use hypercolor_core::device::{
     TransportScanner, UsbScanner,
 };
 use hypercolor_driver_api::{
-    DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, NetworkDriverFactory,
+    DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, DriverModule,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -96,7 +96,7 @@ pub async fn execute_discovery_scan_if_idle(
 }
 
 struct NetworkDriverScanner {
-    driver: Arc<dyn NetworkDriverFactory>,
+    driver: Arc<dyn DriverModule>,
     driver_id: String,
     config: DriverConfigEntry,
     host: Arc<DaemonDriverHost>,
@@ -105,7 +105,7 @@ struct NetworkDriverScanner {
 
 impl NetworkDriverScanner {
     fn new(
-        driver: Arc<dyn NetworkDriverFactory>,
+        driver: Arc<dyn DriverModule>,
         driver_id: String,
         config: DriverConfigEntry,
         host: Arc<DaemonDriverHost>,

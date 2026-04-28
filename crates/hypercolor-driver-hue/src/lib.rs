@@ -21,7 +21,7 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    DriverHost, DriverModule, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
     PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
@@ -59,12 +59,12 @@ const FIELD_BRIDGE_IPS: &str = "bridge_ips";
 const FIELD_USE_CIE_XY: &str = "use_cie_xy";
 
 #[derive(Clone)]
-pub struct HueDriverFactory {
+pub struct HueDriverModule {
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
 }
 
-impl HueDriverFactory {
+impl HueDriverModule {
     #[must_use]
     pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
         Self {
@@ -74,7 +74,7 @@ impl HueDriverFactory {
     }
 }
 
-impl NetworkDriverFactory for HueDriverFactory {
+impl DriverModule for HueDriverModule {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &DESCRIPTOR
     }
@@ -109,7 +109,7 @@ impl NetworkDriverFactory for HueDriverFactory {
 }
 
 #[async_trait]
-impl DiscoveryCapability for HueDriverFactory {
+impl DiscoveryCapability for HueDriverModule {
     async fn discover(
         &self,
         host: &dyn DriverHost,
@@ -137,7 +137,7 @@ impl DiscoveryCapability for HueDriverFactory {
     }
 }
 
-impl DriverConfigProvider for HueDriverFactory {
+impl DriverConfigProvider for HueDriverModule {
     fn default_config(&self) -> DriverConfigEntry {
         DriverConfigEntry::enabled(BTreeMap::from([
             (FIELD_BRIDGE_IPS.to_owned(), serde_json::json!([])),
@@ -159,7 +159,7 @@ impl DriverConfigProvider for HueDriverFactory {
 }
 
 #[async_trait]
-impl DriverControlProvider for HueDriverFactory {
+impl DriverControlProvider for HueDriverModule {
     async fn driver_surface(
         &self,
         _host: &dyn DriverHost,
@@ -424,7 +424,7 @@ fn push_unique_impact(impacts: &mut Vec<ApplyImpact>, impact: ApplyImpact) {
 }
 
 #[async_trait]
-impl PairingCapability for HueDriverFactory {
+impl PairingCapability for HueDriverModule {
     async fn auth_summary(
         &self,
         host: &dyn DriverHost,

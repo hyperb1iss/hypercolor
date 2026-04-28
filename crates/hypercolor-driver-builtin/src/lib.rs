@@ -11,12 +11,12 @@ use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{GoveeConfig, HypercolorConfig};
 
 #[cfg(feature = "govee")]
-use hypercolor_driver_govee::GoveeDriverFactory;
+use hypercolor_driver_govee::GoveeDriverModule;
 #[cfg(feature = "hue")]
-use hypercolor_driver_hue::HueDriverFactory;
+use hypercolor_driver_hue::HueDriverModule;
 #[cfg(feature = "nanoleaf")]
-use hypercolor_driver_nanoleaf::NanoleafDriverFactory;
-use hypercolor_driver_wled::WledDriverFactory;
+use hypercolor_driver_nanoleaf::NanoleafDriverModule;
+use hypercolor_driver_wled::WledDriverModule;
 
 /// Build the compiled-in driver module registry for this process.
 ///
@@ -43,24 +43,24 @@ pub fn register_driver_modules(
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
 ) -> Result<()> {
-    registry.register(WledDriverFactory::new(config.discovery.mdns_enabled))?;
+    registry.register(WledDriverModule::new(config.discovery.mdns_enabled))?;
     #[cfg(not(any(feature = "govee", feature = "hue", feature = "nanoleaf")))]
     let _ = &credential_store;
 
     #[cfg(feature = "govee")]
-    registry.register(GoveeDriverFactory::with_credential_store(
+    registry.register(GoveeDriverModule::with_credential_store(
         GoveeConfig::default(),
         Arc::clone(&credential_store),
     ))?;
 
     #[cfg(feature = "hue")]
-    registry.register(HueDriverFactory::new(
+    registry.register(HueDriverModule::new(
         Arc::clone(&credential_store),
         config.discovery.mdns_enabled,
     ))?;
 
     #[cfg(feature = "nanoleaf")]
-    registry.register(NanoleafDriverFactory::new(
+    registry.register(NanoleafDriverModule::new(
         credential_store,
         config.discovery.mdns_enabled,
     ))?;

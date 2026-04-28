@@ -19,7 +19,7 @@ use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveryCapability, DiscoveryRequest,
     DiscoveryResult, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
-    DriverTransport, NetworkDriverFactory, ValidatedControlChanges,
+    DriverModule, DriverTransport, ValidatedControlChanges,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -159,7 +159,7 @@ static ACTION_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
 
 struct ActionTestDriver;
 
-impl NetworkDriverFactory for ActionTestDriver {
+impl DriverModule for ActionTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &ACTION_TEST_DRIVER
     }
@@ -289,7 +289,7 @@ impl RescanTestDriver {
     }
 }
 
-impl NetworkDriverFactory for RescanTestDriver {
+impl DriverModule for RescanTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &RESCAN_TEST_DRIVER
     }
@@ -408,7 +408,7 @@ static UNSUPPORTED_IMPACT_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
 
 struct UnsupportedImpactTestDriver;
 
-impl NetworkDriverFactory for UnsupportedImpactTestDriver {
+impl DriverModule for UnsupportedImpactTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &UNSUPPORTED_IMPACT_TEST_DRIVER
     }

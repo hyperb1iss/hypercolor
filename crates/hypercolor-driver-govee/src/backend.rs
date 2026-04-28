@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use hypercolor_core::device::net::{CredentialStore, Credentials};
-use hypercolor_core::device::{BackendInfo, DeviceBackend, HealthStatus, TransportScanner};
+use hypercolor_driver_api::{
+    BackendInfo, CredentialStore, DeviceBackend, HealthStatus, TransportScanner,
+};
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;
@@ -167,7 +168,18 @@ impl GoveeBackend {
         let Some(store) = &self.credential_store else {
             return Ok(None);
         };
-        let Some(Credentials::Govee { api_key }) = store.get("govee:account").await else {
+        let Some(api_key) = store
+            .get_json("govee:account")
+            .await
+            .and_then(|value| {
+                value
+                    .get("api_key")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .map(ToOwned::to_owned)
+            })
+            .filter(|value| !value.is_empty())
+        else {
             return Ok(None);
         };
 

@@ -7,7 +7,7 @@ use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTransport, NetworkDriverFactory,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTransport,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -258,7 +258,7 @@ static CONFIGLESS_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     false,
 );
 
-impl NetworkDriverFactory for ConfiglessDriver {
+impl DriverModule for ConfiglessDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &CONFIGLESS_DESCRIPTOR
     }

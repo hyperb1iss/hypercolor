@@ -1,4 +1,4 @@
-use hypercolor_core::device::DeviceBackend;
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
 use hypercolor_driver_govee::{GoveeLanDevice, build_cloud_discovered_device, build_device_info};
