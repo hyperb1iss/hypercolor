@@ -404,7 +404,7 @@ async fn invoke_driver_control_action(
             publish_action_progress(state, &result);
             ApiResponse::ok(result)
         }
-        Err(error) => ApiError::validation(format!("Control action failed: {error}")),
+        Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
     }
 }
 
@@ -448,7 +448,7 @@ async fn invoke_device_control_action(
             publish_action_progress(state, &result);
             ApiResponse::ok(result)
         }
-        Err(error) => ApiError::validation(format!("Control action failed: {error}")),
+        Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
     }
 }
 
@@ -503,7 +503,7 @@ async fn invoke_driver_device_control_action(
             publish_action_progress(state, &result);
             ApiResponse::ok(result)
         }
-        Err(error) => ApiError::validation(format!("Control action failed: {error}")),
+        Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
     }
 }
 
@@ -573,6 +573,18 @@ fn empty_control_changes(surface_id: &str) -> Response {
         serde_json::json!({
             "kind": "empty_control_changes",
             "surface_id": surface_id,
+        }),
+    )
+}
+
+fn control_action_failed(surface_id: &str, action_id: &str, detail: &str) -> Response {
+    ApiError::validation_with_details(
+        format!("Control action failed: {detail}"),
+        serde_json::json!({
+            "kind": "control_action_failed",
+            "surface_id": surface_id,
+            "action_id": action_id,
+            "detail": detail,
         }),
     )
 }

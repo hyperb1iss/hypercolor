@@ -2717,6 +2717,15 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
+    assert_eq!(json["error"]["details"]["kind"], "control_action_failed");
+    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
+    assert_eq!(json["error"]["details"]["action_id"], "missing");
+    assert!(
+        json["error"]["details"]["detail"]
+            .as_str()
+            .expect("error detail")
+            .contains("unknown WLED control action")
+    );
     assert!(
         json["error"]["message"]
             .as_str()
