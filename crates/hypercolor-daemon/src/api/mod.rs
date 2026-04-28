@@ -179,10 +179,10 @@ pub struct AppState {
     /// Shared encrypted credential store for network-authenticated backends.
     pub credential_store: Arc<CredentialStore>,
 
-    /// Narrow host adapter shared with built-in network drivers.
+    /// Narrow host adapter shared with built-in driver modules.
     pub driver_host: Arc<DaemonDriverHost>,
 
-    /// Registry of compiled-in network drivers and capabilities.
+    /// Registry of compiled-in driver modules and capabilities.
     pub driver_registry: Arc<DriverModuleRegistry>,
 
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
@@ -414,7 +414,7 @@ impl AppState {
                 &HypercolorConfig::default(),
                 Arc::clone(&credential_store),
             )
-            .expect("default app state should build network driver registry"),
+            .expect("default app state should build driver module registry"),
         );
         let driver_host = Arc::new(DaemonDriverHost::new(
             device_registry.clone(),

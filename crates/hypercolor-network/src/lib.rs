@@ -1,9 +1,9 @@
 //! Driver module registry and orchestration primitives.
 //!
-//! This crate owns the host-side registry for modular network drivers. It does
-//! not contain driver implementations; it provides the lookup and capability
-//! filtering layer that the daemon will use to dispatch discovery and pairing
-//! without backend-specific branching.
+//! This crate owns host-side lookup and capability filtering for compiled-in
+//! driver modules. Concrete drivers live in separate crates so the daemon can
+//! dispatch discovery, pairing, and backend construction without
+//! backend-specific branching.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, DriverM
 use hypercolor_types::device::DriverModuleDescriptor;
 use thiserror::Error;
 
-/// Registry of all compiled-in network driver modules.
+/// Registry of all compiled-in driver modules.
 #[derive(Default)]
 pub struct DriverModuleRegistry {
     drivers: BTreeMap<String, Arc<dyn DriverModule>>,

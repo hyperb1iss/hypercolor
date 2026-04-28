@@ -380,7 +380,7 @@ impl DaemonState {
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(config, Arc::clone(&credential_store))
-                .context("failed to build network driver registry")?,
+                .context("failed to build driver module registry")?,
         );
         let driver_host = Arc::new(DaemonDriverHost::new(
             device_registry.clone(),
@@ -407,7 +407,7 @@ impl DaemonState {
         ));
         info!(
             drivers = ?driver_registry.ids(),
-            "Network driver registry ready"
+            "Driver module registry ready"
         );
 
         {

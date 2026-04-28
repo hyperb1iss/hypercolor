@@ -114,10 +114,10 @@ pub struct DaemonState {
     /// Shared credential store for network-authenticated device backends.
     pub credential_store: Arc<CredentialStore>,
 
-    /// Narrow host adapter shared with built-in network drivers.
+    /// Narrow host adapter shared with built-in driver modules.
     pub driver_host: Arc<DaemonDriverHost>,
 
-    /// Registry of compiled-in network drivers and capabilities.
+    /// Registry of compiled-in driver modules and capabilities.
     pub driver_registry: Arc<DriverModuleRegistry>,
 
     /// Rolling render-performance snapshot shared with the API.
