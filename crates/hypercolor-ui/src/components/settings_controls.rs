@@ -39,14 +39,14 @@ fn restart_badge() -> impl IntoView {
 
 #[component]
 pub fn SettingToggle(
-    label: &'static str,
-    description: &'static str,
-    key: &'static str,
+    #[prop(into)] label: String,
+    #[prop(into)] description: String,
+    #[prop(into)] key: String,
     #[prop(into)] value: Signal<bool>,
     on_change: Callback<(String, serde_json::Value)>,
     #[prop(default = false)] restart_required: bool,
 ) -> impl IntoView {
-    let key_owned = key.to_string();
+    let key_owned = key;
     view! {
         <div class="flex items-start justify-between gap-4 py-3 setting-row">
             <div class="flex-1 min-w-0">

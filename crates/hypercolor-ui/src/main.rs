@@ -11,6 +11,7 @@ mod device_event_logic;
 mod device_metrics;
 mod display_preview_state;
 mod display_utils;
+mod driver_settings;
 mod effect_search;
 mod icons;
 mod layout_geometry;

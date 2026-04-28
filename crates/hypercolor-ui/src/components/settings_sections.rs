@@ -9,6 +9,7 @@ use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use crate::api;
 use crate::app::WsContext;
 use crate::components::settings_controls::*;
+use crate::driver_settings::discovery_driver_settings;
 use crate::icons::*;
 use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
@@ -540,16 +541,15 @@ pub fn SessionSection(
 #[component]
 pub fn DiscoverySection(
     #[prop(into)] config: Signal<Option<HypercolorConfig>>,
+    #[prop(into)] driver_modules: Signal<Vec<api::DriverSummary>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
     let mdns = Signal::derive(move || read_config(config, |cfg| cfg.discovery.mdns_enabled));
     let scan_interval =
         Signal::derive(move || read_config(config, |cfg| cfg.discovery.scan_interval_secs as f64));
-    let wled = Signal::derive(move || read_config(config, |cfg| driver_enabled(cfg, "wled")));
-    let hue = Signal::derive(move || read_config(config, |cfg| driver_enabled(cfg, "hue")));
-    let nanoleaf =
-        Signal::derive(move || read_config(config, |cfg| driver_enabled(cfg, "nanoleaf")));
+    let discovery_drivers =
+        Signal::derive(move || discovery_driver_settings(&driver_modules.get()));
     view! {
         <section id="section-discovery" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
@@ -569,27 +569,21 @@ pub fn DiscoverySection(
                 on_change=on_change
                 min=30.0 max=3600.0 step=30.0
             />
-            <SettingToggle
-                label="WLED Scan"
-                description="Discover WLED controllers on the network"
-                key="drivers.wled.enabled"
-                value=wled
-                on_change=on_change
-            />
-            <SettingToggle
-                label="Hue Scan"
-                description="Discover Philips Hue bridges"
-                key="drivers.hue.enabled"
-                value=hue
-                on_change=on_change
-            />
-            <SettingToggle
-                label="Nanoleaf Scan"
-                description="Discover Nanoleaf panels and lines"
-                key="drivers.nanoleaf.enabled"
-                value=nanoleaf
-                on_change=on_change
-            />
+            {move || discovery_drivers.get().into_iter().map(|setting| {
+                let driver_id = setting.id.clone();
+                let enabled = Signal::derive(move || {
+                    read_config(config, |cfg| driver_enabled(cfg, &driver_id))
+                });
+                view! {
+                    <SettingToggle
+                        label=setting.label
+                        description=setting.description
+                        key=setting.key
+                        value=enabled
+                        on_change=on_change
+                    />
+                }
+            }).collect_view()}
             <SectionReset section_label="Discovery" on_reset=Callback::new(move |()| on_reset.run("discovery".to_string())) />
         </section>
     }

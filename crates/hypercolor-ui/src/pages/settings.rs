@@ -4,7 +4,6 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseIntersectionObserverOptions, use_intersection_observer_with_options};
 
-use hypercolor_leptos_ext::events::{document as browser_document, scroll_into_view_start};
 use crate::api;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::settings_sections::*;
@@ -13,6 +12,7 @@ use crate::icons::*;
 use crate::settings_audio_devices::{
     AudioDeviceChoice, AudioDeviceLoadState, resolve_audio_device_dropdown,
 };
+use hypercolor_leptos_ext::events::{document as browser_document, scroll_into_view_start};
 
 /// Section IDs for nav and scroll spy.
 const SECTION_IDS: &[&str] = &[
@@ -41,6 +41,7 @@ fn settings_section_targets() -> Vec<web_sys::Element> {
 pub fn SettingsPage() -> impl IntoView {
     let config_ctx = expect_context::<ConfigContext>();
     let devices_resource = LocalResource::new(api::fetch_audio_devices);
+    let drivers_resource = LocalResource::new(api::fetch_drivers);
     let config = config_ctx.config;
     let set_config = config_ctx.set_config;
     let (active_section, set_active_section) = signal("audio".to_string());
@@ -105,6 +106,12 @@ pub fn SettingsPage() -> impl IntoView {
                 )
             }
         }
+    });
+    let driver_modules = Signal::derive(move || {
+        drivers_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
     });
 
     // Change handler — optimistic update + persist
@@ -348,7 +355,12 @@ pub fn SettingsPage() -> impl IntoView {
                                 class="settings-card"
                                 style="animation: fade-in 0.4s ease-out 0.25s both"
                             >
-                                <DiscoverySection config=config on_change=on_change on_reset=on_reset />
+                                <DiscoverySection
+                                    config=config
+                                    driver_modules=driver_modules
+                                    on_change=on_change
+                                    on_reset=on_reset
+                                />
                             </div>
                             <div
                                 class="settings-card"
