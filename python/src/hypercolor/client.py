@@ -9,12 +9,29 @@ from typing import Any, Self, TypeVar
 import httpx
 import msgspec
 
-from ._generated.api.devices import list_devices as generated_list_devices
+from ._generated.api.devices import (
+    get_device as generated_get_device,
+    list_devices as generated_list_devices,
+)
 from ._generated.api.effects import (
     get_active_effect as generated_get_active_effect,
     get_effect as generated_get_effect,
     list_effects as generated_list_effects,
 )
+from ._generated.api.layouts import (
+    apply_layout as generated_apply_layout,
+    get_active_layout as generated_get_active_layout,
+    list_layouts as generated_list_layouts,
+)
+from ._generated.api.profiles import (
+    get_profile as generated_get_profile,
+    list_profiles as generated_list_profiles,
+)
+from ._generated.api.scenes import (
+    activate_scene as generated_activate_scene,
+    list_scenes as generated_list_scenes,
+)
+from ._generated.api.settings import list_audio_devices as generated_list_audio_devices
 from ._generated.api.system import (
     get_status as generated_get_status,
     health_check as generated_health_check,
@@ -57,6 +74,7 @@ from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
 _DEVICE_FILTERS = {"offset", "limit", "status", "backend", "q"}
+_SCENE_FILTERS: set[str] = set()
 
 
 class HypercolorClient:
@@ -159,7 +177,10 @@ class HypercolorClient:
 
     async def get_device(self, device_id: str) -> Device:
         """Fetch a single device."""
-        return await self._request_model("GET", f"/devices/{device_id}", Device)
+        return await self._generated_model(
+            generated_get_device._get_kwargs(device_id),
+            Device,
+        )
 
     async def update_device(self, device_id: str, **fields: Any) -> Device:
         """Update device configuration."""
@@ -255,26 +276,41 @@ class HypercolorClient:
 
     async def get_layouts(self) -> list[LayoutSummary]:
         """List layouts."""
-        return await self._request_items("GET", "/layouts", LayoutSummary)
+        return await self._generated_items(
+            generated_list_layouts._get_kwargs(),
+            LayoutSummary,
+        )
 
     async def get_active_layout(self) -> Layout | None:
         """Return the active layout if one exists."""
         try:
-            return await self._request_model("GET", "/layouts/active", Layout)
+            return await self._generated_model(
+                generated_get_active_layout._get_kwargs(),
+                Layout,
+            )
         except HypercolorNotFoundError:
             return None
 
     async def apply_layout(self, layout_id: str) -> MutationResult:
         """Apply a layout."""
-        return await self._request_model("POST", f"/layouts/{layout_id}/apply", MutationResult)
+        return await self._generated_model(
+            generated_apply_layout._get_kwargs(layout_id),
+            MutationResult,
+        )
 
     async def get_profiles(self) -> list[ProfileSummary]:
         """List saved profiles."""
-        return await self._request_items("GET", "/profiles", ProfileSummary)
+        return await self._generated_items(
+            generated_list_profiles._get_kwargs(),
+            ProfileSummary,
+        )
 
     async def get_profile(self, profile_id: str) -> Profile:
         """Fetch a single profile."""
-        return await self._request_model("GET", f"/profiles/{profile_id}", Profile)
+        return await self._generated_model(
+            generated_get_profile._get_kwargs(profile_id),
+            Profile,
+        )
 
     async def apply_profile(
         self,
@@ -293,12 +329,18 @@ class HypercolorClient:
 
     async def get_scenes(self, **filters: Any) -> list[Scene]:
         """List available scenes."""
-        return await self._request_items("GET", "/scenes", Scene, params=filters)
+        if any(key not in _SCENE_FILTERS for key in filters):
+            return await self._request_items("GET", "/scenes", Scene, params=filters)
+        return await self._generated_items(
+            generated_list_scenes._get_kwargs(),
+            Scene,
+        )
 
     async def activate_scene(self, scene_id: str) -> ActivateSceneResult:
         """Trigger a scene manually."""
-        return await self._request_model(
-            "POST", f"/scenes/{scene_id}/activate", ActivateSceneResult
+        return await self._generated_model(
+            generated_activate_scene._get_kwargs(scene_id),
+            ActivateSceneResult,
         )
 
     async def get_audio_spectrum(self) -> SpectrumSnapshot:
@@ -312,7 +354,10 @@ class HypercolorClient:
     async def get_audio_devices(self) -> AudioDevices:
         """Return the available audio capture devices."""
 
-        return await self._request_model("GET", "/audio/devices", AudioDevices)
+        return await self._generated_model(
+            generated_list_audio_devices._get_kwargs(),
+            AudioDevices,
+        )
 
     async def _generated_model(
         self,

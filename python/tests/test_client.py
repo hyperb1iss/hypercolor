@@ -80,6 +80,45 @@ async def test_get_devices(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_get_device_quotes_generated_path_parameters(client: HypercolorClient) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices/keyboard%2Fmain").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "id": "keyboard/main",
+                    "layout_device_id": "keyboard",
+                    "name": "Keyboard",
+                    "backend": "hid",
+                    "status": "connected",
+                    "brightness": 88,
+                    "firmware_version": None,
+                    "total_leds": 104,
+                    "zones": [
+                        {
+                            "id": "main",
+                            "name": "Main",
+                            "led_count": 104,
+                            "topology": "matrix",
+                            "topology_hint": {"type": "matrix", "rows": 6, "cols": 18},
+                        }
+                    ],
+                    "connection_label": "USB HID",
+                    "network_ip": None,
+                    "network_hostname": None,
+                }
+            ),
+        )
+    )
+
+    device = await client.get_device("keyboard/main")
+
+    assert route.called
+    assert device.id == "keyboard/main"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_get_active_effect_returns_none_on_404(client: HypercolorClient) -> None:
     respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
         return_value=httpx.Response(
