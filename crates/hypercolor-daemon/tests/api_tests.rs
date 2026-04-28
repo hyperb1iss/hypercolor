@@ -2319,6 +2319,60 @@ async fn patch_driver_control_surface_updates_config() {
 }
 
 #[tokio::test]
+async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:wled/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:wled",
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "known_ips",
+                                "value": {
+                                    "kind": "list",
+                                    "value": [
+                                        { "kind": "ip_address", "value": "127.0.0.1" }
+                                    ]
+                                }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("invalid WLED known IP")
+    );
+    assert!(
+        manager
+            .get()
+            .drivers
+            .get("wled")
+            .and_then(|entry| entry.settings.get("known_ips"))
+            .is_none(),
+        "invalid known IPs should not be persisted"
+    );
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_publishes_values_changed_event() {
     let (state, _manager, _tmp) = test_state_with_temp_config_manager();
     let mut events = state.event_bus.subscribe_all();

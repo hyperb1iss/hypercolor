@@ -576,6 +576,9 @@ fn validate_wled_driver_changes(
             .value_type
             .validate_value(&change.value)
             .with_context(|| format!("invalid WLED control field: {}", change.field_id))?;
+        if change.field_id == FIELD_KNOWN_IPS {
+            validate_control_ip_list("WLED known IP", &change.value)?;
+        }
         push_unique_impact(&mut impacts, field.apply_impact.clone());
     }
 
@@ -583,6 +586,21 @@ fn validate_wled_driver_changes(
         changes: changes.to_vec(),
         impacts,
     })
+}
+
+fn validate_control_ip_list(label: &str, value: &ControlValue) -> Result<()> {
+    let ControlValue::List(values) = value else {
+        return Ok(());
+    };
+    for value in values {
+        if let ControlValue::IpAddress(raw) = value {
+            let ip = raw
+                .parse::<IpAddr>()
+                .with_context(|| format!("invalid {label}: {raw}"))?;
+            validate_ip(ip).with_context(|| format!("invalid {label}: {ip}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {

@@ -302,6 +302,11 @@ impl DriverControlStore for DaemonDriverHost {
                 .settings
                 .insert(key, control_value_to_config_json(value));
         }
+        if let Some(driver) = self.driver_registry.get(driver_id)
+            && let Some(provider) = driver.config()
+        {
+            provider.validate_config(entry)?;
+        }
         manager.update(config);
         manager.save()
     }
