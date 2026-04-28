@@ -376,6 +376,33 @@ impl Component for DeviceManagerView {
                     self.controls_scroll.set(0);
                 }
             }
+            Action::DeviceControlChangeApplied {
+                device_id,
+                response,
+            } => {
+                if self
+                    .selected_device()
+                    .is_some_and(|device| &device.id == device_id)
+                    && let Some(surface) = self
+                        .surfaces
+                        .iter_mut()
+                        .find(|surface| surface.surface_id == response.surface_id)
+                {
+                    surface.revision = response.revision;
+                    surface.values.clone_from(&response.values);
+                    self.error = None;
+                }
+            }
+            Action::DeviceControlChangeFailed {
+                device_id, error, ..
+            } => {
+                if self
+                    .selected_device()
+                    .is_some_and(|device| &device.id == device_id)
+                {
+                    self.error = Some(error.clone());
+                }
+            }
             _ => {}
         }
         Ok(None)

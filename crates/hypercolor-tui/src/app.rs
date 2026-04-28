@@ -8,6 +8,7 @@ use anyhow::Result;
 use crossterm::ExecutableCommand;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use hypercolor_types::controls::{ApplyControlChangesRequest, ControlChange};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -648,7 +649,9 @@ impl App {
                 self.sync_daemon_device_summary();
             }
             Action::DeviceControlSurfacesUpdated { .. }
-            | Action::DeviceControlSurfacesFailed { .. } => {}
+            | Action::DeviceControlSurfacesFailed { .. }
+            | Action::DeviceControlChangeApplied { .. }
+            | Action::DeviceControlChangeFailed { .. } => {}
             Action::SimulatedDisplaysUpdated(simulators) => {
                 self.simulator_preview
                     .simulators
@@ -733,6 +736,7 @@ impl App {
             | Action::UpdateControl(_, _)
             | Action::ResetControls
             | Action::LoadDeviceControls(_)
+            | Action::ApplyDeviceControlChange { .. }
                 if !self.is_connected() =>
             {
                 self.notify_not_connected();
@@ -834,6 +838,41 @@ impl App {
                     }
                 });
             }
+            Action::ApplyDeviceControlChange {
+                device_id,
+                surface_id,
+                expected_revision,
+                field_id,
+                value,
+            } => {
+                self.spawn_command({
+                    let client = self.client.clone();
+                    let device_id = device_id.clone();
+                    let surface_id = surface_id.clone();
+                    let request = ApplyControlChangesRequest {
+                        surface_id: surface_id.clone(),
+                        expected_revision: Some(*expected_revision),
+                        changes: vec![ControlChange {
+                            field_id: field_id.clone(),
+                            value: value.clone(),
+                        }],
+                        dry_run: false,
+                    };
+                    async move {
+                        match client.apply_control_changes(&request).await {
+                            Ok(response) => Ok(Action::DeviceControlChangeApplied {
+                                device_id,
+                                response: Arc::new(response),
+                            }),
+                            Err(error) => Ok(Action::DeviceControlChangeFailed {
+                                device_id,
+                                surface_id,
+                                error: error.to_string(),
+                            }),
+                        }
+                    }
+                });
+            }
 
             // ── Notifications ───────────────────────────────
             Action::Notify(notif) => {
@@ -884,6 +923,8 @@ impl App {
                 | Action::DevicesUpdated(_)
                 | Action::DeviceControlSurfacesUpdated { .. }
                 | Action::DeviceControlSurfacesFailed { .. }
+                | Action::DeviceControlChangeApplied { .. }
+                | Action::DeviceControlChangeFailed { .. }
                 | Action::SimulatedDisplaysUpdated(_)
                 | Action::FavoritesUpdated(_)
                 | Action::CanvasFrameReceived(_)

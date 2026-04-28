@@ -8,7 +8,9 @@ use crate::state::{
     CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary, Notification,
     PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
 };
-use hypercolor_types::controls::ControlSurfaceDocument;
+use hypercolor_types::controls::{
+    ApplyControlChangesResponse, ControlSurfaceDocument, ControlValue as DynamicControlValue,
+};
 
 /// Every state change in the TUI flows through an Action.
 #[derive(Debug, Clone)]
@@ -96,6 +98,25 @@ pub enum Action {
     ResetControls,
     /// Fetch dynamic control surfaces for a device.
     LoadDeviceControls(String),
+    /// Apply one typed dynamic control value for a device surface.
+    ApplyDeviceControlChange {
+        device_id: String,
+        surface_id: String,
+        expected_revision: u64,
+        field_id: String,
+        value: DynamicControlValue,
+    },
+    /// Dynamic control-surface mutation succeeded for one device.
+    DeviceControlChangeApplied {
+        device_id: String,
+        response: Arc<ApplyControlChangesResponse>,
+    },
+    /// Dynamic control-surface mutation failed for one device.
+    DeviceControlChangeFailed {
+        device_id: String,
+        surface_id: String,
+        error: String,
+    },
 
     // ── UI State ────────────────────────────────────────────
     /// Toggle the help overlay.
