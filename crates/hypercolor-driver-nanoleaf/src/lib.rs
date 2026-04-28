@@ -125,9 +125,10 @@ pub async fn pair_device_with_status(
     };
 
     let info = fetch_device_info(ip, api_port, &auth_token).await?;
+    let device_key = nanoleaf_pair_device_key(&info);
     Ok(Some(NanoleafPairResult {
         auth_token,
-        device_key: info.serial_no.clone(),
+        device_key,
         name: info.name,
         model: info.model,
         firmware_version: info.firmware_version,
@@ -135,9 +136,17 @@ pub async fn pair_device_with_status(
     }))
 }
 
+fn nanoleaf_pair_device_key(info: &NanoleafDeviceInfo) -> String {
+    if !info.serial_no.trim().is_empty() {
+        return info.serial_no.trim().to_ascii_lowercase();
+    }
+    info.name.trim().to_ascii_lowercase().replace(' ', "-")
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NanoleafPairResponse {
+    #[serde(alias = "auth_token")]
     auth_token: Option<String>,
 }
 
