@@ -10,14 +10,26 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
+use crate::app::WsContext;
 use crate::icons::*;
 use crate::toasts;
 
 #[component]
 pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
+    let ws_ctx = expect_context::<WsContext>();
     let surfaces_resource = LocalResource::new(move || {
         let id = device_id.get();
         async move { api::fetch_device_control_surfaces(&id, true).await }
+    });
+
+    Effect::new(move |_| {
+        let Some(event) = ws_ctx.last_control_surface_event.get() else {
+            return;
+        };
+        let current_device_id = device_id.get_untracked();
+        if control_surface_event_matches_device(&event.surface_id, &current_device_id) {
+            surfaces_resource.refetch();
+        }
     });
 
     view! {
@@ -590,4 +602,10 @@ fn surface_title(surface: &ControlSurfaceDocument) -> String {
             }
         }
     }
+}
+
+fn control_surface_event_matches_device(surface_id: &str, device_id: &str) -> bool {
+    surface_id == format!("device:{device_id}")
+        || surface_id.ends_with(&format!(":device:{device_id}"))
+        || !surface_id.contains(":device:")
 }

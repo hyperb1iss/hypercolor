@@ -30,8 +30,8 @@ use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
-    AudioLevel, BackpressureNotice, CanvasFrame, DeviceEventHint, EffectErrorHint,
-    PerformanceMetrics, SceneEventHint, WsManager,
+    AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
+    EffectErrorHint, PerformanceMetrics, SceneEventHint, WsManager,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +77,7 @@ pub struct WsContext {
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
+    pub last_control_surface_event: ReadSignal<Option<ControlSurfaceEventHint>>,
     pub audio_level: ReadSignal<AudioLevel>,
 }
 
@@ -555,6 +556,7 @@ pub fn App() -> impl IntoView {
         last_device_event: ws.last_device_event,
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
+        last_control_surface_event: ws.last_control_surface_event,
         audio_level: ws.audio_level,
     };
     provide_context(ws_ctx);

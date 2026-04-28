@@ -1,10 +1,10 @@
 //! JSON and binary message handlers for the daemon WebSocket protocol.
 
+use hypercolor_leptos_ext::prelude::now_ms;
+pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
-use hypercolor_leptos_ext::prelude::now_ms;
-pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 use hypercolor_types::event::RenderGroupChangeKind;
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use leptos::prelude::*;
@@ -38,6 +38,7 @@ pub const EFFECT_STARTED_EVENTS: &[&str] =
 pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
 pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
 pub const SCENE_EVENTS: &[&str] = &["active_scene_changed", "render_group_changed"];
+pub const CONTROL_SURFACE_EVENTS: &[&str] = &["control_surface_changed"];
 pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_connected",
     "device_discovered",
@@ -193,6 +194,14 @@ pub struct EffectErrorHint {
     pub fallback: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlSurfaceEventHint {
+    pub event_type: String,
+    pub kind: String,
+    pub surface_id: String,
+    pub revision: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 struct MetricsMessage {
     data: PerformanceMetrics,
@@ -247,6 +256,7 @@ pub(super) fn handle_json_message(
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
     set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
     set_last_effect_error: &WriteSignal<Option<EffectErrorHint>>,
+    set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
@@ -364,6 +374,10 @@ pub(super) fn handle_json_message(
                 } else if EFFECT_ERROR_EVENTS.contains(&event_type) {
                     let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_effect_error.set(extract_effect_error_hint(event_type, effect_data));
+                } else if CONTROL_SURFACE_EVENTS.contains(&event_type) {
+                    let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    set_last_control_surface_event
+                        .set(extract_control_surface_event_hint(event_type, data));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
@@ -373,6 +387,23 @@ pub(super) fn handle_json_message(
         }
         _ => {}
     }
+}
+
+pub(crate) fn extract_control_surface_event_hint(
+    event_type: &str,
+    data: &serde_json::Value,
+) -> Option<ControlSurfaceEventHint> {
+    let surface_id = data.get("surface_id")?.as_str()?.to_owned();
+    Some(ControlSurfaceEventHint {
+        event_type: event_type.to_owned(),
+        kind: data
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("surface_changed")
+            .to_owned(),
+        surface_id,
+        revision: data.get("revision").and_then(serde_json::Value::as_u64),
+    })
 }
 
 pub(crate) fn extract_effect_error_hint(
