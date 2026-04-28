@@ -56,6 +56,16 @@ pub async fn fetch_device_control_surfaces(
     .await
 }
 
+/// Fetch one control surface by stable surface ID.
+pub async fn fetch_control_surface(surface_id: &str) -> Result<ControlSurfaceDocument, String> {
+    client::fetch_json(&format!(
+        "/api/v1/control-surfaces/{}",
+        path_segment(surface_id)
+    ))
+    .await
+    .map_err(Into::into)
+}
+
 /// Fetch one driver-level control surface.
 pub async fn fetch_driver_control_surface(
     driver_id: &str,
