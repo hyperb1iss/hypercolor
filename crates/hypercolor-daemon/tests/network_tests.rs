@@ -8,13 +8,14 @@ use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverProtocolCatalog, DriverRuntimeActions,
-    DriverTransport,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverProtocolCatalog, DriverRuntimeActions, DriverTransport,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceId, DeviceInfo, DriverPresentation, DriverProtocolDescriptor,
+    DriverTransportKind,
 };
 
 #[test]
@@ -337,6 +338,52 @@ impl DriverModule for ProtocolCatalogDriver {
     }
 }
 
+struct PresentationDriver;
+
+static PRESENTATION_DRIVER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "presentation-driver",
+    "Presentation Driver",
+    DriverTransport::Network,
+    false,
+    false,
+);
+
+impl DriverPresentationProvider for PresentationDriver {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "Driver-Owned Presentation".to_owned(),
+            short_label: Some("DOP".to_owned()),
+            accent_rgb: Some([128, 255, 234]),
+            secondary_rgb: None,
+            icon: Some("controller".to_owned()),
+            default_device_class: Some(DeviceClassHint::Controller),
+        }
+    }
+}
+
+impl DriverModule for PresentationDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PRESENTATION_DRIVER_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(self)
+    }
+}
+
 #[test]
 fn protocol_descriptors_use_driver_catalog_before_hal_catalog() {
     let mut registry = DriverModuleRegistry::new();
@@ -349,6 +396,24 @@ fn protocol_descriptors_use_driver_catalog_before_hal_catalog() {
     assert_eq!(protocols.len(), 1);
     assert_eq!(protocols[0].protocol_id, "protocol-catalog/example");
     assert_eq!(protocols[0].route_backend_id, "usb");
+}
+
+#[test]
+fn module_presentation_prefers_driver_provider() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(PresentationDriver)
+        .expect("presentation driver should register");
+
+    let presentation = network::module_presentation(&registry, "presentation-driver")
+        .expect("presentation should resolve");
+
+    assert_eq!(presentation.label, "Driver-Owned Presentation");
+    assert_eq!(presentation.short_label.as_deref(), Some("DOP"));
+    assert_eq!(
+        presentation.default_device_class,
+        Some(DeviceClassHint::Controller)
+    );
 }
 
 #[test]

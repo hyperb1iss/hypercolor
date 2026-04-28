@@ -4,9 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverProtocolCatalog, DriverTransport,
-    PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind, ValidatedControlChanges, support,
+    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverProtocolCatalog, DriverTransport, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind, ValidatedControlChanges, support,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::controls::{
@@ -14,9 +14,9 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, DriverModuleKind,
-    DriverProtocolDescriptor, DriverTransportKind, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind, ZoneInfo,
 };
 
 #[test]
@@ -248,6 +248,54 @@ impl DriverModule for ProtocolOnlyDriver {
     }
 }
 
+struct PresentationOnlyProvider;
+
+impl DriverPresentationProvider for PresentationOnlyProvider {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "Protocol Queen".to_owned(),
+            short_label: Some("PQ".to_owned()),
+            accent_rgb: Some([128, 255, 234]),
+            secondary_rgb: Some([225, 53, 255]),
+            icon: Some("usb".to_owned()),
+            default_device_class: Some(DeviceClassHint::Controller),
+        }
+    }
+}
+
+struct PresentationOnlyDriver;
+
+static PRESENTATION_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "presentation-only",
+    "Presentation Only",
+    DriverTransport::Usb,
+    false,
+    false,
+);
+
+impl DriverModule for PresentationOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PRESENTATION_ONLY_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: hypercolor_driver_api::DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<Box<dyn hypercolor_driver_api::DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(&PresentationOnlyProvider)
+    }
+}
+
 #[test]
 fn driver_module_advertises_control_provider_capability() {
     let module = ControlOnlyDriver.module_descriptor();
@@ -272,6 +320,23 @@ fn driver_module_advertises_protocol_catalog_capability() {
     assert_eq!(
         catalog.descriptors()[0].protocol_id,
         "protocol-only/example"
+    );
+}
+
+#[test]
+fn driver_module_advertises_presentation_capability() {
+    let module = PresentationOnlyDriver.module_descriptor();
+    let presentation = PresentationOnlyDriver
+        .presentation()
+        .expect("presentation provider should be present")
+        .presentation();
+
+    assert!(module.capabilities.presentation);
+    assert!(!module.capabilities.output_backend);
+    assert_eq!(presentation.label, "Protocol Queen");
+    assert_eq!(
+        presentation.default_device_class,
+        Some(DeviceClassHint::Controller)
     );
 }
 

@@ -137,6 +137,16 @@ impl DriverModuleRegistry {
             .map(Arc::clone)
             .collect()
     }
+
+    /// Return all drivers that advertise presentation metadata capability.
+    #[must_use]
+    pub fn presentation_drivers(&self) -> Vec<Arc<dyn DriverModule>> {
+        self.drivers
+            .values()
+            .filter(|driver| driver.presentation().is_some())
+            .map(Arc::clone)
+            .collect()
+    }
 }
 
 /// Errors produced by the driver module registry.

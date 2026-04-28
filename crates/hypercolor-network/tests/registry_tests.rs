@@ -5,9 +5,9 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
-    DriverHost, DriverModule, DriverProtocolCatalog, DriverRuntimeActions, DriverTransport,
-    PairDeviceOutcome, PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
-    ValidatedControlChanges,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
+    DriverRuntimeActions, DriverTransport, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
@@ -16,7 +16,8 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, DriverModuleKind, DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
+    DriverProtocolDescriptor, DriverTransportKind,
 };
 use std::sync::LazyLock;
 
@@ -399,6 +400,54 @@ impl DriverModule for ProtocolOnlyDriver {
     }
 }
 
+struct PresentationOnlyProvider;
+
+impl DriverPresentationProvider for PresentationOnlyProvider {
+    fn presentation(&self) -> DriverPresentation {
+        DriverPresentation {
+            label: "Presentation Only Custom".to_owned(),
+            short_label: Some("PO".to_owned()),
+            accent_rgb: Some([255, 106, 193]),
+            secondary_rgb: None,
+            icon: Some("spark".to_owned()),
+            default_device_class: Some(DeviceClassHint::Light),
+        }
+    }
+}
+
+struct PresentationOnlyDriver;
+
+static PRESENTATION_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "presentation-only",
+    "Presentation Only",
+    DriverTransport::Network,
+    false,
+    false,
+);
+
+impl DriverModule for PresentationOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PRESENTATION_ONLY_DESCRIPTOR
+    }
+
+    fn build_output_backend(
+        &self,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        Some(&PresentationOnlyProvider)
+    }
+}
+
 #[test]
 fn registry_rejects_duplicate_ids() {
     let mut registry = DriverModuleRegistry::new();
@@ -537,6 +586,32 @@ fn registry_filters_protocol_catalog_drivers() {
 
     assert_eq!(protocol_ids, vec!["protocol-only".to_owned()]);
     assert!(descriptor.capabilities.protocol_catalog);
+    assert!(!descriptor.capabilities.output_backend);
+}
+
+#[test]
+fn registry_filters_presentation_drivers() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("discovery driver should register");
+    registry
+        .register(PresentationOnlyDriver)
+        .expect("presentation driver should register");
+
+    let presentation_ids = registry
+        .presentation_drivers()
+        .into_iter()
+        .map(|driver| driver.descriptor().id.to_owned())
+        .collect::<Vec<_>>();
+    let descriptor = registry
+        .module_descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.id == "presentation-only")
+        .expect("presentation descriptor should be present");
+
+    assert_eq!(presentation_ids, vec!["presentation-only".to_owned()]);
+    assert!(descriptor.capabilities.presentation);
     assert!(!descriptor.capabilities.output_backend);
 }
 

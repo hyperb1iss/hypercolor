@@ -108,6 +108,12 @@ pub fn module_presentation(
     registry: &DriverModuleRegistry,
     driver_id: &str,
 ) -> Option<DriverPresentation> {
+    if let Some(driver) = registry.get(driver_id)
+        && let Some(provider) = driver.presentation()
+    {
+        return Some(provider.presentation());
+    }
+
     module_descriptor(registry, driver_id).map(|descriptor| descriptor_presentation(&descriptor))
 }
 

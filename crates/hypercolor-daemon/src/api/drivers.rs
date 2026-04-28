@@ -76,7 +76,11 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
             };
 
             DriverSummary {
-                presentation: network::descriptor_presentation(&descriptor),
+                presentation: network::module_presentation(
+                    state.driver_registry.as_ref(),
+                    &descriptor.id,
+                )
+                .unwrap_or_else(|| network::descriptor_presentation(&descriptor)),
                 descriptor,
                 enabled,
                 config_key,

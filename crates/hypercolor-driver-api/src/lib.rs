@@ -17,7 +17,8 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverTransportKind,
+    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverProtocolDescriptor,
+    DriverTransportKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -699,6 +700,12 @@ pub trait DriverProtocolCatalog: Send + Sync {
     fn descriptors(&self) -> &[DriverProtocolDescriptor];
 }
 
+/// Driver capability for exposing presentation metadata to the host.
+pub trait DriverPresentationProvider: Send + Sync {
+    /// Return API and UI presentation metadata for this driver.
+    fn presentation(&self) -> DriverPresentation;
+}
+
 /// Capability root for one modular driver.
 pub trait DriverModule: Send + Sync {
     /// Static metadata about the driver.
@@ -714,6 +721,7 @@ pub trait DriverModule: Send + Sync {
         descriptor.capabilities.credentials = descriptor.capabilities.pairing;
         descriptor.capabilities.output_backend = self.has_output_backend();
         descriptor.capabilities.protocol_catalog = self.protocol_catalog().is_some();
+        descriptor.capabilities.presentation = self.presentation().is_some();
         descriptor.capabilities.controls = self.controls().is_some();
         descriptor
     }
@@ -758,6 +766,11 @@ pub trait DriverModule: Send + Sync {
 
     /// Protocol catalog capability, if this driver exposes host-readable protocols.
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
+        None
+    }
+
+    /// Presentation metadata capability, if this driver customizes host-facing metadata.
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
         None
     }
 
