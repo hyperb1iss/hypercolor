@@ -186,6 +186,14 @@ impl DeviceManagerView {
         }
 
         let lines = control_surface_lines(&self.surfaces, usize::from(inner.width));
+        if lines.is_empty() {
+            frame.render_widget(
+                Paragraph::new("No dynamic controls exposed.").style(Style::default().fg(DIM_GRAY)),
+                inner,
+            );
+            return;
+        }
+
         let max_scroll = lines.len().saturating_sub(usize::from(inner.height));
         let scroll = self.controls_scroll.get().min(max_scroll);
         self.controls_scroll.set(scroll);
@@ -403,6 +411,9 @@ impl Component for DeviceManagerView {
 fn control_surface_lines(surfaces: &[ControlSurfaceDocument], width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for surface in surfaces {
+        if !surface_has_visible_items(surface) {
+            continue;
+        }
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -422,6 +433,17 @@ fn control_surface_lines(surfaces: &[ControlSurfaceDocument], width: usize) -> V
         append_ungrouped_lines(surface, width, &mut lines);
     }
     lines
+}
+
+fn surface_has_visible_items(surface: &ControlSurfaceDocument) -> bool {
+    surface
+        .fields
+        .iter()
+        .any(|field| !field_is_hidden(surface, field))
+        || surface
+            .actions
+            .iter()
+            .any(|action| !action_is_hidden(surface, action))
 }
 
 fn append_group_lines(
