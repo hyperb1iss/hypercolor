@@ -29,10 +29,10 @@ use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionResult, ControlAvailabilityExpr, ControlChange, ControlFieldDescriptor,
-    ControlGroupDescriptor, ControlGroupKind, ControlOwner, ControlPersistence,
-    ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
-    ControlVisibility,
+    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
+    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
+    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
+    ControlValueType, ControlVisibility,
 };
 
 pub use backend::{HueBackend, HueConfig};
@@ -57,6 +57,17 @@ pub static DESCRIPTOR: DriverDescriptor =
 
 const FIELD_BRIDGE_IPS: &str = "bridge_ips";
 const FIELD_USE_CIE_XY: &str = "use_cie_xy";
+const DEVICE_FIELD_IP: &str = "ip";
+const DEVICE_FIELD_API_PORT: &str = "api_port";
+const DEVICE_FIELD_BRIDGE_ID: &str = "bridge_id";
+const DEVICE_FIELD_BRIDGE_NAME: &str = "bridge_name";
+const DEVICE_FIELD_ENTERTAINMENT_CONFIG_ID: &str = "entertainment_config_id";
+const DEVICE_FIELD_ENTERTAINMENT_CONFIG_NAME: &str = "entertainment_config_name";
+const DEVICE_FIELD_MODEL: &str = "model";
+const DEVICE_FIELD_FIRMWARE_VERSION: &str = "firmware_version";
+const DEVICE_FIELD_LED_COUNT: &str = "led_count";
+const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
+const DEVICE_FIELD_STATE: &str = "state";
 
 #[derive(Clone)]
 pub struct HueDriverModule {
@@ -173,9 +184,9 @@ impl DriverControlProvider for HueDriverModule {
     async fn device_surface(
         &self,
         _host: &dyn DriverHost,
-        _device: &TrackedDeviceCtx<'_>,
+        device: &TrackedDeviceCtx<'_>,
     ) -> Result<Option<ControlSurfaceDocument>> {
-        Ok(None)
+        Ok(Some(hue_device_control_surface(device)))
     }
 
     async fn validate_changes(
@@ -254,6 +265,173 @@ pub fn hue_driver_control_surface(config: &HueConfig) -> ControlSurfaceDocument 
     });
     document.fields = hue_driver_control_fields();
     document.values = hue_config_values(config);
+    document.revision = hue_control_revision(&document.values);
+    document
+}
+
+#[must_use]
+pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
+        ControlSurfaceScope::Device {
+            device_id: device.device_id,
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.extend([
+        ControlGroupDescriptor {
+            id: "connection".to_owned(),
+            label: "Connection".to_owned(),
+            description: None,
+            kind: ControlGroupKind::Connection,
+            ordering: 0,
+        },
+        ControlGroupDescriptor {
+            id: "entertainment".to_owned(),
+            label: "Entertainment".to_owned(),
+            description: None,
+            kind: ControlGroupKind::Output,
+            ordering: 10,
+        },
+        ControlGroupDescriptor {
+            id: "diagnostics".to_owned(),
+            label: "Diagnostics".to_owned(),
+            description: None,
+            kind: ControlGroupKind::Diagnostics,
+            ordering: 20,
+        },
+    ]);
+
+    if let Some(metadata) = device.metadata {
+        push_hue_metadata_field(
+            &mut document,
+            metadata,
+            DEVICE_FIELD_IP,
+            "IP Address",
+            "connection",
+            ControlValueType::IpAddress,
+            ControlValue::IpAddress,
+            0,
+        );
+        if let Some(api_port) = metadata
+            .get(DEVICE_FIELD_API_PORT)
+            .and_then(|raw| raw.parse::<i64>().ok())
+        {
+            push_hue_readonly_field(
+                &mut document,
+                DEVICE_FIELD_API_PORT,
+                "API Port",
+                "connection",
+                integer_value_type(0, Some(i64::from(u16::MAX))),
+                ControlValue::Integer(api_port),
+                10,
+            );
+        }
+        push_hue_metadata_field(
+            &mut document,
+            metadata,
+            DEVICE_FIELD_BRIDGE_ID,
+            "Bridge ID",
+            "connection",
+            string_value_type(255),
+            ControlValue::String,
+            20,
+        );
+        push_hue_metadata_field(
+            &mut document,
+            metadata,
+            DEVICE_FIELD_BRIDGE_NAME,
+            "Bridge Name",
+            "connection",
+            string_value_type(255),
+            ControlValue::String,
+            30,
+        );
+        push_hue_metadata_field(
+            &mut document,
+            metadata,
+            DEVICE_FIELD_ENTERTAINMENT_CONFIG_ID,
+            "Entertainment Config ID",
+            "entertainment",
+            string_value_type(255),
+            ControlValue::String,
+            0,
+        );
+        push_hue_metadata_field(
+            &mut document,
+            metadata,
+            DEVICE_FIELD_ENTERTAINMENT_CONFIG_NAME,
+            "Entertainment Config",
+            "entertainment",
+            string_value_type(255),
+            ControlValue::String,
+            10,
+        );
+    }
+
+    if let Some(model) = &device.info.model {
+        push_hue_readonly_field(
+            &mut document,
+            DEVICE_FIELD_MODEL,
+            "Model",
+            "diagnostics",
+            string_value_type(80),
+            ControlValue::String(model.clone()),
+            0,
+        );
+    }
+    if let Some(firmware_version) = &device.info.firmware_version {
+        push_hue_readonly_field(
+            &mut document,
+            DEVICE_FIELD_FIRMWARE_VERSION,
+            "Firmware",
+            "diagnostics",
+            string_value_type(80),
+            ControlValue::String(firmware_version.clone()),
+            10,
+        );
+    }
+    push_hue_readonly_field(
+        &mut document,
+        DEVICE_FIELD_LED_COUNT,
+        "LED Count",
+        "diagnostics",
+        integer_value_type(0, None),
+        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        20,
+    );
+    push_hue_readonly_field(
+        &mut document,
+        DEVICE_FIELD_MAX_FPS,
+        "Max FPS",
+        "diagnostics",
+        integer_value_type(0, None),
+        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        30,
+    );
+    push_hue_readonly_field(
+        &mut document,
+        DEVICE_FIELD_STATE,
+        "State",
+        "diagnostics",
+        string_value_type(32),
+        ControlValue::String(device.current_state.to_string()),
+        40,
+    );
+
+    document.availability = document
+        .fields
+        .iter()
+        .map(|field| {
+            (
+                field.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
     document.revision = hue_control_revision(&document.values);
     document
 }
@@ -363,6 +541,75 @@ fn hue_driver_field(
         visibility: ControlVisibility::Standard,
         availability: ControlAvailabilityExpr::Always,
         ordering,
+    }
+}
+
+fn push_hue_metadata_field(
+    document: &mut ControlSurfaceDocument,
+    metadata: &HashMap<String, String>,
+    id: &str,
+    label: &str,
+    group_id: &str,
+    value_type: ControlValueType,
+    value: impl FnOnce(String) -> ControlValue,
+    ordering: i32,
+) {
+    let Some(raw) = metadata.get(id).filter(|value| !value.is_empty()).cloned() else {
+        return;
+    };
+    push_hue_readonly_field(
+        document,
+        id,
+        label,
+        group_id,
+        value_type,
+        value(raw),
+        ordering,
+    );
+}
+
+fn push_hue_readonly_field(
+    document: &mut ControlSurfaceDocument,
+    id: &str,
+    label: &str,
+    group_id: &str,
+    value_type: ControlValueType,
+    value: ControlValue,
+    ordering: i32,
+) {
+    document.fields.push(ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: Some(group_id.to_owned()),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadOnly,
+        persistence: ControlPersistence::RuntimeOnly,
+        apply_impact: ApplyImpact::None,
+        visibility: ControlVisibility::Diagnostics,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    });
+    document.values.insert(id.to_owned(), value);
+}
+
+const fn integer_value_type(min: i64, max: Option<i64>) -> ControlValueType {
+    ControlValueType::Integer {
+        min: Some(min),
+        max,
+        step: Some(1),
+    }
+}
+
+const fn string_value_type(max_len: u16) -> ControlValueType {
+    ControlValueType::String {
+        min_len: None,
+        max_len: Some(max_len),
+        pattern: None,
     }
 }
 

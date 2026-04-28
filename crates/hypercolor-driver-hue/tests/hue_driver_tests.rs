@@ -3,11 +3,16 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{DriverConfigProvider, DriverModule, DriverTrackedDevice};
-use hypercolor_driver_hue::{
-    HueConfig, HueDriverModule, hue_driver_control_surface, resolve_hue_probe_bridges_from_sources,
+use hypercolor_driver_api::{
+    DriverConfigProvider, DriverModule, DriverTrackedDevice, TrackedDeviceCtx,
 };
-use hypercolor_types::controls::{ApplyImpact, ControlValue};
+use hypercolor_driver_hue::{
+    HueConfig, HueDriverModule, hue_device_control_surface, hue_driver_control_surface,
+    resolve_hue_probe_bridges_from_sources,
+};
+use hypercolor_types::controls::{
+    ApplyImpact, ControlAccess, ControlAvailabilityState, ControlSurfaceScope, ControlValue,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
@@ -45,6 +50,12 @@ fn tracked_hue_device() -> DriverTrackedDevice {
             ("ip".to_owned(), "10.0.0.20".to_owned()),
             ("api_port".to_owned(), "8443".to_owned()),
             ("bridge_id".to_owned(), "bridge-123".to_owned()),
+            ("bridge_name".to_owned(), "Studio Bridge".to_owned()),
+            ("entertainment_config_id".to_owned(), "config-1".to_owned()),
+            (
+                "entertainment_config_name".to_owned(),
+                "Studio Area".to_owned(),
+            ),
         ]),
         fingerprint: None,
         current_state: DeviceState::Known,
@@ -122,5 +133,63 @@ fn hue_driver_control_surface_exposes_typed_config_fields() {
             .iter()
             .any(|field| field.id == "use_cie_xy"
                 && field.apply_impact == ApplyImpact::BackendRebind)
+    );
+}
+
+#[test]
+fn hue_device_control_surface_exposes_tracked_metadata() {
+    let tracked = tracked_hue_device();
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let surface = hue_device_control_surface(&device);
+
+    assert_eq!(
+        surface.surface_id,
+        format!("driver:hue:device:{}", tracked.info.id)
+    );
+    assert_eq!(
+        surface.scope,
+        ControlSurfaceScope::Device {
+            device_id: tracked.info.id,
+            driver_id: "hue".to_owned(),
+        }
+    );
+    assert!(surface.revision > 0);
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "ip" && field.access == ControlAccess::ReadOnly)
+    );
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| field.id == "entertainment_config_name"
+                && field.access == ControlAccess::ReadOnly)
+    );
+    assert_eq!(
+        surface.values["ip"],
+        ControlValue::IpAddress("10.0.0.20".to_owned())
+    );
+    assert_eq!(surface.values["api_port"], ControlValue::Integer(8443));
+    assert_eq!(
+        surface.values["entertainment_config_name"],
+        ControlValue::String("Studio Area".to_owned())
+    );
+    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Integer(0));
+    assert_eq!(
+        surface.values["state"],
+        ControlValue::String("Known".to_owned())
+    );
+    assert_eq!(
+        surface.availability["ip"].state,
+        ControlAvailabilityState::Available
     );
 }
