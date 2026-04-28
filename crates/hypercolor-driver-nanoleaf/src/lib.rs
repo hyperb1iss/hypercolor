@@ -30,10 +30,10 @@ use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionResult, ControlAvailabilityExpr, ControlChange, ControlFieldDescriptor,
-    ControlGroupDescriptor, ControlGroupKind, ControlOwner, ControlPersistence,
-    ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
-    ControlVisibility,
+    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
+    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
+    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
+    ControlValueType, ControlVisibility,
 };
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -62,6 +62,14 @@ pub static DESCRIPTOR: DriverDescriptor =
 
 const FIELD_DEVICE_IPS: &str = "device_ips";
 const FIELD_TRANSITION_TIME: &str = "transition_time";
+const DEVICE_FIELD_IP: &str = "ip";
+const DEVICE_FIELD_API_PORT: &str = "api_port";
+const DEVICE_FIELD_DEVICE_KEY: &str = "device_key";
+const DEVICE_FIELD_MODEL: &str = "model";
+const DEVICE_FIELD_FIRMWARE_VERSION: &str = "firmware_version";
+const DEVICE_FIELD_LED_COUNT: &str = "led_count";
+const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
+const DEVICE_FIELD_STATE: &str = "state";
 
 static NANOLEAF_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -304,9 +312,9 @@ impl DriverControlProvider for NanoleafDriverFactory {
     async fn device_surface(
         &self,
         _host: &dyn DriverHost,
-        _device: &TrackedDeviceCtx<'_>,
+        device: &TrackedDeviceCtx<'_>,
     ) -> Result<Option<ControlSurfaceDocument>> {
-        Ok(None)
+        Ok(Some(nanoleaf_device_control_surface(device)))
     }
 
     async fn validate_changes(
@@ -386,6 +394,185 @@ pub fn nanoleaf_driver_control_surface(config: &NanoleafConfig) -> ControlSurfac
     document.fields = nanoleaf_driver_control_fields();
     document.values = nanoleaf_config_values(config);
     document.revision = nanoleaf_control_revision(&document.values);
+    document
+}
+
+#[must_use]
+pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfaceDocument {
+    let mut document = ControlSurfaceDocument::empty(
+        format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
+        ControlSurfaceScope::Device {
+            device_id: device.device_id,
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+    );
+    document.groups.push(ControlGroupDescriptor {
+        id: "connection".to_owned(),
+        label: "Connection".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Connection,
+        ordering: 0,
+    });
+    document.groups.push(ControlGroupDescriptor {
+        id: "diagnostics".to_owned(),
+        label: "Diagnostics".to_owned(),
+        description: None,
+        kind: ControlGroupKind::Diagnostics,
+        ordering: 10,
+    });
+
+    if let Some(metadata) = device.metadata {
+        if let Some(ip) = metadata.get("ip") {
+            document.fields.push(nanoleaf_device_readonly_field(
+                DEVICE_FIELD_IP,
+                "IP Address",
+                "connection",
+                ControlValueType::IpAddress,
+                0,
+            ));
+            document.values.insert(
+                DEVICE_FIELD_IP.to_owned(),
+                ControlValue::IpAddress(ip.clone()),
+            );
+        }
+        if let Some(api_port) = metadata
+            .get("api_port")
+            .and_then(|raw| raw.parse::<i64>().ok())
+        {
+            document.fields.push(nanoleaf_device_readonly_field(
+                DEVICE_FIELD_API_PORT,
+                "API Port",
+                "connection",
+                ControlValueType::Integer {
+                    min: Some(0),
+                    max: Some(i64::from(u16::MAX)),
+                    step: Some(1),
+                },
+                10,
+            ));
+            document.values.insert(
+                DEVICE_FIELD_API_PORT.to_owned(),
+                ControlValue::Integer(api_port),
+            );
+        }
+        if let Some(device_key) = metadata.get("device_key") {
+            document.fields.push(nanoleaf_device_readonly_field(
+                DEVICE_FIELD_DEVICE_KEY,
+                "Device Key",
+                "diagnostics",
+                ControlValueType::String {
+                    min_len: None,
+                    max_len: Some(255),
+                    pattern: None,
+                },
+                20,
+            ));
+            document.values.insert(
+                DEVICE_FIELD_DEVICE_KEY.to_owned(),
+                ControlValue::String(device_key.clone()),
+            );
+        }
+    }
+
+    if let Some(model) = &device.info.model {
+        document.fields.push(nanoleaf_device_readonly_field(
+            DEVICE_FIELD_MODEL,
+            "Model",
+            "diagnostics",
+            ControlValueType::String {
+                min_len: None,
+                max_len: Some(80),
+                pattern: None,
+            },
+            30,
+        ));
+        document.values.insert(
+            DEVICE_FIELD_MODEL.to_owned(),
+            ControlValue::String(model.clone()),
+        );
+    }
+    if let Some(firmware_version) = &device.info.firmware_version {
+        document.fields.push(nanoleaf_device_readonly_field(
+            DEVICE_FIELD_FIRMWARE_VERSION,
+            "Firmware",
+            "diagnostics",
+            ControlValueType::String {
+                min_len: None,
+                max_len: Some(80),
+                pattern: None,
+            },
+            40,
+        ));
+        document.values.insert(
+            DEVICE_FIELD_FIRMWARE_VERSION.to_owned(),
+            ControlValue::String(firmware_version.clone()),
+        );
+    }
+
+    document.fields.extend([
+        nanoleaf_device_readonly_field(
+            DEVICE_FIELD_LED_COUNT,
+            "LED Count",
+            "diagnostics",
+            ControlValueType::Integer {
+                min: Some(0),
+                max: None,
+                step: Some(1),
+            },
+            50,
+        ),
+        nanoleaf_device_readonly_field(
+            DEVICE_FIELD_MAX_FPS,
+            "Max FPS",
+            "diagnostics",
+            ControlValueType::Integer {
+                min: Some(0),
+                max: None,
+                step: Some(1),
+            },
+            60,
+        ),
+        nanoleaf_device_readonly_field(
+            DEVICE_FIELD_STATE,
+            "State",
+            "diagnostics",
+            ControlValueType::String {
+                min_len: None,
+                max_len: Some(32),
+                pattern: None,
+            },
+            70,
+        ),
+    ]);
+    document.values.extend([
+        (
+            DEVICE_FIELD_LED_COUNT.to_owned(),
+            ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ),
+        (
+            DEVICE_FIELD_MAX_FPS.to_owned(),
+            ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ),
+        (
+            DEVICE_FIELD_STATE.to_owned(),
+            ControlValue::String(device.current_state.to_string()),
+        ),
+    ]);
+
+    document.availability = document
+        .fields
+        .iter()
+        .map(|field| {
+            (
+                field.id.clone(),
+                ControlAvailability {
+                    state: ControlAvailabilityState::Available,
+                    reason: None,
+                },
+            )
+        })
+        .collect();
+    document.revision = nanoleaf_device_control_revision(device, &document.values);
     document
 }
 
@@ -501,6 +688,32 @@ fn nanoleaf_driver_field(
     }
 }
 
+fn nanoleaf_device_readonly_field(
+    id: &str,
+    label: &str,
+    group_id: &str,
+    value_type: ControlValueType,
+    ordering: i32,
+) -> ControlFieldDescriptor {
+    ControlFieldDescriptor {
+        id: id.to_owned(),
+        owner: ControlOwner::Driver {
+            driver_id: DESCRIPTOR.id.to_owned(),
+        },
+        group_id: Some(group_id.to_owned()),
+        label: label.to_owned(),
+        description: None,
+        value_type,
+        default_value: None,
+        access: ControlAccess::ReadOnly,
+        persistence: ControlPersistence::RuntimeOnly,
+        apply_impact: ApplyImpact::None,
+        visibility: ControlVisibility::Diagnostics,
+        availability: ControlAvailabilityExpr::Always,
+        ordering,
+    }
+}
+
 fn nanoleaf_config_values(config: &NanoleafConfig) -> ControlValueMap {
     ControlValueMap::from([
         (
@@ -518,6 +731,32 @@ fn nanoleaf_config_values(config: &NanoleafConfig) -> ControlValueMap {
             ControlValue::Integer(i64::from(config.transition_time)),
         ),
     ])
+}
+
+fn nanoleaf_device_control_revision(
+    device: &TrackedDeviceCtx<'_>,
+    values: &ControlValueMap,
+) -> u64 {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(device.device_id.to_string().as_bytes());
+    payload.extend_from_slice(device.info.name.as_bytes());
+    payload.extend_from_slice(&device.info.total_led_count().to_le_bytes());
+    payload.extend_from_slice(&device.info.capabilities.max_fps.to_le_bytes());
+    if let Some(metadata) = device.metadata {
+        let mut metadata_entries = metadata.iter().collect::<Vec<_>>();
+        metadata_entries.sort_by_key(|(key, _)| key.as_str());
+        for (key, value) in metadata_entries {
+            payload.extend_from_slice(key.as_bytes());
+            payload.extend_from_slice(value.as_bytes());
+        }
+    }
+    for (key, value) in values {
+        payload.extend_from_slice(key.as_bytes());
+        payload.extend_from_slice(format!("{value:?}").as_bytes());
+    }
+    payload.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn nanoleaf_apply_response(

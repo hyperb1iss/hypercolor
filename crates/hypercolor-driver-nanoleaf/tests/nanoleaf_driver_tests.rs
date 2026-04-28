@@ -3,12 +3,14 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory};
-use hypercolor_driver_nanoleaf::{
-    NanoleafConfig, NanoleafDriverFactory, nanoleaf_driver_control_surface,
-    resolve_nanoleaf_probe_devices_from_sources,
+use hypercolor_driver_api::{
+    DriverConfigProvider, DriverTrackedDevice, NetworkDriverFactory, TrackedDeviceCtx,
 };
-use hypercolor_types::controls::{ApplyImpact, ControlValue};
+use hypercolor_driver_nanoleaf::{
+    NanoleafConfig, NanoleafDriverFactory, nanoleaf_device_control_surface,
+    nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
+};
+use hypercolor_types::controls::{ApplyImpact, ControlAccess, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
@@ -123,5 +125,66 @@ fn nanoleaf_driver_control_surface_exposes_typed_config_fields() {
             .iter()
             .any(|field| field.id == "transition_time"
                 && field.apply_impact == ApplyImpact::BackendRebind)
+    );
+}
+
+#[test]
+fn nanoleaf_device_control_surface_exposes_tracked_metadata() {
+    let tracked = tracked_nanoleaf_device();
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let surface = nanoleaf_device_control_surface(&device);
+
+    assert_eq!(
+        surface.surface_id,
+        format!("driver:nanoleaf:device:{}", tracked.info.id)
+    );
+    assert_eq!(
+        surface.scope,
+        hypercolor_types::controls::ControlSurfaceScope::Device {
+            device_id: tracked.info.id,
+            driver_id: "nanoleaf".to_owned(),
+        }
+    );
+    assert!(surface.revision > 0);
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| { field.id == "ip" && field.access == ControlAccess::ReadOnly })
+    );
+    assert!(
+        surface
+            .fields
+            .iter()
+            .any(|field| { field.id == "api_port" && field.access == ControlAccess::ReadOnly })
+    );
+    assert_eq!(
+        surface.values["ip"],
+        ControlValue::IpAddress("10.0.0.30".to_owned())
+    );
+    assert_eq!(surface.values["api_port"], ControlValue::Integer(16021));
+    assert_eq!(
+        surface.values["device_key"],
+        ControlValue::String("nanoleaf-shapes".to_owned())
+    );
+    assert_eq!(
+        surface.values["model"],
+        ControlValue::String("NL42".to_owned())
+    );
+    assert_eq!(
+        surface.values["firmware_version"],
+        ControlValue::String("9.4.0".to_owned())
+    );
+    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Integer(30));
+    assert_eq!(
+        surface.values["state"],
+        ControlValue::String("Known".to_owned())
     );
 }
