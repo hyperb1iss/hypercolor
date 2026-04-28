@@ -81,6 +81,10 @@ pub struct ControlSurfaceDocument {
 
     /// Resolved availability keyed by field ID.
     pub availability: ControlAvailabilityMap,
+
+    /// Resolved availability keyed by action ID.
+    #[serde(default)]
+    pub action_availability: ControlActionAvailabilityMap,
 }
 
 impl ControlSurfaceDocument {
@@ -97,6 +101,7 @@ impl ControlSurfaceDocument {
             actions: Vec::new(),
             values: ControlValueMap::new(),
             availability: ControlAvailabilityMap::new(),
+            action_availability: ControlActionAvailabilityMap::new(),
         }
     }
 }
@@ -106,6 +111,9 @@ pub type ControlValueMap = BTreeMap<ControlFieldId, ControlValue>;
 
 /// Availability map keyed by control field ID.
 pub type ControlAvailabilityMap = BTreeMap<ControlFieldId, ControlAvailability>;
+
+/// Availability map keyed by control action ID.
+pub type ControlActionAvailabilityMap = BTreeMap<ControlActionId, ControlAvailability>;
 
 /// Closed type vocabulary for control values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]

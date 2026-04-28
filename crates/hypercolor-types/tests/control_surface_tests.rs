@@ -239,6 +239,13 @@ fn control_surface_document_roundtrips() {
             reason: None,
         },
     );
+    document.action_availability.insert(
+        "identify".to_owned(),
+        ControlAvailability {
+            state: ControlAvailabilityState::Available,
+            reason: None,
+        },
+    );
 
     let json = serde_json::to_string(&document).expect("serialize document");
     let roundtrip: ControlSurfaceDocument =
@@ -246,6 +253,26 @@ fn control_surface_document_roundtrips() {
 
     assert_eq!(roundtrip.schema_version, CONTROL_SURFACE_SCHEMA_VERSION);
     assert_eq!(roundtrip, document);
+
+    let legacy_json = serde_json::json!({
+        "surface_id": format!("device:{device_id}"),
+        "scope": {
+            "device": {
+                "device_id": device_id,
+                "driver_id": "wled"
+            }
+        },
+        "schema_version": CONTROL_SURFACE_SCHEMA_VERSION,
+        "revision": 7,
+        "groups": [],
+        "fields": [],
+        "actions": [],
+        "values": {},
+        "availability": {}
+    });
+    let legacy: ControlSurfaceDocument =
+        serde_json::from_value(legacy_json).expect("deserialize legacy document");
+    assert!(legacy.action_availability.is_empty());
 }
 
 #[test]
