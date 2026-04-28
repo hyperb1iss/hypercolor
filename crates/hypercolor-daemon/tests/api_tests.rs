@@ -8419,6 +8419,32 @@ async fn list_devices_supports_filters() {
 }
 
 #[tokio::test]
+async fn get_device_includes_explicit_origin_metadata() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/devices/{device_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    let device = &json["data"];
+    assert_eq!(device["backend"], "smbus");
+    assert_eq!(device["origin"]["driver_id"], "asus");
+    assert_eq!(device["origin"]["backend_id"], "smbus");
+    assert_eq!(device["origin"]["transport"], "smbus");
+    assert_eq!(device["origin"]["protocol_id"], "asus/aura-smbus");
+}
+
+#[tokio::test]
 async fn list_devices_includes_network_metadata_when_available() {
     let state = Arc::new(isolated_state());
     let info = DeviceInfo {

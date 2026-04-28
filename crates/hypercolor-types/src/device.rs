@@ -572,7 +572,7 @@ pub struct DriverProtocolDescriptor {
 }
 
 /// Origin metadata that separates device ownership from output routing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeviceOrigin {
     /// Driver module that owns discovery, semantics, and presentation.
     pub driver_id: String,
