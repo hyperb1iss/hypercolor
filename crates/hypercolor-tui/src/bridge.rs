@@ -15,6 +15,7 @@ use crate::action::Action;
 use crate::client::rest::DaemonClient;
 use crate::client::ws::{self, WsMessage};
 use crate::state::DaemonState;
+use hypercolor_types::controls::ControlSurfaceScope;
 
 /// Spawn the data bridge as a background task.
 ///
@@ -183,6 +184,9 @@ async fn refresh_for_event(
         name if name.starts_with("profile_") || name == "session_changed" => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
         }
+        "control_surface_changed" => {
+            refresh_control_surface(client, action_tx, event).await;
+        }
         _ => {}
     }
 
@@ -231,11 +235,42 @@ async fn refresh_favorites(client: &DaemonClient, action_tx: &mpsc::UnboundedSen
     }
 }
 
+async fn refresh_control_surface(
+    client: &DaemonClient,
+    action_tx: &mpsc::UnboundedSender<Action>,
+    event: &serde_json::Value,
+) {
+    let Some(surface_id) = event_data(event)
+        .get("surface_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+
+    match client.get_control_surface(surface_id).await {
+        Ok(surface) => {
+            if let ControlSurfaceScope::Device { device_id, .. } = &surface.scope {
+                let _ = action_tx.send(Action::DeviceControlSurfaceRefreshed {
+                    device_id: device_id.to_string(),
+                    surface: Arc::new(surface),
+                });
+            }
+        }
+        Err(error) => {
+            tracing::debug!(%surface_id, %error, "Failed to refresh dynamic control surface");
+        }
+    }
+}
+
 fn event_name(event: &serde_json::Value) -> Option<&str> {
     event
         .get("event")
         .and_then(serde_json::Value::as_str)
         .or_else(|| event.get("event_type").and_then(serde_json::Value::as_str))
+}
+
+fn event_data(event: &serde_json::Value) -> &serde_json::Value {
+    event.get("data").unwrap_or(event)
 }
 
 fn merge_metrics_into_daemon_state(
