@@ -329,10 +329,10 @@ impl DriverControlProvider for WledDriverModule {
                 ))
             }
             ControlApplyTarget::Device { device } => {
-                if device.info.origin.driver_id != DESCRIPTOR.id {
+                if device.info.driver_id() != DESCRIPTOR.id {
                     bail!(
                         "WLED controls cannot apply to device owned by '{}'",
-                        device.info.origin.driver_id
+                        device.info.driver_id()
                     );
                 }
 
@@ -360,7 +360,7 @@ impl DriverControlProvider for WledDriverModule {
                 if changes.impacts.contains(&ApplyImpact::DeviceReconnect) {
                     control_host
                         .lifecycle()
-                        .reconnect_device(device.device_id, device.info.backend_id())
+                        .reconnect_device(device.device_id, device.info.output_backend_id())
                         .await?;
                 }
 
@@ -595,10 +595,10 @@ fn validate_wled_driver_changes(
             wled_driver_control_fields()
         }
         ControlApplyTarget::Device { device } => {
-            if device.info.origin.driver_id != DESCRIPTOR.id {
+            if device.info.driver_id() != DESCRIPTOR.id {
                 bail!(
                     "WLED controls cannot validate device owned by '{}'",
-                    device.info.origin.driver_id
+                    device.info.driver_id()
                 );
             }
             wled_device_control_fields()

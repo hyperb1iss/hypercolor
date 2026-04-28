@@ -309,7 +309,7 @@ pub async fn execute_discovery_scan(
         .any(|scanner| scanner.error.is_some());
     let mut scoped_registry_ids = HashSet::new();
     for tracked in runtime.device_registry.list().await {
-        let backend_id = tracked.info.backend_id().to_owned();
+        let backend_id = tracked.info.output_backend_id().to_owned();
         if scanned_backend_ids.contains(&backend_id) {
             scoped_registry_ids.insert(tracked.info.id);
         }
@@ -450,7 +450,7 @@ async fn retain_transient_backend_devices(
             continue;
         }
 
-        if !transient_miss_backend_ids.contains(tracked.info.backend_id()) {
+        if !transient_miss_backend_ids.contains(tracked.info.output_backend_id()) {
             continue;
         }
 
@@ -525,7 +525,7 @@ async fn process_discovered_device(
     let tracked_before = runtime.device_registry.get(&device_id).await?;
     let was_renderable = tracked_before.state.is_renderable();
 
-    let backend = tracked_before.info.backend_id().to_owned();
+    let backend = tracked_before.info.output_backend_id().to_owned();
     let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
     let connect_behavior = desired_connect_behavior(
         runtime,

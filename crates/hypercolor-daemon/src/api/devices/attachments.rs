@@ -542,7 +542,7 @@ fn template_supports_device_slot(
 
 fn device_attachment_compatibility_ids(device: &DeviceInfo) -> Vec<String> {
     let mut ids = Vec::with_capacity(2);
-    push_unique_id(&mut ids, device.origin.driver_id.as_str().to_owned());
+    push_unique_id(&mut ids, device.driver_id().to_owned());
     if let Some(protocol_id) = device.origin.protocol_id.as_deref() {
         push_unique_id(&mut ids, protocol_id.to_owned());
     }

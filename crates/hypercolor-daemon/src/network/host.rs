@@ -230,7 +230,7 @@ impl DriverDiscoveryState for DaemonDriverHost {
                 .metadata_for_id(&tracked.info.id)
                 .await
                 .unwrap_or_default();
-            if tracked.info.origin.driver_id != driver_id {
+            if tracked.info.driver_id() != driver_id {
                 continue;
             }
             let fingerprint = self

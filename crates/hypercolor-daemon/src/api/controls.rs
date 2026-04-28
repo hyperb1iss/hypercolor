@@ -83,7 +83,7 @@ pub async fn list_control_surfaces(
             Err(response) => return response,
         }
         if query.include_driver.unwrap_or(false) {
-            let driver_id = &tracked.info.origin.driver_id;
+            let driver_id = tracked.info.driver_id();
             match driver_control_surface_document(&state, driver_id).await {
                 Ok(Some(surface)) => surfaces.push(surface),
                 Ok(None) => {}
@@ -163,7 +163,7 @@ async fn driver_device_control_surface(
     info: &DeviceInfo,
     current_state: DeviceState,
 ) -> Result<Option<ControlSurfaceDocument>, Response> {
-    let driver_id = &info.origin.driver_id;
+    let driver_id = info.driver_id();
     let Some(driver) = state.driver_registry.get(driver_id) else {
         return Ok(None);
     };
@@ -415,17 +415,12 @@ async fn invoke_device_control_action(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {device_id}"));
     };
-    let Some(driver) = state.driver_registry.get(&tracked.info.origin.driver_id) else {
-        return ApiError::not_found(format!(
-            "Driver not found: {}",
-            tracked.info.origin.driver_id
-        ));
+    let driver_id = tracked.info.driver_id();
+    let Some(driver) = state.driver_registry.get(driver_id) else {
+        return ApiError::not_found(format!("Driver not found: {}", driver_id));
     };
     let Some(provider) = driver.controls() else {
-        return ApiError::not_found(format!(
-            "Driver does not expose controls: {}",
-            tracked.info.origin.driver_id
-        ));
+        return ApiError::not_found(format!("Driver does not expose controls: {}", driver_id));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let device = TrackedDeviceCtx {
@@ -862,7 +857,7 @@ pub(crate) fn device_control_surface(
         format!("device:{}", info.id),
         ControlSurfaceScope::Device {
             device_id: info.id,
-            driver_id: info.origin.driver_id.clone(),
+            driver_id: info.driver_id().to_owned(),
         },
     );
     document.revision = revision;

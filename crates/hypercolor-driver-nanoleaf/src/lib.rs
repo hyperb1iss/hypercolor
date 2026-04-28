@@ -376,10 +376,10 @@ impl DriverControlProvider for NanoleafDriverModule {
         let ControlApplyTarget::Device { device } = target else {
             bail!("Nanoleaf refresh topology requires a device target");
         };
-        if device.info.origin.driver_id != DESCRIPTOR.id {
+        if device.info.driver_id() != DESCRIPTOR.id {
             bail!(
                 "Nanoleaf refresh topology cannot target device owned by '{}'",
-                device.info.origin.driver_id
+                device.info.driver_id()
             );
         }
 
@@ -388,7 +388,7 @@ impl DriverControlProvider for NanoleafDriverModule {
             .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
         let scheduled = control_host
             .lifecycle()
-            .reconnect_device(device.device_id, device.info.backend_id())
+            .reconnect_device(device.device_id, device.info.output_backend_id())
             .await?;
         let surface = nanoleaf_device_control_surface(device);
 

@@ -118,10 +118,22 @@ impl DeviceInfo {
         self.zones.iter().map(|z| z.led_count).sum()
     }
 
+    /// Driver module that owns this device's semantics.
+    #[must_use]
+    pub fn driver_id(&self) -> &str {
+        &self.origin.driver_id
+    }
+
+    /// Output backend responsible for writing frames to this device.
+    #[must_use]
+    pub fn output_backend_id(&self) -> &str {
+        &self.origin.backend_id
+    }
+
     /// Output backend responsible for writing frames to this device.
     #[must_use]
     pub fn backend_id(&self) -> &str {
-        &self.origin.backend_id
+        self.output_backend_id()
     }
 }
 

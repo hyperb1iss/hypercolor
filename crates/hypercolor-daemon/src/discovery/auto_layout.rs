@@ -71,7 +71,7 @@ pub async fn sync_active_layout_for_renderable_devices(
                 layout_device_id.clone()
             } else {
                 let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-                let backend_id = tracked.info.backend_id();
+                let backend_id = tracked.info.output_backend_id();
                 DeviceLifecycleManager::canonical_layout_device_id(
                     backend_id,
                     &tracked.info,
@@ -174,7 +174,7 @@ pub async fn sync_active_layout_connectivity(
             continue;
         }
 
-        let backend = tracked.info.backend_id();
+        let backend = tracked.info.output_backend_id();
         let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
         let connect_behavior = super::device_helpers::desired_connect_behavior(
             runtime,

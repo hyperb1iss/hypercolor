@@ -378,7 +378,7 @@ pub(super) fn device_ref_for_tracked(info: &DeviceInfo) -> DeviceRef {
     DeviceRef {
         id: info.id.to_string(),
         name: info.name.clone(),
-        backend: info.backend_id().to_owned(),
+        backend: info.output_backend_id().to_owned(),
         led_count: info.total_led_count(),
     }
 }

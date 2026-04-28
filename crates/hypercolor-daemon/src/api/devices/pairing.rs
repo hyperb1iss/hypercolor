@@ -80,7 +80,7 @@ pub(super) async fn build_device_auth_summary(
     device_state: &DeviceState,
     metadata: Option<&HashMap<String, String>>,
 ) -> Option<DeviceAuthSummary> {
-    let driver_id = info.origin.driver_id.as_str();
+    let driver_id = info.driver_id();
     let driver = state.driver_registry.get(driver_id)?;
     let pairing = driver.pairing()?;
     let device = TrackedDeviceCtx {
@@ -139,7 +139,7 @@ async fn pair_device_for_ui(
         )));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let driver_id = tracked.info.origin.driver_id.as_str();
+    let driver_id = tracked.info.driver_id();
     let Some(driver) = state.driver_registry.get(driver_id) else {
         return Err(ApiError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
@@ -201,7 +201,7 @@ async fn delete_device_pairing(
         )));
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let driver_id = tracked.info.origin.driver_id.as_str();
+    let driver_id = tracked.info.driver_id();
     let Some(driver) = state.driver_registry.get(driver_id) else {
         return Err(ApiError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"

@@ -863,7 +863,7 @@ pub(super) async fn summarize_device_for_response(
         id: info.id.to_string(),
         layout_device_id,
         name: info.name.clone(),
-        backend: info.backend_id().to_owned(),
+        backend: info.output_backend_id().to_owned(),
         status: device_state.variant_name().to_lowercase(),
         brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),
@@ -974,7 +974,7 @@ async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -
         .device_registry
         .fingerprint_for_id(&device_info.id)
         .await;
-    let backend_id = device_info.backend_id();
+    let backend_id = device_info.output_backend_id();
     DeviceLifecycleManager::canonical_layout_device_id(
         backend_id,
         device_info,
@@ -1110,7 +1110,7 @@ pub(super) async fn resolve_device_id_or_response(
 }
 
 pub(super) fn resolved_backend_id(info: &DeviceInfo) -> String {
-    info.backend_id().to_owned()
+    info.output_backend_id().to_owned()
 }
 
 fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {

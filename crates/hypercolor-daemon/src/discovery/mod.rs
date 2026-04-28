@@ -541,6 +541,6 @@ mod tests {
         let info =
             device_info_with_origin(DeviceOrigin::native("ableton", "usb", ConnectionType::Usb));
 
-        assert_eq!(info.backend_id(), "usb");
+        assert_eq!(info.output_backend_id(), "usb");
     }
 }

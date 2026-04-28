@@ -738,7 +738,7 @@ async fn display_targets(
             continue;
         };
 
-        let backend_id = tracked.info.backend_id().to_owned();
+        let backend_id = tracked.info.output_backend_id().to_owned();
         targets.push(Arc::new(DisplayTarget {
             worker_key: (backend_id.clone(), tracked.info.id),
             backend_id,

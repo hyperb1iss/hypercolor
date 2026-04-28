@@ -385,7 +385,7 @@ fn normalize_backends(
 }
 
 fn backend_hint(info: &DeviceInfo) -> &str {
-    info.backend_id()
+    info.output_backend_id()
 }
 
 fn add_driver_scanner(
