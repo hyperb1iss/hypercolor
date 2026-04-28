@@ -9,6 +9,7 @@ pub mod drivers;
 pub mod protocol;
 pub mod protocol_config;
 pub mod registry;
+pub mod smbus_registry;
 pub mod transport;
 
 pub use attachment_profile::{effective_attachment_slots, normalize_attachment_profile_slots};
@@ -18,4 +19,8 @@ pub use protocol::{
 };
 pub use protocol_config::{ProtocolRuntimeConfig, runtime_config_for_attachment_profile};
 pub use registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
+pub use smbus_registry::{
+    ASUS_AURA_SMBUS_PROTOCOL_ID, SmBusProbe, SmBusProbeError, build_smbus_protocol,
+    probe_smbus_devices_in_root,
+};
 pub use transport::{Transport, TransportError};

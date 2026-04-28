@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use hypercolor_hal::drivers::asus::build_aura_smbus_protocol;
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::smbus_registry::build_smbus_protocol;
 use hypercolor_hal::transport::smbus::SmBusTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
@@ -25,6 +25,7 @@ const MAX_RETRIES: u8 = 3;
 struct PendingSmBusDevice {
     bus_path: String,
     address: u16,
+    protocol_id: String,
     info_template: DeviceInfo,
 }
 
@@ -240,6 +241,7 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingSmBus
     Some(PendingSmBusDevice {
         bus_path,
         address,
+        protocol_id: discovered.info.origin.protocol_id.clone()?,
         info_template: discovered.info.clone(),
     })
 }
@@ -249,7 +251,12 @@ async fn connect_pending_device(
     transport_factory: &SmBusTransportFactory,
 ) -> Result<ConnectedSmBusDevice> {
     let transport = transport_factory(&pending.bus_path, pending.address)?;
-    let protocol = build_aura_smbus_protocol();
+    let protocol = build_smbus_protocol(&pending.protocol_id).with_context(|| {
+        format!(
+            "SMBus protocol '{}' is not registered for {} at {} address 0x{:02X}",
+            pending.protocol_id, pending.info_template.name, pending.bus_path, pending.address
+        )
+    })?;
     run_init_sequence(
         protocol.as_ref(),
         transport.as_ref(),

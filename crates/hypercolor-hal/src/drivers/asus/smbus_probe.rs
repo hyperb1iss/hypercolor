@@ -13,6 +13,7 @@ use crate::drivers::asus::smbus::{
     AuraSmBusProtocol, encode_ene_transaction, ene_dram_remap_sequence,
 };
 use crate::protocol::{Protocol, ProtocolError, ProtocolZone, ResponseStatus};
+use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
@@ -626,7 +627,7 @@ fn build_device_info(
         model: Some(controller_kind.model_id().to_owned()),
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
-            .with_protocol_id("asus/aura-smbus"),
+            .with_protocol_id(ASUS_AURA_SMBUS_PROTOCOL_ID),
         zones,
         firmware_version: firmware_name,
         capabilities: protocol.capabilities(),

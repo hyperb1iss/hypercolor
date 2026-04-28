@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use hypercolor_hal::drivers::asus::probe_asus_smbus_devices_in_root;
+use hypercolor_hal::probe_smbus_devices_in_root;
 use hypercolor_types::device::ConnectionType;
 
 use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
@@ -42,7 +42,7 @@ impl TransportScanner for SmBusScanner {
     }
 
     async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        let probes = probe_asus_smbus_devices_in_root(&self.dev_root).await?;
+        let probes = probe_smbus_devices_in_root(&self.dev_root).await?;
         Ok(probes
             .into_iter()
             .map(|probe| DiscoveredDevice {
