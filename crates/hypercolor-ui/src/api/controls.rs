@@ -41,6 +41,19 @@ pub async fn fetch_control_surfaces(
     Ok(response.surfaces)
 }
 
+/// Fetch device, driver-owned device, and optional driver-level surfaces.
+pub async fn fetch_device_control_surfaces(
+    device_id: &str,
+    include_driver: bool,
+) -> Result<Vec<ControlSurfaceDocument>, String> {
+    fetch_control_surfaces(ControlSurfaceListQuery {
+        device_id: Some(device_id),
+        driver_id: None,
+        include_driver,
+    })
+    .await
+}
+
 /// Fetch one driver-level control surface.
 pub async fn fetch_driver_control_surface(
     driver_id: &str,
