@@ -3,8 +3,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use hypercolor_types::controls::{
-    ControlActionDescriptor, ControlFieldDescriptor, ControlGroupDescriptor,
-    ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
+    ControlActionDescriptor, ControlAvailabilityState, ControlFieldDescriptor,
+    ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -324,8 +324,13 @@ fn append_ungrouped_lines(
     width: usize,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let fields = fields_for_group(surface, None);
-    let actions = actions_for_group(surface, None);
+    let known_groups = surface
+        .groups
+        .iter()
+        .map(|group| group.id.as_str())
+        .collect::<Vec<_>>();
+    let fields = fields_without_known_group(surface, &known_groups);
+    let actions = actions_without_known_group(surface, &known_groups);
     append_items(surface, fields, actions, width, lines);
 }
 
@@ -368,6 +373,7 @@ fn fields_for_group<'a>(
         .fields
         .iter()
         .filter(|field| field.group_id.as_deref() == group_id)
+        .filter(|field| !field_is_hidden(surface, field))
         .collect::<Vec<_>>();
     fields.sort_by_key(|field| field.ordering);
     fields
@@ -381,9 +387,62 @@ fn actions_for_group<'a>(
         .actions
         .iter()
         .filter(|action| action.group_id.as_deref() == group_id)
+        .filter(|action| !action_is_hidden(surface, action))
         .collect::<Vec<_>>();
     actions.sort_by_key(|action| action.ordering);
     actions
+}
+
+fn fields_without_known_group<'a>(
+    surface: &'a ControlSurfaceDocument,
+    known_groups: &[&str],
+) -> Vec<&'a ControlFieldDescriptor> {
+    let mut fields = surface
+        .fields
+        .iter()
+        .filter(|field| {
+            field
+                .group_id
+                .as_deref()
+                .is_none_or(|group_id| !known_groups.contains(&group_id))
+        })
+        .filter(|field| !field_is_hidden(surface, field))
+        .collect::<Vec<_>>();
+    fields.sort_by_key(|field| field.ordering);
+    fields
+}
+
+fn actions_without_known_group<'a>(
+    surface: &'a ControlSurfaceDocument,
+    known_groups: &[&str],
+) -> Vec<&'a ControlActionDescriptor> {
+    let mut actions = surface
+        .actions
+        .iter()
+        .filter(|action| {
+            action
+                .group_id
+                .as_deref()
+                .is_none_or(|group_id| !known_groups.contains(&group_id))
+        })
+        .filter(|action| !action_is_hidden(surface, action))
+        .collect::<Vec<_>>();
+    actions.sort_by_key(|action| action.ordering);
+    actions
+}
+
+fn field_is_hidden(surface: &ControlSurfaceDocument, field: &ControlFieldDescriptor) -> bool {
+    surface
+        .availability
+        .get(&field.id)
+        .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
+}
+
+fn action_is_hidden(surface: &ControlSurfaceDocument, action: &ControlActionDescriptor) -> bool {
+    surface
+        .action_availability
+        .get(&action.id)
+        .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
 }
 
 fn surface_title(surface: &ControlSurfaceDocument) -> String {
