@@ -44,7 +44,7 @@ enum DebugCommand {
 enum DebugBackend {
     SmBus,
     Usb,
-    Network(String),
+    Driver(String),
 }
 
 #[derive(Debug, Args)]
@@ -273,7 +273,7 @@ async fn run_scan(
         match backend {
             DebugBackend::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
             DebugBackend::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
-            DebugBackend::Network(driver_id) => add_network_scanner(
+            DebugBackend::Driver(driver_id) => add_driver_scanner(
                 &mut orchestrator,
                 driver_registry,
                 Arc::clone(&driver_host),
@@ -362,21 +362,19 @@ fn normalize_backends(
         let backend = match backend.as_str() {
             "smbus" => DebugBackend::SmBus,
             "usb" => DebugBackend::Usb,
-            network_driver_id => {
-                let Some(driver) = driver_registry.get(network_driver_id) else {
+            driver_id => {
+                let Some(driver) = driver_registry.get(driver_id) else {
                     let mut supported = vec!["smbus".to_owned(), "usb".to_owned()];
                     supported.extend(driver_registry.ids());
                     anyhow::bail!(
-                        "unknown backend '{network_driver_id}'. Supported backends: {}",
+                        "unknown backend '{driver_id}'. Supported backends: {}",
                         supported.join(", ")
                     );
                 };
                 if driver.discovery().is_none() {
-                    anyhow::bail!(
-                        "network driver '{network_driver_id}' does not support discovery"
-                    );
+                    anyhow::bail!("driver '{driver_id}' does not support discovery");
                 }
-                DebugBackend::Network(network_driver_id.to_owned())
+                DebugBackend::Driver(driver_id.to_owned())
             }
         };
         if !out.contains(&backend) {
@@ -390,7 +388,7 @@ fn backend_hint(info: &DeviceInfo) -> &str {
     info.backend_id()
 }
 
-fn add_network_scanner(
+fn add_driver_scanner(
     orchestrator: &mut DiscoveryOrchestrator,
     driver_registry: &DriverModuleRegistry,
     host: Arc<DebugDriverHost>,
@@ -400,9 +398,9 @@ fn add_network_scanner(
 ) -> Result<()> {
     let driver = driver_registry
         .get(driver_id)
-        .with_context(|| format!("debug network driver '{driver_id}' is not registered"))?;
+        .with_context(|| format!("debug driver '{driver_id}' is not registered"))?;
     let driver_config = hypercolor_daemon::network::driver_config_entry(config, driver_id);
-    orchestrator.add_scanner(Box::new(DebugNetworkScanner {
+    orchestrator.add_scanner(Box::new(DebugDriverScanner {
         driver,
         driver_id: driver_id.to_owned(),
         config: driver_config,
@@ -415,7 +413,7 @@ fn add_network_scanner(
     Ok(())
 }
 
-struct DebugNetworkScanner {
+struct DebugDriverScanner {
     driver: Arc<dyn DriverModule>,
     driver_id: String,
     config: DriverConfigEntry,
@@ -424,7 +422,7 @@ struct DebugNetworkScanner {
 }
 
 #[async_trait::async_trait]
-impl TransportScanner for DebugNetworkScanner {
+impl TransportScanner for DebugDriverScanner {
     fn name(&self) -> &str {
         self.driver.descriptor().display_name
     }

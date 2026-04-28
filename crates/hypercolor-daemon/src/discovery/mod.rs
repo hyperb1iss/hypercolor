@@ -139,24 +139,24 @@ pub struct DiscoveryRuntime {
 /// Discovery backends currently implemented in runtime scans.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DiscoveryBackend {
-    Network(String),
+    Driver(String),
     Usb,
     SmBus,
     Blocks,
 }
 
 impl DiscoveryBackend {
-    /// Create a network-backed discovery target.
+    /// Create a driver-backed discovery target.
     #[must_use]
-    pub fn network(id: impl Into<String>) -> Self {
-        Self::Network(id.into())
+    pub fn driver(id: impl Into<String>) -> Self {
+        Self::Driver(id.into())
     }
 
     /// Stable backend identifier used in request/response payloads.
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Network(id) => id.as_str(),
+            Self::Driver(id) => id.as_str(),
             Self::Usb => "usb",
             Self::SmBus => "smbus",
             Self::Blocks => "blocks",
@@ -177,7 +177,7 @@ impl DiscoveryBackend {
             _ => registry
                 .get(raw)
                 .filter(|driver| driver.discovery().is_some())
-                .map(|_| Self::network(raw)),
+                .map(|_| Self::driver(raw)),
         }
     }
 
@@ -186,7 +186,7 @@ impl DiscoveryBackend {
         let mut backends = registry
             .discovery_drivers()
             .into_iter()
-            .map(|driver| Self::network(driver.descriptor().id))
+            .map(|driver| Self::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
         backends.extend([Self::Usb, Self::SmBus, Self::Blocks]);
         backends
@@ -262,7 +262,7 @@ pub fn resolve_backends(
         }
 
         match &backend {
-            DiscoveryBackend::Network(driver_id) => {
+            DiscoveryBackend::Driver(driver_id) => {
                 if !crate::network::driver_enabled(config, driver_id) {
                     if explicit_request {
                         let config_flag = crate::network::driver_config_flag(driver_id);
@@ -356,7 +356,7 @@ mod tests {
             .driver_registry
             .discovery_drivers()
             .into_iter()
-            .map(|driver| DiscoveryBackend::network(driver.descriptor().id))
+            .map(|driver| DiscoveryBackend::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
         backends.extend([
             DiscoveryBackend::Usb,
@@ -480,7 +480,7 @@ mod tests {
         assert!(DiscoveryBackend::SmBus.preserves_renderable_on_discovery_miss());
         assert!(!DiscoveryBackend::Usb.preserves_renderable_on_discovery_miss());
         assert!(!DiscoveryBackend::Blocks.preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryBackend::network("wled").preserves_renderable_on_discovery_miss());
+        assert!(!DiscoveryBackend::driver("wled").preserves_renderable_on_discovery_miss());
     }
 
     #[test]

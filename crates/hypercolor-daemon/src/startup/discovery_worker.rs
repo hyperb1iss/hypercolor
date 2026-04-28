@@ -166,7 +166,7 @@ impl DiscoveryWorkerContext {
             let backends = unmapped_by_driver
                 .keys()
                 .cloned()
-                .map(DiscoveryBackend::network)
+                .map(DiscoveryBackend::driver)
                 .collect::<Vec<_>>();
             let drivers = discovery::backend_names(&backends);
             let unmapped_layout_device_ids = unmapped_by_driver

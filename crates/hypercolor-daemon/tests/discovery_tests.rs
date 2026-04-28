@@ -417,7 +417,7 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         Arc::new(config),
-        vec![DiscoveryBackend::network("wled")],
+        vec![DiscoveryBackend::driver("wled")],
         Duration::from_millis(50),
     )
     .await;

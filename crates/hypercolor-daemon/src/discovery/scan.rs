@@ -95,7 +95,7 @@ pub async fn execute_discovery_scan_if_idle(
     )
 }
 
-struct NetworkDriverScanner {
+struct DriverModuleScanner {
     driver: Arc<dyn DriverModule>,
     driver_id: String,
     config: DriverConfigEntry,
@@ -103,7 +103,7 @@ struct NetworkDriverScanner {
     request: DiscoveryRequest,
 }
 
-impl NetworkDriverScanner {
+impl DriverModuleScanner {
     fn new(
         driver: Arc<dyn DriverModule>,
         driver_id: String,
@@ -122,7 +122,7 @@ impl NetworkDriverScanner {
 }
 
 #[async_trait::async_trait]
-impl TransportScanner for NetworkDriverScanner {
+impl TransportScanner for DriverModuleScanner {
     fn name(&self) -> &str {
         self.driver.descriptor().display_name
     }
@@ -217,20 +217,20 @@ pub async fn execute_discovery_scan(
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     for backend in backends {
         match backend {
-            DiscoveryBackend::Network(driver_id) => {
+            DiscoveryBackend::Driver(driver_id) => {
                 let Some(driver) = driver_registry.get(&driver_id) else {
-                    warn!(driver_id, "skipping unknown network discovery driver");
+                    warn!(driver_id, "skipping unknown discovery driver");
                     continue;
                 };
                 if driver.discovery().is_none() {
                     warn!(
                         driver_id,
-                        "skipping network driver without discovery capability"
+                        "skipping driver without discovery capability"
                     );
                     continue;
                 }
                 let driver_config = network::driver_config_entry(&config, &driver_id);
-                orchestrator.add_scanner(Box::new(NetworkDriverScanner::new(
+                orchestrator.add_scanner(Box::new(DriverModuleScanner::new(
                     driver,
                     driver_id,
                     driver_config,

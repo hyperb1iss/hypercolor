@@ -1,7 +1,7 @@
-//! Driver-facing host boundary for modular Hypercolor network drivers.
+//! Driver-facing host boundary for modular Hypercolor drivers.
 //!
 //! This crate defines the stable capability surface between the daemon-owned
-//! runtime and network driver implementations. Drivers should depend on these
+//! runtime and driver implementations. Drivers should depend on these
 //! traits and shared request/response types instead of reaching into daemon
 //! internals directly.
 
@@ -723,8 +723,7 @@ pub trait DriverModule: Send + Sync {
 
     /// Build the optional runtime backend used for color output.
     ///
-    /// Returning `Ok(None)` allows capability-only drivers, though built-in
-    /// Hypercolor network drivers are expected to contribute a backend.
+    /// Returning `Ok(None)` allows capability-only drivers.
     ///
     /// # Errors
     ///
@@ -760,7 +759,7 @@ const fn bool_true() -> bool {
     true
 }
 
-/// Shared helper utilities for network drivers.
+/// Shared helper utilities for drivers.
 pub mod support {
     use std::collections::HashMap;
     use std::net::IpAddr;

@@ -17,7 +17,7 @@ use hypercolor_types::device::{
 pub use host::DaemonDriverHost;
 pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin_driver_module_registry;
 
-/// Whether a network driver is enabled by the active config.
+/// Whether a driver is enabled by the active config.
 #[must_use]
 pub fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
     driver_enabled_with_default(config, driver_id, true)
@@ -106,7 +106,7 @@ pub fn enabled_hal_driver_ids_for_transport(
         .collect()
 }
 
-/// Config key responsible for enabling a built-in network driver.
+/// Config key responsible for enabling a driver module.
 #[must_use]
 pub fn driver_config_flag(driver_id: &str) -> String {
     format!("drivers.{driver_id}.enabled")
@@ -118,7 +118,7 @@ pub fn driver_config_entry(config: &HypercolorConfig, driver_id: &str) -> Driver
     config.drivers.get(driver_id).cloned().unwrap_or_default()
 }
 
-/// Register all enabled network backends with the backend manager.
+/// Register all enabled driver backends with the backend manager.
 ///
 /// # Errors
 ///
