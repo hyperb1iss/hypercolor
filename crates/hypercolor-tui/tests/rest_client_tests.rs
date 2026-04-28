@@ -5,9 +5,14 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::http::Uri;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use hypercolor_tui::client::rest::DaemonClient;
+use hypercolor_types::controls::{
+    ApplyControlChangesRequest, ControlActionStatus, ControlChange,
+    ControlValue as SurfaceControlValue,
+};
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, PresetTemplate,
 };
@@ -251,6 +256,154 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
     assert_eq!(devices[0].state, "connected");
     assert_eq!(devices[0].led_count, 120);
     assert_eq!(favorites, vec!["rainbow".to_string()]);
+}
+
+#[tokio::test]
+async fn control_surface_list_encodes_device_query() {
+    let captured_uri = Arc::new(Mutex::new(None::<String>));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces",
+            get(
+                |State(captured_uri): State<Arc<Mutex<Option<String>>>>, uri: Uri| async move {
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    Json(json!({
+                        "data": {
+                            "surfaces": [{
+                                "surface_id": "device:Desk Strip",
+                                "scope": {
+                                    "device": {
+                                        "device_id": "00000000-0000-0000-0000-000000000001",
+                                        "driver_id": "wled"
+                                    }
+                                },
+                                "schema_version": 1,
+                                "revision": 4,
+                                "groups": [],
+                                "fields": [],
+                                "actions": [],
+                                "values": {},
+                                "availability": {},
+                                "action_availability": {}
+                            }]
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured_uri));
+
+    let client = client_for(spawn_server(router).await);
+    let surfaces = client
+        .get_device_control_surfaces("Desk Strip", true)
+        .await
+        .expect("fetch device control surfaces");
+
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].surface_id, "device:Desk Strip");
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/control-surfaces?device_id=Desk%20Strip&include_driver=true")
+    );
+}
+
+#[tokio::test]
+async fn control_surface_mutations_encode_path_ids_and_payloads() {
+    let captured_patch = Arc::new(Mutex::new(None::<Value>));
+    let captured_action = Arc::new(Mutex::new(None::<Value>));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces/{surface_id}/values",
+            patch(
+                |Path(surface_id): Path<String>,
+                 State((captured_patch, _captured_action)): State<(
+                    Arc<Mutex<Option<Value>>>,
+                    Arc<Mutex<Option<Value>>>,
+                )>,
+                 Json(payload): Json<Value>| async move {
+                    assert_eq!(surface_id, "driver:wled:device:Desk Strip");
+                    *captured_patch.lock().await = Some(payload);
+                    Json(json!({
+                        "data": {
+                            "surface_id": "driver:wled:device:Desk Strip",
+                            "previous_revision": 3,
+                            "revision": 4,
+                            "accepted": [],
+                            "rejected": [],
+                            "impacts": [],
+                            "values": {}
+                        }
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            post(
+                |Path((surface_id, action_id)): Path<(String, String)>,
+                 State((_captured_patch, captured_action)): State<(
+                    Arc<Mutex<Option<Value>>>,
+                    Arc<Mutex<Option<Value>>>,
+                )>,
+                 Json(payload): Json<Value>| async move {
+                    assert_eq!(surface_id, "driver:wled:device:Desk Strip");
+                    assert_eq!(action_id, "refresh topology");
+                    *captured_action.lock().await = Some(payload);
+                    Json(json!({
+                        "data": {
+                            "surface_id": "driver:wled:device:Desk Strip",
+                            "action_id": "refresh topology",
+                            "status": "completed",
+                            "result": null,
+                            "revision": 4
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state((Arc::clone(&captured_patch), Arc::clone(&captured_action)));
+
+    let client = client_for(spawn_server(router).await);
+    let request = ApplyControlChangesRequest {
+        surface_id: "driver:wled:device:Desk Strip".to_string(),
+        expected_revision: Some(3),
+        changes: vec![ControlChange {
+            field_id: "enabled".to_string(),
+            value: SurfaceControlValue::Bool(true),
+        }],
+        dry_run: false,
+    };
+    let response = client
+        .apply_control_changes(&request)
+        .await
+        .expect("apply controls");
+    let result = client
+        .invoke_control_action(
+            "driver:wled:device:Desk Strip",
+            "refresh topology",
+            Default::default(),
+        )
+        .await
+        .expect("invoke action");
+
+    assert_eq!(response.revision, 4);
+    assert_eq!(result.status, ControlActionStatus::Completed);
+    assert_eq!(
+        captured_patch.lock().await.as_ref(),
+        Some(&json!({
+            "surface_id": "driver:wled:device:Desk Strip",
+            "expected_revision": 3,
+            "changes": [{
+                "field_id": "enabled",
+                "value": { "kind": "bool", "value": true }
+            }],
+            "dry_run": false
+        }))
+    );
+    assert_eq!(
+        captured_action.lock().await.as_ref(),
+        Some(&json!({ "input": {} }))
+    );
 }
 
 #[tokio::test]

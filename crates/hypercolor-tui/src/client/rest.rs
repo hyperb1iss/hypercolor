@@ -5,6 +5,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
+use hypercolor_types::controls::{
+    ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
+    ControlSurfaceDocument, ControlValueMap,
+};
 use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
@@ -109,6 +113,67 @@ impl DaemonClient {
     pub async fn get_devices(&self) -> Result<Vec<DeviceSummary>> {
         let response: DeviceListResponse = self.get_data("/devices").await?;
         Ok(response.items.into_iter().map(map_device_summary).collect())
+    }
+
+    /// Fetch control surfaces selected by device, driver, or both.
+    pub async fn get_control_surfaces(
+        &self,
+        query: ControlSurfaceQuery<'_>,
+    ) -> Result<Vec<ControlSurfaceDocument>> {
+        let response: ControlSurfaceListResponse =
+            self.get_data(&control_surface_list_path(query)).await?;
+        Ok(response.surfaces)
+    }
+
+    /// Fetch device-owned and optional driver-owned control surfaces.
+    pub async fn get_device_control_surfaces(
+        &self,
+        device_id: &str,
+        include_driver: bool,
+    ) -> Result<Vec<ControlSurfaceDocument>> {
+        self.get_control_surfaces(ControlSurfaceQuery {
+            device_id: Some(device_id),
+            driver_id: None,
+            include_driver,
+        })
+        .await
+    }
+
+    /// Fetch one driver-level control surface through the direct endpoint.
+    pub async fn get_driver_control_surface(
+        &self,
+        driver_id: &str,
+    ) -> Result<ControlSurfaceDocument> {
+        self.get_data(&format!("/drivers/{}/controls", path_segment(driver_id)))
+            .await
+    }
+
+    /// Apply typed changes to a dynamic control surface.
+    pub async fn apply_control_changes(
+        &self,
+        request: &ApplyControlChangesRequest,
+    ) -> Result<ApplyControlChangesResponse> {
+        let path = format!(
+            "/control-surfaces/{}/values",
+            path_segment(&request.surface_id)
+        );
+        self.patch_data(&path, request).await
+    }
+
+    /// Invoke a typed dynamic control-surface action.
+    pub async fn invoke_control_action(
+        &self,
+        surface_id: &str,
+        action_id: &str,
+        input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        let path = format!(
+            "/control-surfaces/{}/actions/{}",
+            path_segment(surface_id),
+            path_segment(action_id)
+        );
+        self.post_data(&path, &InvokeControlActionRequest { input })
+            .await
     }
 
     /// Fetch all configured virtual display simulators.
@@ -246,6 +311,38 @@ impl DaemonClient {
         }
     }
 
+    async fn post_data<Req, Res>(&self, path: &str, body: &Req) -> Result<Res>
+    where
+        Req: serde::Serialize + ?Sized,
+        Res: DeserializeOwned,
+    {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Failed to connect to daemon at {url}"))?;
+        response_data(response).await
+    }
+
+    async fn patch_data<Req, Res>(&self, path: &str, body: &Req) -> Result<Res>
+    where
+        Req: serde::Serialize + ?Sized,
+        Res: DeserializeOwned,
+    {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .http
+            .patch(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Failed to connect to daemon at {url}"))?;
+        response_data(response).await
+    }
+
     async fn get_effect_detail(&self, effect_id: &str) -> Result<EffectDetailResponse> {
         self.get_data(&format!("/effects/{effect_id}")).await
     }
@@ -253,6 +350,24 @@ impl DaemonClient {
     async fn get_active_effect(&self) -> Result<ActiveEffectResponse> {
         self.get_data("/effects/active").await
     }
+}
+
+/// Query parameters for the aggregate control-surface endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControlSurfaceQuery<'a> {
+    pub device_id: Option<&'a str>,
+    pub driver_id: Option<&'a str>,
+    pub include_driver: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ControlSurfaceListResponse {
+    surfaces: Vec<ControlSurfaceDocument>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct InvokeControlActionRequest {
+    input: ControlValueMap,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,4 +596,60 @@ async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     anyhow::bail!("{context} ({status}): {body}");
+}
+
+async fn response_data<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("API request failed ({status}): {body}");
+    }
+
+    let envelope: serde_json::Value = response.json().await?;
+    if let Some(data) = envelope.get("data") {
+        Ok(serde_json::from_value(data.clone())?)
+    } else {
+        Ok(serde_json::from_value(envelope)?)
+    }
+}
+
+fn control_surface_list_path(query: ControlSurfaceQuery<'_>) -> String {
+    let mut parts = Vec::new();
+    if let Some(device_id) = query.device_id {
+        parts.push(format!("device_id={}", query_value(device_id)));
+    }
+    if let Some(driver_id) = query.driver_id {
+        parts.push(format!("driver_id={}", query_value(driver_id)));
+    }
+    if query.include_driver {
+        parts.push("include_driver=true".to_string());
+    }
+
+    if parts.is_empty() {
+        "/control-surfaces".to_string()
+    } else {
+        format!("/control-surfaces?{}", parts.join("&"))
+    }
+}
+
+fn path_segment(input: &str) -> String {
+    percent_encode(input)
+}
+
+fn query_value(input: &str) -> String {
+    percent_encode(input)
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
