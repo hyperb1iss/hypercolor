@@ -90,7 +90,7 @@ impl NanoleafDiscoveredDevice {
             connection_type: ConnectionType::Network,
             origin: self.info.origin.clone(),
             name: self.info.name.clone(),
-            family: DeviceFamily::Nanoleaf,
+            family: DeviceFamily::new_static("nanoleaf", "Nanoleaf"),
             fingerprint,
             connect_behavior: self.connect_behavior,
             info: self.info,
@@ -131,7 +131,7 @@ pub fn build_device_info(
             name.to_owned()
         },
         vendor: "Nanoleaf".to_owned(),
-        family: DeviceFamily::Nanoleaf,
+        family: DeviceFamily::new_static("nanoleaf", "Nanoleaf"),
         model: model
             .map(str::trim)
             .filter(|value| !value.is_empty())

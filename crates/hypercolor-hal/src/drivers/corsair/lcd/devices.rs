@@ -78,7 +78,7 @@ macro_rules! lcd_descriptor {
             vendor_id: CORSAIR_VID,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::Corsair,
+            family: DeviceFamily::new_static("corsair", "Corsair"),
             transport: TransportType::UsbHid {
                 interface: CORSAIR_LCD_INTERFACE,
             },

@@ -30,7 +30,7 @@ static PUSH2_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         vendor_id: ABLETON_VENDOR_ID,
         product_id: PID_PUSH_2,
         name: "Ableton Push 2",
-        family: DeviceFamily::Custom("Ableton".to_owned()),
+        family: DeviceFamily::named("Ableton"),
         transport: TransportType::UsbMidi {
             midi_interface: PUSH2_MIDI_INTERFACE,
             display_interface: PUSH2_DISPLAY_INTERFACE,

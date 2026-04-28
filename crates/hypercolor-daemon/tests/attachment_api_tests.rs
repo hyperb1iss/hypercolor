@@ -116,7 +116,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         id,
         name: name.to_owned(),
         vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::Wled,
+        family: DeviceFamily::new_static("wled", "WLED"),
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
@@ -148,7 +148,7 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
         id,
         name: "PrismRGB Prism 8".to_owned(),
         vendor: "PrismRGB".to_owned(),
-        family: DeviceFamily::PrismRgb,
+        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
         model: Some("prism_8".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
@@ -181,7 +181,7 @@ async fn insert_nollie32_test_device(state: &Arc<AppState>) -> DeviceId {
         id,
         name: "Nollie 32".to_owned(),
         vendor: "Nollie".to_owned(),
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         model: Some("nollie_32".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)

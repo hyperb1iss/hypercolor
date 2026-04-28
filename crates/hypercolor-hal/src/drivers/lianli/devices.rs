@@ -113,7 +113,7 @@ macro_rules! ene_descriptor {
             vendor_id: LIANLI_ENE_VENDOR_ID,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::LianLi,
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
             transport: TransportType::UsbHid {
                 interface: LIANLI_ENE_INTERFACE,
             },
@@ -137,7 +137,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         vendor_id: LIANLI_ENE_VENDOR_ID,
         product_id: PID_UNI_HUB_AL,
         name: "Lian Li Uni Hub - AL",
-        family: DeviceFamily::LianLi,
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
         transport: TransportType::UsbHid {
             interface: LIANLI_ENE_INTERFACE,
         },
@@ -151,7 +151,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         vendor_id: LIANLI_ENE_VENDOR_ID,
         product_id: PID_UNI_HUB_AL,
         name: "Lian Li Uni Hub - AL10",
-        family: DeviceFamily::LianLi,
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
         transport: TransportType::UsbVendor,
         protocol: ProtocolBinding {
             id: "lianli/al10",
@@ -193,7 +193,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         vendor_id: LIANLI_ENE_VENDOR_ID,
         product_id: PID_UNI_HUB_ORIGINAL,
         name: "Lian Li Uni Hub",
-        family: DeviceFamily::LianLi,
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
         transport: TransportType::UsbVendor,
         protocol: ProtocolBinding {
             id: "lianli/original",
@@ -205,7 +205,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         vendor_id: LIANLI_TL_VENDOR_ID,
         product_id: PID_TL_FAN_HUB,
         name: "Lian Li TL Fan Hub",
-        family: DeviceFamily::LianLi,
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
         transport: TransportType::UsbHidApi {
             interface: None,
             report_id: TL_REPORT_ID,

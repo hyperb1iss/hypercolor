@@ -102,7 +102,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         id: DeviceId::new(),
         name: name.to_string(),
         vendor: "TestCorp".to_string(),
-        family: DeviceFamily::Wled,
+        family: DeviceFamily::new_static("wled", "WLED"),
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),

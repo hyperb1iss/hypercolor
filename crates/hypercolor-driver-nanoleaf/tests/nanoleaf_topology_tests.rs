@@ -69,7 +69,10 @@ fn build_device_info_filters_non_led_panels_and_preserves_order() {
         panels.as_slice(),
     );
 
-    assert_eq!(info.family, DeviceFamily::Nanoleaf);
+    assert_eq!(
+        info.family,
+        DeviceFamily::new_static("nanoleaf", "Nanoleaf")
+    );
     assert_eq!(info.total_led_count(), 2);
     assert_eq!(info.zones.len(), 2);
     assert_eq!(info.zones[0].name, "Panel 11");

@@ -126,7 +126,7 @@ impl HueDiscoveredBridge {
             connection_type: ConnectionType::Network,
             origin: self.info.origin.clone(),
             name: self.info.name.clone(),
-            family: DeviceFamily::Hue,
+            family: DeviceFamily::new_static("hue", "Philips Hue"),
             fingerprint,
             connect_behavior: self.connect_behavior,
             info: self.info,
@@ -200,7 +200,7 @@ pub fn build_device_info(
         id: device_id,
         name: resolved_device_name(bridge_id, bridge_name, entertainment_config),
         vendor: "Philips Hue".to_owned(),
-        family: DeviceFamily::Hue,
+        family: DeviceFamily::new_static("hue", "Philips Hue"),
         model: model_id
             .map(str::trim)
             .filter(|value| !value.is_empty())

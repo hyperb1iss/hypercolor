@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn discovered_known_device_requests_connect() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Case Strip", DeviceFamily::Wled);
+        let info = device_info("Case Strip", DeviceFamily::new_static("wled", "WLED"));
         let actions = lifecycle.on_discovered(
             info.id,
             &info,
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn comm_error_emits_disconnect_unmap_and_reconnect() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Desk Strip", DeviceFamily::Wled);
+        let info = device_info("Desk Strip", DeviceFamily::new_static("wled", "WLED"));
         lifecycle.on_discovered(info.id, &info, "wled", None);
         lifecycle
             .on_connected(info.id)
@@ -652,7 +652,10 @@ mod tests {
     #[test]
     fn connect_failure_schedules_reconnect() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Unreachable Device", DeviceFamily::Wled);
+        let info = device_info(
+            "Unreachable Device",
+            DeviceFamily::new_static("wled", "WLED"),
+        );
         lifecycle.on_discovered(info.id, &info, "wled", None);
 
         let actions = lifecycle
@@ -675,7 +678,7 @@ mod tests {
             max_attempts: Some(2),
             jitter: 0.0,
         });
-        let info = device_info("Kitchen Strip", DeviceFamily::Wled);
+        let info = device_info("Kitchen Strip", DeviceFamily::new_static("wled", "WLED"));
         lifecycle.on_discovered(
             info.id,
             &info,
@@ -713,7 +716,10 @@ mod tests {
     #[test]
     fn default_policy_eventually_exhausts_reconnects() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Default Policy Device", DeviceFamily::Wled);
+        let info = device_info(
+            "Default Policy Device",
+            DeviceFamily::new_static("wled", "WLED"),
+        );
         lifecycle.on_discovered(info.id, &info, "wled", None);
 
         lifecycle
@@ -740,7 +746,7 @@ mod tests {
     #[test]
     fn disable_then_enable_reconnects_known_device() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Panel", DeviceFamily::Wled);
+        let info = device_info("Panel", DeviceFamily::new_static("wled", "WLED"));
         lifecycle.on_discovered(info.id, &info, "wled", None);
         lifecycle
             .on_connected(info.id)
@@ -770,7 +776,7 @@ mod tests {
     #[test]
     fn vanished_active_device_requests_disconnect_and_unmap() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Vanishing Strip", DeviceFamily::Wled);
+        let info = device_info("Vanishing Strip", DeviceFamily::new_static("wled", "WLED"));
         lifecycle.on_discovered(info.id, &info, "wled", None);
         lifecycle
             .on_connected(info.id)
@@ -795,14 +801,17 @@ mod tests {
 
     #[test]
     fn layout_id_falls_back_to_backend_prefix_and_normalized_name() {
-        let info = device_info("My Test Device", DeviceFamily::Custom("Mock".to_owned()));
+        let info = device_info("My Test Device", DeviceFamily::named("Mock"));
         let layout_id = DeviceLifecycleManager::layout_device_id("mock", &info);
         assert_eq!(layout_id, "mock:my-test-device");
     }
 
     #[test]
     fn network_fingerprints_use_driver_prefix_without_driver_special_cases() {
-        let info = device_info("Living Room", DeviceFamily::Hue);
+        let info = device_info(
+            "Living Room",
+            DeviceFamily::new_static("hue", "Philips Hue"),
+        );
         let fingerprint = DeviceFingerprint("net:hue:bridge.local".to_owned());
 
         let layout_id =
@@ -813,7 +822,7 @@ mod tests {
 
     #[test]
     fn unscoped_network_fingerprints_preserve_existing_wled_layout_ids() {
-        let info = device_info("Case Strip", DeviceFamily::Wled);
+        let info = device_info("Case Strip", DeviceFamily::new_static("wled", "WLED"));
         let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
 
         let layout_id =

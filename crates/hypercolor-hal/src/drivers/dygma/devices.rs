@@ -37,7 +37,7 @@ macro_rules! dygma_descriptor {
             vendor_id: DYGMA_VENDOR_ID,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::Dygma,
+            family: DeviceFamily::new_static("dygma", "Dygma"),
             transport: TransportType::UsbSerial { baud_rate: 115_200 },
             protocol: ProtocolBinding {
                 id: $protocol_id,

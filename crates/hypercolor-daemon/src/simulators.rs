@@ -56,7 +56,7 @@ impl SimulatedDisplayConfig {
             id: self.id,
             name: self.name.clone(),
             vendor: "Hypercolor".to_owned(),
-            family: DeviceFamily::Custom(SIMULATED_DISPLAY_FAMILY.to_owned()),
+            family: DeviceFamily::named(SIMULATED_DISPLAY_FAMILY.to_owned()),
             model: Some("virtual_display".to_owned()),
             connection_type: ConnectionType::Bridge,
             origin: DeviceOrigin::native(

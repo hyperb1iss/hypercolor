@@ -92,7 +92,7 @@ impl DeviceBackend for ContentionMockBackend {
             id: self.device_id,
             name: format!("contention-{}", self.backend_id),
             vendor: "hypercolor-test".to_owned(),
-            family: DeviceFamily::Custom("Contention".to_owned()),
+            family: DeviceFamily::named("Contention"),
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native(

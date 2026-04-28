@@ -118,7 +118,7 @@ fn usb_device_info() -> DeviceInfo {
         id: DeviceId::new(),
         name: "USB Test Device".into(),
         vendor: "TestCorp".into(),
-        family: DeviceFamily::PrismRgb,
+        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
         model: Some("test_prism".into()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
@@ -148,7 +148,7 @@ fn smbus_device_info(name: &str) -> DeviceInfo {
         id: DeviceId::new(),
         name: name.into(),
         vendor: "ASUS".into(),
-        family: DeviceFamily::Asus,
+        family: DeviceFamily::new_static("asus", "ASUS"),
         model: Some("asus_aura_smbus_dram".into()),
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
@@ -178,7 +178,7 @@ fn mock_device_info() -> DeviceInfo {
         id: DeviceId::new(),
         name: "Mock Layout Device".into(),
         vendor: "Mock".into(),
-        family: DeviceFamily::Custom("mock".into()),
+        family: DeviceFamily::named("mock"),
         model: Some("mock_layout_device".into()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),

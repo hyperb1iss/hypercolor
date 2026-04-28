@@ -39,7 +39,7 @@ macro_rules! prismrgb_descriptor {
             vendor_id: $vid,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::PrismRgb,
+            family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
             transport: TransportType::UsbHid {
                 interface: $interface,
             },

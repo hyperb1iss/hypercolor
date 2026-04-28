@@ -292,7 +292,7 @@ fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
         id: device_id,
         name: format!("{} ({serial_short})", block_type.display_name()),
         vendor: "ROLI".to_owned(),
-        family: DeviceFamily::Roli,
+        family: DeviceFamily::new_static("roli", "ROLI"),
         model: Some(block_type.display_name().to_owned()),
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("roli", "blocks", ConnectionType::Bridge),

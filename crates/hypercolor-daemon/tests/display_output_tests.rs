@@ -286,7 +286,7 @@ fn simulated_display_device_info(device_id: DeviceId, width: u32, height: u32) -
     let mut info = display_device_info(device_id, true, width, height, true);
     "Simulated Display".clone_into(&mut info.name);
     "Hypercolor".clone_into(&mut info.vendor);
-    info.family = DeviceFamily::Custom(SIMULATED_DISPLAY_BACKEND_ID.to_owned());
+    info.family = DeviceFamily::named(SIMULATED_DISPLAY_BACKEND_ID.to_owned());
     info.connection_type = ConnectionType::Network;
     info.origin = DeviceOrigin::native(
         SIMULATED_DISPLAY_BACKEND_ID,
@@ -365,7 +365,7 @@ fn display_device_info_with_format_and_max_fps(
         id: device_id,
         name: "Corsair Test Device".to_owned(),
         vendor: "Corsair".to_owned(),
-        family: DeviceFamily::Corsair,
+        family: DeviceFamily::new_static("corsair", "Corsair"),
         model: None,
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
@@ -641,7 +641,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
         id: device_id,
         name: "Hybrid Display Device".to_owned(),
         vendor: "Corsair".to_owned(),
-        family: DeviceFamily::Corsair,
+        family: DeviceFamily::new_static("corsair", "Corsair"),
         model: Some("hybrid-display".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),

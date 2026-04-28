@@ -20,7 +20,7 @@ static LINK_DESCRIPTORS: &[DeviceDescriptor] = &[DeviceDescriptor {
     vendor_id: CORSAIR_VID,
     product_id: PID_ICUE_LINK_SYSTEM_HUB,
     name: "Corsair iCUE LINK System Hub",
-    family: DeviceFamily::Corsair,
+    family: DeviceFamily::new_static("corsair", "Corsair"),
     transport: TransportType::UsbHid { interface: 0 },
     protocol: ProtocolBinding {
         id: "corsair/icue-link-system-hub",

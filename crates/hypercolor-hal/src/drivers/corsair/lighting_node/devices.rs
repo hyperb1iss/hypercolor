@@ -74,7 +74,7 @@ macro_rules! lighting_node_descriptor {
             vendor_id: CORSAIR_VID,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::Corsair,
+            family: DeviceFamily::new_static("corsair", "Corsair"),
             transport: TransportType::UsbHid { interface: 0 },
             protocol: ProtocolBinding {
                 id: $protocol_id,

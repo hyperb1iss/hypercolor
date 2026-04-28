@@ -44,7 +44,7 @@ fn sample_device() -> DeviceInfo {
         id: DeviceId::new(),
         name: "Prism S".into(),
         vendor: "PrismRGB".into(),
-        family: DeviceFamily::PrismRgb,
+        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
         model: Some("prism_s".into()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb),

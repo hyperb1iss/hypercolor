@@ -75,7 +75,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: PRISM_VENDOR_ID,
         pid: PID_PRISM_8,
         name: "PrismRGB Prism 8",
-        family: DeviceFamily::PrismRgb,
+        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
         protocol_id: "nollie/prism-8",
         builder: build_prism_8_protocol
     ),
@@ -83,7 +83,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_VENDOR_ID,
         pid: PID_NOLLIE_1,
         name: "Nollie 1",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-1",
         builder: build_nollie_1_protocol
     ),
@@ -91,7 +91,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_VENDOR_ID,
         pid: PID_NOLLIE_8_V2,
         name: "Nollie 8 v2",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-8-v2",
         builder: build_nollie_8_v2_protocol
     ),
@@ -99,7 +99,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_VENDOR_ID,
         pid: PID_NOLLIE_28_12_A,
         name: "Nollie 28/12",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-28-12",
         builder: build_nollie_28_12_protocol
     ),
@@ -107,7 +107,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_VENDOR_ID,
         pid: PID_NOLLIE_28_12_B,
         name: "Nollie 28/12 (rev B)",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-28-12-b",
         builder: build_nollie_28_12_protocol
     ),
@@ -115,7 +115,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_VENDOR_ID,
         pid: PID_NOLLIE_28_12_C,
         name: "Nollie 28/12 (rev C)",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-28-12-c",
         builder: build_nollie_28_12_protocol
     ),
@@ -123,7 +123,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_GEN2_VENDOR_ID,
         pid: PID_NOLLIE_16_V3,
         name: "Nollie 16 v3",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-16-v3",
         builder: build_nollie_16_v3_protocol
     ),
@@ -131,7 +131,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         vid: NOLLIE_GEN2_VENDOR_ID,
         pid: PID_NOLLIE_32,
         name: "Nollie 32",
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-32",
         builder: build_nollie_32_protocol
     ),

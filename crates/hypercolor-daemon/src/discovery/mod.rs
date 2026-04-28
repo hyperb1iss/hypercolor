@@ -371,7 +371,7 @@ mod tests {
             id: DeviceId::new(),
             name: "Test Device".to_owned(),
             vendor: "Test".to_owned(),
-            family: DeviceFamily::Custom("test".to_owned()),
+            family: DeviceFamily::named("test"),
             model: None,
             connection_type: ConnectionType::Network,
             origin,

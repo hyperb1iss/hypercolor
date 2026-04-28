@@ -11,7 +11,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, Visitor};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -616,107 +618,52 @@ impl DeviceOrigin {
 
 // ── DeviceFamily ──────────────────────────────────────────────────────────
 
-/// Device family classification for protocol selection and device database
-/// lookup.
-///
-/// Known families are `Copy` and `Hash`-able. Truly unknown hardware uses
-/// `Custom(String)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum DeviceFamily {
-    /// WLED ESP8266/ESP32 controller.
-    Wled,
-
-    /// Philips Hue bridge + lights.
-    Hue,
-
-    /// Nanoleaf `WiFi` panels (Shapes, Canvas, Elements, Lines, Skylight).
-    Nanoleaf,
-
-    /// Govee Wi-Fi lights and RGBIC devices.
-    Govee,
-
-    /// Native Razer USB devices.
-    Razer,
-
-    /// Native Corsair devices (and bridge-managed Corsair in phase 1).
-    Corsair,
-
-    /// Native Dygma keyboards over USB serial.
-    Dygma,
-
-    /// Native Lian Li USB hub devices.
-    LianLi,
-
-    /// Native Nollie OEM USB ARGB controllers.
-    Nollie,
-
-    /// Native `PrismRGB` / `Nollie` USB controllers.
-    PrismRgb,
-
-    /// Native ASUS Aura USB controllers.
-    Asus,
-
-    /// QMK keyboards with per-key HID RGB control.
-    Qmk,
-
-    /// ROLI Blocks (Lightpad, LUMI Keys, Seaboard) via blocksd bridge.
-    Roli,
-
-    /// Unknown or user-defined device family.
-    Custom(String),
+/// Device family classification for presentation and driver-owned metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeviceFamily {
+    id: Cow<'static, str>,
+    name: Cow<'static, str>,
 }
 
 impl DeviceFamily {
-    /// Human-readable vendor name for display purposes.
+    /// Build a compile-time family descriptor for built-in driver catalogs.
     #[must_use]
-    pub fn vendor_name(&self) -> &str {
-        match self {
-            Self::Wled => "WLED",
-            Self::Hue => "Philips Hue",
-            Self::Nanoleaf => "Nanoleaf",
-            Self::Govee => "Govee",
-            Self::Razer => "Razer",
-            Self::Corsair => "Corsair",
-            Self::Dygma => "Dygma",
-            Self::LianLi => "Lian Li",
-            Self::Nollie => "Nollie",
-            Self::PrismRgb => "PrismRGB",
-            Self::Asus => "ASUS",
-            Self::Qmk => "QMK",
-            Self::Roli => "ROLI",
-            Self::Custom(name) => name.as_str(),
+    pub const fn new_static(id: &'static str, name: &'static str) -> Self {
+        Self {
+            id: Cow::Borrowed(id),
+            name: Cow::Borrowed(name),
         }
     }
 
-    /// Stable machine-readable identifier (lowercase, ASCII-safe).
-    ///
-    /// Used for attachment slot matching, API filtering, and persistent
-    /// configuration keys. Returns a borrowed `&str` for known families
-    /// and an owned sanitized `String` for custom families.
+    /// Build a driver-defined family descriptor.
     #[must_use]
-    pub fn id(&self) -> Cow<'static, str> {
-        match self {
-            Self::Wled => "wled".into(),
-            Self::Hue => "hue".into(),
-            Self::Nanoleaf => "nanoleaf".into(),
-            Self::Govee => "govee".into(),
-            Self::Razer => "razer".into(),
-            Self::Corsair => "corsair".into(),
-            Self::Dygma => "dygma".into(),
-            Self::LianLi => "lianli".into(),
-            Self::Nollie => "nollie".into(),
-            Self::PrismRgb => "prismrgb".into(),
-            Self::Asus => "asus".into(),
-            Self::Qmk => "qmk".into(),
-            Self::Roli => "roli".into(),
-            Self::Custom(name) => Cow::Owned(
-                name.chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-                    .collect::<String>()
-                    .to_ascii_lowercase(),
-            ),
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: Cow::Owned(sanitize_family_id(id.into().as_str())),
+            name: Cow::Owned(name.into()),
         }
+    }
+
+    /// Build a descriptor from only a display name.
+    #[must_use]
+    pub fn named(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            id: Cow::Owned(sanitize_family_id(&name)),
+            name: Cow::Owned(name),
+        }
+    }
+
+    /// Human-readable family or vendor name for display purposes.
+    #[must_use]
+    pub fn vendor_name(&self) -> &str {
+        self.name.as_ref()
+    }
+
+    /// Stable machine-readable identifier (lowercase, ASCII-safe).
+    #[must_use]
+    pub fn id(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.id.as_ref())
     }
 }
 
@@ -724,6 +671,115 @@ impl fmt::Display for DeviceFamily {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.vendor_name())
     }
+}
+
+impl Serialize for DeviceFamily {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("DeviceFamily", 2)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("name", &self.name)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceFamily {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DeviceFamilyVisitor)
+    }
+}
+
+struct DeviceFamilyVisitor;
+
+impl<'de> Visitor<'de> for DeviceFamilyVisitor {
+    type Value = DeviceFamily;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a device family string, tuple, or object")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(legacy_device_family(value))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let id: String = seq
+            .next_element()?
+            .ok_or_else(|| de::Error::missing_field("id"))?;
+        let name: String = seq
+            .next_element()?
+            .ok_or_else(|| de::Error::missing_field("name"))?;
+        Ok(DeviceFamily::new(id, name))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut id = None;
+        let mut name = None;
+        let mut custom = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "id" => id = Some(map.next_value::<String>()?),
+                "name" => name = Some(map.next_value::<String>()?),
+                "Custom" => custom = Some(map.next_value::<String>()?),
+                legacy => {
+                    let _ignored = map.next_value::<de::IgnoredAny>()?;
+                    if custom.is_none() {
+                        custom = Some(legacy.to_owned());
+                    }
+                }
+            }
+        }
+
+        if let Some(custom) = custom {
+            return Ok(DeviceFamily::named(custom));
+        }
+
+        let id = id.ok_or_else(|| de::Error::missing_field("id"))?;
+        let name = name.ok_or_else(|| de::Error::missing_field("name"))?;
+        Ok(DeviceFamily::new(id, name))
+    }
+}
+
+fn legacy_device_family(value: &str) -> DeviceFamily {
+    match value {
+        "Wled" | "wled" | "WLED" => DeviceFamily::new_static("wled", "WLED"),
+        "Hue" | "hue" | "Philips Hue" => DeviceFamily::new_static("hue", "Philips Hue"),
+        "Nanoleaf" | "nanoleaf" => DeviceFamily::new_static("nanoleaf", "Nanoleaf"),
+        "Govee" | "govee" => DeviceFamily::new_static("govee", "Govee"),
+        "Razer" | "razer" => DeviceFamily::new_static("razer", "Razer"),
+        "Corsair" | "corsair" => DeviceFamily::new_static("corsair", "Corsair"),
+        "Dygma" | "dygma" => DeviceFamily::new_static("dygma", "Dygma"),
+        "LianLi" | "Lian Li" | "lianli" => DeviceFamily::new_static("lianli", "Lian Li"),
+        "Nollie" | "nollie" => DeviceFamily::new_static("nollie", "Nollie"),
+        "PrismRgb" | "PrismRGB" | "prismrgb" => DeviceFamily::new_static("prismrgb", "PrismRGB"),
+        "Asus" | "ASUS" | "asus" => DeviceFamily::new_static("asus", "ASUS"),
+        "Qmk" | "QMK" | "qmk" => DeviceFamily::new_static("qmk", "QMK"),
+        "Roli" | "ROLI" | "roli" => DeviceFamily::new_static("roli", "ROLI"),
+        other => DeviceFamily::named(other.to_owned()),
+    }
+}
+
+fn sanitize_family_id(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 // ── DeviceState ───────────────────────────────────────────────────────────

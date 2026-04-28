@@ -381,7 +381,7 @@ fn all_descriptors_use_qmk_family() {
     for desc in hypercolor_hal::drivers::qmk::descriptors() {
         assert_eq!(
             desc.family,
-            hypercolor_types::device::DeviceFamily::Qmk,
+            hypercolor_types::device::DeviceFamily::new_static("qmk", "QMK"),
             "{} should be QMK family",
             desc.name
         );

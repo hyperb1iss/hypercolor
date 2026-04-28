@@ -643,7 +643,7 @@ mod tests {
             id: DeviceId::new(),
             name: "PrismRGB Prism S".to_owned(),
             vendor: "PrismRGB".to_owned(),
-            family: DeviceFamily::PrismRgb,
+            family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
             model: Some("prism_s".to_owned()),
             connection_type: ConnectionType::Usb,
             origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)

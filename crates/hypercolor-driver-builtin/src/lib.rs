@@ -8,7 +8,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::{GoveeConfig, HypercolorConfig};
+#[cfg(feature = "govee")]
+use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::config::HypercolorConfig;
 
 #[cfg(feature = "govee")]
 use hypercolor_driver_govee::GoveeDriverModule;

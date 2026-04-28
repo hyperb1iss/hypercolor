@@ -60,7 +60,7 @@ fn lookup_returns_asus_motherboard_descriptor() {
         .expect("ASUS motherboard descriptor should exist");
 
     assert_eq!(descriptor.name, "ASUS Aura Motherboard (Gen 3)");
-    assert_eq!(descriptor.family, DeviceFamily::Asus);
+    assert_eq!(descriptor.family, DeviceFamily::new_static("asus", "ASUS"));
     assert_eq!(descriptor.protocol.id, "asus/motherboard-gen3");
     assert_eq!(
         descriptor.transport,
@@ -83,7 +83,7 @@ fn lookup_returns_asus_terminal_descriptor() {
         .expect("ASUS Aura Terminal descriptor should exist");
 
     assert_eq!(descriptor.name, "ASUS Aura Terminal");
-    assert_eq!(descriptor.family, DeviceFamily::Asus);
+    assert_eq!(descriptor.family, DeviceFamily::new_static("asus", "ASUS"));
     assert_eq!(descriptor.protocol.id, "asus/terminal");
 
     let protocol = (descriptor.protocol.build)();
@@ -97,7 +97,10 @@ fn lookup_returns_prism_8_descriptor() {
         .expect("Prism 8 descriptor should exist");
 
     assert_eq!(descriptor.name, "PrismRGB Prism 8");
-    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("prismrgb", "PrismRGB")
+    );
     assert_eq!(descriptor.driver_id(), "nollie");
     assert_eq!(descriptor.protocol.id, "nollie/prism-8");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
@@ -114,7 +117,10 @@ fn lookup_returns_lianli_sl_infinity_descriptor() {
         .expect("Lian Li SL Infinity descriptor should exist");
 
     assert_eq!(descriptor.name, "Lian Li Uni Hub - SL Infinity");
-    assert_eq!(descriptor.family, DeviceFamily::LianLi);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("lianli", "Lian Li")
+    );
     assert_eq!(descriptor.protocol.id, "lianli/sl-infinity");
     assert_eq!(
         descriptor.transport,
@@ -135,7 +141,10 @@ fn lookup_returns_lianli_tl_fan_descriptor() {
         .expect("Lian Li TL Fan descriptor should exist");
 
     assert_eq!(descriptor.name, "Lian Li TL Fan Hub");
-    assert_eq!(descriptor.family, DeviceFamily::LianLi);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("lianli", "Lian Li")
+    );
     assert_eq!(descriptor.protocol.id, "lianli/tl-fan");
     assert_eq!(
         descriptor.transport,
@@ -160,7 +169,10 @@ fn lookup_returns_lianli_original_descriptor() {
         .expect("original Lian Li UNI Hub descriptor should exist");
 
     assert_eq!(descriptor.name, "Lian Li Uni Hub");
-    assert_eq!(descriptor.family, DeviceFamily::LianLi);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("lianli", "Lian Li")
+    );
     assert_eq!(descriptor.protocol.id, "lianli/original");
     assert_eq!(descriptor.transport, TransportType::UsbVendor);
 
@@ -202,7 +214,10 @@ fn lookup_returns_defy_wired_descriptor() {
         .expect("Dygma Defy descriptor should exist");
 
     assert_eq!(descriptor.name, "Dygma Defy");
-    assert_eq!(descriptor.family, DeviceFamily::Dygma);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("dygma", "Dygma")
+    );
     assert_eq!(descriptor.protocol.id, "dygma/defy-wired");
     assert_eq!(
         descriptor.transport,
@@ -222,7 +237,10 @@ fn lookup_returns_defy_wireless_descriptor() {
         .expect("Dygma Defy Wireless descriptor should exist");
 
     assert_eq!(descriptor.name, "Dygma Defy Wireless");
-    assert_eq!(descriptor.family, DeviceFamily::Dygma);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("dygma", "Dygma")
+    );
     assert_eq!(descriptor.protocol.id, "dygma/defy-wireless");
     assert_eq!(
         descriptor.transport,
@@ -236,10 +254,7 @@ fn lookup_returns_push2_descriptor() {
         .expect("Ableton Push 2 descriptor should exist");
 
     assert_eq!(descriptor.name, "Ableton Push 2");
-    assert_eq!(
-        descriptor.family,
-        DeviceFamily::Custom("Ableton".to_owned())
-    );
+    assert_eq!(descriptor.family, DeviceFamily::named("Ableton"));
     assert_eq!(descriptor.protocol.id, "push2/push-2");
     assert_eq!(
         descriptor.transport,
@@ -263,7 +278,10 @@ fn lookup_returns_icue_link_system_hub_descriptor() {
         .expect("Corsair iCUE LINK System Hub descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair iCUE LINK System Hub");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/icue-link-system-hub");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -279,7 +297,10 @@ fn lookup_returns_lighting_node_core_descriptor() {
         .expect("Corsair Lighting Node Core descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair Lighting Node Core");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/lighting-node-core");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -295,7 +316,10 @@ fn lookup_returns_lighting_node_pro_descriptor() {
         .expect("Corsair Lighting Node Pro descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair Lighting Node Pro");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/lighting-node-pro");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -311,7 +335,10 @@ fn lookup_returns_commander_pro_descriptor() {
         .expect("Corsair Commander Pro descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair Commander Pro");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/commander-pro");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 }
@@ -322,7 +349,10 @@ fn lookup_returns_elite_capellix_lcd_descriptor() {
         .expect("Corsair Elite Capellix LCD descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair Elite Capellix LCD");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/elite-capellix-lcd");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -338,7 +368,10 @@ fn lookup_returns_icue_link_lcd_descriptor() {
         .expect("Corsair iCUE LINK LCD descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair iCUE LINK LCD");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/icue-link-lcd");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 }
@@ -349,7 +382,10 @@ fn lookup_returns_xd6_elite_lcd_descriptor() {
         .expect("Corsair XD6 Elite LCD descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair XD6 Elite LCD");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/xd6-elite-lcd");
 
     let protocol = (descriptor.protocol.build)();
@@ -363,7 +399,10 @@ fn lookup_returns_xc7_rgb_elite_lcd_descriptor() {
         .expect("Corsair XC7 RGB Elite LCD descriptor should exist");
 
     assert_eq!(descriptor.name, "Corsair XC7 RGB Elite LCD");
-    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("corsair", "Corsair")
+    );
     assert_eq!(descriptor.protocol.id, "corsair/xc7-rgb-elite-lcd");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -386,7 +425,10 @@ fn lookup_returns_nollie_8_v2_descriptor() {
         .expect("Nollie 8 v2 descriptor should exist");
 
     assert_eq!(descriptor.name, "Nollie 8 v2");
-    assert_eq!(descriptor.family, DeviceFamily::Nollie);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("nollie", "Nollie")
+    );
     assert_eq!(descriptor.protocol.id, "nollie/nollie-8-v2");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 }
@@ -397,7 +439,10 @@ fn lookup_returns_nollie_1_descriptor() {
         .expect("Nollie 1 descriptor should exist");
 
     assert_eq!(descriptor.name, "Nollie 1");
-    assert_eq!(descriptor.family, DeviceFamily::Nollie);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("nollie", "Nollie")
+    );
     assert_eq!(descriptor.protocol.id, "nollie/nollie-1");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 
@@ -412,7 +457,10 @@ fn lookup_returns_nollie_28_12_descriptor() {
         .expect("Nollie 28/12 descriptor should exist");
 
     assert_eq!(descriptor.name, "Nollie 28/12");
-    assert_eq!(descriptor.family, DeviceFamily::Nollie);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("nollie", "Nollie")
+    );
     assert_eq!(descriptor.protocol.id, "nollie/nollie-28-12");
 
     let protocol = (descriptor.protocol.build)();
@@ -425,13 +473,19 @@ fn lookup_returns_nollie_gen2_descriptors() {
     let nollie16 = ProtocolDatabase::lookup(NOLLIE_GEN2_VENDOR_ID, PID_NOLLIE_16_V3)
         .expect("Nollie 16 v3 descriptor should exist");
     assert_eq!(nollie16.name, "Nollie 16 v3");
-    assert_eq!(nollie16.family, DeviceFamily::Nollie);
+    assert_eq!(
+        nollie16.family,
+        DeviceFamily::new_static("nollie", "Nollie")
+    );
     assert_eq!(nollie16.protocol.id, "nollie/nollie-16-v3");
 
     let nollie32 = ProtocolDatabase::lookup(NOLLIE_GEN2_VENDOR_ID, PID_NOLLIE_32)
         .expect("Nollie 32 descriptor should exist");
     assert_eq!(nollie32.name, "Nollie 32");
-    assert_eq!(nollie32.family, DeviceFamily::Nollie);
+    assert_eq!(
+        nollie32.family,
+        DeviceFamily::new_static("nollie", "Nollie")
+    );
     assert_eq!(nollie32.protocol.id, "nollie/nollie-32");
 }
 
@@ -441,7 +495,10 @@ fn lookup_returns_prism_s_descriptor() {
         .expect("Prism S descriptor should exist");
 
     assert_eq!(descriptor.name, "PrismRGB Prism S");
-    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("prismrgb", "PrismRGB")
+    );
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-s");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 2 });
 
@@ -456,7 +513,10 @@ fn lookup_returns_prism_mini_descriptor() {
         .expect("Prism Mini descriptor should exist");
 
     assert_eq!(descriptor.name, "PrismRGB Prism Mini");
-    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("prismrgb", "PrismRGB")
+    );
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-mini");
     assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 2 });
 
@@ -471,7 +531,10 @@ fn lookup_returns_huntsman_descriptor() {
         .expect("Huntsman V2 descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Huntsman V2");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
     assert_eq!(descriptor.protocol.id, "razer/huntsman-v2");
     assert_eq!(
         descriptor.transport,
@@ -489,7 +552,10 @@ fn lookup_returns_basilisk_descriptor() {
         .expect("Basilisk descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Basilisk V3");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
     assert_eq!(
         descriptor.transport,
         expected_razer_shared_hid_transport(3, 0x00, Some(0x000C), Some(0x0001))
@@ -502,7 +568,10 @@ fn lookup_returns_mamba_elite_descriptor() {
         .expect("Mamba Elite descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Mamba Elite");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
     assert_eq!(descriptor.protocol.id, "razer/mamba-elite");
     assert_eq!(
         descriptor.transport,
@@ -520,7 +589,10 @@ fn lookup_returns_tartarus_chroma_descriptor() {
         .expect("Tartarus Chroma descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Tartarus Chroma");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
     assert_eq!(descriptor.protocol.id, "razer/tartarus-chroma");
     assert_eq!(
         descriptor.transport,
@@ -539,7 +611,10 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
         .expect("Blade descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Blade 15 (Late 2021 Advanced)");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
     assert_eq!(descriptor.protocol.id, "razer/blade-15-late-2021-advanced");
 
     assert_eq!(
@@ -726,7 +801,10 @@ fn lookup_returns_seiren_v3_chroma_descriptor() {
         .expect("Seiren V3 Chroma descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Seiren V3 Chroma");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
     assert_eq!(descriptor.protocol.id, "razer/seiren-v3-chroma");
     assert_eq!(
         descriptor.transport,
@@ -745,7 +823,10 @@ fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
         .expect("Seiren Emote descriptor should exist");
 
     assert_eq!(descriptor.name, "Razer Seiren Emote");
-    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("razer", "Razer")
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer Extended");
@@ -809,7 +890,7 @@ fn lookup_filters_by_enabled_hal_driver_ids() {
         Some(&nollie_only),
     )
     .expect("enabled Nollie descriptor should resolve");
-    assert_eq!(enabled.family, DeviceFamily::Nollie);
+    assert_eq!(enabled.family, DeviceFamily::new_static("nollie", "Nollie"));
 
     let prism_8 = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
         PRISM_VENDOR_ID,
@@ -818,7 +899,10 @@ fn lookup_filters_by_enabled_hal_driver_ids() {
         Some(&nollie_only),
     )
     .expect("Nollie-owned Prism 8 descriptor should resolve");
-    assert_eq!(prism_8.family, DeviceFamily::PrismRgb);
+    assert_eq!(
+        prism_8.family,
+        DeviceFamily::new_static("prismrgb", "PrismRGB")
+    );
     assert_eq!(prism_8.driver_id(), "nollie");
 
     let disabled = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
@@ -869,11 +953,11 @@ fn module_descriptors_group_hal_protocols_by_family() {
         vec![DriverTransportKind::Usb, DriverTransportKind::Smbus]
     );
 
-    let ableton = modules
+    let push2 = modules
         .iter()
-        .find(|module| module.id == "ableton")
-        .expect("Ableton module descriptor should exist");
-    assert_eq!(ableton.transports, vec![DriverTransportKind::Midi]);
+        .find(|module| module.id == "push2")
+        .expect("Push 2 module descriptor should exist");
+    assert_eq!(push2.transports, vec![DriverTransportKind::Midi]);
 
     let dygma = modules
         .iter()

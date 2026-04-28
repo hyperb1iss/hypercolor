@@ -19,7 +19,7 @@ fn tracked_hue_device() -> DriverTrackedDevice {
             id: DeviceId::new(),
             name: "Studio Bridge".to_owned(),
             vendor: "Philips Hue".to_owned(),
-            family: DeviceFamily::Hue,
+            family: DeviceFamily::new_static("hue", "Philips Hue"),
             model: Some("BSB002".to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),

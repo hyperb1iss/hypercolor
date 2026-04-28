@@ -623,7 +623,7 @@ fn build_device_info(
             controller_kind.display_name()
         ),
         vendor: "ASUS".to_owned(),
-        family: DeviceFamily::Asus,
+        family: DeviceFamily::new_static("asus", "ASUS"),
         model: Some(controller_kind.model_id().to_owned()),
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)

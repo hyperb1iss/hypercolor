@@ -22,7 +22,7 @@ fn tracked_wled_device(ip: &str, hostname: &str, name: &str) -> DriverTrackedDev
             id: DeviceId::new(),
             name: name.to_owned(),
             vendor: "WLED".to_owned(),
-            family: DeviceFamily::Wled,
+            family: DeviceFamily::new_static("wled", "WLED"),
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),

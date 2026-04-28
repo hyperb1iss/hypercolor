@@ -162,7 +162,7 @@ fn device_info(id: DeviceId, name: &str) -> DeviceInfo {
         id,
         name: name.to_owned(),
         vendor: "TestVendor".to_owned(),
-        family: DeviceFamily::Custom("mock".to_owned()),
+        family: DeviceFamily::named("mock"),
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),

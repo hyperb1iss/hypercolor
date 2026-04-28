@@ -62,7 +62,7 @@ fn sample_device_info() -> DeviceInfo {
         id: DeviceId::new(),
         name: "Test Strip".into(),
         vendor: "WLED".into(),
-        family: DeviceFamily::Wled,
+        family: DeviceFamily::new_static("wled", "WLED"),
         model: Some("strip".into()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
@@ -116,7 +116,7 @@ fn device_info_empty_zones_yields_zero_leds() {
         id: DeviceId::new(),
         name: "Empty".into(),
         vendor: "Test".into(),
-        family: DeviceFamily::Custom("test".into()),
+        family: DeviceFamily::named("test"),
         model: None,
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Bridge),
@@ -386,57 +386,91 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
 
 #[test]
 fn device_family_display() {
-    assert_eq!(DeviceFamily::Wled.to_string(), "WLED");
-    assert_eq!(DeviceFamily::Hue.to_string(), "Philips Hue");
-    assert_eq!(DeviceFamily::Nanoleaf.to_string(), "Nanoleaf");
-    assert_eq!(DeviceFamily::Razer.to_string(), "Razer");
-    assert_eq!(DeviceFamily::Corsair.to_string(), "Corsair");
-    assert_eq!(DeviceFamily::Dygma.to_string(), "Dygma");
-    assert_eq!(DeviceFamily::LianLi.to_string(), "Lian Li");
-    assert_eq!(DeviceFamily::Nollie.to_string(), "Nollie");
-    assert_eq!(DeviceFamily::PrismRgb.to_string(), "PrismRGB");
-    assert_eq!(DeviceFamily::Asus.to_string(), "ASUS");
+    assert_eq!(DeviceFamily::new_static("wled", "WLED").to_string(), "WLED");
     assert_eq!(
-        DeviceFamily::Custom("PrismRGB".into()).to_string(),
+        DeviceFamily::new_static("hue", "Philips Hue").to_string(),
+        "Philips Hue"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("nanoleaf", "Nanoleaf").to_string(),
+        "Nanoleaf"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("razer", "Razer").to_string(),
+        "Razer"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("corsair", "Corsair").to_string(),
+        "Corsair"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("dygma", "Dygma").to_string(),
+        "Dygma"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("lianli", "Lian Li").to_string(),
+        "Lian Li"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("nollie", "Nollie").to_string(),
+        "Nollie"
+    );
+    assert_eq!(
+        DeviceFamily::new_static("prismrgb", "PrismRGB").to_string(),
         "PrismRGB"
     );
+    assert_eq!(DeviceFamily::new_static("asus", "ASUS").to_string(), "ASUS");
+    assert_eq!(DeviceFamily::named("PrismRGB").to_string(), "PrismRGB");
 }
 
 #[test]
 fn device_family_equality() {
-    assert_eq!(DeviceFamily::Wled, DeviceFamily::Wled);
-    assert_ne!(DeviceFamily::Wled, DeviceFamily::Hue);
-    assert_ne!(DeviceFamily::Hue, DeviceFamily::Nanoleaf);
     assert_eq!(
-        DeviceFamily::Custom("Foo".into()),
-        DeviceFamily::Custom("Foo".into())
+        DeviceFamily::new_static("wled", "WLED"),
+        DeviceFamily::new_static("wled", "WLED")
     );
     assert_ne!(
-        DeviceFamily::Custom("Foo".into()),
-        DeviceFamily::Custom("Bar".into())
+        DeviceFamily::new_static("wled", "WLED"),
+        DeviceFamily::new_static("hue", "Philips Hue")
     );
+    assert_ne!(
+        DeviceFamily::new_static("hue", "Philips Hue"),
+        DeviceFamily::new_static("nanoleaf", "Nanoleaf")
+    );
+    assert_eq!(DeviceFamily::named("Foo"), DeviceFamily::named("Foo"));
+    assert_ne!(DeviceFamily::named("Foo"), DeviceFamily::named("Bar"));
 }
 
 #[test]
 fn device_family_serde_round_trip() {
     let families = vec![
-        DeviceFamily::Wled,
-        DeviceFamily::Hue,
-        DeviceFamily::Nanoleaf,
-        DeviceFamily::Razer,
-        DeviceFamily::Corsair,
-        DeviceFamily::Dygma,
-        DeviceFamily::LianLi,
-        DeviceFamily::Nollie,
-        DeviceFamily::PrismRgb,
-        DeviceFamily::Asus,
-        DeviceFamily::Custom("PrismRGB".into()),
+        DeviceFamily::new_static("wled", "WLED"),
+        DeviceFamily::new_static("hue", "Philips Hue"),
+        DeviceFamily::new_static("nanoleaf", "Nanoleaf"),
+        DeviceFamily::new_static("razer", "Razer"),
+        DeviceFamily::new_static("corsair", "Corsair"),
+        DeviceFamily::new_static("dygma", "Dygma"),
+        DeviceFamily::new_static("lianli", "Lian Li"),
+        DeviceFamily::new_static("nollie", "Nollie"),
+        DeviceFamily::new_static("prismrgb", "PrismRGB"),
+        DeviceFamily::new_static("asus", "ASUS"),
+        DeviceFamily::named("PrismRGB"),
     ];
     for family in families {
         let json = serde_json::to_string(&family).expect("serialize");
         let back: DeviceFamily = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, family);
     }
+}
+
+#[test]
+fn device_family_deserializes_legacy_variants() {
+    let family: DeviceFamily = serde_json::from_str(r#""Wled""#).expect("legacy unit variant");
+    assert_eq!(family, DeviceFamily::new_static("wled", "WLED"));
+
+    let family: DeviceFamily =
+        serde_json::from_str(r#"{"Custom":"PrismRGB"}"#).expect("legacy custom variant");
+    assert_eq!(family, DeviceFamily::named("PrismRGB"));
 }
 
 // ── Color ─────────────────────────────────────────────────────────────────

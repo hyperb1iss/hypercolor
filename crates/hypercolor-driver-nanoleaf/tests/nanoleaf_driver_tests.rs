@@ -22,7 +22,7 @@ fn tracked_nanoleaf_device() -> DriverTrackedDevice {
             id: DeviceId::new(),
             name: "Shapes".to_owned(),
             vendor: "Nanoleaf".to_owned(),
-            family: DeviceFamily::Nanoleaf,
+            family: DeviceFamily::new_static("nanoleaf", "Nanoleaf"),
             model: Some("NL42".to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),

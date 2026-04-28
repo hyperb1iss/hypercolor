@@ -12,7 +12,7 @@ fn prism_s_info() -> DeviceInfo {
         id: DeviceId::new(),
         name: "PrismRGB Prism S".to_owned(),
         vendor: "PrismRGB".to_owned(),
-        family: DeviceFamily::PrismRgb,
+        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
         model: Some("prism_s".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
@@ -28,7 +28,7 @@ fn nollie32_info() -> DeviceInfo {
         id: DeviceId::new(),
         name: "Nollie 32".to_owned(),
         vendor: "Nollie".to_owned(),
-        family: DeviceFamily::Nollie,
+        family: DeviceFamily::new_static("nollie", "Nollie"),
         model: Some("nollie_32".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)

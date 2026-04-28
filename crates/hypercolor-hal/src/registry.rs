@@ -57,10 +57,6 @@ impl DeviceDescriptor {
     /// Driver module that owns this protocol descriptor.
     #[must_use]
     pub fn driver_id(&self) -> Cow<'_, str> {
-        if matches!(self.family, DeviceFamily::Custom(_)) {
-            return self.family.id();
-        }
-
         self.protocol.id.split_once('/').map_or_else(
             || self.family.id(),
             |(driver_id, _)| Cow::Borrowed(driver_id),

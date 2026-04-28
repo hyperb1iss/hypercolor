@@ -841,7 +841,7 @@ fn hidapi_descriptor(
         vendor_id: RAZER_VENDOR_ID,
         product_id,
         name,
-        family: DeviceFamily::Razer,
+        family: DeviceFamily::new_static("razer", "Razer"),
         transport: TransportType::UsbHidApi {
             interface,
             report_id,
@@ -867,7 +867,7 @@ fn control_descriptor(
         vendor_id: RAZER_VENDOR_ID,
         product_id,
         name,
-        family: DeviceFamily::Razer,
+        family: DeviceFamily::new_static("razer", "Razer"),
         transport: TransportType::UsbControl {
             interface: 2,
             report_id: HID_REPORT_ID_DEFAULT,

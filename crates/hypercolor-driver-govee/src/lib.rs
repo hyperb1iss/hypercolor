@@ -584,7 +584,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
         id: fingerprint.stable_device_id(),
         name: name.clone(),
         vendor: "Govee".to_owned(),
-        family: DeviceFamily::Govee,
+        family: DeviceFamily::new_static("govee", "Govee"),
         model: Some(device.model.clone()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),

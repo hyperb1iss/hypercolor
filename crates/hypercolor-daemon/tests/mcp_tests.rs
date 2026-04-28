@@ -94,7 +94,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         id,
         name: name.to_owned(),
         vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::Wled,
+        family: DeviceFamily::new_static("wled", "WLED"),
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),

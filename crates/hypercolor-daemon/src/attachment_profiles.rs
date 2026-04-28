@@ -174,7 +174,7 @@ mod tests {
             id: DeviceId::new(),
             name: "Hue Area".to_owned(),
             vendor: "Philips Hue".to_owned(),
-            family: DeviceFamily::Hue,
+            family: DeviceFamily::new_static("hue", "Philips Hue"),
             model: Some("Bridge".to_owned()),
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),

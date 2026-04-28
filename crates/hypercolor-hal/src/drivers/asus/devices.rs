@@ -92,7 +92,7 @@ macro_rules! asus_descriptor {
             vendor_id: ASUS_VID,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::Asus,
+            family: DeviceFamily::new_static("asus", "ASUS"),
             transport: TransportType::UsbHidRaw {
                 interface: 2,
                 report_id: AURA_REPORT_ID,

@@ -153,7 +153,7 @@ macro_rules! qmk_descriptor {
             vendor_id: $vid,
             product_id: $pid,
             name: $name,
-            family: DeviceFamily::Qmk,
+            family: DeviceFamily::new_static("qmk", "QMK"),
             transport: TransportType::UsbHidApi {
                 interface: None,
                 report_id: 0x00,

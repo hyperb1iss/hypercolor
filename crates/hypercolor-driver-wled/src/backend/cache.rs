@@ -219,7 +219,7 @@ pub(super) fn build_device_info(
         id: device_id,
         name: wled_info.name.clone(),
         vendor: "WLED".to_owned(),
-        family: DeviceFamily::Wled,
+        family: DeviceFamily::new_static("wled", "WLED"),
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
