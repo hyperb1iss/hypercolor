@@ -8,8 +8,8 @@ use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupTarget, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
