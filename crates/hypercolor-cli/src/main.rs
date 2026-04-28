@@ -133,12 +133,16 @@ pub enum Commands {
     #[command(display_order = 10)]
     Devices(commands::devices::DevicesArgs),
 
-    /// Spatial LED layout configuration
+    /// Dynamic driver and device controls
     #[command(display_order = 11)]
+    Controls(commands::controls::ControlsArgs),
+
+    /// Spatial LED layout configuration
+    #[command(display_order = 12)]
     Layouts(commands::layouts::LayoutsArgs),
 
     /// Audio input device selection
-    #[command(display_order = 12)]
+    #[command(display_order = 13)]
     Audio(commands::audio::AudioArgs),
 
     // ── Library ───────────────────────────────────────────────
@@ -224,6 +228,7 @@ async fn main() -> Result<()> {
     let result = match &cli.command {
         Commands::Status(args) => commands::status::execute(args, &client, &ctx).await,
         Commands::Devices(args) => commands::devices::execute(args, &client, &ctx).await,
+        Commands::Controls(args) => commands::controls::execute(args, &client, &ctx).await,
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
         Commands::Profiles(args) => commands::profiles::execute(args, &client, &ctx).await,

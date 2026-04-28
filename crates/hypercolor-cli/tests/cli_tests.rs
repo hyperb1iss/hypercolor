@@ -113,6 +113,59 @@ fn build_cmd() -> clap::Command {
                 ),
         )
         .subcommand(
+            Command::new("controls")
+                .about("Dynamic driver and device controls")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List control surfaces")
+                        .arg(Arg::new("device").long("device"))
+                        .arg(Arg::new("driver").long("driver"))
+                        .arg(
+                            Arg::new("include-driver")
+                                .long("include-driver")
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("show")
+                        .about("Show a control surface")
+                        .arg(Arg::new("target").required(true))
+                        .arg(Arg::new("driver").long("driver").action(ArgAction::SetTrue))
+                        .arg(Arg::new("device").long("device").action(ArgAction::SetTrue)),
+                )
+                .subcommand(
+                    Command::new("set")
+                        .about("Apply control values")
+                        .arg(Arg::new("surface").required(true))
+                        .arg(
+                            Arg::new("value")
+                                .long("value")
+                                .short('v')
+                                .required(true)
+                                .action(ArgAction::Append),
+                        )
+                        .arg(Arg::new("expected-revision").long("expected-revision"))
+                        .arg(
+                            Arg::new("dry-run")
+                                .long("dry-run")
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("action")
+                        .about("Invoke a control action")
+                        .arg(Arg::new("surface").required(true))
+                        .arg(Arg::new("action").required(true))
+                        .arg(
+                            Arg::new("input")
+                                .long("input")
+                                .short('i')
+                                .action(ArgAction::Append),
+                        ),
+                ),
+        )
+        .subcommand(
             Command::new("effects")
                 .about("Effect browsing and control")
                 .subcommand_required(true)
@@ -514,6 +567,101 @@ fn parse_devices_set_color() {
     assert_eq!(
         sc.get_one::<String>("color").map(String::as_str),
         Some("#ff6ac1")
+    );
+}
+
+#[test]
+fn parse_controls_list_device_with_driver_surface() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "controls",
+            "list",
+            "--device",
+            "Desk Strip",
+            "--include-driver",
+        ])
+        .expect("controls list should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, list) = sub.subcommand().expect("should have list");
+    assert_eq!(
+        list.get_one::<String>("device").map(String::as_str),
+        Some("Desk Strip")
+    );
+    assert!(list.get_flag("include-driver"));
+}
+
+#[test]
+fn parse_controls_show_driver_surface() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from(["hyper", "controls", "show", "driver:wled"])
+        .expect("controls show should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, show) = sub.subcommand().expect("should have show");
+    assert_eq!(
+        show.get_one::<String>("target").map(String::as_str),
+        Some("driver:wled")
+    );
+}
+
+#[test]
+fn parse_controls_set_typed_values() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "controls",
+            "set",
+            "driver:wled",
+            "--value",
+            "host=ip:10.0.0.42",
+            "--value",
+            "timeout=duration:1500",
+            "--expected-revision",
+            "4",
+            "--dry-run",
+        ])
+        .expect("controls set should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, set) = sub.subcommand().expect("should have set");
+    let values: Vec<&String> = set
+        .get_many::<String>("value")
+        .expect("should have values")
+        .collect();
+    assert_eq!(values, vec!["host=ip:10.0.0.42", "timeout=duration:1500"]);
+    assert_eq!(
+        set.get_one::<String>("expected-revision")
+            .map(String::as_str),
+        Some("4")
+    );
+    assert!(set.get_flag("dry-run"));
+}
+
+#[test]
+fn parse_controls_action_with_input() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "controls",
+            "action",
+            "device:strip",
+            "identify",
+            "--input",
+            "duration_ms=duration:1200",
+        ])
+        .expect("controls action should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, action) = sub.subcommand().expect("should have action");
+    assert_eq!(
+        action.get_one::<String>("surface").map(String::as_str),
+        Some("device:strip")
+    );
+    assert_eq!(
+        action.get_one::<String>("action").map(String::as_str),
+        Some("identify")
     );
 }
 

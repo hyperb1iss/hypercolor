@@ -4,6 +4,7 @@ pub mod audio;
 pub mod brightness;
 pub mod completions;
 pub mod config;
+pub mod controls;
 pub mod devices;
 pub mod diagnose;
 pub mod effects;
