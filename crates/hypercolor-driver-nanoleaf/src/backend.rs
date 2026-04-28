@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::scanner::{NanoleafKnownDevice, NanoleafScanner, load_auth_token};
@@ -51,7 +52,7 @@ pub struct NanoleafBackend {
     credential_store: Arc<CredentialStore>,
     mdns_enabled: bool,
     discovered: HashMap<DeviceId, NanoleafDiscoveredDevice>,
-    devices: HashMap<DeviceId, NanoleafDeviceState>,
+    devices: HashMap<DeviceId, Arc<Mutex<NanoleafDeviceState>>>,
 }
 
 struct NanoleafDeviceState {
@@ -138,6 +139,75 @@ impl NanoleafBackend {
         resolved.sort_by_key(|device| device.ip);
         resolved
     }
+
+    async fn write_device_colors(
+        id: &DeviceId,
+        device: &Arc<Mutex<NanoleafDeviceState>>,
+        colors: &[[u8; 3]],
+        transition_time: u16,
+    ) -> Result<()> {
+        let mut device = device.lock().await;
+
+        let expected_led_count =
+            usize::try_from(device.info.total_led_count()).unwrap_or(usize::MAX);
+        if colors.len() != expected_led_count {
+            let should_warn = device
+                .last_size_mismatch_warn_at
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+            if should_warn {
+                warn!(
+                    device_id = %id,
+                    expected_led_count,
+                    actual_led_count = colors.len(),
+                    "Nanoleaf frame size mismatch; truncating or padding to match panel count"
+                );
+                device.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        if device.brightness == u8::MAX {
+            device.stream.send_frame(colors, transition_time).await?;
+            return Ok(());
+        }
+
+        let brightness = device.brightness;
+        device.scaled_colors.clear();
+        device.scaled_colors.reserve(colors.len());
+        for [r, g, b] in colors.iter().copied() {
+            device.scaled_colors.push([
+                scale_channel(r, brightness),
+                scale_channel(g, brightness),
+                scale_channel(b, brightness),
+            ]);
+        }
+
+        let scaled_colors = std::mem::take(&mut device.scaled_colors);
+        let result = device
+            .stream
+            .send_frame(scaled_colors.as_slice(), transition_time)
+            .await;
+        device.scaled_colors = scaled_colors;
+        result
+    }
+}
+
+struct NanoleafFrameSink {
+    device_id: DeviceId,
+    device: Arc<Mutex<NanoleafDeviceState>>,
+    transition_time: u16,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for NanoleafFrameSink {
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        NanoleafBackend::write_device_colors(
+            &self.device_id,
+            &self.device,
+            colors.as_slice(),
+            self.transition_time,
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -169,7 +239,10 @@ impl DeviceBackend for NanoleafBackend {
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        Ok(self.devices.get(id).map(|device| device.info.clone()))
+        let Some(device) = self.devices.get(id) else {
+            return Ok(None);
+        };
+        Ok(Some(device.lock().await.info.clone()))
     }
 
     #[expect(
@@ -268,24 +341,27 @@ impl DeviceBackend for NanoleafBackend {
             },
         );
 
-        self.devices.insert(
-            *id,
-            NanoleafDeviceState {
-                device_key: discovered.device_key.clone(),
-                ip: discovered.ip,
-                api_port: discovered.api_port,
-                stream,
-                info,
-                brightness: u8::MAX,
-                scaled_colors: Vec::new(),
-                last_size_mismatch_warn_at: None,
-            },
-        );
+        let device = NanoleafDeviceState {
+            device_key: discovered.device_key.clone(),
+            ip: discovered.ip,
+            api_port: discovered.api_port,
+            stream,
+            info,
+            brightness: u8::MAX,
+            scaled_colors: Vec::new(),
+            last_size_mismatch_warn_at: None,
+        };
+        self.devices.insert(*id, Arc::new(Mutex::new(device)));
 
+        let panels = self
+            .devices
+            .get(id)
+            .and_then(|device| device.try_lock().ok())
+            .map_or(0, |device| device.info.total_led_count());
         info!(
             device_id = %id,
             ip = %discovered.ip,
-            panels = self.devices.get(id).map_or(0, |device| device.info.total_led_count()),
+            panels,
             "Connected to Nanoleaf device"
         );
         Ok(())
@@ -293,6 +369,7 @@ impl DeviceBackend for NanoleafBackend {
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
         if let Some(device) = self.devices.remove(id) {
+            let device = device.lock().await;
             info!(
                 device_id = %id,
                 ip = %device.ip,
@@ -309,61 +386,32 @@ impl DeviceBackend for NanoleafBackend {
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         let device = self
             .devices
-            .get_mut(id)
+            .get(id)
             .with_context(|| format!("Nanoleaf device {id} is not connected"))?;
-
-        let expected_led_count =
-            usize::try_from(device.info.total_led_count()).unwrap_or(usize::MAX);
-        if colors.len() != expected_led_count {
-            let should_warn = device
-                .last_size_mismatch_warn_at
-                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-            if should_warn {
-                warn!(
-                    device_id = %id,
-                    expected_led_count,
-                    actual_led_count = colors.len(),
-                    "Nanoleaf frame size mismatch; truncating or padding to match panel count"
-                );
-                device.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        if device.brightness == u8::MAX {
-            device
-                .stream
-                .send_frame(colors, self.config.transition_time)
-                .await?;
-            return Ok(());
-        }
-
-        device.scaled_colors.clear();
-        device.scaled_colors.reserve(colors.len());
-        for [r, g, b] in colors.iter().copied() {
-            device.scaled_colors.push([
-                scale_channel(r, device.brightness),
-                scale_channel(g, device.brightness),
-                scale_channel(b, device.brightness),
-            ]);
-        }
-
-        device
-            .stream
-            .send_frame(device.scaled_colors.as_slice(), self.config.transition_time)
-            .await
+        Self::write_device_colors(id, device, colors, self.config.transition_time).await
     }
 
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
         let device = self
             .devices
-            .get_mut(id)
+            .get(id)
             .with_context(|| format!("Nanoleaf device {id} is not connected"))?;
-        device.brightness = brightness;
+        device.lock().await.brightness = brightness;
         Ok(())
     }
 
     fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
         Some(10)
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.devices.get(id).map(|device| {
+            Arc::new(NanoleafFrameSink {
+                device_id: *id,
+                device: Arc::clone(device),
+                transition_time: self.config.transition_time,
+            }) as Arc<dyn DeviceFrameSink>
+        })
     }
 }
 
