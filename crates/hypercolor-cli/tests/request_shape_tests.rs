@@ -271,6 +271,117 @@ async fn drivers_action_targets_driver_surface() -> Result<()> {
 }
 
 #[tokio::test]
+async fn devices_set_control_targets_device_surface() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces/{surface_id}/values",
+            patch(capture_device_control_patch),
+        )
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &[
+            "devices",
+            "set-control",
+            test_device_id(),
+            "color_order",
+            "enum:grb",
+            "--expected-revision",
+            "2",
+        ],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/control-surfaces/device%3A00000000-0000-0000-0000-000000000001/values")
+    );
+    assert_eq!(
+        captured_body
+            .lock()
+            .await
+            .clone()
+            .context("server did not capture device control patch request body")?,
+        serde_json::json!({
+            "surface_id": "device:00000000-0000-0000-0000-000000000001",
+            "changes": [{
+                "field_id": "color_order",
+                "value": {
+                    "kind": "enum",
+                    "value": "grb"
+                }
+            }],
+            "dry_run": false,
+            "expected_revision": 2
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn devices_action_targets_device_surface() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
+            post(capture_device_control_action),
+        )
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &[
+            "devices",
+            "action",
+            test_device_id(),
+            "identify",
+            "--input",
+            "duration_ms=duration:1200",
+        ],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some(
+            "/api/v1/control-surfaces/device%3A00000000-0000-0000-0000-000000000001/actions/identify"
+        )
+    );
+    assert_eq!(
+        captured_body
+            .lock()
+            .await
+            .clone()
+            .context("server did not capture device control action request body")?,
+        serde_json::json!({
+            "input": {
+                "duration_ms": {
+                    "kind": "duration_ms",
+                    "value": 1200
+                }
+            }
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn profiles_apply_sends_requested_transition_body() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
@@ -506,6 +617,54 @@ async fn capture_control_action(
     }))
 }
 
+async fn capture_device_control_patch(
+    Path(surface_id): Path<String>,
+    State((captured_uri, captured_body)): State<SharedRequest>,
+    uri: Uri,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    assert_eq!(surface_id, format!("device:{}", test_device_id()));
+    *captured_uri.lock().await = Some(uri.to_string());
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "surface_id": format!("device:{}", test_device_id()),
+            "previous_revision": 2,
+            "revision": 3,
+            "accepted": ["color_order"],
+            "rejected": [],
+            "impacts": [],
+            "values": {
+                "color_order": {
+                    "kind": "enum",
+                    "value": "grb"
+                }
+            }
+        }
+    }))
+}
+
+async fn capture_device_control_action(
+    Path((surface_id, action_id)): Path<(String, String)>,
+    State((captured_uri, captured_body)): State<SharedRequest>,
+    uri: Uri,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    assert_eq!(surface_id, format!("device:{}", test_device_id()));
+    assert_eq!(action_id, "identify");
+    *captured_uri.lock().await = Some(uri.to_string());
+    *captured_body.lock().await = Some(body);
+    Json(serde_json::json!({
+        "data": {
+            "surface_id": format!("device:{}", test_device_id()),
+            "action_id": "identify",
+            "status": "completed",
+            "result": null,
+            "revision": 3
+        }
+    }))
+}
+
 async fn capture_profile_apply(
     Path(profile): Path<String>,
     State(captured_body): State<SharedBody>,
@@ -521,4 +680,8 @@ async fn capture_profile_apply(
             "applied": true,
         },
     }))
+}
+
+fn test_device_id() -> &'static str {
+    "00000000-0000-0000-0000-000000000001"
 }

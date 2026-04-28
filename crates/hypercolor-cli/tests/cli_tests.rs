@@ -106,6 +106,36 @@ fn build_cmd() -> clap::Command {
                         .about("Set device color")
                         .arg(Arg::new("device").required(true))
                         .arg(Arg::new("color").required(true)),
+                )
+                .subcommand(
+                    Command::new("controls")
+                        .about("Show device controls")
+                        .arg(Arg::new("device").required(true)),
+                )
+                .subcommand(
+                    Command::new("set-control")
+                        .about("Apply a device control value")
+                        .arg(Arg::new("device").required(true))
+                        .arg(Arg::new("field").required(true))
+                        .arg(Arg::new("value").required(true))
+                        .arg(Arg::new("expected-revision").long("expected-revision"))
+                        .arg(
+                            Arg::new("dry-run")
+                                .long("dry-run")
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("action")
+                        .about("Invoke a device control action")
+                        .arg(Arg::new("device").required(true))
+                        .arg(Arg::new("action").required(true))
+                        .arg(
+                            Arg::new("input")
+                                .long("input")
+                                .short('i')
+                                .action(ArgAction::Append),
+                        ),
                 ),
         )
         .subcommand(
@@ -622,6 +652,59 @@ fn parse_controls_list_device_with_driver_surface() {
         Some("Desk Strip")
     );
     assert!(list.get_flag("include-driver"));
+}
+
+#[test]
+fn parse_devices_set_control() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "devices",
+            "set-control",
+            "00000000-0000-0000-0000-000000000001",
+            "color_order",
+            "enum:grb",
+            "--expected-revision",
+            "2",
+        ])
+        .expect("devices set-control should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, set) = sub.subcommand().expect("should have set-control");
+    assert_eq!(
+        set.get_one::<String>("device").map(String::as_str),
+        Some("00000000-0000-0000-0000-000000000001")
+    );
+    assert_eq!(
+        set.get_one::<String>("field").map(String::as_str),
+        Some("color_order")
+    );
+    assert_eq!(
+        set.get_one::<String>("value").map(String::as_str),
+        Some("enum:grb")
+    );
+}
+
+#[test]
+fn parse_devices_action_with_input() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "devices",
+            "action",
+            "00000000-0000-0000-0000-000000000001",
+            "identify",
+            "--input",
+            "duration_ms=duration:1200",
+        ])
+        .expect("devices action should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, action) = sub.subcommand().expect("should have action");
+    assert_eq!(
+        action.get_one::<String>("action").map(String::as_str),
+        Some("identify")
+    );
 }
 
 #[test]

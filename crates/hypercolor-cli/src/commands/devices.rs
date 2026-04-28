@@ -2,8 +2,10 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use serde_json::json;
 
 use crate::client::DaemonClient;
+use crate::commands::controls;
 use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
 
 /// Device discovery and management.
@@ -28,6 +30,12 @@ pub enum DeviceCommand {
     Identify(DeviceIdentifyArgs),
     /// Set a device to a specific color.
     SetColor(DeviceSetColorArgs),
+    /// Show one device-level control surface.
+    Controls(DeviceControlsArgs),
+    /// Apply one device-level control value.
+    SetControl(DeviceSetControlArgs),
+    /// Invoke one device-level control action.
+    Action(DeviceActionArgs),
 }
 
 /// Arguments for `devices list`.
@@ -93,6 +101,48 @@ pub struct DeviceSetColorArgs {
     pub color: String,
 }
 
+/// Arguments for `devices controls`.
+#[derive(Debug, Args)]
+pub struct DeviceControlsArgs {
+    /// Device name or ID.
+    pub device: String,
+}
+
+/// Arguments for `devices set-control`.
+#[derive(Debug, Args)]
+pub struct DeviceSetControlArgs {
+    /// Device ID.
+    pub device: String,
+
+    /// Field ID.
+    pub field: String,
+
+    /// Typed value. Examples: `enum:grb`, `bool:true`, `duration:1500`.
+    pub value: String,
+
+    /// Expected surface revision for optimistic concurrency.
+    #[arg(long)]
+    pub expected_revision: Option<u64>,
+
+    /// Validate the transaction without applying it.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Arguments for `devices action`.
+#[derive(Debug, Args)]
+pub struct DeviceActionArgs {
+    /// Device ID.
+    pub device: String,
+
+    /// Action ID.
+    pub action: String,
+
+    /// Action input assignment, repeatable.
+    #[arg(long = "input", short = 'i')]
+    pub input: Vec<String>,
+}
+
 /// Execute the `devices` subcommand tree.
 ///
 /// # Errors
@@ -111,6 +161,13 @@ pub async fn execute(args: &DevicesArgs, client: &DaemonClient, ctx: &OutputCont
             execute_identify(identify_args, client, ctx).await
         }
         DeviceCommand::SetColor(color_args) => execute_set_color(color_args, client, ctx).await,
+        DeviceCommand::Controls(controls_args) => {
+            execute_controls(controls_args, client, ctx).await
+        }
+        DeviceCommand::SetControl(control_args) => {
+            execute_set_control(control_args, client, ctx).await
+        }
+        DeviceCommand::Action(action_args) => execute_action(action_args, client, ctx).await,
     }
 }
 
@@ -279,6 +336,63 @@ async fn execute_info(
     Ok(())
 }
 
+async fn execute_controls(
+    args: &DeviceControlsArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let response = client
+        .get(&format!("/devices/{}/controls", urlencoded(&args.device)))
+        .await?;
+    controls::render_surface(&response, ctx)
+}
+
+async fn execute_set_control(
+    args: &DeviceSetControlArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let surface_id = device_surface_id(&args.device);
+    let assignment = format!("{}={}", args.field, args.value);
+    let changes = controls::assignments_to_changes(&[assignment])?;
+    let mut body = json!({
+        "surface_id": surface_id,
+        "changes": changes,
+        "dry_run": args.dry_run,
+    });
+    if let Some(revision) = args.expected_revision {
+        body["expected_revision"] = json!(revision);
+    }
+
+    let response = client
+        .patch(
+            &format!("/control-surfaces/{}/values", urlencoded(&surface_id)),
+            &body,
+        )
+        .await?;
+    controls::render_apply_response(&response, ctx)
+}
+
+async fn execute_action(
+    args: &DeviceActionArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let surface_id = device_surface_id(&args.device);
+    let input = controls::assignments_to_map(&args.input)?;
+    let response = client
+        .post(
+            &format!(
+                "/control-surfaces/{}/actions/{}",
+                urlencoded(&surface_id),
+                urlencoded(&args.action)
+            ),
+            &json!({ "input": input }),
+        )
+        .await?;
+    controls::render_action_response(&response, ctx)
+}
+
 async fn execute_identify(
     args: &DeviceIdentifyArgs,
     client: &DaemonClient,
@@ -346,4 +460,8 @@ fn render_pair_response(
     }
 
     Ok(())
+}
+
+fn device_surface_id(device_id: &str) -> String {
+    format!("device:{device_id}")
 }
