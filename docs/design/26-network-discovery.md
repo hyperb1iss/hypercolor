@@ -300,7 +300,7 @@ the same `ServerIdentity` fields. Additive change — no existing fields removed
 - `MdnsPublisher` struct wrapping `mdns_sd::ServiceDaemon`
 - Register `_hypercolor._tcp.local.` with TXT records on startup
 - Unregister on drop (graceful shutdown) — follow existing WLED scanner pattern
-  at `crates/hypercolor-core/src/device/wled/scanner.rs:315`
+  at `crates/hypercolor-driver-wled/src/scanner.rs`
 - **Publish guard:** only register if effective bind is non-loopback AND
   `config.network.mdns_publish` is true
 - Interface selection: specific IP if bound to one, all interfaces if `0.0.0.0`

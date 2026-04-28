@@ -2,10 +2,10 @@
 
 > Wire-level protocol details, Rust types, and operational semantics for driving WLED devices from Hypercolor.
 
-**Status:** Implementation-ready
-**Crate:** `hypercolor-core`
-**Module path:** `hypercolor_core::device::wled`
-**Feature flag:** `wled` (default-enabled)
+**Status:** Implemented
+**Crate:** `hypercolor-driver-wled`
+**Module path:** `hypercolor_driver_wled`
+**Feature flag:** Built-in daemon driver selection, not a core feature flag
 **Author:** Nova
 **Date:** 2026-03-01
 
@@ -513,7 +513,7 @@ pub fn universes_needed(pixel_count: usize, bytes_per_pixel: usize) -> usize {
 
 ## 4. WledDevice Struct
 
-The `WledDevice` is the runtime representation of a single WLED controller. It implements the `DeviceBackend` trait from `hypercolor-core`.
+The `WledDevice` is the runtime representation of a single WLED controller. It implements the `DeviceBackend` trait exported by `hypercolor-driver-api`.
 
 ### 4.1 Core Types
 
@@ -2345,7 +2345,7 @@ auto_import_segments = true                # Auto-create zones from WLED segment
 ### 10.2 Cargo.toml Fragment
 
 ```toml
-# In crates/hypercolor-core/Cargo.toml
+# In crates/hypercolor-driver-wled/Cargo.toml
 
 [dependencies]
 # WLED protocol support

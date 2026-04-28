@@ -103,7 +103,7 @@ Constructed by both the WLED scanner (`wled/scanner.rs`) and the WLED backend ca
 
 ### 3.4 Philips Hue
 
-Constructed in `hypercolor-core/src/device/hue/types.rs`. One fingerprint per bridge;
+Constructed in `hypercolor-driver-hue/src/types.rs`. One fingerprint per bridge;
 individual lights are modeled as zones within the bridge device, not as separate devices.
 
 | Field       | Source                                                      |
@@ -121,7 +121,7 @@ promoted to first-class device status.
 
 ### 3.5 Nanoleaf
 
-Constructed in `hypercolor-core/src/device/nanoleaf/types.rs`. The stable key is a
+Constructed in `hypercolor-driver-nanoleaf/src/types.rs`. The stable key is a
 `device_key` derived by the scanner's `normalized_device_key()` function.
 
 | Priority        | Source                                                 |

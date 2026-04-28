@@ -3,11 +3,11 @@
 > Implementation-ready specification for Philips Hue, Nanoleaf, and shared network
 > device infrastructure in Hypercolor.
 
-**Status:** Draft
+**Status:** Implemented and superseded by driver-crate modules
 **Author:** Nova
 **Date:** 2026-03-15
-**Crates:** `hypercolor-core`, `hypercolor-types`
-**Feature flags:** `hue` (default), `nanoleaf` (default)
+**Crates:** `hypercolor-driver-hue`, `hypercolor-driver-nanoleaf`, `hypercolor-driver-wled`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-types`
+**Feature flags:** Built-in daemon driver selection, not core feature flags
 
 ---
 
@@ -34,9 +34,11 @@ implementation.
 
 ### Design decisions (from brainstorm)
 
-- **No new crates.** Backends live in `hypercolor-core/src/device/{family}/`,
-  following the proven WLED pattern. Shared utilities in `core/device/net/`.
-- **Feature flags per backend.** `hue` and `nanoleaf`, both default-enabled.
+- **Driver crates.** Backends now live in `hypercolor-driver-{hue,nanoleaf,wled}`,
+  behind boundary types exported by `hypercolor-driver-api`.
+- **Built-in driver selection.** Hue, Nanoleaf, and WLED are selected at the
+  daemon/built-in-driver layer. `hypercolor-core` no longer exposes
+  driver-specific feature flags.
 - **DTLS via `webrtc-dtls`.** Pure Rust, async/tokio native, has the exact PSK
   cipher suite Hue requires. No system OpenSSL dependency.
 - **Credential store.** Encrypted at rest in XDG data dir. Hue stores API key +
@@ -62,27 +64,21 @@ implementation.
 ### Module layout
 
 ```
-crates/hypercolor-core/src/device/
-  net/                          ← NEW: shared network infrastructure
-    mod.rs                      — re-exports
-    credentials.rs              — encrypted credential store
-    mdns.rs                     — shared mDNS browse helpers
-  hue/                          ← NEW: Philips Hue backend
-    mod.rs                      — re-exports
-    backend.rs                  — HueBackend: DeviceBackend
-    bridge.rs                   — bridge discovery, CLIP v2 client
-    streaming.rs                — DTLS entertainment streaming
-    color.rs                    — CIE xy conversion, gamut mapping
-    scanner.rs                  — TransportScanner impl
-    types.rs                    — Hue-specific types
-  nanoleaf/                     ← NEW: Nanoleaf backend
-    mod.rs                      — re-exports
-    backend.rs                  — NanoleafBackend: DeviceBackend
-    streaming.rs                — UDP panel streaming (v2)
-    scanner.rs                  — TransportScanner impl
-    topology.rs                 — shape types → DeviceTopologyHint
-    types.rs                    — Nanoleaf-specific types
-  wled/                         ← existing (reference pattern)
+crates/hypercolor-driver-api/    ← driver boundary traits and native host utilities
+crates/hypercolor-driver-hue/    ← Philips Hue backend
+  src/backend.rs                 — HueBackend: DeviceBackend
+  src/bridge.rs                  — bridge discovery, CLIP v2 client
+  src/streaming.rs               — DTLS entertainment streaming
+  src/color.rs                   — CIE xy conversion, gamut mapping
+  src/scanner.rs                 — TransportScanner impl
+  src/types.rs                   — Hue-specific types
+crates/hypercolor-driver-nanoleaf/ ← Nanoleaf backend
+  src/backend.rs                 — NanoleafBackend: DeviceBackend
+  src/streaming.rs               — UDP panel streaming (v2)
+  src/scanner.rs                 — TransportScanner impl
+  src/topology.rs                — shape types to DeviceTopologyHint
+  src/types.rs                   — Nanoleaf-specific types
+crates/hypercolor-driver-wled/   ← WLED backend
 ```
 
 ### Data flow
@@ -958,17 +954,18 @@ fn default_nanoleaf_transition() -> u16 { 1 }
 
 ## 8. Dependency Additions
 
-### `hypercolor-core/Cargo.toml`
+### Driver crate manifests
 
 ```toml
 [dependencies]
-# Existing: mdns-sd, reqwest, tokio, serde, serde_json, uuid, ...
+# Existing driver dependencies: mdns-sd, reqwest, tokio, serde, serde_json,
+# uuid, hypercolor-driver-api, ...
 
-# NEW: Hue DTLS streaming
+# Hue DTLS streaming, owned by hypercolor-driver-hue
 webrtc-dtls = { version = "0.12", optional = true }
 webrtc-util = { version = "0.12", optional = true }
 
-# NEW: Credential encryption
+# Credential encryption, owned by the shared native host utility layer
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.9", optional = true }  # if not already present
 
@@ -1080,10 +1077,10 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/nanoleaf/mod.rs` (new)
-- `crates/hypercolor-core/src/device/nanoleaf/types.rs` (new)
-- `crates/hypercolor-core/src/device/nanoleaf/topology.rs` (new)
-- `crates/hypercolor-core/tests/nanoleaf_topology_tests.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/src/mod.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/src/types.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/src/topology.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/tests/nanoleaf_topology_tests.rs` (new)
 
 **Implementation:**
 
@@ -1092,7 +1089,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - `NanoleafDeviceInfo`, `NanoleafPanelLayout` response types
 - Tests for shape filtering and topology mapping
 
-**Verify:** `cargo test -p hypercolor-core nanoleaf`
+**Verify:** `cargo test -p hypercolor-driver-nanoleaf nanoleaf`
 
 **Depends on:** Task 1 (DeviceFamily::Nanoleaf).
 
@@ -1100,7 +1097,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/nanoleaf/scanner.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/src/scanner.rs` (new)
 
 **Implementation:**
 
@@ -1110,7 +1107,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Known-device caching and re-probe
 - `DiscoveredDevice` construction with panel → zone mapping
 
-**Verify:** `cargo check -p hypercolor-core`
+**Verify:** `cargo check -p hypercolor-driver-nanoleaf`
 
 **Depends on:** Tasks 4 (mDNS browser), 5 (types/topology).
 
@@ -1118,8 +1115,8 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/nanoleaf/streaming.rs` (new)
-- `crates/hypercolor-core/tests/nanoleaf_streaming_tests.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/src/streaming.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/tests/nanoleaf_streaming_tests.rs` (new)
 
 **Implementation:**
 
@@ -1129,7 +1126,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Buffer pre-allocation and reuse
 - Tests for packet serialization (round-trip with known bytes)
 
-**Verify:** `cargo test -p hypercolor-core nanoleaf_streaming`
+**Verify:** `cargo test -p hypercolor-driver-nanoleaf nanoleaf_streaming`
 
 **Parallel:** Yes — Tasks 6 and 7 can run in parallel (different files).
 
@@ -1137,8 +1134,8 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/nanoleaf/backend.rs` (new)
-- `crates/hypercolor-core/src/device/mod.rs` (add `pub mod nanoleaf`)
+- `crates/hypercolor-driver-nanoleaf/src/backend.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/src/lib.rs` (export backend modules)
 
 **Implementation:**
 
@@ -1147,7 +1144,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Credential loading from `CredentialStore`
 - `target_fps()` → `Some(10)`
 
-**Verify:** `cargo check -p hypercolor-core`
+**Verify:** `cargo check -p hypercolor-driver-nanoleaf`
 
 **Depends on:** Tasks 3, 6, 7.
 
@@ -1159,9 +1156,9 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/hue/mod.rs` (new)
-- `crates/hypercolor-core/src/device/hue/color.rs` (new)
-- `crates/hypercolor-core/tests/hue_color_tests.rs` (new)
+- `crates/hypercolor-driver-hue/src/mod.rs` (new)
+- `crates/hypercolor-driver-hue/src/color.rs` (new)
+- `crates/hypercolor-driver-hue/tests/hue_color_tests.rs` (new)
 
 **Implementation:**
 
@@ -1170,7 +1167,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Gamut constants (A, B, C)
 - Tests against known conversion values (Philips reference data)
 
-**Verify:** `cargo test -p hypercolor-core hue_color`
+**Verify:** `cargo test -p hypercolor-driver-hue hue_color`
 
 **Depends on:** None (pure math).
 **Parallel:** Can start during Wave 2.
@@ -1179,9 +1176,9 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/hue/types.rs` (new)
-- `crates/hypercolor-core/src/device/hue/bridge.rs` (new)
-- `crates/hypercolor-core/tests/hue_types_tests.rs` (new)
+- `crates/hypercolor-driver-hue/src/types.rs` (new)
+- `crates/hypercolor-driver-hue/src/bridge.rs` (new)
+- `crates/hypercolor-driver-hue/tests/hue_types_tests.rs` (new)
 
 **Implementation:**
 
@@ -1191,7 +1188,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - `HueEntertainmentConfig`, `HueChannel`, `HuePosition`, `HueLight`
 - `HueEntertainmentType` enum
 
-**Verify:** `cargo check -p hypercolor-core && cargo test -p hypercolor-core hue_types`
+**Verify:** `cargo check -p hypercolor-driver-hue && cargo test -p hypercolor-driver-hue hue_types`
 
 **Depends on:** Task 2 (HueConfig).
 
@@ -1199,9 +1196,9 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/hue/streaming.rs` (new)
-- `crates/hypercolor-core/Cargo.toml` (add `webrtc-dtls`, `webrtc-util`)
-- `crates/hypercolor-core/tests/hue_streaming_tests.rs` (new)
+- `crates/hypercolor-driver-hue/src/streaming.rs` (new)
+- `crates/hypercolor-driver-hue/Cargo.toml` (add `webrtc-dtls`, `webrtc-util`)
+- `crates/hypercolor-driver-hue/tests/hue_streaming_tests.rs` (new)
 
 **Implementation:**
 
@@ -1212,7 +1209,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Buffer pre-allocation (max 192 bytes)
 - Tests for packet serialization
 
-**Verify:** `cargo test -p hypercolor-core hue_streaming`
+**Verify:** `cargo test -p hypercolor-driver-hue hue_streaming`
 
 **Depends on:** Task 9 (color conversion).
 
@@ -1220,7 +1217,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/hue/scanner.rs` (new)
+- `crates/hypercolor-driver-hue/src/scanner.rs` (new)
 
 **Implementation:**
 
@@ -1230,7 +1227,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Entertainment config enumeration for authenticated bridges
 - `DiscoveredDevice` construction with channels → zones
 
-**Verify:** `cargo check -p hypercolor-core`
+**Verify:** `cargo check -p hypercolor-driver-hue`
 
 **Depends on:** Tasks 4, 10.
 
@@ -1238,8 +1235,8 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/hue/backend.rs` (new)
-- `crates/hypercolor-core/src/device/mod.rs` (add `pub mod hue`)
+- `crates/hypercolor-driver-hue/src/backend.rs` (new)
+- `crates/hypercolor-driver-hue/src/lib.rs` (export backend modules)
 
 **Implementation:**
 
@@ -1249,7 +1246,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Per-channel gamut lookup from light model
 - `target_fps()` → `Some(50)`
 
-**Verify:** `cargo check -p hypercolor-core`
+**Verify:** `cargo check -p hypercolor-driver-hue`
 
 **Depends on:** Tasks 3, 11, 12.
 
@@ -1257,18 +1254,18 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 ### Wave 4: Integration
 
-#### Task 14: Daemon registration and feature flags
+#### Task 14: Daemon registration and built-in driver selection
 
 **Files:**
 
-- `crates/hypercolor-core/Cargo.toml` (feature flag wiring)
-- `crates/hypercolor-daemon/src/startup.rs` (backend registration)
-- `crates/hypercolor-daemon/Cargo.toml` (forward feature flags)
+- `crates/hypercolor-driver-builtin/src/lib.rs` (built-in driver registration)
+- `crates/hypercolor-daemon/src/startup.rs` (load built-in registry)
+- `crates/hypercolor-daemon/Cargo.toml` (select built-in driver crates)
 
 **Implementation:**
 
-- Wire `hue` and `nanoleaf` feature flags through workspace
-- Add conditional backend registration in daemon startup
+- Wire Hue and Nanoleaf through the built-in driver registry
+- Add conditional driver registry loading in daemon startup
 - Pass credential store to both backends
 - Add to default features
 
@@ -1321,8 +1318,8 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/tests/hue_backend_tests.rs` (new)
-- `crates/hypercolor-core/tests/nanoleaf_backend_tests.rs` (new)
+- `crates/hypercolor-driver-hue/tests/hue_backend_tests.rs` (new)
+- `crates/hypercolor-driver-nanoleaf/tests/nanoleaf_backend_tests.rs` (new)
 - `crates/hypercolor-daemon/tests/network_backend_tests.rs` (new)
 
 **Implementation:**
@@ -1338,7 +1335,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 
 **Files:**
 
-- `crates/hypercolor-core/src/device/wled/scanner.rs` (modify)
+- `crates/hypercolor-driver-wled/src/scanner.rs` (modify)
 
 **Implementation:**
 
@@ -1346,7 +1343,7 @@ the credential store). If neither is enabled, no crypto deps are pulled in.
 - Preserve all existing behavior (IPv4 preference, caching, timeouts)
 - Remove duplicated mDNS boilerplate
 
-**Verify:** `cargo test -p hypercolor-core wled`
+**Verify:** `cargo test -p hypercolor-driver-wled wled`
 
 **Parallel:** Yes — Tasks 17 and 18 can run in parallel.
 

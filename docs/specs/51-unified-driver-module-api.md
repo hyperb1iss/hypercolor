@@ -3,7 +3,7 @@
 > A single internal driver-module model for network drivers, HAL protocols,
 > built-in backends, and future Wasm-loaded extensions.
 
-**Status:** Draft
+**Status:** In progress
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-hal`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
@@ -85,16 +85,18 @@ not. That distinction is the whole spell.
 
 Current state:
 
-- `hypercolor-daemon` still imports concrete network driver crates at the
-  built-in registration edge.
-- `DeviceFamily::backend_id()` in `hypercolor-types` embeds runtime routing in
-  a shared identity enum.
+- Built-in registration now flows through driver crates, but
+  `hypercolor-driver-api` still re-exports several native boundary traits from
+  `hypercolor-core`.
+- `DeviceInfo::backend_id()` now reads explicit `DeviceOrigin` routing metadata,
+  but older callers still treat backend strings as the main routing vocabulary.
 - Discovery metadata uses ad hoc `"backend_id"` strings to override routing.
 - HAL protocol descriptors live behind `ProtocolDatabase`, while network
   drivers live behind `DriverRegistry`.
-- Runtime session state has WLED-specific cache fields.
-- `DaemonDriverHost` translates Hue, Nanoleaf, and WLED credentials with
-  backend-specific matches.
+- Runtime session state now stores driver runtime caches by driver id.
+- Native host utilities still expose credential and mDNS helpers through
+  `hypercolor-driver-api`; the longer-term Wasm boundary should replace these
+  with value-shaped host services.
 - UI device cards, filters, and settings panels hardcode vendor and backend
   presentation instead of reading driver metadata.
 - Prism S dynamic topology/config is applied from daemon discovery code even
@@ -362,8 +364,8 @@ Owns pure serializable data types:
 It must not depend on `hypercolor-core`, `hypercolor-hal`, driver crates, or
 daemon crates.
 
-`DeviceFamily` remains a device identity enum. `DeviceFamily::backend_id()`
-should be deprecated and eventually removed.
+`DeviceFamily` remains a device identity enum and must stay out of runtime
+routing.
 
 ### 7.2 `hypercolor-driver-api`
 
@@ -382,8 +384,10 @@ Owns host/driver boundary traits and value request/response types:
 - `DriverPresentationProvider`
 - `DriverHost`
 
-It may depend on `hypercolor-types` and `hypercolor-core` while the native
-backend factory returns `Box<dyn DeviceBackend>`.
+It may depend on `hypercolor-types` and `hypercolor-core` while native boundary
+traits are being extracted. The target is for native drivers to import
+`DeviceBackend`, `TransportScanner`, credentials, and host services from this
+crate without coupling to core.
 
 It should not depend on `hypercolor-hal`, because HAL must remain core-free and
 because Wasm-shaped value contracts should not require native transport types.
@@ -844,9 +848,8 @@ Routing should use this priority:
 1. `DiscoveredDevice.origin.backend_id`
 2. persisted registry origin for the same fingerprint
 3. legacy metadata key `"backend_id"` during migration only
-4. temporary fallback from `DeviceFamily::backend_id()` during migration only
 
-After migration, routes should not depend on `DeviceFamily`.
+Routes must not depend on `DeviceFamily`.
 
 ### 11.2 Discovery Scan Loop
 
@@ -1172,7 +1175,7 @@ pub wled_probe_targets: Vec<WledKnownTarget>,
 with:
 
 ```rust
-pub driver_runtime: BTreeMap<String, serde_json::Value>,
+pub driver_runtime_cache: BTreeMap<String, serde_json::Value>,
 ```
 
 Compatibility helpers can read old fields and write the new shape once during
@@ -1616,7 +1619,7 @@ Work:
 - attach origin to discovered devices
 - persist origin in registry metadata
 - update lifecycle actions to carry origin or resolved backend ID from origin
-- deprecate `DeviceFamily::backend_id()` usage in runtime code
+- keep runtime routing sourced from `DeviceOrigin`
 - keep metadata `"backend_id"` fallback during migration
 
 Verify:
@@ -1707,7 +1710,7 @@ Files:
 
 Work:
 
-- remove runtime dependencies on `DeviceFamily::backend_id()`
+- remove any remaining family-derived runtime routing
 - remove WLED-specific runtime state fields after migration window
 - remove UI backend hardcodes
 - update docs to call `driver_id` and `backend_id` separate concepts
