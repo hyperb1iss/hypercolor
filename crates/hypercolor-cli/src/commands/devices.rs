@@ -18,7 +18,7 @@ pub struct DevicesArgs {
 pub enum DeviceCommand {
     /// List connected and discovered devices.
     List(DeviceListArgs),
-    /// Scan for new RGB devices across all backends.
+    /// Scan for new RGB devices across discovery targets.
     Discover(DeviceDiscoverArgs),
     /// Pair a network device and store credentials.
     Pair(DevicePairArgs),
@@ -45,9 +45,9 @@ pub struct DeviceListArgs {
 /// Arguments for `devices discover`.
 #[derive(Debug, Args)]
 pub struct DeviceDiscoverArgs {
-    /// Scan specific backends only (repeatable: wled, hid, hue).
+    /// Scan specific discovery targets only (repeatable: wled, usb, hue).
     #[arg(long)]
-    pub backend: Vec<String>,
+    pub target: Vec<String>,
 
     /// Discovery timeout in seconds.
     #[arg(long, default_value = "10")]
@@ -209,7 +209,7 @@ async fn execute_discover(
     ctx: &OutputContext,
 ) -> Result<()> {
     let body = serde_json::json!({
-        "backends": args.backend,
+        "targets": args.target,
         "timeout_ms": args.timeout.saturating_mul(1000),
     });
 

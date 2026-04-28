@@ -87,11 +87,7 @@ fn build_cmd() -> clap::Command {
                 .subcommand(
                     Command::new("discover")
                         .about("Scan for devices")
-                        .arg(
-                            Arg::new("backend")
-                                .long("backend")
-                                .action(ArgAction::Append),
-                        )
+                        .arg(Arg::new("target").long("target").action(ArgAction::Append))
                         .arg(Arg::new("timeout").long("timeout").default_value("10")),
                 )
                 .subcommand(
@@ -499,18 +495,18 @@ fn parse_devices_list() {
 }
 
 #[test]
-fn parse_devices_discover_with_backend() {
+fn parse_devices_discover_with_target() {
     let cmd = build_cmd();
     let matches = cmd
-        .try_get_matches_from(["hyper", "devices", "discover", "--backend", "wled"])
+        .try_get_matches_from(["hyper", "devices", "discover", "--target", "wled"])
         .expect("devices discover should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
     let (_, discover) = sub.subcommand().expect("should have discover");
-    let backends: Vec<&String> = discover
-        .get_many::<String>("backend")
-        .expect("should have backend")
+    let targets: Vec<&String> = discover
+        .get_many::<String>("target")
+        .expect("should have target")
         .collect();
-    assert_eq!(backends, vec!["wled"]);
+    assert_eq!(targets, vec!["wled"]);
 }
 
 #[test]

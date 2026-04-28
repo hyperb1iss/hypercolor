@@ -33,7 +33,7 @@ use hypercolor_core::device::ScannerScanReport;
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveryScanResult {
     /// Public discovery target identifiers that were scanned.
-    pub backends: Vec<String>,
+    pub targets: Vec<String>,
 
     /// Effective timeout used for the scan.
     pub timeout_ms: u64,
@@ -187,7 +187,7 @@ pub async fn execute_discovery_scan(
     runtime
         .event_bus
         .publish(HypercolorEvent::DeviceDiscoveryStarted {
-            backends: target_names.clone(),
+            targets: target_names.clone(),
         });
     info!(
         targets = ?target_names,
@@ -203,7 +203,7 @@ pub async fn execute_discovery_scan(
                 duration_ms: 0,
             });
         return DiscoveryScanResult {
-            backends: target_names,
+            targets: target_names,
             timeout_ms,
             new_devices: Vec::new(),
             reappeared_devices: Vec::new(),
@@ -266,7 +266,7 @@ pub async fn execute_discovery_scan(
                 duration_ms: 0,
             });
         return DiscoveryScanResult {
-            backends: target_names,
+            targets: target_names,
             timeout_ms,
             new_devices: Vec::new(),
             reappeared_devices: Vec::new(),
@@ -419,7 +419,7 @@ pub async fn execute_discovery_scan(
     }
 
     DiscoveryScanResult {
-        backends: target_names,
+        targets: target_names,
         timeout_ms,
         new_devices,
         reappeared_devices,

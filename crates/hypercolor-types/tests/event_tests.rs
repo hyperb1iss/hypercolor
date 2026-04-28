@@ -55,7 +55,7 @@ fn device_events_have_device_category() {
             changes: HashMap::new(),
         },
         HypercolorEvent::DeviceDiscoveryStarted {
-            backends: vec!["wled".into()],
+            targets: vec!["wled".into()],
         },
         HypercolorEvent::DeviceDiscoveryCompleted {
             found: vec![],

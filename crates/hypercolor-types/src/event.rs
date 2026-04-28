@@ -447,11 +447,11 @@ pub enum HypercolorEvent {
 
     /// Device discovery scan started.
     DeviceDiscoveryStarted {
-        /// Which backends are being scanned.
-        backends: Vec<String>,
+        /// Which discovery targets are being scanned.
+        targets: Vec<String>,
     },
 
-    /// Device discovery scan completed for all requested backends.
+    /// Device discovery scan completed for all requested targets.
     DeviceDiscoveryCompleted {
         found: Vec<DeviceRef>,
         duration_ms: u64,

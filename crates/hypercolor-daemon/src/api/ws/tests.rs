@@ -852,12 +852,12 @@ fn snake_case_conversion_handles_camel_case() {
 #[test]
 fn event_message_parts_unwraps_payload() {
     let event = HypercolorEvent::DeviceDiscoveryStarted {
-        backends: vec!["wled".to_owned()],
+        targets: vec!["wled".to_owned()],
     };
 
     let (event_name, event_data) = event_message_parts(&event);
     assert_eq!(event_name, "device_discovery_started");
-    assert_eq!(event_data["backends"], serde_json::json!(["wled"]));
+    assert_eq!(event_data["targets"], serde_json::json!(["wled"]));
     assert!(event_data.get("type").is_none());
 }
 

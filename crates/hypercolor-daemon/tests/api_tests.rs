@@ -3189,7 +3189,7 @@ async fn discover_devices_returns_accepted() {
                 .method("POST")
                 .uri("/api/v1/devices/discover")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"backends": ["wled"], "timeout_ms": 5000}"#))
+                .body(Body::from(r#"{"targets": ["wled"], "timeout_ms": 5000}"#))
                 .expect("failed to build request"),
         )
         .await
@@ -3218,7 +3218,7 @@ async fn discover_devices_wait_mode_returns_report() {
                 .uri("/api/v1/devices/discover")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"backends": ["wled"], "timeout_ms": 100, "wait": true}"#,
+                    r#"{"targets": ["wled"], "timeout_ms": 100, "wait": true}"#,
                 ))
                 .expect("failed to build request"),
         )
@@ -6862,7 +6862,7 @@ async fn discover_devices_without_body() {
 }
 
 #[tokio::test]
-async fn discover_devices_rejects_unknown_backend() {
+async fn discover_devices_rejects_unknown_target() {
     let app = test_app();
 
     let response = app
@@ -6872,7 +6872,7 @@ async fn discover_devices_rejects_unknown_backend() {
                 .uri("/api/v1/devices/discover")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"backends": ["mystery"], "timeout_ms": 5000}"#,
+                    r#"{"targets": ["mystery"], "timeout_ms": 5000}"#,
                 ))
                 .expect("failed to build request"),
         )

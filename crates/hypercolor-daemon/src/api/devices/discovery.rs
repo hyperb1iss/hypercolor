@@ -17,7 +17,7 @@ use crate::discovery;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DiscoverRequest {
-    pub backends: Option<Vec<String>>,
+    pub targets: Option<Vec<String>>,
     pub timeout_ms: Option<u64>,
     pub wait: Option<bool>,
 }
@@ -31,9 +31,9 @@ pub async fn discover_devices(
         || Arc::new(HypercolorConfig::default()),
         |manager| Arc::clone(&manager.get()),
     );
-    let requested_backends = body.as_ref().and_then(|request| request.backends.as_ref());
+    let requested_targets = body.as_ref().and_then(|request| request.targets.as_ref());
     let resolved_targets = match discovery::resolve_targets(
-        requested_backends.map(Vec::as_slice),
+        requested_targets.map(Vec::as_slice),
         config.as_ref(),
         state.driver_registry.as_ref(),
     ) {
@@ -89,7 +89,7 @@ pub async fn discover_devices(
     ApiResponse::accepted(serde_json::json!({
         "scan_id": scan_id,
         "status": "scanning",
-        "backends": target_names,
+        "targets": target_names,
         "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
     }))
 }
