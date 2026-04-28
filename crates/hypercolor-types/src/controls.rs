@@ -740,6 +740,7 @@ pub struct ApplyControlChangesRequest {
     pub changes: Vec<ControlChange>,
 
     /// Validate without mutating state.
+    #[serde(default)]
     pub dry_run: bool,
 }
 

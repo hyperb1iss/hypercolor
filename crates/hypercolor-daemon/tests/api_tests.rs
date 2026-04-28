@@ -2642,12 +2642,7 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
                 .method("POST")
                 .uri("/api/v1/control-surfaces/driver:wled/actions/missing")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "input": {}
-                    })
-                    .to_string(),
-                ))
+                .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("failed to build request"),
         )
         .await

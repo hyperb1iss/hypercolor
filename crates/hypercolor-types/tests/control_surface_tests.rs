@@ -264,6 +264,20 @@ fn apply_request_response_and_events_roundtrip() {
         serde_json::from_str(&request_json).expect("deserialize request");
     assert_eq!(request_roundtrip, request);
 
+    let request_without_dry_run: ApplyControlChangesRequest =
+        serde_json::from_value(serde_json::json!({
+            "surface_id": "device:abc",
+            "expected_revision": 3,
+            "changes": [
+                {
+                    "field_id": "max_fps",
+                    "value": { "kind": "integer", "value": 60 }
+                }
+            ]
+        }))
+        .expect("deserialize request with default dry_run");
+    assert!(!request_without_dry_run.dry_run);
+
     let response = ApplyControlChangesResponse {
         surface_id: "device:abc".to_owned(),
         previous_revision: 3,
