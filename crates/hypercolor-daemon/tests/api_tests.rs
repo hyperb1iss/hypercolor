@@ -2112,8 +2112,14 @@ async fn list_drivers_returns_registered_module_descriptors() {
     );
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["backend_factory"], true);
+    assert_eq!(wled["descriptor"]["capabilities"]["controls"], true);
     assert_eq!(wled["enabled"], true);
     assert_eq!(wled["config_key"], "drivers.wled");
+    assert_eq!(wled["control_surface_id"], "driver:wled");
+    assert_eq!(
+        wled["control_surface_path"],
+        "/api/v1/drivers/wled/controls"
+    );
 
     let nollie = items
         .iter()
@@ -2132,8 +2138,11 @@ async fn list_drivers_returns_registered_module_descriptors() {
         nollie["descriptor"]["capabilities"]["backend_factory"],
         false
     );
+    assert_eq!(nollie["descriptor"]["capabilities"]["controls"], false);
     assert_eq!(nollie["enabled"], true);
     assert_eq!(nollie["config_key"], "drivers.nollie");
+    assert!(nollie.get("control_surface_id").is_none());
+    assert!(nollie.get("control_surface_path").is_none());
 }
 
 #[tokio::test]

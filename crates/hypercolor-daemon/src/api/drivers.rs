@@ -24,6 +24,10 @@ pub struct DriverSummary {
     pub descriptor: DriverModuleDescriptor,
     pub enabled: bool,
     pub config_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_surface_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_surface_path: Option<String>,
 }
 
 /// `GET /api/v1/drivers` — List registered driver modules.
@@ -52,11 +56,21 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         .map(|descriptor| {
             let enabled = network::module_enabled(&config, &descriptor);
             let config_key = format!("drivers.{}", descriptor.id);
+            let control_surface_id = descriptor
+                .capabilities
+                .controls
+                .then(|| format!("driver:{}", descriptor.id));
+            let control_surface_path = descriptor
+                .capabilities
+                .controls
+                .then(|| format!("/api/v1/drivers/{}/controls", descriptor.id));
 
             DriverSummary {
                 descriptor,
                 enabled,
                 config_key,
+                control_surface_id,
+                control_surface_path,
             }
         })
         .collect();
