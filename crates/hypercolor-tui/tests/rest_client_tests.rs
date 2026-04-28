@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,6 +19,8 @@ use hypercolor_types::effect::{
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+
+type CapturedControlPayloads = (Arc<Mutex<Option<Value>>>, Arc<Mutex<Option<Value>>>);
 
 fn client_for(addr: SocketAddr) -> DaemonClient {
     DaemonClient::new("127.0.0.1", addr.port())
@@ -316,10 +318,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
             "/api/v1/control-surfaces/{surface_id}/values",
             patch(
                 |Path(surface_id): Path<String>,
-                 State((captured_patch, _captured_action)): State<(
-                    Arc<Mutex<Option<Value>>>,
-                    Arc<Mutex<Option<Value>>>,
-                )>,
+                 State((captured_patch, _captured_action)): State<CapturedControlPayloads>,
                  Json(payload): Json<Value>| async move {
                     assert_eq!(surface_id, "driver:wled:device:Desk Strip");
                     *captured_patch.lock().await = Some(payload);
@@ -341,10 +340,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
             "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
             post(
                 |Path((surface_id, action_id)): Path<(String, String)>,
-                 State((_captured_patch, captured_action)): State<(
-                    Arc<Mutex<Option<Value>>>,
-                    Arc<Mutex<Option<Value>>>,
-                )>,
+                 State((_captured_patch, captured_action)): State<CapturedControlPayloads>,
                  Json(payload): Json<Value>| async move {
                     assert_eq!(surface_id, "driver:wled:device:Desk Strip");
                     assert_eq!(action_id, "refresh topology");
@@ -381,7 +377,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
         .invoke_control_action(
             "driver:wled:device:Desk Strip",
             "refresh topology",
-            Default::default(),
+            BTreeMap::default(),
         )
         .await
         .expect("invoke action");

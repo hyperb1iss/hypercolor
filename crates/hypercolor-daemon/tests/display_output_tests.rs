@@ -732,9 +732,9 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let canvas = sample_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes = wait_for_display_writes(&display_writes).await;
     assert!(!writes[0].is_empty());
@@ -804,9 +804,9 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let canvas = sample_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes = wait_for_display_writes(&display_writes).await;
     assert_eq!(writes[0].len(), 320 * 200 * 3);
@@ -876,9 +876,9 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     assert_eq!(preview_runtime.tracked_canvas_receiver_count(), 0);
 
     let canvas = sample_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
     let _ = wait_for_display_writes(&display_writes).await;
 
     let preview_snapshot = preview_runtime.snapshot();
@@ -949,9 +949,9 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
         display_frames: Arc::clone(&display_frames),
     });
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&sample_canvas(), 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&sample_canvas(), 1, 16));
     tokio::time::sleep(Duration::from_millis(120)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -1021,9 +1021,9 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
         display_frames: Arc::clone(&display_frames),
     });
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -1033,9 +1033,9 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
 
     let _preview_rx = display_frames.write().await.subscribe(device_id);
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(0, 255, 0, 255)),
             2,
             32,
@@ -1087,9 +1087,9 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     });
 
     let canvas = sample_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -1140,9 +1140,9 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     });
 
     let canvas = sample_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(display_writes.lock().await.is_empty());
@@ -1205,9 +1205,9 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let canvas = split_color_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -1294,9 +1294,9 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     });
 
     let canvas = split_color_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -1368,9 +1368,9 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     });
 
     let canvas = split_color_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -1600,9 +1600,9 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
 
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -1701,9 +1701,9 @@ async fn display_group_alpha_waits_for_effect_frame_before_blending() {
         "expected blended display faces to wait for an effect frame before publishing"
     );
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             2,
             32,
@@ -1772,9 +1772,9 @@ async fn display_output_uses_render_published_face_route_metadata() {
         },
     );
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -1850,9 +1850,9 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -1875,7 +1875,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     thread.shutdown().await.expect("display thread should stop");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
@@ -1938,9 +1938,9 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
             1,
             16,
         ));
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -2038,9 +2038,9 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
 
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -2126,9 +2126,9 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
 
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 255, 255, 255)),
             1,
             16,
@@ -2214,9 +2214,9 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
 
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(
+        .send_replace(CanvasFrame::from_canvas(
             &solid_canvas(Rgba::new(255, 0, 0, 255)),
             1,
             16,
@@ -2303,16 +2303,16 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let green = solid_canvas(Rgba::new(0, 255, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&green, 2, 32));
-    let _ = event_bus
+        .send_replace(CanvasFrame::from_canvas(&green, 2, 32));
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&blue, 3, 48));
+        .send_replace(CanvasFrame::from_canvas(&blue, 3, 48));
 
     tokio::time::sleep(Duration::from_millis(550)).await;
 
@@ -2401,9 +2401,9 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let green = solid_canvas(Rgba::new(0, 255, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(
         writes
@@ -2416,13 +2416,13 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
         "expected first paced frame to be red, got {first_pixel:?}"
     );
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&green, 2, 32));
+        .send_replace(CanvasFrame::from_canvas(&green, 2, 32));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&blue, 3, 48));
+        .send_replace(CanvasFrame::from_canvas(&blue, 3, 48));
 
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected second paced display frame"));
@@ -2491,9 +2491,9 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
 
     let frame = wait_for_display_frame_snapshot(&display_frames, device_id).await;
     let image = decode_jpeg(frame.jpeg_data.as_slice());
@@ -2568,9 +2568,9 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
 
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let attempt_times = wait_for_display_attempt_count(&display_write_attempt_times, 2).await;
@@ -2655,15 +2655,15 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 2, 32));
+        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
     tokio::time::sleep(Duration::from_millis(140)).await;
     assert_eq!(
         display_writes.lock().await.len(),
@@ -2671,9 +2671,9 @@ async fn automatic_display_output_skips_unchanged_frames() {
         "identical frame should not trigger another LCD write"
     );
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&blue, 3, 48));
+        .send_replace(CanvasFrame::from_canvas(&blue, 3, 48));
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     assert_eq!(writes.len(), 2);
 
@@ -2743,15 +2743,15 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
 
     let surface =
         PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 1, 16);
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_surface(surface.clone()));
+        .send_replace(CanvasFrame::from_surface(surface.clone()));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_surface(
+        .send_replace(CanvasFrame::from_surface(
             surface.with_frame_metadata(2, 32),
         ));
     tokio::time::sleep(Duration::from_millis(140)).await;
@@ -2823,9 +2823,9 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.0))
         .await;
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let black_image = decode_jpeg(
         writes
@@ -2841,9 +2841,9 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.5))
         .await;
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 2, 32));
+        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let dimmed_image = decode_jpeg(
         writes
@@ -2917,15 +2917,15 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let _ = device_registry
         .update_user_settings(&device_id, None, None, Some(0.0))
         .await;
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     assert_eq!(writes.len(), 1);
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&blue, 2, 32));
+        .send_replace(CanvasFrame::from_canvas(&blue, 2, 32));
     tokio::time::sleep(Duration::from_millis(140)).await;
     assert_eq!(
         display_writes.lock().await.len(),
@@ -2989,9 +2989,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     });
 
     let canvas = split_color_canvas();
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(writes.first().expect("expected initial display frame"));
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -3009,9 +3009,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         )]));
     }
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&canvas, 2, 32));
+        .send_replace(CanvasFrame::from_canvas(&canvas, 2, 32));
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected refreshed display frame"));
     let second_pixel = second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
@@ -3079,9 +3079,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(writes.first().expect("expected initial display frame"));
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -3094,9 +3094,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     event_bus
         .group_canvas_sender(group_id)
         .send_replace(CanvasFrame::from_canvas(&blue, 2, 32));
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&red, 3, 48));
+        .send_replace(CanvasFrame::from_canvas(&red, 3, 48));
 
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(writes.last().expect("expected refreshed direct-face frame"));
@@ -3165,9 +3165,9 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     let black = solid_canvas(Rgba::BLACK);
-    let _ = event_bus
+    event_bus
         .scene_canvas_sender()
-        .send(CanvasFrame::from_canvas(&black, 1, 16));
+        .send_replace(CanvasFrame::from_canvas(&black, 1, 16));
     let _ = wait_for_display_write_count(&display_writes, 1).await;
 
     power_tx.send_replace(OutputPowerState {
