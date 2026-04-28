@@ -89,6 +89,10 @@ python-ws-protocol-check:
 python-test:
     cd python && uv run pytest
 
+# Build Python client sdist and wheel with uv-build
+python-build:
+    cd python && uv build
+
 # Run the full Python client verification suite
 python-verify: python-lint python-fmt-check python-typecheck python-ws-protocol-check python-test
     @echo '✅ Python checks passed'

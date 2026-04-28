@@ -51,6 +51,10 @@ ws-protocol-check:
 test:
     uv run pytest
 
+# Build sdist and wheel with uv-build
+build:
+    uv build
+
 # Run the full Python verification suite
 verify: lint fmt-check typecheck ws-protocol-check test
     @echo '✅ Python checks passed'
