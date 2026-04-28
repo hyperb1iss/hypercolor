@@ -1,5 +1,7 @@
 //! Generic dynamic controls for device and driver-owned surfaces.
 
+use std::collections::BTreeMap;
+
 use hypercolor_leptos_ext::events::Change;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
@@ -8,6 +10,7 @@ use hypercolor_types::controls::{
 };
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use serde_json::Value as JsonValue;
 
 use crate::api;
 use crate::app::WsContext;
@@ -227,6 +230,29 @@ fn render_field_editor(
             surfaces_resource,
         )
         .into_any(),
+        ControlValueType::Flags { options } => render_flags_editor(
+            surface_id,
+            revision,
+            field.id.clone(),
+            flags_value(current_value.as_ref()),
+            options
+                .iter()
+                .map(|option| (option.value.clone(), option.label.clone()))
+                .collect(),
+            editable,
+            surfaces_resource,
+        )
+        .into_any(),
+        ControlValueType::List { .. } | ControlValueType::Object { .. } => render_json_editor(
+            field.value_type.clone(),
+            surface_id,
+            revision,
+            field.id.clone(),
+            json_text(current_value.as_ref()),
+            editable,
+            surfaces_resource,
+        )
+        .into_any(),
         ControlValueType::String { .. }
         | ControlValueType::Secret
         | ControlValueType::IpAddress
@@ -242,10 +268,95 @@ fn render_field_editor(
             surfaces_resource,
         )
         .into_any(),
-        _ => view! {
-            <span class="text-[10px] font-mono text-fg-tertiary/50">{value_text(current_value.as_ref())}</span>
-        }
-        .into_any(),
+    }
+}
+
+fn render_flags_editor(
+    surface_id: String,
+    revision: u64,
+    field_id: String,
+    selected: Vec<String>,
+    options: Vec<(String, String)>,
+    editable: bool,
+    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+) -> impl IntoView {
+    view! {
+        <div class="flex flex-wrap justify-end gap-1">
+            {options.into_iter().map(|(value, label)| {
+                let checked = selected.contains(&value);
+                let current_selected = selected.clone();
+                let value_for_change = value.clone();
+                let field_for_change = field_id.clone();
+                let surface_for_change = surface_id.clone();
+                view! {
+                    <label class="inline-flex items-center gap-1 rounded-md border border-edge-subtle/60 bg-surface-sunken px-1.5 py-1 text-[9px] text-fg-secondary">
+                        <input
+                            type="checkbox"
+                            class="w-3 h-3 rounded border-edge-subtle accent-cyan-300"
+                            prop:checked=checked
+                            disabled=!editable
+                            on:change=move |ev| {
+                                let mut next = current_selected.clone();
+                                let Some(enabled) = Change::from_event(ev).checked() else {
+                                    return;
+                                };
+                                if enabled && !next.contains(&value_for_change) {
+                                    next.push(value_for_change.clone());
+                                } else if !enabled {
+                                    next.retain(|item| item != &value_for_change);
+                                }
+                                apply_change(
+                                    surface_for_change.clone(),
+                                    revision,
+                                    field_for_change.clone(),
+                                    DynamicControlValue::Flags(next),
+                                    surfaces_resource,
+                                );
+                            }
+                        />
+                        <span>{label}</span>
+                    </label>
+                }
+            }).collect_view()}
+        </div>
+    }
+}
+
+fn render_json_editor(
+    value_type: ControlValueType,
+    surface_id: String,
+    revision: u64,
+    field_id: String,
+    value: String,
+    editable: bool,
+    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+) -> impl IntoView {
+    view! {
+        <textarea
+            class="w-40 min-h-16 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] font-mono text-fg-secondary
+                   focus:outline-none focus:border-accent-muted disabled:opacity-50"
+            prop:value=value
+            disabled=!editable
+            on:change=move |ev| {
+                let Some(raw) = Change::from_event(ev).value_string() else {
+                    return;
+                };
+                let parsed = match parse_json_control_value(&value_type, &raw) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        toasts::toast_error(&error);
+                        return;
+                    }
+                };
+                apply_change(
+                    surface_id.clone(),
+                    revision,
+                    field_id.clone(),
+                    parsed,
+                    surfaces_resource,
+                );
+            }
+        />
     }
 }
 
@@ -603,6 +714,27 @@ fn render_action_input_editor(
             }
             .into_any()
         }
+        ControlValueType::Flags { options } => render_action_flags_input(
+            field_id,
+            options
+                .into_iter()
+                .map(|option| (option.value, option.label))
+                .collect(),
+            input_values,
+            set_input_values,
+            enabled,
+        )
+        .into_any(),
+        ControlValueType::List { .. } | ControlValueType::Object { .. } => {
+            render_action_json_input(
+                field.value_type,
+                field_id,
+                input_values,
+                set_input_values,
+                enabled,
+            )
+            .into_any()
+        }
         ControlValueType::String { .. }
         | ControlValueType::Secret
         | ControlValueType::IpAddress
@@ -616,10 +748,59 @@ fn render_action_input_editor(
             enabled,
         )
         .into_any(),
-        _ => view! {
-            <span class="text-[9px] text-fg-tertiary/45">"Unsupported input"</span>
-        }
-        .into_any(),
+    }
+}
+
+fn render_action_flags_input(
+    field_id: String,
+    options: Vec<(String, String)>,
+    input_values: ReadSignal<ControlValueMap>,
+    set_input_values: WriteSignal<ControlValueMap>,
+    enabled: bool,
+) -> impl IntoView {
+    view! {
+        <div class="flex flex-wrap gap-1">
+            {options.into_iter().map(|(value, label)| {
+                let field_for_value = field_id.clone();
+                let field_for_change = field_id.clone();
+                let value_for_checked = value.clone();
+                let value_for_change = value.clone();
+                view! {
+                    <label class="inline-flex items-center gap-1 rounded-md border border-edge-subtle/60 bg-surface-sunken px-1.5 py-1 text-[9px] text-fg-secondary">
+                        <input
+                            type="checkbox"
+                            class="w-3 h-3 rounded border-edge-subtle accent-cyan-300"
+                            prop:checked=move || {
+                                let values = input_values.get();
+                                matches!(
+                                    values.get(&field_for_value),
+                                    Some(DynamicControlValue::Flags(flags)) if flags.contains(&value_for_checked)
+                                )
+                            }
+                            disabled=!enabled
+                            on:change=move |ev| {
+                                let Some(checked) = Change::from_event(ev).checked() else {
+                                    return;
+                                };
+                                set_input_values.update(|values| {
+                                    let mut next = match values.get(&field_for_change) {
+                                        Some(DynamicControlValue::Flags(flags)) => flags.clone(),
+                                        _ => Vec::new(),
+                                    };
+                                    if checked && !next.contains(&value_for_change) {
+                                        next.push(value_for_change.clone());
+                                    } else if !checked {
+                                        next.retain(|item| item != &value_for_change);
+                                    }
+                                    values.insert(field_for_change.clone(), DynamicControlValue::Flags(next));
+                                });
+                            }
+                        />
+                        <span>{label}</span>
+                    </label>
+                }
+            }).collect_view()}
+        </div>
     }
 }
 
@@ -685,6 +866,37 @@ fn render_action_text_input(
                         change_field.clone(),
                         text_value(kind, raw),
                     );
+                }
+            }
+        />
+    }
+}
+
+fn render_action_json_input(
+    value_type: ControlValueType,
+    field_id: String,
+    input_values: ReadSignal<ControlValueMap>,
+    set_input_values: WriteSignal<ControlValueMap>,
+    enabled: bool,
+) -> impl IntoView {
+    let value_field = field_id.clone();
+    let change_field = field_id.clone();
+    view! {
+        <textarea
+            class="w-full min-h-16 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] font-mono text-fg-secondary
+                   focus:outline-none focus:border-accent-muted disabled:opacity-50"
+            prop:value=move || {
+                let values = input_values.get();
+                json_text(values.get(&value_field))
+            }
+            disabled=!enabled
+            on:change=move |ev| {
+                let Some(raw) = Change::from_event(ev).value_string() else {
+                    return;
+                };
+                match parse_json_control_value(&value_type, &raw) {
+                    Ok(value) => set_action_input_value(set_input_values, change_field.clone(), value),
+                    Err(error) => toasts::toast_error(&error),
                 }
             }
         />
@@ -886,6 +1098,202 @@ fn value_text(value: Option<&DynamicControlValue>) -> String {
         Some(DynamicControlValue::Object(_)) => "object".to_string(),
         Some(DynamicControlValue::Null) | None => String::new(),
     }
+}
+
+fn flags_value(value: Option<&DynamicControlValue>) -> Vec<String> {
+    match value {
+        Some(DynamicControlValue::Flags(values)) => values.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn json_text(value: Option<&DynamicControlValue>) -> String {
+    value
+        .map(control_value_to_json)
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_default()
+}
+
+fn control_value_to_json(value: &DynamicControlValue) -> JsonValue {
+    match value {
+        DynamicControlValue::Null => JsonValue::Null,
+        DynamicControlValue::Bool(value) => JsonValue::Bool(*value),
+        DynamicControlValue::Integer(value) => JsonValue::from(*value),
+        DynamicControlValue::Float(value) => JsonValue::from(*value),
+        DynamicControlValue::String(value)
+        | DynamicControlValue::SecretRef(value)
+        | DynamicControlValue::IpAddress(value)
+        | DynamicControlValue::MacAddress(value)
+        | DynamicControlValue::Enum(value) => JsonValue::String(value.clone()),
+        DynamicControlValue::ColorRgb(value) => JsonValue::Array(
+            value
+                .iter()
+                .map(|channel| JsonValue::from(*channel))
+                .collect(),
+        ),
+        DynamicControlValue::ColorRgba(value) => JsonValue::Array(
+            value
+                .iter()
+                .map(|channel| JsonValue::from(*channel))
+                .collect(),
+        ),
+        DynamicControlValue::DurationMs(value) => JsonValue::from(*value),
+        DynamicControlValue::Flags(values) => JsonValue::Array(
+            values
+                .iter()
+                .map(|value| JsonValue::String(value.clone()))
+                .collect(),
+        ),
+        DynamicControlValue::List(values) => {
+            JsonValue::Array(values.iter().map(control_value_to_json).collect())
+        }
+        DynamicControlValue::Object(values) => JsonValue::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), control_value_to_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn parse_json_control_value(
+    value_type: &ControlValueType,
+    raw: &str,
+) -> Result<DynamicControlValue, String> {
+    let json = serde_json::from_str::<JsonValue>(raw).map_err(|error| format!("JSON: {error}"))?;
+    let value = json_to_control_value(value_type, json)?;
+    value_type
+        .validate_value(&value)
+        .map_err(|error| format!("Invalid value: {error}"))?;
+    Ok(value)
+}
+
+fn json_to_control_value(
+    value_type: &ControlValueType,
+    value: JsonValue,
+) -> Result<DynamicControlValue, String> {
+    match value_type {
+        ControlValueType::Bool => value
+            .as_bool()
+            .map(DynamicControlValue::Bool)
+            .ok_or_else(|| "Expected boolean JSON".to_string()),
+        ControlValueType::Integer { .. } => value
+            .as_i64()
+            .map(DynamicControlValue::Integer)
+            .ok_or_else(|| "Expected integer JSON".to_string()),
+        ControlValueType::Float { .. } => value
+            .as_f64()
+            .map(DynamicControlValue::Float)
+            .ok_or_else(|| "Expected number JSON".to_string()),
+        ControlValueType::String { .. } => value
+            .as_str()
+            .map(|value| DynamicControlValue::String(value.to_string()))
+            .ok_or_else(|| "Expected string JSON".to_string()),
+        ControlValueType::Secret => value
+            .as_str()
+            .map(|value| DynamicControlValue::SecretRef(value.to_string()))
+            .ok_or_else(|| "Expected secret reference string".to_string()),
+        ControlValueType::IpAddress => value
+            .as_str()
+            .map(|value| DynamicControlValue::IpAddress(value.to_string()))
+            .ok_or_else(|| "Expected IP address string".to_string()),
+        ControlValueType::MacAddress => value
+            .as_str()
+            .map(|value| DynamicControlValue::MacAddress(value.to_string()))
+            .ok_or_else(|| "Expected MAC address string".to_string()),
+        ControlValueType::DurationMs { .. } => value
+            .as_u64()
+            .map(DynamicControlValue::DurationMs)
+            .ok_or_else(|| "Expected duration integer JSON".to_string()),
+        ControlValueType::Enum { .. } => value
+            .as_str()
+            .map(|value| DynamicControlValue::Enum(value.to_string()))
+            .ok_or_else(|| "Expected enum string".to_string()),
+        ControlValueType::Flags { .. } => value
+            .as_array()
+            .ok_or_else(|| "Expected flags array".to_string())?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| "Expected flag string".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(DynamicControlValue::Flags),
+        ControlValueType::ColorRgb => json_to_color::<3>(value).map(DynamicControlValue::ColorRgb),
+        ControlValueType::ColorRgba => {
+            json_to_color::<4>(value).map(DynamicControlValue::ColorRgba)
+        }
+        ControlValueType::List { item_type, .. } => value
+            .as_array()
+            .ok_or_else(|| "Expected list array".to_string())?
+            .iter()
+            .cloned()
+            .map(|item| json_to_control_value(item_type, item))
+            .collect::<Result<Vec<_>, _>>()
+            .map(DynamicControlValue::List),
+        ControlValueType::Object { fields } => {
+            let object = value
+                .as_object()
+                .ok_or_else(|| "Expected object JSON".to_string())?;
+            for key in object.keys() {
+                if !fields.iter().any(|field| field.id == *key) {
+                    return Err(format!("Unknown object field: {key}"));
+                }
+            }
+            let mut values = BTreeMap::new();
+            for field in fields {
+                if let Some(value) = object.get(&field.id) {
+                    values.insert(
+                        field.id.clone(),
+                        json_to_control_value(&field.value_type, value.clone())?,
+                    );
+                } else if let Some(default_value) = &field.default_value {
+                    values.insert(field.id.clone(), default_value.clone());
+                } else if field.required {
+                    return Err(format!("Missing required object field: {}", field.id));
+                }
+            }
+            Ok(DynamicControlValue::Object(values))
+        }
+    }
+}
+
+fn json_to_color<const N: usize>(value: JsonValue) -> Result<[u8; N], String> {
+    if let Some(text) = value.as_str() {
+        return parse_color_hex_channels(text);
+    }
+    let channels = value
+        .as_array()
+        .ok_or_else(|| "Expected color array or hex string".to_string())?;
+    if channels.len() != N {
+        return Err(format!("Expected {N} color channels"));
+    }
+    let mut out = [0_u8; N];
+    for (index, channel) in channels.iter().enumerate() {
+        let Some(channel) = channel.as_u64().and_then(|value| u8::try_from(value).ok()) else {
+            return Err("Expected color channels from 0-255".to_string());
+        };
+        out[index] = channel;
+    }
+    Ok(out)
+}
+
+fn parse_color_hex_channels<const N: usize>(raw: &str) -> Result<[u8; N], String> {
+    let hex = raw.trim().trim_start_matches('#');
+    if hex.len() != N * 2 {
+        return Err(format!("Expected {}-digit hex color", N * 2));
+    }
+
+    let mut out = [0_u8; N];
+    for (index, channel) in out.iter_mut().enumerate() {
+        let start = index * 2;
+        let end = start + 2;
+        *channel = u8::from_str_radix(&hex[start..end], 16)
+            .map_err(|_| "Expected hex color channels".to_string())?;
+    }
+    Ok(out)
 }
 
 fn surface_title(surface: &ControlSurfaceDocument) -> String {
