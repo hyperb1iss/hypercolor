@@ -10,7 +10,7 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
 
     store
         .store_json(
-            "hue:bridge-1",
+            "alpha:bridge-1",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",
@@ -19,17 +19,17 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
         .await?;
     store
         .store_json(
-            "nanoleaf:panel-1",
+            "beta:panel-1",
             serde_json::json!({
-                "auth_token": "nano-token",
+                "auth_token": "panel-token",
             }),
         )
         .await?;
     store
         .store_json(
-            "wled:living-room",
+            "gamma:living-room",
             serde_json::json!({
-                "username": "wled",
+                "username": "user",
                 "password": "secret",
                 "token": null,
             }),
@@ -37,7 +37,7 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
         .await?;
 
     assert_eq!(
-        store.get_json("hue:bridge-1").await,
+        store.get_json("alpha:bridge-1").await,
         Some(serde_json::json!({
             "api_key": "api-key",
             "client_key": "client-key",
@@ -46,23 +46,23 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
     assert_eq!(
         store.keys().await,
         vec![
-            "hue:bridge-1".to_owned(),
-            "nanoleaf:panel-1".to_owned(),
-            "wled:living-room".to_owned(),
+            "alpha:bridge-1".to_owned(),
+            "beta:panel-1".to_owned(),
+            "gamma:living-room".to_owned(),
         ]
     );
 
     let reopened = CredentialStore::open(tempdir.path()).await?;
     assert_eq!(
-        reopened.get_json("nanoleaf:panel-1").await,
+        reopened.get_json("beta:panel-1").await,
         Some(serde_json::json!({
-            "auth_token": "nano-token",
+            "auth_token": "panel-token",
         }))
     );
     assert_eq!(
-        reopened.get_json("wled:living-room").await,
+        reopened.get_json("gamma:living-room").await,
         Some(serde_json::json!({
-            "username": "wled",
+            "username": "user",
             "password": "secret",
             "token": null,
         }))
@@ -100,7 +100,7 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
 
     store
         .store_json(
-            "hue:bridge-1",
+            "alpha:bridge-1",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",
@@ -118,7 +118,7 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
         .await?;
 
     assert_eq!(
-        store.get_json("hue:bridge-1").await,
+        store.get_json("alpha:bridge-1").await,
         Some(serde_json::json!({
             "api_key": "api-key",
             "client_key": "client-key",
@@ -141,36 +141,16 @@ async fn credential_store_keeps_driver_json_opaque() -> TestResult {
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store_json("wled:strip", serde_json::json!({}))
+        .store_json("alpha:strip", serde_json::json!({}))
         .await?;
 
     assert_eq!(
-        store.get_json("wled:strip").await,
+        store.get_json("alpha:strip").await,
         Some(serde_json::json!({}))
     );
     assert_eq!(
-        store.get("wled:strip").await,
-        Some(Credentials::new("wled", serde_json::json!({})))
-    );
-
-    Ok(())
-}
-
-#[test]
-fn credentials_migrate_legacy_typed_payloads_to_opaque_driver_json() -> TestResult {
-    let credentials: Credentials = serde_json::from_value(serde_json::json!({
-        "kind": "hue_bridge",
-        "api_key": "api-key",
-        "client_key": "client-key",
-    }))?;
-
-    assert_eq!(credentials.backend_id, "hue");
-    assert_eq!(
-        credentials.into_driver_json(),
-        serde_json::json!({
-            "api_key": "api-key",
-            "client_key": "client-key",
-        })
+        store.get("alpha:strip").await,
+        Some(Credentials::new("alpha", serde_json::json!({})))
     );
 
     Ok(())
@@ -183,7 +163,7 @@ async fn credential_store_keeps_plaintext_out_of_encrypted_file() -> TestResult 
 
     store
         .store_json(
-            "hue:bridge-1",
+            "alpha:bridge-1",
             serde_json::json!({
                 "api_key": "visible-api-key",
                 "client_key": "visible-client-key",

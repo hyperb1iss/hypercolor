@@ -22,7 +22,6 @@ const NONCE_BYTES: usize = 12;
 
 /// Stored credentials for a network device/backend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "StoredCredentials", into = "StoredCredentials")]
 pub struct Credentials {
     /// Backend identifier, for example `openrgb`.
     pub backend_id: String,
@@ -51,100 +50,6 @@ impl Credentials {
     pub fn from_driver_json(key: &str, value: Value) -> Self {
         let backend_id = key.split(':').next().unwrap_or("custom");
         Self::new(backend_id, value)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-enum StoredCredentials {
-    Current { backend_id: String, data: Value },
-    Legacy(LegacyCredentials),
-}
-
-impl From<StoredCredentials> for Credentials {
-    fn from(stored: StoredCredentials) -> Self {
-        match stored {
-            StoredCredentials::Current { backend_id, data } => Self { backend_id, data },
-            StoredCredentials::Legacy(legacy) => legacy.into(),
-        }
-    }
-}
-
-impl From<Credentials> for StoredCredentials {
-    fn from(credentials: Credentials) -> Self {
-        Self::Current {
-            backend_id: credentials.backend_id,
-            data: credentials.data,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-enum LegacyCredentials {
-    HueBridge {
-        api_key: String,
-        client_key: String,
-    },
-    Nanoleaf {
-        auth_token: String,
-    },
-    Govee {
-        api_key: String,
-    },
-    Wled {
-        #[serde(default)]
-        username: Option<String>,
-        #[serde(default)]
-        password: Option<String>,
-        #[serde(default)]
-        token: Option<String>,
-    },
-    Custom {
-        backend_id: String,
-        data: Value,
-    },
-}
-
-impl From<LegacyCredentials> for Credentials {
-    fn from(legacy: LegacyCredentials) -> Self {
-        match legacy {
-            LegacyCredentials::HueBridge {
-                api_key,
-                client_key,
-            } => Self::new(
-                "hue",
-                serde_json::json!({
-                    "api_key": api_key,
-                    "client_key": client_key,
-                }),
-            ),
-            LegacyCredentials::Nanoleaf { auth_token } => Self::new(
-                "nanoleaf",
-                serde_json::json!({
-                    "auth_token": auth_token,
-                }),
-            ),
-            LegacyCredentials::Govee { api_key } => Self::new(
-                "govee",
-                serde_json::json!({
-                    "api_key": api_key,
-                }),
-            ),
-            LegacyCredentials::Wled {
-                username,
-                password,
-                token,
-            } => Self::new(
-                "wled",
-                serde_json::json!({
-                    "username": username,
-                    "password": password,
-                    "token": token,
-                }),
-            ),
-            LegacyCredentials::Custom { backend_id, data } => Self::new(backend_id, data),
-        }
     }
 }
 
