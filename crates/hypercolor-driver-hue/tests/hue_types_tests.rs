@@ -1,4 +1,4 @@
-use hypercolor_core::device::hue::{
+use hypercolor_driver_hue::{
     HueChannel, HueChannelMember, HueEntertainmentConfig, HueEntertainmentType, HueLight,
     HuePosition, build_device_info,
 };

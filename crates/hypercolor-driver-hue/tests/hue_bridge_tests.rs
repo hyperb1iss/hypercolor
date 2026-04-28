@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use hypercolor_core::device::hue::HueBridgeClient;
+use hypercolor_driver_hue::HueBridgeClient;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

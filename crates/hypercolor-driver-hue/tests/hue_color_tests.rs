@@ -1,4 +1,4 @@
-use hypercolor_core::device::hue::{GAMUT_A, GAMUT_C, rgb_to_cie_xyb};
+use hypercolor_driver_hue::{GAMUT_A, GAMUT_C, rgb_to_cie_xyb};
 
 #[test]
 fn rgb_to_cie_xyb_returns_white_point_for_black() {

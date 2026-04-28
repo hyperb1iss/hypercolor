@@ -12,12 +12,19 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-hypercolor-core = { path = "../hypercolor-core", default-features = false, features = ["hue"] }
+hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-driver-api = { workspace = true }
 hypercolor-types = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+webrtc-dtls = { workspace = true }
+webrtc-util = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -5,8 +5,8 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::types::device::{
+use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
 };

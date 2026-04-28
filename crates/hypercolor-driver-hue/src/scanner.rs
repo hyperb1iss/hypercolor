@@ -11,8 +11,9 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-use crate::device::discovery::{DiscoveryConnectBehavior, TransportScanner};
-use crate::device::net::{CredentialStore, MdnsBrowser};
+use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::net::{CredentialStore, MdnsBrowser};
+use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 use super::bridge::{DEFAULT_HUE_API_PORT, HueBridgeClient};
 use super::types::{
@@ -203,7 +204,7 @@ impl HueScanner {
 
 impl Default for HueScanner {
     fn default() -> Self {
-        let store_dir = crate::config::ConfigManager::data_dir();
+        let store_dir = ConfigManager::data_dir();
         let credential_store = CredentialStore::open_blocking(&store_dir)
             .expect("default Hue scanner should open credential store");
         Self::new(Arc::new(credential_store))
@@ -216,7 +217,7 @@ impl TransportScanner for HueScanner {
         "Hue"
     }
 
-    async fn scan(&mut self) -> Result<Vec<crate::device::discovery::DiscoveredDevice>> {
+    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         Ok(self
             .scan_bridges()
             .await?

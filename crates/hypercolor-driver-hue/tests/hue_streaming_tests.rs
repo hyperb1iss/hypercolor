@@ -1,4 +1,4 @@
-use hypercolor_core::device::hue::{CieXyb, HueChannel, HuePosition, encode_packet_into};
+use hypercolor_driver_hue::{CieXyb, HueChannel, HuePosition, encode_packet_into};
 
 #[test]
 fn encode_packet_into_writes_huestream_header_and_channel_payload() {

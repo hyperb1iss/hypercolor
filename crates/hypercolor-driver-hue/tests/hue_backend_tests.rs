@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use hypercolor_core::device::DeviceBackend;
 use hypercolor_core::device::DiscoveryConnectBehavior;
-use hypercolor_core::device::hue::{
+use hypercolor_core::device::net::CredentialStore;
+use hypercolor_driver_hue::{
     GAMUT_C, HueBackend, HueConfig, HueDiscoveredBridge, build_device_info, rgb_to_cie_xyb,
 };
-use hypercolor_core::device::net::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
