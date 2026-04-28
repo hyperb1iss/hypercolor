@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use hypercolor_types::device::DriverModuleDescriptor;
+use hypercolor_types::device::{DriverModuleDescriptor, DriverProtocolDescriptor};
 
 use super::client;
 
@@ -16,6 +16,8 @@ pub struct DriverSummary {
     pub descriptor: DriverModuleDescriptor,
     pub enabled: bool,
     pub config_key: String,
+    #[serde(default)]
+    pub protocols: Vec<DriverProtocolDescriptor>,
     #[serde(default)]
     pub control_surface_id: Option<String>,
     #[serde(default)]

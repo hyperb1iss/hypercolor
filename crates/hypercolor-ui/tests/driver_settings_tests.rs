@@ -37,6 +37,7 @@ fn driver(
         },
         enabled: true,
         config_key: format!("drivers.{id}"),
+        protocols: Vec::new(),
         control_surface_id: None,
         control_surface_path: None,
     }
@@ -59,16 +60,31 @@ fn discovery_settings_follow_driver_descriptors() {
             false,
             vec![DriverTransportKind::Usb],
         ),
+        driver(
+            "bridge",
+            "Bridge Driver",
+            true,
+            false,
+            vec![DriverTransportKind::Bridge],
+        ),
     ]);
 
     assert_eq!(
         settings,
-        vec![DiscoveryDriverSetting {
-            id: "leaf".to_string(),
-            label: "Leaf Driver Scan".to_string(),
-            description: "Discover and pair Leaf Driver devices over the network".to_string(),
-            key: "drivers.leaf.enabled".to_string(),
-        }]
+        vec![
+            DiscoveryDriverSetting {
+                id: "leaf".to_string(),
+                label: "Leaf Driver Scan".to_string(),
+                description: "Discover and pair Leaf Driver devices over the network".to_string(),
+                key: "drivers.leaf.enabled".to_string(),
+            },
+            DiscoveryDriverSetting {
+                id: "bridge".to_string(),
+                label: "Bridge Driver Scan".to_string(),
+                description: "Discover Bridge Driver devices over bridge services".to_string(),
+                key: "drivers.bridge.enabled".to_string(),
+            }
+        ]
     );
 }
 
@@ -97,7 +113,17 @@ fn driver_list_response_deserializes_daemon_data() {
                 "default_enabled": true
             },
             "enabled": true,
-            "config_key": "drivers.testnet"
+            "config_key": "drivers.testnet",
+            "protocols": [{
+                "driver_id": "testnet",
+                "protocol_id": "testnet/proto",
+                "display_name": "Test Protocol",
+                "vendor_id": 4660,
+                "product_id": 22136,
+                "family_id": "testnet",
+                "transport": "network",
+                "route_backend_id": "network"
+            }]
         }]
     }"#;
 
@@ -106,4 +132,6 @@ fn driver_list_response_deserializes_daemon_data() {
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].descriptor.id, "testnet");
     assert_eq!(response.items[0].config_key, "drivers.testnet");
+    assert_eq!(response.items[0].protocols[0].protocol_id, "testnet/proto");
+    assert_eq!(response.items[0].protocols[0].route_backend_id, "network");
 }

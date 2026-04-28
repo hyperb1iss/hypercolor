@@ -68,6 +68,7 @@ fn transport_label(transport: &DriverTransportKind) -> String {
         DriverTransportKind::Smbus => "SMBus".to_owned(),
         DriverTransportKind::Midi => "MIDI".to_owned(),
         DriverTransportKind::Serial => "serial".to_owned(),
+        DriverTransportKind::Bridge => "bridge services".to_owned(),
         DriverTransportKind::Virtual => "virtual transport".to_owned(),
         DriverTransportKind::Custom(label) => label.clone(),
     }
