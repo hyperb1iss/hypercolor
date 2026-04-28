@@ -162,10 +162,8 @@ pub fn DeviceDetail(
         <div class="space-y-2.5">
             {move || device.get().map(|dev| {
                 let brand = classify_brand(&dev);
-                let (primary, secondary) = brand_colors(brand);
-                let rgb = primary.to_string();
-                let secondary_rgb = secondary.to_string();
-                let vendor_label = brand_label(brand);
+                let (rgb, secondary_rgb) = brand_colors(&brand);
+                let vendor_label = brand_label(&brand);
                 let rgb_for_border = rgb.clone();
                 let rgb_for_slider = rgb.clone();
                 let rgb_for_identify = rgb.clone();
@@ -201,7 +199,7 @@ pub fn DeviceDetail(
                 let is_network = dev.network_ip.is_some() || dev.network_hostname.is_some();
 
                 view! {
-                    // ── Header: Brand chip + Name + status + actions ──────────
+                    // ── Header: Driver chip + Name + status + actions ─────────
                     // No border-top accent strip — the hero gradient does the branding.
                     <div class="relative rounded-xl bg-surface-raised border border-edge-subtle/60 overflow-hidden"
                          style:--glow-rgb=rgb.clone()
@@ -213,7 +211,7 @@ pub fn DeviceDetail(
                              style="background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 6px)" />
 
                         <div class="relative px-4 py-3">
-                            // Brand chip (single, subtle — status lives in the dot next to the name)
+                            // Driver chip (single, subtle — status lives in the dot next to the name)
                             {vendor_label.map(|label| {
                                 let chip_rgb = rgb.clone();
                                 view! {
@@ -509,30 +507,20 @@ pub fn DeviceDetail(
 
                     <DeviceControlSurfaces device_id=device_id />
 
-                    // ── Hue entertainment area hint (when no zones) ─────────
-                    {(dev.zones.is_empty() && dev.backend.to_lowercase() == "hue").then(|| {
+                    // ── Empty topology hint (when no zones) ─────────────────
+                    {dev.zones.is_empty().then(|| {
+                        let hint_rgb = rgb.clone();
                         view! {
                             <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
                                 <div class="px-4 py-3">
                                     <div class="flex items-center gap-2 mb-2">
-                                        <Icon icon=LuLightbulb width="13px" height="13px" style="color: rgba(255, 183, 77, 0.6)" />
-                                        <h3 class="text-[11px] font-medium" style="color: rgba(255, 183, 77, 0.8)">
-                                            "Entertainment Area Required"
+                                        <Icon icon=LuInfo width="13px" height="13px" style=format!("color: rgba({hint_rgb}, 0.6)") />
+                                        <h3 class="text-[11px] font-medium" style=format!("color: rgba({hint_rgb}, 0.8)")>
+                                            "No Addressable Zones"
                                         </h3>
                                     </div>
-                                    <p class="text-[10px] text-fg-tertiary/60 leading-relaxed mb-2">
-                                        "Hypercolor streams to Hue lights through the Entertainment API. "
-                                        "To get started:"
-                                    </p>
-                                    <ol class="text-[10px] text-fg-tertiary/50 leading-relaxed space-y-1 pl-4 list-decimal mb-2">
-                                        <li>"Open the Hue app on your phone"</li>
-                                        <li>"Go to Settings \u{2192} Entertainment areas"</li>
-                                        <li>"Create an area and add the lights you want to control"</li>
-                                        <li>"Come back here and re-scan for devices"</li>
-                                    </ol>
-                                    <p class="text-[9px] text-fg-tertiary/35 leading-relaxed">
-                                        "Each light in the entertainment area becomes an addressable channel "
-                                        "that Hypercolor can stream color data to in real time."
+                                    <p class="text-[10px] text-fg-tertiary/60 leading-relaxed">
+                                        "This driver has not reported any controllable LED zones for this device yet."
                                     </p>
                                 </div>
                             </div>

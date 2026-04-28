@@ -1,4 +1,4 @@
-//! Device card — hardware showcase card with brand identity, metadata, and zone topology.
+//! Device card — hardware showcase card with driver identity, metadata, and zone topology.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -7,123 +7,53 @@ use crate::api::DeviceSummary;
 use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
 use crate::storage;
+use crate::style_utils::device_accent_colors;
 
-// ── Brand identity ──────────────────────────────────────────────────────────
-//
-// Vendor families get distinct SilkCircuit-harmonized accents so the grid reads
-// like a lineup of hardware instead of a wall of grey rectangles. The color is
-// the vendor's spirit (Razer green, Corsair gold, ASUS red) nudged toward the
-// SilkCircuit palette so nothing clashes with the dark theme.
+// ── Driver presentation ─────────────────────────────────────────────────────
 
-/// Vendor family — detected from device name first, backend second.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum DeviceBrand {
-    Razer,
-    Corsair,
-    Asus,
-    LianLi,
-    Ableton,
-    Roli,
-    Dygma,
-    PrismRgb,
-    Nanoleaf,
-    Hue,
-    Wled,
-    Generic,
+#[derive(Clone, PartialEq, Eq)]
+pub struct DeviceBrand {
+    label: Option<String>,
+    primary_rgb: String,
+    secondary_rgb: String,
 }
 
-/// Detect vendor family. Name beats backend because backends group multiple
-/// vendors (e.g. the HAL serves Razer, ASUS, Corsair — all under "hid-bridge").
 pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
-    let name = device.name.to_lowercase();
-    let backend = device.backend.to_lowercase();
+    let color_key = if device.backend.trim().is_empty() {
+        device.id.as_str()
+    } else {
+        device.backend.as_str()
+    };
+    let (primary_rgb, secondary_rgb) = device_accent_colors(color_key);
 
-    if backend == "wled" {
-        return DeviceBrand::Wled;
-    }
-    if backend == "hue" {
-        return DeviceBrand::Hue;
-    }
-    if backend == "nanoleaf" {
-        return DeviceBrand::Nanoleaf;
-    }
-
-    if name.contains("razer") {
-        return DeviceBrand::Razer;
-    }
-    if name.contains("corsair") || name.contains("icue") {
-        return DeviceBrand::Corsair;
-    }
-    if name.contains("asus") || name.contains("aura") || name.contains("rog ") {
-        return DeviceBrand::Asus;
-    }
-    if name.contains("lian li") || name.contains("lian-li") || name.contains("ene ") {
-        return DeviceBrand::LianLi;
-    }
-    if name.contains("ableton") || name.contains("push") {
-        return DeviceBrand::Ableton;
-    }
-    if name.contains("lumi") || name.contains("lightpad") || name.contains("roli") {
-        return DeviceBrand::Roli;
-    }
-    if name.contains("dygma") || name.contains("defy") || name.contains("raise") {
-        return DeviceBrand::Dygma;
-    }
-    if name.contains("prism") {
-        return DeviceBrand::PrismRgb;
-    }
-
-    DeviceBrand::Generic
-}
-
-/// Brand → (primary RGB, secondary RGB). Primary drives glow/text accents,
-/// secondary blends into the hero gradient so each card reads as a duotone.
-pub fn brand_colors(brand: DeviceBrand) -> (&'static str, &'static str) {
-    match brand {
-        DeviceBrand::Razer => ("96, 240, 120", "30, 200, 180"),
-        DeviceBrand::Corsair => ("245, 208, 70", "255, 140, 60"),
-        DeviceBrand::Asus => ("255, 80, 120", "225, 53, 255"),
-        DeviceBrand::LianLi => ("150, 130, 255", "225, 53, 255"),
-        DeviceBrand::Ableton => ("255, 150, 80", "255, 106, 193"),
-        DeviceBrand::Roli => ("110, 180, 255", "180, 120, 255"),
-        DeviceBrand::Dygma => ("200, 130, 255", "128, 255, 234"),
-        DeviceBrand::PrismRgb => ("225, 53, 255", "128, 255, 234"),
-        DeviceBrand::Nanoleaf => ("140, 230, 120", "128, 255, 234"),
-        DeviceBrand::Hue => ("255, 183, 77", "255, 106, 193"),
-        DeviceBrand::Wled => ("128, 255, 234", "225, 53, 255"),
-        DeviceBrand::Generic => ("180, 165, 220", "128, 255, 234"),
+    DeviceBrand {
+        label: backend_label(&device.backend),
+        primary_rgb,
+        secondary_rgb,
     }
 }
 
-/// Short all-caps vendor label for the brand chip. `None` for Generic (no chip).
-pub fn brand_label(brand: DeviceBrand) -> Option<&'static str> {
-    match brand {
-        DeviceBrand::Razer => Some("RAZER"),
-        DeviceBrand::Corsair => Some("CORSAIR"),
-        DeviceBrand::Asus => Some("ASUS"),
-        DeviceBrand::LianLi => Some("LIAN LI"),
-        DeviceBrand::Ableton => Some("ABLETON"),
-        DeviceBrand::Roli => Some("ROLI"),
-        DeviceBrand::Dygma => Some("DYGMA"),
-        DeviceBrand::PrismRgb => Some("PRISM"),
-        DeviceBrand::Nanoleaf => Some("NANOLEAF"),
-        DeviceBrand::Hue => Some("HUE"),
-        DeviceBrand::Wled => Some("WLED"),
-        DeviceBrand::Generic => None,
-    }
+pub fn brand_colors(brand: &DeviceBrand) -> (String, String) {
+    (brand.primary_rgb.clone(), brand.secondary_rgb.clone())
 }
 
-/// Backend → accent RGB string for inline styles (case-insensitive).
-/// Kept as a stable surface for other components that key off backend name.
-pub fn backend_accent_rgb(backend: &str) -> &'static str {
-    match backend.to_lowercase().as_str() {
-        "razer" => "96, 240, 120",
-        "wled" => "128, 255, 234",
-        "corsair" | "corsair-bridge" => "245, 208, 70",
-        "hue" => "255, 183, 77",
-        "nanoleaf" => "140, 230, 120",
-        _ => "180, 165, 220",
-    }
+pub fn brand_label(brand: &DeviceBrand) -> Option<String> {
+    brand.label.clone()
+}
+
+pub fn backend_accent_rgb(backend: &str) -> String {
+    device_accent_colors(backend).0
+}
+
+fn backend_label(backend: &str) -> Option<String> {
+    let label = backend
+        .split(['-', '_', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    (!label.is_empty()).then_some(label)
 }
 
 /// Status → accent RGB for indicator dot.
@@ -144,7 +74,7 @@ pub enum DeviceClass {
     Mouse,
     Hub,
     Controller,
-    WledController,
+    NetworkController,
     SmartLight,
     Audio,
     Display,
@@ -157,7 +87,7 @@ pub const ALL_DEVICE_CLASSES: &[DeviceClass] = &[
     DeviceClass::Mouse,
     DeviceClass::Hub,
     DeviceClass::Controller,
-    DeviceClass::WledController,
+    DeviceClass::NetworkController,
     DeviceClass::SmartLight,
     DeviceClass::Audio,
     DeviceClass::Display,
@@ -182,48 +112,30 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
     }
 
     let name = device.name.to_lowercase();
-    let backend = device.backend.to_lowercase();
 
-    if backend == "wled" {
-        return DeviceClass::WledController;
-    }
-    if backend == "hue" {
-        return DeviceClass::SmartLight;
+    if device.network_ip.is_some() || device.network_hostname.is_some() {
+        return DeviceClass::NetworkController;
     }
 
-    if name.contains("push")
-        || name.contains("huntsman")
-        || name.contains("defy")
-        || name.contains("keyboard")
-    {
+    if name.contains("keyboard") {
         return DeviceClass::Keyboard;
     }
-    if name.contains("basilisk")
-        || name.contains("deathadder")
-        || name.contains("viper")
-        || name.contains("mouse")
-    {
+    if name.contains("mouse") {
         return DeviceClass::Mouse;
     }
-    if name.contains("prism")
-        || name.contains("link")
-        || name.contains("commander")
-        || name.contains("hub")
-    {
+    if name.contains("hub") || name.contains("bridge") {
         return DeviceClass::Hub;
     }
-    if name.contains("seiren")
-        || name.contains("kraken")
-        || name.contains("nari")
-        || name.contains("mic")
-        || name.contains("headset")
-    {
+    if name.contains("mic") || name.contains("headset") || name.contains("audio") {
         return DeviceClass::Audio;
     }
     if name.contains("lcd") || name.contains("display") || name.contains("screen") {
         return DeviceClass::Display;
     }
-    if name.contains("dram") || name.contains("aura") || name.contains("motherbo") {
+    if name.contains("light") || name.contains("lamp") || name.contains("panel") {
+        return DeviceClass::SmartLight;
+    }
+    if name.contains("controller") || name.contains("node") || name.contains("strip") {
         return DeviceClass::Controller;
     }
 
@@ -245,7 +157,7 @@ pub fn device_class_icon(class: &DeviceClass) -> icondata_core::Icon {
         DeviceClass::Mouse => LuMousePointerClick,
         DeviceClass::Hub => LuNetwork,
         DeviceClass::Controller => LuLayers,
-        DeviceClass::WledController => LuWifi,
+        DeviceClass::NetworkController => LuWifi,
         DeviceClass::SmartLight => LuLightbulb,
         DeviceClass::Audio => LuMic,
         DeviceClass::Display => LuMonitor,
@@ -260,7 +172,7 @@ pub fn device_class_label(class: &DeviceClass) -> &'static str {
         DeviceClass::Mouse => "Mouse",
         DeviceClass::Hub => "Hub",
         DeviceClass::Controller => "Controller",
-        DeviceClass::WledController => "WLED",
+        DeviceClass::NetworkController => "Network Controller",
         DeviceClass::SmartLight => "Smart Light",
         DeviceClass::Audio => "Audio",
         DeviceClass::Display => "Display",
@@ -273,10 +185,7 @@ fn connection_type(device: &DeviceSummary) -> &'static str {
     if device.network_ip.is_some() || device.network_hostname.is_some() {
         return "Network";
     }
-    match device.backend.to_lowercase().as_str() {
-        "wled" | "hue" => "Network",
-        _ => "USB",
-    }
+    "USB"
 }
 
 /// Connection type → icon.
@@ -318,7 +227,7 @@ fn status_label(status: &str) -> &'static str {
     }
 }
 
-/// Hardware showcase device card with brand identity and metric-forward layout.
+/// Hardware showcase device card with driver identity and metric-forward layout.
 #[component]
 pub fn DeviceCard(
     device: DeviceSummary,
@@ -330,12 +239,12 @@ pub fn DeviceCard(
     let device_id = device.id.clone();
     let device_id_for_pair = device.id.clone();
 
-    // Brand identity → duotone accents + vendor chip
+    // Driver identity → duotone accents + compact backend chip
     let brand = classify_brand(&device);
-    let (primary_rgb, secondary_rgb) = brand_colors(brand);
-    let primary = primary_rgb.to_string();
-    let secondary = secondary_rgb.to_string();
-    let vendor_label = brand_label(brand);
+    let (primary, secondary) = brand_colors(&brand);
+    let vendor_label = brand_label(&brand);
+    let vendor_label_for_chip = vendor_label.clone();
+    let vendor_label_for_separator = vendor_label.clone();
 
     let primary_sel = primary.clone();
     let status_rgb = status_dot_rgb(&device.status).to_string();
@@ -386,7 +295,7 @@ pub fn DeviceCard(
         .collect();
     let remaining_zones = zone_count.saturating_sub(5);
 
-    // Hero background — duotone gradient tied to brand, richer than a wash
+    // Hero background — duotone gradient tied to driver identity, richer than a wash
     let hero_bg = format!(
         "background: \
          radial-gradient(ellipse at 18% 0%, rgba({primary}, 0.28) 0%, transparent 55%), \
@@ -398,7 +307,7 @@ pub fn DeviceCard(
         format!("box-shadow: inset 0 0 32px rgba({primary}, 0.06), 0 0 18px rgba({primary}, 0.05)");
     let dot_style =
         format!("background: rgb({status_rgb}); box-shadow: 0 0 10px rgba({status_rgb}, 0.7)");
-    // Icon gets the brand primary — the glyph feels owned by the vendor
+    // Icon gets the driver primary so the glyph feels owned by the module
     let icon_bg = format!(
         "background: linear-gradient(140deg, rgba({primary}, 0.18), rgba({secondary}, 0.10)); \
          border: 1px solid rgba({primary}, 0.28); color: rgba({primary}, 0.95); \
@@ -432,7 +341,7 @@ pub fn DeviceCard(
                 format!("{base} {state} stagger-{}", stagger)
             }
             style:--glow-rgb=primary.clone()
-            // Selected ring uses the brand accent, not a universal purple — keeps
+            // Selected ring uses the driver accent, not a universal purple — keeps
             // the highlight from fighting the card's hero gradient.
             style=move || {
                 if is_selected.get() {
@@ -443,7 +352,7 @@ pub fn DeviceCard(
             }
             on:click=move |_| on_select.run(device_id.clone())
         >
-            // Hero duotone gradient (brand-coded)
+            // Hero duotone gradient (driver-coded)
             <div class="absolute inset-0 pointer-events-none rounded-xl" style=hero_bg />
 
             // Subtle grid-texture cross-hatch for depth
@@ -479,7 +388,7 @@ pub fn DeviceCard(
             }
 
             <div class="relative flex flex-col h-full p-3.5 gap-2.5">
-                // ── Row 1: Icon + device name + vendor/type + status dot ──
+                // ── Row 1: Icon + device name + driver/type + status dot ──
                 <div class="flex items-start gap-2.5">
                     <div class="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style=icon_bg>
                         <Icon icon=icon width="20px" height="20px" />
@@ -499,15 +408,15 @@ pub fn DeviceCard(
                                 title=status
                             />
                         </div>
-                        // Brand · type · connection — single meta line
+                        // Driver · type · connection — single meta line
                         <div class="flex items-center gap-1.5 mt-1">
-                            {vendor_label.map(|label| view! {
+                            {vendor_label_for_chip.map(|label| view! {
                                 <span class="text-[9px] font-mono font-bold tracking-[0.14em]"
                                       style=format!("color: rgba({primary}, 0.9)", primary = primary.clone())>
                                     {label}
                                 </span>
                             })}
-                            {vendor_label.map(|_| view! {
+                            {vendor_label_for_separator.map(|_| view! {
                                 <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
                             })}
                             <span class="text-[10px]" style=format!("color: rgba({primary}, 0.60)", primary = primary.clone())>
@@ -568,18 +477,16 @@ pub fn DeviceCard(
                             })}
                         </div>
                     }.into_any())
-                } else if device.backend.to_lowercase() == "hue" {
+                } else {
                     Some(view! {
                         <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg"
-                             style="background: rgba(255, 183, 77, 0.05); border: 1px solid rgba(255, 183, 77, 0.15)">
-                            <Icon icon=LuInfo width="10px" height="10px" style="color: rgba(255, 183, 77, 0.6); flex-shrink: 0" />
-                            <span class="text-[9px] leading-tight" style="color: rgba(255, 183, 77, 0.7)">
-                                "Set up an Entertainment Area to enable streaming"
+                             style=format!("background: rgba({primary}, 0.05); border: 1px solid rgba({primary}, 0.15)", primary = primary.clone())>
+                            <Icon icon=LuInfo width="10px" height="10px" style=format!("color: rgba({primary}, 0.6); flex-shrink: 0", primary = primary.clone()) />
+                            <span class="text-[9px] leading-tight" style=format!("color: rgba({primary}, 0.7)", primary = primary.clone())>
+                                "No addressable zones reported"
                             </span>
                         </div>
                     }.into_any())
-                } else {
-                    None
                 }}
 
                 // ── Row 3: Hero LED count + brightness meter ──────────────
