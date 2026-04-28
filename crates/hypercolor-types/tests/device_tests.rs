@@ -658,15 +658,6 @@ fn device_identifier_smbus_display() {
 }
 
 #[test]
-fn device_identifier_hue_display() {
-    let id = DeviceIdentifier::HueBridge {
-        bridge_id: "001788FFFE123456".into(),
-        light_id: "3".into(),
-    };
-    assert_eq!(id.display_short(), "Hue 001788FF:3");
-}
-
-#[test]
 fn device_identifier_bridge_display() {
     let id = DeviceIdentifier::Bridge {
         service: "openlinkhub".into(),
@@ -731,18 +722,6 @@ fn device_identifier_fingerprint_network() {
 }
 
 #[test]
-fn device_identifier_fingerprint_hue() {
-    let id = DeviceIdentifier::HueBridge {
-        bridge_id: "001788FFFE123456".into(),
-        light_id: "7".into(),
-    };
-    assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("hue:001788FFFE123456:7".into())
-    );
-}
-
-#[test]
 fn device_identifier_fingerprint_bridge() {
     let id = DeviceIdentifier::Bridge {
         service: "openlinkhub".into(),
@@ -771,10 +750,6 @@ fn device_identifier_serde_round_trip() {
             mac_address: "AA:BB:CC:DD:EE:FF".into(),
             last_ip: None,
             mdns_hostname: Some("wled-desk".into()),
-        },
-        DeviceIdentifier::HueBridge {
-            bridge_id: "BRIDGE1".into(),
-            light_id: "1".into(),
         },
         DeviceIdentifier::Bridge {
             service: "openlinkhub".into(),
@@ -833,11 +808,11 @@ fn device_handle_accessors_and_display() {
 #[test]
 fn device_handle_serde_round_trip() {
     let handle = DeviceHandle::new(
-        DeviceIdentifier::HueBridge {
-            bridge_id: "bridge-123".into(),
-            light_id: "5".into(),
+        DeviceIdentifier::Bridge {
+            service: "bridge-service".into(),
+            device_serial: "bridge-123:5".into(),
         },
-        "hue",
+        "bridge-service",
     );
 
     let json = serde_json::to_string(&handle).expect("serialize");

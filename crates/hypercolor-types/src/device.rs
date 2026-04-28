@@ -1041,14 +1041,6 @@ pub enum DeviceIdentifier {
         mdns_hostname: Option<String>,
     },
 
-    /// Philips Hue bridge + individual light.
-    HueBridge {
-        /// Bridge identifier (stable forever).
-        bridge_id: String,
-        /// Individual light/group ID.
-        light_id: String,
-    },
-
     /// Device managed by an external bridge service.
     Bridge {
         /// Bridge service identifier (for example, `openlinkhub`).
@@ -1083,14 +1075,6 @@ impl DeviceIdentifier {
                 Some(h) => format!("{h} ({mac_address})"),
                 None => mac_address.clone(),
             },
-            Self::HueBridge {
-                bridge_id,
-                light_id,
-                ..
-            } => {
-                let prefix_len = 8.min(bridge_id.len());
-                format!("Hue {}:{light_id}", &bridge_id[..prefix_len])
-            }
             Self::Bridge {
                 service,
                 device_serial,
@@ -1120,11 +1104,6 @@ impl DeviceIdentifier {
             Self::Network { mac_address, .. } => {
                 DeviceFingerprint(format!("net:{}", mac_address.to_lowercase()))
             }
-            Self::HueBridge {
-                bridge_id,
-                light_id,
-                ..
-            } => DeviceFingerprint(format!("hue:{bridge_id}:{light_id}")),
             Self::Bridge {
                 service,
                 device_serial,
