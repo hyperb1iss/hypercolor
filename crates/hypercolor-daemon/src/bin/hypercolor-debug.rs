@@ -7,7 +7,7 @@ use hypercolor_core::device::{
     DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, SmBusScanner,
     UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
 };
-use hypercolor_types::device::ConnectionType;
+use hypercolor_types::device::DeviceInfo;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -277,7 +277,7 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
                 "  + {} [{}] backend_hint={}",
                 tracked.info.name,
                 id,
-                backend_hint(&tracked.info.family, tracked.info.connection_type),
+                backend_hint(&tracked.info),
             );
         }
     }
@@ -288,7 +288,7 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
                 "  ~ {} [{}] backend_hint={}",
                 tracked.info.name,
                 id,
-                backend_hint(&tracked.info.family, tracked.info.connection_type),
+                backend_hint(&tracked.info),
             );
         }
     }
@@ -326,15 +326,8 @@ fn normalize_backends(backends: &[DebugBackend]) -> Vec<DebugBackend> {
     out
 }
 
-fn backend_hint(
-    family: &hypercolor_types::device::DeviceFamily,
-    connection_type: ConnectionType,
-) -> &'static str {
-    if connection_type == ConnectionType::SmBus {
-        return "smbus";
-    }
-
-    family.backend_id()
+fn backend_hint(info: &DeviceInfo) -> &str {
+    info.backend_id()
 }
 
 fn timestamp_now() -> String {
