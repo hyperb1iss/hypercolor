@@ -11,8 +11,9 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-use crate::device::discovery::{DiscoveryConnectBehavior, TransportScanner};
-use crate::device::net::{CredentialStore, MdnsBrowser};
+use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::net::{CredentialStore, MdnsBrowser};
+use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 use super::fetch_device_info;
 use super::fetch_panel_layout;
@@ -208,7 +209,7 @@ impl NanoleafScanner {
 
 impl Default for NanoleafScanner {
     fn default() -> Self {
-        let store_dir = crate::config::ConfigManager::data_dir();
+        let store_dir = ConfigManager::data_dir();
         let credential_store = CredentialStore::open_blocking(&store_dir)
             .expect("default Nanoleaf scanner should open credential store");
         Self::new(Arc::new(credential_store))
@@ -221,7 +222,7 @@ impl TransportScanner for NanoleafScanner {
         "Nanoleaf"
     }
 
-    async fn scan(&mut self) -> Result<Vec<crate::device::discovery::DiscoveredDevice>> {
+    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         Ok(self
             .scan_devices()
             .await?

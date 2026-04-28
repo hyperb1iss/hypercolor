@@ -4593,8 +4593,12 @@ dependencies = [
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-types",
+ "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

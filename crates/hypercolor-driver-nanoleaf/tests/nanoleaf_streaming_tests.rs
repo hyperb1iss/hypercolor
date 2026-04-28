@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use hypercolor_core::device::nanoleaf::{NanoleafStreamSession, encode_frame_into};
+use hypercolor_driver_nanoleaf::{NanoleafStreamSession, encode_frame_into};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;

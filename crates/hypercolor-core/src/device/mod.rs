@@ -10,8 +10,6 @@ mod discovery_server;
 mod lifecycle;
 pub mod manager;
 pub mod mock;
-#[cfg(feature = "nanoleaf")]
-pub mod nanoleaf;
 pub mod net;
 mod registry;
 pub mod smbus_backend;

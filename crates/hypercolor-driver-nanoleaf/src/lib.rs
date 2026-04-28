@@ -1,13 +1,17 @@
+pub mod backend;
+mod scanner;
+mod streaming;
+mod topology;
+mod types;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_core::device::nanoleaf::{
-    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
-};
-pub use hypercolor_core::device::nanoleaf::{NanoleafConfig, NanoleafKnownDevice};
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{
@@ -31,6 +35,21 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
     ControlVisibility,
 };
+use reqwest::StatusCode;
+use serde::Deserialize;
+
+use self::types::NanoleafPanelLayoutResponse;
+
+pub use backend::{NanoleafBackend, NanoleafConfig};
+pub use scanner::{NanoleafKnownDevice, NanoleafScanner};
+pub use streaming::{
+    DEFAULT_NANOLEAF_API_PORT, DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession,
+    encode_frame_into,
+};
+pub use topology::NanoleafShapeType;
+pub use types::{NanoleafDeviceInfo, NanoleafDiscoveredDevice, NanoleafPanelLayout};
+#[doc(hidden)]
+pub use types::{build_device_info, panel_ids_from_layout};
 
 const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Hold the Nanoleaf power button for 5-7 seconds.",
@@ -43,6 +62,124 @@ pub static DESCRIPTOR: DriverDescriptor =
 
 const FIELD_DEVICE_IPS: &str = "device_ips";
 const FIELD_TRANSITION_TIME: &str = "transition_time";
+
+static NANOLEAF_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| error.to_string())
+});
+
+fn nanoleaf_http_client() -> Result<&'static reqwest::Client> {
+    NANOLEAF_HTTP_CLIENT
+        .as_ref()
+        .map_err(|error| anyhow!("failed to build shared Nanoleaf HTTP client: {error}"))
+}
+
+/// Result of a successful Nanoleaf pairing attempt.
+#[derive(Debug, Clone)]
+pub struct NanoleafPairResult {
+    pub auth_token: String,
+    pub device_key: String,
+    pub name: String,
+    pub model: String,
+    pub firmware_version: String,
+    pub serial_no: String,
+}
+
+/// Attempt to pair with a Nanoleaf device.
+///
+/// Returns `Ok(None)` when the device is not in pairing mode.
+///
+/// # Errors
+///
+/// Returns an error if the pairing request fails or the device-info fetch after
+/// pairing is malformed.
+pub async fn pair_device_with_status(
+    ip: IpAddr,
+    api_port: u16,
+) -> Result<Option<NanoleafPairResult>> {
+    let url = format!("http://{ip}:{api_port}/api/v1/new");
+    let client = nanoleaf_http_client()?;
+    let response = client
+        .post(&url)
+        .send()
+        .await
+        .with_context(|| format!("Nanoleaf pairing request to {url} failed"))?;
+    if matches!(
+        response.status(),
+        StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND
+    ) {
+        return Ok(None);
+    }
+
+    let response = response
+        .error_for_status()
+        .with_context(|| format!("Nanoleaf pairing request to {url} failed"))?;
+    let body: NanoleafPairResponse = response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode Nanoleaf pairing response from {url}"))?;
+    let Some(auth_token) = body.auth_token else {
+        return Ok(None);
+    };
+
+    let info = fetch_device_info(ip, api_port, &auth_token).await?;
+    Ok(Some(NanoleafPairResult {
+        auth_token,
+        device_key: info.serial_no.clone(),
+        name: info.name,
+        model: info.model,
+        firmware_version: info.firmware_version,
+        serial_no: info.serial_no,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NanoleafPairResponse {
+    auth_token: Option<String>,
+}
+
+async fn fetch_device_info(
+    ip: IpAddr,
+    api_port: u16,
+    auth_token: &str,
+) -> Result<NanoleafDeviceInfo> {
+    let url = format!("http://{ip}:{api_port}/api/v1/{auth_token}");
+    let client = nanoleaf_http_client()?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("Nanoleaf device-info request to {url} failed"))?;
+
+    response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode Nanoleaf device-info response from {url}"))
+}
+
+async fn fetch_panel_layout(
+    ip: IpAddr,
+    api_port: u16,
+    auth_token: &str,
+) -> Result<NanoleafPanelLayoutResponse> {
+    let url = format!("http://{ip}:{api_port}/api/v1/{auth_token}/panelLayout/layout");
+    let client = nanoleaf_http_client()?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("Nanoleaf panel-layout request to {url} failed"))?;
+    let decoded: NanoleafPanelLayoutResponse = response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode Nanoleaf panel-layout response from {url}"))?;
+    Ok(decoded)
+}
 
 #[derive(Clone)]
 pub struct NanoleafDriverFactory {

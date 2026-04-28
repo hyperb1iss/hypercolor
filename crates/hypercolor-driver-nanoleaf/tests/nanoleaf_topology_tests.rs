@@ -1,4 +1,4 @@
-use hypercolor_core::device::nanoleaf::{
+use hypercolor_driver_nanoleaf::{
     NanoleafPanelLayout, NanoleafShapeType, build_device_info, panel_ids_from_layout,
 };
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};

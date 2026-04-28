@@ -9,9 +9,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::device::net::CredentialStore;
-use crate::device::traits::{BackendInfo, DeviceBackend};
-use crate::types::device::{DeviceId, DeviceInfo};
+use hypercolor_core::device::net::CredentialStore;
+use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use super::scanner::{NanoleafKnownDevice, NanoleafScanner, load_auth_token};
 use super::streaming::NanoleafStreamSession;

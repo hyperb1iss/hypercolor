@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::device::DeviceTopologyHint;
+use hypercolor_types::device::DeviceTopologyHint;
 
 /// Nanoleaf panel/controller shape types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
