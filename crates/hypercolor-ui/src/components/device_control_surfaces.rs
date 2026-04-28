@@ -24,6 +24,7 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
         let id = device_id.get();
         async move { api::fetch_device_control_surfaces(&id, true).await }
     });
+    let surface_overrides = RwSignal::new(BTreeMap::<String, ControlSurfaceDocument>::new());
 
     Effect::new(move |_| {
         let Some(event) = ws_ctx.last_control_surface_event.get() else {
@@ -31,7 +32,17 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
         };
         let current_device_id = device_id.get_untracked();
         if control_surface_event_matches_device(&event.surface_id, &current_device_id) {
-            surfaces_resource.refetch();
+            let surface_id = event.surface_id.clone();
+            leptos::task::spawn_local(async move {
+                match api::fetch_control_surface(&surface_id).await {
+                    Ok(surface) => {
+                        surface_overrides.update(|overrides| {
+                            overrides.insert(surface.surface_id.clone(), surface);
+                        });
+                    }
+                    Err(error) => toasts::toast_error(&format!("Control refresh failed: {error}")),
+                }
+            });
         }
     });
 
@@ -45,7 +56,10 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
                 <button
                     class="w-6 h-6 rounded-md flex items-center justify-center text-fg-tertiary/55 hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
                     title="Refresh controls"
-                    on:click=move |_| surfaces_resource.refetch()
+                    on:click=move |_| {
+                        surface_overrides.update(BTreeMap::clear);
+                        surfaces_resource.refetch();
+                    }
                 >
                     <Icon icon=LuRefreshCw width="12px" height="12px" />
                 </button>
@@ -56,6 +70,11 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
                 }>
                     {move || match surfaces_resource.get() {
                         Some(Ok(surfaces)) => {
+                            let surfaces = merge_control_surface_overrides(
+                                surfaces,
+                                surface_overrides.get(),
+                                &device_id.get(),
+                            );
                             let surfaces = visible_control_surfaces(surfaces);
                             if surfaces.is_empty() {
                                 view! {
@@ -84,6 +103,29 @@ pub fn DeviceControlSurfaces(#[prop(into)] device_id: Signal<String>) -> impl In
             </div>
         </div>
     }
+}
+
+fn merge_control_surface_overrides(
+    mut surfaces: Vec<ControlSurfaceDocument>,
+    overrides: BTreeMap<String, ControlSurfaceDocument>,
+    device_id: &str,
+) -> Vec<ControlSurfaceDocument> {
+    for surface in &mut surfaces {
+        if let Some(fresh) = overrides.get(&surface.surface_id) {
+            *surface = fresh.clone();
+        }
+    }
+
+    for surface in overrides.into_values() {
+        let already_listed = surfaces
+            .iter()
+            .any(|listed| listed.surface_id == surface.surface_id);
+        if !already_listed && control_surface_event_matches_device(&surface.surface_id, device_id) {
+            surfaces.push(surface);
+        }
+    }
+
+    surfaces
 }
 
 fn render_surface(
@@ -212,7 +254,7 @@ fn grouped_surface_items(surface: &ControlSurfaceDocument) -> Vec<ControlSurface
                 .map(ControlSurfaceItem::Action),
         )
         .collect::<Vec<_>>();
-    items.sort_by(|left, right| left.ordering().cmp(&right.ordering()));
+    items.sort_by_key(ControlSurfaceItem::ordering);
 
     for item in items {
         let Some(group_id) = item.group_id() else {
@@ -354,51 +396,53 @@ fn render_field_editor(
             surfaces_resource,
         )
         .into_any(),
-        ControlValueType::Integer { min, max, step } => render_number_editor(
-            NumberEditorKind::Integer,
+        ControlValueType::Integer { min, max, step } => render_number_editor(NumberEditorProps {
+            kind: NumberEditorKind::Integer,
             surface_id,
             revision,
-            field.id.clone(),
-            number_text(current_value.as_ref()),
-            Bounds {
+            field_id: field.id.clone(),
+            value: number_text(current_value.as_ref()),
+            bounds: Bounds {
                 min: min.map(|v| v.to_string()),
                 max: max.map(|v| v.to_string()),
                 step: step.map_or_else(|| "1".to_string(), |v| v.to_string()),
             },
             editable,
             surfaces_resource,
-        )
+        })
         .into_any(),
-        ControlValueType::Float { min, max, step } => render_number_editor(
-            NumberEditorKind::Float,
+        ControlValueType::Float { min, max, step } => render_number_editor(NumberEditorProps {
+            kind: NumberEditorKind::Float,
             surface_id,
             revision,
-            field.id.clone(),
-            number_text(current_value.as_ref()),
-            Bounds {
+            field_id: field.id.clone(),
+            value: number_text(current_value.as_ref()),
+            bounds: Bounds {
                 min: min.map(|v| v.to_string()),
                 max: max.map(|v| v.to_string()),
                 step: step.map_or_else(|| "0.01".to_string(), |v| v.to_string()),
             },
             editable,
             surfaces_resource,
-        )
+        })
         .into_any(),
-        ControlValueType::DurationMs { min, max, step } => render_number_editor(
-            NumberEditorKind::DurationMs,
-            surface_id,
-            revision,
-            field.id.clone(),
-            number_text(current_value.as_ref()),
-            Bounds {
-                min: min.map(|v| v.to_string()),
-                max: max.map(|v| v.to_string()),
-                step: step.map_or_else(|| "100".to_string(), |v| v.to_string()),
-            },
-            editable,
-            surfaces_resource,
-        )
-        .into_any(),
+        ControlValueType::DurationMs { min, max, step } => {
+            render_number_editor(NumberEditorProps {
+                kind: NumberEditorKind::DurationMs,
+                surface_id,
+                revision,
+                field_id: field.id.clone(),
+                value: number_text(current_value.as_ref()),
+                bounds: Bounds {
+                    min: min.map(|v| v.to_string()),
+                    max: max.map(|v| v.to_string()),
+                    step: step.map_or_else(|| "100".to_string(), |v| v.to_string()),
+                },
+                editable,
+                surfaces_resource,
+            })
+            .into_any()
+        }
         ControlValueType::Enum { options } => render_enum_editor(
             surface_id,
             revision,
@@ -585,7 +629,7 @@ enum NumberEditorKind {
     DurationMs,
 }
 
-fn render_number_editor(
+struct NumberEditorProps {
     kind: NumberEditorKind,
     surface_id: String,
     revision: u64,
@@ -594,7 +638,20 @@ fn render_number_editor(
     bounds: Bounds,
     editable: bool,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
-) -> impl IntoView {
+}
+
+fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
+    let NumberEditorProps {
+        kind,
+        surface_id,
+        revision,
+        field_id,
+        value,
+        bounds,
+        editable,
+        surfaces_resource,
+    } = props;
+
     view! {
         <input
             type="number"
@@ -1252,13 +1309,13 @@ fn parse_color_rgba(raw: &str) -> [u8; 4] {
 fn parse_color_bytes(raw: &str) -> [u8; 4] {
     let hex = raw.trim().trim_start_matches('#');
     let mut out = [0_u8, 0_u8, 0_u8, 255_u8];
-    for index in 0..out.len() {
+    for (index, channel) in out.iter_mut().enumerate() {
         let start = index * 2;
         let end = start + 2;
         if end <= hex.len()
             && let Ok(byte) = u8::from_str_radix(&hex[start..end], 16)
         {
-            out[index] = byte;
+            *channel = byte;
         }
     }
     out
