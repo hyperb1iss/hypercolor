@@ -160,6 +160,14 @@ async fn credential_store_scopes_driver_json_payloads() -> TestResult {
         Some(serde_json::json!({ "api_key": "alpha-key" }))
     );
     assert_eq!(
+        store
+            .get("alpha:account")
+            .await
+            .expect("scoped credential should exist")
+            .driver_id,
+        "alpha"
+    );
+    assert_eq!(
         store.get_driver_json("beta", "account").await,
         Some(serde_json::json!({ "api_key": "beta-key" }))
     );

@@ -1,4 +1,4 @@
-//! Encrypted credential storage for network device backends.
+//! Encrypted credential storage for network device drivers.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,21 +20,21 @@ const STORE_FILE_NAME: &str = "credentials.json.enc";
 const SEED_FILE_NAME: &str = ".credential_seed";
 const NONCE_BYTES: usize = 12;
 
-/// Stored credentials for a network device/backend.
+/// Stored credentials for a device driver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credentials {
-    /// Backend identifier, for example `openrgb`.
-    pub backend_id: String,
-    /// Backend-defined credential payload.
+    /// Driver identifier, for example `hue`.
+    pub driver_id: String,
+    /// Driver-defined credential payload.
     pub data: Value,
 }
 
 impl Credentials {
-    /// Build stored credentials from backend-owned payload data.
+    /// Build stored credentials from driver-owned payload data.
     #[must_use]
-    pub fn new(backend_id: impl Into<String>, data: Value) -> Self {
+    pub fn new(driver_id: impl Into<String>, data: Value) -> Self {
         Self {
-            backend_id: backend_id.into(),
+            driver_id: driver_id.into(),
             data,
         }
     }
@@ -48,8 +48,8 @@ impl Credentials {
     /// Build stored credentials from a driver-facing JSON payload.
     #[must_use]
     pub fn from_driver_json(key: &str, value: Value) -> Self {
-        let backend_id = key.split(':').next().unwrap_or("custom");
-        Self::new(backend_id, value)
+        let driver_id = key.split(':').next().unwrap_or("custom");
+        Self::new(driver_id, value)
     }
 }
 
