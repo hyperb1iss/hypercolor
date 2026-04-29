@@ -433,11 +433,11 @@ fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
 
     assert_eq!(
         lifecycle.layout_device_id_for(first_id),
-        Some("usb:16d0:1294:1-3-3")
+        Some("mock:16d0:1294:1-3-3")
     );
     assert_eq!(
         lifecycle.layout_device_id_for(second_id),
-        Some("usb:16d0:1294:1-3-4")
+        Some("mock:16d0:1294:1-3-4")
     );
 }
 
@@ -456,7 +456,7 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
 
     assert_eq!(
         lifecycle.layout_device_id_for(device_id),
-        Some("smbus:-dev-i2c-9:40")
+        Some("mock:dev-i2c-9:40")
     );
 }
 

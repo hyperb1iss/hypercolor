@@ -236,7 +236,7 @@ pub fn append_auto_layout_zones_for_device(
     let slot_center = auto_layout_slot_center(existing_device_count);
 
     for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let override_spec = auto_layout_override(layout_device_id, zone_info);
+        let override_spec = auto_layout_override(device_info, zone_info);
         let topology = override_spec.as_ref().map_or_else(
             || spatial_topology_for_zone(zone_info),
             |spec| spec.topology.clone(),
@@ -328,7 +328,7 @@ pub fn reconcile_auto_layout_zones_for_device(
     }
 
     for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let override_spec = auto_layout_override(layout_device_id, zone_info);
+        let override_spec = auto_layout_override(device_info, zone_info);
         let expected_topology = override_spec.as_ref().map_or_else(
             || spatial_topology_for_zone(zone_info),
             |spec| spec.topology.clone(),
@@ -472,10 +472,13 @@ struct AutoLayoutOverride {
 }
 
 fn auto_layout_override(
-    layout_device_id: &str,
+    device_info: &DeviceInfo,
     zone_info: &hypercolor_types::device::ZoneInfo,
 ) -> Option<AutoLayoutOverride> {
-    if layout_device_id.starts_with("usb:1532:056f:") && zone_info.led_count == 10 {
+    let family_id = device_info.family.id();
+    let device_name = device_info.name.as_str();
+
+    if family_id == "razer" && device_name.contains("Seiren V3") && zone_info.led_count == 10 {
         return Some(AutoLayoutOverride {
             topology: LedTopology::Custom {
                 positions: normalized_grid_positions(
@@ -501,7 +504,7 @@ fn auto_layout_override(
         });
     }
 
-    if layout_device_id.starts_with("usb:1532:0099:") && zone_info.led_count == 11 {
+    if family_id == "razer" && device_name.contains("Basilisk V3") && zone_info.led_count == 11 {
         return Some(AutoLayoutOverride {
             topology: LedTopology::Custom {
                 positions: normalized_grid_positions(
@@ -528,10 +531,7 @@ fn auto_layout_override(
         });
     }
 
-    if layout_device_id.starts_with("usb:1b1c:0c3f:")
-        && zone_info.led_count == 20
-        && zone_info.name.contains("AIO")
-    {
+    if family_id == "corsair" && zone_info.led_count == 20 && zone_info.name.contains("AIO") {
         return Some(AutoLayoutOverride {
             topology: LedTopology::Custom {
                 positions: normalized_grid_positions(
@@ -567,7 +567,7 @@ fn auto_layout_override(
         });
     }
 
-    if layout_device_id.starts_with("usb:1b1c:0c3f:")
+    if family_id == "corsair"
         && zone_info.led_count == 24
         && zone_info.name.contains("Cooler Pump LCD")
     {

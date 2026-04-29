@@ -413,14 +413,14 @@ impl DeviceLifecycleManager {
         Ok(actions)
     }
 
-    /// Derive a deterministic layout device ID from backend and device metadata.
+    /// Derive a deterministic layout device ID from device origin and metadata.
     ///
-    /// Fallback format: `<backend>:<normalized_name>`.
+    /// Fallback format: `<driver>:<normalized_name>`.
     #[must_use]
     pub fn layout_device_id(backend_id: &str, device_info: &DeviceInfo) -> String {
-        let backend = backend_id.trim().to_ascii_lowercase();
+        let owner = Self::layout_owner_id(backend_id, device_info);
         let name = sanitize_component(&device_info.name);
-        format!("{backend}:{name}")
+        format!("{owner}:{name}")
     }
 
     /// Derive the canonical layout device ID using the discovery fingerprint
@@ -462,33 +462,44 @@ impl DeviceLifecycleManager {
         device_info: &DeviceInfo,
         fingerprint: Option<&DeviceFingerprint>,
     ) -> String {
+        let owner = Self::layout_owner_id(backend_id, device_info);
         let Some(fingerprint) = fingerprint else {
             return Self::layout_device_id(backend_id, device_info);
         };
         let value = fingerprint.0.to_ascii_lowercase();
 
         if let Some(value) = value.strip_prefix("net:") {
-            let backend_prefix = format!("{backend_id}:");
-            if let Some(driver_scoped_value) = value.strip_prefix(&backend_prefix) {
-                return format!("{backend_id}:{}", sanitize_component(driver_scoped_value));
+            let owner_prefix = format!("{owner}:");
+            if let Some(driver_scoped_value) = value.strip_prefix(&owner_prefix) {
+                return format!("{owner}:{}", sanitize_component(driver_scoped_value));
             }
-            return format!("{backend_id}:{value}");
+            return format!("{owner}:{value}");
         }
 
         if let Some(value) = value.strip_prefix("usb:") {
-            return format!("usb:{}", sanitize_component(value));
+            return format!("{owner}:{}", sanitize_component(value));
         }
 
         if let Some(value) = value.strip_prefix("smbus:") {
-            return format!("smbus:{}", sanitize_component(value));
+            return format!("{owner}:{}", sanitize_component(value));
         }
 
-        let backend_prefix = format!("{backend_id}:");
-        if let Some(value) = value.strip_prefix(&backend_prefix) {
-            return format!("{backend_id}:{}", sanitize_component(value));
+        let owner_prefix = format!("{owner}:");
+        if let Some(value) = value.strip_prefix(&owner_prefix) {
+            return format!("{owner}:{}", sanitize_component(value));
         }
 
         Self::layout_device_id(backend_id, device_info)
+    }
+
+    fn layout_owner_id(backend_id: &str, device_info: &DeviceInfo) -> String {
+        let driver_id = device_info.driver_id().trim();
+        let owner = if driver_id.is_empty() {
+            backend_id.trim()
+        } else {
+            driver_id
+        };
+        sanitize_component(owner)
     }
 
     fn identifier_for_device(
@@ -553,9 +564,7 @@ fn sanitize_component(input: &str) -> String {
         }
     }
 
-    if out.ends_with('-') {
-        out.pop();
-    }
+    let out = out.trim_matches('-').to_owned();
 
     if out.is_empty() {
         "device".to_owned()
@@ -574,6 +583,7 @@ mod tests {
     use std::time::Duration;
 
     fn device_info(name: &str, family: DeviceFamily) -> DeviceInfo {
+        let driver_id = family.id().into_owned();
         DeviceInfo {
             id: DeviceId::new(),
             name: name.to_owned(),
@@ -581,7 +591,7 @@ mod tests {
             family,
             model: None,
             connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+            origin: DeviceOrigin::native(driver_id, "test", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 16,
@@ -800,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_id_falls_back_to_backend_prefix_and_normalized_name() {
+    fn layout_id_falls_back_to_driver_prefix_and_normalized_name() {
         let info = device_info("My Test Device", DeviceFamily::named("Mock"));
         let layout_id = DeviceLifecycleManager::layout_device_id("mock", &info);
         assert_eq!(layout_id, "mock:my-test-device");
@@ -829,5 +839,18 @@ mod tests {
             DeviceLifecycleManager::canonical_layout_device_id("wled", &info, Some(&fingerprint));
 
         assert_eq!(layout_id, "wled:aa:bb:cc:dd:ee:ff");
+    }
+
+    #[test]
+    fn usb_layout_ids_use_driver_origin_not_output_backend() {
+        let mut info = device_info("Nollie 32", DeviceFamily::new_static("nollie", "Nollie"));
+        info.connection_type = ConnectionType::Usb;
+        info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb);
+        let fingerprint = DeviceFingerprint("usb:/dev/hidraw2".to_owned());
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id("usb", &info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "nollie:dev-hidraw2");
     }
 }
