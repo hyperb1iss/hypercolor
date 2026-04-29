@@ -14,8 +14,8 @@ use hypercolor_driver_api::{
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DeviceInfo, DriverPresentation, DriverProtocolDescriptor,
-    DriverTransportKind,
+    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
+    DriverProtocolDescriptor, DriverTransportKind,
 };
 
 #[test]
@@ -90,7 +90,7 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
 }
 
 #[test]
-fn enabled_hal_driver_ids_honor_driver_config_entries() {
+fn enabled_module_ids_honor_driver_config_entries() {
     let state = AppState::new();
     let mut config = HypercolorConfig::default();
     config.drivers.insert(
@@ -98,16 +98,20 @@ fn enabled_hal_driver_ids_honor_driver_config_entries() {
         DriverConfigEntry::disabled(BTreeMap::new()),
     );
 
-    let enabled = network::enabled_hal_driver_ids(state.driver_registry.as_ref(), &config);
+    let enabled = network::enabled_module_ids(
+        state.driver_registry.as_ref(),
+        &config,
+        DriverModuleKind::Hal,
+    );
 
     assert!(!enabled.contains("nollie"));
     assert!(enabled.contains("prismrgb"));
-    assert!(network::hal_driver_enabled(
+    assert!(network::module_enabled_by_id(
         state.driver_registry.as_ref(),
         &config,
         "prismrgb"
     ));
-    assert!(!network::hal_driver_enabled(
+    assert!(!network::module_enabled_by_id(
         state.driver_registry.as_ref(),
         &config,
         "nollie"
@@ -115,7 +119,7 @@ fn enabled_hal_driver_ids_honor_driver_config_entries() {
 }
 
 #[test]
-fn enabled_hal_driver_ids_can_filter_by_transport() {
+fn enabled_module_ids_can_filter_by_transport() {
     let state = AppState::new();
     let mut config = HypercolorConfig::default();
     config.drivers.insert(
@@ -123,9 +127,10 @@ fn enabled_hal_driver_ids_can_filter_by_transport() {
         DriverConfigEntry::disabled(BTreeMap::new()),
     );
 
-    let enabled = network::enabled_hal_driver_ids_for_transport(
+    let enabled = network::enabled_module_ids_for_transport(
         state.driver_registry.as_ref(),
         &config,
+        DriverModuleKind::Hal,
         &DriverTransportKind::Smbus,
     );
 
@@ -134,11 +139,12 @@ fn enabled_hal_driver_ids_can_filter_by_transport() {
 }
 
 #[test]
-fn enabled_hal_driver_ids_include_default_enabled_hal_modules() {
+fn enabled_module_ids_include_default_enabled_hal_modules() {
     let state = AppState::new();
-    let enabled = network::enabled_hal_driver_ids(
+    let enabled = network::enabled_module_ids(
         state.driver_registry.as_ref(),
         &HypercolorConfig::default(),
+        DriverModuleKind::Hal,
     );
 
     assert!(enabled.is_superset(&BTreeSet::from([

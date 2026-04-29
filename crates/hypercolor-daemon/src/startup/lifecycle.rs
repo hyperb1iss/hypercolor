@@ -641,7 +641,7 @@ impl DaemonState {
                             let run_usb_scan = match event {
                                 Ok(UsbHotplugEvent::Arrived { vendor_id, product_id, descriptor }) => {
                                     let driver_id = descriptor.driver_id();
-                                    if crate::network::hal_driver_enabled(
+                                    if crate::network::module_enabled_by_id(
                                         driver_registry.as_ref(),
                                         &config,
                                         driver_id.as_ref(),

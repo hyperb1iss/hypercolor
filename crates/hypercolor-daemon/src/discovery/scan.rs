@@ -12,7 +12,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceState, DriverModuleKind};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -241,7 +241,11 @@ pub async fn execute_discovery_scan(
             }
             DiscoveryTargetKind::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
-                    network::enabled_hal_driver_ids(driver_registry.as_ref(), &config),
+                    network::enabled_module_ids(
+                        driver_registry.as_ref(),
+                        &config,
+                        DriverModuleKind::Hal,
+                    ),
                 )));
             }
             DiscoveryTargetKind::SmBus => {

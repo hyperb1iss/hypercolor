@@ -22,7 +22,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DeviceId, DriverTransportKind};
+use hypercolor_types::device::{DeviceId, DriverModuleKind, DriverTransportKind};
 use hypercolor_types::spatial::SpatialLayout;
 use serde::Serialize;
 use tokio::runtime::Handle;
@@ -330,7 +330,13 @@ pub fn resolve_targets(
                 }
             }
             DiscoveryTargetKind::Usb => {
-                if crate::network::enabled_hal_driver_ids(driver_registry, config).is_empty() {
+                if crate::network::enabled_module_ids(
+                    driver_registry,
+                    config,
+                    DriverModuleKind::Hal,
+                )
+                .is_empty()
+                {
                     if explicit_request {
                         return Err(
                             "Discovery target 'usb' has no enabled HAL driver modules".to_owned()
@@ -340,9 +346,10 @@ pub fn resolve_targets(
                 }
             }
             DiscoveryTargetKind::SmBus => {
-                if crate::network::enabled_hal_driver_ids_for_transport(
+                if crate::network::enabled_module_ids_for_transport(
                     driver_registry,
                     config,
+                    DriverModuleKind::Hal,
                     &DriverTransportKind::Smbus,
                 )
                 .is_empty()

@@ -45,26 +45,27 @@ pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescri
     driver_enabled_with_default(config, &descriptor.id, descriptor.default_enabled)
 }
 
-/// Whether a HAL driver module is enabled by the active config.
+/// Whether one registered driver module is enabled by the active config.
 #[must_use]
-pub fn hal_driver_enabled(
+pub fn module_enabled_by_id(
     registry: &DriverModuleRegistry,
     config: &HypercolorConfig,
     driver_id: &str,
 ) -> bool {
-    hal_module_descriptors(registry)
-        .iter()
-        .find(|descriptor| descriptor.id == driver_id)
-        .is_some_and(|descriptor| module_enabled(config, descriptor))
+    module_descriptor(registry, driver_id)
+        .is_some_and(|descriptor| module_enabled(config, &descriptor))
 }
 
-/// Module descriptors for HAL-backed driver modules.
+/// Module descriptors for one driver module kind.
 #[must_use]
-pub fn hal_module_descriptors(registry: &DriverModuleRegistry) -> Vec<DriverModuleDescriptor> {
+pub fn module_descriptors_for_kind(
+    registry: &DriverModuleRegistry,
+    module_kind: DriverModuleKind,
+) -> Vec<DriverModuleDescriptor> {
     registry
         .module_descriptors()
         .into_iter()
-        .filter(|descriptor| descriptor.module_kind == DriverModuleKind::Hal)
+        .filter(|descriptor| descriptor.module_kind == module_kind)
         .collect()
 }
 
@@ -154,27 +155,29 @@ pub fn protocol_descriptors(
     Vec::new()
 }
 
-/// Enabled HAL driver module IDs from the shared protocol catalog.
+/// Enabled driver module IDs for one module kind.
 #[must_use]
-pub fn enabled_hal_driver_ids(
+pub fn enabled_module_ids(
     registry: &DriverModuleRegistry,
     config: &HypercolorConfig,
+    module_kind: DriverModuleKind,
 ) -> BTreeSet<String> {
-    hal_module_descriptors(registry)
+    module_descriptors_for_kind(registry, module_kind)
         .iter()
         .filter(|descriptor| module_enabled(config, descriptor))
         .map(|descriptor| descriptor.id.clone())
         .collect()
 }
 
-/// Enabled HAL driver module IDs that advertise one transport category.
+/// Enabled driver module IDs for one module kind and transport category.
 #[must_use]
-pub fn enabled_hal_driver_ids_for_transport(
+pub fn enabled_module_ids_for_transport(
     registry: &DriverModuleRegistry,
     config: &HypercolorConfig,
+    module_kind: DriverModuleKind,
     transport: &DriverTransportKind,
 ) -> BTreeSet<String> {
-    hal_module_descriptors(registry)
+    module_descriptors_for_kind(registry, module_kind)
         .iter()
         .filter(|descriptor| descriptor.transports.iter().any(|item| item == transport))
         .filter(|descriptor| module_enabled(config, descriptor))
@@ -256,8 +259,13 @@ pub fn register_enabled_device_backends(
         backend_manager.register_backend(Box::new(BlocksBackend::new(socket_path)));
     }
 
-    if !enabled_hal_driver_ids_for_transport(registry, config, &DriverTransportKind::Smbus)
-        .is_empty()
+    if !enabled_module_ids_for_transport(
+        registry,
+        config,
+        DriverModuleKind::Hal,
+        &DriverTransportKind::Smbus,
+    )
+    .is_empty()
     {
         backend_manager.register_backend(Box::new(SmBusBackend::new()));
     }
@@ -265,7 +273,7 @@ pub fn register_enabled_device_backends(
     backend_manager.register_backend(Box::new(
         UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
             usb_protocol_configs,
-            enabled_hal_driver_ids(registry, config),
+            enabled_module_ids(registry, config, DriverModuleKind::Hal),
         ),
     ));
 
