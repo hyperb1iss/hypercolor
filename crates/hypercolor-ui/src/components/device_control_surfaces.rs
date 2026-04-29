@@ -14,6 +14,10 @@ use serde_json::Value as JsonValue;
 
 use crate::api;
 use crate::app::WsContext;
+use crate::control_surface_view::{
+    action_is_hidden, control_value_summary, field_is_hidden, visible_action_count,
+    visible_control_surfaces, visible_field_count,
+};
 use crate::icons::*;
 use crate::toasts;
 
@@ -162,33 +166,6 @@ fn render_surface(
     }
 }
 
-fn visible_control_surfaces(surfaces: Vec<ControlSurfaceDocument>) -> Vec<ControlSurfaceDocument> {
-    surfaces
-        .into_iter()
-        .filter(surface_has_visible_items)
-        .collect()
-}
-
-fn surface_has_visible_items(surface: &ControlSurfaceDocument) -> bool {
-    visible_field_count(surface) > 0 || visible_action_count(surface) > 0
-}
-
-fn visible_field_count(surface: &ControlSurfaceDocument) -> usize {
-    surface
-        .fields
-        .iter()
-        .filter(|field| !field_is_hidden(surface, field))
-        .count()
-}
-
-fn visible_action_count(surface: &ControlSurfaceDocument) -> usize {
-    surface
-        .actions
-        .iter()
-        .filter(|action| !action_is_hidden(surface, action))
-        .count()
-}
-
 #[derive(Clone)]
 struct ControlSurfaceSection {
     id: Option<String>,
@@ -293,20 +270,6 @@ fn section_from_group(group: ControlGroupDescriptor) -> ControlSurfaceSection {
         ordering: group.ordering,
         items: Vec::new(),
     }
-}
-
-fn field_is_hidden(surface: &ControlSurfaceDocument, field: &ControlFieldDescriptor) -> bool {
-    surface
-        .availability
-        .get(&field.id)
-        .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
-}
-
-fn action_is_hidden(surface: &ControlSurfaceDocument, action: &ControlActionDescriptor) -> bool {
-    surface
-        .action_availability
-        .get(&action.id)
-        .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
 }
 
 fn render_group(
@@ -1387,31 +1350,7 @@ fn enum_text(value: Option<&DynamicControlValue>) -> String {
 }
 
 fn value_text(value: Option<&DynamicControlValue>) -> String {
-    match value {
-        Some(DynamicControlValue::String(value))
-        | Some(DynamicControlValue::IpAddress(value))
-        | Some(DynamicControlValue::MacAddress(value)) => value.clone(),
-        Some(DynamicControlValue::SecretRef(_)) => "Configured".to_string(),
-        Some(DynamicControlValue::ColorRgb(value)) => {
-            format!("#{:02x}{:02x}{:02x}", value[0], value[1], value[2])
-        }
-        Some(DynamicControlValue::ColorRgba(value)) => {
-            format!(
-                "#{:02x}{:02x}{:02x}{:02x}",
-                value[0], value[1], value[2], value[3]
-            )
-        }
-        Some(DynamicControlValue::Bool(value)) => value.to_string(),
-        Some(DynamicControlValue::Integer(_))
-        | Some(DynamicControlValue::Float(_))
-        | Some(DynamicControlValue::DurationMs(_)) => number_text(value),
-        Some(DynamicControlValue::Enum(_)) => enum_text(value),
-        Some(DynamicControlValue::Flags(values)) => values.join(", "),
-        Some(DynamicControlValue::List(_)) => "list".to_string(),
-        Some(DynamicControlValue::Object(_)) => "object".to_string(),
-        Some(DynamicControlValue::Unknown) => "unsupported value".to_string(),
-        Some(DynamicControlValue::Null) | None => String::new(),
-    }
+    control_value_summary(value)
 }
 
 fn flags_value(value: Option<&DynamicControlValue>) -> Vec<String> {
