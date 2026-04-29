@@ -7767,6 +7767,10 @@ async fn invoke_host_device_control_surface_identify_action_returns_typed_result
     let state = Arc::new(isolated_state());
     register_noop_backend(&state, "wled", "WLED Test Backend").await;
     let device_id = insert_test_device(&state, "Desk Strip").await;
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -9001,10 +9005,13 @@ async fn get_device_includes_explicit_origin_metadata() {
     assert_eq!(device["origin"]["transport"], "smbus");
     assert_eq!(device["origin"]["protocol_id"], "asus/aura-smbus");
     assert_eq!(device["presentation"]["label"], "ASUS");
+    assert_eq!(device["connection"]["transport"], "smbus");
+    assert_eq!(device["connection"]["label"], "SMBus 0x40");
+    assert_eq!(device["connection"]["endpoint"], "SMBus 0x40");
 }
 
 #[tokio::test]
-async fn list_devices_includes_network_metadata_when_available() {
+async fn list_devices_includes_connection_summary_when_available() {
     let state = Arc::new(isolated_state());
     let info = DeviceInfo {
         id: DeviceId::new(),
@@ -9058,8 +9065,11 @@ async fn list_devices_includes_network_metadata_when_available() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let json = body_json(response).await;
-    assert_eq!(json["data"]["items"][0]["network_ip"], "192.168.1.42");
-    assert_eq!(json["data"]["items"][0]["network_hostname"], "wled-desk");
+    let connection = &json["data"]["items"][0]["connection"];
+    assert_eq!(connection["transport"], "network");
+    assert_eq!(connection["ip"], "192.168.1.42");
+    assert_eq!(connection["hostname"], "wled-desk");
+    assert_eq!(connection["endpoint"], "wled-desk");
 }
 
 #[cfg(feature = "builtin-drivers")]

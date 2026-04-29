@@ -47,7 +47,11 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
     let physical_device_id = dev.id.clone();
     let device_id = dev.layout_device_id.clone();
     let device_name = dev.name.clone();
-    let connection_label = dev.connection_label.clone();
+    let connection_label = dev
+        .connection
+        .label
+        .clone()
+        .or(dev.connection.endpoint.clone());
     let backend = dev.backend.clone();
     let (primary_rgb, secondary_rgb) = device_accent_colors(&device_id);
     let fallback_leds = dev.total_leds;

@@ -25,7 +25,7 @@ use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings,
-    DriverPresentation,
+    DriverPresentation, DriverTransportKind,
 };
 use hypercolor_types::event::HypercolorEvent;
 
@@ -89,13 +89,20 @@ pub struct DeviceSummary {
     pub status: String,
     pub brightness: u8,
     pub firmware_version: Option<String>,
-    pub network_ip: Option<String>,
-    pub network_hostname: Option<String>,
-    pub connection_label: Option<String>,
+    pub connection: DeviceConnectionSummary,
     pub total_leds: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<DeviceAuthSummary>,
     pub zones: Vec<ZoneSummary>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeviceConnectionSummary {
+    pub transport: String,
+    pub label: Option<String>,
+    pub endpoint: Option<String>,
+    pub ip: Option<String>,
+    pub hostname: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -511,13 +518,8 @@ pub async fn identify_device(
     }
 
     let backend_id = resolved_backend_id(&tracked.info);
-    let network_metadata = state.device_registry.metadata_for_id(&device_id).await;
-    let network_ip = network_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("ip").cloned());
-    let network_hostname = network_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("hostname").cloned());
+    let device_metadata = state.device_registry.metadata_for_id(&device_id).await;
+    let connection = device_connection_summary(&tracked.info, device_metadata.as_ref());
     let on_frame = vec![identify_color; led_count];
     let (manager, direct_backend, disconnect_after_identify) = match prepare_identify_backend(
         &state,
@@ -537,8 +539,8 @@ pub async fn identify_device(
         led_count,
         color = ?identify_rgb,
         effective_brightness = identify_brightness,
-        network_ip = ?network_ip,
-        network_hostname = ?network_hostname,
+        connection_transport = %connection.transport,
+        connection_endpoint = ?connection.endpoint,
         disconnect_after_identify,
         "identify enabling direct control and issuing initial on-frame"
     );
@@ -569,8 +571,8 @@ pub async fn identify_device(
         duration_ms,
         color = ?identify_rgb,
         effective_brightness = identify_brightness,
-        network_ip = ?network_ip,
-        network_hostname = ?network_hostname,
+        connection_transport = %connection.transport,
+        connection_endpoint = ?connection.endpoint,
         "Identify flash started"
     );
     tokio::spawn(run_identify_flash(
@@ -885,9 +887,7 @@ pub(super) async fn summarize_device_for_response(
         status: device_state.variant_name().to_lowercase(),
         brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),
-        network_ip: metadata.and_then(|values| values.get("ip").cloned()),
-        network_hostname: metadata.and_then(|values| values.get("hostname").cloned()),
-        connection_label: device_connection_label(metadata),
+        connection: device_connection_summary(info, metadata),
         total_leds: info.total_led_count(),
         auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await,
         zones: info
@@ -928,13 +928,67 @@ pub(super) async fn refreshed_device_summary(
     ))
 }
 
-fn device_connection_label(metadata: Option<&HashMap<String, String>>) -> Option<String> {
-    metadata.and_then(|values| {
-        values
-            .get("serial")
-            .cloned()
-            .or_else(|| values.get("usb_path").map(|path| format!("USB {path}")))
-    })
+fn device_connection_summary(
+    info: &DeviceInfo,
+    metadata: Option<&HashMap<String, String>>,
+) -> DeviceConnectionSummary {
+    let ip = metadata_value(metadata, "ip").map(str::to_owned);
+    let hostname = metadata_value(metadata, "hostname").map(str::to_owned);
+    let label = device_connection_label(&info.origin.transport, metadata);
+    let endpoint = hostname
+        .clone()
+        .or_else(|| ip.clone())
+        .or_else(|| label.clone());
+
+    DeviceConnectionSummary {
+        transport: connection_transport_id(&info.origin.transport),
+        label,
+        endpoint,
+        ip,
+        hostname,
+    }
+}
+
+fn device_connection_label(
+    transport: &DriverTransportKind,
+    metadata: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    match transport {
+        DriverTransportKind::Usb => metadata_value(metadata, "serial")
+            .map(str::to_owned)
+            .or_else(|| metadata_value(metadata, "usb_path").map(|path| format!("USB {path}"))),
+        DriverTransportKind::Smbus => match (
+            metadata_value(metadata, "bus_path"),
+            metadata_value(metadata, "smbus_address"),
+        ) {
+            (Some(bus_path), Some(address)) => Some(format!("{bus_path} {address}")),
+            (None, Some(address)) => Some(format!("SMBus {address}")),
+            (Some(bus_path), None) => Some(bus_path.to_owned()),
+            (None, None) => metadata_value(metadata, "serial").map(str::to_owned),
+        },
+        _ => metadata_value(metadata, "serial").map(str::to_owned),
+    }
+}
+
+fn metadata_value<'a>(metadata: Option<&'a HashMap<String, String>>, key: &str) -> Option<&'a str> {
+    metadata
+        .and_then(|values| values.get(key))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn connection_transport_id(transport: &DriverTransportKind) -> String {
+    match transport {
+        DriverTransportKind::Network => "network".to_owned(),
+        DriverTransportKind::Usb => "usb".to_owned(),
+        DriverTransportKind::Smbus => "smbus".to_owned(),
+        DriverTransportKind::Midi => "midi".to_owned(),
+        DriverTransportKind::Serial => "serial".to_owned(),
+        DriverTransportKind::Bridge => "bridge".to_owned(),
+        DriverTransportKind::Virtual => "virtual".to_owned(),
+        DriverTransportKind::Custom(value) => value.clone(),
+    }
 }
 
 fn percent_to_brightness(percent: u8) -> f32 {
@@ -1266,6 +1320,12 @@ async fn prepare_identify_backend(
     let direct_backend = {
         let manager = manager.lock().await;
         let Some(direct_backend) = manager.backend_io(backend_id) else {
+            if !device_state.is_renderable() {
+                return Err(ApiError::conflict(format!(
+                    "Device is not connected: {} (state={device_state})",
+                    info.name
+                )));
+            }
             return Err(ApiError::internal(format!(
                 "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
                 info.name

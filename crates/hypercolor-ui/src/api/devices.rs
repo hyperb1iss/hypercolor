@@ -143,16 +143,26 @@ pub struct DeviceSummary {
     #[serde(default)]
     pub firmware_version: Option<String>,
     #[serde(default)]
-    pub network_ip: Option<String>,
-    #[serde(default)]
-    pub network_hostname: Option<String>,
-    #[serde(default)]
-    pub connection_label: Option<String>,
+    pub connection: DeviceConnectionSummary,
     pub total_leds: usize,
     #[serde(default)]
     pub auth: Option<DeviceAuthSummary>,
     #[serde(default)]
     pub zones: Vec<ZoneSummary>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DeviceConnectionSummary {
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub ip: Option<String>,
+    #[serde(default)]
+    pub hostname: Option<String>,
 }
 
 /// Paginated device list response.

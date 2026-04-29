@@ -113,7 +113,7 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
 
     let name = device.name.to_lowercase();
 
-    if device.network_ip.is_some() || device.network_hostname.is_some() {
+    if device.connection.transport == "network" {
         return DeviceClass::NetworkController;
     }
 
@@ -182,16 +182,22 @@ pub fn device_class_label(class: &DeviceClass) -> &'static str {
 
 /// Infer connection type from device metadata.
 fn connection_type(device: &DeviceSummary) -> &'static str {
-    if device.network_ip.is_some() || device.network_hostname.is_some() {
-        return "Network";
+    match device.connection.transport.as_str() {
+        "network" => "Network",
+        "smbus" => "SMBus",
+        "bridge" => "Bridge",
+        "midi" => "MIDI",
+        "serial" => "Serial",
+        "virtual" => "Virtual",
+        _ => "USB",
     }
-    "USB"
 }
 
 /// Connection type → icon.
 fn connection_icon(conn: &str) -> icondata_core::Icon {
     match conn {
         "Network" => LuGlobe,
+        "Bridge" => LuNetwork,
         _ => LuCable,
     }
 }

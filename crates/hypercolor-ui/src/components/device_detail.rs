@@ -193,10 +193,8 @@ pub fn DeviceDetail(
                 );
 
                 let zone_count = dev.zones.len();
-                let connection_endpoint = dev.connection_label.clone()
-                    .or_else(|| dev.network_hostname.clone())
-                    .or_else(|| dev.network_ip.clone());
-                let is_network = dev.network_ip.is_some() || dev.network_hostname.is_some();
+                let connection_endpoint = dev.connection.endpoint.clone();
+                let is_network = dev.connection.transport == "network";
 
                 view! {
                     // ── Header: Driver chip + Name + status + actions ─────────
