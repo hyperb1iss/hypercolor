@@ -899,10 +899,10 @@ fn control_value_summary(value: &ControlValue) -> String {
         ControlValue::Integer(value) => value.to_string(),
         ControlValue::Float(value) => format!("{value:.2}"),
         ControlValue::String(value)
-        | ControlValue::SecretRef(value)
         | ControlValue::IpAddress(value)
         | ControlValue::MacAddress(value)
         | ControlValue::Enum(value) => value.clone(),
+        ControlValue::SecretRef(_) => "configured".to_owned(),
         ControlValue::ColorRgb(value) => {
             format!("#{:02x}{:02x}{:02x}", value[0], value[1], value[2])
         }

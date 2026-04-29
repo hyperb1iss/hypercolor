@@ -717,12 +717,20 @@ fn render_text_editor(
     editable: bool,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
 ) -> impl IntoView {
+    let is_secret = matches!(kind, TextEditorKind::Secret);
+    let placeholder = if is_secret && !value.is_empty() {
+        "Configured"
+    } else {
+        ""
+    };
+    let value = if is_secret { String::new() } else { value };
     view! {
         <input
-            type=if matches!(kind, TextEditorKind::Secret) { "password" } else { "text" }
+            type=if is_secret { "password" } else { "text" }
             class="w-36 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] font-mono text-fg-secondary
                    focus:outline-none focus:border-accent-muted disabled:opacity-50"
             prop:value=value
+            placeholder=placeholder
             disabled=!editable
             on:change=move |ev| {
                 let Some(raw) = Change::from_event(ev).value_string() else {
@@ -1140,14 +1148,19 @@ fn render_action_text_input(
 ) -> impl IntoView {
     let value_field = field_id.clone();
     let change_field = field_id.clone();
+    let is_secret = matches!(kind, TextEditorKind::Secret);
     view! {
         <input
-            type=if matches!(kind, TextEditorKind::Secret) { "password" } else { "text" }
+            type=if is_secret { "password" } else { "text" }
             class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[10px] font-mono text-fg-secondary
                    focus:outline-none focus:border-accent-muted disabled:opacity-50"
             prop:value=move || {
                 let values = input_values.get();
-                value_text(values.get(&value_field))
+                if is_secret {
+                    String::new()
+                } else {
+                    value_text(values.get(&value_field))
+                }
             }
             disabled=!enabled
             on:change=move |ev| {
@@ -1376,9 +1389,9 @@ fn enum_text(value: Option<&DynamicControlValue>) -> String {
 fn value_text(value: Option<&DynamicControlValue>) -> String {
     match value {
         Some(DynamicControlValue::String(value))
-        | Some(DynamicControlValue::SecretRef(value))
         | Some(DynamicControlValue::IpAddress(value))
         | Some(DynamicControlValue::MacAddress(value)) => value.clone(),
+        Some(DynamicControlValue::SecretRef(_)) => "Configured".to_string(),
         Some(DynamicControlValue::ColorRgb(value)) => {
             format!("#{:02x}{:02x}{:02x}", value[0], value[1], value[2])
         }

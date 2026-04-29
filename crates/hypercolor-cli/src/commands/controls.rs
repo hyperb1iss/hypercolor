@@ -527,6 +527,10 @@ fn action_availability_label(surface: &Value, action_id: &str) -> String {
 }
 
 fn value_summary(value: &Value) -> String {
+    if value.get("kind").and_then(Value::as_str) == Some("secret_ref") {
+        return "configured".to_string();
+    }
+
     match value.get("value") {
         Some(Value::String(value)) => value.clone(),
         Some(Value::Number(value)) => value.to_string(),
