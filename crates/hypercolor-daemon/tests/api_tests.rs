@@ -2217,8 +2217,36 @@ async fn get_driver_controls_returns_module_control_surface() {
 }
 
 #[tokio::test]
-async fn get_driver_controls_returns_hue_and_nanoleaf_surfaces() {
+async fn get_driver_controls_returns_govee_hue_and_nanoleaf_surfaces() {
     let app = test_app();
+
+    let govee_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/govee/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(govee_response.status(), StatusCode::OK);
+    let govee = body_json(govee_response).await;
+    assert_eq!(govee["data"]["surface_id"], "driver:govee");
+    assert_eq!(govee["data"]["values"]["known_ips"]["kind"], "list");
+    assert_eq!(
+        govee["data"]["values"]["power_off_on_disconnect"]["kind"],
+        "bool"
+    );
+    let govee_fields = govee["data"]["fields"]
+        .as_array()
+        .expect("Govee fields should be an array");
+    assert!(govee_fields.iter().any(|field| {
+        field["id"] == "known_ips" && field["apply_impact"] == "discovery_rescan"
+    }));
+    assert!(govee_fields.iter().any(|field| {
+        field["id"] == "lan_state_fps" && field["apply_impact"] == "backend_rebind"
+    }));
 
     let hue_response = app
         .clone()
