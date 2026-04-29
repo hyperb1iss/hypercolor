@@ -24,7 +24,7 @@ use super::device_helpers::{
     device_ref_for_tracked, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
-use super::{DiscoveryRuntime, DiscoveryScannerResult, DiscoveryTarget, DiscoveryTargetKind};
+use super::{DiscoveryRuntime, DiscoveryScannerResult, DiscoveryTarget, DiscoveryTargetScanner};
 use crate::network::{self, DaemonDriverHost};
 
 use hypercolor_core::device::ScannerScanReport;
@@ -216,8 +216,8 @@ pub async fn execute_discovery_scan(
 
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     for target in targets {
-        match target.kind() {
-            DiscoveryTargetKind::Driver => {
+        match target.scanner() {
+            DiscoveryTargetScanner::DriverModule => {
                 let driver_id = target.as_str().to_owned();
                 let Some(driver) = driver_registry.get(&driver_id) else {
                     warn!(driver_id, "skipping unknown discovery driver");
@@ -239,7 +239,7 @@ pub async fn execute_discovery_scan(
                     },
                 )));
             }
-            DiscoveryTargetKind::Usb => {
+            DiscoveryTargetScanner::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
                     network::enabled_module_ids(
                         driver_registry.as_ref(),
@@ -248,10 +248,10 @@ pub async fn execute_discovery_scan(
                     ),
                 )));
             }
-            DiscoveryTargetKind::SmBus => {
+            DiscoveryTargetScanner::SmBus => {
                 orchestrator.add_scanner(Box::new(SmBusScanner::new()));
             }
-            DiscoveryTargetKind::Blocks => {
+            DiscoveryTargetScanner::Blocks => {
                 let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
                     hypercolor_core::device::BlocksBackend::default_socket_path,
                     std::path::PathBuf::from,

@@ -136,10 +136,10 @@ pub struct DiscoveryRuntime {
     pub task_spawner: Handle,
 }
 
-/// Discovery target kind used by the scanner builder.
+/// Scanner implementation used for one resolved discovery target.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum DiscoveryTargetKind {
-    Driver,
+pub(super) enum DiscoveryTargetScanner {
+    DriverModule,
     Usb,
     SmBus,
     Blocks,
@@ -161,7 +161,7 @@ enum DiscoveryTargetAvailability {
 #[derive(Debug, Clone)]
 struct HostDiscoveryTargetDescriptor {
     id: &'static str,
-    kind: DiscoveryTargetKind,
+    scanner: DiscoveryTargetScanner,
     preserves_renderable_on_miss: bool,
     availability: DiscoveryTargetAvailability,
 }
@@ -169,7 +169,7 @@ struct HostDiscoveryTargetDescriptor {
 static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     HostDiscoveryTargetDescriptor {
         id: "usb",
-        kind: DiscoveryTargetKind::Usb,
+        scanner: DiscoveryTargetScanner::Usb,
         preserves_renderable_on_miss: false,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
@@ -179,7 +179,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     },
     HostDiscoveryTargetDescriptor {
         id: "smbus",
-        kind: DiscoveryTargetKind::SmBus,
+        scanner: DiscoveryTargetScanner::SmBus,
         preserves_renderable_on_miss: true,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
@@ -189,7 +189,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     },
     HostDiscoveryTargetDescriptor {
         id: "blocks",
-        kind: DiscoveryTargetKind::Blocks,
+        scanner: DiscoveryTargetScanner::Blocks,
         preserves_renderable_on_miss: false,
         availability: DiscoveryTargetAvailability::BlocksScan {
             disabled_message: "Discovery target 'blocks' is disabled by config (discovery.blocks_scan=false)",
@@ -201,7 +201,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DiscoveryTarget {
     id: String,
-    kind: DiscoveryTargetKind,
+    scanner: DiscoveryTargetScanner,
     preserves_renderable_on_miss: bool,
     availability: DiscoveryTargetAvailability,
 }
@@ -212,7 +212,7 @@ impl DiscoveryTarget {
     pub fn driver(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            kind: DiscoveryTargetKind::Driver,
+            scanner: DiscoveryTargetScanner::DriverModule,
             preserves_renderable_on_miss: false,
             availability: DiscoveryTargetAvailability::DriverModule,
         }
@@ -248,8 +248,8 @@ impl DiscoveryTarget {
         self.preserves_renderable_on_miss
     }
 
-    pub(super) const fn kind(&self) -> &DiscoveryTargetKind {
-        &self.kind
+    pub(super) const fn scanner(&self) -> &DiscoveryTargetScanner {
+        &self.scanner
     }
 
     fn availability(&self) -> &DiscoveryTargetAvailability {
@@ -266,7 +266,7 @@ impl DiscoveryTarget {
     fn from_host_descriptor(descriptor: &HostDiscoveryTargetDescriptor) -> Self {
         Self {
             id: descriptor.id.to_owned(),
-            kind: descriptor.kind.clone(),
+            scanner: descriptor.scanner.clone(),
             preserves_renderable_on_miss: descriptor.preserves_renderable_on_miss,
             availability: descriptor.availability.clone(),
         }
