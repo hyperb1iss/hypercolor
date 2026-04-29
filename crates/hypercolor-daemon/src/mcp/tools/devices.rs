@@ -25,11 +25,11 @@ pub(super) fn build_get_devices() -> ToolDefinition {
                 },
                 "driver_id": {
                     "type": "string",
-                    "description": "Optional driver module id filter, such as wled, hue, nanoleaf, asus, or nollie"
+                    "description": "Optional driver module id filter. Use ids reported by device origin metadata."
                 },
                 "backend_id": {
                     "type": "string",
-                    "description": "Optional output backend id filter, such as usb, smbus, wled, hue, or nanoleaf"
+                    "description": "Optional output backend id filter. Use ids reported by device origin metadata."
                 }
             }
         }),
