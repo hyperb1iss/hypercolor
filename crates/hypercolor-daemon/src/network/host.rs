@@ -426,7 +426,7 @@ impl DriverControlHost for DaemonDriverHost {
 
 fn control_value_to_config_json(value: ControlValue) -> Value {
     match value {
-        ControlValue::Null => Value::Null,
+        ControlValue::Null | ControlValue::Unknown => Value::Null,
         ControlValue::Bool(value) => Value::Bool(value),
         ControlValue::Integer(value) => Value::Number(Number::from(value)),
         ControlValue::Float(value) => Number::from_f64(value).map_or(Value::Null, Value::Number),
