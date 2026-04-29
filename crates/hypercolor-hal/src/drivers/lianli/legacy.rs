@@ -514,6 +514,7 @@ impl Protocol for LegacyUniHubProtocol {
                         .expect("legacy LEDs per fan should fit in u32"),
                 topology: self.zone_topology(),
                 color_format: Self::color_format(),
+                layout_hint: None,
             })
             .collect()
     }

@@ -541,6 +541,7 @@ mod tests {
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: None,
             capabilities: DeviceCapabilities::default(),

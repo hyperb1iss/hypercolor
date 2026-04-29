@@ -323,6 +323,7 @@ impl Protocol for TlFanProtocol {
                     led_count,
                     topology: DeviceTopologyHint::Ring { count: led_count },
                     color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
                 });
             }
         }

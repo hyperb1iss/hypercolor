@@ -6,6 +6,7 @@ use hypercolor_hal::drivers::corsair::{
     build_xd6_elite_lcd_protocol,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
+use hypercolor_types::spatial::LedTopology;
 
 fn make_standard_lcd() -> CorsairLcdProtocol {
     CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0)
@@ -13,6 +14,10 @@ fn make_standard_lcd() -> CorsairLcdProtocol {
 
 fn make_standard_lcd_with_ring() -> CorsairLcdProtocol {
     CorsairLcdProtocol::new("Test LCD Ring", 480, 480, 0x40, 0x40, true, 16)
+}
+
+fn make_cooler_pump_lcd_with_ring() -> CorsairLcdProtocol {
+    CorsairLcdProtocol::new("Test LCD Ring", 480, 480, 0x40, 0x40, true, 24)
 }
 
 // --- build_lcd_display_packet header validation ---
@@ -381,6 +386,26 @@ fn lcd_with_ring_still_encodes_display_frames_identically() {
     for (index, (a, b)) in no_ring_bulk.iter().zip(with_ring_bulk.iter()).enumerate() {
         assert_eq!(a.data, b.data, "bulk packet {index} should be identical");
     }
+}
+
+#[test]
+fn cooler_pump_lcd_ring_exposes_driver_layout_hint() {
+    let protocol = make_cooler_pump_lcd_with_ring();
+    let zones = protocol.zones();
+    let ring = zones
+        .iter()
+        .find(|zone| zone.name == "RGB Ring")
+        .expect("ring zone should be exposed");
+    let hint = ring
+        .layout_hint
+        .as_ref()
+        .expect("24-LED cooler pump ring should expose custom geometry");
+
+    assert!(hint.co_located);
+    assert!(matches!(
+        hint.topology,
+        Some(LedTopology::Custom { ref positions }) if positions.len() == 24
+    ));
 }
 
 // --- Keepalive integration with display frames ---

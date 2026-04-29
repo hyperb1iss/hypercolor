@@ -270,6 +270,7 @@ fn discovered_smbus_device(device_id: DeviceId) -> DiscoveredDevice {
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: Some("AUDA0-E6K5-0101".to_owned()),
             capabilities: DeviceCapabilities {

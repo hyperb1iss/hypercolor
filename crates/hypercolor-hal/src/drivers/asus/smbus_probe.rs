@@ -637,5 +637,6 @@ fn protocol_zone_to_zone_info(zone: ProtocolZone) -> ZoneInfo {
         led_count: zone.led_count,
         topology: zone.topology,
         color_format: zone.color_format,
+        layout_hint: zone.layout_hint,
     }
 }

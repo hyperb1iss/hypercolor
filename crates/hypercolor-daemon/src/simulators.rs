@@ -73,6 +73,7 @@ impl SimulatedDisplayConfig {
                     circular: self.circular,
                 },
                 color_format: DeviceColorFormat::Jpeg,
+                layout_hint: None,
             }],
             firmware_version: None,
             capabilities: DeviceCapabilities {

@@ -552,6 +552,7 @@ fn build_device_info(
             led_count,
             topology: device_topology,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("mock-1.0.0".to_owned()),
         capabilities: DeviceCapabilities {

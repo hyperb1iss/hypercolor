@@ -171,6 +171,7 @@ fn device_info(id: DeviceId, name: &str) -> DeviceInfo {
             led_count: 4,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {

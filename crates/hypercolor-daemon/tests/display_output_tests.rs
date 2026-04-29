@@ -351,6 +351,7 @@ fn display_device_info_with_format_and_max_fps(
                 circular,
             },
             color_format,
+            layout_hint: None,
         }]
     } else {
         vec![ZoneInfo {
@@ -358,6 +359,7 @@ fn display_device_info_with_format_and_max_fps(
             led_count: 24,
             topology: DeviceTopologyHint::Ring { count: 24 },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }]
     };
 
@@ -651,6 +653,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Display".to_owned(),
@@ -661,6 +664,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
                     circular: false,
                 },
                 color_format: DeviceColorFormat::Jpeg,
+                layout_hint: None,
             },
         ],
         firmware_version: None,

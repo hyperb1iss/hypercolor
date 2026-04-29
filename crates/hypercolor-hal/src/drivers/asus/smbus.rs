@@ -570,6 +570,7 @@ impl Protocol for AuraSmBusProtocol {
             led_count: state.led_count,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }]
     }
 

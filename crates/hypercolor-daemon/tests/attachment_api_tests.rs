@@ -125,6 +125,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -158,6 +159,7 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
             led_count: 126,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Grb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -192,6 +194,7 @@ async fn insert_nollie32_test_device(state: &Arc<AppState>) -> DeviceId {
                 led_count: 256,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Grb,
+                layout_hint: None,
             })
             .collect(),
         firmware_version: Some("0.1.0".to_owned()),

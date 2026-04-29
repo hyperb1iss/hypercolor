@@ -228,6 +228,7 @@ pub(super) fn build_device_info(
             led_count: u32::from(wled_info.led_count),
             topology: DeviceTopologyHint::Strip,
             color_format,
+            layout_hint: None,
         }],
         firmware_version: Some(wled_info.firmware_version.clone()),
         capabilities: DeviceCapabilities {

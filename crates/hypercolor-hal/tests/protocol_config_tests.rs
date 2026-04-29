@@ -38,6 +38,7 @@ fn nollie32_info() -> DeviceInfo {
             led_count: 256,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Grb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),

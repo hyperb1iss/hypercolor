@@ -192,6 +192,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
             led_count,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("1.0.0".to_string()),
         capabilities: DeviceCapabilities {
@@ -1433,6 +1434,7 @@ async fn multiple_scanners_aggregate_results() {
                 led_count: 40,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: Some("2.0.0".to_string()),
             capabilities: DeviceCapabilities {

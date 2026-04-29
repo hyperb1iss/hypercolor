@@ -55,6 +55,7 @@ impl UsbScanner {
                     led_count: fallback_led_count,
                     topology: DeviceTopologyHint::Point,
                     color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
                 }],
                 DeviceCapabilities {
                     led_count: fallback_led_count,
@@ -173,6 +174,7 @@ fn protocol_zone_to_zone_info(zone: ProtocolZone) -> hypercolor_types::device::Z
         led_count: zone.led_count,
         topology: zone.topology,
         color_format: zone.color_format,
+        layout_hint: zone.layout_hint,
     }
 }
 

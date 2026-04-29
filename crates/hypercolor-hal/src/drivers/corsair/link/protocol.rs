@@ -330,6 +330,7 @@ impl Protocol for CorsairLinkProtocol {
                 led_count: child.led_count,
                 topology: child.topology(),
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: child.device_type.layout_hint(),
             })
             .collect()
     }

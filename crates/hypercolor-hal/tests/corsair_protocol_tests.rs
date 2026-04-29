@@ -10,6 +10,7 @@ use hypercolor_hal::drivers::corsair::{
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
 use hypercolor_types::device::DeviceTopologyHint;
+use hypercolor_types::spatial::LedTopology;
 
 fn link_enumeration_response(records: &[(u8, u8, &str)]) -> Vec<u8> {
     let mut data = vec![0x00, 0x00, 0x00, 0x00];
@@ -80,6 +81,40 @@ fn link_parse_response_populates_children_and_capabilities() {
     assert_eq!(capabilities.max_fps, 30);
     assert_eq!(protocol.total_leds(), 194);
     assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
+}
+
+#[test]
+fn link_aio_children_expose_driver_layout_hints() {
+    let protocol = CorsairLinkProtocol::new();
+    protocol
+        .parse_response(&link_enumeration_response(&[
+            (0x07, 0x00, "AIO1"),
+            (0x06, 0x00, "LCD1"),
+        ]))
+        .expect("enumeration response should parse");
+
+    let zones = protocol.zones();
+    assert_eq!(zones.len(), 2);
+
+    let aio_hint = zones[0]
+        .layout_hint
+        .as_ref()
+        .expect("AIO child should expose a custom layout hint");
+    assert!(aio_hint.co_located);
+    assert!(matches!(
+        aio_hint.topology,
+        Some(LedTopology::Custom { ref positions }) if positions.len() == 20
+    ));
+
+    let lcd_hint = zones[1]
+        .layout_hint
+        .as_ref()
+        .expect("Cooler Pump LCD child should expose a custom layout hint");
+    assert!(lcd_hint.co_located);
+    assert!(matches!(
+        lcd_hint.topology,
+        Some(LedTopology::Custom { ref positions }) if positions.len() == 24
+    ));
 }
 
 #[test]

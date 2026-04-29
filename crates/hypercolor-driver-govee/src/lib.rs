@@ -623,6 +623,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
             led_count,
             topology: topology_for_family(profile.family),
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {

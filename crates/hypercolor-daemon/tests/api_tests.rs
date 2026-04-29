@@ -1825,6 +1825,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -1861,6 +1862,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
                 circular: true,
             },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -1900,6 +1902,7 @@ async fn insert_test_hue_bridge_device(
             led_count: 1,
             topology: DeviceTopologyHint::Point,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("1.0.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -1946,6 +1949,7 @@ async fn insert_test_nanoleaf_device(
             led_count: 12,
             topology: DeviceTopologyHint::Matrix { rows: 3, cols: 4 },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("12.0.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -1985,6 +1989,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("AUMA0-E6K5-0107".to_owned()),
         capabilities: DeviceCapabilities {
@@ -3029,6 +3034,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
             led_count: 96,
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 16 },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -8566,6 +8572,7 @@ async fn list_devices_includes_network_metadata_when_available() {
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -9261,6 +9268,7 @@ async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() 
                 led_count: 60,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: Some("0.1.0".to_owned()),
             capabilities: DeviceCapabilities {

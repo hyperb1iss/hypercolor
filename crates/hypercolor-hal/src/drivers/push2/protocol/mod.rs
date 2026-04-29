@@ -346,42 +346,49 @@ impl Protocol for Push2Protocol {
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Buttons Above".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Buttons Below".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Scene Launch".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Transport".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Custom,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "White Buttons".to_owned(),
                 led_count: u32::try_from(PUSH2_WHITE_BUTTON_COUNT).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Touch Strip".to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Display".to_owned(),
@@ -392,6 +399,7 @@ impl Protocol for Push2Protocol {
                     circular: false,
                 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
         ]
     }

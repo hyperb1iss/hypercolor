@@ -162,6 +162,7 @@ pub fn build_device_info(device: &GoveeLanDevice) -> DeviceInfo {
             led_count,
             topology,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: device.firmware_version.clone(),
         capabilities: DeviceCapabilities {

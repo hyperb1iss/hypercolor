@@ -92,6 +92,7 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
             led_count,
             topology: DeviceTopologyHint::Matrix { rows, cols },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: dev.firmware_version.clone(),
         capabilities: DeviceCapabilities {

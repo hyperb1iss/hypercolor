@@ -327,6 +327,7 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
                 led_count: 1,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: None,
             capabilities: DeviceCapabilities {

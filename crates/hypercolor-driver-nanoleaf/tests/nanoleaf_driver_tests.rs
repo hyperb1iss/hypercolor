@@ -42,6 +42,7 @@ fn tracked_nanoleaf_device() -> DriverTrackedDevice {
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: Some("9.4.0".to_owned()),
             capabilities: DeviceCapabilities {

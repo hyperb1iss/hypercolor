@@ -128,6 +128,7 @@ fn usb_device_info() -> DeviceInfo {
             led_count: 16,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("1.0.0".into()),
         capabilities: DeviceCapabilities {
@@ -158,6 +159,7 @@ fn smbus_device_info(name: &str) -> DeviceInfo {
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("AUDA0-E6K5-0101".into()),
         capabilities: DeviceCapabilities {
@@ -187,6 +189,7 @@ fn mock_device_info() -> DeviceInfo {
             led_count: 16,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("1.0.0".into()),
         capabilities: DeviceCapabilities {

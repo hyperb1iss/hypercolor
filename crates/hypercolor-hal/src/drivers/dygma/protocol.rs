@@ -321,24 +321,28 @@ impl Protocol for DygmaProtocol {
                 led_count: LEFT_KEYS,
                 topology: DeviceTopologyHint::Custom,
                 color_format,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Right Keys".to_owned(),
                 led_count: RIGHT_KEYS,
                 topology: DeviceTopologyHint::Custom,
                 color_format,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Left Underglow".to_owned(),
                 led_count: LEFT_UNDERGLOW,
                 topology: DeviceTopologyHint::Strip,
                 color_format,
+                layout_hint: None,
             },
             ProtocolZone {
                 name: "Right Underglow".to_owned(),
                 led_count: RIGHT_UNDERGLOW,
                 topology: DeviceTopologyHint::Strip,
                 color_format,
+                layout_hint: None,
             },
         ]
     }

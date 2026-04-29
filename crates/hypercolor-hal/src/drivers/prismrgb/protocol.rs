@@ -456,6 +456,7 @@ impl Protocol for PrismRgbProtocol {
                         led_count: u32::try_from(PRISM_S_ATX_LEDS).unwrap_or(u32::MAX),
                         topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
                         color_format: self.model.color_format(),
+                        layout_hint: None,
                     });
                 }
                 if let Some(gpu_cable) = self.prism_s_config.gpu_cable {
@@ -464,6 +465,7 @@ impl Protocol for PrismRgbProtocol {
                         led_count: u32::try_from(gpu_cable.led_count()).unwrap_or(u32::MAX),
                         topology: gpu_cable.topology(),
                         color_format: self.model.color_format(),
+                        layout_hint: None,
                     });
                 }
                 zones
@@ -473,6 +475,7 @@ impl Protocol for PrismRgbProtocol {
                 led_count: u32::try_from(PRISM_MINI_MAX_LEDS).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,
                 color_format: self.model.color_format(),
+                layout_hint: None,
             }],
         }
     }

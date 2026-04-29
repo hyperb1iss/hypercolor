@@ -21,12 +21,14 @@ fn prism_s_info() -> DeviceInfo {
                 led_count: 120,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "GPU Strimer".to_owned(),
                 led_count: 162,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
         ],
         capabilities: DeviceCapabilities::default(),
@@ -50,6 +52,7 @@ fn nollie32_info() -> DeviceInfo {
                 led_count: 256,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Grb,
+                layout_hint: None,
             })
             .collect(),
         capabilities: DeviceCapabilities::default(),

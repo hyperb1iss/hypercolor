@@ -11,6 +11,7 @@ use hypercolor_types::device::{
 use crate::drivers::corsair::framing::{
     LCD_DATA_PER_PACKET, LCD_PACKET_SIZE, append_lcd_display_packet, build_lcd_report,
 };
+use crate::drivers::corsair::types::cooler_pump_lcd_layout_hint;
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
     ProtocolZone, ResponseStatus, TransferType,
@@ -338,6 +339,7 @@ impl Protocol for CorsairLcdProtocol {
                 circular: self.circular,
             },
             color_format: DeviceColorFormat::Jpeg,
+            layout_hint: None,
         }];
 
         if self.ring_led_count > 0 {
@@ -348,6 +350,7 @@ impl Protocol for CorsairLcdProtocol {
                     count: self.ring_led_count,
                 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: (self.ring_led_count == 24).then(cooler_pump_lcd_layout_hint),
             });
         }
 

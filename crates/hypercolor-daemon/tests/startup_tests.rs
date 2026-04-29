@@ -29,13 +29,14 @@ use hypercolor_types::config::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    ZoneLayoutHint,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-    StripDirection,
+    StripDirection, ZoneShape,
 };
 use serde_json::Value;
 use tempfile::NamedTempFile;
@@ -187,6 +188,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: Some(seiren_v3_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {
@@ -768,6 +770,7 @@ async fn runtime_state_captures_default_scene_groups() {
                     led_count: 30,
                     topology: DeviceTopologyHint::Strip,
                     color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
                 }],
                 firmware_version: Some("0.15.3".to_owned()),
                 capabilities: DeviceCapabilities::default(),
@@ -1154,6 +1157,7 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
             led_count: 30,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1209,6 +1213,7 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
                 circular: true,
             },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {
@@ -1237,6 +1242,117 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
     assert!(layout.zones.is_empty());
 }
 
+fn seiren_v3_layout_hint() -> ZoneLayoutHint {
+    ZoneLayoutHint::custom_grid(
+        6,
+        2,
+        &[
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+        ],
+    )
+    .with_size(NormalizedPosition::new(0.2, 0.08))
+    .with_shape(ZoneShape::Rectangle)
+}
+
+fn basilisk_v3_layout_hint() -> ZoneLayoutHint {
+    ZoneLayoutHint::custom_grid(
+        7,
+        8,
+        &[
+            (3, 5),
+            (3, 1),
+            (1, 1),
+            (0, 2),
+            (0, 3),
+            (0, 4),
+            (2, 6),
+            (4, 6),
+            (5, 3),
+            (6, 2),
+            (6, 1),
+        ],
+    )
+    .with_size(NormalizedPosition::new(0.16, 0.18))
+    .with_shape(ZoneShape::Rectangle)
+}
+
+fn corsair_aio_layout_hint() -> ZoneLayoutHint {
+    ZoneLayoutHint::custom_grid(
+        13,
+        13,
+        &[
+            (12, 6),
+            (11, 8),
+            (10, 10),
+            (8, 11),
+            (6, 12),
+            (4, 11),
+            (2, 10),
+            (1, 8),
+            (0, 6),
+            (1, 4),
+            (2, 2),
+            (4, 1),
+            (6, 0),
+            (8, 1),
+            (10, 2),
+            (11, 4),
+            (8, 6),
+            (6, 8),
+            (4, 6),
+            (6, 4),
+        ],
+    )
+    .with_size(NormalizedPosition::new(0.16, 0.16))
+    .with_shape(ZoneShape::Ring)
+    .co_located()
+}
+
+fn corsair_lcd_layout_hint() -> ZoneLayoutHint {
+    ZoneLayoutHint::custom_grid(
+        11,
+        11,
+        &[
+            (10, 5),
+            (9, 6),
+            (9, 7),
+            (8, 8),
+            (7, 9),
+            (6, 9),
+            (5, 10),
+            (4, 9),
+            (3, 9),
+            (2, 8),
+            (1, 7),
+            (1, 6),
+            (0, 5),
+            (1, 4),
+            (1, 3),
+            (2, 2),
+            (3, 1),
+            (4, 1),
+            (5, 0),
+            (6, 1),
+            (7, 1),
+            (8, 2),
+            (9, 3),
+            (9, 4),
+        ],
+    )
+    .with_size(NormalizedPosition::new(0.19, 0.19))
+    .with_shape(ZoneShape::Ring)
+    .co_located()
+}
+
 #[test]
 fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
     let device_id = DeviceId::new();
@@ -1253,6 +1369,7 @@ fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: Some(seiren_v3_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1304,6 +1421,7 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
             led_count: 11,
             topology: DeviceTopologyHint::Matrix { rows: 1, cols: 11 },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: Some(basilisk_v3_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1356,12 +1474,14 @@ fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry()
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: Some(corsair_aio_layout_hint()),
             },
             ZoneInfo {
                 name: "iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: Some(corsair_lcd_layout_hint()),
             },
         ],
         firmware_version: None,
@@ -1440,36 +1560,42 @@ fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panick
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Buttons Above".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Buttons Below".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Scene Launch".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Transport".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Custom,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Touch Strip".to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
         ],
         firmware_version: None,
@@ -1524,6 +1650,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: Some(seiren_v3_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1594,12 +1721,14 @@ fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_to
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: Some(corsair_aio_layout_hint()),
             },
             ZoneInfo {
                 name: "iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: Some(corsair_lcd_layout_hint()),
             },
         ],
         firmware_version: None,
@@ -1716,6 +1845,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
             led_count: 108,
             topology: DeviceTopologyHint::Matrix { rows: 4, cols: 27 },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {

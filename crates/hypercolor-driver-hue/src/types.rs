@@ -189,6 +189,7 @@ pub fn build_device_info(
                             DeviceTopologyHint::Strip
                         },
                         color_format: DeviceColorFormat::Rgb,
+                        layout_hint: None,
                     }
                 })
                 .collect()

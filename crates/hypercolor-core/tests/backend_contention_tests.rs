@@ -238,6 +238,7 @@ impl DeviceBackend for ContentionMockBackend {
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: None,
             capabilities: DeviceCapabilities {
@@ -353,6 +354,7 @@ fn test_device_info(device_id: DeviceId, backend_id: &str) -> DeviceInfo {
             led_count: 4,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {

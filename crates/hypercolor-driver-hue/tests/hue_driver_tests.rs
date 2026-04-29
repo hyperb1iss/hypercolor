@@ -33,6 +33,7 @@ fn tracked_hue_device() -> DriverTrackedDevice {
                 led_count: 1,
                 topology: DeviceTopologyHint::Point,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             }],
             firmware_version: Some("1969152010".to_owned()),
             capabilities: DeviceCapabilities {

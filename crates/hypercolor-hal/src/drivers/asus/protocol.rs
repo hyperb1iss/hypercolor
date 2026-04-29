@@ -483,6 +483,7 @@ impl Protocol for AuraUsbProtocol {
                 led_count: topology.mainboard_leds,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             });
         }
 
@@ -507,6 +508,7 @@ impl Protocol for AuraUsbProtocol {
                 led_count: *led_count,
                 topology: topology_hint,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             });
         }
 

@@ -107,6 +107,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
                 circular: true,
             },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: Some("0.1.0".to_owned()),
         capabilities: DeviceCapabilities {

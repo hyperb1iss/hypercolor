@@ -290,6 +290,7 @@ impl Protocol for CorsairLightingNodeProtocol {
                 led_count,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             })
             .collect()
     }

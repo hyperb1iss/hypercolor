@@ -5,8 +5,9 @@ use hypercolor_types::device::{
     DeviceError, DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId,
     DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     DeviceUserSettings, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverTransportKind, ZoneInfo,
+    DriverPresentation, DriverTransportKind, ZoneInfo, ZoneLayoutHint,
 };
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 use uuid::Uuid;
 
 // ── DeviceId ──────────────────────────────────────────────────────────────
@@ -72,12 +73,14 @@ fn sample_device_info() -> DeviceInfo {
                 led_count: 60,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Accent".into(),
                 led_count: 30,
                 topology: DeviceTopologyHint::Ring { count: 30 },
                 color_format: DeviceColorFormat::Rgbw,
+                layout_hint: None,
             },
         ],
         firmware_version: Some("0.15.0".into()),
@@ -901,6 +904,7 @@ fn zone_info_serde_round_trip() {
         led_count: 144,
         topology: DeviceTopologyHint::Strip,
         color_format: DeviceColorFormat::Rgb,
+        layout_hint: None,
     };
     let json = serde_json::to_string(&zone).expect("serialize");
     let back: ZoneInfo = serde_json::from_str(&json).expect("deserialize");
@@ -911,12 +915,33 @@ fn zone_info_serde_round_trip() {
 }
 
 #[test]
+fn zone_layout_hint_custom_grid_builds_normalized_positions() {
+    let hint = ZoneLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 1), (2, 1)])
+        .with_size(NormalizedPosition::new(0.2, 0.1))
+        .with_shape(ZoneShape::Rectangle)
+        .co_located();
+
+    assert_eq!(hint.size, Some(NormalizedPosition::new(0.2, 0.1)));
+    assert_eq!(hint.shape, Some(ZoneShape::Rectangle));
+    assert!(hint.co_located);
+
+    let Some(LedTopology::Custom { positions }) = hint.topology else {
+        panic!("expected custom topology");
+    };
+    assert_eq!(positions.len(), 3);
+    assert_eq!(positions[0], NormalizedPosition::new(0.0, 0.0));
+    assert_eq!(positions[1], NormalizedPosition::new(0.5, 1.0));
+    assert_eq!(positions[2], NormalizedPosition::new(1.0, 1.0));
+}
+
+#[test]
 fn zone_info_matrix_topology() {
     let zone = ZoneInfo {
         name: "Panel".into(),
         led_count: 256,
         topology: DeviceTopologyHint::Matrix { rows: 16, cols: 16 },
         color_format: DeviceColorFormat::Rgbw,
+        layout_hint: None,
     };
     if let DeviceTopologyHint::Matrix { rows, cols } = zone.topology {
         assert_eq!(rows, 16);

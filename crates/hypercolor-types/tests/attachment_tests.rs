@@ -54,12 +54,14 @@ fn sample_device() -> DeviceInfo {
                 led_count: 120,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "GPU Strimer".into(),
                 led_count: 162,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
         ],
         firmware_version: Some("1.0.0".into()),
@@ -211,12 +213,14 @@ fn device_info_default_attachment_profile_deduplicates_slot_ids() {
                 led_count: 16,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
             ZoneInfo {
                 name: "Channel 1".into(),
                 led_count: 16,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             },
         ],
         ..sample_device()
@@ -239,6 +243,7 @@ fn prism_8_channel_slots_allow_fan_attachments() {
             led_count: 126,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         ..sample_device()
     };

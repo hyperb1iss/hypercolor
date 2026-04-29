@@ -3,8 +3,9 @@
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, ZoneLayoutHint,
 };
+use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
@@ -183,6 +184,26 @@ impl Protocol for SeirenV3Protocol {
             led_count: 10,
             topology: DeviceTopologyHint::Custom,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: Some(
+                ZoneLayoutHint::custom_grid(
+                    6,
+                    2,
+                    &[
+                        (1, 0),
+                        (2, 0),
+                        (3, 0),
+                        (4, 0),
+                        (0, 1),
+                        (1, 1),
+                        (2, 1),
+                        (3, 1),
+                        (4, 1),
+                        (5, 1),
+                    ],
+                )
+                .with_size(NormalizedPosition::new(0.2, 0.08))
+                .with_shape(ZoneShape::Rectangle),
+            ),
         }]
     }
 

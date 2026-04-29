@@ -370,6 +370,7 @@ fn gen1_zones(channels: usize, leds_per_channel: usize, model: NollieModel) -> V
             led_count: u32::try_from(leds_per_channel).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Strip,
             color_format: model.color_format(),
+            layout_hint: None,
         })
         .collect()
 }
@@ -389,6 +390,7 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
             led_count: u32::try_from(LEDS_ATX_STRIMER).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
             color_format: DeviceColorFormat::Grb,
+            layout_hint: None,
         });
     }
 
@@ -398,6 +400,7 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
             led_count: u32::try_from(config.gpu_cable_type.led_count()).unwrap_or(u32::MAX),
             topology,
             color_format: DeviceColorFormat::Grb,
+            layout_hint: None,
         });
     }
 

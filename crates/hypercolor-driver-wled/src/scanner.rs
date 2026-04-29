@@ -203,6 +203,7 @@ impl WledScanner {
                 led_count: u32::from(led_count),
                 topology: DeviceTopologyHint::Strip,
                 color_format,
+                layout_hint: None,
             }],
             firmware_version,
             capabilities: DeviceCapabilities {
@@ -281,6 +282,7 @@ impl WledScanner {
                 led_count,
                 topology: DeviceTopologyHint::Strip,
                 color_format,
+                layout_hint: None,
             }],
             firmware_version: target.firmware_version.clone(),
             capabilities: DeviceCapabilities {

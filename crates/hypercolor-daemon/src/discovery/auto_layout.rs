@@ -236,24 +236,21 @@ pub fn append_auto_layout_zones_for_device(
     let slot_center = auto_layout_slot_center(existing_device_count);
 
     for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let override_spec = auto_layout_override(device_info, zone_info);
-        let topology = override_spec.as_ref().map_or_else(
-            || spatial_topology_for_zone(zone_info),
-            |spec| spec.topology.clone(),
-        );
+        let layout_hint = zone_info.layout_hint.as_ref();
+        let topology = layout_hint
+            .and_then(|hint| hint.topology.clone())
+            .unwrap_or_else(|| spatial_topology_for_zone(zone_info));
         let (default_position, default_size) = auto_layout_geometry(
             slot_center,
             index,
             eligible_zones.len(),
             &zone_info.topology,
         );
-        let position = override_spec
-            .as_ref()
-            .filter(|spec| spec.co_located)
+        let position = layout_hint
+            .filter(|hint| hint.co_located)
             .map_or(default_position, |_| slot_center);
-        let size = override_spec
-            .as_ref()
-            .and_then(|spec| spec.size)
+        let size = layout_hint
+            .and_then(|hint| hint.size)
             .unwrap_or(default_size);
         let zone_id = unique_auto_zone_id(layout, layout_device_id, &zone_info.name);
         let zone_name = if eligible_zones.len() == 1 {
@@ -278,9 +275,8 @@ pub fn append_auto_layout_zones_for_device(
             led_mapping: None,
             sampling_mode: Some(SamplingMode::Bilinear),
             edge_behavior: Some(EdgeBehavior::Clamp),
-            shape: override_spec
-                .as_ref()
-                .and_then(|spec| spec.shape.clone())
+            shape: layout_hint
+                .and_then(|hint| hint.shape.clone())
                 .or_else(|| auto_layout_shape(&zone_info.topology)),
             shape_preset: None,
             attachment: None,
@@ -328,11 +324,10 @@ pub fn reconcile_auto_layout_zones_for_device(
     }
 
     for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let override_spec = auto_layout_override(device_info, zone_info);
-        let expected_topology = override_spec.as_ref().map_or_else(
-            || spatial_topology_for_zone(zone_info),
-            |spec| spec.topology.clone(),
-        );
+        let layout_hint = zone_info.layout_hint.as_ref();
+        let expected_topology = layout_hint
+            .and_then(|hint| hint.topology.clone())
+            .unwrap_or_else(|| spatial_topology_for_zone(zone_info));
 
         let (_, default_size) = auto_layout_geometry(
             NormalizedPosition::new(0.5, 0.5),
@@ -340,9 +335,8 @@ pub fn reconcile_auto_layout_zones_for_device(
             eligible_zones.len(),
             &zone_info.topology,
         );
-        let expected_size = override_spec
-            .as_ref()
-            .and_then(|spec| spec.size)
+        let expected_size = layout_hint
+            .and_then(|hint| hint.size)
             .unwrap_or(default_size);
         let expected_name = if eligible_zones.len() == 1 {
             device_info.name.clone()
@@ -350,9 +344,8 @@ pub fn reconcile_auto_layout_zones_for_device(
             format!("{}: {}", device_info.name, zone_info.name)
         };
         let expected_positions = generate_positions(&expected_topology);
-        let expected_shape = override_spec
-            .as_ref()
-            .and_then(|spec| spec.shape.clone())
+        let expected_shape = layout_hint
+            .and_then(|hint| hint.shape.clone())
             .or_else(|| auto_layout_shape(&zone_info.topology));
 
         for zone in layout.zones.iter_mut().filter(|zone| {
@@ -461,175 +454,6 @@ fn auto_layout_geometry(
     };
 
     (position, size)
-}
-
-#[derive(Clone)]
-struct AutoLayoutOverride {
-    topology: LedTopology,
-    size: Option<NormalizedPosition>,
-    shape: Option<ZoneShape>,
-    co_located: bool,
-}
-
-fn auto_layout_override(
-    device_info: &DeviceInfo,
-    zone_info: &hypercolor_types::device::ZoneInfo,
-) -> Option<AutoLayoutOverride> {
-    let family_id = device_info.family.id();
-    let device_name = device_info.name.as_str();
-
-    if family_id == "razer" && device_name.contains("Seiren V3") && zone_info.led_count == 10 {
-        return Some(AutoLayoutOverride {
-            topology: LedTopology::Custom {
-                positions: normalized_grid_positions(
-                    6,
-                    2,
-                    &[
-                        (1, 0),
-                        (2, 0),
-                        (3, 0),
-                        (4, 0),
-                        (0, 1),
-                        (1, 1),
-                        (2, 1),
-                        (3, 1),
-                        (4, 1),
-                        (5, 1),
-                    ],
-                ),
-            },
-            size: Some(NormalizedPosition::new(0.2, 0.08)),
-            shape: Some(ZoneShape::Rectangle),
-            co_located: false,
-        });
-    }
-
-    if family_id == "razer" && device_name.contains("Basilisk V3") && zone_info.led_count == 11 {
-        return Some(AutoLayoutOverride {
-            topology: LedTopology::Custom {
-                positions: normalized_grid_positions(
-                    7,
-                    8,
-                    &[
-                        (3, 5),
-                        (3, 1),
-                        (1, 1),
-                        (0, 2),
-                        (0, 3),
-                        (0, 4),
-                        (2, 6),
-                        (4, 6),
-                        (5, 3),
-                        (6, 2),
-                        (6, 1),
-                    ],
-                ),
-            },
-            size: Some(NormalizedPosition::new(0.16, 0.18)),
-            shape: Some(ZoneShape::Rectangle),
-            co_located: false,
-        });
-    }
-
-    if family_id == "corsair" && zone_info.led_count == 20 && zone_info.name.contains("AIO") {
-        return Some(AutoLayoutOverride {
-            topology: LedTopology::Custom {
-                positions: normalized_grid_positions(
-                    13,
-                    13,
-                    &[
-                        (12, 6),
-                        (11, 8),
-                        (10, 10),
-                        (8, 11),
-                        (6, 12),
-                        (4, 11),
-                        (2, 10),
-                        (1, 8),
-                        (0, 6),
-                        (1, 4),
-                        (2, 2),
-                        (4, 1),
-                        (6, 0),
-                        (8, 1),
-                        (10, 2),
-                        (11, 4),
-                        (8, 6),
-                        (6, 8),
-                        (4, 6),
-                        (6, 4),
-                    ],
-                ),
-            },
-            size: Some(NormalizedPosition::new(0.16, 0.16)),
-            shape: Some(ZoneShape::Ring),
-            co_located: true,
-        });
-    }
-
-    if family_id == "corsair"
-        && zone_info.led_count == 24
-        && zone_info.name.contains("Cooler Pump LCD")
-    {
-        return Some(AutoLayoutOverride {
-            topology: LedTopology::Custom {
-                positions: normalized_grid_positions(
-                    11,
-                    11,
-                    &[
-                        (10, 5),
-                        (9, 6),
-                        (9, 7),
-                        (8, 8),
-                        (7, 9),
-                        (6, 9),
-                        (5, 10),
-                        (4, 9),
-                        (3, 9),
-                        (2, 8),
-                        (1, 7),
-                        (1, 6),
-                        (0, 5),
-                        (1, 4),
-                        (1, 3),
-                        (2, 2),
-                        (3, 1),
-                        (4, 1),
-                        (5, 0),
-                        (6, 1),
-                        (7, 1),
-                        (8, 2),
-                        (9, 3),
-                        (9, 4),
-                    ],
-                ),
-            },
-            size: Some(NormalizedPosition::new(0.19, 0.19)),
-            shape: Some(ZoneShape::Ring),
-            co_located: true,
-        });
-    }
-
-    None
-}
-
-fn normalized_grid_positions(
-    width: u32,
-    height: u32,
-    coordinates: &[(u32, u32)],
-) -> Vec<NormalizedPosition> {
-    let x_divisor = f32::from(u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
-    let y_divisor = f32::from(u16::try_from(height.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
-
-    coordinates
-        .iter()
-        .map(|&(x, y)| {
-            NormalizedPosition::new(
-                f32::from(u16::try_from(x).unwrap_or(u16::MAX)) / x_divisor,
-                f32::from(u16::try_from(y).unwrap_or(u16::MAX)) / y_divisor,
-            )
-        })
-        .collect()
 }
 
 fn spatial_topology_for_zone(zone_info: &hypercolor_types::device::ZoneInfo) -> LedTopology {

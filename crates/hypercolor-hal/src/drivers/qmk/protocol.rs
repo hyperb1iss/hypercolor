@@ -297,6 +297,7 @@ impl Protocol for QmkProtocol {
             led_count: u32::try_from(key_count).unwrap_or(u32::MAX),
             topology,
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         });
 
         if self.config.has_underglow && self.config.underglow_count > 0 {
@@ -305,6 +306,7 @@ impl Protocol for QmkProtocol {
                 led_count: u32::try_from(self.config.underglow_count).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
             });
         }
 

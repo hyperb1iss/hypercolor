@@ -1,6 +1,7 @@
 //! Shared Corsair protocol enums and endpoint definitions.
 
-use hypercolor_types::device::DeviceTopologyHint;
+use hypercolor_types::device::{DeviceTopologyHint, ZoneLayoutHint};
+use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 
 /// Wire-level command bytes for the Corsair iCUE LINK hub.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +202,84 @@ impl LinkDeviceType {
             | Self::OriginOa => DeviceTopologyHint::Custom,
         }
     }
+
+    /// Driver-owned layout hint for devices whose LEDs are not evenly spaced.
+    #[must_use]
+    pub fn layout_hint(self) -> Option<ZoneLayoutHint> {
+        match self {
+            Self::HSeriesAio | Self::TitanAio => Some(
+                ZoneLayoutHint::custom_grid(
+                    13,
+                    13,
+                    &[
+                        (12, 6),
+                        (11, 8),
+                        (10, 10),
+                        (8, 11),
+                        (6, 12),
+                        (4, 11),
+                        (2, 10),
+                        (1, 8),
+                        (0, 6),
+                        (1, 4),
+                        (2, 2),
+                        (4, 1),
+                        (6, 0),
+                        (8, 1),
+                        (10, 2),
+                        (11, 4),
+                        (8, 6),
+                        (6, 8),
+                        (4, 6),
+                        (6, 4),
+                    ],
+                )
+                .with_size(NormalizedPosition::new(0.16, 0.16))
+                .with_shape(ZoneShape::Ring)
+                .co_located(),
+            ),
+            Self::CoolerPumpLcd => Some(cooler_pump_lcd_layout_hint()),
+            _ => None,
+        }
+    }
+}
+
+/// Layout hint for the iCUE LINK Cooler Pump LCD 24-LED ring.
+#[must_use]
+pub fn cooler_pump_lcd_layout_hint() -> ZoneLayoutHint {
+    ZoneLayoutHint::custom_grid(
+        11,
+        11,
+        &[
+            (10, 5),
+            (9, 6),
+            (9, 7),
+            (8, 8),
+            (7, 9),
+            (6, 9),
+            (5, 10),
+            (4, 9),
+            (3, 9),
+            (2, 8),
+            (1, 7),
+            (1, 6),
+            (0, 5),
+            (1, 4),
+            (1, 3),
+            (2, 2),
+            (3, 1),
+            (4, 1),
+            (5, 0),
+            (6, 1),
+            (7, 1),
+            (8, 2),
+            (9, 3),
+            (9, 4),
+        ],
+    )
+    .with_size(NormalizedPosition::new(0.19, 0.19))
+    .with_shape(ZoneShape::Ring)
+    .co_located()
 }
 
 /// Lighting Node command packet IDs.

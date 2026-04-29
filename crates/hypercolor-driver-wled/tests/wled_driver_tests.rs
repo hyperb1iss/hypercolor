@@ -31,6 +31,7 @@ fn tracked_wled_device(ip: &str, hostname: &str, name: &str) -> DriverTrackedDev
                 led_count: 60,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgbw,
+                layout_hint: None,
             }],
             firmware_version: Some("0.15.0".to_owned()),
             capabilities: DeviceCapabilities {

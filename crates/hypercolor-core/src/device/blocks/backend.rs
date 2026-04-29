@@ -301,6 +301,7 @@ fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
             led_count,
             topology: DeviceTopologyHint::Matrix { rows, cols },
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         }],
         firmware_version: dev.firmware_version.clone(),
         capabilities: DeviceCapabilities {

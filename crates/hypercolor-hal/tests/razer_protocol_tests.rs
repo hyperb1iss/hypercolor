@@ -7,6 +7,7 @@ use hypercolor_hal::drivers::razer::{
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
+use hypercolor_types::spatial::LedTopology;
 use zerocopy::{FromZeros, IntoBytes};
 
 #[test]
@@ -62,6 +63,37 @@ fn protocol_version_transaction_id_mapping() {
     assert_eq!(RazerProtocolVersion::WirelessKb.transaction_id(), 0x9F);
     assert_eq!(RazerProtocolVersion::Special08.transaction_id(), 0x08);
     assert_eq!(RazerProtocolVersion::KrakenV4.transaction_id(), 0x60);
+}
+
+#[test]
+fn razer_specialized_protocols_expose_layout_hints() {
+    let basilisk_zones = build_basilisk_v3_protocol().zones();
+    let basilisk_hint = basilisk_zones[0]
+        .layout_hint
+        .as_ref()
+        .expect("Basilisk V3 should expose custom layout geometry");
+    assert_eq!(
+        basilisk_hint.size.map(|size| (size.x, size.y)),
+        Some((0.16, 0.18))
+    );
+    assert!(matches!(
+        basilisk_hint.topology,
+        Some(LedTopology::Custom { ref positions }) if positions.len() == 11
+    ));
+
+    let seiren_zones = build_seiren_v3_protocol().zones();
+    let seiren_hint = seiren_zones[0]
+        .layout_hint
+        .as_ref()
+        .expect("Seiren V3 should expose custom layout geometry");
+    assert_eq!(
+        seiren_hint.size.map(|size| (size.x, size.y)),
+        Some((0.2, 0.08))
+    );
+    assert!(matches!(
+        seiren_hint.topology,
+        Some(LedTopology::Custom { ref positions }) if positions.len() == 10
+    ));
 }
 
 #[test]

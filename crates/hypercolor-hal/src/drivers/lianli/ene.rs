@@ -667,6 +667,7 @@ impl Protocol for Ene6k77Protocol {
                 led_count: self.logical_zone_led_count(logical_channel),
                 topology: self.zone_topology(logical_channel),
                 color_format: self.variant.color_format(),
+                layout_hint: None,
             });
         }
 

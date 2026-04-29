@@ -119,6 +119,7 @@ pub fn build_device_info(
             led_count: 1,
             topology: panel.topology_hint(),
             color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
         })
         .collect();
     let panel_count = u32::try_from(zones.len()).unwrap_or(u32::MAX);

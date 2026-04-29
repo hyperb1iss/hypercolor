@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::spatial::{LedTopology, NormalizedPosition, ZoneShape};
+
 // ── DeviceId ──────────────────────────────────────────────────────────────
 
 /// Opaque, globally unique device identifier.
@@ -259,6 +261,83 @@ pub struct ZoneInfo {
 
     /// Wire-level color format for this zone.
     pub color_format: DeviceColorFormat,
+
+    /// Optional driver-provided spatial presentation hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_hint: Option<ZoneLayoutHint>,
+}
+
+/// Driver-owned spatial hint used when auto-generating or repairing layouts.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ZoneLayoutHint {
+    /// Rich topology to use instead of deriving one from [`DeviceTopologyHint`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<LedTopology>,
+
+    /// Preferred zone size in normalized canvas coordinates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<NormalizedPosition>,
+
+    /// Preferred editor shape for this zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<ZoneShape>,
+
+    /// Place this zone at the same center as sibling zones.
+    #[serde(default)]
+    pub co_located: bool,
+}
+
+impl ZoneLayoutHint {
+    /// Build a custom topology from integer grid coordinates.
+    #[must_use]
+    pub fn custom_grid(width: u32, height: u32, coordinates: &[(u32, u32)]) -> Self {
+        Self {
+            topology: Some(LedTopology::Custom {
+                positions: normalized_grid_positions(width, height, coordinates),
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// Set the preferred normalized zone size.
+    #[must_use]
+    pub const fn with_size(mut self, size: NormalizedPosition) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Set the preferred editor shape.
+    #[must_use]
+    pub fn with_shape(mut self, shape: ZoneShape) -> Self {
+        self.shape = Some(shape);
+        self
+    }
+
+    /// Place this zone at the same center as sibling zones.
+    #[must_use]
+    pub const fn co_located(mut self) -> Self {
+        self.co_located = true;
+        self
+    }
+}
+
+fn normalized_grid_positions(
+    width: u32,
+    height: u32,
+    coordinates: &[(u32, u32)],
+) -> Vec<NormalizedPosition> {
+    let x_divisor = f32::from(u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
+    let y_divisor = f32::from(u16::try_from(height.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
+
+    coordinates
+        .iter()
+        .map(|&(x, y)| {
+            NormalizedPosition::new(
+                f32::from(u16::try_from(x).unwrap_or(u16::MAX)) / x_divisor,
+                f32::from(u16::try_from(y).unwrap_or(u16::MAX)) / y_divisor,
+            )
+        })
+        .collect()
 }
 
 // ── DeviceTopologyHint ────────────────────────────────────────────────────
