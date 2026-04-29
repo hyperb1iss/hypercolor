@@ -90,6 +90,25 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
 }
 
 #[test]
+fn host_transport_scanner_factory_handles_known_and_unknown_targets() {
+    let registry = DriverModuleRegistry::new();
+    let config = HypercolorConfig::default();
+
+    let usb = network::host_transport_scanner("usb", &registry, &config)
+        .expect("usb host scanner should be built");
+    assert_eq!(usb.name(), "USB HAL");
+
+    let smbus = network::host_transport_scanner("smbus", &registry, &config)
+        .expect("smbus host scanner should be built");
+    assert_eq!(smbus.name(), "SMBus HAL");
+
+    assert!(
+        network::host_transport_scanner("unknown", &registry, &config).is_none(),
+        "unknown host discovery targets should not build scanners"
+    );
+}
+
+#[test]
 #[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_honor_driver_config_entries() {
     let state = AppState::new();

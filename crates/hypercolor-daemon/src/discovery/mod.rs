@@ -140,9 +140,7 @@ pub struct DiscoveryRuntime {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum DiscoveryTargetScanner {
     DriverModule,
-    Usb,
-    SmBus,
-    Blocks,
+    HostTransport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -169,7 +167,7 @@ struct HostDiscoveryTargetDescriptor {
 static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     HostDiscoveryTargetDescriptor {
         id: "usb",
-        scanner: DiscoveryTargetScanner::Usb,
+        scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: false,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
@@ -179,7 +177,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     },
     HostDiscoveryTargetDescriptor {
         id: "smbus",
-        scanner: DiscoveryTargetScanner::SmBus,
+        scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: true,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
@@ -189,7 +187,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     },
     HostDiscoveryTargetDescriptor {
         id: "blocks",
-        scanner: DiscoveryTargetScanner::Blocks,
+        scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: false,
         availability: DiscoveryTargetAvailability::BlocksScan {
             disabled_message: "Discovery target 'blocks' is disabled by config (discovery.blocks_scan=false)",

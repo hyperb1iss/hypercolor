@@ -4,15 +4,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use hypercolor_core::device::{
-    BlocksScanner, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, SmBusScanner,
-    TransportScanner, UsbScanner,
+    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, TransportScanner,
 };
 use hypercolor_driver_api::{
     DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, DriverModule,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::{DeviceId, DeviceState, DriverModuleKind};
+use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -239,24 +238,15 @@ pub async fn execute_discovery_scan(
                     },
                 )));
             }
-            DiscoveryTargetScanner::Usb => {
-                orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
-                    network::enabled_module_ids(
-                        driver_registry.as_ref(),
-                        &config,
-                        DriverModuleKind::Hal,
-                    ),
-                )));
-            }
-            DiscoveryTargetScanner::SmBus => {
-                orchestrator.add_scanner(Box::new(SmBusScanner::new()));
-            }
-            DiscoveryTargetScanner::Blocks => {
-                let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
-                    hypercolor_core::device::BlocksBackend::default_socket_path,
-                    std::path::PathBuf::from,
-                );
-                orchestrator.add_scanner(Box::new(BlocksScanner::new(socket_path)));
+            DiscoveryTargetScanner::HostTransport => {
+                let target_id = target.as_str();
+                let Some(scanner) =
+                    network::host_transport_scanner(target_id, driver_registry.as_ref(), &config)
+                else {
+                    warn!(target_id, "skipping unknown host discovery target");
+                    continue;
+                };
+                orchestrator.add_scanner(scanner);
             }
         }
     }

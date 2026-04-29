@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::device::{
-    BackendManager, BlocksBackend, SmBusBackend, UsbBackend, UsbProtocolConfigStore,
+    BackendManager, BlocksBackend, BlocksScanner, SmBusBackend, SmBusScanner, TransportScanner,
+    UsbBackend, UsbProtocolConfigStore, UsbScanner,
 };
 #[cfg(not(feature = "builtin-drivers"))]
 use hypercolor_driver_api::CredentialStore;
@@ -295,4 +296,28 @@ pub fn register_enabled_device_backends(
     ));
 
     Ok(())
+}
+
+/// Build one host-owned transport scanner by public discovery target id.
+#[must_use]
+pub fn host_transport_scanner(
+    target_id: &str,
+    registry: &DriverModuleRegistry,
+    config: &HypercolorConfig,
+) -> Option<Box<dyn TransportScanner>> {
+    match target_id {
+        "usb" => Some(Box::new(UsbScanner::with_enabled_driver_ids(
+            enabled_module_ids(registry, config, DriverModuleKind::Hal),
+        ))),
+        "smbus" => Some(Box::new(SmBusScanner::new())),
+        "blocks" => {
+            let socket_path = config
+                .discovery
+                .blocks_socket_path
+                .as_ref()
+                .map_or_else(BlocksBackend::default_socket_path, std::path::PathBuf::from);
+            Some(Box::new(BlocksScanner::new(socket_path)))
+        }
+        _ => None,
+    }
 }
