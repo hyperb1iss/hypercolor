@@ -10,7 +10,7 @@ use crate::state::{
 };
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
-    ControlValue as DynamicControlValue,
+    ControlValue as DynamicControlValue, ControlValueMap as DynamicControlValueMap,
 };
 
 /// Every state change in the TUI flows through an Action.
@@ -123,6 +123,7 @@ pub enum Action {
         device_id: String,
         surface_id: String,
         action_id: String,
+        input: DynamicControlValueMap,
     },
     /// Dynamic control-surface action completed for one device.
     DeviceControlActionInvoked {

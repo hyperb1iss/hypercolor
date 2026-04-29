@@ -1,6 +1,6 @@
 //! App — the central coordinator and main event loop.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -899,15 +899,17 @@ impl App {
                 device_id,
                 surface_id,
                 action_id,
+                input,
             } => {
                 self.spawn_actions({
                     let client = self.client.clone();
                     let device_id = device_id.clone();
                     let surface_id = surface_id.clone();
                     let action_id = action_id.clone();
+                    let input = input.clone();
                     async move {
                         match client
-                            .invoke_control_action(&surface_id, &action_id, BTreeMap::default())
+                            .invoke_control_action(&surface_id, &action_id, input)
                             .await
                         {
                             Ok(result) => {

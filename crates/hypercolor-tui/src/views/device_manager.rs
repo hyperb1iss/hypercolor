@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKin
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
     ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope,
-    ControlValue, ControlValueType,
+    ControlValue, ControlValueMap, ControlValueType,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -352,6 +352,7 @@ impl DeviceManagerView {
             }
             InteractiveControlKind::Action {
                 action_id,
+                input,
                 confirmation_level,
                 confirmation_message,
             } if direction >= 0 => {
@@ -369,6 +370,7 @@ impl DeviceManagerView {
                     device_id,
                     surface_id: target.surface_id,
                     action_id,
+                    input,
                 })
             }
             InteractiveControlKind::Action { .. } => {
@@ -404,23 +406,25 @@ impl DeviceManagerView {
                 let actions = surface
                     .actions
                     .iter()
-                    .filter(|action| {
-                        action.input_fields.is_empty() && action_is_available(surface, action)
-                    })
-                    .map(|action| InteractiveControlTarget {
-                        surface_id: surface.surface_id.clone(),
-                        revision: surface.revision,
-                        kind: InteractiveControlKind::Action {
-                            action_id: action.id.clone(),
-                            confirmation_level: action
-                                .confirmation
-                                .as_ref()
-                                .map(|confirmation| confirmation.level),
-                            confirmation_message: action
-                                .confirmation
-                                .as_ref()
-                                .map(|confirmation| confirmation.message.clone()),
-                        },
+                    .filter(|action| action_is_available(surface, action))
+                    .filter_map(|action| {
+                        let input = default_action_input(action)?;
+                        Some(InteractiveControlTarget {
+                            surface_id: surface.surface_id.clone(),
+                            revision: surface.revision,
+                            kind: InteractiveControlKind::Action {
+                                action_id: action.id.clone(),
+                                input,
+                                confirmation_level: action
+                                    .confirmation
+                                    .as_ref()
+                                    .map(|confirmation| confirmation.level),
+                                confirmation_message: action
+                                    .confirmation
+                                    .as_ref()
+                                    .map(|confirmation| confirmation.message.clone()),
+                            },
+                        })
                     });
                 fields.chain(actions).collect::<Vec<_>>()
             })
@@ -686,6 +690,7 @@ enum InteractiveControlKind {
     },
     Action {
         action_id: String,
+        input: ControlValueMap,
         confirmation_level: Option<ActionConfirmationLevel>,
         confirmation_message: Option<String>,
     },
@@ -959,6 +964,18 @@ fn action_is_available(surface: &ControlSurfaceDocument, action: &ControlActionD
         .action_availability
         .get(&action.id)
         .is_none_or(|availability| availability.state == ControlAvailabilityState::Available)
+}
+
+fn default_action_input(action: &ControlActionDescriptor) -> Option<ControlValueMap> {
+    let mut input = ControlValueMap::new();
+    for field in &action.input_fields {
+        if let Some(value) = field.default_value.clone() {
+            input.insert(field.id.clone(), value);
+        } else if field.required {
+            return None;
+        }
+    }
+    Some(input)
 }
 
 fn confirmation_notice(level: Option<ActionConfirmationLevel>, message: &str) -> String {

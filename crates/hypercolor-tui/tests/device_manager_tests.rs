@@ -7,7 +7,8 @@ use hypercolor_tui::state::DeviceSummary;
 use hypercolor_tui::views::DeviceManagerView;
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyImpact, ControlActionDescriptor,
-    ControlAvailabilityExpr, ControlOwner, ControlSurfaceDocument, ControlSurfaceScope,
+    ControlAvailabilityExpr, ControlObjectField, ControlOwner, ControlSurfaceDocument,
+    ControlSurfaceScope, ControlValue, ControlValueType,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -30,10 +31,12 @@ fn confirmed_device_action_requires_second_enter() {
             device_id,
             surface_id,
             action_id,
+            input,
         }) => {
             assert_eq!(device_id, DEVICE_ID);
             assert_eq!(surface_id, format!("driver:wled:device:{DEVICE_ID}"));
             assert_eq!(action_id, "factory_reset");
+            assert!(input.is_empty());
         }
         other => panic!("expected confirmed action invocation, got {other:?}"),
     }
@@ -54,7 +57,33 @@ fn unconfirmed_device_action_invokes_on_first_enter() {
     }
 }
 
+#[test]
+fn action_with_default_input_invokes_with_default_values() {
+    let mut view = loaded_device_manager_with_surface(control_surface_with_default_input());
+
+    let action = view
+        .handle_key_event(enter_key())
+        .expect("enter should be handled");
+    match action {
+        Some(Action::InvokeDeviceControlAction {
+            action_id, input, ..
+        }) => {
+            assert_eq!(action_id, "identify");
+            assert_eq!(
+                input.get("duration_ms"),
+                Some(&ControlValue::DurationMs(3000))
+            );
+            assert!(!input.contains_key("color"));
+        }
+        other => panic!("expected action invocation, got {other:?}"),
+    }
+}
+
 fn loaded_device_manager(requires_confirmation: bool) -> DeviceManagerView {
+    loaded_device_manager_with_surface(control_surface(requires_confirmation))
+}
+
+fn loaded_device_manager_with_surface(surface: ControlSurfaceDocument) -> DeviceManagerView {
     let mut view = DeviceManagerView::new();
     let devices = Arc::new(vec![DeviceSummary {
         id: DEVICE_ID.to_owned(),
@@ -68,7 +97,7 @@ fn loaded_device_manager(requires_confirmation: bool) -> DeviceManagerView {
         .expect("devices should update");
     view.update(&Action::DeviceControlSurfacesUpdated {
         device_id: DEVICE_ID.to_owned(),
-        surfaces: Arc::new(vec![control_surface(requires_confirmation)]),
+        surfaces: Arc::new(vec![surface]),
     })
     .expect("control surfaces should update");
     view
@@ -97,6 +126,44 @@ fn control_surface(requires_confirmation: bool) -> ControlSurfaceDocument {
             message: "This resets the device".to_owned(),
         }),
         apply_impact: ApplyImpact::DeviceReconnect,
+        availability: ControlAvailabilityExpr::Always,
+        ordering: 0,
+    });
+    surface
+}
+
+fn control_surface_with_default_input() -> ControlSurfaceDocument {
+    let mut surface = control_surface(false);
+    surface.actions.clear();
+    surface.actions.push(ControlActionDescriptor {
+        id: "identify".to_owned(),
+        owner: ControlOwner::Host,
+        group_id: None,
+        label: "Identify".to_owned(),
+        description: None,
+        input_fields: vec![
+            ControlObjectField {
+                id: "duration_ms".to_owned(),
+                label: "Duration".to_owned(),
+                value_type: ControlValueType::DurationMs {
+                    min: Some(1),
+                    max: Some(120_000),
+                    step: Some(100),
+                },
+                required: false,
+                default_value: Some(ControlValue::DurationMs(3000)),
+            },
+            ControlObjectField {
+                id: "color".to_owned(),
+                label: "Color".to_owned(),
+                value_type: ControlValueType::ColorRgb,
+                required: false,
+                default_value: None,
+            },
+        ],
+        result_type: None,
+        confirmation: None,
+        apply_impact: ApplyImpact::Live,
         availability: ControlAvailabilityExpr::Always,
         ordering: 0,
     });
