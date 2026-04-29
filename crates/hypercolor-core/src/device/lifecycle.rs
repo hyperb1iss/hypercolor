@@ -520,9 +520,9 @@ impl DeviceLifecycleManager {
                 };
             }
             if let Some(rest) = value.strip_prefix("net:") {
-                let backend_prefix = format!("{backend_id}:");
+                let owner_prefix = format!("{}:", Self::layout_owner_id(backend_id, device_info));
                 let mdns_hostname = rest
-                    .strip_prefix(&backend_prefix)
+                    .strip_prefix(&owner_prefix)
                     .map(ToOwned::to_owned)
                     .or_else(|| Some(device_info.name.clone()));
                 return DeviceIdentifier::Network {
