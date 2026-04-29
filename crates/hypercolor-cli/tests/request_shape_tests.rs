@@ -276,6 +276,10 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
+            "/api/v1/devices/{device}/controls",
+            get(device_control_surface),
+        )
+        .route(
             "/api/v1/control-surfaces/{surface_id}/values",
             patch(capture_device_control_patch),
         )
@@ -332,6 +336,10 @@ async fn devices_action_targets_device_surface() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
+        .route(
+            "/api/v1/devices/{device}/controls",
+            get(device_control_surface),
+        )
         .route(
             "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
             post(capture_device_control_action),
@@ -640,6 +648,29 @@ async fn capture_device_control_patch(
                     "value": "grb"
                 }
             }
+        }
+    }))
+}
+
+async fn device_control_surface(Path(device): Path<String>) -> Json<serde_json::Value> {
+    assert_eq!(device, test_device_id());
+    Json(serde_json::json!({
+        "data": {
+            "surface_id": format!("device:{}", test_device_id()),
+            "scope": {
+                "device": {
+                    "device_id": test_device_id(),
+                    "driver_id": "host"
+                }
+            },
+            "schema_version": 1,
+            "revision": 2,
+            "groups": [],
+            "fields": [],
+            "actions": [],
+            "values": {},
+            "availability": {},
+            "action_availability": {}
         }
     }))
 }

@@ -352,7 +352,7 @@ async fn execute_set_control(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = device_surface_id(&args.device);
+    let surface_id = device_control_surface_id(client, &args.device).await?;
     let assignment = format!("{}={}", args.field, args.value);
     let changes = controls::assignments_to_changes(&[assignment])?;
     let mut body = json!({
@@ -378,7 +378,7 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = device_surface_id(&args.device);
+    let surface_id = device_control_surface_id(client, &args.device).await?;
     let input = controls::assignments_to_map(&args.input)?;
     let response = client
         .post(
@@ -462,6 +462,9 @@ fn render_pair_response(
     Ok(())
 }
 
-fn device_surface_id(device_id: &str) -> String {
-    format!("device:{device_id}")
+async fn device_control_surface_id(client: &DaemonClient, device: &str) -> Result<String> {
+    let surface = client
+        .get(&format!("/devices/{}/controls", urlencoded(device)))
+        .await?;
+    Ok(extract_str(&surface, "surface_id"))
 }
