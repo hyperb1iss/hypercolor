@@ -166,6 +166,10 @@ async fn drivers_set_control_targets_driver_surface() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
+            "/api/v1/drivers/{driver}/controls",
+            get(driver_control_surface),
+        )
+        .route(
             "/api/v1/control-surfaces/{surface_id}/values",
             patch(capture_control_patch),
         )
@@ -223,6 +227,10 @@ async fn drivers_action_targets_driver_surface() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
+        .route(
+            "/api/v1/drivers/{driver}/controls",
+            get(driver_control_surface),
+        )
         .route(
             "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
             post(capture_control_action),
@@ -600,6 +608,28 @@ async fn capture_control_patch(
                     "value": "ddp"
                 }
             }
+        }
+    }))
+}
+
+async fn driver_control_surface(Path(driver): Path<String>) -> Json<serde_json::Value> {
+    assert_eq!(driver, "wled");
+    Json(serde_json::json!({
+        "data": {
+            "surface_id": "driver:wled",
+            "scope": {
+                "driver": {
+                    "driver_id": "wled"
+                }
+            },
+            "schema_version": 1,
+            "revision": 3,
+            "groups": [],
+            "fields": [],
+            "actions": [],
+            "values": {},
+            "availability": {},
+            "action_availability": {}
         }
     }))
 }

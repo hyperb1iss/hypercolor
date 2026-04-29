@@ -132,7 +132,7 @@ async fn execute_set_control(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = driver_surface_id(&args.driver);
+    let surface_id = driver_control_surface_id(client, &args.driver).await?;
     let assignment = format!("{}={}", args.field, args.value);
     let changes = controls::assignments_to_changes(&[assignment])?;
     let mut body = json!({
@@ -158,7 +158,7 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = driver_surface_id(&args.driver);
+    let surface_id = driver_control_surface_id(client, &args.driver).await?;
     let input = controls::assignments_to_map(&args.input)?;
     let response = client
         .post(
@@ -189,8 +189,11 @@ fn driver_row(driver: &Value, ctx: &OutputContext) -> Vec<String> {
     ]
 }
 
-fn driver_surface_id(driver_id: &str) -> String {
-    format!("driver:{driver_id}")
+async fn driver_control_surface_id(client: &DaemonClient, driver: &str) -> Result<String> {
+    let surface = client
+        .get(&format!("/drivers/{}/controls", urlencoded(driver)))
+        .await?;
+    Ok(extract_str(&surface, "surface_id"))
 }
 
 fn descriptor_field(driver: &Value, key: &str) -> String {
