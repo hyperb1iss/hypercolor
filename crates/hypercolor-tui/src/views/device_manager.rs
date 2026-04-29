@@ -5,9 +5,9 @@ use std::cell::Cell as StdCell;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use hypercolor_types::controls::{
-    ControlAccess, ControlActionDescriptor, ControlAvailabilityState, ControlFieldDescriptor,
-    ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
-    ControlValueType,
+    ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
+    ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope,
+    ControlValue, ControlValueType,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -38,6 +38,8 @@ pub struct DeviceManagerView {
     surfaces: Vec<ControlSurfaceDocument>,
     loading_device_id: Option<String>,
     error: Option<String>,
+    pending_confirmation: Option<ControlKey>,
+    confirmation_notice: Option<String>,
     devices_rect: StdCell<Rect>,
     devices_scroll: StdCell<usize>,
     controls_rect: StdCell<Rect>,
@@ -63,6 +65,8 @@ impl DeviceManagerView {
             surfaces: Vec::new(),
             loading_device_id: None,
             error: None,
+            pending_confirmation: None,
+            confirmation_notice: None,
             devices_rect: StdCell::new(Rect::default()),
             devices_scroll: StdCell::new(0),
             controls_rect: StdCell::new(Rect::default()),
@@ -78,7 +82,13 @@ impl DeviceManagerView {
         let device_id = self.selected_device()?.id.clone();
         self.loading_device_id = Some(device_id.clone());
         self.error = None;
+        self.clear_pending_confirmation();
         Some(Action::LoadDeviceControls(device_id))
+    }
+
+    fn clear_pending_confirmation(&mut self) {
+        self.pending_confirmation = None;
+        self.confirmation_notice = None;
     }
 
     fn render_devices(&self, frame: &mut Frame, area: Rect) {
@@ -189,7 +199,7 @@ impl DeviceManagerView {
         }
 
         let selected = self.selected_control_key();
-        let lines =
+        let mut lines =
             control_surface_lines(&self.surfaces, usize::from(inner.width), selected.as_ref());
         if lines.is_empty() {
             frame.render_widget(
@@ -197,6 +207,16 @@ impl DeviceManagerView {
                 inner,
             );
             return;
+        }
+        if let Some(notice) = &self.confirmation_notice {
+            lines.insert(0, Line::default());
+            lines.insert(
+                0,
+                Line::from(vec![
+                    Span::styled("  Confirm  ", Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(notice.clone(), Style::default().fg(BASE_WHITE)),
+                ]),
+            );
         }
 
         let max_scroll = lines.len().saturating_sub(usize::from(inner.height));
@@ -235,6 +255,7 @@ impl DeviceManagerView {
         self.selected_device = index;
         self.controls_scroll.set(0);
         self.selected_control = 0;
+        self.clear_pending_confirmation();
         self.request_selected_controls()
     }
 
@@ -288,6 +309,7 @@ impl DeviceManagerView {
             return None;
         }
         self.selected_control = (self.selected_control + 1) % count;
+        self.clear_pending_confirmation();
         Some(Action::Render)
     }
 
@@ -301,21 +323,24 @@ impl DeviceManagerView {
         } else {
             self.selected_control - 1
         };
+        self.clear_pending_confirmation();
         Some(Action::Render)
     }
 
-    fn apply_selected_control_delta(&self, direction: i8) -> Option<Action> {
+    fn apply_selected_control_delta(&mut self, direction: i8) -> Option<Action> {
         let device_id = self.selected_device()?.id.clone();
         let target = self
             .interactive_control_targets()
             .get(self.selected_control)
             .cloned()?;
+        let key = target.key();
         match target.kind {
             InteractiveControlKind::Field {
                 field_id,
                 value_type,
                 value,
             } => {
+                self.clear_pending_confirmation();
                 let value = next_control_value(&value_type, &value, direction)?;
                 Some(Action::ApplyDeviceControlChange {
                     device_id,
@@ -325,14 +350,31 @@ impl DeviceManagerView {
                     value,
                 })
             }
-            InteractiveControlKind::Action { action_id } if direction >= 0 => {
+            InteractiveControlKind::Action {
+                action_id,
+                confirmation_level,
+                confirmation_message,
+            } if direction >= 0 => {
+                if let Some(message) = confirmation_message
+                    && self.pending_confirmation.as_ref() != Some(&key)
+                {
+                    self.pending_confirmation = Some(key);
+                    self.confirmation_notice =
+                        Some(confirmation_notice(confirmation_level, &message));
+                    self.controls_scroll.set(0);
+                    return Some(Action::Render);
+                }
+                self.clear_pending_confirmation();
                 Some(Action::InvokeDeviceControlAction {
                     device_id,
                     surface_id: target.surface_id,
                     action_id,
                 })
             }
-            InteractiveControlKind::Action { .. } => None,
+            InteractiveControlKind::Action { .. } => {
+                self.clear_pending_confirmation();
+                None
+            }
         }
     }
 
@@ -370,6 +412,14 @@ impl DeviceManagerView {
                         revision: surface.revision,
                         kind: InteractiveControlKind::Action {
                             action_id: action.id.clone(),
+                            confirmation_level: action
+                                .confirmation
+                                .as_ref()
+                                .map(|confirmation| confirmation.level),
+                            confirmation_message: action
+                                .confirmation
+                                .as_ref()
+                                .map(|confirmation| confirmation.message.clone()),
                         },
                     });
                 fields.chain(actions).collect::<Vec<_>>()
@@ -476,6 +526,7 @@ impl Component for DeviceManagerView {
                     self.loaded_device_id = Some(device_id.clone());
                     self.loading_device_id = None;
                     self.error = None;
+                    self.clear_pending_confirmation();
                     self.surfaces.clone_from(surfaces);
                     self.selected_control = self
                         .selected_control
@@ -493,6 +544,7 @@ impl Component for DeviceManagerView {
                     self.surfaces.clear();
                     self.selected_control = 0;
                     self.error = Some(error.clone());
+                    self.clear_pending_confirmation();
                     self.controls_scroll.set(0);
                 }
             }
@@ -511,6 +563,7 @@ impl Component for DeviceManagerView {
                     surface.revision = response.revision;
                     surface.values.clone_from(&response.values);
                     self.error = None;
+                    self.clear_pending_confirmation();
                     self.selected_control = self
                         .selected_control
                         .min(self.interactive_control_targets().len().saturating_sub(1));
@@ -524,6 +577,7 @@ impl Component for DeviceManagerView {
                     .is_some_and(|device| &device.id == device_id)
                 {
                     self.error = Some(error.clone());
+                    self.clear_pending_confirmation();
                 }
             }
             Action::DeviceControlActionInvoked { device_id, .. } => {
@@ -532,6 +586,7 @@ impl Component for DeviceManagerView {
                     .is_some_and(|device| &device.id == device_id)
                 {
                     self.error = None;
+                    self.clear_pending_confirmation();
                 }
             }
             Action::DeviceControlSurfaceRefreshed { device_id, surface } => {
@@ -549,6 +604,7 @@ impl Component for DeviceManagerView {
                         self.surfaces.push(surface.as_ref().clone());
                     }
                     self.error = None;
+                    self.clear_pending_confirmation();
                     self.selected_control = self
                         .selected_control
                         .min(self.interactive_control_targets().len().saturating_sub(1));
@@ -562,6 +618,7 @@ impl Component for DeviceManagerView {
                     .is_some_and(|device| &device.id == device_id)
                 {
                     self.error = Some(error.clone());
+                    self.clear_pending_confirmation();
                 }
             }
             _ => {}
@@ -611,7 +668,7 @@ impl InteractiveControlTarget {
                 item_id: field_id.clone(),
                 kind: ControlKeyKind::Field,
             },
-            InteractiveControlKind::Action { action_id } => ControlKey {
+            InteractiveControlKind::Action { action_id, .. } => ControlKey {
                 surface_id: self.surface_id.clone(),
                 item_id: action_id.clone(),
                 kind: ControlKeyKind::Action,
@@ -629,6 +686,8 @@ enum InteractiveControlKind {
     },
     Action {
         action_id: String,
+        confirmation_level: Option<ActionConfirmationLevel>,
+        confirmation_message: Option<String>,
     },
 }
 
@@ -774,15 +833,35 @@ fn append_items(
         let marker = if selected { "\u{25B8} " } else { "  " };
         let style = if selected {
             Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+        } else if action.confirmation.is_some() {
+            Style::default()
+                .fg(ELECTRIC_YELLOW)
+                .add_modifier(Modifier::BOLD)
         } else if action.input_fields.is_empty() {
             Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(BASE_WHITE)
         };
+        let action_marker = match action
+            .confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.level)
+        {
+            Some(ActionConfirmationLevel::Destructive) => "! ",
+            Some(ActionConfirmationLevel::HardwarePersistent | ActionConfirmationLevel::Normal) => {
+                "? "
+            }
+            None => "\u{25B9} ",
+        };
+        let marker_style = if action.confirmation.is_some() {
+            Style::default().fg(ELECTRIC_YELLOW)
+        } else {
+            Style::default().fg(CORAL)
+        };
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(marker, Style::default().fg(NEON_CYAN)),
-            Span::styled("\u{25B9} ", Style::default().fg(CORAL)),
+            Span::styled(action_marker, marker_style),
             Span::styled(action.label.clone(), style),
         ]));
     }
@@ -880,6 +959,15 @@ fn action_is_available(surface: &ControlSurfaceDocument, action: &ControlActionD
         .action_availability
         .get(&action.id)
         .is_none_or(|availability| availability.state == ControlAvailabilityState::Available)
+}
+
+fn confirmation_notice(level: Option<ActionConfirmationLevel>, message: &str) -> String {
+    let prefix = match level {
+        Some(ActionConfirmationLevel::Destructive) => "Destructive action",
+        Some(ActionConfirmationLevel::HardwarePersistent) => "Hardware write",
+        Some(ActionConfirmationLevel::Normal) | None => "Action",
+    };
+    format!("{prefix}: {message}. Press Enter again to run.")
 }
 
 fn surface_title(surface: &ControlSurfaceDocument) -> String {
