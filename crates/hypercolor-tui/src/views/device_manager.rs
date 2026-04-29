@@ -1091,3 +1091,26 @@ fn truncate(value: &str, max_len: usize) -> String {
 fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
     col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
 }
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::controls::ControlValue;
+
+    use super::control_value_summary;
+
+    #[test]
+    fn control_value_summary_hides_secret_refs() {
+        assert_eq!(
+            control_value_summary(&ControlValue::SecretRef("driver-owned-secret".to_owned())),
+            "configured"
+        );
+    }
+
+    #[test]
+    fn control_value_summary_marks_unknown_values_unsupported() {
+        assert_eq!(
+            control_value_summary(&ControlValue::Unknown),
+            "unsupported value"
+        );
+    }
+}
