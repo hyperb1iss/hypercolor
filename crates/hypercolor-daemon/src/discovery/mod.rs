@@ -145,12 +145,65 @@ pub(super) enum DiscoveryTargetKind {
     Blocks,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DiscoveryTargetAvailability {
+    DriverModule,
+    BlocksScan {
+        disabled_message: &'static str,
+    },
+    EnabledModules {
+        module_kind: DriverModuleKind,
+        transport: Option<DriverTransportKind>,
+        disabled_message: &'static str,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct HostDiscoveryTargetDescriptor {
+    id: &'static str,
+    kind: DiscoveryTargetKind,
+    preserves_renderable_on_miss: bool,
+    availability: DiscoveryTargetAvailability,
+}
+
+static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
+    HostDiscoveryTargetDescriptor {
+        id: "usb",
+        kind: DiscoveryTargetKind::Usb,
+        preserves_renderable_on_miss: false,
+        availability: DiscoveryTargetAvailability::EnabledModules {
+            module_kind: DriverModuleKind::Hal,
+            transport: None,
+            disabled_message: "Discovery target 'usb' has no enabled HAL driver modules",
+        },
+    },
+    HostDiscoveryTargetDescriptor {
+        id: "smbus",
+        kind: DiscoveryTargetKind::SmBus,
+        preserves_renderable_on_miss: true,
+        availability: DiscoveryTargetAvailability::EnabledModules {
+            module_kind: DriverModuleKind::Hal,
+            transport: Some(DriverTransportKind::Smbus),
+            disabled_message: "Discovery target 'smbus' has no enabled SMBus HAL driver modules",
+        },
+    },
+    HostDiscoveryTargetDescriptor {
+        id: "blocks",
+        kind: DiscoveryTargetKind::Blocks,
+        preserves_renderable_on_miss: false,
+        availability: DiscoveryTargetAvailability::BlocksScan {
+            disabled_message: "Discovery target 'blocks' is disabled by config (discovery.blocks_scan=false)",
+        },
+    },
+];
+
 /// Opaque discovery target resolved from driver modules and host transports.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DiscoveryTarget {
     id: String,
     kind: DiscoveryTargetKind,
     preserves_renderable_on_miss: bool,
+    availability: DiscoveryTargetAvailability,
 }
 
 impl DiscoveryTarget {
@@ -161,37 +214,26 @@ impl DiscoveryTarget {
             id: id.into(),
             kind: DiscoveryTargetKind::Driver,
             preserves_renderable_on_miss: false,
+            availability: DiscoveryTargetAvailability::DriverModule,
         }
     }
 
     /// Create the host USB discovery target.
     #[must_use]
     pub fn usb() -> Self {
-        Self {
-            id: "usb".to_owned(),
-            kind: DiscoveryTargetKind::Usb,
-            preserves_renderable_on_miss: false,
-        }
+        Self::host("usb").expect("usb discovery target descriptor should exist")
     }
 
     /// Create the host SMBus discovery target.
     #[must_use]
     pub fn smbus() -> Self {
-        Self {
-            id: "smbus".to_owned(),
-            kind: DiscoveryTargetKind::SmBus,
-            preserves_renderable_on_miss: true,
-        }
+        Self::host("smbus").expect("smbus discovery target descriptor should exist")
     }
 
     /// Create the host Blocks bridge discovery target.
     #[must_use]
     pub fn blocks() -> Self {
-        Self {
-            id: "blocks".to_owned(),
-            kind: DiscoveryTargetKind::Blocks,
-            preserves_renderable_on_miss: false,
-        }
+        Self::host("blocks").expect("blocks discovery target descriptor should exist")
     }
 
     /// Stable discovery target identifier used in request/response payloads.
@@ -210,16 +252,33 @@ impl DiscoveryTarget {
         &self.kind
     }
 
+    fn availability(&self) -> &DiscoveryTargetAvailability {
+        &self.availability
+    }
+
+    fn host(id: &str) -> Option<Self> {
+        HOST_DISCOVERY_TARGETS
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .map(Self::from_host_descriptor)
+    }
+
+    fn from_host_descriptor(descriptor: &HostDiscoveryTargetDescriptor) -> Self {
+        Self {
+            id: descriptor.id.to_owned(),
+            kind: descriptor.kind.clone(),
+            preserves_renderable_on_miss: descriptor.preserves_renderable_on_miss,
+            availability: descriptor.availability.clone(),
+        }
+    }
+
     fn parse(raw: &str, registry: &DriverModuleRegistry) -> Option<Self> {
-        match raw {
-            "usb" => Some(Self::usb()),
-            "smbus" => Some(Self::smbus()),
-            "blocks" => Some(Self::blocks()),
-            _ => registry
+        Self::host(raw).or_else(|| {
+            registry
                 .get(raw)
                 .filter(|driver| driver.discovery().is_some())
-                .map(|_| Self::driver(raw)),
-        }
+                .map(|_| Self::driver(raw))
+        })
     }
 
     /// All discovery targets compiled into this daemon binary.
@@ -229,7 +288,11 @@ impl DiscoveryTarget {
             .into_iter()
             .map(|driver| Self::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
-        targets.extend([Self::usb(), Self::smbus(), Self::blocks()]);
+        targets.extend(
+            HOST_DISCOVERY_TARGETS
+                .iter()
+                .map(Self::from_host_descriptor),
+        );
         targets
     }
 }
@@ -302,8 +365,8 @@ pub fn resolve_targets(
             continue;
         }
 
-        match target.kind() {
-            DiscoveryTargetKind::Driver => {
+        match target.availability() {
+            DiscoveryTargetAvailability::DriverModule => {
                 let driver_id = target.as_str();
                 let enabled = driver_registry.get(driver_id).is_some_and(|driver| {
                     crate::network::module_enabled(config, &driver.module_descriptor())
@@ -318,47 +381,33 @@ pub fn resolve_targets(
                     continue;
                 }
             }
-            DiscoveryTargetKind::Blocks => {
+            DiscoveryTargetAvailability::BlocksScan { disabled_message } => {
                 if !config.discovery.blocks_scan {
                     if explicit_request {
-                        return Err(
-                            "Discovery target 'blocks' is disabled by config (discovery.blocks_scan=false)"
-                                .to_owned(),
-                        );
+                        return Err((*disabled_message).to_owned());
                     }
                     continue;
                 }
             }
-            DiscoveryTargetKind::Usb => {
-                if crate::network::enabled_module_ids(
-                    driver_registry,
-                    config,
-                    DriverModuleKind::Hal,
-                )
-                .is_empty()
-                {
+            DiscoveryTargetAvailability::EnabledModules {
+                module_kind,
+                transport,
+                disabled_message,
+            } => {
+                let enabled = transport.as_ref().map_or_else(
+                    || crate::network::enabled_module_ids(driver_registry, config, *module_kind),
+                    |transport| {
+                        crate::network::enabled_module_ids_for_transport(
+                            driver_registry,
+                            config,
+                            *module_kind,
+                            transport,
+                        )
+                    },
+                );
+                if enabled.is_empty() {
                     if explicit_request {
-                        return Err(
-                            "Discovery target 'usb' has no enabled HAL driver modules".to_owned()
-                        );
-                    }
-                    continue;
-                }
-            }
-            DiscoveryTargetKind::SmBus => {
-                if crate::network::enabled_module_ids_for_transport(
-                    driver_registry,
-                    config,
-                    DriverModuleKind::Hal,
-                    &DriverTransportKind::Smbus,
-                )
-                .is_empty()
-                {
-                    if explicit_request {
-                        return Err(
-                            "Discovery target 'smbus' has no enabled SMBus HAL driver modules"
-                                .to_owned(),
-                        );
+                        return Err((*disabled_message).to_owned());
                     }
                     continue;
                 }
@@ -618,6 +667,19 @@ mod tests {
         let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
             .expect_err("smbus must fail when all SMBus HAL modules are disabled");
         assert!(error.contains("no enabled SMBus HAL driver modules"));
+    }
+
+    #[test]
+    fn resolve_targets_rejects_disabled_blocks_scan() {
+        let state = builtin_registry();
+        let mut cfg = HypercolorConfig::default();
+        cfg.discovery.blocks_scan = false;
+        let requested = vec!["blocks".to_owned()];
+
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
+            .expect_err("blocks must fail when disabled");
+
+        assert!(error.contains("discovery.blocks_scan=false"));
     }
 
     #[test]
