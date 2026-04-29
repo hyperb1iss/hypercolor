@@ -155,7 +155,7 @@ impl DiscoveryWorkerContext {
 
         for attempt in 1..=STARTUP_NETWORK_RECOVERY_ATTEMPTS {
             let unmapped_by_driver = self
-                .active_layout_unmapped_network_targets(&latest_config)
+                .active_layout_unmapped_driver_targets(&latest_config)
                 .await;
             if unmapped_by_driver.is_empty() {
                 return;
@@ -178,7 +178,7 @@ impl DiscoveryWorkerContext {
                 retry_after_secs = STARTUP_NETWORK_RECOVERY_INTERVAL_SECS,
                 drivers = ?drivers,
                 unmapped_layout_device_ids = ?unmapped_layout_device_ids,
-                "Active layout still has unmapped network targets after startup scan; retrying discovery"
+                "Active layout still has unmapped driver targets after startup scan; retrying discovery"
             );
 
             tokio::time::sleep(std::time::Duration::from_secs(
@@ -189,13 +189,13 @@ impl DiscoveryWorkerContext {
             self.run_scan_if_idle(
                 Arc::clone(&latest_config),
                 targets,
-                "Skipping startup network recovery scan; discovery already in progress",
+                "Skipping startup driver recovery scan; discovery already in progress",
             )
             .await;
         }
 
         let unmapped_by_driver = self
-            .active_layout_unmapped_network_targets(&latest_config)
+            .active_layout_unmapped_driver_targets(&latest_config)
             .await;
         if !unmapped_by_driver.is_empty() {
             let drivers = unmapped_by_driver.keys().cloned().collect::<Vec<_>>();
@@ -209,12 +209,12 @@ impl DiscoveryWorkerContext {
                 drivers = ?drivers,
                 unmapped_layout_device_ids = ?unmapped_layout_device_ids,
                 scan_interval_secs = latest_config.discovery.scan_interval_secs.max(1),
-                "Startup recovery scans exhausted; active layout still has unmapped network targets"
+                "Startup recovery scans exhausted; active layout still has unmapped driver targets"
             );
         }
     }
 
-    async fn active_layout_unmapped_network_targets(
+    async fn active_layout_unmapped_driver_targets(
         &self,
         config: &HypercolorConfig,
     ) -> BTreeMap<String, Vec<String>> {
