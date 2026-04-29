@@ -3,6 +3,8 @@
 //! The daemon loads this crate as one local module bundle, keeping concrete
 //! built-in driver implementations out of daemon orchestration code.
 
+mod hal;
+
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -67,5 +69,16 @@ pub fn register_driver_modules(
         config.discovery.mdns_enabled,
     ))?;
 
+    for driver in hal::hal_catalog_driver_modules() {
+        registry.register(driver)?;
+    }
+
     Ok(())
+}
+
+/// Ensure config entries exist for compiled-in driver modules with dynamic catalogs.
+pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
+    for descriptor in hal::hal_module_descriptors() {
+        config.drivers.entry(descriptor.id.clone()).or_default();
+    }
 }

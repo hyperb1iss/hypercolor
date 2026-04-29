@@ -4,6 +4,7 @@ use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_builtin::build_driver_module_registry;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::device::DriverModuleKind;
 use tempfile::tempdir;
 
 #[test]
@@ -24,24 +25,37 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     assert!(ids.contains(&"hue".to_owned()));
     #[cfg(feature = "nanoleaf")]
     assert!(ids.contains(&"nanoleaf".to_owned()));
+    assert!(ids.contains(&"nollie".to_owned()));
+    assert!(ids.contains(&"prismrgb".to_owned()));
 
-    for id in ids {
-        let driver = registry.get(&id).expect("registered driver should resolve");
+    for driver_id in ["wled", "govee", "hue", "nanoleaf"] {
+        let Some(driver) = registry.get(driver_id) else {
+            continue;
+        };
         let descriptor = driver.module_descriptor();
-        assert!(
-            descriptor.capabilities.config,
-            "{id} should expose driver config capability"
-        );
-        assert!(
-            descriptor.capabilities.controls,
-            "{id} should expose driver controls capability"
-        );
+        assert!(descriptor.capabilities.config);
+        assert!(descriptor.capabilities.controls);
         driver
             .config()
             .expect("config provider should be present")
             .validate_config(&driver.config().expect("config provider").default_config())
             .expect("default config should validate");
     }
+
+    let nollie = registry
+        .get("nollie")
+        .expect("HAL catalog module should resolve");
+    let descriptor = nollie.module_descriptor();
+    assert_eq!(descriptor.module_kind, DriverModuleKind::Hal);
+    assert!(descriptor.capabilities.protocol_catalog);
+    assert!(!descriptor.capabilities.output_backend);
+    assert!(
+        !nollie
+            .protocol_catalog()
+            .expect("HAL module should expose protocol catalog")
+            .descriptors()
+            .is_empty()
+    );
 }
 
 #[test]

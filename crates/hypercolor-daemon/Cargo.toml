@@ -27,7 +27,6 @@ servo = ["hypercolor-core/servo"]
 [dependencies]
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
-hypercolor-hal = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false }
 hypercolor-network = { workspace = true }

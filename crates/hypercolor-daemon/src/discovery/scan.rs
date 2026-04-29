@@ -241,7 +241,7 @@ pub async fn execute_discovery_scan(
             }
             DiscoveryTargetKind::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::with_enabled_driver_ids(
-                    network::enabled_hal_driver_ids(&config),
+                    network::enabled_hal_driver_ids(driver_registry.as_ref(), &config),
                 )));
             }
             DiscoveryTargetKind::SmBus => {

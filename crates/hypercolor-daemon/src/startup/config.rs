@@ -92,7 +92,7 @@ pub fn parse_config_toml(toml_str: &str) -> Result<HypercolorConfig> {
 }
 
 pub(super) fn normalize_daemon_driver_configs(config: &mut HypercolorConfig) {
-    network::normalize_hal_driver_config_entries(config);
+    network::normalize_builtin_driver_config_entries(config);
 }
 
 pub(super) fn resolve_server_identity(config: &HypercolorConfig) -> Result<ServerIdentity> {

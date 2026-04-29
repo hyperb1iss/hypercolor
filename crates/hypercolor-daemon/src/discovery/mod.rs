@@ -330,7 +330,7 @@ pub fn resolve_targets(
                 }
             }
             DiscoveryTargetKind::Usb => {
-                if crate::network::enabled_hal_driver_ids(config).is_empty() {
+                if crate::network::enabled_hal_driver_ids(driver_registry, config).is_empty() {
                     if explicit_request {
                         return Err(
                             "Discovery target 'usb' has no enabled HAL driver modules".to_owned()
@@ -341,6 +341,7 @@ pub fn resolve_targets(
             }
             DiscoveryTargetKind::SmBus => {
                 if crate::network::enabled_hal_driver_ids_for_transport(
+                    driver_registry,
                     config,
                     &DriverTransportKind::Smbus,
                 )

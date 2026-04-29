@@ -601,6 +601,7 @@ impl DaemonState {
             };
         let scan_interval =
             std::time::Duration::from_secs(config.discovery.scan_interval_secs.max(1));
+        let driver_registry = Arc::clone(&self.driver_registry);
 
         self.discovery_task = Some(tokio::spawn(async move {
             let hotplug_monitor = UsbHotplugMonitor::new(256);
@@ -641,6 +642,7 @@ impl DaemonState {
                                 Ok(UsbHotplugEvent::Arrived { vendor_id, product_id, descriptor }) => {
                                     let driver_id = descriptor.driver_id();
                                     if crate::network::hal_driver_enabled(
+                                        driver_registry.as_ref(),
                                         &config,
                                         driver_id.as_ref(),
                                     ) {

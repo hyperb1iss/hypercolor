@@ -24,6 +24,7 @@ hypercolor-driver-govee = { workspace = true, optional = true }
 hypercolor-driver-hue = { workspace = true, optional = true }
 hypercolor-driver-nanoleaf = { workspace = true, optional = true }
 hypercolor-driver-wled = { workspace = true }
+hypercolor-hal = { workspace = true }
 hypercolor-network = { workspace = true }
 hypercolor-types = { workspace = true }
 anyhow = { workspace = true }

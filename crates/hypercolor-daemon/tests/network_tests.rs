@@ -91,30 +91,43 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
 
 #[test]
 fn enabled_hal_driver_ids_honor_driver_config_entries() {
+    let state = AppState::new();
     let mut config = HypercolorConfig::default();
     config.drivers.insert(
         "nollie".to_owned(),
         DriverConfigEntry::disabled(BTreeMap::new()),
     );
 
-    let enabled = network::enabled_hal_driver_ids(&config);
+    let enabled = network::enabled_hal_driver_ids(state.driver_registry.as_ref(), &config);
 
     assert!(!enabled.contains("nollie"));
     assert!(enabled.contains("prismrgb"));
-    assert!(network::hal_driver_enabled(&config, "prismrgb"));
-    assert!(!network::hal_driver_enabled(&config, "nollie"));
+    assert!(network::hal_driver_enabled(
+        state.driver_registry.as_ref(),
+        &config,
+        "prismrgb"
+    ));
+    assert!(!network::hal_driver_enabled(
+        state.driver_registry.as_ref(),
+        &config,
+        "nollie"
+    ));
 }
 
 #[test]
 fn enabled_hal_driver_ids_can_filter_by_transport() {
+    let state = AppState::new();
     let mut config = HypercolorConfig::default();
     config.drivers.insert(
         "asus".to_owned(),
         DriverConfigEntry::disabled(BTreeMap::new()),
     );
 
-    let enabled =
-        network::enabled_hal_driver_ids_for_transport(&config, &DriverTransportKind::Smbus);
+    let enabled = network::enabled_hal_driver_ids_for_transport(
+        state.driver_registry.as_ref(),
+        &config,
+        &DriverTransportKind::Smbus,
+    );
 
     assert!(!enabled.contains("asus"));
     assert!(enabled.is_empty());
@@ -122,7 +135,11 @@ fn enabled_hal_driver_ids_can_filter_by_transport() {
 
 #[test]
 fn enabled_hal_driver_ids_include_default_enabled_hal_modules() {
-    let enabled = network::enabled_hal_driver_ids(&HypercolorConfig::default());
+    let state = AppState::new();
+    let enabled = network::enabled_hal_driver_ids(
+        state.driver_registry.as_ref(),
+        &HypercolorConfig::default(),
+    );
 
     assert!(enabled.is_superset(&BTreeSet::from([
         "asus".to_owned(),
