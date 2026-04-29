@@ -3,12 +3,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverProtocolCatalog, DriverTransport, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider,
+    DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice, DriverDiscoveryState,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
+    DriverRuntimeActions, DriverTransport, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
     PairingFieldDescriptor, PairingFlowKind, ValidatedControlChanges, support,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
@@ -159,6 +161,130 @@ impl DriverControlProvider for ControlOnlyProvider {
     }
 }
 
+struct DefaultActionProvider;
+
+#[async_trait]
+impl DriverControlProvider for DefaultActionProvider {
+    async fn driver_surface(
+        &self,
+        host: &dyn DriverHost,
+        config: hypercolor_driver_api::DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        let _ = (host, config);
+        Ok(None)
+    }
+
+    async fn device_surface(
+        &self,
+        host: &dyn DriverHost,
+        device: &hypercolor_driver_api::TrackedDeviceCtx<'_>,
+    ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
+        let _ = (host, device);
+        Ok(None)
+    }
+
+    async fn validate_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: &[ControlChange],
+    ) -> anyhow::Result<ValidatedControlChanges> {
+        let _ = (host, target);
+        Ok(ValidatedControlChanges::new(changes.to_vec()))
+    }
+
+    async fn apply_changes(
+        &self,
+        host: &dyn DriverHost,
+        target: &ControlApplyTarget<'_>,
+        changes: ValidatedControlChanges,
+    ) -> anyhow::Result<ApplyControlChangesResponse> {
+        let _ = (host, target, changes);
+        unreachable!("apply is not exercised in default action tests")
+    }
+}
+
+struct NoopDriverHost;
+
+#[async_trait]
+impl DriverCredentialStore for NoopDriverHost {
+    async fn get_json(
+        &self,
+        driver_id: &str,
+        key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
+        Ok(None)
+    }
+
+    async fn set_json(
+        &self,
+        driver_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let _ = (driver_id, key, value);
+        Ok(())
+    }
+
+    async fn remove(&self, driver_id: &str, key: &str) -> anyhow::Result<()> {
+        let _ = (driver_id, key);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DriverRuntimeActions for NoopDriverHost {
+    async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> anyhow::Result<bool> {
+        let _ = (device_id, backend_id);
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        device_id: DeviceId,
+        backend_id: &str,
+        will_retry: bool,
+    ) -> anyhow::Result<bool> {
+        let _ = (device_id, backend_id, will_retry);
+        Ok(false)
+    }
+}
+
+#[async_trait]
+impl DriverDiscoveryState for NoopDriverHost {
+    async fn tracked_devices(
+        &self,
+        driver_id: &str,
+    ) -> Vec<hypercolor_driver_api::DriverTrackedDevice> {
+        let _ = driver_id;
+        Vec::new()
+    }
+
+    fn load_cached_json(
+        &self,
+        driver_id: &str,
+        key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
+        Ok(None)
+    }
+}
+
+impl DriverHost for NoopDriverHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        self
+    }
+
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        self
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        self
+    }
+}
+
 struct ControlOnlyDriver;
 
 static CONTROL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
@@ -267,6 +393,28 @@ fn driver_module_advertises_control_provider_capability() {
     assert!(!module.capabilities.credentials);
     assert!(!module.capabilities.output_backend);
     assert!(!module.capabilities.runtime_cache);
+}
+
+#[tokio::test]
+async fn control_provider_default_action_reports_unknown_action() {
+    let provider = DefaultActionProvider;
+    let host = NoopDriverHost;
+    let config_entry = DriverConfigEntry::default();
+    let config = hypercolor_driver_api::DriverConfigView {
+        driver_id: "default-action",
+        entry: &config_entry,
+    };
+    let target = ControlApplyTarget::Driver {
+        driver_id: "default-action",
+        config,
+    };
+
+    let error = provider
+        .invoke_action(&host, &target, "pulse", ControlValueMap::new())
+        .await
+        .expect_err("default action handler should reject unknown actions");
+
+    assert_eq!(error.to_string(), "unknown control action: pulse");
 }
 
 #[test]
