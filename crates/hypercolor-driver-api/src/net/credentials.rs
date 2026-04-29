@@ -9,7 +9,6 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
@@ -23,31 +22,11 @@ const STORE_FILE_NAME: &str = "credentials.json.enc";
 const SEED_FILE_NAME: &str = ".credential_seed";
 const NONCE_BYTES: usize = 12;
 
-/// Stored credentials for a device driver.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Credentials {
-    driver_id: String,
-    data: Value,
-}
-
-impl Credentials {
-    fn new(driver_id: impl Into<String>, data: Value) -> Self {
-        Self {
-            driver_id: driver_id.into(),
-            data,
-        }
-    }
-
-    fn into_driver_json(self) -> Value {
-        self.data
-    }
-}
-
 /// Encrypted credential store rooted in Hypercolor's data directory.
 pub struct CredentialStore {
     store_path: PathBuf,
     cipher: Aes256Gcm,
-    cache: RwLock<HashMap<String, Credentials>>,
+    cache: RwLock<HashMap<String, Value>>,
 }
 
 impl CredentialStore {
@@ -104,12 +83,12 @@ impl CredentialStore {
         Ok(store)
     }
 
-    async fn get(&self, key: &str) -> Option<Credentials> {
+    async fn get(&self, key: &str) -> Option<Value> {
         self.cache.read().await.get(key).cloned()
     }
 
     async fn get_json(&self, key: &str) -> Option<Value> {
-        self.get(key).await.map(Credentials::into_driver_json)
+        self.get(key).await
     }
 
     /// Retrieve credentials as a driver-scoped JSON payload.
@@ -117,10 +96,10 @@ impl CredentialStore {
         self.get_json(&scoped_credential_key(driver_id, key)).await
     }
 
-    async fn store(&self, key: &str, creds: Credentials) -> Result<()> {
+    async fn store(&self, key: &str, value: Value) -> Result<()> {
         let snapshot = {
             let mut cache = self.cache.write().await;
-            cache.insert(key.to_owned(), creds);
+            cache.insert(key.to_owned(), value);
             cache.clone()
         };
         self.persist_snapshot(&snapshot).await
@@ -132,11 +111,8 @@ impl CredentialStore {
     ///
     /// Returns an error if the encrypted payload cannot be persisted.
     pub async fn store_driver_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
-        self.store(
-            &scoped_credential_key(driver_id, key),
-            Credentials::new(driver_id, value),
-        )
-        .await
+        self.store(&scoped_credential_key(driver_id, key), value)
+            .await
     }
 
     async fn remove(&self, key: &str) -> Result<()> {
@@ -164,7 +140,7 @@ impl CredentialStore {
         keys
     }
 
-    async fn persist_snapshot(&self, snapshot: &HashMap<String, Credentials>) -> Result<()> {
+    async fn persist_snapshot(&self, snapshot: &HashMap<String, Value>) -> Result<()> {
         let payload = encrypt_snapshot(&self.cipher, snapshot)?;
 
         let tmp_path = temp_store_path(&self.store_path);
@@ -254,10 +230,7 @@ async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
     Ok(seed)
 }
 
-fn load_cache_blocking(
-    cipher: &Aes256Gcm,
-    store_path: &Path,
-) -> Result<HashMap<String, Credentials>> {
+fn load_cache_blocking(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Value>> {
     if !store_path.exists() {
         return Ok(HashMap::new());
     }
@@ -279,7 +252,7 @@ fn load_cache_blocking(
     deserialize_cache(&plaintext, store_path)
 }
 
-async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Credentials>> {
+async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Value>> {
     if !store_path.exists() {
         return Ok(HashMap::new());
     }
@@ -302,7 +275,7 @@ async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<Str
     deserialize_cache(&plaintext, store_path)
 }
 
-fn deserialize_cache(plaintext: &[u8], store_path: &Path) -> Result<HashMap<String, Credentials>> {
+fn deserialize_cache(plaintext: &[u8], store_path: &Path) -> Result<HashMap<String, Value>> {
     serde_json::from_slice(plaintext).with_context(|| {
         format!(
             "failed to deserialize credential store {}",
@@ -311,10 +284,7 @@ fn deserialize_cache(plaintext: &[u8], store_path: &Path) -> Result<HashMap<Stri
     })
 }
 
-fn encrypt_snapshot(
-    cipher: &Aes256Gcm,
-    snapshot: &HashMap<String, Credentials>,
-) -> Result<Vec<u8>> {
+fn encrypt_snapshot(cipher: &Aes256Gcm, snapshot: &HashMap<String, Value>) -> Result<Vec<u8>> {
     let plaintext =
         serde_json::to_vec_pretty(snapshot).context("failed to serialize credentials")?;
     let nonce_bytes = rand::random::<[u8; NONCE_BYTES]>();

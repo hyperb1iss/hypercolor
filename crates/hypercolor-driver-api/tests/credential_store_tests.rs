@@ -185,14 +185,18 @@ async fn credential_store_keeps_driver_json_opaque() -> TestResult {
     let tempdir = tempdir()?;
     let store = CredentialStore::open(tempdir.path()).await?;
 
+    let payload = serde_json::json!({
+        "driver_id": "driver-owned-field",
+        "data": {
+            "nested": true,
+        },
+    });
+
     store
-        .store_driver_json("alpha", "strip", serde_json::json!({}))
+        .store_driver_json("alpha", "strip", payload.clone())
         .await?;
 
-    assert_eq!(
-        store.get_driver_json("alpha", "strip").await,
-        Some(serde_json::json!({}))
-    );
+    assert_eq!(store.get_driver_json("alpha", "strip").await, Some(payload));
     assert_eq!(store.keys().await, vec!["alpha:strip".to_owned()]);
 
     Ok(())
