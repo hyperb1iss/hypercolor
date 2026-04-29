@@ -85,6 +85,38 @@ fn validation_accepts_matching_scalar_values() {
 }
 
 #[test]
+fn validation_accepts_secret_refs_and_rejects_raw_secret_values() {
+    let value_type = ControlValueType::Secret;
+
+    value_type
+        .validate_value(&ControlValue::SecretRef(
+            "credential:govee:api_key".to_owned(),
+        ))
+        .expect("secret references should validate");
+
+    let error = value_type
+        .validate_value(&ControlValue::String("raw-api-key".to_owned()))
+        .expect_err("raw secret material should not validate as a secret reference");
+    assert!(matches!(
+        error,
+        ControlValueValidationError::TypeMismatch { .. }
+    ));
+
+    let json = serde_json::to_value(ControlValue::SecretRef(
+        "credential:govee:api_key".to_owned(),
+    ))
+    .expect("serialize secret reference");
+    assert_eq!(json["kind"], "secret_ref");
+
+    let roundtrip: ControlValue =
+        serde_json::from_value(json).expect("deserialize secret reference");
+    assert_eq!(
+        roundtrip,
+        ControlValue::SecretRef("credential:govee:api_key".to_owned())
+    );
+}
+
+#[test]
 fn validation_rejects_type_mismatch_and_bounds() {
     let value_type = ControlValueType::DurationMs {
         min: Some(100),
