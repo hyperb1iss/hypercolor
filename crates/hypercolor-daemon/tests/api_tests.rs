@@ -450,9 +450,15 @@ impl DriverControlProvider for UnsupportedImpactTestDriver {
     async fn device_surface(
         &self,
         _host: &dyn DriverHost,
-        _device: &hypercolor_driver_api::TrackedDeviceCtx<'_>,
+        device: &hypercolor_driver_api::TrackedDeviceCtx<'_>,
     ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
-        Ok(None)
+        Ok(Some(ControlSurfaceDocument::empty(
+            format!("driver:unsupported_impact_test:device:{}", device.device_id),
+            ControlSurfaceScope::Device {
+                device_id: device.device_id,
+                driver_id: "unsupported_impact_test".to_owned(),
+            },
+        )))
     }
 
     async fn validate_changes(
@@ -3184,6 +3190,66 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
             .as_str()
             .expect("error message")
             .contains("unsupported driver-level control impact")
+    );
+}
+
+#[tokio::test]
+async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_level_impact() {
+    let (mut state, dir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(dir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(UnsupportedImpactTestDriver)
+        .expect("test unsupported impact driver should register");
+    let registry = Arc::new(registry);
+
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_registry = Arc::clone(&registry);
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_config_manager(Some(manager))
+            .with_driver_registry(registry),
+    );
+    let state = Arc::new(state);
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(state);
+    let surface_id = format!("driver:unsupported_impact_test:device:{device_id}");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": surface_id,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "topology",
+                                "value": { "kind": "bool", "value": true }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("unsupported device-level control impact")
     );
 }
 
