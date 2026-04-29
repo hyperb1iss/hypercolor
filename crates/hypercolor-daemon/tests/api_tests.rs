@@ -2746,6 +2746,60 @@ async fn patch_driver_control_surface_updates_config() {
 }
 
 #[tokio::test]
+async fn patch_govee_driver_control_surface_persists_backend_settings() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:govee/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:govee",
+                        "changes": [
+                            {
+                                "field_id": "power_off_on_disconnect",
+                                "value": { "kind": "bool", "value": true }
+                            },
+                            {
+                                "field_id": "lan_state_fps",
+                                "value": { "kind": "integer", "value": 12 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], "driver:govee");
+    assert_eq!(
+        json["data"]["values"]["power_off_on_disconnect"]["value"],
+        true
+    );
+    assert_eq!(json["data"]["values"]["lan_state_fps"]["value"], 12);
+    assert_eq!(
+        json["data"]["impacts"],
+        serde_json::json!(["backend_rebind"])
+    );
+
+    let config = manager.get();
+    let govee = config
+        .drivers
+        .get("govee")
+        .expect("govee config should exist");
+    assert_eq!(govee.settings["power_off_on_disconnect"], true);
+    assert_eq!(govee.settings["lan_state_fps"], 12);
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_dry_run_does_not_mutate_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
