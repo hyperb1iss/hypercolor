@@ -1,7 +1,23 @@
 //! Layout canvas — live effect preview with draggable zone overlays.
+//!
+//! The hot path during drag/resize is intentionally non-reactive: a single
+//! `requestAnimationFrame` scheduler reads the latest pointer position from a
+//! `Cell`, computes the new zone geometry against an immutable base snapshot,
+//! and writes the result *directly* to the cached zone DOM elements. The
+//! layout signal is only updated once on `mouseup`. This bypasses the
+//! reactive flush that would otherwise trigger O(N²) zone-style recomputes
+//! on every mousemove and lets the `CanvasPreview` RAF loop keep painting.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use leptos::ev;
 use leptos::prelude::*;
+use leptos::reactive::owner::LocalStorage;
+use wasm_bindgen::JsCast;
+
+use hypercolor_leptos_ext::raf::Scheduler;
 
 use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
@@ -9,7 +25,12 @@ use crate::compound_selection::{self, CompoundDepth};
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
-use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
+use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout, ZoneShape};
+
+/// Throttle the in-drag preview push to the daemon. Matches the existing
+/// debounce we use outside drags so the spatial engine isn't recomputed at
+/// 60 Hz when a single coalesced 75 ms cadence is enough for a smooth feel.
+const PREVIEW_PUSH_INTERVAL_MS: f64 = 75.0;
 
 /// Canvas viewport with zone overlay divs.
 #[component]
@@ -24,6 +45,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     let set_compound_depth = editor.set_compound_depth;
     let set_layout = editor.set_layout;
     let set_is_dirty = editor.set_is_dirty;
+    let push_preview = editor.push_preview;
     let devices_ctx = expect_context::<DevicesContext>();
     let zone_display_ctx =
         expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
@@ -37,17 +59,57 @@ pub fn LayoutCanvas() -> impl IntoView {
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let (canvas_slot_size, set_canvas_slot_size) = signal((0.0_f64, 0.0_f64));
 
-    // Drag state
-    let (interaction, set_interaction) = signal(None::<InteractionState>);
+    // Active drag/resize runtime — non-reactive, accessed by mouse handlers
+    // and the RAF scheduler. Cleared on mouseup. `LocalStorage` lets us
+    // store the (non-Send) `web_sys::HtmlElement` cache while the
+    // `StoredValue` handle itself stays `Copy + Send + Sync` so it can ride
+    // along inside reactive `move ||` closures.
+    let drag_runtime: StoredValue<Option<DragRuntime>, LocalStorage> = StoredValue::new_local(None);
 
-    // Track which zone is actively being dragged/resized so we can disable
-    // CSS transitions on it (prevents visual lag during interaction).
-    let interacting_zone_id = Signal::derive(move || {
-        interaction.get().map(|state| match &state {
-            InteractionState::Drag(d) => d.zone_id.clone(),
-            InteractionState::Resize(r) => r.zone_id.clone(),
-        })
-    });
+    // Reactive flag exposing which zone (if any) is being interacted with.
+    // Used purely to toggle a CSS class that disables zone transitions.
+    let interacting_zone_id = RwSignal::new(None::<String>);
+
+    // RAF-driven step. Reads `pending_mouse` from the runtime, runs the
+    // geometry math on the running zone copy, paints affected elements
+    // directly, and throttles preview pushes to the daemon.
+    let scheduler: Rc<RefCell<Option<Scheduler>>> = Rc::new(RefCell::new(None));
+    {
+        let layout_signal = layout;
+        let scheduler_inst = Scheduler::new(move |frame_info| {
+            let painted_change = drag_runtime
+                .try_update_value(|opt| opt.as_mut().is_some_and(DragRuntime::step))
+                .unwrap_or(false);
+            if !painted_change {
+                return;
+            }
+
+            // Throttle daemon preview pushes — 75 ms matches the existing
+            // debounce we use outside of drags.
+            let now_ms = frame_info.monotonic_ms;
+            let should_push = drag_runtime
+                .try_update_value(|opt| {
+                    let runtime = opt.as_mut()?;
+                    if now_ms - runtime.last_preview_push_ms.get() < PREVIEW_PUSH_INTERVAL_MS {
+                        return None;
+                    }
+                    runtime.last_preview_push_ms.set(now_ms);
+                    Some(runtime.current_zones.clone())
+                })
+                .flatten();
+            // Build a layout snapshot with the in-flight zones overlaid on
+            // the rest of the saved layout (canvas dims, sampling, etc.)
+            // and push it to the daemon. This keeps the LED preview live
+            // without touching the reactive layout signal.
+            if let Some(zones) = should_push
+                && let Some(mut snapshot) = layout_signal.with_untracked(Clone::clone)
+            {
+                snapshot.zones = zones;
+                push_preview.run(snapshot);
+            }
+        });
+        *scheduler.borrow_mut() = Some(scheduler_inst);
+    }
 
     // Derive zone IDs sorted by display_order — only re-renders when zones are added/removed
     // or their stacking order changes, NOT when positions change during drag.
@@ -79,6 +141,22 @@ pub fn LayoutCanvas() -> impl IntoView {
                 })
                 .unwrap_or_default()
         })
+    });
+
+    // Per-id zone lookup memo — lets every per-zone style closure resolve
+    // its zone in O(1). Replaces the O(N) `zones.iter().find(|z| z.id == zid)`
+    // scan that ran inside each `zone_style` derive.
+    let zones_by_id: Memo<HashMap<String, DeviceZone>> = Memo::new(move |_| {
+        layout
+            .with(|current| {
+                current.as_ref().map(|l| {
+                    l.zones
+                        .iter()
+                        .map(|z| (z.id.clone(), z.clone()))
+                        .collect::<HashMap<_, _>>()
+                })
+            })
+            .unwrap_or_default()
     });
 
     let layout_ratio = Signal::derive(move || {
@@ -130,140 +208,84 @@ pub fn LayoutCanvas() -> impl IntoView {
         update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
     });
 
+    // Commit the in-flight runtime to the layout signal and clear it. Run
+    // when the pointer is released or leaves the canvas slot. Idempotent:
+    // safe to call when no runtime is active.
+    let finish_interaction = {
+        let layout_signal = layout;
+        move || {
+            let Some(mut runtime) = drag_runtime.try_update_value(Option::take).flatten() else {
+                return;
+            };
+            interacting_zone_id.set(None);
+
+            if !runtime.moved.get() {
+                // No actual movement happened — discard without touching
+                // the signal or history stack.
+                set_layout.finish_interaction();
+                return;
+            }
+
+            // Apply size normalization (strip aspect / ring squaring) once
+            // at release. Doing this mid-drag would fight the pointer.
+            for zone in &mut runtime.current_zones {
+                zone.size = layout_geometry::normalize_zone_size_for_editor(
+                    zone.position,
+                    zone.size,
+                    &zone.topology,
+                );
+            }
+            let final_zones = std::mem::take(&mut runtime.current_zones);
+            let committed = set_layout.commit_zones(final_zones);
+            set_layout.finish_interaction();
+            if committed {
+                set_is_dirty.set(true);
+                if let Some(snapshot) = layout_signal.get_untracked() {
+                    push_preview.run(snapshot);
+                }
+            }
+        }
+    };
+    let finish_for_mouseup = finish_interaction;
+    let finish_for_leave = finish_interaction;
+
+    let scheduler_for_move = Rc::clone(&scheduler);
+
     view! {
         <div
             node_ref=canvas_slot_ref
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
-            on:mouseup=move |_| {
-                // Normalize zone size on interaction end (deferred from mousemove
-                // to prevent strip aspect enforcement from fighting the user mid-drag).
-                if let Some(state) = interaction.try_get_untracked().flatten() {
-                    let zone_id = match &state {
-                        InteractionState::Drag(d) => d.zone_id.clone(),
-                        InteractionState::Resize(r) => r.zone_id.clone(),
-                    };
-                    set_layout.update(|l| {
-                        if let Some(layout) = l
-                            && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                                zone.size = layout_geometry::normalize_zone_size_for_editor(
-                                    zone.position, zone.size, &zone.topology,
-                                );
-                            }
-                    });
-                    set_layout.finish_interaction();
-                }
-                set_interaction.set(None);
-            }
-            on:mouseleave=move |_| {
-                if let Some(state) = interaction.try_get_untracked().flatten() {
-                    let zone_id = match &state {
-                        InteractionState::Drag(d) => d.zone_id.clone(),
-                        InteractionState::Resize(r) => r.zone_id.clone(),
-                    };
-                    set_layout.update(|l| {
-                        if let Some(layout) = l
-                            && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                                zone.size = layout_geometry::normalize_zone_size_for_editor(
-                                    zone.position, zone.size, &zone.topology,
-                                );
-                            }
-                    });
-                    set_layout.finish_interaction();
-                }
-                set_interaction.set(None);
-            }
+            on:mouseup=move |_| finish_for_mouseup()
+            on:mouseleave=move |_| finish_for_leave()
             on:mousemove=move |ev| {
-                let Some(interaction_state) = interaction.get_untracked() else {
+                // Lightweight hot path: stash the latest pointer position
+                // and ask the RAF scheduler for a frame. All the real work
+                // happens in the scheduler callback at most once per frame,
+                // so 120-Hz mousemove storms collapse to ~60-Hz updates.
+                let active = drag_runtime.with_value(Option::is_some);
+                if !active {
                     return;
-                };
+                }
                 let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
                     return;
                 };
-                let rect = viewport.get_bounding_client_rect();
-                let cw = rect.width();
-                let ch = rect.height();
-                if cw <= 0.0 || ch <= 0.0 { return; }
-
-                let mouse_x = f64::from(ev.client_x()) - rect.left();
-                let mouse_y = f64::from(ev.client_y()) - rect.top();
-
-                #[allow(clippy::cast_possible_truncation)]
-                let mouse_norm = NormalizedPosition::new((mouse_x / cw) as f32, (mouse_y / ch) as f32);
-
-                match interaction_state {
-                    InteractionState::Drag(drag) => {
-                        if drag.initial_positions.len() > 1 {
-                            // Compound drag: compute delta from primary zone's initial position
-                            let primary_initial = drag.initial_positions
-                                .iter()
-                                .find(|(id, _)| *id == drag.zone_id)
-                                .map(|(_, pos)| *pos)
-                                .unwrap_or(NormalizedPosition::new(0.5, 0.5));
-                            let desired_primary = NormalizedPosition::new(
-                                (mouse_norm.x - drag.offset_x).clamp(0.0, 1.0),
-                                (mouse_norm.y - drag.offset_y).clamp(0.0, 1.0),
-                            );
-                            let delta = NormalizedPosition::new(
-                                desired_primary.x - primary_initial.x,
-                                desired_primary.y - primary_initial.y,
-                            );
-                            let initial_positions = drag.initial_positions.clone();
-                            set_layout.update(|l| {
-                                if let Some(layout) = l {
-                                    let _ = layout_geometry::translate_zones(
-                                        layout,
-                                        &initial_positions,
-                                        delta,
-                                    );
-                                }
-                            });
-                        } else {
-                            // Single zone drag
-                            let norm_x = (mouse_norm.x - drag.offset_x).clamp(0.0, 1.0);
-                            let norm_y = (mouse_norm.y - drag.offset_y).clamp(0.0, 1.0);
-                            let zone_id = drag.zone_id.clone();
-                            set_layout.update(|l| {
-                                if let Some(layout) = l {
-                                    let desired_position = NormalizedPosition::new(norm_x, norm_y);
-                                    let _ = layout_geometry::drag_zone_to_position(
-                                        layout,
-                                        &zone_id,
-                                        desired_position,
-                                    );
-                                }
-                            });
-                        }
+                let viewport_el: web_sys::HtmlElement = (*viewport).clone();
+                let Some(mouse_norm) = pointer_to_normalized(
+                    &viewport_el,
+                    ev.client_x(),
+                    ev.client_y(),
+                ) else {
+                    return;
+                };
+                drag_runtime.with_value(|opt| {
+                    if let Some(runtime) = opt.as_ref() {
+                        runtime.pending_mouse.set(Some(mouse_norm));
                     }
-                    InteractionState::Resize(resize) => {
-                        let zone_id = resize.zone_id.clone();
-                        let keep_ratio = keep_aspect_ratio.get_untracked();
-                        set_layout.update(|l| {
-                            if let Some(layout) = l
-                                && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                                    // Force locked aspect ratio for circular shapes
-                                    let force_locked = matches!(
-                                        zone.shape,
-                                        Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-                                    );
-                                    let (position, size) = layout_geometry::resize_zone_from_handle(
-                                        resize.start_center,
-                                        resize.start_size,
-                                        resize.start_mouse,
-                                        resize.handle,
-                                        mouse_norm,
-                                        keep_ratio || force_locked,
-                                        resize.rotation,
-                                    );
-                                    zone.position = position;
-                                    // Raw size — normalization deferred to mouseup to prevent
-                                    // strip aspect enforcement from fighting the user mid-drag.
-                                    zone.size = size;
-                                }
-                        });
-                    }
+                });
+                if let Some(scheduler) = scheduler_for_move.borrow().as_ref() {
+                    scheduler.schedule();
                 }
-                set_is_dirty.set(true);
             }
         >
             // Dot grid background pattern
@@ -338,7 +360,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                             let zid_resize_sw = zone_id.clone();
                             let zid_resize_se = zone_id.clone();
 
-                            // Derive per-zone position/style reactively from the layout signal
+                            // Derive per-zone position/style reactively from the layout signal.
+                            // Uses the indexed `zones_by_id` memo for O(1) lookup so this
+                            // closure no longer scans the full zone vec on every layout update.
                             let zone_style = Signal::derive({
                                 let zid = zid.clone();
                                 move || {
@@ -349,9 +373,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         .unwrap_or_default();
                                     let attachment_profiles =
                                         zone_display_ctx.attachment_profiles.get().unwrap_or_default();
-                                    layout.with(|current| {
-                                        let layout = current.as_ref()?;
-                                        let zone = layout.zones.iter().find(|z| z.id == zid)?;
+                                    zones_by_id.with(|map| {
+                                        let zone = map.get(&zid)?;
                                         let x_pct = zone.position.x * 100.0;
                                         let y_pct = zone.position.y * 100.0;
                                         let w_pct = zone.size.x * 100.0;
@@ -409,11 +432,14 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                             let is_interacting = {
                                 let zid = zid.clone();
-                                Signal::derive(move || interacting_zone_id.get().as_deref() == Some(&zid))
+                                Signal::derive(move || interacting_zone_id.with(|active| {
+                                    active.as_deref() == Some(&zid)
+                                }))
                             };
 
                             view! {
                                 <div
+                                    data-zone-id=zid.clone()
                                     class=move || if is_interacting.get() {
                                         "absolute rounded-md cursor-move group"
                                     } else {
@@ -507,43 +533,62 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
                                             return;
                                         };
-                                        let rect = viewport.get_bounding_client_rect();
-                                        let cw = rect.width();
-                                        let ch = rect.height();
-                                        if cw <= 0.0 || ch <= 0.0 { return; }
+                                        let viewport_el: web_sys::HtmlElement = (*viewport).clone();
+                                        let Some(mouse_norm) = pointer_to_normalized(
+                                            &viewport_el,
+                                            ev.client_x(),
+                                            ev.client_y(),
+                                        ) else {
+                                            return;
+                                        };
 
-                                        #[allow(clippy::cast_possible_truncation)]
-                                        let mouse_norm_x = ((f64::from(ev.client_x()) - rect.left()) / cw) as f32;
-                                        #[allow(clippy::cast_possible_truncation)]
-                                        let mouse_norm_y = ((f64::from(ev.client_y()) - rect.top()) / ch) as f32;
+                                        // Snapshot the layout once and capture every zone we need
+                                        // so the drag can run entirely against an in-flight copy.
+                                        let Some(snapshot) = layout.get_untracked() else {
+                                            return;
+                                        };
+                                        let primary_zone_id = zid_drag.clone();
+                                        let Some(primary_zone) = snapshot
+                                            .zones
+                                            .iter()
+                                            .find(|z| z.id == primary_zone_id)
+                                        else {
+                                            return;
+                                        };
+                                        let zx = primary_zone.position.x;
+                                        let zy = primary_zone.position.y;
 
-                                        // Read zone position without tracking
-                                        let zone_pos = layout.try_get_untracked()
-                                            .flatten()
-                                            .and_then(|l| l.zones.iter().find(|z| z.id == zid_drag).map(|z| (z.position.x, z.position.y)));
+                                        let dragged_ids: std::collections::HashSet<String> =
+                                            selected_zone_ids.get_untracked();
+                                        let initial_positions: Vec<(String, NormalizedPosition)> = snapshot
+                                            .zones
+                                            .iter()
+                                            .filter(|z| dragged_ids.contains(&z.id))
+                                            .map(|z| (z.id.clone(), z.position))
+                                            .collect();
 
-                                        if let Some((zx, zy)) = zone_pos {
-                                            set_layout.begin_interaction();
-                                            // Snapshot positions of all selected zones for compound drag
-                                            let initial_positions = layout.with_untracked(|l| {
-                                                let ids = selected_zone_ids.get_untracked();
-                                                l.as_ref()
-                                                    .map(|l| {
-                                                        l.zones
-                                                            .iter()
-                                                            .filter(|z| ids.contains(&z.id))
-                                                            .map(|z| (z.id.clone(), z.position))
-                                                            .collect::<Vec<_>>()
-                                                    })
-                                                    .unwrap_or_default()
-                                            });
-                                            set_interaction.set(Some(InteractionState::Drag(DragState {
-                                                zone_id: zid_drag2.clone(),
-                                                offset_x: mouse_norm_x - zx,
-                                                offset_y: mouse_norm_y - zy,
+                                        let elements = collect_zone_elements(
+                                            &viewport_el,
+                                            initial_positions.iter().map(|(id, _)| id.clone()),
+                                        );
+
+                                        set_layout.begin_interaction();
+                                        interacting_zone_id.set(Some(zid_drag2.clone()));
+
+                                        let runtime = DragRuntime {
+                                            kind: InteractionKind::Drag {
+                                                primary_zone_id,
+                                                offset_x: mouse_norm.x - zx,
+                                                offset_y: mouse_norm.y - zy,
                                                 initial_positions,
-                                            })));
-                                        }
+                                            },
+                                            current_zones: snapshot.zones,
+                                            elements,
+                                            pending_mouse: Cell::new(None),
+                                            moved: Cell::new(false),
+                                            last_preview_push_ms: Cell::new(0.0),
+                                        };
+                                        drag_runtime.set_value(Some(runtime));
                                     }
                                     on:dblclick=move |ev| {
                                         ev.stop_propagation();
@@ -629,22 +674,85 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                                     // Resize handles (selected only) — small circles with accent glow.
                                     // Counter-rotated so they stay axis-aligned, with dynamic cursors.
-                                    {move || is_selected.get().then(|| {
+                                    {
+                                        let zid_for_resize = zid.clone();
                                         let zid_resize_nw = zid_resize_nw.clone();
-                                        let zid_resize_ne = zid_resize_ne.clone();
-                                        let zid_resize_sw = zid_resize_sw.clone();
-                                        let zid_resize_se = zid_resize_se.clone();
+                                        let _ = (&zid_resize_ne, &zid_resize_sw, &zid_resize_se);
+                                        move || is_selected.get().then(|| {
+                                        let zid_resize_nw = zid_resize_nw.clone();
+                                        let zid_for_rotation = zid_for_resize.clone();
 
                                         let handle_class = "absolute w-3 h-3 rounded-full border-2 transition-[box-shadow,transform] duration-150 \
                                                            hover:scale-125";
 
-                                        // Derive rotation for counter-rotate + cursor
+                                        // Shared resize starter — builds a `DragRuntime` keyed to the
+                                        // requested handle and seeds it with the current zone snapshot.
+                                        let start_resize: Rc<dyn Fn(ResizeHandle, i32, i32)> = {
+                                            let zone_id_template = zid_resize_nw.clone();
+                                            Rc::new(move |handle, client_x, client_y| {
+                                                let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+                                                    return;
+                                                };
+                                                let viewport_el: web_sys::HtmlElement =
+                                                    (*viewport).clone();
+                                                let Some(mouse_norm) = pointer_to_normalized(
+                                                    &viewport_el,
+                                                    client_x,
+                                                    client_y,
+                                                ) else {
+                                                    return;
+                                                };
+                                                let Some(snapshot) = layout.get_untracked() else {
+                                                    return;
+                                                };
+                                                let zone_id = zone_id_template.clone();
+                                                let Some(zone) = snapshot.zones.iter().find(|z| z.id == zone_id) else {
+                                                    return;
+                                                };
+                                                let start_center = zone.position;
+                                                let start_size = zone.size;
+                                                let rotation = zone.rotation;
+
+                                                set_selected_zone_ids
+                                                    .set(std::collections::HashSet::from([zone_id.clone()]));
+                                                set_layout.begin_interaction();
+                                                interacting_zone_id.set(Some(zone_id.clone()));
+
+                                                let elements = collect_zone_elements(
+                                                    &viewport_el,
+                                                    std::iter::once(zone_id.clone()),
+                                                );
+
+                                                let runtime = DragRuntime {
+                                                    kind: InteractionKind::Resize {
+                                                        zone_id,
+                                                        handle,
+                                                        start_mouse: mouse_norm,
+                                                        start_center,
+                                                        start_size,
+                                                        rotation,
+                                                        keep_aspect_ratio: keep_aspect_ratio.get_untracked(),
+                                                    },
+                                                    current_zones: snapshot.zones,
+                                                    elements,
+                                                    pending_mouse: Cell::new(None),
+                                                    moved: Cell::new(false),
+                                                    last_preview_push_ms: Cell::new(0.0),
+                                                };
+                                                drag_runtime.set_value(Some(runtime));
+                                            })
+                                        };
+                                        let start_resize_nw = Rc::clone(&start_resize);
+                                        let start_resize_ne = Rc::clone(&start_resize);
+                                        let start_resize_sw = Rc::clone(&start_resize);
+                                        let start_resize_se = Rc::clone(&start_resize);
+
+                                        // Derive rotation for counter-rotate + cursor — O(1) via zones_by_id
                                         let zone_rotation_deg = {
-                                            let zid = zid.clone();
+                                            let zid = zid_for_rotation;
                                             Signal::derive(move || {
-                                                layout.with(|current| {
-                                                    current.as_ref()
-                                                        .and_then(|l| l.zones.iter().find(|z| z.id == zid))
+                                                zones_by_id.with(|map| {
+                                                    map.get(&zid)
                                                         .map(|z| z.rotation.to_degrees())
                                                         .unwrap_or(0.0)
                                                 })
@@ -703,11 +811,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
-                                                    let zone_id = zid_resize_nw.clone();
-                                                    begin_resize(
-                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
-                                                        &zone_id, ResizeHandle::NorthWest, ev.client_x(), ev.client_y(),
-                                                    );
+                                                    start_resize_nw(ResizeHandle::NorthWest, ev.client_x(), ev.client_y());
                                                 }
                                             />
                                             <div
@@ -716,11 +820,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
-                                                    let zone_id = zid_resize_ne.clone();
-                                                    begin_resize(
-                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
-                                                        &zone_id, ResizeHandle::NorthEast, ev.client_x(), ev.client_y(),
-                                                    );
+                                                    start_resize_ne(ResizeHandle::NorthEast, ev.client_x(), ev.client_y());
                                                 }
                                             />
                                             <div
@@ -729,11 +829,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
-                                                    let zone_id = zid_resize_sw.clone();
-                                                    begin_resize(
-                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
-                                                        &zone_id, ResizeHandle::SouthWest, ev.client_x(), ev.client_y(),
-                                                    );
+                                                    start_resize_sw(ResizeHandle::SouthWest, ev.client_x(), ev.client_y());
                                                 }
                                             />
                                             <div
@@ -742,11 +838,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
-                                                    let zone_id = zid_resize_se.clone();
-                                                    begin_resize(
-                                                        &viewport_ref, &layout, &set_layout, &set_selected_zone_ids, &set_interaction,
-                                                        &zone_id, ResizeHandle::SouthEast, ev.client_x(), ev.client_y(),
-                                                    );
+                                                    start_resize_se(ResizeHandle::SouthEast, ev.client_x(), ev.client_y());
                                                 }
                                             />
                                         }
@@ -930,81 +1022,235 @@ struct ZoneRenderData {
     shape: Option<ZoneShape>,
 }
 
-#[derive(Clone, Debug)]
-struct DragState {
-    zone_id: String,
-    offset_x: f32,
-    offset_y: f32,
-    /// Snapshot of all selected zone positions at drag start for compound drag.
-    initial_positions: Vec<(String, NormalizedPosition)>,
+/// Drag/resize runtime — non-reactive state machine for an in-flight pointer
+/// interaction. Owns cached DOM refs, the immutable base snapshot, and a
+/// running mutable copy of the dragged zones. The RAF scheduler reads from
+/// `pending_mouse`, computes the new geometry, and writes results directly
+/// to the cached `HtmlElement`s without going through the layout signal.
+struct DragRuntime {
+    kind: InteractionKind,
+    current_zones: Vec<DeviceZone>,
+    /// `data-zone-id` → element. Captured at interaction start so the RAF
+    /// loop never has to query the DOM.
+    elements: HashMap<String, web_sys::HtmlElement>,
+    /// Latest pointer position (normalized to the viewport rect) waiting to
+    /// be processed by the next RAF tick.
+    pending_mouse: Cell<Option<NormalizedPosition>>,
+    /// Have any frames been processed yet for this interaction?
+    /// Tracks whether we've actually mutated zones so mouseup can decide
+    /// between a no-op release and a real commit.
+    moved: Cell<bool>,
+    /// Last preview push timestamp (browser monotonic ms) for throttling.
+    last_preview_push_ms: Cell<f64>,
 }
 
-#[derive(Clone, Debug)]
-struct ResizeState {
-    zone_id: String,
-    handle: ResizeHandle,
-    start_mouse: NormalizedPosition,
-    start_center: NormalizedPosition,
-    start_size: NormalizedPosition,
-    rotation: f32,
+enum InteractionKind {
+    Drag {
+        primary_zone_id: String,
+        offset_x: f32,
+        offset_y: f32,
+        initial_positions: Vec<(String, NormalizedPosition)>,
+    },
+    Resize {
+        zone_id: String,
+        handle: ResizeHandle,
+        start_mouse: NormalizedPosition,
+        start_center: NormalizedPosition,
+        start_size: NormalizedPosition,
+        rotation: f32,
+        keep_aspect_ratio: bool,
+    },
 }
 
-#[derive(Clone, Debug)]
-enum InteractionState {
-    Drag(DragState),
-    Resize(ResizeState),
+impl DragRuntime {
+    /// Apply the latest pending pointer position to the in-flight zone copy
+    /// and paint the affected elements directly. Returns true if any zone
+    /// position/size actually changed this frame.
+    fn step(&mut self) -> bool {
+        let Some(mouse) = self.pending_mouse.take() else {
+            return false;
+        };
+        // Run the geometry math against an owned `SpatialLayout` borrowed
+        // out of `current_zones`, then move the (possibly mutated) zones
+        // back. We never clone the zone vec on the hot path.
+        let mut working = SpatialLayoutShim {
+            zones: std::mem::take(&mut self.current_zones),
+        }
+        .into_layout();
+        let changed = match &self.kind {
+            InteractionKind::Drag {
+                primary_zone_id,
+                offset_x,
+                offset_y,
+                initial_positions,
+            } => {
+                if initial_positions.len() > 1 {
+                    let primary_initial = initial_positions
+                        .iter()
+                        .find(|(id, _)| id == primary_zone_id)
+                        .map(|(_, pos)| *pos)
+                        .unwrap_or(NormalizedPosition::new(0.5, 0.5));
+                    let desired_primary = NormalizedPosition::new(
+                        (mouse.x - offset_x).clamp(0.0, 1.0),
+                        (mouse.y - offset_y).clamp(0.0, 1.0),
+                    );
+                    let delta = NormalizedPosition::new(
+                        desired_primary.x - primary_initial.x,
+                        desired_primary.y - primary_initial.y,
+                    );
+                    layout_geometry::translate_zones(&mut working, initial_positions, delta)
+                } else {
+                    let norm_x = (mouse.x - offset_x).clamp(0.0, 1.0);
+                    let norm_y = (mouse.y - offset_y).clamp(0.0, 1.0);
+                    layout_geometry::drag_zone_to_position(
+                        &mut working,
+                        primary_zone_id,
+                        NormalizedPosition::new(norm_x, norm_y),
+                    )
+                }
+            }
+            InteractionKind::Resize {
+                zone_id,
+                handle,
+                start_mouse,
+                start_center,
+                start_size,
+                rotation,
+                keep_aspect_ratio,
+            } => {
+                let Some(zone) = working.zones.iter_mut().find(|z| z.id == *zone_id) else {
+                    self.current_zones = working.zones;
+                    return false;
+                };
+                let force_locked = matches!(
+                    zone.shape,
+                    Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
+                );
+                let (position, size) = layout_geometry::resize_zone_from_handle(
+                    *start_center,
+                    *start_size,
+                    *start_mouse,
+                    *handle,
+                    mouse,
+                    *keep_aspect_ratio || force_locked,
+                    *rotation,
+                );
+                let changed = zone.position != position || zone.size != size;
+                if changed {
+                    zone.position = position;
+                    zone.size = size;
+                }
+                changed
+            }
+        };
+        self.current_zones = working.zones;
+
+        if changed {
+            self.moved.set(true);
+            self.paint_affected();
+        }
+        changed
+    }
+
+    /// Recompute the inline `style` attribute on every cached element to
+    /// reflect the current zone geometry. This is the only DOM write per
+    /// frame — it sets the same string Leptos would have produced, so the
+    /// reactive flush at mouseup is a clean handoff (matching strings,
+    /// no extra paint).
+    fn paint_affected(&self) {
+        for zone in &self.current_zones {
+            let Some(element) = self.elements.get(&zone.id) else {
+                continue;
+            };
+            let style = element.style();
+            let x_pct = zone.position.x * 100.0;
+            let y_pct = zone.position.y * 100.0;
+            let w_pct = zone.size.x * 100.0;
+            let h_pct = zone.size.y * 100.0;
+            let rotation = zone.rotation.to_degrees();
+            let scale = zone.scale;
+            let _ = style.set_property("left", &format!("{x_pct:.2}%"));
+            let _ = style.set_property("top", &format!("{y_pct:.2}%"));
+            let _ = style.set_property("width", &format!("{w_pct:.2}%"));
+            let is_circular = matches!(
+                zone.shape,
+                Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
+            );
+            if is_circular {
+                let _ = style.set_property("aspect-ratio", "1");
+                // Browsers ignore stale `height` in the presence of
+                // aspect-ratio, but clear it explicitly so the layout signal
+                // can re-take ownership cleanly on commit.
+                let _ = style.remove_property("height");
+            } else {
+                let _ = style.set_property("height", &format!("{h_pct:.2}%"));
+                let _ = style.remove_property("aspect-ratio");
+            }
+            let _ = style.set_property(
+                "transform",
+                &format!("translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"),
+            );
+        }
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn begin_resize(
-    viewport_ref: &NodeRef<leptos::html::Div>,
-    layout: &Signal<Option<SpatialLayout>>,
-    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
-    set_selected_zone_ids: &WriteSignal<std::collections::HashSet<String>>,
-    set_interaction: &WriteSignal<Option<InteractionState>>,
-    zone_id: &str,
-    handle: ResizeHandle,
+/// Tiny helper so the geometry helpers (which expect `&mut SpatialLayout`)
+/// can run against just the zone vec we own during an interaction. Keeps
+/// the rest of the layout immutable and out of our hot loop.
+struct SpatialLayoutShim {
+    zones: Vec<DeviceZone>,
+}
+
+impl SpatialLayoutShim {
+    fn into_layout(self) -> SpatialLayout {
+        SpatialLayout {
+            id: String::new(),
+            name: String::new(),
+            description: None,
+            canvas_width: 1,
+            canvas_height: 1,
+            zones: self.zones,
+            default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
+            default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+}
+
+fn collect_zone_elements(
+    viewport: &web_sys::HtmlElement,
+    zone_ids: impl IntoIterator<Item = String>,
+) -> HashMap<String, web_sys::HtmlElement> {
+    let mut out = HashMap::new();
+    for id in zone_ids {
+        let selector = format!("[data-zone-id=\"{id}\"]");
+        let Ok(Some(node)) = viewport.query_selector(&selector) else {
+            continue;
+        };
+        if let Ok(element) = node.dyn_into::<web_sys::HtmlElement>() {
+            out.insert(id, element);
+        }
+    }
+    out
+}
+
+fn pointer_to_normalized(
+    viewport: &web_sys::HtmlElement,
     client_x: i32,
     client_y: i32,
-) {
-    let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
-        return;
-    };
+) -> Option<NormalizedPosition> {
     let rect = viewport.get_bounding_client_rect();
     let cw = rect.width();
     let ch = rect.height();
     if cw <= 0.0 || ch <= 0.0 {
-        return;
+        return None;
     }
-
     #[allow(clippy::cast_possible_truncation)]
-    let mouse = NormalizedPosition::new(
+    Some(NormalizedPosition::new(
         ((f64::from(client_x) - rect.left()) / cw) as f32,
         ((f64::from(client_y) - rect.top()) / ch) as f32,
-    );
-
-    let zone_snapshot = layout.try_get_untracked().flatten().and_then(|current| {
-        current
-            .zones
-            .iter()
-            .find(|z| z.id == zone_id)
-            .map(|zone| (zone.position, zone.size, zone.rotation))
-    });
-
-    let Some((start_center, start_size, rotation)) = zone_snapshot else {
-        return;
-    };
-
-    set_selected_zone_ids.set(std::collections::HashSet::from([zone_id.to_owned()]));
-    set_layout.begin_interaction();
-    set_interaction.set(Some(InteractionState::Resize(ResizeState {
-        zone_id: zone_id.to_owned(),
-        handle,
-        start_mouse: mouse,
-        start_center,
-        start_size,
-        rotation,
-    })));
+    ))
 }
 
 fn update_canvas_slot_size(

@@ -32,6 +32,10 @@ impl LayoutHistoryState {
         !self.future.is_empty()
     }
 
+    pub fn is_interactive(&self) -> bool {
+        self.interaction_start.is_some()
+    }
+
     pub fn reset(&mut self) {
         self.past.clear();
         self.future.clear();

@@ -98,6 +98,7 @@ pub(crate) struct LayoutWriteHandle {
     removed_zone_cache: ReadSignal<crate::layout_utils::ZoneCache>,
     set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
     history: RwSignal<LayoutHistoryState>,
+    set_dirty: WriteSignal<bool>,
 }
 
 impl LayoutWriteHandle {
@@ -128,7 +129,20 @@ impl LayoutWriteHandle {
         self.set_removed_zone_cache.set(removed_zone_cache);
     }
 
+    fn in_interaction(self) -> bool {
+        self.history
+            .with_untracked(LayoutHistoryState::is_interactive)
+    }
+
     pub fn update(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
+        // Skip history bookkeeping while a drag/resize interaction is in flight —
+        // begin_interaction already captured the pre-drag snapshot, and
+        // finish_interaction will record the single combined diff on release.
+        // Outside an interaction, capture before/after snapshots and record the edit.
+        if self.in_interaction() {
+            self.set_layout.update(f);
+            return;
+        }
         let before = self.capture_snapshot();
         self.set_layout.update(f);
         let (Some(before), Some(after)) = (before, self.capture_snapshot()) else {
@@ -145,6 +159,11 @@ impl LayoutWriteHandle {
     pub fn set(self, value: Option<SpatialLayout>) {
         self.history.update(LayoutHistoryState::discard_interaction);
         self.set_layout.set(value);
+        self.set_dirty.set(false);
+    }
+
+    pub fn mark_clean(self) {
+        self.set_dirty.set(false);
     }
 
     pub fn reset_history(self) {
@@ -167,12 +186,34 @@ impl LayoutWriteHandle {
         }
     }
 
+    /// Commit the in-flight drag/resize result in a single signal write.
+    ///
+    /// During drag the canvas paints positions directly to the DOM and never
+    /// touches the layout signal, so this is the *only* moment the reactive
+    /// graph sees the change. Returns true if zone state actually changed.
+    pub fn commit_zones(self, zones: Vec<DeviceZone>) -> bool {
+        let unchanged = self
+            .layout
+            .with_untracked(|l| l.as_ref().is_some_and(|current| current.zones == zones));
+        if unchanged {
+            return false;
+        }
+        self.set_layout.update(move |current| {
+            if let Some(layout) = current {
+                layout.zones = zones;
+            }
+        });
+        self.set_dirty.set(true);
+        true
+    }
+
     pub fn replace_zones_with_history(self, zones: Vec<DeviceZone>) {
         self.update(move |current| {
             if let Some(layout) = current {
                 layout.zones = zones;
             }
         });
+        self.set_dirty.set(true);
     }
 
     pub fn undo(self) {
@@ -185,6 +226,7 @@ impl LayoutWriteHandle {
         });
         if let Some(snapshot) = restored {
             self.apply_snapshot(snapshot);
+            self.set_dirty.set(true);
         }
     }
 
@@ -198,6 +240,7 @@ impl LayoutWriteHandle {
         });
         if let Some(snapshot) = restored {
             self.apply_snapshot(snapshot);
+            self.set_dirty.set(true);
         }
     }
 }
@@ -218,6 +261,10 @@ pub(crate) struct LayoutEditorContext {
     pub set_keep_aspect_ratio: WriteSignal<bool>,
     pub removed_zone_cache: Signal<crate::layout_utils::ZoneCache>,
     pub set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    /// Push the current in-flight layout to the daemon's preview engine.
+    /// Used by the canvas during drag to keep the LED preview live without
+    /// committing intermediate state to the layout signal.
+    pub push_preview: Callback<SpatialLayout>,
 }
 
 #[derive(Clone, Copy)]
@@ -256,9 +303,9 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (removed_zone_cache, set_removed_zone_cache) =
         signal(crate::layout_utils::ZoneCache::new());
 
-    // Writable dirty signal for child components (actual dirty state is derived
-    // from layout vs saved_layout comparison, but children need to signal changes).
-    let (_dirty_marker, set_is_dirty) = signal(false);
+    // Tracked dirty flag — set true on commit, cleared on save/revert/load.
+    // Replaces the old vec-equality derive that ran on every drag tick.
+    let (dirty, set_is_dirty) = signal(false);
     let history = RwSignal::new(LayoutHistoryState::default());
     let set_layout = LayoutWriteHandle {
         layout,
@@ -270,6 +317,7 @@ pub fn LayoutBuilder() -> impl IntoView {
         removed_zone_cache,
         set_removed_zone_cache,
         history,
+        set_dirty: set_is_dirty,
     };
 
     let layout_signal = Signal::derive(move || layout.get());
@@ -278,6 +326,21 @@ pub fn LayoutBuilder() -> impl IntoView {
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
+
+    let preview_layout = use_debounce_fn_with_arg(
+        |layout: SpatialLayout| {
+            leptos::task::spawn_local(async move {
+                let _ = api::preview_layout(&layout).await;
+            });
+        },
+        75.0,
+    );
+    let push_preview = Callback::new({
+        let preview_layout = preview_layout.clone();
+        move |snapshot: SpatialLayout| {
+            preview_layout(snapshot);
+        }
+    });
 
     provide_context(LayoutEditorContext {
         layout: layout_signal,
@@ -293,6 +356,7 @@ pub fn LayoutBuilder() -> impl IntoView {
         set_compound_depth,
         removed_zone_cache: removed_zone_cache.into(),
         set_removed_zone_cache,
+        push_preview,
     });
 
     let attachment_profiles = LocalResource::new(move || {
@@ -411,15 +475,9 @@ pub fn LayoutBuilder() -> impl IntoView {
     });
     let can_undo = Signal::derive(move || history.get().can_undo());
     let can_redo = Signal::derive(move || history.get().can_redo());
-    // Derive dirty state by comparing working layout to saved snapshot.
-    let is_dirty = Signal::derive(move || {
-        let current = layout.get();
-        let saved = saved_layout.get();
-        match (current, saved) {
-            (Some(c), Some(s)) => c.zones != s.zones,
-            _ => false,
-        }
-    });
+    // Tracked dirty flag — flipped explicitly on commits; saved/revert clear it.
+    // Subscribers (Save/Revert buttons) only re-fire on toggle, never on drag ticks.
+    let is_dirty = Signal::derive(move || dirty.get());
 
     // Options + current value for the layout SilkSelect. Empty value doubles
     // as "unselect current layout" — the first option is the sentinel.
@@ -440,14 +498,6 @@ pub fn LayoutBuilder() -> impl IntoView {
     });
     let layout_value = Signal::derive(move || selected_layout_id.get().unwrap_or_default());
 
-    let preview_layout = use_debounce_fn_with_arg(
-        |layout: SpatialLayout| {
-            leptos::task::spawn_local(async move {
-                let _ = api::preview_layout(&layout).await;
-            });
-        },
-        75.0,
-    );
     let _history_shortcuts =
         window_event_listener(ev::keydown, move |ev: web_sys::KeyboardEvent| {
             if keyboard_target_is_text_input(ev.target()) {
@@ -665,6 +715,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             if api::update_layout(&id, &req).await.is_ok() {
                 toasts::toast_success("Layout saved");
                 set_saved_layout.set(Some(saved_copy));
+                set_layout.mark_clean();
             } else {
                 toasts::toast_error("Failed to save layout");
             }
@@ -678,6 +729,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             return;
         };
         set_layout.replace_zones_with_history(saved.zones.clone());
+        set_layout.mark_clean();
         toasts::toast_info("Layout reverted");
     };
 
