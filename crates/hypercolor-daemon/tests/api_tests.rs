@@ -3197,13 +3197,13 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
         json["error"]["details"]["detail"]
             .as_str()
             .expect("error detail")
-            .contains("unknown WLED control action")
+            .contains("unknown control action")
     );
     assert!(
         json["error"]["message"]
             .as_str()
             .expect("error message")
-            .contains("unknown WLED control action")
+            .contains("unknown control action")
     );
 }
 
