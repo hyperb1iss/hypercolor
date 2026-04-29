@@ -471,6 +471,24 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
     assert_eq!(lifecycle_state, Some(DeviceState::Connected));
 }
 
+#[test]
+fn session_resume_targets_are_host_recovery_targets() {
+    let targets = DiscoveryTarget::session_resume_targets();
+    let ids = targets
+        .iter()
+        .map(DiscoveryTarget::as_str)
+        .collect::<Vec<_>>();
+
+    assert_eq!(ids, vec!["usb", "smbus"]);
+    assert!(
+        targets
+            .iter()
+            .find(|target| target.as_str() == "smbus")
+            .is_some_and(DiscoveryTarget::preserves_renderable_on_discovery_miss),
+        "SMBus resume scans should keep renderable devices during transient misses"
+    );
+}
+
 #[tokio::test]
 async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss() {
     let device_registry = DeviceRegistry::new();

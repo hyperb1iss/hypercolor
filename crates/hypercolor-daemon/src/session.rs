@@ -186,7 +186,7 @@ fn spawn_wake_transition(
             if current.sleeping && current.off_output_behavior == OffOutputBehavior::Release {
                 run_full_reconnect_scan(&runtime).await;
             } else if matches!(event, SessionEvent::Resumed) {
-                run_usb_resume_scan(&runtime).await;
+                run_host_resume_scan(&runtime).await;
             }
 
             if current.sleeping {
@@ -238,7 +238,7 @@ async fn ensure_awake(runtime: &SessionRuntime) {
     );
 }
 
-async fn run_usb_resume_scan(runtime: &SessionRuntime) {
+async fn run_host_resume_scan(runtime: &SessionRuntime) {
     let config_guard = runtime.config_manager.get();
     let config = Arc::clone(&*config_guard);
     let Some(result) = discovery::execute_discovery_scan_if_idle(
@@ -246,7 +246,7 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        vec![DiscoveryTarget::usb(), DiscoveryTarget::smbus()],
+        DiscoveryTarget::session_resume_targets(),
         discovery::default_timeout(),
     )
     .await
@@ -256,7 +256,7 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
                 .discovery_runtime
                 .in_progress
                 .load(Ordering::Acquire),
-            "Skipping USB resume recovery scan because discovery is already running"
+            "Skipping host resume recovery scan because discovery is already running"
         );
         return;
     };
@@ -265,7 +265,7 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
         found = result.new_devices.len() + result.reappeared_devices.len(),
         vanished = result.vanished_devices.len(),
         duration_ms = result.duration_ms,
-        "USB resume recovery scan finished"
+        "Host resume recovery scan finished"
     );
 }
 

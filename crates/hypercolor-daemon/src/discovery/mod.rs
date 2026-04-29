@@ -161,6 +161,7 @@ struct HostDiscoveryTargetDescriptor {
     id: &'static str,
     scanner: DiscoveryTargetScanner,
     preserves_renderable_on_miss: bool,
+    scan_on_session_resume: bool,
     availability: DiscoveryTargetAvailability,
 }
 
@@ -169,6 +170,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         id: "usb",
         scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: false,
+        scan_on_session_resume: true,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
             transport: None,
@@ -179,6 +181,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         id: "smbus",
         scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: true,
+        scan_on_session_resume: true,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
             transport: Some(DriverTransportKind::Smbus),
@@ -189,6 +192,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         id: "blocks",
         scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: false,
+        scan_on_session_resume: false,
         availability: DiscoveryTargetAvailability::BlocksScan {
             disabled_message: "Discovery target 'blocks' is disabled by config (discovery.blocks_scan=false)",
         },
@@ -292,6 +296,16 @@ impl DiscoveryTarget {
                 .map(Self::from_host_descriptor),
         );
         targets
+    }
+
+    /// Host discovery targets used after the host resumes from sleep.
+    #[must_use]
+    pub fn session_resume_targets() -> Vec<Self> {
+        HOST_DISCOVERY_TARGETS
+            .iter()
+            .filter(|descriptor| descriptor.scan_on_session_resume)
+            .map(Self::from_host_descriptor)
+            .collect()
     }
 }
 
