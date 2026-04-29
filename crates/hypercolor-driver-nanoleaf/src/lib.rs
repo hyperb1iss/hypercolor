@@ -29,12 +29,12 @@ use hypercolor_driver_api::{
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
-    AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionDescriptor, ControlActionResult, ControlActionStatus, ControlAvailability,
-    ControlAvailabilityExpr, ControlAvailabilityState, ControlChange, ControlFieldDescriptor,
-    ControlGroupDescriptor, ControlGroupKind, ControlOwner, ControlPersistence,
-    ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType,
-    ControlVisibility,
+    ActionConfirmation, ActionConfirmationLevel, AppliedControlChange, ApplyControlChangesResponse,
+    ApplyImpact, ControlAccess, ControlActionDescriptor, ControlActionResult, ControlActionStatus,
+    ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState, ControlChange,
+    ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
+    ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
+    ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation};
 use reqwest::StatusCode;
@@ -623,7 +623,10 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         description: Some("Reconnect and reload the Nanoleaf panel layout".to_owned()),
         input_fields: Vec::new(),
         result_type: Some(ControlValueType::Bool),
-        confirmation: None,
+        confirmation: Some(ActionConfirmation {
+            level: ActionConfirmationLevel::Normal,
+            message: "Refresh topology will reconnect this Nanoleaf device.".to_owned(),
+        }),
         apply_impact: ApplyImpact::DeviceReconnect,
         availability: ControlAvailabilityExpr::Always,
         ordering: 100,

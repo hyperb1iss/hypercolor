@@ -17,8 +17,8 @@ use hypercolor_driver_nanoleaf::{
     nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
 };
 use hypercolor_types::controls::{
-    ApplyImpact, ControlAccess, ControlActionStatus, ControlSurfaceEvent, ControlValue,
-    ControlValueMap,
+    ActionConfirmationLevel, ApplyImpact, ControlAccess, ControlActionStatus, ControlSurfaceEvent,
+    ControlValue, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
@@ -230,6 +230,16 @@ fn nanoleaf_device_control_surface_exposes_tracked_metadata() {
         .expect("refresh topology action should be exposed");
     assert_eq!(refresh.apply_impact, ApplyImpact::DeviceReconnect);
     assert!(refresh.input_fields.is_empty());
+    let confirmation = refresh
+        .confirmation
+        .as_ref()
+        .expect("refresh topology should require confirmation");
+    assert_eq!(confirmation.level, ActionConfirmationLevel::Normal);
+    assert!(
+        confirmation
+            .message
+            .contains("reconnect this Nanoleaf device")
+    );
     assert_eq!(
         surface.action_availability["refresh_topology"].state,
         hypercolor_types::controls::ControlAvailabilityState::Available
