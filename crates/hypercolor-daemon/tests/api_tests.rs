@@ -2471,6 +2471,96 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
 }
 
 #[tokio::test]
+async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_values() {
+    let (state, tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let surface_id = format!("driver:wled:device:{device_id}");
+
+    let surface_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(surface_response.status(), StatusCode::OK);
+    let surface_json = body_json(surface_response).await;
+    let revision = surface_json["data"]["revision"]
+        .as_u64()
+        .expect("revision should be an integer");
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": surface_id,
+                        "expected_revision": revision,
+                        "dry_run": true,
+                        "changes": [
+                            {
+                                "field_id": "protocol",
+                                "value": { "kind": "enum", "value": "e131" }
+                            },
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 6 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["previous_revision"], revision);
+    assert_eq!(json["data"]["revision"], revision);
+    assert_eq!(json["data"]["values"]["protocol"]["value"], "ddp");
+    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 2);
+
+    let refreshed = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(refreshed.status(), StatusCode::OK);
+    let refreshed_json = body_json(refreshed).await;
+    assert_eq!(refreshed_json["data"]["values"]["protocol"]["value"], "ddp");
+    assert_eq!(
+        refreshed_json["data"]["values"]["dedup_threshold"]["value"],
+        2
+    );
+    assert!(
+        fs::read_to_string(tmp.path().join("data/device-settings.json")).is_err(),
+        "dry-run should not write driver device control settings"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), events.recv())
+            .await
+            .is_err(),
+        "dry-run should not publish control surface events"
+    );
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_updates_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
