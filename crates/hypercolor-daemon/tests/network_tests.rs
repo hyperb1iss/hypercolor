@@ -102,6 +102,10 @@ fn host_transport_scanner_factory_handles_known_and_unknown_targets() {
         .expect("smbus host scanner should be built");
     assert_eq!(smbus.name(), "SMBus HAL");
 
+    let blocks = network::host_transport_scanner("blocks", &registry, &config)
+        .expect("blocks host scanner should be built");
+    assert_eq!(blocks.name(), "ROLI Blocks (blocksd)");
+
     assert!(
         network::host_transport_scanner("unknown", &registry, &config).is_none(),
         "unknown host discovery targets should not build scanners"
