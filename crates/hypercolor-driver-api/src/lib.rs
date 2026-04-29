@@ -745,9 +745,11 @@ pub trait DriverModule: Send + Sync {
     /// Returns an error if backend construction fails.
     fn build_output_backend(
         &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>>;
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+        Ok(None)
+    }
 
     /// Discovery capability, if supported.
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {

@@ -174,15 +174,6 @@ impl DriverModule for ControlOnlyDriver {
         &CONTROL_ONLY_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: hypercolor_driver_api::DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn hypercolor_driver_api::DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(&ControlOnlyProvider)
     }
@@ -230,15 +221,6 @@ impl DriverModule for ProtocolOnlyDriver {
         &PROTOCOL_ONLY_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: hypercolor_driver_api::DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn hypercolor_driver_api::DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
     fn has_output_backend(&self) -> bool {
         false
     }
@@ -276,15 +258,6 @@ static PRESENTATION_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 impl DriverModule for PresentationOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &PRESENTATION_ONLY_DESCRIPTOR
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: hypercolor_driver_api::DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn hypercolor_driver_api::DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
     }
 
     fn has_output_backend(&self) -> bool {
