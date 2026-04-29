@@ -16,12 +16,10 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-hue = ["hypercolor-driver-builtin/hue"]
-nanoleaf = ["hypercolor-driver-builtin/nanoleaf"]
-govee = ["hypercolor-driver-builtin/govee"]
+builtin-drivers = ["hypercolor-driver-builtin/default"]
 nvidia = ["hypercolor-core/nvidia"]
 wgpu = ["dep:wgpu", "dep:pollster"]
-default = ["hue", "nanoleaf", "govee", "wgpu", "servo"]
+default = ["builtin-drivers", "wgpu", "servo"]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]

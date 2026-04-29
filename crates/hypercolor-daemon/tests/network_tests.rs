@@ -1,9 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(feature = "builtin-drivers")]
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::BackendManager;
+#[cfg(feature = "builtin-drivers")]
 use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
@@ -13,30 +16,29 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
+#[cfg(feature = "builtin-drivers")]
+use hypercolor_types::device::DriverModuleKind;
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
-    DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceId, DeviceInfo, DriverPresentation, DriverProtocolDescriptor,
+    DriverTransportKind,
 };
 
 #[test]
+#[cfg(feature = "builtin-drivers")]
 fn default_app_state_registers_builtin_network_drivers() {
     let state = AppState::new();
     let ids = state.driver_registry.ids();
 
     assert!(ids.contains(&"wled".to_owned()));
-    #[cfg(feature = "hue")]
     assert!(ids.contains(&"hue".to_owned()));
-    #[cfg(feature = "nanoleaf")]
     assert!(ids.contains(&"nanoleaf".to_owned()));
 }
 
 #[test]
+#[cfg(feature = "builtin-drivers")]
 fn builtin_pairing_drivers_expose_pairing_capabilities() {
     let state = AppState::new();
-    #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
-    let _ = &state;
 
-    #[cfg(feature = "hue")]
     assert!(
         state
             .driver_registry
@@ -46,7 +48,6 @@ fn builtin_pairing_drivers_expose_pairing_capabilities() {
             .is_some()
     );
 
-    #[cfg(feature = "nanoleaf")]
     assert!(
         state
             .driver_registry
@@ -58,6 +59,7 @@ fn builtin_pairing_drivers_expose_pairing_capabilities() {
 }
 
 #[test]
+#[cfg(feature = "builtin-drivers")]
 fn builtin_network_drivers_expose_discovery_capabilities() {
     let state = AppState::new();
 
@@ -69,7 +71,6 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
             .discovery()
             .is_some()
     );
-    #[cfg(feature = "hue")]
     assert!(
         state
             .driver_registry
@@ -78,7 +79,6 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
             .discovery()
             .is_some()
     );
-    #[cfg(feature = "nanoleaf")]
     assert!(
         state
             .driver_registry
@@ -90,6 +90,7 @@ fn builtin_network_drivers_expose_discovery_capabilities() {
 }
 
 #[test]
+#[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_honor_driver_config_entries() {
     let state = AppState::new();
     let mut config = HypercolorConfig::default();
@@ -119,6 +120,7 @@ fn enabled_module_ids_honor_driver_config_entries() {
 }
 
 #[test]
+#[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_can_filter_by_transport() {
     let state = AppState::new();
     let mut config = HypercolorConfig::default();
@@ -139,6 +141,7 @@ fn enabled_module_ids_can_filter_by_transport() {
 }
 
 #[test]
+#[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_include_default_enabled_hal_modules() {
     let state = AppState::new();
     let enabled = network::enabled_module_ids(

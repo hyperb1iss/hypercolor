@@ -3,6 +3,7 @@
 //! The daemon loads this crate as one local module bundle, keeping concrete
 //! built-in driver implementations out of daemon orchestration code.
 
+#[cfg(feature = "hal")]
 mod hal;
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use hypercolor_driver_govee::GoveeDriverModule;
 use hypercolor_driver_hue::HueDriverModule;
 #[cfg(feature = "nanoleaf")]
 use hypercolor_driver_nanoleaf::NanoleafDriverModule;
+#[cfg(feature = "wled")]
 use hypercolor_driver_wled::WledDriverModule;
 
 /// Build the compiled-in driver module registry for this process.
@@ -47,6 +49,18 @@ pub fn register_driver_modules(
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
 ) -> Result<()> {
+    #[cfg(not(any(
+        feature = "wled",
+        feature = "govee",
+        feature = "hue",
+        feature = "nanoleaf",
+        feature = "hal"
+    )))]
+    let _ = registry;
+    #[cfg(not(any(feature = "wled", feature = "hue", feature = "nanoleaf")))]
+    let _ = config;
+
+    #[cfg(feature = "wled")]
     registry.register(WledDriverModule::new(config.discovery.mdns_enabled))?;
     #[cfg(not(any(feature = "govee", feature = "hue", feature = "nanoleaf")))]
     let _ = &credential_store;
@@ -69,8 +83,11 @@ pub fn register_driver_modules(
         config.discovery.mdns_enabled,
     ))?;
 
-    for driver in hal::hal_catalog_driver_modules() {
-        registry.register(driver)?;
+    #[cfg(feature = "hal")]
+    {
+        for driver in hal::hal_catalog_driver_modules() {
+            registry.register(driver)?;
+        }
     }
 
     Ok(())
@@ -78,6 +95,10 @@ pub fn register_driver_modules(
 
 /// Ensure config entries exist for compiled-in driver modules with dynamic catalogs.
 pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
+    #[cfg(not(feature = "hal"))]
+    let _ = config;
+
+    #[cfg(feature = "hal")]
     for descriptor in hal::hal_module_descriptors() {
         config.drivers.entry(descriptor.id.clone()).or_default();
     }

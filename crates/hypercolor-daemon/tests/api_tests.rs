@@ -21,7 +21,9 @@ use hypercolor_driver_api::{
     DiscoveryResult, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
     DriverModule, DriverTransport, ValidatedControlChanges,
 };
+#[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "builtin-drivers")]
 use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -1876,7 +1878,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
     id
 }
 
-#[cfg(feature = "hue")]
+#[cfg(feature = "builtin-drivers")]
 async fn insert_test_hue_bridge_device(
     state: &Arc<AppState>,
     name: &str,
@@ -1922,7 +1924,7 @@ async fn insert_test_hue_bridge_device(
         .await
 }
 
-#[cfg(feature = "nanoleaf")]
+#[cfg(feature = "builtin-drivers")]
 async fn insert_test_nanoleaf_device(
     state: &Arc<AppState>,
     name: &str,
@@ -8563,7 +8565,7 @@ async fn list_devices_includes_network_metadata_when_available() {
     assert_eq!(json["data"]["items"][0]["network_hostname"], "wled-desk");
 }
 
-#[cfg(feature = "hue")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn list_devices_includes_hue_auth_summary_when_pairing_required() {
     let state = Arc::new(isolated_state());
@@ -8590,7 +8592,7 @@ async fn list_devices_includes_hue_auth_summary_when_pairing_required() {
     assert_eq!(auth["descriptor"]["action_label"], "Pair Bridge");
 }
 
-#[cfg(feature = "hue")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn list_devices_includes_hue_auth_summary_when_configured() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -9363,7 +9365,7 @@ async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() 
     );
 }
 
-#[cfg(feature = "hue")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn pair_device_route_pairs_hue_by_device_id() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -9433,7 +9435,7 @@ async fn pair_device_route_pairs_hue_by_device_id() {
     server_task.await.expect("Hue mock task should finish");
 }
 
-#[cfg(feature = "hue")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn pair_device_route_returns_action_required_for_hue_without_button() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -9484,7 +9486,7 @@ async fn pair_device_route_returns_action_required_for_hue_without_button() {
     server_task.await.expect("Hue mock task should finish");
 }
 
-#[cfg(feature = "nanoleaf")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn pair_device_route_pairs_nanoleaf_by_device_id() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -9551,7 +9553,7 @@ async fn pair_device_route_pairs_nanoleaf_by_device_id() {
     server_task.await.expect("Nanoleaf mock task should finish");
 }
 
-#[cfg(feature = "hue")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn delete_pairing_removes_hue_credentials() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -9615,7 +9617,7 @@ async fn delete_pairing_removes_hue_credentials() {
     );
 }
 
-#[cfg(feature = "nanoleaf")]
+#[cfg(feature = "builtin-drivers")]
 #[tokio::test]
 async fn delete_pairing_removes_nanoleaf_credentials() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -9678,6 +9680,7 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
     );
 }
 
+#[cfg(feature = "builtin-drivers")]
 fn pairing_json_response(body: &str) -> Vec<u8> {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -9687,10 +9690,12 @@ fn pairing_json_response(body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+#[cfg(feature = "builtin-drivers")]
 fn pairing_not_found_response() -> Vec<u8> {
     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
 }
 
+#[cfg(feature = "builtin-drivers")]
 async fn read_pairing_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
     let mut buf = vec![0_u8; 4096];
     let mut total = 0_usize;
