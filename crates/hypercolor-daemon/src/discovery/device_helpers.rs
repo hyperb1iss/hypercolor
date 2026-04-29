@@ -228,13 +228,12 @@ pub(super) async fn desired_connect_behavior(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     device_info: &DeviceInfo,
-    backend_id: &str,
     fingerprint: Option<&DeviceFingerprint>,
     discovered_behavior: hypercolor_core::device::DiscoveryConnectBehavior,
     user_enabled: bool,
 ) -> hypercolor_core::device::DiscoveryConnectBehavior {
     let layout_device_id =
-        DeviceLifecycleManager::canonical_layout_device_id(backend_id, device_info, fingerprint);
+        DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint);
     ensure_default_logical_for_device(
         runtime,
         device_id,

@@ -66,18 +66,14 @@ pub async fn sync_active_layout_for_renderable_devices(
             continue;
         }
 
-        let layout_device_id =
-            if let Some(Some(layout_device_id)) = canonical_layout_ids.get(&device_id) {
-                layout_device_id.clone()
-            } else {
-                let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-                let backend_id = tracked.info.output_backend_id();
-                DeviceLifecycleManager::canonical_layout_device_id(
-                    backend_id,
-                    &tracked.info,
-                    fingerprint.as_ref(),
-                )
-            };
+        let layout_device_id = if let Some(Some(layout_device_id)) =
+            canonical_layout_ids.get(&device_id)
+        {
+            layout_device_id.clone()
+        } else {
+            let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+            DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref())
+        };
         let default_enabled = logical_store
             .get(&layout_device_id)
             .is_none_or(|entry| entry.enabled);
@@ -174,13 +170,11 @@ pub async fn sync_active_layout_connectivity(
             continue;
         }
 
-        let backend = tracked.info.output_backend_id();
         let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
         let connect_behavior = super::device_helpers::desired_connect_behavior(
             runtime,
             device_id,
             &tracked.info,
-            backend,
             fingerprint.as_ref(),
             tracked.connect_behavior,
             tracked.user_settings.enabled,
@@ -192,7 +186,6 @@ pub async fn sync_active_layout_connectivity(
             lifecycle.on_discovered_with_behavior(
                 device_id,
                 &tracked.info,
-                &backend,
                 fingerprint.as_ref(),
                 connect_behavior,
             )

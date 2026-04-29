@@ -7821,7 +7821,7 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
         .expect("device should exist");
     let layout_device_id = {
         let mut lifecycle = state.lifecycle_manager.lock().await;
-        let _actions = lifecycle.on_discovered(device_id, &tracked.info, "wled", None);
+        let _actions = lifecycle.on_discovered(device_id, &tracked.info, None);
         lifecycle
             .layout_device_id_for(device_id)
             .expect("layout id should exist")
@@ -9158,7 +9158,7 @@ async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
     let layout_device_id = {
         let mut lifecycle = state.lifecycle_manager.lock().await;
         let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
-        let _ = lifecycle.on_discovered(device_id, &tracked.info, "smbus", Some(&fingerprint));
+        let _ = lifecycle.on_discovered(device_id, &tracked.info, Some(&fingerprint));
         let layout_device_id = lifecycle
             .layout_device_id_for(device_id)
             .expect("layout id should exist")
@@ -9295,7 +9295,7 @@ async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() 
 
     {
         let mut lifecycle = state.lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &tracked.info, "wled", Some(&fingerprint));
+        let _ = lifecycle.on_discovered(device_id, &tracked.info, Some(&fingerprint));
         let _ = lifecycle
             .on_connected(device_id)
             .expect("connect transition should succeed");

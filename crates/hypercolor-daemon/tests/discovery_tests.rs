@@ -398,7 +398,7 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     {
         let mut lifecycle = lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &info, "usb", None);
+        let _ = lifecycle.on_discovered(device_id, &info, None);
         lifecycle
             .on_connected(device_id)
             .expect("lifecycle should accept connected transition");
@@ -463,7 +463,7 @@ async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss()
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     {
         let mut lifecycle = lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &info, "smbus", Some(&fingerprint));
+        let _ = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
         lifecycle
             .on_connected(device_id)
             .expect("lifecycle should accept connected transition");
@@ -518,7 +518,7 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     let layout_device_id = {
         let mut lifecycle = lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &info, "usb", None);
+        let _ = lifecycle.on_discovered(device_id, &info, None);
         lifecycle
             .on_connected(device_id)
             .expect("lifecycle should accept connected transition");
@@ -579,7 +579,7 @@ async fn sync_active_layout_for_renderable_devices_does_not_auto_adopt_new_devic
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     let layout_device_id = {
         let mut lifecycle = lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &info, "usb", None);
+        let _ = lifecycle.on_discovered(device_id, &info, None);
         lifecycle
             .on_connected(device_id)
             .expect("lifecycle should accept connected transition");
@@ -694,7 +694,7 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
     }
 
     let layout_device_id =
-        DeviceLifecycleManager::canonical_layout_device_id("mock", &info, Some(&fingerprint));
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
     {
         let mut spatial = runtime.spatial_engine.write().await;
         spatial.update_layout(layout_with_device(&layout_device_id));

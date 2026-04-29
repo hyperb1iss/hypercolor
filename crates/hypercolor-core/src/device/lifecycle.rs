@@ -137,13 +137,11 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
         device_info: &DeviceInfo,
-        backend_id: &str,
         fingerprint: Option<&DeviceFingerprint>,
     ) -> Vec<LifecycleAction> {
         self.on_discovered_with_behavior(
             device_id,
             device_info,
-            backend_id,
             fingerprint,
             DiscoveryConnectBehavior::AutoConnect,
         )
@@ -154,16 +152,14 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
         device_info: &DeviceInfo,
-        backend_id: &str,
         fingerprint: Option<&DeviceFingerprint>,
         connect_behavior: DiscoveryConnectBehavior,
     ) -> Vec<LifecycleAction> {
-        let backend_id = backend_id.to_ascii_lowercase();
-        let layout_device_id =
-            Self::layout_device_id_with_fingerprint(&backend_id, device_info, fingerprint);
+        let backend_id = device_info.output_backend_id().to_ascii_lowercase();
+        let layout_device_id = Self::layout_device_id_with_fingerprint(device_info, fingerprint);
 
         let managed = self.devices.entry(device_id).or_insert_with(|| {
-            let identifier = Self::identifier_for_device(&backend_id, device_info, fingerprint);
+            let identifier = Self::identifier_for_device(device_info, fingerprint);
             ManagedDevice {
                 state_machine: DeviceStateMachine::with_policy(
                     identifier.clone(),
@@ -417,8 +413,8 @@ impl DeviceLifecycleManager {
     ///
     /// Fallback format: `<driver>:<normalized_name>`.
     #[must_use]
-    pub fn layout_device_id(backend_id: &str, device_info: &DeviceInfo) -> String {
-        let owner = Self::layout_owner_id(backend_id, device_info);
+    pub fn layout_device_id(device_info: &DeviceInfo) -> String {
+        let owner = Self::layout_owner_id(device_info);
         let name = sanitize_component(&device_info.name);
         format!("{owner}:{name}")
     }
@@ -427,11 +423,10 @@ impl DeviceLifecycleManager {
     /// when one is available.
     #[must_use]
     pub fn canonical_layout_device_id(
-        backend_id: &str,
         device_info: &DeviceInfo,
         fingerprint: Option<&DeviceFingerprint>,
     ) -> String {
-        Self::layout_device_id_with_fingerprint(backend_id, device_info, fingerprint)
+        Self::layout_device_id_with_fingerprint(device_info, fingerprint)
     }
 
     fn managed_mut(&mut self, device_id: DeviceId) -> Result<&mut ManagedDevice, DeviceError> {
@@ -458,13 +453,12 @@ impl DeviceLifecycleManager {
     }
 
     fn layout_device_id_with_fingerprint(
-        backend_id: &str,
         device_info: &DeviceInfo,
         fingerprint: Option<&DeviceFingerprint>,
     ) -> String {
-        let owner = Self::layout_owner_id(backend_id, device_info);
+        let owner = Self::layout_owner_id(device_info);
         let Some(fingerprint) = fingerprint else {
-            return Self::layout_device_id(backend_id, device_info);
+            return Self::layout_device_id(device_info);
         };
         let value = fingerprint.0.to_ascii_lowercase();
 
@@ -489,13 +483,13 @@ impl DeviceLifecycleManager {
             return format!("{owner}:{}", sanitize_component(value));
         }
 
-        Self::layout_device_id(backend_id, device_info)
+        Self::layout_device_id(device_info)
     }
 
-    fn layout_owner_id(backend_id: &str, device_info: &DeviceInfo) -> String {
+    fn layout_owner_id(device_info: &DeviceInfo) -> String {
         let driver_id = device_info.driver_id().trim();
         let owner = if driver_id.is_empty() {
-            backend_id.trim()
+            device_info.output_backend_id().trim()
         } else {
             driver_id
         };
@@ -503,10 +497,10 @@ impl DeviceLifecycleManager {
     }
 
     fn identifier_for_device(
-        backend_id: &str,
         device_info: &DeviceInfo,
         fingerprint: Option<&DeviceFingerprint>,
     ) -> DeviceIdentifier {
+        let backend_id = device_info.output_backend_id();
         if let Some(fingerprint) = fingerprint {
             let value = fingerprint.0.clone();
             if let Some(rest) = value.strip_prefix("smbus:") {
@@ -520,7 +514,7 @@ impl DeviceLifecycleManager {
                 };
             }
             if let Some(rest) = value.strip_prefix("net:") {
-                let owner_prefix = format!("{}:", Self::layout_owner_id(backend_id, device_info));
+                let owner_prefix = format!("{}:", Self::layout_owner_id(device_info));
                 let mdns_hostname = rest
                     .strip_prefix(&owner_prefix)
                     .map(ToOwned::to_owned)
@@ -611,7 +605,6 @@ mod tests {
         let actions = lifecycle.on_discovered(
             info.id,
             &info,
-            "wled",
             Some(&DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned())),
         );
 
@@ -630,7 +623,7 @@ mod tests {
     fn comm_error_emits_disconnect_unmap_and_reconnect() {
         let mut lifecycle = DeviceLifecycleManager::new();
         let info = device_info("Desk Strip", DeviceFamily::new_static("wled", "WLED"));
-        lifecycle.on_discovered(info.id, &info, "wled", None);
+        lifecycle.on_discovered(info.id, &info, None);
         lifecycle
             .on_connected(info.id)
             .expect("connect transition should work");
@@ -667,7 +660,7 @@ mod tests {
             "Unreachable Device",
             DeviceFamily::new_static("wled", "WLED"),
         );
-        lifecycle.on_discovered(info.id, &info, "wled", None);
+        lifecycle.on_discovered(info.id, &info, None);
 
         let actions = lifecycle
             .on_connect_failed(info.id)
@@ -693,7 +686,6 @@ mod tests {
         lifecycle.on_discovered(
             info.id,
             &info,
-            "wled",
             Some(&DeviceFingerprint("net:wled:office-strip".to_owned())),
         );
         lifecycle
@@ -731,7 +723,7 @@ mod tests {
             "Default Policy Device",
             DeviceFamily::new_static("wled", "WLED"),
         );
-        lifecycle.on_discovered(info.id, &info, "wled", None);
+        lifecycle.on_discovered(info.id, &info, None);
 
         lifecycle
             .on_connect_failed(info.id)
@@ -758,7 +750,7 @@ mod tests {
     fn disable_then_enable_reconnects_known_device() {
         let mut lifecycle = DeviceLifecycleManager::new();
         let info = device_info("Panel", DeviceFamily::new_static("wled", "WLED"));
-        lifecycle.on_discovered(info.id, &info, "wled", None);
+        lifecycle.on_discovered(info.id, &info, None);
         lifecycle
             .on_connected(info.id)
             .expect("connect transition should work");
@@ -788,7 +780,7 @@ mod tests {
     fn vanished_active_device_requests_disconnect_and_unmap() {
         let mut lifecycle = DeviceLifecycleManager::new();
         let info = device_info("Vanishing Strip", DeviceFamily::new_static("wled", "WLED"));
-        lifecycle.on_discovered(info.id, &info, "wled", None);
+        lifecycle.on_discovered(info.id, &info, None);
         lifecycle
             .on_connected(info.id)
             .expect("connect transition should work");
@@ -813,7 +805,7 @@ mod tests {
     #[test]
     fn layout_id_falls_back_to_driver_prefix_and_normalized_name() {
         let info = device_info("My Test Device", DeviceFamily::named("Mock"));
-        let layout_id = DeviceLifecycleManager::layout_device_id("mock", &info);
+        let layout_id = DeviceLifecycleManager::layout_device_id(&info);
         assert_eq!(layout_id, "mock:my-test-device");
     }
 
@@ -826,7 +818,7 @@ mod tests {
         let fingerprint = DeviceFingerprint("net:hue:bridge.local".to_owned());
 
         let layout_id =
-            DeviceLifecycleManager::canonical_layout_device_id("hue", &info, Some(&fingerprint));
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "hue:bridge-local");
     }
@@ -837,7 +829,7 @@ mod tests {
         let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
 
         let layout_id =
-            DeviceLifecycleManager::canonical_layout_device_id("wled", &info, Some(&fingerprint));
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "wled:aa:bb:cc:dd:ee:ff");
     }
@@ -850,7 +842,7 @@ mod tests {
         let fingerprint = DeviceFingerprint("usb:/dev/hidraw2".to_owned());
 
         let layout_id =
-            DeviceLifecycleManager::canonical_layout_device_id("usb", &info, Some(&fingerprint));
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "nollie:dev-hidraw2");
     }

@@ -992,12 +992,7 @@ async fn resolved_layout_device_id(state: &AppState, device_info: &DeviceInfo) -
         .device_registry
         .fingerprint_for_id(&device_info.id)
         .await;
-    let backend_id = device_info.output_backend_id();
-    DeviceLifecycleManager::canonical_layout_device_id(
-        backend_id,
-        device_info,
-        fingerprint.as_ref(),
-    )
+    DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint.as_ref())
 }
 
 pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {

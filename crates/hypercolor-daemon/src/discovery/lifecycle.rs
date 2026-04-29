@@ -38,14 +38,12 @@ pub async fn apply_user_enabled_state(
         let Some(tracked) = runtime.device_registry.get(&device_id).await else {
             return Ok(UserEnabledStateResult::MissingLifecycle);
         };
-        let backend = tracked.info.output_backend_id();
         let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
 
         desired_connect_behavior(
             runtime,
             device_id,
             &tracked.info,
-            backend,
             fingerprint.as_ref(),
             tracked.connect_behavior,
             true,
@@ -116,14 +114,12 @@ pub async fn activate_pairable_device(
             let _ = lifecycle.on_discovered_with_behavior(
                 device_id,
                 &tracked.info,
-                backend_id,
                 fingerprint.as_ref(),
                 DiscoveryConnectBehavior::Deferred,
             );
             lifecycle.layout_device_id_for(device_id).map_or_else(
                 || {
                     DeviceLifecycleManager::canonical_layout_device_id(
-                        backend_id,
                         &tracked.info,
                         fingerprint.as_ref(),
                     )

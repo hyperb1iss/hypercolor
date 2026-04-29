@@ -302,7 +302,6 @@ async fn lifecycle_discovery_connect_and_frame_write() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        "mock",
         Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
@@ -338,7 +337,6 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
     let deferred_actions = lifecycle.on_discovered_with_behavior(
         device_id,
         &info,
-        "wled",
         Some(&fingerprint),
         DiscoveryConnectBehavior::Deferred,
     );
@@ -351,7 +349,6 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
     let upgraded_actions = lifecycle.on_discovered_with_behavior(
         device_id,
         &info,
-        "wled",
         Some(&fingerprint),
         DiscoveryConnectBehavior::AutoConnect,
     );
@@ -373,7 +370,6 @@ fn deferred_discovery_disconnects_connected_device() {
     let initial_actions = lifecycle.on_discovered_with_behavior(
         device_id,
         &info,
-        "mock",
         Some(&fingerprint),
         DiscoveryConnectBehavior::AutoConnect,
     );
@@ -392,7 +388,6 @@ fn deferred_discovery_disconnects_connected_device() {
     let deferred_actions = lifecycle.on_discovered_with_behavior(
         device_id,
         &info,
-        "mock",
         Some(&fingerprint),
         DiscoveryConnectBehavior::Deferred,
     );
@@ -422,13 +417,11 @@ fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         first_id,
         &first,
-        "usb",
         Some(&DeviceFingerprint("usb:16d0:1294:1-3.3".to_owned())),
     );
     let _ = lifecycle.on_discovered(
         second_id,
         &second,
-        "usb",
         Some(&DeviceFingerprint("usb:16d0:1294:1-3.4".to_owned())),
     );
 
@@ -451,7 +444,6 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         device_id,
         &info,
-        "asus",
         Some(&DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned())),
     );
 
@@ -470,7 +462,6 @@ fn runtime_deactivate_disconnects_without_disabling_the_device() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        "mock",
         Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
     );
     assert!(
@@ -527,7 +518,6 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        "mock",
         Some(&DeviceFingerprint("mock:case-fan".to_owned())),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;

@@ -370,7 +370,6 @@ pub async fn activate_simulated_displays(
             let mut actions = lifecycle.on_discovered_with_behavior(
                 device_id,
                 &tracked.info,
-                SIMULATED_DISPLAY_BACKEND_ID,
                 Some(&fingerprint),
                 DiscoveryConnectBehavior::AutoConnect,
             );

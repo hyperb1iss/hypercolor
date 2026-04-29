@@ -528,13 +528,11 @@ async fn process_discovered_device(
     let tracked_before = runtime.device_registry.get(&device_id).await?;
     let was_renderable = tracked_before.state.is_renderable();
 
-    let backend = tracked_before.info.output_backend_id().to_owned();
     let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
     let connect_behavior = desired_connect_behavior(
         runtime,
         device_id,
         &tracked_before.info,
-        &backend,
         fingerprint.as_ref(),
         tracked_before.connect_behavior,
         persisted_settings.enabled,
@@ -552,7 +550,6 @@ async fn process_discovered_device(
         lifecycle.on_discovered_with_behavior(
             device_id,
             &tracked_before.info,
-            &backend,
             fingerprint.as_ref(),
             connect_behavior,
         )

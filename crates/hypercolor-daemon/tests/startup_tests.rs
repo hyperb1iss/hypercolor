@@ -466,7 +466,7 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
     let _ = state.device_registry.add(info.clone()).await;
     let layout_device_id = {
         let mut lifecycle = state.lifecycle_manager.lock().await;
-        let _actions = lifecycle.on_discovered(device_id, &info, "cleanup", None);
+        let _actions = lifecycle.on_discovered(device_id, &info, None);
         lifecycle
             .layout_device_id_for(device_id)
             .expect("layout id should exist")

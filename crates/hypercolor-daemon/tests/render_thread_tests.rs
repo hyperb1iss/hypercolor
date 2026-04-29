@@ -2332,7 +2332,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         .first()
         .cloned()
         .expect("mock backend should expose one device");
-    let layout_device_id = DeviceLifecycleManager::layout_device_id("mock", &info);
+    let layout_device_id = DeviceLifecycleManager::layout_device_id(&info);
 
     backend.connect(&device_id).await.expect("connect");
     backend.fail_write = true;
@@ -2354,7 +2354,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     )));
     {
         let mut lifecycle = lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &info, "mock", None);
+        let _ = lifecycle.on_discovered(device_id, &info, None);
         lifecycle
             .on_connected(device_id)
             .expect("connected state should be valid");
