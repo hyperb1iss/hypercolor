@@ -496,6 +496,27 @@ fn render_field_editor(
             surfaces_resource,
         )
         .into_any(),
+        ControlValueType::Unknown => {
+            render_unsupported_value(current_value.as_ref(), "Unsupported value type").into_any()
+        }
+    }
+}
+
+fn render_unsupported_value(
+    current_value: Option<&DynamicControlValue>,
+    reason: &'static str,
+) -> impl IntoView {
+    let summary = value_text(current_value);
+    view! {
+        <div
+            class="max-w-[180px] rounded-md border border-edge-subtle/55 bg-surface-sunken px-2 py-1 text-right"
+            title=reason
+        >
+            <div class="truncate text-[10px] font-mono text-fg-tertiary/65">
+                {if summary.is_empty() { "Unsupported".to_owned() } else { summary }}
+            </div>
+            <div class="text-[8px] uppercase tracking-[0.08em] text-fg-tertiary/35">"Unsupported"</div>
+        </div>
     }
 }
 
@@ -1014,6 +1035,10 @@ fn render_action_input_editor(
             enabled,
         )
         .into_any(),
+        ControlValueType::Unknown => view! {
+            <span class="text-[9px] text-fg-tertiary/50">"Unsupported input"</span>
+        }
+        .into_any(),
     }
 }
 
@@ -1283,7 +1308,16 @@ fn text_editor_kind(value_type: &ControlValueType) -> TextEditorKind {
         ControlValueType::MacAddress => TextEditorKind::MacAddress,
         ControlValueType::ColorRgb => TextEditorKind::ColorRgb,
         ControlValueType::ColorRgba => TextEditorKind::ColorRgba,
-        _ => TextEditorKind::String,
+        ControlValueType::Bool
+        | ControlValueType::Integer { .. }
+        | ControlValueType::Float { .. }
+        | ControlValueType::String { .. }
+        | ControlValueType::DurationMs { .. }
+        | ControlValueType::Enum { .. }
+        | ControlValueType::Flags { .. }
+        | ControlValueType::List { .. }
+        | ControlValueType::Object { .. }
+        | ControlValueType::Unknown => TextEditorKind::String,
     }
 }
 
@@ -1362,6 +1396,7 @@ fn value_text(value: Option<&DynamicControlValue>) -> String {
         Some(DynamicControlValue::Flags(values)) => values.join(", "),
         Some(DynamicControlValue::List(_)) => "list".to_string(),
         Some(DynamicControlValue::Object(_)) => "object".to_string(),
+        Some(DynamicControlValue::Unknown) => "unsupported value".to_string(),
         Some(DynamicControlValue::Null) | None => String::new(),
     }
 }
@@ -1419,6 +1454,7 @@ fn control_value_to_json(value: &DynamicControlValue) -> JsonValue {
                 .map(|(key, value)| (key.clone(), control_value_to_json(value)))
                 .collect(),
         ),
+        DynamicControlValue::Unknown => JsonValue::Null,
     }
 }
 
@@ -1523,6 +1559,7 @@ fn json_to_control_value(
             }
             Ok(DynamicControlValue::Object(values))
         }
+        ControlValueType::Unknown => Err("Unsupported control value type".to_string()),
     }
 }
 

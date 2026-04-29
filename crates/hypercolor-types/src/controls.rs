@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use utoipa::ToSchema;
 
@@ -115,7 +115,7 @@ pub type ControlAvailabilityMap = BTreeMap<ControlFieldId, ControlAvailability>;
 /// Availability map keyed by control action ID.
 pub type ControlActionAvailabilityMap = BTreeMap<ControlActionId, ControlAvailability>;
 
-/// Closed type vocabulary for control values.
+/// Versioned type vocabulary for control values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[schema(no_recursion)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -215,6 +215,10 @@ pub enum ControlValueType {
         /// Object field descriptors.
         fields: Vec<ControlObjectField>,
     },
+
+    /// Unknown value type from a newer daemon or driver schema.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ControlValueType {
@@ -257,6 +261,7 @@ impl ControlValueType {
             (Self::Object { fields }, ControlValue::Object(values)) => {
                 validate_object(fields, values)
             }
+            (Self::Unknown, _) => Err(ControlValueValidationError::UnsupportedValueType),
             _ => Err(ControlValueValidationError::TypeMismatch {
                 expected: self.clone(),
                 actual: value.kind(),
@@ -266,7 +271,7 @@ impl ControlValueType {
 }
 
 /// Typed value payload matching a [`ControlValueType`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[schema(no_recursion)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum ControlValue {
@@ -314,6 +319,54 @@ pub enum ControlValue {
 
     /// Structured object.
     Object(BTreeMap<String, ControlValue>),
+
+    /// Unknown value from a newer daemon or driver schema.
+    #[serde(other)]
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for ControlValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawControlValue {
+            kind: String,
+            #[serde(default)]
+            value: Option<serde_json::Value>,
+        }
+
+        fn parse_value<T, E>(kind: &str, value: Option<serde_json::Value>) -> Result<T, E>
+        where
+            T: serde::de::DeserializeOwned,
+            E: serde::de::Error,
+        {
+            let value = value.ok_or_else(|| E::custom(format!("missing value for {kind}")))?;
+            serde_json::from_value(value)
+                .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
+        }
+
+        let raw = RawControlValue::deserialize(deserializer)?;
+        match raw.kind.as_str() {
+            "null" => Ok(Self::Null),
+            "bool" => parse_value("bool", raw.value).map(Self::Bool),
+            "integer" => parse_value("integer", raw.value).map(Self::Integer),
+            "float" => parse_value("float", raw.value).map(Self::Float),
+            "string" => parse_value("string", raw.value).map(Self::String),
+            "secret_ref" => parse_value("secret_ref", raw.value).map(Self::SecretRef),
+            "color_rgb" => parse_value("color_rgb", raw.value).map(Self::ColorRgb),
+            "color_rgba" => parse_value("color_rgba", raw.value).map(Self::ColorRgba),
+            "ip_address" => parse_value("ip_address", raw.value).map(Self::IpAddress),
+            "mac_address" => parse_value("mac_address", raw.value).map(Self::MacAddress),
+            "duration_ms" => parse_value("duration_ms", raw.value).map(Self::DurationMs),
+            "enum" => parse_value("enum", raw.value).map(Self::Enum),
+            "flags" => parse_value("flags", raw.value).map(Self::Flags),
+            "list" => parse_value("list", raw.value).map(Self::List),
+            "object" => parse_value("object", raw.value).map(Self::Object),
+            _ => Ok(Self::Unknown),
+        }
+    }
 }
 
 impl ControlValue {
@@ -336,6 +389,7 @@ impl ControlValue {
             Self::Flags(_) => ControlValueKind::Flags,
             Self::List(_) => ControlValueKind::List,
             Self::Object(_) => ControlValueKind::Object,
+            Self::Unknown => ControlValueKind::Unknown,
         }
     }
 }
@@ -374,6 +428,8 @@ pub enum ControlValueKind {
     List,
     /// Object value.
     Object,
+    /// Unknown future value.
+    Unknown,
 }
 
 /// Stable enum option.
@@ -964,6 +1020,10 @@ pub enum ControlSurfaceEvent {
 /// Validation error for matching [`ControlValue`] to [`ControlValueType`].
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ControlValueValidationError {
+    /// The value type is not understood by this client.
+    #[error("unsupported control value type")]
+    UnsupportedValueType,
+
     /// Value kind does not match expected type.
     #[error("expected {expected:?}, got {actual:?}")]
     TypeMismatch {

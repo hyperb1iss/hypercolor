@@ -914,6 +914,7 @@ fn control_value_summary(value: &ControlValue) -> String {
         ControlValue::Flags(values) => values.join(", "),
         ControlValue::List(values) => format!("{} items", values.len()),
         ControlValue::Object(values) => format!("{} fields", values.len()),
+        ControlValue::Unknown => "unsupported value".to_owned(),
     }
 }
 

@@ -32,6 +32,22 @@ fn control_value_type_roundtrips_with_explicit_kind() {
 }
 
 #[test]
+fn control_value_type_deserializes_unknown_kind_as_fallback() {
+    let value_type: ControlValueType = serde_json::from_value(serde_json::json!({
+        "kind": "vector3",
+        "min": [0, 0, 0],
+        "max": [1, 1, 1]
+    }))
+    .expect("deserialize future value type");
+
+    assert_eq!(value_type, ControlValueType::Unknown);
+    assert_eq!(
+        value_type.validate_value(&ControlValue::String("future".to_owned())),
+        Err(ControlValueValidationError::UnsupportedValueType)
+    );
+}
+
+#[test]
 fn control_value_roundtrips_with_explicit_kind_and_value() {
     let value = ControlValue::DurationMs(1_500);
 
@@ -42,6 +58,17 @@ fn control_value_roundtrips_with_explicit_kind_and_value() {
 
     let roundtrip: ControlValue = serde_json::from_value(json).expect("deserialize value");
     assert_eq!(roundtrip, value);
+}
+
+#[test]
+fn control_value_deserializes_unknown_kind_as_fallback() {
+    let value: ControlValue = serde_json::from_value(serde_json::json!({
+        "kind": "vector3",
+        "value": [0.1, 0.2, 0.3]
+    }))
+    .expect("deserialize future value");
+
+    assert_eq!(value, ControlValue::Unknown);
 }
 
 #[test]
