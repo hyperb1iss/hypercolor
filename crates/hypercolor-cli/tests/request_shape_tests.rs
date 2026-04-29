@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::Uri;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -309,8 +309,8 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/devices/{device}/controls",
-            get(device_control_surface),
+            "/api/v1/control-surfaces",
+            get(capture_device_control_surface_list),
         )
         .route(
             "/api/v1/control-surfaces/{surface_id}/values",
@@ -339,7 +339,9 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
 
     assert_eq!(
         captured_uri.lock().await.as_deref(),
-        Some("/api/v1/control-surfaces/device%3A00000000-0000-0000-0000-000000000001/values")
+        Some(
+            "/api/v1/control-surfaces/driver%3Awled%3Adevice%3A00000000-0000-0000-0000-000000000001/values"
+        )
     );
     assert_eq!(
         captured_body
@@ -348,7 +350,7 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
             .clone()
             .context("server did not capture device control patch request body")?,
         serde_json::json!({
-            "surface_id": "device:00000000-0000-0000-0000-000000000001",
+            "surface_id": "driver:wled:device:00000000-0000-0000-0000-000000000001",
             "changes": [{
                 "field_id": "color_order",
                 "value": {
@@ -365,14 +367,15 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
 }
 
 #[tokio::test]
-async fn devices_controls_fetches_device_surface_endpoint() -> Result<()> {
+async fn devices_controls_fetches_device_surface_list_endpoint() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/devices/{device}/controls",
-            get(capture_device_control_surface),
+            "/api/v1/control-surfaces",
+            get(capture_device_control_surface_list),
         )
-        .with_state(Arc::clone(&captured_uri));
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_body)));
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
     let cli_result = run_hyper(port, &["devices", "controls", test_device_id()]).await;
@@ -383,7 +386,7 @@ async fn devices_controls_fetches_device_surface_endpoint() -> Result<()> {
 
     assert_eq!(
         captured_uri.lock().await.as_deref(),
-        Some("/api/v1/devices/00000000-0000-0000-0000-000000000001/controls")
+        Some("/api/v1/control-surfaces?device_id=00000000-0000-0000-0000-000000000001")
     );
 
     Ok(())
@@ -395,8 +398,8 @@ async fn devices_action_targets_device_surface() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
-            "/api/v1/devices/{device}/controls",
-            get(device_control_surface),
+            "/api/v1/control-surfaces",
+            get(capture_device_control_surface_list),
         )
         .route(
             "/api/v1/control-surfaces/{surface_id}/actions/{action_id}",
@@ -725,12 +728,15 @@ async fn capture_device_control_patch(
     uri: Uri,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    assert_eq!(surface_id, format!("device:{}", test_device_id()));
+    assert_eq!(
+        surface_id,
+        format!("driver:wled:device:{}", test_device_id())
+    );
     *captured_uri.lock().await = Some(uri.to_string());
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
         "data": {
-            "surface_id": format!("device:{}", test_device_id()),
+            "surface_id": format!("driver:wled:device:{}", test_device_id()),
             "previous_revision": 2,
             "revision": 3,
             "accepted": ["color_order"],
@@ -744,11 +750,6 @@ async fn capture_device_control_patch(
             }
         }
     }))
-}
-
-async fn device_control_surface(Path(device): Path<String>) -> Json<serde_json::Value> {
-    assert_eq!(device, test_device_id());
-    Json(device_control_surface_response())
 }
 
 fn device_control_surface_response() -> serde_json::Value {
@@ -765,7 +766,15 @@ fn device_control_surface_response() -> serde_json::Value {
             "revision": 2,
             "groups": [],
             "fields": [],
-            "actions": [],
+            "actions": [{
+                "id": "identify",
+                "label": "Identify",
+                "description": null,
+                "group_id": null,
+                "input": [],
+                "confirmation": "none",
+                "apply_impact": "live"
+            }],
             "values": {},
             "availability": {},
             "action_availability": {}
@@ -773,14 +782,76 @@ fn device_control_surface_response() -> serde_json::Value {
     })
 }
 
-async fn capture_device_control_surface(
-    Path(device): Path<String>,
-    State(captured_uri): State<SharedUri>,
+fn driver_device_control_surface_response() -> serde_json::Value {
+    serde_json::json!({
+        "data": {
+            "surface_id": format!("driver:wled:device:{}", test_device_id()),
+            "scope": {
+                "device": {
+                    "device_id": test_device_id(),
+                    "driver_id": "wled"
+                }
+            },
+            "schema_version": 1,
+            "revision": 2,
+            "groups": [],
+            "fields": [{
+                "id": "color_order",
+                "label": "Color order",
+                "description": null,
+                "group_id": null,
+                "value_type": {
+                    "kind": "enum",
+                    "options": [{
+                        "value": "grb",
+                        "label": "GRB",
+                        "description": null
+                    }]
+                },
+                "access": "read_write",
+                "persistence": "device_config",
+                "apply_impact": "live",
+                "visibility": "normal",
+                "required": false,
+                "owner": {
+                    "driver": {
+                        "driver_id": "wled"
+                    }
+                },
+                "availability": null,
+                "ordering": 0
+            }],
+            "actions": [],
+            "values": {
+                "color_order": {
+                    "kind": "enum",
+                    "value": "grb"
+                }
+            },
+            "availability": {},
+            "action_availability": {}
+        }
+    })
+}
+
+async fn capture_device_control_surface_list(
+    Query(query): Query<std::collections::BTreeMap<String, String>>,
+    State((captured_uri, _captured_body)): State<SharedRequest>,
     uri: Uri,
 ) -> Json<serde_json::Value> {
-    assert_eq!(device, test_device_id());
+    assert_eq!(
+        query.get("device_id").map(String::as_str),
+        Some(test_device_id())
+    );
     *captured_uri.lock().await = Some(uri.to_string());
-    Json(device_control_surface_response())
+    Json(serde_json::json!({
+        "data": {
+            "surfaces": [
+                device_control_surface_response()["data"].clone(),
+                driver_device_control_surface_response()["data"].clone()
+            ]
+        }
+    }))
 }
 
 async fn capture_device_control_action(

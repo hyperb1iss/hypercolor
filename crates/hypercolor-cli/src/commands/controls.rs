@@ -200,7 +200,7 @@ async fn execute_action(
     render_action_response(&response, ctx)
 }
 
-fn render_surface_list(response: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_surface_list(response: &Value, ctx: &OutputContext) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain => {

@@ -1,8 +1,8 @@
 //! `hyper devices` -- device discovery, inspection, and management.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::client::DaemonClient;
 use crate::commands::controls;
@@ -342,9 +342,12 @@ async fn execute_controls(
     ctx: &OutputContext,
 ) -> Result<()> {
     let response = client
-        .get(&format!("/devices/{}/controls", urlencoded(&args.device)))
+        .get(&format!(
+            "/control-surfaces?device_id={}",
+            urlencoded(&args.device)
+        ))
         .await?;
-    controls::render_surface(&response, ctx)
+    controls::render_surface_list(&response, ctx)
 }
 
 async fn execute_set_control(
@@ -352,7 +355,7 @@ async fn execute_set_control(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = device_control_surface_id(client, &args.device).await?;
+    let surface_id = device_control_surface_id_for_field(client, &args.device, &args.field).await?;
     let assignment = format!("{}={}", args.field, args.value);
     let changes = controls::assignments_to_changes(&[assignment])?;
     let mut body = json!({
@@ -378,7 +381,8 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = device_control_surface_id(client, &args.device).await?;
+    let surface_id =
+        device_control_surface_id_for_action(client, &args.device, &args.action).await?;
     let input = controls::assignments_to_map(&args.input)?;
     let response = client
         .post(
@@ -462,9 +466,85 @@ fn render_pair_response(
     Ok(())
 }
 
-async fn device_control_surface_id(client: &DaemonClient, device: &str) -> Result<String> {
-    let surface = client
-        .get(&format!("/devices/{}/controls", urlencoded(device)))
+async fn device_control_surface_id_for_field(
+    client: &DaemonClient,
+    device: &str,
+    field: &str,
+) -> Result<String> {
+    let surfaces = device_control_surfaces(client, device).await?;
+    find_surface_with_item(&surfaces, "fields", field).ok_or_else(|| {
+        let available = available_surface_items(&surfaces, "fields");
+        anyhow::anyhow!(
+            "Device control field '{field}' was not found on {device}. Available fields: {available}"
+        )
+    })
+}
+
+async fn device_control_surface_id_for_action(
+    client: &DaemonClient,
+    device: &str,
+    action: &str,
+) -> Result<String> {
+    let surfaces = device_control_surfaces(client, device).await?;
+    find_surface_with_item(&surfaces, "actions", action).ok_or_else(|| {
+        let available = available_surface_items(&surfaces, "actions");
+        anyhow::anyhow!(
+            "Device control action '{action}' was not found on {device}. Available actions: {available}"
+        )
+    })
+}
+
+async fn device_control_surfaces(client: &DaemonClient, device: &str) -> Result<Vec<Value>> {
+    let response = client
+        .get(&format!(
+            "/control-surfaces?device_id={}",
+            urlencoded(device)
+        ))
         .await?;
-    Ok(extract_str(&surface, "surface_id"))
+    let surfaces = response
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if surfaces.is_empty() {
+        bail!("Device {device} does not expose control surfaces");
+    }
+    Ok(surfaces)
+}
+
+fn find_surface_with_item(surfaces: &[Value], collection: &str, item_id: &str) -> Option<String> {
+    surfaces.iter().find_map(|surface| {
+        surface
+            .get(collection)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some(item_id))
+            .then(|| {
+                surface
+                    .get("surface_id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .flatten()
+    })
+}
+
+fn available_surface_items(surfaces: &[Value], collection: &str) -> String {
+    let items = surfaces
+        .iter()
+        .flat_map(|surface| {
+            surface
+                .get(collection)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.get("id").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        "none".to_owned()
+    } else {
+        items.join(", ")
+    }
 }
