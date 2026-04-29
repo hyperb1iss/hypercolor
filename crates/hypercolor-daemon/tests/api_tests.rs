@@ -2315,6 +2315,49 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
     }));
 }
 
+#[cfg(feature = "builtin-drivers")]
+#[tokio::test]
+async fn list_control_surfaces_preserves_driver_action_confirmation() {
+    let state = Arc::new(isolated_state());
+    let device_id =
+        insert_test_nanoleaf_device(&state, "Living Room Shapes", "serial42", "10.0.0.8", 16021)
+            .await;
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/control-surfaces?device_id={device_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let surfaces = json["data"]["surfaces"]
+        .as_array()
+        .expect("surfaces should be an array");
+    let nanoleaf = surfaces
+        .iter()
+        .find(|surface| surface["surface_id"] == format!("driver:nanoleaf:device:{device_id}"))
+        .expect("Nanoleaf device surface should be returned");
+    let refresh = nanoleaf["actions"]
+        .as_array()
+        .expect("actions should be an array")
+        .iter()
+        .find(|action| action["id"] == "refresh_topology")
+        .expect("refresh topology action should be exposed");
+    assert_eq!(refresh["confirmation"]["level"], "normal");
+    assert!(
+        refresh["confirmation"]["message"]
+            .as_str()
+            .expect("confirmation message should be a string")
+            .contains("reconnect this Nanoleaf device")
+    );
+}
+
 #[tokio::test]
 async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
     let state = Arc::new(isolated_state());
