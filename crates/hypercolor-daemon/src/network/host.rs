@@ -381,7 +381,8 @@ impl BackendRebindActions for DaemonDriverHost {
         let Some(driver) = self.driver_registry.get(driver_id) else {
             return Ok(());
         };
-        if !super::module_enabled(&config, &driver.module_descriptor()) {
+        let descriptor = driver.module_descriptor();
+        if !super::module_enabled(&config, &descriptor) || !descriptor.capabilities.output_backend {
             return Ok(());
         }
 
