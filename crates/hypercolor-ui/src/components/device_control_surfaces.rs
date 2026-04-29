@@ -12,12 +12,13 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use serde_json::Value as JsonValue;
 
-use crate::api;
-use crate::app::WsContext;
-use crate::control_surface_view::{
+use hypercolor_ui::control_surface_view::{
     action_is_hidden, control_value_summary, field_is_hidden, visible_action_count,
     visible_control_surfaces, visible_field_count,
 };
+
+use crate::api;
+use crate::app::WsContext;
 use crate::icons::*;
 use crate::toasts;
 

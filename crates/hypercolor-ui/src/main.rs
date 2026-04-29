@@ -7,7 +7,6 @@ mod components;
 mod compound_selection;
 mod config_state;
 mod control_geometry;
-mod control_surface_view;
 mod device_event_logic;
 mod device_metrics;
 mod display_preview_state;
