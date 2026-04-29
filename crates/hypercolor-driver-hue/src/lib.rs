@@ -103,6 +103,10 @@ impl DriverModule for HueDriverModule {
         ))))
     }
 
+    fn has_output_backend(&self) -> bool {
+        true
+    }
+
     fn pairing(&self) -> Option<&dyn PairingCapability> {
         Some(self)
     }

@@ -304,6 +304,10 @@ impl DriverModule for ConfiglessDriver {
             id: "external-backend",
         })))
     }
+
+    fn has_output_backend(&self) -> bool {
+        true
+    }
 }
 
 struct CapabilityOnlyDriver;

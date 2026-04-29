@@ -733,7 +733,7 @@ pub trait DriverModule: Send + Sync {
 
     /// Whether this driver contributes a runtime backend for color output.
     fn has_output_backend(&self) -> bool {
-        true
+        false
     }
 
     /// Build the optional runtime backend used for color output.

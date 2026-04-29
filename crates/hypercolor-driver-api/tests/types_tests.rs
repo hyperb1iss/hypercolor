@@ -177,10 +177,6 @@ impl DriverModule for ControlOnlyDriver {
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
         Some(&ControlOnlyProvider)
     }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
 }
 
 struct ProtocolOnlyCatalog;
@@ -221,10 +217,6 @@ impl DriverModule for ProtocolOnlyDriver {
         &PROTOCOL_ONLY_DESCRIPTOR
     }
 
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
         Some(&ProtocolOnlyCatalog)
     }
@@ -258,10 +250,6 @@ static PRESENTATION_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 impl DriverModule for PresentationOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &PRESENTATION_ONLY_DESCRIPTOR
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 
     fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {

@@ -168,6 +168,10 @@ impl DriverModule for WledDriverModule {
         )?)))
     }
 
+    fn has_output_backend(&self) -> bool {
+        true
+    }
+
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }

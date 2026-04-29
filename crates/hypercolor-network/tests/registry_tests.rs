@@ -277,6 +277,10 @@ impl DriverModule for DiscoveryOnlyDriver {
         Ok(Some(Box::new(TestBackend)))
     }
 
+    fn has_output_backend(&self) -> bool {
+        true
+    }
+
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(&DiscoveryOnlyCapability)
     }
