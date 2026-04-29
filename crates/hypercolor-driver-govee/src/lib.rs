@@ -269,24 +269,13 @@ impl DriverControlProvider for GoveeDriverModule {
         }
         let revision = govee_control_revision(&values);
 
-        if let Some(control_host) = host.control_host() {
-            control_host
-                .driver_config_store()
-                .save_driver_values(DESCRIPTOR.id, values.clone())
-                .await?;
-            if changes.impacts.contains(&ApplyImpact::BackendRebind) {
-                control_host
-                    .backend_rebind()
-                    .rebind_backend(DESCRIPTOR.id)
-                    .await?;
-            }
-            if changes.impacts.contains(&ApplyImpact::DiscoveryRescan) {
-                control_host
-                    .lifecycle()
-                    .rescan_driver(DESCRIPTOR.id)
-                    .await?;
-            }
-        }
+        let control_host = host
+            .control_host()
+            .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
+        control_host
+            .driver_config_store()
+            .save_driver_values(DESCRIPTOR.id, values.clone())
+            .await?;
 
         Ok(govee_apply_response(
             format!("driver:{}", DESCRIPTOR.id),

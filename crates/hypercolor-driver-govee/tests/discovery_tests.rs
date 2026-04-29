@@ -1,16 +1,25 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hypercolor_driver_api::{DriverTrackedDevice, TrackedDeviceCtx};
+use anyhow::Result;
+use hypercolor_driver_api::{
+    BackendRebindActions, ControlApplyTarget, DeviceControlStore, DriverConfigView,
+    DriverControlHost, DriverControlProvider, DriverControlStore, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverLifecycleActions, DriverRuntimeActions,
+    DriverTrackedDevice, TrackedDeviceCtx, ValidatedControlChanges,
+};
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    GoveeKnownDevice, build_cloud_discovered_device, build_device_info,
+    GoveeDriverModule, GoveeKnownDevice, build_cloud_discovered_device, build_device_info,
     govee_device_control_surface, govee_driver_control_surface, merge_cloud_inventory,
     parse_scan_response, resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
 };
-use hypercolor_types::config::GoveeConfig;
+use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
-    ControlAccess, ControlPersistence, ControlSurfaceScope, ControlValue,
+    ApplyImpact, ControlAccess, ControlChange, ControlPersistence, ControlSurfaceEvent,
+    ControlSurfaceScope, ControlValue, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -218,6 +227,45 @@ fn govee_driver_control_surface_exposes_config_fields() {
     assert_ne!(surface.revision, changed.revision);
 }
 
+#[tokio::test]
+async fn govee_apply_persists_values_without_running_host_impacts() {
+    let host = TestControlHost::default();
+    let driver = GoveeDriverModule::new(GoveeConfig::default());
+    let entry = DriverConfigEntry::enabled(BTreeMap::new());
+    let config = DriverConfigView {
+        driver_id: "govee",
+        entry: &entry,
+    };
+    let target = ControlApplyTarget::Driver {
+        driver_id: "govee",
+        config,
+    };
+
+    let response = DriverControlProvider::apply_changes(
+        &driver,
+        &host,
+        &target,
+        ValidatedControlChanges {
+            changes: vec![ControlChange {
+                field_id: "lan_state_fps".to_owned(),
+                value: ControlValue::Integer(8),
+            }],
+            impacts: vec![ApplyImpact::BackendRebind, ApplyImpact::DiscoveryRescan],
+        },
+    )
+    .await
+    .expect("govee control apply should persist values");
+
+    assert_eq!(response.surface_id, "driver:govee");
+    assert_eq!(response.values["lan_state_fps"], ControlValue::Integer(8));
+    assert_eq!(
+        host.saved_driver_values("govee")["lan_state_fps"],
+        ControlValue::Integer(8)
+    );
+    assert_eq!(host.rebinds.load(Ordering::Relaxed), 0);
+    assert_eq!(host.rescans.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn govee_device_control_surface_exposes_lan_metadata() {
     let tracked = tracked_govee_device("10.0.0.5", "H619A", "001122334455");
@@ -349,4 +397,163 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
         fingerprint: Some(DeviceFingerprint(format!("net:govee:{mac}"))),
         current_state: DeviceState::Known,
     }
+}
+
+#[derive(Default)]
+struct TestControlHost {
+    driver_values: Mutex<HashMap<String, ControlValueMap>>,
+    rebinds: AtomicUsize,
+    rescans: AtomicUsize,
+}
+
+impl TestControlHost {
+    fn saved_driver_values(&self, driver_id: &str) -> ControlValueMap {
+        self.driver_values
+            .lock()
+            .expect("test driver values mutex should not be poisoned")
+            .get(driver_id)
+            .cloned()
+            .expect("driver values should be saved")
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverCredentialStore for TestControlHost {
+    async fn get_json(&self, _driver_id: &str, _key: &str) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+
+    async fn set_json(
+        &self,
+        _driver_id: &str,
+        _key: &str,
+        _value: serde_json::Value,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn remove(&self, _driver_id: &str, _key: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverRuntimeActions for TestControlHost {
+    async fn activate_device(&self, _device_id: DeviceId, _backend_id: &str) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn disconnect_device(
+        &self,
+        _device_id: DeviceId,
+        _backend_id: &str,
+        _will_retry: bool,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverDiscoveryState for TestControlHost {
+    async fn tracked_devices(&self, _driver_id: &str) -> Vec<DriverTrackedDevice> {
+        Vec::new()
+    }
+
+    fn load_cached_json(&self, _driver_id: &str, _key: &str) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+}
+
+impl DriverHost for TestControlHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        self
+    }
+
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        self
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        self
+    }
+
+    fn control_host(&self) -> Option<&dyn DriverControlHost> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverControlStore for TestControlHost {
+    async fn load_driver_values(&self, driver_id: &str) -> Result<ControlValueMap> {
+        Ok(self
+            .driver_values
+            .lock()
+            .expect("test driver values mutex should not be poisoned")
+            .get(driver_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn save_driver_values(&self, driver_id: &str, values: ControlValueMap) -> Result<()> {
+        self.driver_values
+            .lock()
+            .expect("test driver values mutex should not be poisoned")
+            .insert(driver_id.to_owned(), values);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceControlStore for TestControlHost {
+    async fn load_device_values(&self, _device_id: DeviceId) -> Result<ControlValueMap> {
+        Ok(ControlValueMap::new())
+    }
+
+    async fn save_device_values(
+        &self,
+        _device_id: DeviceId,
+        _values: ControlValueMap,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DriverLifecycleActions for TestControlHost {
+    async fn reconnect_device(&self, _device_id: DeviceId, _backend_id: &str) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn rescan_driver(&self, _driver_id: &str) -> Result<()> {
+        self.rescans.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl BackendRebindActions for TestControlHost {
+    async fn rebind_backend(&self, _driver_id: &str) -> Result<()> {
+        self.rebinds.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+impl DriverControlHost for TestControlHost {
+    fn driver_config_store(&self) -> &dyn DriverControlStore {
+        self
+    }
+
+    fn device_config_store(&self) -> &dyn DeviceControlStore {
+        self
+    }
+
+    fn lifecycle(&self) -> &dyn DriverLifecycleActions {
+        self
+    }
+
+    fn backend_rebind(&self) -> &dyn BackendRebindActions {
+        self
+    }
+
+    fn publish_control_event(&self, _event: ControlSurfaceEvent) {}
 }
