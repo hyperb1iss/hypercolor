@@ -3,11 +3,15 @@
 mod host;
 
 use std::collections::BTreeSet;
+#[cfg(not(feature = "builtin-drivers"))]
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::device::{
     BackendManager, BlocksBackend, SmBusBackend, UsbBackend, UsbProtocolConfigStore,
 };
+#[cfg(not(feature = "builtin-drivers"))]
+use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -17,8 +21,21 @@ use hypercolor_types::device::{
 };
 
 pub use host::DaemonDriverHost;
+#[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin_driver_module_registry;
+#[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
+
+#[cfg(not(feature = "builtin-drivers"))]
+pub fn build_builtin_driver_module_registry(
+    _config: &HypercolorConfig,
+    _credential_store: Arc<CredentialStore>,
+) -> Result<DriverModuleRegistry> {
+    Ok(DriverModuleRegistry::new())
+}
+
+#[cfg(not(feature = "builtin-drivers"))]
+pub fn normalize_builtin_driver_config_entries(_config: &mut HypercolorConfig) {}
 
 /// Whether a driver is enabled by the active config.
 #[must_use]
