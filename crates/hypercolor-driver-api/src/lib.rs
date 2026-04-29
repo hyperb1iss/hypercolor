@@ -31,7 +31,7 @@ pub mod validation;
 
 pub use backend::{BackendInfo, DeviceBackend, DeviceFrameSink, HealthStatus};
 pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
-pub use net::{CredentialStore, Credentials, MdnsBrowser, MdnsService};
+pub use net::{CredentialStore, MdnsBrowser, MdnsService};
 
 /// Current driver API schema version. Bump this on any breaking change to
 /// the [`DriverHost`] trait, [`DriverDescriptor`] fields, or related types.

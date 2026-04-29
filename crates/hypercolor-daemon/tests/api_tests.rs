@@ -8601,8 +8601,9 @@ async fn list_devices_includes_hue_auth_summary_when_configured() {
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
         .credential_store
-        .store_json(
-            "hue:test-bridge",
+        .store_driver_json(
+            "hue",
+            "test-bridge",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",

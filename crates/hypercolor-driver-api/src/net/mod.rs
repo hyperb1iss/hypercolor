@@ -3,5 +3,5 @@
 mod credentials;
 mod mdns;
 
-pub use credentials::{CredentialStore, Credentials};
+pub use credentials::CredentialStore;
 pub use mdns::{MdnsBrowser, MdnsService};

@@ -110,8 +110,9 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
     store
-        .store_json(
-            "hue:test-bridge",
+        .store_driver_json(
+            "hue",
+            "test-bridge",
             serde_json::json!({
                 "api_key": "test-api-key",
                 "client_key": "00112233445566778899aabbccddeeff",

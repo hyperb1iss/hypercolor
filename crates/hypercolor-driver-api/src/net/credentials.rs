@@ -8,10 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
+
+use crate::DriverCredentialStore;
 
 /// Per-process temp-file suffix counter for atomic store writes.
 static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -22,34 +25,21 @@ const NONCE_BYTES: usize = 12;
 
 /// Stored credentials for a device driver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Credentials {
-    /// Driver identifier, for example `hue`.
-    pub driver_id: String,
-    /// Driver-defined credential payload.
-    pub data: Value,
+pub(crate) struct Credentials {
+    driver_id: String,
+    data: Value,
 }
 
 impl Credentials {
-    /// Build stored credentials from driver-owned payload data.
-    #[must_use]
-    pub fn new(driver_id: impl Into<String>, data: Value) -> Self {
+    fn new(driver_id: impl Into<String>, data: Value) -> Self {
         Self {
             driver_id: driver_id.into(),
             data,
         }
     }
 
-    /// Convert stored credentials to the driver-facing JSON payload.
-    #[must_use]
-    pub fn into_driver_json(self) -> Value {
+    fn into_driver_json(self) -> Value {
         self.data
-    }
-
-    /// Build stored credentials from a driver-facing JSON payload.
-    #[must_use]
-    pub fn from_driver_json(key: &str, value: Value) -> Self {
-        let driver_id = key.split(':').next().unwrap_or("custom");
-        Self::new(driver_id, value)
     }
 }
 
@@ -114,13 +104,11 @@ impl CredentialStore {
         Ok(store)
     }
 
-    /// Retrieve credentials for one key.
-    pub async fn get(&self, key: &str) -> Option<Credentials> {
+    async fn get(&self, key: &str) -> Option<Credentials> {
         self.cache.read().await.get(key).cloned()
     }
 
-    /// Retrieve credentials as a driver-facing JSON payload.
-    pub async fn get_json(&self, key: &str) -> Option<Value> {
+    async fn get_json(&self, key: &str) -> Option<Value> {
         self.get(key).await.map(Credentials::into_driver_json)
     }
 
@@ -129,28 +117,13 @@ impl CredentialStore {
         self.get_json(&scoped_credential_key(driver_id, key)).await
     }
 
-    /// Store or replace credentials for one key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the encrypted payload cannot be persisted.
-    pub async fn store(&self, key: &str, creds: Credentials) -> Result<()> {
+    async fn store(&self, key: &str, creds: Credentials) -> Result<()> {
         let snapshot = {
             let mut cache = self.cache.write().await;
             cache.insert(key.to_owned(), creds);
             cache.clone()
         };
         self.persist_snapshot(&snapshot).await
-    }
-
-    /// Store or replace credentials from a driver-facing JSON payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the encrypted payload cannot be persisted.
-    pub async fn store_json(&self, key: &str, value: Value) -> Result<()> {
-        self.store(key, Credentials::from_driver_json(key, value))
-            .await
     }
 
     /// Store or replace a driver-scoped JSON credential payload.
@@ -166,12 +139,7 @@ impl CredentialStore {
         .await
     }
 
-    /// Remove credentials for one key if present.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the encrypted payload cannot be persisted.
-    pub async fn remove(&self, key: &str) -> Result<()> {
+    async fn remove(&self, key: &str) -> Result<()> {
         let snapshot = {
             let mut cache = self.cache.write().await;
             cache.remove(key);
@@ -216,6 +184,21 @@ impl CredentialStore {
             })?;
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl DriverCredentialStore for CredentialStore {
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
+        Ok(self.get_driver_json(driver_id, key).await)
+    }
+
+    async fn set_json(&self, driver_id: &str, key: &str, value: Value) -> Result<()> {
+        self.store_driver_json(driver_id, key, value).await
+    }
+
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
+        self.remove_driver(driver_id, key).await
     }
 }
 

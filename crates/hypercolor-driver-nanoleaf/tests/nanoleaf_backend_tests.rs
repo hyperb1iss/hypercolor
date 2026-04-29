@@ -62,8 +62,9 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
     store
-        .store_json(
-            "nanoleaf:living-room",
+        .store_driver_json(
+            "nanoleaf",
+            "living-room",
             serde_json::json!({
                 "auth_token": "test-token",
             }),

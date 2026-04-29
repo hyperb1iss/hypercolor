@@ -1,4 +1,4 @@
-use hypercolor_driver_api::{CredentialStore, Credentials};
+use hypercolor_driver_api::CredentialStore;
 use tempfile::tempdir;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -9,8 +9,9 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store_json(
-            "alpha:bridge-1",
+        .store_driver_json(
+            "alpha",
+            "bridge-1",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",
@@ -18,16 +19,18 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
         )
         .await?;
     store
-        .store_json(
-            "beta:panel-1",
+        .store_driver_json(
+            "beta",
+            "panel-1",
             serde_json::json!({
                 "auth_token": "panel-token",
             }),
         )
         .await?;
     store
-        .store_json(
-            "gamma:living-room",
+        .store_driver_json(
+            "gamma",
+            "living-room",
             serde_json::json!({
                 "username": "user",
                 "password": "secret",
@@ -37,7 +40,7 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
         .await?;
 
     assert_eq!(
-        store.get_json("alpha:bridge-1").await,
+        store.get_driver_json("alpha", "bridge-1").await,
         Some(serde_json::json!({
             "api_key": "api-key",
             "client_key": "client-key",
@@ -54,13 +57,13 @@ async fn credential_store_round_trips_and_reopens() -> TestResult {
 
     let reopened = CredentialStore::open(tempdir.path()).await?;
     assert_eq!(
-        reopened.get_json("beta:panel-1").await,
+        reopened.get_driver_json("beta", "panel-1").await,
         Some(serde_json::json!({
             "auth_token": "panel-token",
         }))
     );
     assert_eq!(
-        reopened.get_json("gamma:living-room").await,
+        reopened.get_driver_json("gamma", "living-room").await,
         Some(serde_json::json!({
             "username": "user",
             "password": "secret",
@@ -77,17 +80,14 @@ async fn credential_store_remove_updates_persisted_state() -> TestResult {
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store(
-            "custom:test",
-            Credentials::new("custom", serde_json::json!({ "token": "value" })),
-        )
+        .store_driver_json("custom", "test", serde_json::json!({ "token": "value" }))
         .await?;
-    store.remove("custom:test").await?;
+    store.remove_driver("custom", "test").await?;
 
-    assert_eq!(store.get("custom:test").await, None);
+    assert_eq!(store.get_driver_json("custom", "test").await, None);
 
     let reopened = CredentialStore::open(tempdir.path()).await?;
-    assert_eq!(reopened.get("custom:test").await, None);
+    assert_eq!(reopened.get_driver_json("custom", "test").await, None);
     assert!(reopened.keys().await.is_empty());
 
     Ok(())
@@ -99,8 +99,9 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store_json(
-            "alpha:bridge-1",
+        .store_driver_json(
+            "alpha",
+            "bridge-1",
             serde_json::json!({
                 "api_key": "api-key",
                 "client_key": "client-key",
@@ -108,8 +109,9 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
         )
         .await?;
     store
-        .store_json(
-            "custom-driver:device-1",
+        .store_driver_json(
+            "custom-driver",
+            "device-1",
             serde_json::json!({
                 "secret": "driver-owned",
                 "shape": ["opaque", "to", "host"],
@@ -118,14 +120,14 @@ async fn credential_store_exposes_driver_json_payloads() -> TestResult {
         .await?;
 
     assert_eq!(
-        store.get_json("alpha:bridge-1").await,
+        store.get_driver_json("alpha", "bridge-1").await,
         Some(serde_json::json!({
             "api_key": "api-key",
             "client_key": "client-key",
         }))
     );
     assert_eq!(
-        store.get_json("custom-driver:device-1").await,
+        store.get_driver_json("custom-driver", "device-1").await,
         Some(serde_json::json!({
             "secret": "driver-owned",
             "shape": ["opaque", "to", "host"],
@@ -160,12 +162,8 @@ async fn credential_store_scopes_driver_json_payloads() -> TestResult {
         Some(serde_json::json!({ "api_key": "alpha-key" }))
     );
     assert_eq!(
-        store
-            .get("alpha:account")
-            .await
-            .expect("scoped credential should exist")
-            .driver_id,
-        "alpha"
+        store.keys().await,
+        vec!["alpha:account".to_owned(), "beta:account".to_owned()]
     );
     assert_eq!(
         store.get_driver_json("beta", "account").await,
@@ -188,17 +186,14 @@ async fn credential_store_keeps_driver_json_opaque() -> TestResult {
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store_json("alpha:strip", serde_json::json!({}))
+        .store_driver_json("alpha", "strip", serde_json::json!({}))
         .await?;
 
     assert_eq!(
-        store.get_json("alpha:strip").await,
+        store.get_driver_json("alpha", "strip").await,
         Some(serde_json::json!({}))
     );
-    assert_eq!(
-        store.get("alpha:strip").await,
-        Some(Credentials::new("alpha", serde_json::json!({})))
-    );
+    assert_eq!(store.keys().await, vec!["alpha:strip".to_owned()]);
 
     Ok(())
 }
@@ -209,8 +204,9 @@ async fn credential_store_keeps_plaintext_out_of_encrypted_file() -> TestResult 
     let store = CredentialStore::open(tempdir.path()).await?;
 
     store
-        .store_json(
-            "alpha:bridge-1",
+        .store_driver_json(
+            "alpha",
+            "bridge-1",
             serde_json::json!({
                 "api_key": "visible-api-key",
                 "client_key": "visible-client-key",

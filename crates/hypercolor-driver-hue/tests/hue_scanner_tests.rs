@@ -50,8 +50,9 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
     store
-        .store_json(
-            "hue:test-bridge",
+        .store_driver_json(
+            "hue",
+            "test-bridge",
             serde_json::json!({
                 "api_key": "test-api-key",
                 "client_key": "00112233445566778899aabbccddeeff",
