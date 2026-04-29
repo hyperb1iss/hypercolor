@@ -711,6 +711,7 @@ pub fn govee_driver_control_surface(config: &GoveeConfig) -> ControlSurfaceDocum
     });
     document.fields = govee_driver_control_fields();
     document.values = govee_control_values(config);
+    document.revision = govee_control_revision(&document.values);
     document.availability = document
         .fields
         .iter()

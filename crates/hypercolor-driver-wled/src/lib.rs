@@ -431,6 +431,7 @@ pub fn wled_driver_control_surface(config: &WledConfig) -> ControlSurfaceDocumen
     });
     document.fields = wled_driver_control_fields();
     document.values = wled_config_values(config);
+    document.revision = wled_control_revision(&document.values);
     document.availability = document
         .fields
         .iter()
@@ -850,6 +851,15 @@ fn wled_device_control_revision(device: &TrackedDeviceCtx<'_>, values: &ControlV
     payload.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
+}
+
+fn wled_control_revision(values: &ControlValueMap) -> u64 {
+    values
+        .iter()
+        .flat_map(|(key, value)| [key.as_bytes(), format!("{value:?}").as_bytes()].concat())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
 }
 
 fn wled_effective_device_values(

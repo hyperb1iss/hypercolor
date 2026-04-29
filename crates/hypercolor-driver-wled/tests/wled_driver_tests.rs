@@ -156,6 +156,7 @@ fn wled_driver_control_surface_exposes_typed_config_fields() {
     let surface = wled_driver_control_surface(&config);
 
     assert_eq!(surface.surface_id, "driver:wled");
+    assert!(surface.revision > 0);
     assert_eq!(surface.fields.len(), 4);
     assert!(surface.fields.iter().any(|field| {
         field.id == "known_ips" && field.apply_impact == ApplyImpact::DiscoveryRescan
@@ -176,6 +177,12 @@ fn wled_driver_control_surface_exposes_typed_config_fields() {
         ControlValue::Bool(false)
     );
     assert_eq!(surface.values["dedup_threshold"], ControlValue::Integer(7));
+
+    let changed = wled_driver_control_surface(&WledConfig {
+        dedup_threshold: 8,
+        ..config
+    });
+    assert_ne!(surface.revision, changed.revision);
 }
 
 #[test]

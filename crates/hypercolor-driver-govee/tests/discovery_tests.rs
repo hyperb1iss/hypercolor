@@ -182,6 +182,7 @@ fn govee_driver_control_surface_exposes_config_fields() {
     let surface = govee_driver_control_surface(&config);
 
     assert_eq!(surface.surface_id, "driver:govee");
+    assert!(surface.revision > 0);
     assert_eq!(
         surface.scope,
         ControlSurfaceScope::Driver {
@@ -209,6 +210,12 @@ fn govee_driver_control_surface_exposes_config_fields() {
     );
     assert_eq!(surface.values["lan_state_fps"], ControlValue::Integer(7));
     assert_eq!(surface.values["razer_fps"], ControlValue::Integer(25));
+
+    let changed = govee_driver_control_surface(&GoveeConfig {
+        razer_fps: 26,
+        ..config
+    });
+    assert_ne!(surface.revision, changed.revision);
 }
 
 #[test]
