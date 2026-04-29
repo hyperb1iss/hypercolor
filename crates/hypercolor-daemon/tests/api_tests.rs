@@ -2541,6 +2541,82 @@ async fn patch_driver_control_surface_updates_config() {
 }
 
 #[tokio::test]
+async fn patch_driver_control_surface_dry_run_does_not_mutate_config() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let surface_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/wled/controls")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(surface_response.status(), StatusCode::OK);
+    let surface_json = body_json(surface_response).await;
+    let revision = surface_json["data"]["revision"]
+        .as_u64()
+        .expect("revision should be an integer");
+    let original_drivers = manager.get().drivers.clone();
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:wled/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:wled",
+                        "expected_revision": revision,
+                        "dry_run": true,
+                        "changes": [
+                            {
+                                "field_id": "default_protocol",
+                                "value": { "kind": "enum", "value": "e131" }
+                            },
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 9 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["previous_revision"], revision);
+    assert_eq!(json["data"]["revision"], revision);
+    assert_eq!(
+        json["data"]["accepted"].as_array().expect("accepted").len(),
+        2
+    );
+    assert_eq!(json["data"]["values"]["default_protocol"]["value"], "ddp");
+    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 2);
+    assert_eq!(
+        manager.get().drivers,
+        original_drivers,
+        "dry-run should not persist driver config changes"
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), events.recv())
+            .await
+            .is_err(),
+        "dry-run should not publish control surface events"
+    );
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
