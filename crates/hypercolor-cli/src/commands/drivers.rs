@@ -68,6 +68,10 @@ pub struct DriverActionArgs {
     /// Action input assignment, repeatable.
     #[arg(long = "input", short = 'i')]
     pub input: Vec<String>,
+
+    /// Confirm actions that declare confirmation metadata.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Execute the `drivers` subcommand tree.
@@ -158,7 +162,9 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id = driver_control_surface_id(client, &args.driver).await?;
+    let surface = driver_control_surface(client, &args.driver).await?;
+    controls::ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
+    let surface_id = extract_str(&surface, "surface_id");
     let input = controls::assignments_to_map(&args.input)?;
     let response = client
         .post(
@@ -190,10 +196,14 @@ fn driver_row(driver: &Value, ctx: &OutputContext) -> Vec<String> {
 }
 
 async fn driver_control_surface_id(client: &DaemonClient, driver: &str) -> Result<String> {
-    let surface = client
-        .get(&format!("/drivers/{}/controls", urlencoded(driver)))
-        .await?;
+    let surface = driver_control_surface(client, driver).await?;
     Ok(extract_str(&surface, "surface_id"))
+}
+
+async fn driver_control_surface(client: &DaemonClient, driver: &str) -> Result<Value> {
+    client
+        .get(&format!("/drivers/{}/controls", urlencoded(driver)))
+        .await
 }
 
 fn descriptor_field(driver: &Value, key: &str) -> String {

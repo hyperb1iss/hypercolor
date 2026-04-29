@@ -135,7 +135,8 @@ fn build_cmd() -> clap::Command {
                                 .long("input")
                                 .short('i')
                                 .action(ArgAction::Append),
-                        ),
+                        )
+                        .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
                 ),
         )
         .subcommand(
@@ -188,7 +189,8 @@ fn build_cmd() -> clap::Command {
                                 .long("input")
                                 .short('i')
                                 .action(ArgAction::Append),
-                        ),
+                        )
+                        .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
                 ),
         )
         .subcommand(
@@ -224,7 +226,8 @@ fn build_cmd() -> clap::Command {
                                 .long("input")
                                 .short('i')
                                 .action(ArgAction::Append),
-                        ),
+                        )
+                        .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
                 ),
         )
         .subcommand(
@@ -697,6 +700,7 @@ fn parse_devices_action_with_input() {
             "identify",
             "--input",
             "duration_ms=duration:1200",
+            "--yes",
         ])
         .expect("devices action should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -705,6 +709,7 @@ fn parse_devices_action_with_input() {
         action.get_one::<String>("action").map(String::as_str),
         Some("identify")
     );
+    assert!(action.get_flag("yes"));
 }
 
 #[test]
@@ -766,6 +771,7 @@ fn parse_controls_action_with_input() {
             "identify",
             "--input",
             "duration_ms=duration:1200",
+            "--yes",
         ])
         .expect("controls action should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -778,6 +784,7 @@ fn parse_controls_action_with_input() {
         action.get_one::<String>("action").map(String::as_str),
         Some("identify")
     );
+    assert!(action.get_flag("yes"));
 }
 
 #[test]
@@ -830,6 +837,7 @@ fn parse_drivers_action_with_input() {
             "rescan",
             "--input",
             "force=bool:true",
+            "--yes",
         ])
         .expect("drivers action should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -842,6 +850,7 @@ fn parse_drivers_action_with_input() {
         action.get_one::<String>("action").map(String::as_str),
         Some("rescan")
     );
+    assert!(action.get_flag("yes"));
 }
 
 #[test]

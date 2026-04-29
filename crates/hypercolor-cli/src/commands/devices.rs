@@ -141,6 +141,10 @@ pub struct DeviceActionArgs {
     /// Action input assignment, repeatable.
     #[arg(long = "input", short = 'i')]
     pub input: Vec<String>,
+
+    /// Confirm actions that declare confirmation metadata.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Execute the `devices` subcommand tree.
@@ -381,8 +385,9 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface_id =
-        device_control_surface_id_for_action(client, &args.device, &args.action).await?;
+    let surface = device_control_surface_for_action(client, &args.device, &args.action).await?;
+    controls::ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
+    let surface_id = extract_str(&surface, "surface_id");
     let input = controls::assignments_to_map(&args.input)?;
     let response = client
         .post(
@@ -480,13 +485,13 @@ async fn device_control_surface_id_for_field(
     })
 }
 
-async fn device_control_surface_id_for_action(
+async fn device_control_surface_for_action(
     client: &DaemonClient,
     device: &str,
     action: &str,
-) -> Result<String> {
+) -> Result<Value> {
     let surfaces = device_control_surfaces(client, device).await?;
-    find_surface_with_item(&surfaces, "actions", action).ok_or_else(|| {
+    find_surface_value_with_item(&surfaces, "actions", action).ok_or_else(|| {
         let available = available_surface_items(&surfaces, "actions");
         anyhow::anyhow!(
             "Device control action '{action}' was not found on {device}. Available actions: {available}"
@@ -513,6 +518,18 @@ async fn device_control_surfaces(client: &DaemonClient, device: &str) -> Result<
 }
 
 fn find_surface_with_item(surfaces: &[Value], collection: &str, item_id: &str) -> Option<String> {
+    find_surface_value_with_item(surfaces, collection, item_id)
+        .as_ref()
+        .and_then(|surface| surface.get("surface_id"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn find_surface_value_with_item(
+    surfaces: &[Value],
+    collection: &str,
+    item_id: &str,
+) -> Option<Value> {
     surfaces.iter().find_map(|surface| {
         surface
             .get(collection)
@@ -520,13 +537,7 @@ fn find_surface_with_item(surfaces: &[Value], collection: &str, item_id: &str) -
             .into_iter()
             .flatten()
             .any(|item| item.get("id").and_then(Value::as_str) == Some(item_id))
-            .then(|| {
-                surface
-                    .get("surface_id")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-            })
-            .flatten()
+            .then(|| surface.clone())
     })
 }
 

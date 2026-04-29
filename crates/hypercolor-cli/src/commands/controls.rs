@@ -91,6 +91,10 @@ pub struct ControlActionArgs {
     /// Action input assignment, repeatable.
     #[arg(long = "input", short = 'i')]
     pub input: Vec<String>,
+
+    /// Confirm actions that declare confirmation metadata.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Execute the `controls` subcommand tree.
@@ -189,6 +193,11 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
+    let surface = client
+        .get(&format!("/control-surfaces/{}", urlencoded(&args.surface)))
+        .await?;
+    ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
+
     let input = assignments_to_map(&args.input)?;
     let body = json!({ "input": input });
     let path = format!(
@@ -198,6 +207,37 @@ async fn execute_action(
     );
     let response = client.post(&path, &body).await?;
     render_action_response(&response, ctx)
+}
+
+pub(crate) fn ensure_action_confirmed(
+    surface: &Value,
+    action_id: &str,
+    yes: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let Some(confirmation) = action_confirmation(surface, action_id) else {
+        return Ok(());
+    };
+    if yes {
+        return Ok(());
+    }
+
+    let message = confirmation
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("This action requires confirmation.");
+    ctx.warning(message);
+    bail!("Use --yes to confirm action '{action_id}'");
+}
+
+fn action_confirmation<'a>(surface: &'a Value, action_id: &str) -> Option<&'a Value> {
+    surface
+        .get("actions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|action| action.get("id").and_then(Value::as_str) == Some(action_id))?
+        .get("confirmation")
+        .filter(|confirmation| !confirmation.is_null())
 }
 
 pub(crate) fn render_surface_list(response: &Value, ctx: &OutputContext) -> Result<()> {

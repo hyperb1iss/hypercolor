@@ -14,7 +14,7 @@ type SharedBody = Arc<Mutex<Option<serde_json::Value>>>;
 type SharedUri = Arc<Mutex<Option<String>>>;
 type SharedRequest = (SharedUri, SharedBody);
 
-async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
+async fn run_hyper_output(port: u16, args: &[&str]) -> Result<std::process::Output> {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
     cmd.arg("--host")
         .arg("127.0.0.1")
@@ -27,6 +27,11 @@ async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
         .await
         .context("timed out waiting for hyper CLI process")?
         .context("failed to execute hyper CLI")?;
+    Ok(output)
+}
+
+async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
+    let output = run_hyper_output(port, args).await?;
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -298,6 +303,36 @@ async fn drivers_action_targets_driver_surface() -> Result<()> {
                 }
             }
         })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn drivers_action_requires_confirmation_without_yes() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/drivers/{driver}/controls",
+            get(confirmed_driver_control_surface),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(port, &["drivers", "action", "wled", "factory_reset"]).await?;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert!(!output.status.success());
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/drivers/wled/controls")
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Use --yes to confirm action 'factory_reset'"),
+        "stderr should explain confirmation failure: {stderr}"
     );
 
     Ok(())
@@ -701,6 +736,39 @@ async fn capture_driver_control_surface(
     Json(driver_control_surface_response())
 }
 
+async fn confirmed_driver_control_surface(
+    Path(driver): Path<String>,
+    State(captured_uri): State<SharedUri>,
+    uri: Uri,
+) -> Json<serde_json::Value> {
+    assert_eq!(driver, "wled");
+    *captured_uri.lock().await = Some(uri.to_string());
+    let mut response = driver_control_surface_response();
+    response["data"]["actions"] = serde_json::json!([{
+        "id": "factory_reset",
+        "label": "Factory reset",
+        "description": null,
+        "group_id": null,
+        "input_fields": [],
+        "result_type": null,
+        "confirmation": {
+            "level": "destructive",
+            "message": "Factory reset this driver?"
+        },
+        "apply_impact": "hardware_persist",
+        "availability": {
+            "always": {}
+        },
+        "ordering": 0,
+        "owner": {
+            "driver": {
+                "driver_id": "wled"
+            }
+        }
+    }]);
+    Json(response)
+}
+
 async fn capture_control_action(
     Path((surface_id, action_id)): Path<(String, String)>,
     State((captured_uri, captured_body)): State<SharedRequest>,
@@ -772,7 +840,7 @@ fn device_control_surface_response() -> serde_json::Value {
                 "description": null,
                 "group_id": null,
                 "input": [],
-                "confirmation": "none",
+                "confirmation": null,
                 "apply_impact": "live"
             }],
             "values": {},
