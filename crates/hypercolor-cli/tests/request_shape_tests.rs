@@ -223,6 +223,31 @@ async fn drivers_set_control_targets_driver_surface() -> Result<()> {
 }
 
 #[tokio::test]
+async fn drivers_controls_fetches_driver_surface_endpoint() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/drivers/{driver}/controls",
+            get(capture_driver_control_surface),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(port, &["drivers", "controls", "wled"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/drivers/wled/controls")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn drivers_action_targets_driver_surface() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
@@ -334,6 +359,31 @@ async fn devices_set_control_targets_device_surface() -> Result<()> {
             "dry_run": false,
             "expected_revision": 2
         })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn devices_controls_fetches_device_surface_endpoint() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/devices/{device}/controls",
+            get(capture_device_control_surface),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(port, &["devices", "controls", test_device_id()]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/devices/00000000-0000-0000-0000-000000000001/controls")
     );
 
     Ok(())
@@ -614,7 +664,11 @@ async fn capture_control_patch(
 
 async fn driver_control_surface(Path(driver): Path<String>) -> Json<serde_json::Value> {
     assert_eq!(driver, "wled");
-    Json(serde_json::json!({
+    Json(driver_control_surface_response())
+}
+
+fn driver_control_surface_response() -> serde_json::Value {
+    serde_json::json!({
         "data": {
             "surface_id": "driver:wled",
             "scope": {
@@ -631,7 +685,17 @@ async fn driver_control_surface(Path(driver): Path<String>) -> Json<serde_json::
             "availability": {},
             "action_availability": {}
         }
-    }))
+    })
+}
+
+async fn capture_driver_control_surface(
+    Path(driver): Path<String>,
+    State(captured_uri): State<SharedUri>,
+    uri: Uri,
+) -> Json<serde_json::Value> {
+    assert_eq!(driver, "wled");
+    *captured_uri.lock().await = Some(uri.to_string());
+    Json(driver_control_surface_response())
 }
 
 async fn capture_control_action(
@@ -684,7 +748,11 @@ async fn capture_device_control_patch(
 
 async fn device_control_surface(Path(device): Path<String>) -> Json<serde_json::Value> {
     assert_eq!(device, test_device_id());
-    Json(serde_json::json!({
+    Json(device_control_surface_response())
+}
+
+fn device_control_surface_response() -> serde_json::Value {
+    serde_json::json!({
         "data": {
             "surface_id": format!("device:{}", test_device_id()),
             "scope": {
@@ -702,7 +770,17 @@ async fn device_control_surface(Path(device): Path<String>) -> Json<serde_json::
             "availability": {},
             "action_availability": {}
         }
-    }))
+    })
+}
+
+async fn capture_device_control_surface(
+    Path(device): Path<String>,
+    State(captured_uri): State<SharedUri>,
+    uri: Uri,
+) -> Json<serde_json::Value> {
+    assert_eq!(device, test_device_id());
+    *captured_uri.lock().await = Some(uri.to_string());
+    Json(device_control_surface_response())
 }
 
 async fn capture_device_control_action(
