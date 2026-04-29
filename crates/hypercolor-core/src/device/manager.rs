@@ -154,6 +154,12 @@ impl BackendIo {
         backend.supports_temporary_direct_control(info)
     }
 
+    /// Whether this backend consumes host-managed attachment profiles.
+    pub async fn supports_host_attachment_profiles(&self, info: &DeviceInfo) -> bool {
+        let backend = self.backend.lock().await;
+        backend.supports_host_attachment_profiles(info)
+    }
+
     /// Disconnect a device from the backend.
     ///
     /// # Errors

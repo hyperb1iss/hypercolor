@@ -1283,6 +1283,10 @@ impl DeviceBackend for UsbBackend {
         }
     }
 
+    fn supports_host_attachment_profiles(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
     async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
         let mut scanner = self
             .enabled_driver_ids

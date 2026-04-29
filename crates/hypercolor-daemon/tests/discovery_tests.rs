@@ -175,6 +175,37 @@ fn smbus_device_info(name: &str) -> DeviceInfo {
     }
 }
 
+fn prism_s_device_info_with_backend(backend_id: &str) -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: "PrismRGB Prism S".to_owned(),
+        vendor: "PrismRGB".to_owned(),
+        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
+        model: Some("prism_s".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("prismrgb", backend_id, ConnectionType::Usb)
+            .with_protocol_id("prismrgb/prism-s"),
+        zones: vec![
+            ZoneInfo {
+                name: "ATX Strimer".to_owned(),
+                led_count: 120,
+                topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+            ZoneInfo {
+                name: "GPU Strimer".to_owned(),
+                led_count: 162,
+                topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    }
+}
+
 fn mock_device_info() -> DeviceInfo {
     DeviceInfo {
         id: DeviceId::new(),
@@ -725,5 +756,60 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
     assert_eq!(
         lifecycle_manager.lock().await.state(device_id),
         Some(DeviceState::Known)
+    );
+}
+
+#[tokio::test]
+async fn sync_active_layout_connectivity_only_applies_host_attachment_profiles_for_opt_in_backends()
+{
+    let device_registry = DeviceRegistry::new();
+    let info = prism_s_device_info_with_backend("mock");
+    let fingerprint = DeviceFingerprint("usb:external-prism".to_owned());
+    let device_id = device_registry
+        .add_with_fingerprint(info.clone(), fingerprint.clone())
+        .await;
+    assert_eq!(device_id, info.id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.register_backend(Box::new(CountingBackend {
+            expected_device_id: device_id,
+            connect_count: Arc::clone(&connect_count),
+            disconnect_count: Arc::clone(&disconnect_count),
+        }));
+    }
+
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(layout_with_device(&layout_device_id));
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+
+    assert_eq!(
+        connect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "active layout targets should still connect through the custom backend"
+    );
+    assert!(
+        runtime
+            .usb_protocol_configs
+            .config(device_id)
+            .await
+            .is_none(),
+        "HAL USB protocol config must only be applied by backends that opt in"
     );
 }

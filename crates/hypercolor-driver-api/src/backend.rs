@@ -105,6 +105,14 @@ pub trait DeviceBackend: Send + Sync {
         false
     }
 
+    /// Whether this backend consumes host-managed attachment profiles when
+    /// preparing a device connection.
+    #[must_use]
+    fn supports_host_attachment_profiles(&self, info: &DeviceInfo) -> bool {
+        let _ = info;
+        false
+    }
+
     /// Push a JPEG-compressed display frame to a connected device, if supported.
     ///
     /// # Errors
