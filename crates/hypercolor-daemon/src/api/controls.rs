@@ -843,6 +843,11 @@ async fn apply_driver_device_control_surface_values(
             );
         }
     };
+    if let Err(error) = ensure_driver_device_impacts_supported(&driver_id, &validated.impacts) {
+        return ApiError::internal(format!(
+            "Driver controls for {surface_id} returned unsupported impacts: {error}"
+        ));
+    }
 
     if body.dry_run {
         return ApiResponse::ok(ApplyControlChangesResponse {
@@ -868,7 +873,7 @@ async fn apply_driver_device_control_surface_values(
         .await
     {
         Ok(mut response) => {
-            response.surface_id = surface_id;
+            response.surface_id = surface_id.clone();
             let refreshed = provider
                 .device_surface(state.driver_host.as_ref(), &device)
                 .await
@@ -878,6 +883,19 @@ async fn apply_driver_device_control_surface_values(
             if let Some(surface) = refreshed {
                 response.revision = surface.revision;
                 response.values = surface.values;
+            }
+            if let Err(error) = apply_driver_device_control_impacts(
+                state,
+                &driver_id,
+                device_id,
+                tracked.info.output_backend_id(),
+                &response.impacts,
+            )
+            .await
+            {
+                return ApiError::internal(format!(
+                    "Applied device controls for {surface_id}, but dynamic impact handling failed: {error}"
+                ));
             }
             publish_values_changed(state, &response);
             ApiResponse::ok(response)
@@ -1138,6 +1156,36 @@ async fn apply_driver_control_impacts(
     Ok(())
 }
 
+async fn apply_driver_device_control_impacts(
+    state: &AppState,
+    driver_id: &str,
+    device_id: DeviceId,
+    backend_id: &str,
+    impacts: &[ApplyImpact],
+) -> anyhow::Result<()> {
+    let Some(host) = state.driver_host.control_host() else {
+        return Ok(());
+    };
+    for impact in impacts {
+        match impact {
+            ApplyImpact::None | ApplyImpact::Live => {}
+            ApplyImpact::DeviceReconnect => {
+                host.lifecycle()
+                    .reconnect_device(device_id, backend_id)
+                    .await?;
+            }
+            ApplyImpact::BackendRebind => host.backend_rebind().rebind_backend(driver_id).await?,
+            ApplyImpact::DiscoveryRescan => host.lifecycle().rescan_driver(driver_id).await?,
+            ApplyImpact::TopologyRebuild
+            | ApplyImpact::HardwarePersist
+            | ApplyImpact::Custom(_) => {
+                bail!("unsupported device-level control impact for {driver_id}: {impact:?}")
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ensure_driver_level_impacts_supported(
     driver_id: &str,
     impacts: &[ApplyImpact],
@@ -1153,6 +1201,27 @@ fn ensure_driver_level_impacts_supported(
             | ApplyImpact::HardwarePersist
             | ApplyImpact::Custom(_) => {
                 bail!("unsupported driver-level control impact for {driver_id}: {impact:?}")
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_driver_device_impacts_supported(
+    driver_id: &str,
+    impacts: &[ApplyImpact],
+) -> anyhow::Result<()> {
+    for impact in impacts {
+        match impact {
+            ApplyImpact::None
+            | ApplyImpact::Live
+            | ApplyImpact::DeviceReconnect
+            | ApplyImpact::BackendRebind
+            | ApplyImpact::DiscoveryRescan => {}
+            ApplyImpact::TopologyRebuild
+            | ApplyImpact::HardwarePersist
+            | ApplyImpact::Custom(_) => {
+                bail!("unsupported device-level control impact for {driver_id}: {impact:?}")
             }
         }
     }

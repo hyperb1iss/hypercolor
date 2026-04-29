@@ -385,12 +385,6 @@ impl DriverControlProvider for WledDriverModule {
                     .device_config_store()
                     .save_device_values(device.device_id, values.clone())
                     .await?;
-                if changes.impacts.contains(&ApplyImpact::DeviceReconnect) {
-                    control_host
-                        .lifecycle()
-                        .reconnect_device(device.device_id, device.info.output_backend_id())
-                        .await?;
-                }
 
                 Ok(wled_apply_response(
                     format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
