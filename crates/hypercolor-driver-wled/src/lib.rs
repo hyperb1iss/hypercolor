@@ -336,9 +336,11 @@ impl DriverControlProvider for WledDriverModule {
                     .control_host()
                     .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
                 let mut values = wled_config_values(&config.parse_settings::<WledConfig>()?);
+                let previous_revision = wled_control_revision(&values);
                 for change in &changes.changes {
                     values.insert(change.field_id.clone(), change.value.clone());
                 }
+                let revision = wled_control_revision(&values);
                 control_host
                     .driver_config_store()
                     .save_driver_values(DESCRIPTOR.id, values.clone())
@@ -346,6 +348,8 @@ impl DriverControlProvider for WledDriverModule {
 
                 Ok(wled_apply_response(
                     format!("driver:{}", DESCRIPTOR.id),
+                    previous_revision,
+                    revision,
                     changes,
                     values,
                 ))
@@ -372,9 +376,11 @@ impl DriverControlProvider for WledDriverModule {
                     .await?;
                 let mut values =
                     wled_effective_device_values(&driver_values, &existing_device_values);
+                let previous_revision = wled_device_control_revision(device, &values);
                 for change in &changes.changes {
                     values.insert(change.field_id.clone(), change.value.clone());
                 }
+                let revision = wled_device_control_revision(device, &values);
                 control_host
                     .device_config_store()
                     .save_device_values(device.device_id, values.clone())
@@ -388,6 +394,8 @@ impl DriverControlProvider for WledDriverModule {
 
                 Ok(wled_apply_response(
                     format!("driver:{}:device:{}", DESCRIPTOR.id, device.device_id),
+                    previous_revision,
+                    revision,
                     changes,
                     values,
                 ))
@@ -890,13 +898,15 @@ fn wled_effective_device_values(
 
 fn wled_apply_response(
     surface_id: String,
+    previous_revision: u64,
+    revision: u64,
     changes: ValidatedControlChanges,
     values: ControlValueMap,
 ) -> ApplyControlChangesResponse {
     ApplyControlChangesResponse {
         surface_id,
-        previous_revision: 0,
-        revision: 0,
+        previous_revision,
+        revision,
         accepted: changes
             .changes
             .into_iter()

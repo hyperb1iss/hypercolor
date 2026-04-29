@@ -367,9 +367,11 @@ impl DriverControlProvider for NanoleafDriverModule {
             .control_host()
             .ok_or_else(|| anyhow!("driver control host services are unavailable"))?;
         let mut values = nanoleaf_config_values(&config.parse_settings::<NanoleafConfig>()?);
+        let previous_revision = nanoleaf_control_revision(&values);
         for change in &changes.changes {
             values.insert(change.field_id.clone(), change.value.clone());
         }
+        let revision = nanoleaf_control_revision(&values);
         control_host
             .driver_config_store()
             .save_driver_values(DESCRIPTOR.id, values.clone())
@@ -377,6 +379,8 @@ impl DriverControlProvider for NanoleafDriverModule {
 
         Ok(nanoleaf_apply_response(
             format!("driver:{}", DESCRIPTOR.id),
+            previous_revision,
+            revision,
             changes,
             values,
         ))
@@ -841,13 +845,15 @@ fn nanoleaf_device_control_revision(
 
 fn nanoleaf_apply_response(
     surface_id: String,
+    previous_revision: u64,
+    revision: u64,
     changes: ValidatedControlChanges,
     values: ControlValueMap,
 ) -> ApplyControlChangesResponse {
     ApplyControlChangesResponse {
         surface_id,
-        previous_revision: 0,
-        revision: 0,
+        previous_revision,
+        revision,
         accepted: changes
             .changes
             .into_iter()

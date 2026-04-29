@@ -263,9 +263,11 @@ impl DriverControlProvider for GoveeDriverModule {
         }
 
         let mut values = govee_control_values(&config.parse_settings::<GoveeConfig>()?);
+        let previous_revision = govee_control_revision(&values);
         for change in &changes.changes {
             values.insert(change.field_id.clone(), change.value.clone());
         }
+        let revision = govee_control_revision(&values);
 
         if let Some(control_host) = host.control_host() {
             control_host
@@ -288,6 +290,8 @@ impl DriverControlProvider for GoveeDriverModule {
 
         Ok(govee_apply_response(
             format!("driver:{}", DESCRIPTOR.id),
+            previous_revision,
+            revision,
             changes,
             values,
         ))
@@ -1166,13 +1170,15 @@ fn string_value_type() -> ControlValueType {
 
 fn govee_apply_response(
     surface_id: String,
+    previous_revision: u64,
+    revision: u64,
     changes: ValidatedControlChanges,
     values: ControlValueMap,
 ) -> ApplyControlChangesResponse {
     ApplyControlChangesResponse {
         surface_id,
-        previous_revision: 0,
-        revision: 0,
+        previous_revision,
+        revision,
         accepted: changes
             .changes
             .into_iter()
