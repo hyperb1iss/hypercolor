@@ -24,8 +24,8 @@ use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager}
 use hypercolor_driver_api::DeviceAuthSummary;
 use hypercolor_types::attachment::{AttachmentBinding, AttachmentSlot};
 use hypercolor_types::device::{
-    ConnectionType, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DeviceUserSettings, DriverPresentation,
+    DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings,
+    DriverPresentation,
 };
 use hypercolor_types::event::HypercolorEvent;
 
@@ -1262,15 +1262,6 @@ async fn prepare_identify_backend(
     device_state: DeviceState,
     backend_id: &str,
 ) -> Result<(Arc<tokio::sync::Mutex<BackendManager>>, BackendIo, bool), Response> {
-    let supports_temporary_identify = matches!(info.connection_type, ConnectionType::Network)
-        && device_state != DeviceState::Disabled;
-    if !device_state.is_renderable() && !supports_temporary_identify {
-        return Err(ApiError::conflict(format!(
-            "Device is not connected: {} (state={device_state})",
-            info.name
-        )));
-    }
-
     let manager = Arc::clone(&state.backend_manager);
     let direct_backend = {
         let manager = manager.lock().await;
@@ -1282,6 +1273,14 @@ async fn prepare_identify_backend(
         };
         direct_backend
     };
+    let supports_temporary_identify = device_state != DeviceState::Disabled
+        && direct_backend.supports_temporary_direct_control(info).await;
+    if !device_state.is_renderable() && !supports_temporary_identify {
+        return Err(ApiError::conflict(format!(
+            "Device is not connected: {} (state={device_state})",
+            info.name
+        )));
+    }
 
     let disconnect_after_identify = if device_state.is_renderable() {
         false

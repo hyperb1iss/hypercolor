@@ -97,6 +97,14 @@ pub trait DeviceBackend: Send + Sync {
         None
     }
 
+    /// Whether this backend can briefly connect a known, currently idle device
+    /// for direct-control operations such as identify flashes.
+    #[must_use]
+    fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
+        let _ = info;
+        false
+    }
+
     /// Push a JPEG-compressed display frame to a connected device, if supported.
     ///
     /// # Errors

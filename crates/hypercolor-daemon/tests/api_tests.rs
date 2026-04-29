@@ -517,6 +517,10 @@ impl DeviceBackend for DisconnectRecordingBackend {
         Ok(Vec::new())
     }
 
+    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");

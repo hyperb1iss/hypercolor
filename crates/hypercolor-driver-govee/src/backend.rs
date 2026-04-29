@@ -445,6 +445,10 @@ impl DeviceBackend for GoveeBackend {
         Ok(Some(device.lock().await.info.clone()))
     }
 
+    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
         if !self.devices.contains_key(id) {
             bail!("Govee device {id} is not known");

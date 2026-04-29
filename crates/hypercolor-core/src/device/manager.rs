@@ -148,6 +148,12 @@ impl BackendIo {
         backend.frame_sink(&device_id)
     }
 
+    /// Whether this backend can briefly connect an idle device for direct control.
+    pub async fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
+        let backend = self.backend.lock().await;
+        backend.supports_temporary_direct_control(info)
+    }
+
     /// Disconnect a device from the backend.
     ///
     /// # Errors

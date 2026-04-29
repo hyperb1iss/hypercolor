@@ -241,6 +241,10 @@ impl DeviceBackend for HueBackend {
         Ok(Some(bridge.lock().await.info.clone()))
     }
 
+    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
         if self.bridges.contains_key(id) {
             return Ok(());

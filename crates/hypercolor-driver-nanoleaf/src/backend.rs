@@ -245,6 +245,10 @@ impl DeviceBackend for NanoleafBackend {
         Ok(Some(device.lock().await.info.clone()))
     }
 
+    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "connect performs credential lookup, metadata refresh, and stream bootstrap in one linear flow"

@@ -392,6 +392,10 @@ impl DeviceBackend for WledBackend {
         Ok(discovered)
     }
 
+    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
         let known_ip_ids = self
             .device_ips
