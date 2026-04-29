@@ -126,7 +126,7 @@ pub struct DiscoveryRuntime {
     /// Shared per-device USB protocol configuration store.
     pub usb_protocol_configs: UsbProtocolConfigStore,
 
-    /// Shared encrypted credential store for network device auth.
+    /// Shared encrypted credential store for driver device auth.
     pub credential_store: Arc<CredentialStore>,
 
     /// Shared "scan in progress" lock flag.

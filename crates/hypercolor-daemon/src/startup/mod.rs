@@ -111,7 +111,7 @@ pub struct DaemonState {
     /// Shared per-device USB protocol configuration for dynamic topologies.
     pub usb_protocol_configs: UsbProtocolConfigStore,
 
-    /// Shared credential store for network-authenticated device backends.
+    /// Shared credential store for driver-authenticated device backends.
     pub credential_store: Arc<CredentialStore>,
 
     /// Narrow host adapter shared with built-in driver modules.

@@ -75,7 +75,7 @@ struct DetectArgs {
     #[arg(long, default_value_t = false)]
     no_hotplug: bool,
 
-    /// Discovery timeout for network scanners.
+    /// Discovery timeout for selected scanners.
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
 }
@@ -101,7 +101,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
     let config = HypercolorConfig::default();
     let credential_store = Arc::new(
         CredentialStore::open_blocking(&ConfigManager::data_dir())
-            .context("failed to open network credential store")?,
+            .context("failed to open driver credential store")?,
     );
     let driver_registry =
         hypercolor_daemon::network::build_builtin_driver_module_registry(&config, credential_store)

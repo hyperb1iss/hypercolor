@@ -41,7 +41,7 @@ struct DeletePairingResponse {
     device: Option<DeviceSummary>,
 }
 
-/// `POST /api/v1/devices/:id/pair` — pair a discovered network device.
+/// `POST /api/v1/devices/:id/pair` — pair a discovered driver-backed device.
 pub async fn pair_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

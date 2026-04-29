@@ -188,7 +188,7 @@ impl DaemonState {
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
-                .context("failed to open network credential store")?,
+                .context("failed to open driver credential store")?,
         );
 
         // ── Backend Manager ─────────────────────────────────────────────

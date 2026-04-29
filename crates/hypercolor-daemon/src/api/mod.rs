@@ -176,7 +176,7 @@ pub struct AppState {
     /// Latest composited display frames captured per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 
-    /// Shared encrypted credential store for network-authenticated backends.
+    /// Shared encrypted credential store for driver-authenticated backends.
     pub credential_store: Arc<CredentialStore>,
 
     /// Narrow host adapter shared with built-in driver modules.
