@@ -2481,6 +2481,83 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
 }
 
 #[tokio::test]
+async fn patch_driver_owned_device_control_surface_publishes_values_changed_event() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+    let surface_id = format!("driver:wled:device:{device_id}");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": surface_id,
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": { "kind": "integer", "value": 8 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let updated_revision = json["data"]["revision"]
+        .as_u64()
+        .expect("updated revision should be an integer");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ControlSurfaceChanged(
+                        event @ ControlSurfaceEvent::ValuesChanged { .. },
+                    ) = timestamped.event
+                    {
+                        break event;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before driver device control event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for driver device control surface event");
+
+    match event {
+        ControlSurfaceEvent::ValuesChanged {
+            surface_id: event_surface_id,
+            revision,
+            values,
+        } => {
+            assert_eq!(event_surface_id, surface_id);
+            assert_eq!(revision, updated_revision);
+            assert_eq!(
+                values.get("dedup_threshold"),
+                Some(&SurfaceControlValue::Integer(8))
+            );
+        }
+        _ => panic!("expected values_changed control surface event"),
+    }
+}
+
+#[tokio::test]
 async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_values() {
     let (state, tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
