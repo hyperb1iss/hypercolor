@@ -567,8 +567,12 @@ fn action_availability_label(surface: &Value, action_id: &str) -> String {
 }
 
 fn value_summary(value: &Value) -> String {
-    if value.get("kind").and_then(Value::as_str) == Some("secret_ref") {
+    let kind = value.get("kind").and_then(Value::as_str);
+    if kind == Some("secret_ref") {
         return "configured".to_string();
+    }
+    if kind.is_some_and(|kind| !known_control_value_kind(kind)) {
+        return "unsupported value".to_string();
     }
 
     match value.get("value") {
@@ -583,6 +587,27 @@ fn value_summary(value: &Value) -> String {
         Some(Value::Object(_)) => "{...}".to_string(),
         Some(Value::Null) | None => "-".to_string(),
     }
+}
+
+fn known_control_value_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "null"
+            | "bool"
+            | "integer"
+            | "float"
+            | "string"
+            | "secret_ref"
+            | "color_rgb"
+            | "color_rgba"
+            | "ip_address"
+            | "mac_address"
+            | "duration_ms"
+            | "enum"
+            | "flags"
+            | "list"
+            | "object"
+    )
 }
 
 fn array_len(value: &Value, field: &str) -> usize {
@@ -609,4 +634,29 @@ fn is_driver_device_surface(target: &str) -> bool {
         .strip_prefix("driver:")
         .and_then(|target| target.split_once(":device:"))
         .is_some_and(|(driver_id, device_id)| !driver_id.is_empty() && !device_id.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::value_summary;
+
+    #[test]
+    fn value_summary_hides_secret_refs() {
+        let value = serde_json::json!({
+            "kind": "secret_ref",
+            "value": "driver-owned-secret"
+        });
+
+        assert_eq!(value_summary(&value), "configured");
+    }
+
+    #[test]
+    fn value_summary_marks_future_control_values_unsupported() {
+        let value = serde_json::json!({
+            "kind": "spline_curve",
+            "value": "opaque-driver-data"
+        });
+
+        assert_eq!(value_summary(&value), "unsupported value");
+    }
 }
