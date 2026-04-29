@@ -22,10 +22,10 @@ use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
-    ControlChange, ControlEnumOption, ControlFieldDescriptor, ControlGroupDescriptor,
-    ControlGroupKind, ControlOwner, ControlPersistence, ControlSurfaceDocument,
-    ControlSurfaceScope, ControlValue, ControlValueMap, ControlValueType, ControlVisibility,
+    ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState, ControlChange,
+    ControlEnumOption, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind,
+    ControlOwner, ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
+    ControlValueMap, ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::{DeviceClassHint, DeviceId, DriverPresentation};
 use serde::{Deserialize, Serialize};
@@ -395,17 +395,6 @@ impl DriverControlProvider for WledDriverModule {
                 ))
             }
         }
-    }
-
-    async fn invoke_action(
-        &self,
-        host: &dyn DriverHost,
-        target: &ControlApplyTarget<'_>,
-        action_id: &str,
-        input: ControlValueMap,
-    ) -> Result<ControlActionResult> {
-        let _ = (host, target, input);
-        bail!("unknown WLED control action: {action_id}")
     }
 }
 

@@ -29,8 +29,8 @@ use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
+    ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState, ControlChange,
+    ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
     ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
     ControlValueType, ControlVisibility,
 };
@@ -254,16 +254,6 @@ impl DriverControlProvider for HueDriverModule {
             changes,
             values,
         ))
-    }
-
-    async fn invoke_action(
-        &self,
-        _host: &dyn DriverHost,
-        _target: &ControlApplyTarget<'_>,
-        action_id: &str,
-        _input: ControlValueMap,
-    ) -> Result<ControlActionResult> {
-        bail!("unknown Hue control action: {action_id}")
     }
 }
 

@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
@@ -676,11 +676,13 @@ pub trait DriverControlProvider: Send + Sync {
     /// Returns an error if the action fails.
     async fn invoke_action(
         &self,
-        host: &dyn DriverHost,
-        target: &ControlApplyTarget<'_>,
+        _host: &dyn DriverHost,
+        _target: &ControlApplyTarget<'_>,
         action_id: &str,
-        input: ControlValueMap,
-    ) -> Result<ControlActionResult>;
+        _input: ControlValueMap,
+    ) -> Result<ControlActionResult> {
+        bail!("unknown control action: {action_id}")
+    }
 }
 
 /// Driver capability for persisting discovery/runtime hints between daemon runs.

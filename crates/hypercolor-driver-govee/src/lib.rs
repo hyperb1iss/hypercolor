@@ -21,8 +21,8 @@ use hypercolor_driver_api::{
 use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlAccess,
-    ControlActionResult, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
+    ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState, ControlChange,
+    ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind, ControlOwner,
     ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
     ControlValueType, ControlVisibility,
 };
@@ -284,16 +284,6 @@ impl DriverControlProvider for GoveeDriverModule {
             changes,
             values,
         ))
-    }
-
-    async fn invoke_action(
-        &self,
-        _host: &dyn DriverHost,
-        _target: &ControlApplyTarget<'_>,
-        action_id: &str,
-        _input: ControlValueMap,
-    ) -> Result<ControlActionResult> {
-        bail!("Govee control action '{action_id}' is not implemented");
     }
 }
 
