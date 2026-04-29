@@ -27,6 +27,8 @@ pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin
 #[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
 
+pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &["usb", "smbus", "blocks"];
+
 #[cfg(not(feature = "builtin-drivers"))]
 pub fn build_builtin_driver_module_registry(
     _config: &HypercolorConfig,
@@ -320,4 +322,9 @@ pub fn host_transport_scanner(
         }
         _ => None,
     }
+}
+
+#[must_use]
+pub fn is_host_transport_target(target_id: &str) -> bool {
+    HOST_TRANSPORT_TARGET_IDS.contains(&target_id)
 }

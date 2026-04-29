@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport,
-    SmBusScanner, TransportScanner, UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
+    TransportScanner, UsbHotplugEvent, UsbHotplugMonitor,
 };
 use hypercolor_driver_api::{
     CredentialStore, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
@@ -43,9 +43,18 @@ enum DebugCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DebugTarget {
-    SmBus,
-    Usb,
+    HostTransport(String),
     Driver(String),
+}
+
+impl DebugTarget {
+    fn host_transport(target_id: &str) -> Self {
+        Self::HostTransport(target_id.to_owned())
+    }
+
+    fn is_usb(&self) -> bool {
+        matches!(self, Self::HostTransport(target_id) if target_id == "usb")
+    }
 }
 
 #[derive(Debug, Args)]
@@ -104,7 +113,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
         anyhow::bail!("no discovery targets selected");
     }
 
-    let hotplug_enabled = !args.no_hotplug && periodic_targets.contains(&DebugTarget::Usb);
+    let hotplug_enabled = !args.no_hotplug && periodic_targets.iter().any(DebugTarget::is_usb);
     let hotplug_monitor = hotplug_enabled.then(|| UsbHotplugMonitor::new(256));
     let mut hotplug_rx = hotplug_monitor.as_ref().map(UsbHotplugMonitor::subscribe);
     let mut hotplug_task = if let Some(monitor) = hotplug_monitor.as_ref() {
@@ -178,7 +187,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
                             &driver_registry,
                             Arc::clone(&driver_host),
                             &config,
-                            &[DebugTarget::Usb],
+                            &[DebugTarget::host_transport("usb")],
                             &args,
                             discovery_timeout,
                             "usb-hotplug",
@@ -272,8 +281,9 @@ async fn run_scan(
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
     for target in targets {
         match target {
-            DebugTarget::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
-            DebugTarget::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
+            DebugTarget::HostTransport(target_id) => {
+                add_host_transport_scanner(&mut orchestrator, driver_registry, config, target_id)?;
+            }
             DebugTarget::Driver(driver_id) => add_driver_scanner(
                 &mut orchestrator,
                 driver_registry,
@@ -361,11 +371,15 @@ fn normalize_targets(
         .map(|target| target.trim().to_ascii_lowercase())
     {
         let target = match target.as_str() {
-            "smbus" => DebugTarget::SmBus,
-            "usb" => DebugTarget::Usb,
+            target_id if hypercolor_daemon::network::is_host_transport_target(target_id) => {
+                DebugTarget::HostTransport(target_id.to_owned())
+            }
             driver_id => {
                 let Some(driver) = driver_registry.get(driver_id) else {
-                    let mut supported = vec!["smbus".to_owned(), "usb".to_owned()];
+                    let mut supported = hypercolor_daemon::network::HOST_TRANSPORT_TARGET_IDS
+                        .iter()
+                        .map(|target_id| (*target_id).to_owned())
+                        .collect::<Vec<_>>();
                     supported.extend(driver_registry.ids());
                     anyhow::bail!(
                         "unknown discovery target '{driver_id}'. Supported targets: {}",
@@ -387,6 +401,19 @@ fn normalize_targets(
 
 fn output_backend_id(info: &DeviceInfo) -> &str {
     info.output_backend_id()
+}
+
+fn add_host_transport_scanner(
+    orchestrator: &mut DiscoveryOrchestrator,
+    driver_registry: &DriverModuleRegistry,
+    config: &HypercolorConfig,
+    target_id: &str,
+) -> Result<()> {
+    let scanner =
+        hypercolor_daemon::network::host_transport_scanner(target_id, driver_registry, config)
+            .with_context(|| format!("host discovery target '{target_id}' is not registered"))?;
+    orchestrator.add_scanner(scanner);
+    Ok(())
 }
 
 fn add_driver_scanner(
