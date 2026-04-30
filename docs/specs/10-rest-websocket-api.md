@@ -352,7 +352,7 @@ GET /api/v1/devices
 | Parameter | Type      | Default  | Description                                                                  |
 | --------- | --------- | -------- | ---------------------------------------------------------------------------- |
 | `status`  | `string`  | all      | Filter: `"connected"`, `"disconnected"`, `"error"`                           |
-| `backend` | `string`  | all      | Filter by output backend route, for example `"usb"` or `"wled"`              |
+| `backend_id` | `string` | all      | Filter by output backend route, for example `"usb"` or `"wled"`              |
 | `driver`  | `string`  | all      | Filter by owning driver module, for example `"govee"` or `"prismrgb"`        |
 | `q`       | `string`  | --       | Search by name                                                               |
 | `offset`  | `integer` | `0`      | Pagination offset                                                            |
@@ -422,7 +422,6 @@ GET /api/v1/devices
 | `id`               | `string`     | no       | Stable device identifier                                     |
 | `layout_device_id` | `string`     | no       | Stable layout target identifier                              |
 | `name`             | `string`     | no       | Display name (user-editable)                                 |
-| `backend`          | `string`     | no       | Output backend route                                         |
 | `origin`           | `DeviceOrigin` | no     | Owning driver, output backend, transport, and protocol ID     |
 | `presentation`     | `DriverPresentation` | no | Driver-provided label, colors, icon, and device class hints   |
 | `status`           | `string`     | no       | `"connected"`, `"disconnected"`, `"error"`, `"initializing"` |

@@ -9080,7 +9080,7 @@ async fn list_devices_supports_filters() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/devices?backend=wled&q=desk")
+                .uri("/api/v1/devices?backend_id=wled&q=desk")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -9095,7 +9095,7 @@ async fn list_devices_supports_filters() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/devices?backend=smbus")
+                .uri("/api/v1/devices?backend_id=smbus")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )

@@ -130,7 +130,7 @@ Response includes pagination metadata:
 
 ```
 GET /api/v1/effects?audio_reactive=true&author=hyperb1iss
-GET /api/v1/devices?status=connected&backend=wled
+GET /api/v1/devices?status=connected&backend_id=wled
 ```
 
 **Search:**

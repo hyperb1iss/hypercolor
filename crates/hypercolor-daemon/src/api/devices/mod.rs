@@ -146,7 +146,7 @@ pub struct ListDevicesQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
     pub status: Option<String>,
-    pub backend: Option<String>,
+    pub backend_id: Option<String>,
     pub driver: Option<String>,
     pub q: Option<String>,
 }
@@ -169,7 +169,7 @@ enum ResolveDeviceError {
         ("offset" = Option<usize>, Query, description = "Number of devices to skip"),
         ("limit" = Option<usize>, Query, description = "Maximum number of devices to return"),
         ("status" = Option<String>, Query, description = "Filter by device status"),
-        ("backend" = Option<String>, Query, description = "Filter by output backend route"),
+        ("backend_id" = Option<String>, Query, description = "Filter by output backend route"),
         ("driver" = Option<String>, Query, description = "Filter by owning driver module"),
         ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search")
     ),
@@ -203,7 +203,7 @@ pub async fn list_devices(
         Err(error) => return ApiError::validation(error),
     };
     let backend_filter = query
-        .backend
+        .backend_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
