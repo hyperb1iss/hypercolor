@@ -61,7 +61,7 @@ pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
             let label = device.presentation.label.trim();
             (!label.is_empty()).then(|| label.to_owned())
         })
-        .or_else(|| backend_label(&device.backend));
+        .or_else(|| driver_identifier_label(&device.backend));
 
     DeviceBrand {
         label,
@@ -82,8 +82,8 @@ pub fn brand_label(brand: &DeviceBrand) -> Option<String> {
     brand.label.clone()
 }
 
-fn backend_label(backend: &str) -> Option<String> {
-    let label = backend
+pub fn driver_identifier_label(identifier: &str) -> Option<String> {
+    let label = identifier
         .split(['-', '_', ' '])
         .filter(|part| !part.is_empty())
         .map(|part| part.to_ascii_uppercase())

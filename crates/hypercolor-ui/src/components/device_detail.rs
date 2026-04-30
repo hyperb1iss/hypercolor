@@ -13,7 +13,7 @@ use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
     ALL_DEVICE_CLASSES, brand_colors, brand_label, classify_brand, classify_device,
-    device_class_icon, device_class_label, save_category_override,
+    device_class_icon, device_class_label, driver_identifier_label, save_category_override,
 };
 use crate::components::device_control_surfaces::DeviceControlSurfaces;
 use crate::components::device_pairing_modal::needs_pairing;
@@ -164,6 +164,25 @@ pub fn DeviceDetail(
                 let brand = classify_brand(&dev);
                 let (rgb, secondary_rgb) = brand_colors(&brand);
                 let vendor_label = brand_label(&brand);
+                let driver_label = vendor_label.clone().unwrap_or_else(|| {
+                    let identifier = if dev.origin.driver_id.trim().is_empty() {
+                        &dev.backend
+                    } else {
+                        &dev.origin.driver_id
+                    };
+                    driver_identifier_label(identifier).unwrap_or_else(|| identifier.to_string())
+                });
+                let route_backend = if dev.origin.backend_id.trim().is_empty() {
+                    dev.backend.clone()
+                } else {
+                    dev.origin.backend_id.clone()
+                };
+                let route_label = (!dev.origin.driver_id.trim().is_empty()
+                    && route_backend != dev.origin.driver_id
+                    && !route_backend.trim().is_empty())
+                .then(|| {
+                    driver_identifier_label(&route_backend).unwrap_or_else(|| route_backend.clone())
+                });
                 let rgb_for_border = rgb.clone();
                 let rgb_for_slider = rgb.clone();
                 let rgb_for_identify = rgb.clone();
@@ -210,7 +229,7 @@ pub fn DeviceDetail(
 
                         <div class="relative px-4 py-3">
                             // Driver chip (single, subtle — status lives in the dot next to the name)
-                            {vendor_label.map(|label| {
+                            {vendor_label.clone().map(|label| {
                                 let chip_rgb = rgb.clone();
                                 view! {
                                     <div class="mb-2">
@@ -265,7 +284,11 @@ pub fn DeviceDetail(
                             </div>
 
                             <div class="flex items-center gap-2 text-[10px] font-mono text-fg-tertiary/65 mb-3">
-                                <span class="capitalize">{dev.backend.clone()}</span>
+                                <span>{driver_label}</span>
+                                {route_label.clone().map(|backend| view! {
+                                    <span class="text-fg-tertiary/30">{"\u{b7}"}</span>
+                                    <span>"via " {backend}</span>
+                                })}
                                 {dev.firmware_version.clone().map(|fw| view! {
                                     <span class="text-fg-tertiary/30">{"\u{b7}"}</span>
                                     <span>"v" {fw}</span>

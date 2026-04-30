@@ -5,10 +5,13 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::channel_names;
+use crate::components::device_card::{
+    brand_colors, brand_label, classify_brand, driver_identifier_label,
+};
 use crate::compound_selection::{self, CompoundDepth};
 use crate::icons::*;
 use crate::layout_utils;
-use crate::style_utils::{device_accent_colors, uuid_v4_hex};
+use crate::style_utils::uuid_v4_hex;
 
 use super::topology::topology_icon;
 use super::{PaletteState, fetch_attachments_for};
@@ -52,8 +55,16 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
         .label
         .clone()
         .or(dev.connection.endpoint.clone());
-    let backend = dev.backend.clone();
-    let (primary_rgb, secondary_rgb) = device_accent_colors(&device_id);
+    let brand = classify_brand(&dev);
+    let (primary_rgb, secondary_rgb) = brand_colors(&brand);
+    let driver_label = brand_label(&brand).unwrap_or_else(|| {
+        let identifier = if dev.origin.driver_id.trim().is_empty() {
+            &dev.backend
+        } else {
+            &dev.origin.driver_id
+        };
+        driver_identifier_label(identifier).unwrap_or_else(|| identifier.to_string())
+    });
     let fallback_leds = dev.total_leds;
     let has_multi_zones = dev.zones.len() > 1;
     let zone_count = dev.zones.len();
@@ -265,7 +276,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                                 "color: rgba({primary_rgb}, 0.8); border-color: rgba({primary_rgb}, 0.2); background: rgba({primary_rgb}, 0.06)"
                             )
                         >
-                            {backend}
+                            {driver_label}
                         </span>
                     </div>
                     {connection_label.as_ref().map(|label| {

@@ -7,7 +7,9 @@ use leptos_icons::Icon;
 
 use crate::api::DeviceSummary;
 use crate::app::{DevicesContext, WsContext};
-use crate::components::device_card::DeviceCard;
+use crate::components::device_card::{
+    DeviceCard, brand_colors, brand_label, classify_brand, driver_identifier_label,
+};
 use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -16,7 +18,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
-use crate::style_utils::{device_accent_colors, filter_chips};
+use crate::style_utils::filter_chips;
 use crate::toasts;
 
 // ── LocalStorage keys + helpers ─────────────────────────────────────────────
@@ -28,7 +30,7 @@ const SIDEBAR_MAX: f64 = 600.0;
 const LS_SIDEBAR: &str = "hc-devices-sidebar-width";
 const LS_SELECTED: &str = "hc-devices-selected";
 const LS_STATUS: &str = "hc-devices-status-filter";
-const LS_BACKEND: &str = "hc-devices-backend-filter";
+const LS_DRIVER: &str = "hc-devices-driver-filter";
 
 fn ls_get(key: &str) -> Option<String> {
     storage::get(key)
@@ -59,20 +61,41 @@ const STATUS_CHIPS: &[(&str, &str)] = &[
     ("disabled", "255, 99, 99"),
 ];
 
-fn backend_filter_options(devices: &[DeviceSummary]) -> Vec<(String, String)> {
-    let mut backends = devices
-        .iter()
-        .map(|device| device.backend.trim().to_lowercase())
-        .filter(|backend| !backend.is_empty())
-        .collect::<Vec<_>>();
-    backends.sort();
-    backends.dedup();
+#[derive(Clone, PartialEq, Eq)]
+struct DriverFilterOption {
+    id: String,
+    label: String,
+    rgb: String,
+}
 
-    let mut options = vec![("all".to_string(), "225, 53, 255".to_string())];
-    options.extend(backends.into_iter().map(|backend| {
-        let rgb = device_accent_colors(&backend).0;
-        (backend, rgb)
-    }));
+fn driver_filter_options(devices: &[DeviceSummary]) -> Vec<DriverFilterOption> {
+    let mut by_driver = std::collections::BTreeMap::<String, DriverFilterOption>::new();
+    for device in devices {
+        let driver_id = device.origin.driver_id.trim();
+        if driver_id.is_empty() {
+            continue;
+        }
+
+        let brand = classify_brand(device);
+        let (rgb, _) = brand_colors(&brand);
+        let label = brand_label(&brand).unwrap_or_else(|| {
+            driver_identifier_label(driver_id).unwrap_or_else(|| driver_id.to_string())
+        });
+        by_driver
+            .entry(driver_id.to_lowercase())
+            .or_insert_with(|| DriverFilterOption {
+                id: driver_id.to_lowercase(),
+                label,
+                rgb,
+            });
+    }
+
+    let mut options = vec![DriverFilterOption {
+        id: "all".to_string(),
+        label: "All".to_string(),
+        rgb: "225, 53, 255".to_string(),
+    }];
+    options.extend(by_driver.into_values());
     options
 }
 
@@ -100,8 +123,8 @@ pub fn DevicesPage() -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let (status_filter, set_status_filter) =
         signal(ls_get(LS_STATUS).unwrap_or_else(|| "all".to_string()));
-    let (backend_filter, set_backend_filter) =
-        signal(ls_get(LS_BACKEND).unwrap_or_else(|| "all".to_string()));
+    let (driver_filter, set_driver_filter) =
+        signal(ls_get(LS_DRIVER).unwrap_or_else(|| "all".to_string()));
     let (selected_device, set_selected_device) = signal(ls_get(LS_SELECTED));
 
     // Persist filter changes
@@ -114,11 +137,11 @@ pub fn DevicesPage() -> impl IntoView {
         }
     });
     Effect::new(move |_| {
-        let b = backend_filter.get();
-        if b == "all" {
-            ls_remove(LS_BACKEND);
+        let driver = driver_filter.get();
+        if driver == "all" {
+            ls_remove(LS_DRIVER);
         } else {
-            ls_set(LS_BACKEND, &b);
+            ls_set(LS_DRIVER, &driver);
         }
     });
     Effect::new(move |_| {
@@ -155,7 +178,7 @@ pub fn DevicesPage() -> impl IntoView {
 
         let search_term = search.get().to_lowercase();
         let status = status_filter.get();
-        let backend = backend_filter.get();
+        let driver = driver_filter.get();
 
         let mut filtered: Vec<_> = devices
             .into_iter()
@@ -163,13 +186,18 @@ pub fn DevicesPage() -> impl IntoView {
                 if status != "all" && d.status.to_lowercase() != status {
                     return false;
                 }
-                if backend != "all" && d.backend.to_lowercase() != backend {
+                let device_driver = d.origin.driver_id.trim().to_lowercase();
+                if driver != "all" && device_driver != driver {
                     return false;
                 }
                 if !search_term.is_empty() {
+                    let brand = classify_brand(d);
+                    let driver_label = brand_label(&brand).unwrap_or_default().to_lowercase();
                     let matches_name = d.name.to_lowercase().contains(&search_term);
-                    let matches_backend = d.backend.to_lowercase().contains(&search_term);
-                    return matches_name || matches_backend;
+                    let matches_driver = device_driver.contains(&search_term)
+                        || driver_label.contains(&search_term)
+                        || d.backend.to_lowercase().contains(&search_term);
+                    return matches_name || matches_driver;
                 }
                 true
             })
@@ -241,17 +269,23 @@ pub fn DevicesPage() -> impl IntoView {
         if status_filter.get() != "all" {
             count += 1;
         }
-        if backend_filter.get() != "all" {
+        if driver_filter.get() != "all" {
             count += 1;
         }
         count
     });
-    let backend_filter_options = Memo::new(move |_| {
+    let driver_filter_options = Memo::new(move |_| {
         ctx.devices_resource
             .get()
             .and_then(|r| r.ok())
-            .map(|devices| backend_filter_options(&devices))
-            .unwrap_or_else(|| vec![("all".to_string(), "225, 53, 255".to_string())])
+            .map(|devices| driver_filter_options(&devices))
+            .unwrap_or_else(|| {
+                vec![DriverFilterOption {
+                    id: "all".to_string(),
+                    label: "All".to_string(),
+                    rgb: "225, 53, 255".to_string(),
+                }]
+            })
     });
 
     let _close_listener = window_event_listener(ev::keydown, move |ev| {
@@ -345,12 +379,13 @@ pub fn DevicesPage() -> impl IntoView {
                                 </div>
                                 <div class="h-px bg-border-subtle/30 mx-2 my-1" />
                                 <div class="px-3 pt-1 pb-1.5">
-                                    <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Backend"</div>
+                                    <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Driver"</div>
                                     <div class="flex gap-1 flex-wrap">
-                                        {move || backend_filter_options.get().into_iter().map(|(label, rgb)| {
-                                            let chip_label = label.clone();
-                                            let selected_label = label.clone();
-                                            let next_label = label.clone();
+                                        {move || driver_filter_options.get().into_iter().map(|option| {
+                                            let chip_label = option.label.clone();
+                                            let selected_id = option.id.clone();
+                                            let next_id = option.id.clone();
+                                            let rgb = option.rgb.clone();
                                             let active_style = format!(
                                                 "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); \
                                                  box-shadow: 0 0 8px rgba({rgb}, 0.15)"
@@ -358,7 +393,7 @@ pub fn DevicesPage() -> impl IntoView {
                                             let inactive_style = format!(
                                                 "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
                                             );
-                                            let is_active = Memo::new(move |_| backend_filter.get() == selected_label);
+                                            let is_active = Memo::new(move |_| driver_filter.get() == selected_id);
                                             view! {
                                                 <button
                                                     class="px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all"
@@ -367,7 +402,7 @@ pub fn DevicesPage() -> impl IntoView {
                                                     } else {
                                                         inactive_style.clone()
                                                     }
-                                                    on:click=move |_| set_backend_filter.set(next_label.clone())
+                                                    on:click=move |_| set_driver_filter.set(next_id.clone())
                                                 >
                                                     {chip_label}
                                                 </button>
@@ -381,7 +416,7 @@ pub fn DevicesPage() -> impl IntoView {
                                         class="w-full text-left px-5 py-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
                                         on:click=move |_| {
                                             set_status_filter.set("all".to_string());
-                                            set_backend_filter.set("all".to_string());
+                                            set_driver_filter.set("all".to_string());
                                         }
                                     >
                                         "Clear all filters"
