@@ -164,7 +164,11 @@ PATCH  /api/v1/devices/:id/zones/:zone_id # Update zone config (LED count, color
 {
   "id": "wled_living_room_strip",
   "name": "Living Room Strip",
-  "backend": "wled",
+  "origin": {
+    "driver_id": "wled",
+    "backend_id": "wled",
+    "transport": "network"
+  },
   "status": "connected",
   "firmware_version": "0.15.3",
   "total_leds": 120,

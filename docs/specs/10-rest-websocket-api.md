@@ -368,7 +368,6 @@ GET /api/v1/devices
         "id": "019e2f3c-9b5a-7a0c-9d4e-7f4a1d58aa41",
         "layout_device_id": "govee:aa:bb:cc:dd:ee:ff",
         "name": "Living Room Strip",
-        "backend": "wled",
         "origin": {
           "driver_id": "govee",
           "backend_id": "wled",
@@ -3717,7 +3716,6 @@ pub struct DeviceSummary {
     pub id: String,
     pub layout_device_id: String,
     pub name: String,
-    pub backend: String,
     pub origin: DeviceOrigin,
     pub presentation: DriverPresentation,
     pub status: String,
