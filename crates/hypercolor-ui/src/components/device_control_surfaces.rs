@@ -13,8 +13,8 @@ use leptos_icons::Icon;
 use serde_json::Value as JsonValue;
 
 use hypercolor_ui::control_surface_view::{
-    action_is_hidden, control_value_summary, field_is_hidden, visible_action_count,
-    visible_control_surfaces, visible_field_count,
+    action_is_hidden, control_surface_event_matches_device, control_value_summary, field_is_hidden,
+    visible_action_count, visible_control_surfaces, visible_field_count,
 };
 
 use crate::api;
@@ -1568,10 +1568,4 @@ fn surface_title(surface: &ControlSurfaceDocument) -> String {
             }
         }
     }
-}
-
-fn control_surface_event_matches_device(surface_id: &str, device_id: &str) -> bool {
-    surface_id == format!("device:{device_id}")
-        || surface_id.ends_with(&format!(":device:{device_id}"))
-        || !surface_id.contains(":device:")
 }

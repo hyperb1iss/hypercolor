@@ -77,13 +77,22 @@ pub fn control_value_summary(value: Option<&DynamicControlValue>) -> String {
     }
 }
 
+pub fn control_surface_event_matches_device(surface_id: &str, device_id: &str) -> bool {
+    surface_id == format!("device:{device_id}")
+        || surface_id.ends_with(&format!(":device:{device_id}"))
+        || !surface_id.contains(":device:")
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_types::controls::{
         ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueType,
     };
 
-    use super::{control_value_summary, visible_control_surfaces, visible_field_count};
+    use super::{
+        control_surface_event_matches_device, control_value_summary, visible_control_surfaces,
+        visible_field_count,
+    };
 
     #[test]
     fn empty_control_surfaces_are_hidden_from_device_cards() {
@@ -134,5 +143,33 @@ mod tests {
             "unsupported value"
         );
         assert_eq!(visible_control_surfaces(vec![surface]).len(), 1);
+    }
+
+    #[test]
+    fn device_control_surface_events_match_only_their_device() {
+        assert!(control_surface_event_matches_device(
+            "device:desk-strip",
+            "desk-strip"
+        ));
+        assert!(control_surface_event_matches_device(
+            "driver:wled:device:desk-strip",
+            "desk-strip"
+        ));
+        assert!(!control_surface_event_matches_device(
+            "driver:wled:device:desk-strip",
+            "shelf-strip"
+        ));
+    }
+
+    #[test]
+    fn driver_control_surface_events_match_all_device_pages() {
+        assert!(control_surface_event_matches_device(
+            "driver:wled",
+            "desk-strip"
+        ));
+        assert!(control_surface_event_matches_device(
+            "driver:nanoleaf",
+            "panel-wall"
+        ));
     }
 }
