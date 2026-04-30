@@ -211,12 +211,13 @@ mod tests {
 
     #[test]
     fn parses_secret_json_as_secret_reference() {
-        let value = parse_json_control_value(&ControlValueType::Secret, r#""credential:hue:key""#)
-            .expect("secret reference should parse");
+        let value =
+            parse_json_control_value(&ControlValueType::Secret, r#""credential:alpha:key""#)
+                .expect("secret reference should parse");
 
         assert_eq!(
             value,
-            DynamicControlValue::SecretRef("credential:hue:key".to_owned())
+            DynamicControlValue::SecretRef("credential:alpha:key".to_owned())
         );
     }
 

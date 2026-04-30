@@ -87,12 +87,12 @@ mod tests {
     #[test]
     fn control_surface_mutation_urls_encode_surface_and_action_ids() {
         assert_eq!(
-            control_surface_values_url("driver:wled:device:abc/123"),
-            "/api/v1/control-surfaces/driver%3Awled%3Adevice%3Aabc%2F123/values"
+            control_surface_values_url("driver:alpha:device:abc/123"),
+            "/api/v1/control-surfaces/driver%3Aalpha%3Adevice%3Aabc%2F123/values"
         );
         assert_eq!(
-            control_surface_action_url("driver:nanoleaf:device:panel 1", "refresh/topology"),
-            "/api/v1/control-surfaces/driver%3Ananoleaf%3Adevice%3Apanel%201/actions/refresh%2Ftopology"
+            control_surface_action_url("driver:beta:device:panel 1", "refresh/topology"),
+            "/api/v1/control-surfaces/driver%3Abeta%3Adevice%3Apanel%201/actions/refresh%2Ftopology"
         );
     }
 }

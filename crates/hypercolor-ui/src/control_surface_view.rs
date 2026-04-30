@@ -152,11 +152,11 @@ mod tests {
             "desk-strip"
         ));
         assert!(control_surface_event_matches_device(
-            "driver:wled:device:desk-strip",
+            "driver:alpha:device:desk-strip",
             "desk-strip"
         ));
         assert!(!control_surface_event_matches_device(
-            "driver:wled:device:desk-strip",
+            "driver:alpha:device:desk-strip",
             "shelf-strip"
         ));
     }
@@ -164,11 +164,11 @@ mod tests {
     #[test]
     fn driver_control_surface_events_match_all_device_pages() {
         assert!(control_surface_event_matches_device(
-            "driver:wled",
+            "driver:alpha",
             "desk-strip"
         ));
         assert!(control_surface_event_matches_device(
-            "driver:nanoleaf",
+            "driver:beta",
             "panel-wall"
         ));
     }
