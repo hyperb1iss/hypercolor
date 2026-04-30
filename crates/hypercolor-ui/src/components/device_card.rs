@@ -8,6 +8,7 @@ use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
 use crate::storage;
 use crate::style_utils::device_accent_colors;
+use hypercolor_types::device::DeviceClassHint;
 
 // ── Driver presentation ─────────────────────────────────────────────────────
 
@@ -19,18 +20,58 @@ pub struct DeviceBrand {
 }
 
 pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
-    let color_key = if device.backend.trim().is_empty() {
+    let color_key = if device.origin.driver_id.trim().is_empty() {
+        if device.backend.trim().is_empty() {
+            device.id.as_str()
+        } else {
+            device.backend.as_str()
+        }
+    } else {
+        device.origin.driver_id.as_str()
+    };
+    let fallback_key = if device.backend.trim().is_empty() {
         device.id.as_str()
     } else {
         device.backend.as_str()
     };
-    let (primary_rgb, secondary_rgb) = device_accent_colors(color_key);
+    let (fallback_primary, fallback_secondary) = device_accent_colors(color_key);
+    let (_, backend_secondary) = device_accent_colors(fallback_key);
+    let primary_rgb = device
+        .presentation
+        .accent_rgb
+        .map(rgb_triplet)
+        .unwrap_or(fallback_primary);
+    let secondary_rgb = device
+        .presentation
+        .secondary_rgb
+        .map(rgb_triplet)
+        .unwrap_or_else(|| {
+            if device.presentation.accent_rgb.is_some() {
+                backend_secondary
+            } else {
+                fallback_secondary
+            }
+        });
+    let label = device
+        .presentation
+        .short_label
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let label = device.presentation.label.trim();
+            (!label.is_empty()).then(|| label.to_owned())
+        })
+        .or_else(|| backend_label(&device.backend));
 
     DeviceBrand {
-        label: backend_label(&device.backend),
+        label,
         primary_rgb,
         secondary_rgb,
     }
+}
+
+fn rgb_triplet(rgb: [u8; 3]) -> String {
+    format!("{}, {}, {}", rgb[0], rgb[1], rgb[2])
 }
 
 pub fn brand_colors(brand: &DeviceBrand) -> (String, String) {
@@ -39,10 +80,6 @@ pub fn brand_colors(brand: &DeviceBrand) -> (String, String) {
 
 pub fn brand_label(brand: &DeviceBrand) -> Option<String> {
     brand.label.clone()
-}
-
-pub fn backend_accent_rgb(backend: &str) -> String {
-    device_accent_colors(backend).0
 }
 
 fn backend_label(backend: &str) -> Option<String> {
@@ -111,6 +148,14 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
         return class;
     }
 
+    if let Some(class) = device
+        .presentation
+        .default_device_class
+        .and_then(device_class_from_hint)
+    {
+        return class;
+    }
+
     let name = device.name.to_lowercase();
 
     if device.connection.transport == "network" {
@@ -140,6 +185,19 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
     }
 
     DeviceClass::Other
+}
+
+fn device_class_from_hint(hint: DeviceClassHint) -> Option<DeviceClass> {
+    Some(match hint {
+        DeviceClassHint::Keyboard => DeviceClass::Keyboard,
+        DeviceClassHint::Mouse => DeviceClass::Mouse,
+        DeviceClassHint::Hub => DeviceClass::Hub,
+        DeviceClassHint::Controller => DeviceClass::Controller,
+        DeviceClassHint::Light => DeviceClass::SmartLight,
+        DeviceClassHint::Display => DeviceClass::Display,
+        DeviceClassHint::Audio => DeviceClass::Audio,
+        DeviceClassHint::Other => return None,
+    })
 }
 
 fn load_category_override(device_id: &str) -> Option<String> {

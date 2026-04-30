@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use gloo_net::http::Request;
+use hypercolor_types::device::{DeviceOrigin, DriverPresentation};
 use serde::{Deserialize, Serialize};
 
 use super::client;
@@ -138,6 +139,8 @@ pub struct DeviceSummary {
     pub layout_device_id: String,
     pub name: String,
     pub backend: String,
+    pub origin: DeviceOrigin,
+    pub presentation: DriverPresentation,
     pub status: String,
     pub brightness: u8,
     #[serde(default)]

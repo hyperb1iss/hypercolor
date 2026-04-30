@@ -15,6 +15,7 @@ use crate::api::{
     self, DeviceAuthState, DeviceAuthSummary, DeviceSummary, PairDeviceStatus, PairingFlowKind,
 };
 use crate::app::DevicesContext;
+use crate::components::device_card::{brand_colors, classify_brand};
 use crate::icons::*;
 use crate::toasts;
 
@@ -50,7 +51,8 @@ pub fn DevicePairingModal(
     let ctx = expect_context::<DevicesContext>();
     let device_id = device.id.clone();
     let device_name = device.name.clone();
-    let rgb = crate::components::device_card::backend_accent_rgb(&device.backend).to_string();
+    let brand = classify_brand(&device);
+    let (rgb, _) = brand_colors(&brand);
 
     let auth = device.auth.clone();
     let descriptor = auth.as_ref().and_then(|a| a.descriptor.clone());
