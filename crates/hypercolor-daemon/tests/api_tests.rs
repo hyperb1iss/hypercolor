@@ -3029,6 +3029,60 @@ async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
 }
 
 #[tokio::test]
+async fn patch_driver_control_surface_rejects_unknown_future_value_kind() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+    let original_drivers = manager.get().drivers.clone();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:wled/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:wled",
+                        "dry_run": false,
+                        "changes": [
+                            {
+                                "field_id": "dedup_threshold",
+                                "value": {
+                                    "kind": "spline_curve",
+                                    "value": [0.0, 0.4, 1.0]
+                                }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["error"]["details"]["kind"],
+        "driver_control_validation_failed"
+    );
+    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
+    assert_eq!(json["error"]["details"]["driver_id"], "wled");
+    assert!(
+        json["error"]["details"]["detail"]
+            .as_str()
+            .expect("error detail should be a string")
+            .contains("dedup_threshold")
+    );
+    assert_eq!(
+        manager.get().drivers,
+        original_drivers,
+        "unknown future value kinds should not be persisted"
+    );
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_rejects_transaction_without_partial_persist() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
