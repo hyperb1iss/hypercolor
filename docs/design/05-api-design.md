@@ -202,7 +202,7 @@ PATCH  /api/v1/devices/:id/zones/:zone_id # Update zone config (LED count, color
   "data": {
     "scan_id": "scan_f8e7d6c5",
     "status": "scanning",
-    "backends": ["wled", "openrgb", "hid", "hue"],
+    "targets": ["wled", "usb", "hue"],
     "found": []
   }
 }
@@ -1058,7 +1058,7 @@ Lighting is a perfect MCP domain:
 ```json
 {
   "name": "discover_devices",
-  "description": "Trigger a scan for new RGB devices across all backends (WLED, OpenRGB, USB HID, Hue). Returns newly discovered devices.",
+  "description": "Trigger a scan for new RGB devices across discovery targets. Returns newly discovered devices.",
   "inputSchema": {
     "type": "object",
     "properties": {}
@@ -2043,7 +2043,7 @@ pub enum HypercolorEvent {
     DeviceConnected {
         device_id: String,
         name: String,
-        backend: String,
+        backend_id: String,
         led_count: u32,
     },
     DeviceDisconnected {
@@ -2051,7 +2051,7 @@ pub enum HypercolorEvent {
         reason: DisconnectReason,  // "removed", "error", "timeout", "shutdown"
     },
     DeviceDiscoveryStarted {
-        backends: Vec<String>,
+        targets: Vec<String>,
     },
     DeviceDiscoveryCompleted {
         found: Vec<DeviceRef>,

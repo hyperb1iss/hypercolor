@@ -560,20 +560,20 @@ Removes a device from tracking. Does not factory-reset the hardware. The device 
 POST /api/v1/devices/discover
 ```
 
-Triggers an asynchronous scan across all configured backends. Discovery results arrive via the WebSocket `events` channel as `DeviceDiscoveryStarted`, `DeviceDiscovered`, and `DeviceDiscoveryCompleted` events.
+Triggers an asynchronous scan across all configured discovery targets. Discovery results arrive via the WebSocket `events` channel as `DeviceDiscoveryStarted`, `DeviceDiscovered`, and `DeviceDiscoveryCompleted` events.
 
 **Request body (optional):**
 
 ```json
 {
-  "backends": ["wled"],
+  "targets": ["wled"],
   "timeout_ms": 10000
 }
 ```
 
 | Field        | Type       | Required | Default     | Description                           |
 | ------------ | ---------- | -------- | ----------- | ------------------------------------- |
-| `backends`   | `string[]` | no       | all enabled | Limit scan to specific backends       |
+| `targets`    | `string[]` | no       | all enabled | Limit scan to specific discovery targets |
 | `timeout_ms` | `integer`  | no       | `10000`     | Maximum scan duration in milliseconds |
 
 **Response — `202 Accepted`:**
@@ -583,7 +583,7 @@ Triggers an asynchronous scan across all configured backends. Discovery results 
   "data": {
     "scan_id": "scan_f8e7d6c5",
     "status": "scanning",
-    "backends": ["wled"],
+    "targets": ["wled"],
     "timeout_ms": 10000
   },
   "meta": { ... }
@@ -3470,7 +3470,7 @@ Events are pushed to clients subscribed to the `events` channel. All events use 
 | `effect_control_changed`     | `effect_id`, `control_id`, `old_value`, `new_value` | Control value updated                               |
 | `device_connected`           | `device_id`, `name`, `backend_id`, `led_count`      | Device came online                                  |
 | `device_disconnected`        | `device_id`, `reason`                               | Device went offline                                 |
-| `device_discovery_started`   | `backends`                                          | Discovery scan began                                |
+| `device_discovery_started`   | `targets`                                           | Discovery scan began                                |
 | `device_discovery_completed` | `found`, `duration_ms`                              | Discovery scan finished                             |
 | `device_error`               | `device_id`, `error`, `recoverable`                 | Device communication error                          |
 | `profile_applied`            | `profile_id`, `profile_name`, `trigger`             | Profile activated                                   |

@@ -1260,7 +1260,6 @@ Device API responses should include origin:
   "id": "018f...",
   "name": "Nollie 32",
   "family": "nollie",
-  "backend": "usb",
   "origin": {
     "driver_id": "nollie",
     "backend_id": "usb",
@@ -1274,8 +1273,8 @@ Device API responses should include origin:
 }
 ```
 
-Existing `backend` stays for compatibility but should be derived from
-`origin.backend_id`.
+Output routing is exposed through `origin.backend_id`; device summaries do not
+duplicate it as a top-level `backend` field.
 
 ### 15.3 Settings UI
 
@@ -1557,8 +1556,8 @@ Work:
 - add `DriverTransportKind`
 - add `DriverPresentation`
 - add `DriverCapabilitySet`
-- add compatibility serde defaults
-- keep existing `backend` fields in API responses
+- add canonical origin/presentation fields
+- remove duplicate device-summary `backend` response fields
 
 Verify:
 
@@ -1695,7 +1694,7 @@ Work:
 - add `/api/v1/drivers/{id}/config`
 - include origin/presentation in device summaries
 - render discovery settings from driver metadata
-- render backend filter chips from actual device data
+- render driver filter chips from actual device data
 
 Verify:
 
