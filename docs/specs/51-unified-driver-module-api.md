@@ -94,7 +94,6 @@ Implemented:
 Remaining:
 
 - settings/discovery UI should be fully generated from driver control metadata
-- Prism S dynamic topology/config still needs to finish moving out of daemon discovery
 - future Wasm host services still need value-shaped bindings over the native host adapters
 
 ---
@@ -116,8 +115,8 @@ Current state:
   `hypercolor-driver-api`; the longer-term Wasm boundary should replace these
   with value-shaped host services.
 - Some settings and discovery UI surfaces still need to become fully metadata-driven.
-- Prism S dynamic topology/config is applied from daemon discovery code even
-  though the behavior belongs to the HAL/protocol side.
+- HAL-specific attachment/profile behavior now flows through host-managed
+  attachment profile sync, with protocol-specific config resolved on the HAL side.
 
 That creates five concrete problems.
 
@@ -1074,12 +1073,11 @@ DeviceOrigin {
 
 PrismRGB should shrink to PrismRGB-exclusive silicon, matching Spec 49.
 
-Prism S dynamic config currently leaks through daemon discovery. Target state:
+Prism S dynamic config now resolves through HAL-owned attachment profile helpers:
 
 - PrismRGB module exposes config schema for Prism S attachments/topology.
 - Attachment profiles remain daemon-owned persisted data.
-- The USB backend asks a protocol-config provider for the current protocol
-  config by `(driver_id, protocol_id, device_id)`.
+- The USB backend consumes a protocol runtime config derived from attachment profiles.
 - The daemon no longer has a Prism S branch inside discovery.
 
 ### 13.3 Lian Li, ASUS, Corsair, Razer, QMK, Dygma
@@ -1671,8 +1669,8 @@ Work:
 - group HAL descriptors by driver ID
 - expose protocol catalog values through adapter modules
 - route USB/SMBus scanner discoveries with `DeviceOrigin`
-- move Prism S dynamic config out of daemon discovery and into a generic
-  protocol config service
+- keep Prism S and Nollie32 dynamic config behind the generic host attachment
+  profile service
 
 Verify:
 
