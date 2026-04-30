@@ -585,7 +585,7 @@ mod tests {
             family,
             model: None,
             connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native(driver_id, "test", ConnectionType::Network),
+            origin: DeviceOrigin::native(driver_id, "output-backend", ConnectionType::Network),
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: 16,
@@ -601,7 +601,10 @@ mod tests {
     #[test]
     fn discovered_known_device_requests_connect() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Case Strip", DeviceFamily::new_static("wled", "WLED"));
+        let info = device_info(
+            "Network Fixture",
+            DeviceFamily::new_static("net-driver", "Network Driver"),
+        );
         let actions = lifecycle.on_discovered(
             info.id,
             &info,
@@ -615,14 +618,18 @@ mod tests {
                 backend_id,
                 layout_device_id,
                 ..
-            } if backend_id == "wled" && layout_device_id == "wled:aa:bb:cc:dd:ee:ff"
+            } if backend_id == "output-backend"
+                && layout_device_id == "net-driver:aa:bb:cc:dd:ee:ff"
         ));
     }
 
     #[test]
     fn comm_error_emits_disconnect_unmap_and_reconnect() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Desk Strip", DeviceFamily::new_static("wled", "WLED"));
+        let info = device_info(
+            "Recovering Fixture",
+            DeviceFamily::new_static("net-driver", "Network Driver"),
+        );
         lifecycle.on_discovered(info.id, &info, None);
         lifecycle
             .on_connected(info.id)
@@ -658,7 +665,7 @@ mod tests {
         let mut lifecycle = DeviceLifecycleManager::new();
         let info = device_info(
             "Unreachable Device",
-            DeviceFamily::new_static("wled", "WLED"),
+            DeviceFamily::new_static("net-driver", "Network Driver"),
         );
         lifecycle.on_discovered(info.id, &info, None);
 
@@ -682,11 +689,14 @@ mod tests {
             max_attempts: Some(2),
             jitter: 0.0,
         });
-        let info = device_info("Kitchen Strip", DeviceFamily::new_static("wled", "WLED"));
+        let info = device_info(
+            "Retry Fixture",
+            DeviceFamily::new_static("net-driver", "Network Driver"),
+        );
         lifecycle.on_discovered(
             info.id,
             &info,
-            Some(&DeviceFingerprint("net:wled:office-strip".to_owned())),
+            Some(&DeviceFingerprint("net:office-node".to_owned())),
         );
         lifecycle
             .on_connected(info.id)
@@ -721,7 +731,7 @@ mod tests {
         let mut lifecycle = DeviceLifecycleManager::new();
         let info = device_info(
             "Default Policy Device",
-            DeviceFamily::new_static("wled", "WLED"),
+            DeviceFamily::new_static("net-driver", "Network Driver"),
         );
         lifecycle.on_discovered(info.id, &info, None);
 
@@ -749,7 +759,10 @@ mod tests {
     #[test]
     fn disable_then_enable_reconnects_known_device() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Panel", DeviceFamily::new_static("wled", "WLED"));
+        let info = device_info(
+            "Toggle Fixture",
+            DeviceFamily::new_static("net-driver", "Network Driver"),
+        );
         lifecycle.on_discovered(info.id, &info, None);
         lifecycle
             .on_connected(info.id)
@@ -779,7 +792,10 @@ mod tests {
     #[test]
     fn vanished_active_device_requests_disconnect_and_unmap() {
         let mut lifecycle = DeviceLifecycleManager::new();
-        let info = device_info("Vanishing Strip", DeviceFamily::new_static("wled", "WLED"));
+        let info = device_info(
+            "Vanishing Fixture",
+            DeviceFamily::new_static("net-driver", "Network Driver"),
+        );
         lifecycle.on_discovered(info.id, &info, None);
         lifecycle
             .on_connected(info.id)
@@ -812,38 +828,44 @@ mod tests {
     #[test]
     fn network_fingerprints_use_driver_prefix_without_driver_special_cases() {
         let info = device_info(
-            "Living Room",
-            DeviceFamily::new_static("hue", "Philips Hue"),
+            "Scoped Network Device",
+            DeviceFamily::new_static("scoped-driver", "Scoped Driver"),
         );
-        let fingerprint = DeviceFingerprint("net:hue:bridge.local".to_owned());
+        let fingerprint = DeviceFingerprint("net:scoped-driver:bridge.local".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
-        assert_eq!(layout_id, "hue:bridge-local");
+        assert_eq!(layout_id, "scoped-driver:bridge-local");
     }
 
     #[test]
-    fn unscoped_network_fingerprints_preserve_existing_wled_layout_ids() {
-        let info = device_info("Case Strip", DeviceFamily::new_static("wled", "WLED"));
+    fn unscoped_network_fingerprints_preserve_existing_layout_ids() {
+        let info = device_info(
+            "Unscoped Network Device",
+            DeviceFamily::new_static("net-driver", "Network Driver"),
+        );
         let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
-        assert_eq!(layout_id, "wled:aa:bb:cc:dd:ee:ff");
+        assert_eq!(layout_id, "net-driver:aa:bb:cc:dd:ee:ff");
     }
 
     #[test]
     fn usb_layout_ids_use_driver_origin_not_output_backend() {
-        let mut info = device_info("Nollie 32", DeviceFamily::new_static("nollie", "Nollie"));
+        let mut info = device_info(
+            "USB Fixture",
+            DeviceFamily::new_static("usb-driver", "USB Driver"),
+        );
         info.connection_type = ConnectionType::Usb;
-        info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb);
+        info.origin = DeviceOrigin::native("usb-driver", "usb", ConnectionType::Usb);
         let fingerprint = DeviceFingerprint("usb:/dev/hidraw2".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
-        assert_eq!(layout_id, "nollie:dev-hidraw2");
+        assert_eq!(layout_id, "usb-driver:dev-hidraw2");
     }
 }
