@@ -3,7 +3,7 @@
 > A single internal driver-module model for network drivers, HAL protocols,
 > built-in backends, and future Wasm-loaded extensions.
 
-**Status:** In progress
+**Status:** Substantially implemented
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-hal`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
@@ -79,6 +79,24 @@ protocol_id = "wled/ddp"
 For WLED, `driver_id` and `backend_id` happen to match. For Nollie, they do
 not. That distinction is the whole spell.
 
+### 1.1 Implementation Status
+
+Implemented:
+
+- driver-owned config under `drivers.<id>`
+- `DeviceOrigin` on discovered and API-visible devices
+- built-in driver registration through `hypercolor-driver-builtin`
+- network and HAL modules in one `DriverModuleRegistry`
+- driver-scoped runtime cache and encrypted credentials
+- driver presentation metadata in `/api/v1/drivers` and device summaries
+- UI device cards and pairing surfaces reading driver presentation metadata
+
+Remaining:
+
+- settings/discovery UI should be fully generated from driver control metadata
+- Prism S dynamic topology/config still needs to finish moving out of daemon discovery
+- future Wasm host services still need value-shaped bindings over the native host adapters
+
 ---
 
 ## 2. Problem Statement
@@ -97,8 +115,7 @@ Current state:
 - Native host utilities still expose credential and mDNS helpers through
   `hypercolor-driver-api`; the longer-term Wasm boundary should replace these
   with value-shaped host services.
-- UI device cards, filters, and settings panels hardcode vendor and backend
-  presentation instead of reading driver metadata.
+- Some settings and discovery UI surfaces still need to become fully metadata-driven.
 - Prism S dynamic topology/config is applied from daemon discovery code even
   though the behavior belongs to the HAL/protocol side.
 
@@ -1574,7 +1591,7 @@ Verify:
 
 Files:
 
-- new crate: `crates/hypercolor-driver-bundle`
+- new crate: `crates/hypercolor-driver-builtin`
 - `Cargo.toml`
 - `crates/hypercolor-daemon/Cargo.toml`
 - `crates/hypercolor-daemon/src/network.rs`
@@ -1700,7 +1717,7 @@ Work:
 
 - remove any remaining family-derived runtime routing
 - remove WLED-specific runtime state fields after migration window
-- remove UI backend hardcodes
+- remove remaining UI backend hardcodes
 - update docs to call `driver_id` and `backend_id` separate concepts
 
 Verify:
