@@ -21,14 +21,14 @@ fn device_events_have_device_category() {
         HypercolorEvent::DeviceDiscovered {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend: "wled".into(),
+            backend: "fixture-backend".into(),
             led_count: 60,
             address: Some("192.168.1.100".into()),
         },
         HypercolorEvent::DeviceConnected {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend: "wled".into(),
+            backend: "fixture-backend".into(),
             led_count: 60,
             zones: vec![],
         },
@@ -55,7 +55,7 @@ fn device_events_have_device_category() {
             changes: HashMap::new(),
         },
         HypercolorEvent::DeviceDiscoveryStarted {
-            targets: vec!["wled".into()],
+            targets: vec!["fixture-backend".into()],
         },
         HypercolorEvent::DeviceDiscoveryCompleted {
             found: vec![],
@@ -472,7 +472,7 @@ fn high_priority_events() {
         HypercolorEvent::DeviceConnected {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend: "wled".into(),
+            backend: "fixture-backend".into(),
             led_count: 60,
             zones: vec![],
         },
@@ -661,9 +661,9 @@ fn serialize_session_changed_roundtrip() {
 #[test]
 fn serialize_device_discovered_roundtrip() {
     let event = HypercolorEvent::DeviceDiscovered {
-        device_id: "wled_001".into(),
+        device_id: "fixture_device_001".into(),
         name: "Desk Strip".into(),
-        backend: "wled".into(),
+        backend: "fixture-backend".into(),
         led_count: 144,
         address: Some("192.168.1.42".into()),
     };
@@ -679,9 +679,9 @@ fn serialize_device_discovered_roundtrip() {
         address,
     } = deserialized
     {
-        assert_eq!(device_id, "wled_001");
+        assert_eq!(device_id, "fixture_device_001");
         assert_eq!(name, "Desk Strip");
-        assert_eq!(backend, "wled");
+        assert_eq!(backend, "fixture-backend");
         assert_eq!(led_count, 144);
         assert_eq!(address, Some("192.168.1.42".into()));
     } else {

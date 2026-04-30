@@ -12,12 +12,12 @@ fn sample_template() -> AttachmentTemplateManifest {
     AttachmentTemplateManifest {
         schema_version: 1,
         template: AttachmentTemplate {
-            id: "strimer-gpu-triple-8".into(),
-            name: "Triple 8-pin GPU Strimer".into(),
+            id: "fixture-gpu-template".into(),
+            name: "Fixture GPU Accessory".into(),
             category: AttachmentCategory::Strimer,
             origin: AttachmentOrigin::BuiltIn,
-            description: "Prism S GPU cable template".into(),
-            vendor: "Lian Li".into(),
+            description: "Fixture Controller GPU cable template".into(),
+            vendor: "Fixture Accessory".into(),
             default_size: AttachmentCanvasSize::default(),
             topology: LedTopology::Matrix {
                 width: 27,
@@ -26,9 +26,9 @@ fn sample_template() -> AttachmentTemplateManifest {
                 start_corner: Corner::TopLeft,
             },
             compatible_slots: vec![AttachmentCompatibility {
-                controller_ids: vec!["prismrgb".into()],
-                models: vec!["prism_s".into()],
-                slots: vec!["gpu-strimer".into()],
+                controller_ids: vec!["fixture-controller".into()],
+                models: vec!["fixture_model".into()],
+                slots: vec!["gpu-port".into()],
             }],
             tags: vec!["gpu".into(), "cable".into()],
             led_names: Some(vec!["Cable 1".into(), "Cable 2".into()]),
@@ -42,12 +42,12 @@ fn sample_template() -> AttachmentTemplateManifest {
 fn sample_device() -> DeviceInfo {
     DeviceInfo {
         id: DeviceId::new(),
-        name: "Prism S".into(),
-        vendor: "PrismRGB".into(),
-        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
-        model: Some("prism_s".into()),
+        name: "Fixture Controller".into(),
+        vendor: "Fixture Controller".into(),
+        family: DeviceFamily::new_static("fixture-controller", "Fixture Controller"),
+        model: Some("fixture_model".into()),
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb),
+        origin: DeviceOrigin::native("fixture-controller", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
                 name: "ATX Strimer".into(),
@@ -123,7 +123,7 @@ fn custom_attachment_template_preserves_positions() {
 #[test]
 fn attachment_slot_supports_built_in_and_custom_templates() {
     let slot = AttachmentSlot {
-        id: "gpu-strimer".into(),
+        id: "gpu-port".into(),
         name: "GPU Port".into(),
         led_start: 120,
         led_count: 162,
@@ -264,22 +264,22 @@ fn default_attachment_profile_uses_topology_categories_only() {
 #[test]
 fn attachment_compatibility_matches_controller_model_and_slot() {
     let compatibility = AttachmentCompatibility {
-        controller_ids: vec!["prismrgb".into()],
-        models: vec!["prism_s".into()],
-        slots: vec!["gpu-strimer".into()],
+        controller_ids: vec!["fixture-controller".into()],
+        models: vec!["fixture_model".into()],
+        slots: vec!["gpu-port".into()],
     };
 
-    assert!(compatibility.matches("prismrgb", Some("prism_s"), "gpu-strimer"));
-    assert!(!compatibility.matches("prismrgb", Some("prism_8"), "gpu-strimer"));
-    assert!(!compatibility.matches("nollie", Some("prism_s"), "gpu-strimer"));
-    assert!(!compatibility.matches("prismrgb", None, "gpu-strimer"));
+    assert!(compatibility.matches("fixture-controller", Some("fixture_model"), "gpu-port"));
+    assert!(!compatibility.matches("fixture-controller", Some("other_model"), "gpu-port"));
+    assert!(!compatibility.matches("other-controller", Some("fixture_model"), "gpu-port"));
+    assert!(!compatibility.matches("fixture-controller", None, "gpu-port"));
 }
 
 #[test]
 fn attachment_binding_round_trips_defaults() {
     let binding = AttachmentBinding {
-        slot_id: "gpu-strimer".into(),
-        template_id: "strimer-gpu-triple-8".into(),
+        slot_id: "gpu-port".into(),
+        template_id: "fixture-gpu-template".into(),
         name: Some("GPU Cable".into()),
         enabled: true,
         instances: 3,
@@ -295,8 +295,8 @@ fn attachment_binding_round_trips_defaults() {
 fn attachment_binding_defaults_enabled_instances_and_offset() {
     let back: AttachmentBinding = toml::from_str(
         r#"
-slot_id = "gpu-strimer"
-template_id = "strimer-gpu-triple-8"
+slot_id = "gpu-port"
+template_id = "fixture-gpu-template"
 "#,
     )
     .expect("toml deserialize");

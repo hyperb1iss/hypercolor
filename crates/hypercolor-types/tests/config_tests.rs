@@ -333,7 +333,7 @@ mdns_publish = false
 remote_access = true
 instance_name = "desk-pc"
 
-[drivers.wled]
+[drivers.fixture-driver]
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
 realtime_http_enabled = false
@@ -352,16 +352,22 @@ dedup_threshold = 0
     assert_eq!(config.network.instance_name.as_deref(), Some("desk-pc"));
     // Audio fields not overridden keep defaults
     assert!((config.audio.smoothing - 0.8).abs() < f32::EPSILON);
-    assert_eq!(config.drivers["wled"].settings["default_protocol"], "e131");
     assert_eq!(
-        config.drivers["wled"].settings["known_ips"],
+        config.drivers["fixture-driver"].settings["default_protocol"],
+        "e131"
+    );
+    assert_eq!(
+        config.drivers["fixture-driver"].settings["known_ips"],
         serde_json::json!(["192.168.1.50"])
     );
     assert_eq!(
-        config.drivers["wled"].settings["realtime_http_enabled"],
+        config.drivers["fixture-driver"].settings["realtime_http_enabled"],
         false
     );
-    assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
+    assert_eq!(
+        config.drivers["fixture-driver"].settings["dedup_threshold"],
+        0
+    );
 }
 
 // ─── Enum Serialization ─────────────────────────────────────────────────────

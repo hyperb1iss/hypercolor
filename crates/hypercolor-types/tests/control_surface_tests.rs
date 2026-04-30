@@ -90,7 +90,7 @@ fn validation_accepts_secret_refs_and_rejects_raw_secret_values() {
 
     value_type
         .validate_value(&ControlValue::SecretRef(
-            "credential:govee:api_key".to_owned(),
+            "credential:fixture-driver:api_key".to_owned(),
         ))
         .expect("secret references should validate");
 
@@ -103,7 +103,7 @@ fn validation_accepts_secret_refs_and_rejects_raw_secret_values() {
     ));
 
     let json = serde_json::to_value(ControlValue::SecretRef(
-        "credential:govee:api_key".to_owned(),
+        "credential:fixture-driver:api_key".to_owned(),
     ))
     .expect("serialize secret reference");
     assert_eq!(json["kind"], "secret_ref");
@@ -112,7 +112,7 @@ fn validation_accepts_secret_refs_and_rejects_raw_secret_values() {
         serde_json::from_value(json).expect("deserialize secret reference");
     assert_eq!(
         roundtrip,
-        ControlValue::SecretRef("credential:govee:api_key".to_owned())
+        ControlValue::SecretRef("credential:fixture-driver:api_key".to_owned())
     );
 }
 
@@ -241,7 +241,7 @@ fn control_surface_document_roundtrips() {
         format!("device:{device_id}"),
         ControlSurfaceScope::Device {
             device_id,
-            driver_id: "wled".to_owned(),
+            driver_id: "fixture-driver".to_owned(),
         },
     );
     document.revision = 7;
@@ -255,7 +255,7 @@ fn control_surface_document_roundtrips() {
     document.fields.push(ControlFieldDescriptor {
         id: "color_order".to_owned(),
         owner: ControlOwner::Driver {
-            driver_id: "wled".to_owned(),
+            driver_id: "fixture-driver".to_owned(),
         },
         group_id: Some("output".to_owned()),
         label: "Color Order".to_owned(),
@@ -318,7 +318,7 @@ fn control_surface_document_roundtrips() {
         "scope": {
             "device": {
                 "device_id": device_id,
-                "driver_id": "wled"
+                "driver_id": "fixture-driver"
             }
         },
         "schema_version": CONTROL_SURFACE_SCHEMA_VERSION,

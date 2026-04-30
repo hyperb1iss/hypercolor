@@ -281,7 +281,7 @@ fn device_zone_optional_fields() {
     let zone = DeviceZone {
         id: "z".into(),
         name: "Bulb".into(),
-        device_id: "hue:1".into(),
+        device_id: "fixture-device:1".into(),
         zone_name: None,
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(0.1, 0.1),
