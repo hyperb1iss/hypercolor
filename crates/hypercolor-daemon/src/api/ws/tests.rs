@@ -10,6 +10,7 @@ use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
+use hypercolor_types::device::{ConnectionType, DeviceOrigin};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
 use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
 
@@ -859,6 +860,26 @@ fn event_message_parts_unwraps_payload() {
     assert_eq!(event_name, "device_discovery_started");
     assert_eq!(event_data["targets"], serde_json::json!(["fixture-driver"]));
     assert!(event_data.get("type").is_none());
+}
+
+#[test]
+fn event_message_parts_serializes_device_origin() {
+    let event = HypercolorEvent::DeviceConnected {
+        device_id: "fixture-device".to_owned(),
+        name: "Fixture Device".to_owned(),
+        origin: DeviceOrigin::native("fixture-driver", "usb", ConnectionType::Usb)
+            .with_protocol_id("fixture/protocol"),
+        led_count: 64,
+        zones: vec![],
+    };
+
+    let (event_name, event_data) = event_message_parts(&event);
+    assert_eq!(event_name, "device_connected");
+    assert_eq!(event_data["origin"]["driver_id"], "fixture-driver");
+    assert_eq!(event_data["origin"]["backend_id"], "usb");
+    assert_eq!(event_data["origin"]["transport"], "usb");
+    assert_eq!(event_data["origin"]["protocol_id"], "fixture/protocol");
+    assert!(event_data.get("backend_id").is_none());
 }
 
 #[test]

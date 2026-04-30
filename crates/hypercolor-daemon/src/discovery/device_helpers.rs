@@ -323,7 +323,7 @@ pub(super) async fn publish_device_connected(
     runtime.event_bus.publish(HypercolorEvent::DeviceConnected {
         device_id: tracked.info.id.to_string(),
         name: tracked.info.name.clone(),
-        backend_id: backend_id.to_owned(),
+        origin: tracked.info.origin.clone(),
         led_count: tracked.info.total_led_count(),
         zones,
     });
@@ -381,7 +381,7 @@ pub(super) fn device_ref_for_tracked(info: &DeviceInfo) -> DeviceRef {
     DeviceRef {
         id: info.id.to_string(),
         name: info.name.clone(),
-        backend_id: info.output_backend_id().to_owned(),
+        origin: info.origin.clone(),
         led_count: info.total_led_count(),
     }
 }

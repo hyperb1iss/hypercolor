@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::device::{ConnectionType, DeviceOrigin};
 use hypercolor_types::event::{
     ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState, EffectRef,
     EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData, FrameTiming,
@@ -13,6 +14,10 @@ use hypercolor_types::scene::{
 };
 use hypercolor_types::session::SessionEvent;
 
+fn fixture_origin() -> DeviceOrigin {
+    DeviceOrigin::native("fixture-driver", "fixture-backend", ConnectionType::Usb)
+}
+
 // ── Category Tests ──────────────────────────────────────────────────────
 
 #[test]
@@ -21,14 +26,14 @@ fn device_events_have_device_category() {
         HypercolorEvent::DeviceDiscovered {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend_id: "fixture-backend".into(),
+            origin: fixture_origin(),
             led_count: 60,
             address: Some("192.168.1.100".into()),
         },
         HypercolorEvent::DeviceConnected {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend_id: "fixture-backend".into(),
+            origin: fixture_origin(),
             led_count: 60,
             zones: vec![],
         },
@@ -472,7 +477,7 @@ fn high_priority_events() {
         HypercolorEvent::DeviceConnected {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend_id: "fixture-backend".into(),
+            origin: fixture_origin(),
             led_count: 60,
             zones: vec![],
         },
@@ -663,7 +668,7 @@ fn serialize_device_discovered_roundtrip() {
     let event = HypercolorEvent::DeviceDiscovered {
         device_id: "fixture_device_001".into(),
         name: "Desk Strip".into(),
-        backend_id: "fixture-backend".into(),
+        origin: fixture_origin(),
         led_count: 144,
         address: Some("192.168.1.42".into()),
     };
@@ -674,14 +679,15 @@ fn serialize_device_discovered_roundtrip() {
     if let HypercolorEvent::DeviceDiscovered {
         device_id,
         name,
-        backend_id,
+        origin,
         led_count,
         address,
     } = deserialized
     {
         assert_eq!(device_id, "fixture_device_001");
         assert_eq!(name, "Desk Strip");
-        assert_eq!(backend_id, "fixture-backend");
+        assert_eq!(origin.driver_id, "fixture-driver");
+        assert_eq!(origin.backend_id, "fixture-backend");
         assert_eq!(led_count, 144);
         assert_eq!(address, Some("192.168.1.42".into()));
     } else {

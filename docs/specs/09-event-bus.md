@@ -99,7 +99,7 @@ pub enum HypercolorEvent {
     DeviceDiscovered {
         device_id: String,
         name: String,
-        backend: String,
+        origin: DeviceOrigin,
         led_count: u32,
         /// Network address, USB path, or other locator.
         address: Option<String>,
@@ -110,7 +110,7 @@ pub enum HypercolorEvent {
     DeviceConnected {
         device_id: String,
         name: String,
-        backend: String,
+        origin: DeviceOrigin,
         led_count: u32,
         zones: Vec<ZoneRef>,
     },
@@ -493,7 +493,7 @@ pub struct EffectRef {
 pub struct DeviceRef {
     pub id: String,
     pub name: String,
-    pub backend: String,
+    pub origin: DeviceOrigin,
     pub led_count: u32,
 }
 
@@ -1587,7 +1587,7 @@ bus.spectrum.send_replace(SpectrumData::from(spectrum));
 bus.publish(HypercolorEvent::DeviceConnected {
     device_id: device.id.clone(),
     name: device.name.clone(),
-    backend: "wled".into(),
+    origin: device.origin.clone(),
     led_count: device.led_count,
     zones: device.zones.iter().map(ZoneRef::from).collect(),
 });
@@ -2470,7 +2470,11 @@ All `HypercolorEvent` variants derive `Serialize` and `Deserialize` via serde. T
   "data": {
     "device_id": "wled_strip_1",
     "name": "WLED Living Room",
-    "backend": "wled",
+    "origin": {
+      "driver_id": "wled",
+      "backend_id": "wled",
+      "transport": "network"
+    },
     "led_count": 120,
     "zones": [
       {

@@ -2043,7 +2043,7 @@ pub enum HypercolorEvent {
     DeviceConnected {
         device_id: String,
         name: String,
-        backend_id: String,
+        origin: DeviceOrigin,
         led_count: u32,
     },
     DeviceDisconnected {

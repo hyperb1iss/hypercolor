@@ -8,7 +8,7 @@ use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::scene::{DisplayFaceBlendMode, RenderGroupId};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
@@ -23,7 +23,7 @@ fn device_connected(id: &str) -> HypercolorEvent {
     HypercolorEvent::DeviceConnected {
         device_id: id.to_string(),
         name: format!("Device {id}"),
-        backend: "test".to_string(),
+        origin: DeviceOrigin::native("test-driver", "test", ConnectionType::Network),
         led_count: 60,
         zones: Vec::new(),
     }

@@ -2280,7 +2280,7 @@ hypercolor watch --spectrum --fps 30
 **JSON format (JSONL -- one object per line):**
 
 ```jsonl
-{"ts":"2026-03-01T20:32:01.482Z","type":"device_connected","data":{"device":"WLED Living Room","leds":120,"backend":"wled"}}
+{"ts":"2026-03-01T20:32:01.482Z","type":"device_connected","data":{"device":"WLED Living Room","leds":120,"origin":{"driver_id":"wled","backend_id":"wled","transport":"network"}}}
 {"ts":"2026-03-01T20:32:01.500Z","type":"effect_changed","data":{"previous":"Rainbow Wave","current":"Aurora Drift","trigger":"profile"}}
 {"ts":"2026-03-01T20:32:02.100Z","type":"profile_applied","data":{"profile":"Evening","effect":"Aurora Drift"}}
 {"ts":"2026-03-01T20:32:05.823Z","type":"audio_beat","data":{"confidence":0.89,"bpm":128}}

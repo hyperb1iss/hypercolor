@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::controls::ControlSurfaceEvent;
+use crate::device::DeviceOrigin;
 use crate::scene::{RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode};
 use crate::session::SessionEvent;
 
@@ -28,7 +29,7 @@ pub struct EffectRef {
 pub struct DeviceRef {
     pub id: String,
     pub name: String,
-    pub backend_id: String,
+    pub origin: DeviceOrigin,
     pub led_count: u32,
 }
 
@@ -395,7 +396,7 @@ pub enum HypercolorEvent {
     DeviceDiscovered {
         device_id: String,
         name: String,
-        backend_id: String,
+        origin: DeviceOrigin,
         led_count: u32,
         /// Network address, USB path, or other locator.
         address: Option<String>,
@@ -406,7 +407,7 @@ pub enum HypercolorEvent {
     DeviceConnected {
         device_id: String,
         name: String,
-        backend_id: String,
+        origin: DeviceOrigin,
         led_count: u32,
         zones: Vec<ZoneRef>,
     },

@@ -671,7 +671,7 @@ async fn event_bus_filtered_subscription() {
     bus.publish(HypercolorEvent::DeviceDiscovered {
         device_id: "test".to_string(),
         name: "Test Device".to_string(),
-        backend: "wled".to_string(),
+        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
         led_count: 60,
         address: None,
     });
