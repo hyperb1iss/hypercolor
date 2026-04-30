@@ -134,3 +134,36 @@ fn nollie32_gpu_slot_rebases_when_atx_is_not_enabled() {
 
     assert_eq!(gpu.led_start, 5120);
 }
+
+#[test]
+fn generic_channel_protocol_slots_allow_fan_attachments() {
+    let mut info = nollie32_info();
+    info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+        .with_protocol_id("nollie/prism-8");
+    info.zones = vec![ZoneInfo {
+        name: "Channel 1".to_owned(),
+        led_count: 126,
+        topology: DeviceTopologyHint::Strip,
+        color_format: DeviceColorFormat::Grb,
+        layout_hint: None,
+    }];
+
+    let slots = effective_attachment_slots(&info, &[]);
+    let slot = slots
+        .iter()
+        .find(|slot| slot.id == "channel-1")
+        .expect("channel slot should exist");
+
+    assert!(
+        slot.suggested_categories
+            .contains(&hypercolor_types::attachment::AttachmentCategory::Strip)
+    );
+    assert!(
+        slot.suggested_categories
+            .contains(&hypercolor_types::attachment::AttachmentCategory::Fan)
+    );
+    assert!(
+        slot.suggested_categories
+            .contains(&hypercolor_types::attachment::AttachmentCategory::Ring)
+    );
+}

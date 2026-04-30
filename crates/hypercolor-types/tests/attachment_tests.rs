@@ -232,12 +232,12 @@ fn device_info_default_attachment_profile_deduplicates_slot_ids() {
 }
 
 #[test]
-fn prism_8_channel_slots_allow_fan_attachments() {
+fn default_attachment_profile_uses_topology_categories_only() {
     let device = DeviceInfo {
-        name: "Prism 8".into(),
-        model: Some("prism_8".into()),
-        origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
-            .with_protocol_id("nollie/prism-8"),
+        name: "Fixture Controller".into(),
+        model: Some("fixture".into()),
+        origin: DeviceOrigin::native("fixture-driver", "usb", ConnectionType::Usb)
+            .with_protocol_id("fixture/protocol"),
         zones: vec![ZoneInfo {
             name: "Channel 1".into(),
             led_count: 126,
@@ -255,14 +255,9 @@ fn prism_8_channel_slots_allow_fan_attachments() {
             .contains(&AttachmentCategory::Strip)
     );
     assert!(
-        profile.slots[0]
+        !profile.slots[0]
             .suggested_categories
             .contains(&AttachmentCategory::Fan)
-    );
-    assert!(
-        profile.slots[0]
-            .suggested_categories
-            .contains(&AttachmentCategory::Ring)
     );
 }
 

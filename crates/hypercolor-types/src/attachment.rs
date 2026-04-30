@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::device::{DeviceInfo, DeviceTopologyHint, ZoneInfo};
+use crate::device::{DeviceInfo, DeviceTopologyHint};
 use crate::spatial::LedTopology;
 
 const CURRENT_ATTACHMENT_SCHEMA_VERSION: u32 = 1;
@@ -157,7 +157,7 @@ impl Default for AttachmentCanvasSize {
 /// entries at all, it is considered globally compatible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AttachmentCompatibility {
-    /// Controller driver or protocol identifiers, such as `nollie`.
+    /// Controller driver or protocol identifiers.
     #[serde(default)]
     pub controller_ids: Vec<String>,
     /// Optional model identifiers, such as `prism_s`.
@@ -445,7 +445,7 @@ impl DeviceInfo {
                     name: zone.name.clone(),
                     led_start,
                     led_count: zone.led_count,
-                    suggested_categories: slot_suggested_categories(self, zone),
+                    suggested_categories: suggested_categories(&zone.topology),
                     allowed_templates: Vec::new(),
                     allow_custom: true,
                 };
@@ -461,33 +461,6 @@ impl DeviceInfo {
             suggested_zones: Vec::new(),
         }
     }
-}
-
-fn slot_suggested_categories(device: &DeviceInfo, zone: &ZoneInfo) -> Vec<AttachmentCategory> {
-    let mut categories = suggested_categories(&zone.topology);
-
-    if is_generic_channel_attachment_slot(device, zone) {
-        for category in [
-            AttachmentCategory::Fan,
-            AttachmentCategory::Aio,
-            AttachmentCategory::Heatsink,
-            AttachmentCategory::Ring,
-        ] {
-            if !categories.contains(&category) {
-                categories.push(category);
-            }
-        }
-    }
-
-    categories
-}
-
-fn is_generic_channel_attachment_slot(device: &DeviceInfo, zone: &ZoneInfo) -> bool {
-    matches!(
-        device.origin.protocol_id.as_deref(),
-        Some("nollie/prism-8" | "nollie/nollie-8-v2" | "prismrgb/prism-mini")
-    ) && matches!(zone.topology, DeviceTopologyHint::Strip)
-        && zone.name.starts_with("Channel ")
 }
 
 fn matches_filter(filters: &[String], value: &str) -> bool {
