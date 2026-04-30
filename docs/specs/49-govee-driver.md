@@ -2,11 +2,11 @@
 
 > Implementation-ready specification for Govee hardware support in Hypercolor.
 
-**Status:** Draft, research refreshed
+**Status:** Implemented, research refreshed
 **Author:** Nova
 **Date:** 2026-04-25
-**Crates:** `hypercolor-driver-govee` (new), `hypercolor-core`, `hypercolor-types`, `hypercolor-daemon`
-**Feature flag:** `govee` (default enabled, same as `hue` and `nanoleaf`)
+**Crates:** `hypercolor-driver-govee`, `hypercolor-driver-builtin`, `hypercolor-driver-api`, `hypercolor-types`, `hypercolor-daemon`
+**Feature flag:** `hypercolor-driver-builtin/govee` via the default `network` bundle
 **Dependencies (runtime):** `tokio`, `serde`, `reqwest`, `base64`, `async-trait`, `anyhow`, `thiserror`
 
 ---
@@ -36,19 +36,19 @@
 
 ## 1. Overview
 
-Hypercolor currently ships three network drivers: Philips Hue (`hypercolor-driver-hue`), Nanoleaf (`hypercolor-driver-nanoleaf`), and WLED (`hypercolor-driver-wled`). Each lives in its own crate, implements the `NetworkDriverFactory` contract from `hypercolor-driver-api`, and registers through `hypercolor-daemon/src/network.rs`.
+Hypercolor ships network drivers as independent `DriverModule` implementations. The daemon sees a module registry, descriptor metadata, optional discovery/pairing/config/control capabilities, and optional output backend construction. Concrete WLED, Govee, Hue, and Nanoleaf crates are bundled by `hypercolor-driver-builtin`, so core daemon startup does not branch on individual driver crates.
 
-This spec adds a fourth driver, `hypercolor-driver-govee`, with support for Govee's WiFi-connected LED strips, light bars, TV backlights, bulbs, and outdoor lights. The driver spans three transports behind a single feature flag: a documented LAN API for control, a reverse-engineered Razer/Desktop streaming protocol for per-segment effects on validated SKUs, and Govee cloud APIs for cloud-only devices and capability enrichment. A fourth BLE transport is scoped in later phases.
+`hypercolor-driver-govee` supports Govee's WiFi-connected LED strips, light bars, TV backlights, bulbs, and outdoor lights. The driver spans three transports behind one module feature: a documented LAN API for control, a reverse-engineered Razer/Desktop streaming protocol for per-segment effects on validated SKUs, and Govee cloud APIs for cloud-only devices and capability enrichment. A fourth BLE transport is scoped in later phases.
 
 ### Design decisions
 
 - **One crate, multiple transports.** LAN, Cloud, and later BLE all live in `hypercolor-driver-govee`. Per-device transport selection happens at the backend layer based on capabilities discovered during pairing or LAN scan.
 - **LAN is the default and primary path.** No auth, no account, works offline, covers the majority of Govee RGB SKUs in circulation.
 - **Cloud is opt-in.** User provides a personal API key via a credentials-form pairing flow. Cloud adds scene libraries, music reactivity metadata, and reach to devices that cannot be driven from the LAN.
-- **Single feature flag.** `govee` toggles the whole driver. Individual transport knobs live in `GoveeConfig`, not in Cargo features.
+- **Single module feature.** `hypercolor-driver-builtin/govee` toggles the whole driver inside the built-in bundle. Individual transport knobs live in driver-owned config settings, not in Cargo features.
 - **Capability registry in the driver crate.** A Rust translation of `govee-local-api`'s `light_capabilities.py`, scoped to `hypercolor-driver-govee::capabilities`. Not in `hypercolor-types`. Segment counts from this table mean LAN/BLE `ptReal` segment support, not automatically Razer/Desktop streaming support.
 - **No bundled API key.** Govee's "Open API" is key-based but per-user. Hypercolor never ships or proxies a key.
-- **New `Credentials::Govee` variant** in `hypercolor-core::device::net::credentials`. Uses the existing encrypted credential store.
+- **Driver-scoped credentials.** The Govee account key is stored as driver-scoped JSON in the shared encrypted `CredentialStore`, not as a core enum variant.
 
 ### What SignalRGB and OpenRGB tell us
 
@@ -103,7 +103,7 @@ Phase 1 should ship reliable LAN whole-device support for LAN-enabled devices in
 crates/hypercolor-driver-govee/
   Cargo.toml
   src/
-    lib.rs                    — NetworkDriverFactory, DiscoveryCapability, PairingCapability
+    lib.rs                    — DriverModule plus discovery, pairing, config, controls, presentation, runtime cache
     backend.rs                — GoveeBackend: DeviceBackend
     capabilities.rs           — SKU → GoveeCapabilities table (port of govee-local-api)
     config.rs                 — GoveeConfig (mirrors types crate for local use)
@@ -129,7 +129,7 @@ crates/hypercolor-driver-govee/
     discovery_tests.rs        — multicast flow against mock devices
 ```
 
-Three files (`scanner.rs`, `pairing.rs`, `lib.rs`) mirror the Nanoleaf driver shape; the rest is Govee-specific.
+The module exposes the same host-facing capability contracts as other drivers, while LAN/cloud details stay local to `hypercolor-driver-govee`.
 
 ### Data flow
 
@@ -152,22 +152,7 @@ The per-device transport choice is keyed off `GoveeCapabilities` and protocol-sp
 
 ### Driver registration
 
-The daemon builds the driver registry at startup in `hypercolor-daemon/src/network.rs:33`. New code:
-
-```rust
-#[cfg(feature = "govee")]
-use hypercolor_driver_govee::GoveeDriverFactory;
-
-// inside build_builtin_driver_registry:
-#[cfg(feature = "govee")]
-registry.register(GoveeDriverFactory::new(
-    Arc::clone(&credential_store),
-    config.govee.clone(),
-    config.discovery.mdns_enabled,
-))?;
-```
-
-`driver_enabled` and `driver_config_flag` also grow `"govee"` arms pointing at `discovery.govee_scan`. The driver backend is constructed through `build_output_backend` like the others.
+The daemon calls `hypercolor_driver_builtin::build_driver_module_registry(...)` when the `builtin-drivers` feature is enabled. The bundle registers `GoveeDriverModule::with_credential_store(...)` behind its `govee` feature. The daemon then treats it like any other `DriverModule`: config normalization creates `drivers.govee`, discovery uses the module's `DiscoveryCapability`, presentation comes from `DriverPresentationProvider`, and output routing calls `build_output_backend`.
 
 ---
 
@@ -563,13 +548,13 @@ The cloud table follows Govee's official developer-platform supported product li
 The `GoveeScanner` implements the `DiscoveryCapability` contract from `hypercolor-driver-api::DiscoveryCapability`. It runs two concurrent subtasks:
 
 1. **LAN multicast.** Send `scan` to `239.255.255.250:4001`. Listen on `:4002` for replies for the configured `request.timeout` (default 2 seconds, bumped to 5 for first scan of a session). Drain every reply into a `DriverDiscoveredDevice` with fingerprint `net:govee:<mac>`, metadata `ip`, `sku`, firmware versions, and `connect_behavior: AutoConnect`.
-2. **Cloud inventory (optional).** If `Credentials::Govee` is present, call `list_v1_devices()` on the cloud client and synthesize `DriverDiscoveredDevice` entries for any SKUs missing from the LAN scan. Fingerprint is `net:govee:<mac>` if the cloud inventory provides a MAC, otherwise `cloud:govee:<device_id>`.
+2. **Cloud inventory (optional).** If the driver-scoped account credential is present, call `list_v1_devices()` on the cloud client and synthesize `DriverDiscoveredDevice` entries for any SKUs missing from the LAN scan. Fingerprint is `net:govee:<mac>` if the cloud inventory provides a MAC, otherwise `cloud:govee:<device_id>`.
 
 Both subtasks run concurrently via `tokio::join!`. Cloud errors never block LAN discovery.
 
 ### Known-device hints
 
-The scanner respects config-provided IP hints similar to `NanoleafScanner::with_options`:
+The scanner respects config-provided IP hints through its driver-owned `known_ips` setting:
 
 ```rust
 pub struct GoveeKnownDevice {
@@ -642,13 +627,15 @@ fn govee_pairing_descriptor() -> PairingDescriptor {
 
 ### Validation
 
-On submit, call `CloudClient::list_v1_devices()` using the submitted key. If the response is 200, store the credential:
+On submit, call `CloudClient::list_v1_devices()` using the submitted key. If the response is 200, store the credential through the driver host:
 
 ```rust
-Credentials::Govee { api_key: form.api_key.clone() }
+host.credentials()
+    .set_json("govee", "account", json!({ "api_key": form.api_key.clone() }))
+    .await?;
 ```
 
-Plain `String`, matching the existing `Credentials::HueBridge` and `Credentials::Nanoleaf` shapes at `crates/hypercolor-core/src/device/net/credentials.rs:24`. The `CredentialStore` encrypts at rest, so a `SecretString` wrapper would add no additional security. Stored under the key `"govee:account"` in the shared `CredentialStore`. A single account credential covers every cloud-requiring device.
+The `CredentialStore` encrypts at rest and namespaces the payload under the driver ID. A single account credential covers every cloud-requiring device.
 
 If the call returns 401, return `PairDeviceOutcome::InvalidInput` with the message "Govee rejected the API key. Check the value in the Govee Home app and try again."
 
@@ -726,23 +713,21 @@ LAN `brightness` command with 1-100 range. Remember brightness is separate from 
 
 ## 12. Type Extensions
 
-### `hypercolor-core::device::net::credentials::Credentials`
+### Driver-scoped credential payload
 
-Add a new variant:
+No core credential enum is extended. Govee stores the user's account key as encrypted driver-scoped JSON:
 
-```rust
-/// Govee Open API personal key.
-Govee {
-    /// Personal API key issued to the user's Govee account.
-    api_key: String,
-},
+```json
+{
+  "api_key": "..."
+}
 ```
 
-Storage key convention: `"govee:account"` (single per-user, unlike Hue/Nanoleaf's per-device keys).
+Storage key convention: driver `"govee"`, key `"account"` (single per-user, unlike per-device pairing keys).
 
 ### `hypercolor-types::config::GoveeConfig`
 
-New type in `crates/hypercolor-types/src/config.rs`:
+Type in `crates/hypercolor-types/src/config.rs`:
 
 ```rust
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -750,30 +735,16 @@ New type in `crates/hypercolor-types/src/config.rs`:
 pub struct GoveeConfig {
     /// Known device IPs to unicast-scan in addition to the multicast probe.
     pub known_ips: Vec<IpAddr>,
-    /// Enable cloud fallback for non-LAN devices.
-    pub enable_cloud: bool,
     /// Whether to power devices off when Hypercolor disconnects.
     pub power_off_on_disconnect: bool,
-    /// Optional default kelvin for devices that support color-temp mode.
-    pub default_kelvin: Option<u16>,
-    /// Target frames per second per device for Razer streaming.
-    pub streaming_fps: Option<u8>,
+    /// Maximum whole-device LAN state command rate.
+    pub lan_state_fps: u32,
+    /// Maximum validated Razer/Desktop streaming frame rate.
+    pub razer_fps: u32,
 }
 ```
 
-And a field on `HypercolorConfig`:
-
-```rust
-pub struct HypercolorConfig {
-    // ... existing fields ...
-    #[serde(default)]
-    pub govee: GoveeConfig,
-}
-```
-
-### `DiscoveryConfig`
-
-Add `govee_scan: bool` (default `true`).
+The host stores this under `drivers.govee` as a `DriverConfigEntry`, so module-owned settings stay outside daemon-specific config structs.
 
 ---
 
@@ -782,119 +753,50 @@ Add `govee_scan: bool` (default `true`).
 Defaults:
 
 ```toml
-[discovery]
-govee_scan = true
-mdns_enabled = true   # already present, shared with hue/nanoleaf
-
-[govee]
+[drivers.govee]
+enabled = true
 known_ips = []
-enable_cloud = false
 power_off_on_disconnect = false
-streaming_fps = 25
+lan_state_fps = 10
+razer_fps = 25
 ```
 
-`enable_cloud` defaults to `false`: LAN is the out-of-box path and we do not prompt users for an API key until they explicitly opt in via the pairing UI.
+LAN is the out-of-box path and we do not prompt users for an API key until cloud access would unlock a device or flow.
 
 ---
 
 ## 14. Daemon Integration
 
-### `hypercolor-daemon/Cargo.toml`
+### `hypercolor-driver-builtin/Cargo.toml`
 
-The current `[features]` block at `crates/hypercolor-daemon/Cargo.toml:18` is:
-
-```toml
-[features]
-hue = ["dep:hypercolor-driver-hue"]
-nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
-nvidia = ["hypercolor-core/nvidia"]
-wgpu = ["dep:wgpu", "dep:pollster"]
-default = ["hue", "nanoleaf", "wgpu", "servo"]
-servo = ["hypercolor-core/servo"]
-```
-
-WLED is **not** feature-gated — `hypercolor-driver-wled = { workspace = true }` at line 33 is unconditional. Match that split: the Govee driver gets its own feature, gated with `dep:`, and is added to the default set. The final state:
+The built-in bundle owns concrete driver feature flags:
 
 ```toml
 [features]
-hue = ["dep:hypercolor-driver-hue"]
-nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
+default = ["network", "hal"]
+network = ["wled", "govee", "hue", "nanoleaf"]
 govee = ["dep:hypercolor-driver-govee"]
-nvidia = ["hypercolor-core/nvidia"]
-wgpu = ["dep:wgpu", "dep:pollster"]
-servo = ["hypercolor-core/servo"]
-default = ["hue", "nanoleaf", "govee", "wgpu", "servo"]
-
-[dependencies]
-# ... existing dependencies ...
-hypercolor-driver-govee = { workspace = true, optional = true }
 ```
 
-`default` keeps `wgpu` and `servo`; do not drop those while adding `govee`.
+The daemon depends on this bundle through its `builtin-drivers` feature. It should not depend on or register `hypercolor-driver-govee` directly.
 
-### `hypercolor-daemon/src/network.rs`
+### `hypercolor-driver-builtin/src/lib.rs`
 
-Mirror the Hue and Nanoleaf registration:
+Register the module inside the bundle:
 
 ```rust
 #[cfg(feature = "govee")]
-use hypercolor_driver_govee::GoveeDriverFactory;
-
-pub fn build_builtin_driver_registry(
-    config: &HypercolorConfig,
-    credential_store: Arc<CredentialStore>,
-) -> Result<DriverRegistry> {
-    let mut registry = DriverRegistry::new();
-    registry.register(WledDriverFactory::new(config.clone()))?;
-
-    #[cfg(feature = "hue")]
-    registry.register(HueDriverFactory::new(
-        Arc::clone(&credential_store),
-        config.hue.clone(),
-        config.discovery.mdns_enabled,
-    ))?;
-
-    #[cfg(feature = "nanoleaf")]
-    registry.register(NanoleafDriverFactory::new(
-        Arc::clone(&credential_store),
-        config.nanoleaf.clone(),
-        config.discovery.mdns_enabled,
-    ))?;
-
-    #[cfg(feature = "govee")]
-    registry.register(GoveeDriverFactory::new(
-        credential_store,
-        config.govee.clone(),
-        config.discovery.mdns_enabled,
-    ))?;
-
-    Ok(registry)
-}
-
-pub fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
-    match driver_id {
-        "wled" => config.discovery.wled_scan,
-        "hue" => config.discovery.hue_scan,
-        "nanoleaf" => config.discovery.nanoleaf_scan,
-        "govee" => config.discovery.govee_scan,
-        _ => true,
-    }
-}
-
-pub fn driver_config_flag(driver_id: &str) -> Option<&'static str> {
-    match driver_id {
-        "wled" => Some("discovery.wled_scan"),
-        "hue" => Some("discovery.hue_scan"),
-        "nanoleaf" => Some("discovery.nanoleaf_scan"),
-        "govee" => Some("discovery.govee_scan"),
-        _ => None,
-    }
-}
+registry.register(GoveeDriverModule::with_credential_store(
+    GoveeConfig::default(),
+    Arc::clone(&credential_store),
+))?;
 ```
+
+`normalize_driver_config_entries` ensures `drivers.govee` exists. The daemon's `driver_enabled`, `driver_config_flag`, and backend construction paths are generic over `DriverModuleDescriptor` and `DriverConfigEntry`.
 
 ### Workspace `Cargo.toml`
 
-The workspace root uses `members = ["crates/*"]` (`Cargo.toml:2`), so creating `crates/hypercolor-driver-govee/` auto-registers it. No member-list edit is required. Do add a `[workspace.dependencies]` entry so every consumer can reference it via `workspace = true`:
+The workspace root uses `members = ["crates/*"]`, so `crates/hypercolor-driver-govee/` is part of the workspace. The workspace dependency entry lets the built-in bundle reference it via `workspace = true`:
 
 ```toml
 hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee" }
@@ -959,13 +861,13 @@ No new vulnerabilities expected. `reqwest` is already in the workspace. `base64`
 
 ## 16. Phase Plan
 
-Phase 0 assumed complete: this spec.
+Phase 0 complete: this spec and research refresh.
 
-### Phase 1 — LAN v1 skeleton (3-5 days)
+### Phase 1 — LAN v1 skeleton (complete)
 
 Exit criteria:
 
-- `crates/hypercolor-driver-govee` compiles, registered in the daemon registry behind `govee` feature.
+- `crates/hypercolor-driver-govee` compiles, registered through the built-in driver module bundle.
 - LAN multicast discovery finds at least one real device on Bliss's network.
 - `colorwc` drives the device to correct colors from the Hypercolor UI.
 - `turn` + `brightness` work.
@@ -980,7 +882,7 @@ Exit criteria:
 - Tests extend to cover every seeded SKU returning a non-empty capability set.
 - Keep `lan_segment_count` and `razer_led_count` separate. Do not infer Razer streaming from LAN segment codes.
 
-### Phase 3 — Razer streaming (3-5 days)
+### Phase 3 — Razer streaming (complete for validated SKUs)
 
 Exit criteria:
 
@@ -991,11 +893,11 @@ Exit criteria:
 - Manual cross-check against OpenRGB's Govee controller on the same device to confirm byte equivalence.
 - First enabled SKUs are `H619A` and `H70B1` from OpenRGB plus any Bliss-owned SKU with a captured working frame.
 
-### Phase 4 — Cloud API + pairing (4-5 days)
+### Phase 4 — Cloud API + pairing (complete for Developer API v1)
 
 Exit criteria:
 
-- `Credentials::Govee` added.
+- Driver-scoped account credential storage added.
 - Pairing descriptor renders in UI with API-key entry field.
 - Phase 4a implements Developer API v1 inventory/state/control with fixtures from the official PDF shape.
 - Phase 4b captures live router `/user/devices` and optional scene responses, then implements capability enrichment only for fields observed in fixtures.
@@ -1003,18 +905,18 @@ Exit criteria:
 - Rate-limit budget enforced, tests cover per-device minute and per-key day tiers for light and appliance budgets.
 - Cloud-fallback path works for at least one cloud-only device or a fixture-backed mock if Bliss does not own one.
 
-### Phase 5 — UI polish (2 days)
+### Phase 5 — UI polish (partial)
 
 - Transport badge on device cards (LAN / Cloud / Streaming validated).
 - Capability chips (segments, scenes, music).
 - Rate-limit budget indicator for cloud devices.
-- Pairing flow renders the CredentialsForm shape correctly (this exercises the `PairingFlowKind::CredentialsForm` path for the first time; Hue and Nanoleaf both use `PhysicalAction`).
+- Pairing flow renders the CredentialsForm shape correctly.
 
 ### Phase 6 — BLE (deferred, ~5 days if prioritized)
 
 Separate spec or addendum when we pick this up.
 
-Total for Phases 1-5: about 14-19 focused development days, depending on how much live router capture is needed.
+Remaining work is mostly optional device-specific UX polish and live router capability capture.
 
 ---
 
@@ -1038,7 +940,7 @@ Total for Phases 1-5: about 14-19 focused development days, depending on how muc
 
 **Do we expose the `razer` command as a first-class user toggle, or is it always-on when `RAZER_STREAMING` is validated?** Recommendation: always-on. Users pick effects, not transports.
 
-**Cloud pairing UX: one account-wide key, or per-device?** Recommendation: account-wide, stored under `"govee:account"`. Per-device is unnecessary since Govee's key model is per-user.
+**Cloud pairing UX: one account-wide key, or per-device?** Decision: account-wide, stored as driver `"govee"` key `"account"`. Per-device is unnecessary since Govee's key model is per-user.
 
 **Do we add a `govee:recent` LRU cache for cloud device lists?** Not in Phase 4. Revisit if daemon startup time regresses.
 
@@ -1072,8 +974,9 @@ Secondary:
 
 Internal:
 
-- Spec 33 — Network Device Backends (Hue, Nanoleaf, Shared Infrastructure). Template for this document.
-- Spec 35 — Network Driver Architecture. Driver-API contract.
-- `crates/hypercolor-driver-nanoleaf/src/lib.rs` — closest structural analog for the new crate.
-- `crates/hypercolor-core/src/device/net/credentials.rs` — where `Credentials::Govee` lands.
-- `crates/hypercolor-daemon/src/network.rs` — where `GoveeDriverFactory` registers.
+- Spec 33 — Network Device Backends. Historical network-driver context.
+- Spec 35 — Network Driver Architecture. Historical driver-API context.
+- Spec 51 — Unified Driver Module API. Current driver module contract.
+- `crates/hypercolor-driver-govee/src/lib.rs` — current module, pairing, config, controls, presentation, and runtime-cache implementation.
+- `crates/hypercolor-driver-builtin/src/lib.rs` — built-in module bundle registration.
+- `crates/hypercolor-driver-api/src/net/credentials.rs` — encrypted driver-scoped credential store.
