@@ -60,7 +60,7 @@ pub enum DriverTransport {
 /// Static metadata about a modular driver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverDescriptor {
-    /// Stable machine-readable ID, for example `wled` or `hue`.
+    /// Stable machine-readable ID, for example `acme-light-strip`.
     pub id: &'static str,
     /// Human-readable driver name for logs and UI.
     pub display_name: &'static str,

@@ -342,7 +342,7 @@ pub struct DeviceZone {
     pub name: String,
 
     /// Backend device identifier.
-    /// Format: `"<backend>:<device_id>"` (e.g., `"hid:prism-s-1"`, `"wled:192.168.1.42"`).
+    /// Format: `"<backend>:<device_id>"` (e.g., `"usb:controller-1"`, `"network:node-42"`).
     pub device_id: String,
 
     /// Sub-device channel or segment name (e.g., `"ch1"`, `"atx"`, `"segment-0"`).

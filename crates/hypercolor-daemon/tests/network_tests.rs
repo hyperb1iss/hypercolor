@@ -1,13 +1,10 @@
 use std::collections::BTreeMap;
-#[cfg(feature = "builtin-drivers")]
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::BackendManager;
-#[cfg(feature = "builtin-drivers")]
-use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
@@ -16,78 +13,10 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-#[cfg(feature = "builtin-drivers")]
-use hypercolor_types::device::DriverModuleKind;
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DeviceInfo, DriverPresentation, DriverProtocolDescriptor,
-    DriverTransportKind,
+    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
+    DriverProtocolDescriptor, DriverTransportKind,
 };
-
-#[test]
-#[cfg(feature = "builtin-drivers")]
-fn default_app_state_registers_builtin_network_drivers() {
-    let state = AppState::new();
-    let ids = state.driver_registry.ids();
-
-    assert!(ids.contains(&"wled".to_owned()));
-    assert!(ids.contains(&"hue".to_owned()));
-    assert!(ids.contains(&"nanoleaf".to_owned()));
-}
-
-#[test]
-#[cfg(feature = "builtin-drivers")]
-fn builtin_pairing_drivers_expose_pairing_capabilities() {
-    let state = AppState::new();
-
-    assert!(
-        state
-            .driver_registry
-            .get("hue")
-            .expect("hue driver should be registered")
-            .pairing()
-            .is_some()
-    );
-
-    assert!(
-        state
-            .driver_registry
-            .get("nanoleaf")
-            .expect("nanoleaf driver should be registered")
-            .pairing()
-            .is_some()
-    );
-}
-
-#[test]
-#[cfg(feature = "builtin-drivers")]
-fn builtin_network_drivers_expose_discovery_capabilities() {
-    let state = AppState::new();
-
-    assert!(
-        state
-            .driver_registry
-            .get("wled")
-            .expect("wled driver should be registered")
-            .discovery()
-            .is_some()
-    );
-    assert!(
-        state
-            .driver_registry
-            .get("hue")
-            .expect("hue driver should be registered")
-            .discovery()
-            .is_some()
-    );
-    assert!(
-        state
-            .driver_registry
-            .get("nanoleaf")
-            .expect("nanoleaf driver should be registered")
-            .discovery()
-            .is_some()
-    );
-}
 
 #[test]
 fn host_transport_scanner_factory_handles_known_and_unknown_targets() {
@@ -113,72 +42,104 @@ fn host_transport_scanner_factory_handles_known_and_unknown_targets() {
 }
 
 #[test]
-#[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_honor_driver_config_entries() {
-    let state = AppState::new();
+    let registry = fixture_hal_registry();
     let mut config = HypercolorConfig::default();
     config.drivers.insert(
-        "nollie".to_owned(),
+        "hal-fixture-usb".to_owned(),
         DriverConfigEntry::disabled(BTreeMap::new()),
     );
 
-    let enabled = network::enabled_module_ids(
-        state.driver_registry.as_ref(),
-        &config,
-        DriverModuleKind::Hal,
-    );
+    let enabled = network::enabled_module_ids(&registry, &config, DriverModuleKind::Hal);
 
-    assert!(!enabled.contains("nollie"));
-    assert!(enabled.contains("prismrgb"));
+    assert!(!enabled.contains("hal-fixture-usb"));
+    assert!(enabled.contains("hal-fixture-smbus"));
     assert!(network::module_enabled_by_id(
-        state.driver_registry.as_ref(),
+        &registry,
         &config,
-        "prismrgb"
+        "hal-fixture-smbus"
     ));
     assert!(!network::module_enabled_by_id(
-        state.driver_registry.as_ref(),
+        &registry,
         &config,
-        "nollie"
+        "hal-fixture-usb"
     ));
 }
 
 #[test]
-#[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_can_filter_by_transport() {
-    let state = AppState::new();
+    let registry = fixture_hal_registry();
     let mut config = HypercolorConfig::default();
     config.drivers.insert(
-        "asus".to_owned(),
+        "hal-fixture-smbus".to_owned(),
         DriverConfigEntry::disabled(BTreeMap::new()),
     );
 
     let enabled = network::enabled_module_ids_for_transport(
-        state.driver_registry.as_ref(),
+        &registry,
         &config,
         DriverModuleKind::Hal,
         &DriverTransportKind::Smbus,
     );
 
-    assert!(!enabled.contains("asus"));
+    assert!(!enabled.contains("hal-fixture-smbus"));
     assert!(enabled.is_empty());
 }
 
 #[test]
-#[cfg(feature = "builtin-drivers")]
 fn enabled_module_ids_include_default_enabled_hal_modules() {
-    let state = AppState::new();
+    let registry = fixture_hal_registry();
     let enabled = network::enabled_module_ids(
-        state.driver_registry.as_ref(),
+        &registry,
         &HypercolorConfig::default(),
         DriverModuleKind::Hal,
     );
 
     assert!(enabled.is_superset(&BTreeSet::from([
-        "asus".to_owned(),
-        "nollie".to_owned(),
-        "prismrgb".to_owned(),
-        "razer".to_owned(),
+        "hal-fixture-smbus".to_owned(),
+        "hal-fixture-usb".to_owned(),
     ])));
+}
+
+static HAL_USB_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "hal-fixture-usb",
+    "HAL Fixture USB",
+    DriverTransport::Usb,
+    false,
+    false,
+);
+
+static HAL_SMBUS_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "hal-fixture-smbus",
+    "HAL Fixture SMBus",
+    DriverTransport::Smbus,
+    false,
+    false,
+);
+
+struct FixtureHalDriver {
+    descriptor: &'static DriverDescriptor,
+}
+
+impl DriverModule for FixtureHalDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        self.descriptor
+    }
+}
+
+fn fixture_hal_registry() -> DriverModuleRegistry {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(FixtureHalDriver {
+            descriptor: &HAL_USB_DESCRIPTOR,
+        })
+        .expect("USB fixture module should register");
+    registry
+        .register(FixtureHalDriver {
+            descriptor: &HAL_SMBUS_DESCRIPTOR,
+        })
+        .expect("SMBus fixture module should register");
+    registry
 }
 
 struct NullCredentialStore;
