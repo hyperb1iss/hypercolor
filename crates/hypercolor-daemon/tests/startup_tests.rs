@@ -987,10 +987,10 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
         canvas_height: 200,
         zones: vec![
             test_zone("zone_usb", "usb:laptop"),
-            test_zone("zone_wled_mapped", "wled:desk"),
-            test_zone("zone_wled_missing", "wled:wall"),
-            test_zone("zone_wled_missing_dup", "wled:wall"),
-            test_zone("zone_hue", "hue:bridge"),
+            test_zone("zone_alpha_mapped", "driver-alpha:desk"),
+            test_zone("zone_alpha_missing", "driver-alpha:wall"),
+            test_zone("zone_alpha_missing_dup", "driver-alpha:wall"),
+            test_zone("zone_beta", "driver-beta:bridge"),
         ],
 
         default_sampling_mode: SamplingMode::Bilinear,
@@ -999,7 +999,7 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
-        backend_ids: vec!["usb".to_owned(), "wled".to_owned()],
+        backend_ids: vec!["usb".to_owned(), "driver-alpha".to_owned()],
         mapping_count: 2,
         queue_count: 2,
         mappings: vec![
@@ -1011,9 +1011,9 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
                 queue_active: true,
             },
             LayoutRoutingDebugEntry {
-                layout_device_id: "wled:desk".to_owned(),
-                backend_id: "wled".to_owned(),
-                device_id: "device_wled".to_owned(),
+                layout_device_id: "driver-alpha:desk".to_owned(),
+                backend_id: "driver-alpha".to_owned(),
+                device_id: "device_alpha".to_owned(),
                 backend_registered: true,
                 queue_active: true,
             },
@@ -1021,8 +1021,8 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
         orphaned_queues: Vec::<OrphanedQueueDebugEntry>::new(),
     };
 
-    let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:");
-    assert_eq!(unmapped, vec!["wled:wall".to_owned()]);
+    let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "driver-alpha:");
+    assert_eq!(unmapped, vec!["driver-alpha:wall".to_owned()]);
 }
 
 #[test]
@@ -1035,11 +1035,11 @@ fn collect_unmapped_driver_layout_targets_groups_missing_registered_driver_prefi
         canvas_height: 200,
         zones: vec![
             test_zone("zone_usb", "usb:laptop"),
-            test_zone("zone_wled_mapped", "wled:desk"),
-            test_zone("zone_wled_missing", "wled:wall"),
-            test_zone("zone_wled_missing_dup", "wled:wall"),
-            test_zone("zone_hue_missing", "hue:bridge"),
-            test_zone("zone_nanoleaf_ignored", "nanoleaf:panels"),
+            test_zone("zone_alpha_mapped", "driver-alpha:desk"),
+            test_zone("zone_alpha_missing", "driver-alpha:wall"),
+            test_zone("zone_alpha_missing_dup", "driver-alpha:wall"),
+            test_zone("zone_beta_missing", "driver-beta:bridge"),
+            test_zone("zone_gamma_ignored", "driver-gamma:panels"),
         ],
 
         default_sampling_mode: SamplingMode::Bilinear,
@@ -1048,7 +1048,7 @@ fn collect_unmapped_driver_layout_targets_groups_missing_registered_driver_prefi
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
-        backend_ids: vec!["usb".to_owned(), "wled".to_owned()],
+        backend_ids: vec!["usb".to_owned(), "driver-alpha".to_owned()],
         mapping_count: 2,
         queue_count: 2,
         mappings: vec![
@@ -1060,22 +1060,28 @@ fn collect_unmapped_driver_layout_targets_groups_missing_registered_driver_prefi
                 queue_active: true,
             },
             LayoutRoutingDebugEntry {
-                layout_device_id: "wled:desk".to_owned(),
-                backend_id: "wled".to_owned(),
-                device_id: "device_wled".to_owned(),
+                layout_device_id: "driver-alpha:desk".to_owned(),
+                backend_id: "driver-alpha".to_owned(),
+                device_id: "device_alpha".to_owned(),
                 backend_registered: true,
                 queue_active: true,
             },
         ],
         orphaned_queues: Vec::<OrphanedQueueDebugEntry>::new(),
     };
-    let driver_ids = vec!["hue".to_owned(), "wled".to_owned()];
+    let driver_ids = vec!["driver-alpha".to_owned(), "driver-beta".to_owned()];
 
     let unmapped = collect_unmapped_driver_layout_targets(&layout, &routing, &driver_ids);
 
     assert_eq!(unmapped.len(), 2);
-    assert_eq!(unmapped["hue"], vec!["hue:bridge".to_owned()]);
-    assert_eq!(unmapped["wled"], vec!["wled:wall".to_owned()]);
+    assert_eq!(
+        unmapped["driver-alpha"],
+        vec!["driver-alpha:wall".to_owned()]
+    );
+    assert_eq!(
+        unmapped["driver-beta"],
+        vec!["driver-beta:bridge".to_owned()]
+    );
 }
 
 #[test]
@@ -1088,7 +1094,7 @@ fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
         canvas_height: 200,
         zones: vec![
             test_zone("zone_usb", "usb:laptop"),
-            test_zone("zone_hue", "hue:bridge"),
+            test_zone("zone_beta", "driver-beta:bridge"),
         ],
 
         default_sampling_mode: SamplingMode::Bilinear,
@@ -1110,7 +1116,7 @@ fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
         orphaned_queues: Vec::<OrphanedQueueDebugEntry>::new(),
     };
 
-    let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:");
+    let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "driver-alpha:");
     assert!(unmapped.is_empty());
 }
 
@@ -1148,10 +1154,10 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
         id: device_id,
         name: "Desk Strip".to_owned(),
         vendor: "Test".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
+        family: DeviceFamily::new_static("fixture-strip", "Fixture Strip"),
         model: None,
         connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        origin: DeviceOrigin::native("fixture-strip", "fixture-output", ConnectionType::Network),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 30,
@@ -1176,12 +1182,15 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
         version: 1,
     };
 
-    let added =
-        discovery::append_auto_layout_zones_for_device(&mut layout, "wled:desk-strip", &info);
+    let added = discovery::append_auto_layout_zones_for_device(
+        &mut layout,
+        "fixture-strip:desk-strip",
+        &info,
+    );
 
     assert_eq!(added, 1);
     assert_eq!(layout.zones.len(), 1);
-    assert_eq!(layout.zones[0].device_id, "wled:desk-strip");
+    assert_eq!(layout.zones[0].device_id, "fixture-strip:desk-strip");
     assert_eq!(layout.zones[0].zone_name, Some("Main".to_owned()));
     assert_eq!(layout.zones[0].name, "Desk Strip");
     assert_eq!(
