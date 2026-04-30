@@ -62,11 +62,15 @@ fn sample_device_info() -> DeviceInfo {
     DeviceInfo {
         id: DeviceId::new(),
         name: "Test Strip".into(),
-        vendor: "WLED".into(),
-        family: DeviceFamily::new_static("wled", "WLED"),
+        vendor: "Fixture Strip".into(),
+        family: DeviceFamily::new_static("fixture-network", "Fixture Strip"),
         model: Some("strip".into()),
         connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        origin: DeviceOrigin::native(
+            "fixture-network",
+            "fixture-network",
+            ConnectionType::Network,
+        ),
         zones: vec![
             ZoneInfo {
                 name: "Main".into(),
@@ -106,9 +110,9 @@ fn device_info_total_led_count() {
 #[test]
 fn device_info_exposes_driver_and_output_backend_separately() {
     let mut info = sample_device_info();
-    info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb);
+    info.origin = DeviceOrigin::native("fixture-driver", "usb", ConnectionType::Usb);
 
-    assert_eq!(info.driver_id(), "nollie");
+    assert_eq!(info.driver_id(), "fixture-driver");
     assert_eq!(info.output_backend_id(), "usb");
 }
 
@@ -332,12 +336,12 @@ fn driver_transport_kind_preserves_bridge_connections() {
 
 #[test]
 fn device_origin_separates_driver_from_backend() {
-    let origin =
-        DeviceOrigin::new("nollie", "usb", DriverTransportKind::Usb).with_protocol_id("nollie32");
+    let origin = DeviceOrigin::new("fixture-driver", "usb", DriverTransportKind::Usb)
+        .with_protocol_id("fixture/protocol");
 
-    assert_eq!(origin.driver_id, "nollie");
+    assert_eq!(origin.driver_id, "fixture-driver");
     assert_eq!(origin.backend_id, "usb");
-    assert_eq!(origin.protocol_id.as_deref(), Some("nollie32"));
+    assert_eq!(origin.protocol_id.as_deref(), Some("fixture/protocol"));
 
     let json = serde_json::to_string(&origin).expect("serialize");
     let back: DeviceOrigin = serde_json::from_str(&json).expect("deserialize");
@@ -346,7 +350,11 @@ fn device_origin_separates_driver_from_backend() {
 
 #[test]
 fn device_origin_omits_absent_protocol_id() {
-    let origin = DeviceOrigin::new("wled", "wled", DriverTransportKind::Network);
+    let origin = DeviceOrigin::new(
+        "fixture-network",
+        "fixture-network",
+        DriverTransportKind::Network,
+    );
     let json = serde_json::to_string(&origin).expect("serialize");
 
     assert!(!json.contains("protocol_id"));
@@ -355,8 +363,8 @@ fn device_origin_omits_absent_protocol_id() {
 #[test]
 fn driver_presentation_serializes_optional_metadata() {
     let presentation = DriverPresentation {
-        label: "Nanoleaf".into(),
-        short_label: Some("Leaf".into()),
+        label: "Fixture Light".into(),
+        short_label: Some("Light".into()),
         accent_rgb: Some([0x80, 0xff, 0xea]),
         secondary_rgb: None,
         icon: Some("panel-top".into()),
@@ -373,9 +381,9 @@ fn driver_presentation_serializes_optional_metadata() {
 #[test]
 fn driver_module_descriptor_round_trips_capabilities_and_transports() {
     let descriptor = DriverModuleDescriptor {
-        id: "prismrgb".into(),
-        display_name: "PrismRGB".into(),
-        vendor_name: Some("PrismRGB".into()),
+        id: "fixture-hal".into(),
+        display_name: "Fixture HAL".into(),
+        vendor_name: Some("Fixture HAL".into()),
         module_kind: DriverModuleKind::Hal,
         transports: vec![DriverTransportKind::Usb],
         capabilities: DriverCapabilitySet {
@@ -398,56 +406,33 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
 
 #[test]
 fn device_family_display() {
-    assert_eq!(DeviceFamily::new_static("wled", "WLED").to_string(), "WLED");
     assert_eq!(
-        DeviceFamily::new_static("hue", "Philips Hue").to_string(),
-        "Philips Hue"
+        DeviceFamily::new_static("fixture-network", "Fixture Strip").to_string(),
+        "Fixture Strip"
     );
     assert_eq!(
-        DeviceFamily::new_static("nanoleaf", "Nanoleaf").to_string(),
-        "Nanoleaf"
+        DeviceFamily::new("fixture-hal", "Fixture HAL").to_string(),
+        "Fixture HAL"
     );
     assert_eq!(
-        DeviceFamily::new_static("razer", "Razer").to_string(),
-        "Razer"
+        DeviceFamily::named("Fixture HAL").to_string(),
+        "Fixture HAL"
     );
-    assert_eq!(
-        DeviceFamily::new_static("corsair", "Corsair").to_string(),
-        "Corsair"
-    );
-    assert_eq!(
-        DeviceFamily::new_static("dygma", "Dygma").to_string(),
-        "Dygma"
-    );
-    assert_eq!(
-        DeviceFamily::new_static("lianli", "Lian Li").to_string(),
-        "Lian Li"
-    );
-    assert_eq!(
-        DeviceFamily::new_static("nollie", "Nollie").to_string(),
-        "Nollie"
-    );
-    assert_eq!(
-        DeviceFamily::new_static("prismrgb", "PrismRGB").to_string(),
-        "PrismRGB"
-    );
-    assert_eq!(DeviceFamily::new_static("asus", "ASUS").to_string(), "ASUS");
-    assert_eq!(DeviceFamily::named("PrismRGB").to_string(), "PrismRGB");
 }
 
 #[test]
 fn device_family_equality() {
     assert_eq!(
-        DeviceFamily::new_static("wled", "WLED"),
-        DeviceFamily::new_static("wled", "WLED")
+        DeviceFamily::new_static("fixture-network", "Fixture Strip"),
+        DeviceFamily::new_static("fixture-network", "Fixture Strip")
     );
     assert_ne!(
-        DeviceFamily::new_static("wled", "WLED"),
-        DeviceFamily::new_static("hue", "Philips Hue")
+        DeviceFamily::new_static("fixture-network", "Fixture Strip"),
+        DeviceFamily::new_static("fixture-bridge", "Fixture Bridge")
     );
     assert_ne!(
-        DeviceFamily::new_static("hue", "Philips Hue"),
-        DeviceFamily::new_static("nanoleaf", "Nanoleaf")
+        DeviceFamily::new_static("fixture-bridge", "Fixture Bridge"),
+        DeviceFamily::new_static("fixture-light", "Fixture Light")
     );
     assert_eq!(DeviceFamily::named("Foo"), DeviceFamily::named("Foo"));
     assert_ne!(DeviceFamily::named("Foo"), DeviceFamily::named("Bar"));
@@ -456,17 +441,17 @@ fn device_family_equality() {
 #[test]
 fn device_family_serde_round_trip() {
     let families = vec![
-        DeviceFamily::new_static("wled", "WLED"),
-        DeviceFamily::new_static("hue", "Philips Hue"),
-        DeviceFamily::new_static("nanoleaf", "Nanoleaf"),
-        DeviceFamily::new_static("razer", "Razer"),
-        DeviceFamily::new_static("corsair", "Corsair"),
-        DeviceFamily::new_static("dygma", "Dygma"),
-        DeviceFamily::new_static("lianli", "Lian Li"),
-        DeviceFamily::new_static("nollie", "Nollie"),
-        DeviceFamily::new_static("prismrgb", "PrismRGB"),
-        DeviceFamily::new_static("asus", "ASUS"),
-        DeviceFamily::named("PrismRGB"),
+        DeviceFamily::new_static("fixture-network", "Fixture Strip"),
+        DeviceFamily::new_static("fixture-bridge", "Fixture Bridge"),
+        DeviceFamily::new_static("fixture-light", "Fixture Light"),
+        DeviceFamily::new_static("fixture-input", "Fixture Input"),
+        DeviceFamily::new_static("fixture-display", "Fixture Display"),
+        DeviceFamily::new_static("fixture-keyboard", "Fixture Keyboard"),
+        DeviceFamily::new_static("fixture-accessory", "Fixture Accessory"),
+        DeviceFamily::new_static("fixture-driver", "Fixture Driver"),
+        DeviceFamily::new_static("fixture-hal", "Fixture HAL"),
+        DeviceFamily::new_static("fixture-smbus", "Fixture SMBus"),
+        DeviceFamily::named("Fixture HAL"),
     ];
     for family in families {
         let json = serde_json::to_string(&family).expect("serialize");
@@ -481,7 +466,7 @@ fn device_family_rejects_non_object_payloads() {
         .expect_err("family strings should not deserialize");
     assert!(error.is_data());
 
-    let error = serde_json::from_str::<DeviceFamily>(r#"{"Custom":"PrismRGB"}"#)
+    let error = serde_json::from_str::<DeviceFamily>(r#"{"Custom":"Fixture HAL"}"#)
         .expect_err("family custom maps should not deserialize");
     assert!(error.is_data());
 }
@@ -529,12 +514,12 @@ fn color_format_serde_round_trip() {
 #[test]
 fn device_error_display_messages() {
     let err = DeviceError::ConnectionFailed {
-        device: "WLED-Kitchen".into(),
+        device: "Fixture Kitchen".into(),
         reason: "TCP refused".into(),
     };
     assert_eq!(
         err.to_string(),
-        "connection to WLED-Kitchen failed: TCP refused"
+        "connection to Fixture Kitchen failed: TCP refused"
     );
 
     let err = DeviceError::NotFound {
@@ -561,12 +546,12 @@ fn device_error_display_messages() {
     );
 
     let err = DeviceError::ProtocolError {
-        device: "WLED".into(),
+        device: "Fixture Strip".into(),
         detail: "unexpected packet type 0xFF".into(),
     };
     assert_eq!(
         err.to_string(),
-        "protocol error for WLED: unexpected packet type 0xFF"
+        "protocol error for Fixture Strip: unexpected packet type 0xFF"
     );
 
     let err = DeviceError::Disconnected {
@@ -576,18 +561,21 @@ fn device_error_display_messages() {
 
     let err = DeviceError::InvalidHandle {
         handle_id: 42,
-        backend: "wled".into(),
+        backend: "fixture-network".into(),
     };
-    assert_eq!(err.to_string(), "invalid handle 42 for backend wled");
+    assert_eq!(
+        err.to_string(),
+        "invalid handle 42 for backend fixture-network"
+    );
 
     let err = DeviceError::InvalidTransition {
-        device: "WLED".into(),
+        device: "Fixture Strip".into(),
         from: "Known".into(),
         to: "Active".into(),
     };
     assert_eq!(
         err.to_string(),
-        "invalid device transition for WLED: Known -> Active"
+        "invalid device transition for Fixture Strip: Known -> Active"
     );
 }
 
@@ -687,9 +675,12 @@ fn device_identifier_network_display_with_hostname() {
     let id = DeviceIdentifier::Network {
         mac_address: "A4:CF:12:34:AB:CD".into(),
         last_ip: Some("192.168.1.42".parse().expect("valid ip")),
-        mdns_hostname: Some("wled-kitchen".into()),
+        mdns_hostname: Some("fixture-network-kitchen".into()),
     };
-    assert_eq!(id.display_short(), "wled-kitchen (A4:CF:12:34:AB:CD)");
+    assert_eq!(
+        id.display_short(),
+        "fixture-network-kitchen (A4:CF:12:34:AB:CD)"
+    );
 }
 
 #[test]
@@ -803,7 +794,7 @@ fn device_identifier_serde_round_trip() {
         DeviceIdentifier::Network {
             mac_address: "AA:BB:CC:DD:EE:FF".into(),
             last_ip: None,
-            mdns_hostname: Some("wled-desk".into()),
+            mdns_hostname: Some("fixture-network-desk".into()),
         },
         DeviceIdentifier::Bridge {
             service: "openlinkhub".into(),
@@ -828,7 +819,7 @@ fn device_handle_ids_are_unique_and_monotonic() {
             last_ip: None,
             mdns_hostname: None,
         },
-        "wled",
+        "fixture-network",
     );
     let h2 = DeviceHandle::new(
         DeviceIdentifier::Network {
@@ -836,7 +827,7 @@ fn device_handle_ids_are_unique_and_monotonic() {
             last_ip: None,
             mdns_hostname: None,
         },
-        "wled",
+        "fixture-network",
     );
 
     assert!(
@@ -852,11 +843,11 @@ fn device_handle_accessors_and_display() {
         last_ip: None,
         mdns_hostname: Some("desk-strip".into()),
     };
-    let handle = DeviceHandle::new(identifier.clone(), "wled");
+    let handle = DeviceHandle::new(identifier.clone(), "fixture-network");
 
     assert_eq!(handle.device_id(), &identifier);
-    assert_eq!(handle.backend_id(), "wled");
-    assert!(handle.to_string().starts_with("wled#"));
+    assert_eq!(handle.backend_id(), "fixture-network");
+    assert!(handle.to_string().starts_with("fixture-network#"));
 }
 
 #[test]
