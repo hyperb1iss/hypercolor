@@ -4,11 +4,11 @@
 > typed, moves extension settings into registries, and prepares the host
 > boundary for future Wasm-loaded drivers.
 
-**Status:** Draft
+**Status:** Implemented
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-daemon`
-**Related:** `docs/specs/12-configuration.md`, `docs/specs/35-network-driver-architecture.md`, `docs/specs/33-network-device-backends.md`
+**Related:** `docs/specs/12-configuration.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/35-network-driver-architecture.md`, `docs/specs/33-network-device-backends.md`
 
 ---
 
@@ -66,15 +66,15 @@ must still map cleanly to a future Wasm Component Model driver contract.
 
 ## 2. Problem Statement
 
-Current state:
+Original state:
 
-- `HypercolorConfig` has top-level `wled`, `hue`, and `nanoleaf` fields.
-- `DiscoveryConfig` has per-driver booleans such as `wled_scan`, `hue_scan`,
+- `HypercolorConfig` had top-level `wled`, `hue`, and `nanoleaf` fields.
+- `DiscoveryConfig` had per-driver booleans such as `wled_scan`, `hue_scan`,
   and `nanoleaf_scan`.
-- Some driver factories receive broad config snapshots rather than a narrow
+- Some driver factories received broad config snapshots rather than a narrow
   driver-owned slice.
-- The config API can only mutate known paths in the statically typed root.
-- Future dynamic drivers have nowhere to declare config defaults or validation
+- The config API could only mutate known paths in the statically typed root.
+- Future dynamic drivers had nowhere to declare config defaults or validation
   without modifying core crates.
 
 That creates three problems.
@@ -329,10 +329,10 @@ pub trait DriverConfigProvider: Send + Sync {
 }
 ```
 
-Extend `NetworkDriverFactory`:
+`DriverConfigProvider` hangs off the unified `DriverModule` contract:
 
 ```rust
-pub trait NetworkDriverFactory: Send + Sync {
+pub trait DriverModule: Send + Sync {
     fn descriptor(&self) -> &'static DriverDescriptor;
 
     fn config(&self) -> Option<&dyn DriverConfigProvider> {
@@ -345,13 +345,9 @@ pub trait NetworkDriverFactory: Send + Sync {
         config: DriverConfigView<'_>,
     ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>>;
 
-    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
-        None
-    }
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> { None }
 
-    fn pairing(&self) -> Option<&dyn PairingCapability> {
-        None
-    }
+    fn pairing(&self) -> Option<&dyn PairingCapability> { None }
 }
 ```
 
