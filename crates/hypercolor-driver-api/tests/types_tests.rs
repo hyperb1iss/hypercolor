@@ -23,11 +23,16 @@ use hypercolor_types::device::{
 
 #[test]
 fn driver_descriptor_constructor_sets_expected_flags() {
-    let descriptor =
-        DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
+    let descriptor = DriverDescriptor::new(
+        "fixture-network",
+        "Fixture Network",
+        DriverTransport::Network,
+        true,
+        true,
+    );
 
-    assert_eq!(descriptor.id, "hue");
-    assert_eq!(descriptor.display_name, "Philips Hue");
+    assert_eq!(descriptor.id, "fixture-network");
+    assert_eq!(descriptor.display_name, "Fixture Network");
     assert_eq!(descriptor.transport, DriverTransport::Network);
     assert!(descriptor.supports_discovery);
     assert!(descriptor.supports_pairing);
@@ -35,13 +40,18 @@ fn driver_descriptor_constructor_sets_expected_flags() {
 
 #[test]
 fn driver_descriptor_converts_to_module_descriptor() {
-    let descriptor =
-        DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
+    let descriptor = DriverDescriptor::new(
+        "fixture-network",
+        "Fixture Network",
+        DriverTransport::Network,
+        true,
+        true,
+    );
 
     let module = descriptor.module_descriptor();
 
-    assert_eq!(module.id, "hue");
-    assert_eq!(module.display_name, "Philips Hue");
+    assert_eq!(module.id, "fixture-network");
+    assert_eq!(module.display_name, "Fixture Network");
     assert_eq!(module.module_kind, DriverModuleKind::Network);
     assert_eq!(module.transports, vec![DriverTransportKind::Network]);
     assert!(module.capabilities.discovery);
@@ -462,7 +472,7 @@ fn pair_device_request_defaults_to_activation() {
 fn pairing_descriptor_round_trips_with_optional_fields() {
     let descriptor = PairingDescriptor {
         kind: PairingFlowKind::CredentialsForm,
-        title: "Connect WLED".to_owned(),
+        title: "Connect Fixture".to_owned(),
         instructions: vec!["Enter the device credentials.".to_owned()],
         action_label: "Save Credentials".to_owned(),
         fields: vec![PairingFieldDescriptor {
@@ -488,11 +498,15 @@ fn discovered_device_payload_keeps_connect_behavior() {
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Desk Strip".to_owned(),
-        vendor: "WLED".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
+        vendor: "Fixture Vendor".to_owned(),
+        family: DeviceFamily::new_static("fixture-network", "Fixture Network"),
         model: None,
         connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+        origin: DeviceOrigin::native(
+            "fixture-network",
+            "fixture-backend",
+            ConnectionType::Network,
+        ),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 60,
@@ -514,7 +528,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
     };
     let discovered = DriverDiscoveredDevice {
         info,
-        fingerprint: DeviceFingerprint("wled:desk-strip".to_owned()),
+        fingerprint: DeviceFingerprint("fixture:desk-strip".to_owned()),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.50".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
     };
@@ -531,11 +545,15 @@ fn discovered_device_converts_from_core_payload() {
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Bridge".to_owned(),
-        vendor: "Philips".to_owned(),
-        family: DeviceFamily::new_static("hue", "Philips Hue"),
+        vendor: "Fixture Vendor".to_owned(),
+        family: DeviceFamily::new_static("fixture-bridge", "Fixture Bridge"),
         model: Some("bridge".to_owned()),
         connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
+        origin: DeviceOrigin::native(
+            "fixture-bridge",
+            "fixture-bridge-backend",
+            ConnectionType::Network,
+        ),
         zones: Vec::new(),
         firmware_version: Some("1.0".to_owned()),
         capabilities: DeviceCapabilities {
@@ -553,15 +571,15 @@ fn discovered_device_converts_from_core_payload() {
         connection_type: ConnectionType::Network,
         origin: info.origin.clone(),
         name: "Bridge".to_owned(),
-        family: DeviceFamily::new_static("hue", "Philips Hue"),
+        family: DeviceFamily::new_static("fixture-bridge", "Fixture Bridge"),
         info,
-        fingerprint: DeviceFingerprint("net:hue:bridge".to_owned()),
+        fingerprint: DeviceFingerprint("net:fixture:bridge".to_owned()),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.8".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
     });
 
     assert_eq!(discovered.metadata.get("ip"), Some(&"10.0.0.8".to_owned()));
-    assert_eq!(discovered.fingerprint.0, "net:hue:bridge");
+    assert_eq!(discovered.fingerprint.0, "net:fixture:bridge");
 }
 
 #[test]
@@ -592,7 +610,7 @@ fn support_helpers_parse_metadata_and_dedupe_keys() {
         ("ip".to_owned(), "10.0.0.42".to_owned()),
         ("name".to_owned(), " Desk Strip ".to_owned()),
     ]);
-    let mut keys = vec!["wled:ip:10.0.0.42".to_owned()];
+    let mut keys = vec!["fixture:ip:10.0.0.42".to_owned()];
 
     assert_eq!(
         support::network_ip_from_metadata(Some(&metadata))
@@ -605,11 +623,11 @@ fn support_helpers_parse_metadata_and_dedupe_keys() {
         Some("Desk Strip")
     );
 
-    support::push_lookup_key(&mut keys, "wled:ip:10.0.0.42".to_owned());
-    support::push_lookup_key(&mut keys, "wled:desk".to_owned());
+    support::push_lookup_key(&mut keys, "fixture:ip:10.0.0.42".to_owned());
+    support::push_lookup_key(&mut keys, "fixture:desk".to_owned());
 
     assert_eq!(
         keys,
-        vec!["wled:ip:10.0.0.42".to_owned(), "wled:desk".to_owned()]
+        vec!["fixture:ip:10.0.0.42".to_owned(), "fixture:desk".to_owned()]
     );
 }

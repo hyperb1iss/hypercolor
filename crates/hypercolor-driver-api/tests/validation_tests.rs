@@ -5,8 +5,13 @@ use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, DriverT
 
 #[test]
 fn schema_version_constant_is_stamped_onto_new_descriptors() {
-    let descriptor =
-        DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
+    let descriptor = DriverDescriptor::new(
+        "fixture-network",
+        "Fixture Network",
+        DriverTransport::Network,
+        true,
+        true,
+    );
     assert_eq!(descriptor.schema_version, DRIVER_API_SCHEMA_VERSION);
 }
 
