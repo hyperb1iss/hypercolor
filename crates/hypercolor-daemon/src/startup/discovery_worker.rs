@@ -33,8 +33,8 @@ use crate::network::DaemonDriverHost;
 use crate::scene_transactions::SceneTransactionQueue;
 use hypercolor_core::scene::SceneManager;
 
-const STARTUP_NETWORK_RECOVERY_ATTEMPTS: usize = 3;
-const STARTUP_NETWORK_RECOVERY_INTERVAL_SECS: u64 = 5;
+const STARTUP_DRIVER_RECOVERY_ATTEMPTS: usize = 3;
+const STARTUP_DRIVER_RECOVERY_INTERVAL_SECS: u64 = 5;
 
 #[derive(Clone)]
 pub(super) struct DiscoveryWorkerContext {
@@ -150,10 +150,10 @@ impl DiscoveryWorkerContext {
         .await;
     }
 
-    pub(super) async fn run_startup_network_recovery_scans(&self) {
+    pub(super) async fn run_startup_driver_recovery_scans(&self) {
         let latest_config = Arc::clone(&self.config_manager.get());
 
-        for attempt in 1..=STARTUP_NETWORK_RECOVERY_ATTEMPTS {
+        for attempt in 1..=STARTUP_DRIVER_RECOVERY_ATTEMPTS {
             let unmapped_by_driver = self
                 .active_layout_unmapped_driver_targets(&latest_config)
                 .await;
@@ -174,15 +174,15 @@ impl DiscoveryWorkerContext {
 
             info!(
                 attempt,
-                max_attempts = STARTUP_NETWORK_RECOVERY_ATTEMPTS,
-                retry_after_secs = STARTUP_NETWORK_RECOVERY_INTERVAL_SECS,
+                max_attempts = STARTUP_DRIVER_RECOVERY_ATTEMPTS,
+                retry_after_secs = STARTUP_DRIVER_RECOVERY_INTERVAL_SECS,
                 drivers = ?drivers,
                 unmapped_layout_device_ids = ?unmapped_layout_device_ids,
                 "Active layout still has unmapped driver targets after startup scan; retrying discovery"
             );
 
             tokio::time::sleep(std::time::Duration::from_secs(
-                STARTUP_NETWORK_RECOVERY_INTERVAL_SECS,
+                STARTUP_DRIVER_RECOVERY_INTERVAL_SECS,
             ))
             .await;
 
@@ -205,7 +205,7 @@ impl DiscoveryWorkerContext {
                 .cloned()
                 .collect::<Vec<_>>();
             warn!(
-                retry_attempts = STARTUP_NETWORK_RECOVERY_ATTEMPTS,
+                retry_attempts = STARTUP_DRIVER_RECOVERY_ATTEMPTS,
                 drivers = ?drivers,
                 unmapped_layout_device_ids = ?unmapped_layout_device_ids,
                 scan_interval_secs = latest_config.discovery.scan_interval_secs.max(1),
