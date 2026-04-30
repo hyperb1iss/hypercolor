@@ -27,14 +27,15 @@ All responses use the standard Hypercolor envelope (`data` + `meta`, or
 
 ### List query params
 
-`GET /devices?offset=0&limit=50&status=active&backend=wled&q=desk`
+`GET /devices?offset=0&limit=50&status=active&backend_id=wled&driver=wled&q=desk`
 
 Supported:
 
 - `offset` (default `0`)
 - `limit` (default `50`, range `1..=200`)
 - `status` (`known`, `connected`, `active`, `reconnecting`, `disabled`)
-- `backend` (case-insensitive family display name match, for example `wled`)
+- `backend_id` (case-insensitive output route match, for example `wled`)
+- `driver` (case-insensitive owning driver match, for example `wled`)
 - `q` (case-insensitive substring match on name/vendor)
 
 ### Update payload
@@ -209,6 +210,9 @@ Behavior:
 - When one or more enabled segment logical devices exist, the default logical
   device is auto-disabled.
 - Only user-defined segment logical devices are persisted.
+- Logical-device responses include the physical device `origin` object rather
+  than a flat backend field. Use `origin.backend_id` only when routing/debugging,
+  and `origin.driver_id` when grouping by driver ownership.
 
 ### Update payload
 

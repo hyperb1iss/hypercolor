@@ -9744,7 +9744,7 @@ async fn logical_devices_reject_overlapping_segments() {
 }
 
 #[tokio::test]
-async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
+async fn logical_device_endpoints_preserve_smbus_origin_metadata() {
     let (state, _tmp) = test_state_with_temp_logical_store();
     register_noop_backend(&state, "smbus", "SMBus Test").await;
 
@@ -9804,7 +9804,9 @@ async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
         .expect("failed to execute request");
     assert_eq!(create_response.status(), StatusCode::CREATED);
     let create_json = body_json(create_response).await;
-    assert_eq!(create_json["data"]["backend"], "smbus");
+    assert_eq!(create_json["data"]["origin"]["driver_id"], "asus");
+    assert_eq!(create_json["data"]["origin"]["backend_id"], "smbus");
+    assert_eq!(create_json["data"]["origin"]["transport"], "smbus");
     let segment_id = create_json["data"]["id"]
         .as_str()
         .expect("segment id should be a string")
@@ -9825,8 +9827,10 @@ async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
         .as_array()
         .expect("logical items should be an array");
     assert!(
-        items.iter().all(|item| item["backend"] == "smbus"),
-        "every logical device summary should keep the smbus backend id"
+        items
+            .iter()
+            .all(|item| item["origin"]["backend_id"] == "smbus"),
+        "every logical device summary should keep the smbus origin"
     );
 
     let manager = state.backend_manager.lock().await;

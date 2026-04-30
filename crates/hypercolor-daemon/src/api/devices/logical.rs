@@ -9,7 +9,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
 use hypercolor_core::device::{BackendManager, SegmentRange};
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceOrigin};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -61,14 +61,14 @@ pub struct LogicalDeviceSummary {
     pub led_end: u32,
     pub physical_device_id: String,
     pub physical_device_name: String,
-    pub backend: String,
+    pub origin: Option<DeviceOrigin>,
     pub physical_status: String,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct PhysicalSnapshot {
     pub(super) name: String,
-    pub(super) backend: String,
+    pub(super) origin: DeviceOrigin,
     pub(super) status: String,
 }
 
@@ -102,7 +102,7 @@ pub async fn list_logical_devices(
             tracked.info.id,
             PhysicalSnapshot {
                 name: tracked.info.name.clone(),
-                backend: resolved_backend_id(&tracked.info),
+                origin: tracked.info.origin.clone(),
                 status: tracked.state.variant_name().to_ascii_lowercase(),
             },
         ));
@@ -161,7 +161,7 @@ pub async fn list_device_logical_devices(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: resolved_backend_id(&tracked.info),
+            origin: tracked.info.origin.clone(),
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -244,7 +244,7 @@ pub async fn create_logical_device(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: resolved_backend_id(&tracked.info),
+            origin: tracked.info.origin.clone(),
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -271,7 +271,7 @@ pub async fn get_logical_device(
             tracked.info.id,
             PhysicalSnapshot {
                 name: tracked.info.name.clone(),
-                backend: resolved_backend_id(&tracked.info),
+                origin: tracked.info.origin.clone(),
                 status: tracked.state.variant_name().to_ascii_lowercase(),
             },
         ));
@@ -366,7 +366,7 @@ pub async fn update_logical_device(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: resolved_backend_id(&tracked.info),
+            origin: tracked.info.origin.clone(),
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -421,14 +421,15 @@ fn summarize_logical_device(
     entry: &LogicalDevice,
     physical_index: &HashMap<DeviceId, PhysicalSnapshot>,
 ) -> LogicalDeviceSummary {
-    let physical = physical_index
-        .get(&entry.physical_device_id)
-        .cloned()
-        .unwrap_or(PhysicalSnapshot {
-            name: "Unknown Device".to_owned(),
-            backend: "unknown".to_owned(),
-            status: "unknown".to_owned(),
-        });
+    let physical = physical_index.get(&entry.physical_device_id).cloned();
+    let physical_name = physical.as_ref().map_or_else(
+        || "Unknown Device".to_owned(),
+        |physical| physical.name.clone(),
+    );
+    let physical_origin = physical.as_ref().map(|physical| physical.origin.clone());
+    let physical_status = physical
+        .as_ref()
+        .map_or_else(|| "unknown".to_owned(), |physical| physical.status.clone());
 
     LogicalDeviceSummary {
         id: entry.id.clone(),
@@ -443,9 +444,9 @@ fn summarize_logical_device(
         led_count: entry.led_count,
         led_end: entry.led_end_exclusive(),
         physical_device_id: entry.physical_device_id.to_string(),
-        physical_device_name: physical.name,
-        backend: physical.backend,
-        physical_status: physical.status,
+        physical_device_name: physical_name,
+        origin: physical_origin,
+        physical_status,
     }
 }
 
