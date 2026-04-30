@@ -196,7 +196,7 @@ pub fn DevicesPage() -> impl IntoView {
                     let matches_name = d.name.to_lowercase().contains(&search_term);
                     let matches_driver = device_driver.contains(&search_term)
                         || driver_label.contains(&search_term)
-                        || d.backend.to_lowercase().contains(&search_term);
+                        || d.origin.backend_id.to_lowercase().contains(&search_term);
                     return matches_name || matches_driver;
                 }
                 true

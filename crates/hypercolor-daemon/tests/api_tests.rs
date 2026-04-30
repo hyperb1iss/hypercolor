@@ -9118,7 +9118,10 @@ async fn list_devices_supports_filters() {
     assert_eq!(driver_response.status(), StatusCode::OK);
     let driver_json = body_json(driver_response).await;
     assert_eq!(driver_json["data"]["pagination"]["total"], 1);
-    assert_eq!(driver_json["data"]["items"][0]["backend"], "smbus");
+    assert_eq!(
+        driver_json["data"]["items"][0]["origin"]["backend_id"],
+        "smbus"
+    );
 }
 
 #[tokio::test]
@@ -9140,7 +9143,6 @@ async fn get_device_includes_explicit_origin_metadata() {
 
     let json = body_json(response).await;
     let device = &json["data"];
-    assert_eq!(device["backend"], "smbus");
     assert_eq!(device["origin"]["driver_id"], "asus");
     assert_eq!(device["origin"]["backend_id"], "smbus");
     assert_eq!(device["origin"]["transport"], "smbus");

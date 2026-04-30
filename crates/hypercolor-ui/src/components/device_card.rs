@@ -21,18 +21,18 @@ pub struct DeviceBrand {
 
 pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
     let color_key = if device.origin.driver_id.trim().is_empty() {
-        if device.backend.trim().is_empty() {
+        if device.origin.backend_id.trim().is_empty() {
             device.id.as_str()
         } else {
-            device.backend.as_str()
+            device.origin.backend_id.as_str()
         }
     } else {
         device.origin.driver_id.as_str()
     };
-    let fallback_key = if device.backend.trim().is_empty() {
+    let fallback_key = if device.origin.backend_id.trim().is_empty() {
         device.id.as_str()
     } else {
-        device.backend.as_str()
+        device.origin.backend_id.as_str()
     };
     let (fallback_primary, fallback_secondary) = device_accent_colors(color_key);
     let (_, backend_secondary) = device_accent_colors(fallback_key);
@@ -61,7 +61,7 @@ pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
             let label = device.presentation.label.trim();
             (!label.is_empty()).then(|| label.to_owned())
         })
-        .or_else(|| driver_identifier_label(&device.backend));
+        .or_else(|| driver_identifier_label(&device.origin.backend_id));
 
     DeviceBrand {
         label,

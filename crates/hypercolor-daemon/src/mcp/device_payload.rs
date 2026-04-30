@@ -13,7 +13,6 @@ pub(crate) fn inventory_device_payload(
         "name": &info.name,
         "vendor": &info.vendor,
         "family": info.family.to_string(),
-        "backend": info.output_backend_id(),
         "origin": &info.origin,
         "presentation": crate::network::device_presentation(state.driver_registry.as_ref(), info),
         "connection_type": format!("{:?}", info.connection_type),

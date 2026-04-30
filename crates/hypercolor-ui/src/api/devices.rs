@@ -138,7 +138,6 @@ pub struct DeviceSummary {
     pub id: String,
     pub layout_device_id: String,
     pub name: String,
-    pub backend: String,
     pub origin: DeviceOrigin,
     pub presentation: DriverPresentation,
     pub status: String,

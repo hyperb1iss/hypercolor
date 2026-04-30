@@ -1749,8 +1749,8 @@ Behavioral checks:
   `driver_id = "asus"` for ASUS devices.
 - Prism S attachment changes update protocol config without daemon discovery
   matching on `DeviceFamily::PrismRgb`.
-- Device API still includes legacy `backend` string while new `origin` is
-  present.
+- Device API exposes route ownership through `origin.backend_id` instead of a
+  duplicate legacy `backend` string.
 - UI shows driver filter chips for actual returned drivers/devices.
 - Unknown driver config entries roundtrip through config load/save.
 - A disabled driver module does not register backend, discovery, pairing, or UI

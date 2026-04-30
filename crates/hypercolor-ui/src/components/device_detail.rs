@@ -166,17 +166,13 @@ pub fn DeviceDetail(
                 let vendor_label = brand_label(&brand);
                 let driver_label = vendor_label.clone().unwrap_or_else(|| {
                     let identifier = if dev.origin.driver_id.trim().is_empty() {
-                        &dev.backend
+                        &dev.origin.backend_id
                     } else {
                         &dev.origin.driver_id
                     };
                     driver_identifier_label(identifier).unwrap_or_else(|| identifier.to_string())
                 });
-                let route_backend = if dev.origin.backend_id.trim().is_empty() {
-                    dev.backend.clone()
-                } else {
-                    dev.origin.backend_id.clone()
-                };
+                let route_backend = dev.origin.backend_id.clone();
                 let route_label = (!dev.origin.driver_id.trim().is_empty()
                     && route_backend != dev.origin.driver_id
                     && !route_backend.trim().is_empty())

@@ -1095,7 +1095,6 @@ async fn mcp_device_inventory_exposes_driver_origin_and_presentation() {
         .expect("devices resource should exist");
     let resource_device = &resource["devices"][0];
     assert_eq!(resource_device["id"], device_id.to_string());
-    assert_eq!(resource_device["backend"], "usb");
     assert_eq!(resource_device["origin"]["driver_id"], "wled");
     assert_eq!(resource_device["origin"]["backend_id"], "usb");
     assert_eq!(resource_device["origin"]["transport"], "usb");

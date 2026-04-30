@@ -59,7 +59,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
     let (primary_rgb, secondary_rgb) = brand_colors(&brand);
     let driver_label = brand_label(&brand).unwrap_or_else(|| {
         let identifier = if dev.origin.driver_id.trim().is_empty() {
-            &dev.backend
+            &dev.origin.backend_id
         } else {
             &dev.origin.driver_id
         };

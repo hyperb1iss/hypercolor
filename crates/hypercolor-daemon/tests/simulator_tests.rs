@@ -195,7 +195,10 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
     )
     .await;
     assert_eq!(devices["data"]["items"][0]["id"], display_id);
-    assert_eq!(devices["data"]["items"][0]["backend"], "simulator");
+    assert_eq!(
+        devices["data"]["items"][0]["origin"]["backend_id"],
+        "simulator"
+    );
 }
 
 #[tokio::test]
