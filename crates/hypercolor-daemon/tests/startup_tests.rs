@@ -188,7 +188,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(seiren_v3_layout_hint()),
+            layout_hint: Some(compact_perimeter_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities {
@@ -1242,7 +1242,7 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
     assert!(layout.zones.is_empty());
 }
 
-fn seiren_v3_layout_hint() -> ZoneLayoutHint {
+fn compact_perimeter_layout_hint() -> ZoneLayoutHint {
     ZoneLayoutHint::custom_grid(
         6,
         2,
@@ -1263,7 +1263,7 @@ fn seiren_v3_layout_hint() -> ZoneLayoutHint {
     .with_shape(ZoneShape::Rectangle)
 }
 
-fn basilisk_v3_layout_hint() -> ZoneLayoutHint {
+fn asymmetric_pointer_layout_hint() -> ZoneLayoutHint {
     ZoneLayoutHint::custom_grid(
         7,
         8,
@@ -1285,7 +1285,7 @@ fn basilisk_v3_layout_hint() -> ZoneLayoutHint {
     .with_shape(ZoneShape::Rectangle)
 }
 
-fn corsair_aio_layout_hint() -> ZoneLayoutHint {
+fn outer_ring_layout_hint() -> ZoneLayoutHint {
     ZoneLayoutHint::custom_grid(
         13,
         13,
@@ -1317,7 +1317,7 @@ fn corsair_aio_layout_hint() -> ZoneLayoutHint {
     .co_located()
 }
 
-fn corsair_lcd_layout_hint() -> ZoneLayoutHint {
+fn inner_ring_layout_hint() -> ZoneLayoutHint {
     ZoneLayoutHint::custom_grid(
         11,
         11,
@@ -1354,22 +1354,22 @@ fn corsair_lcd_layout_hint() -> ZoneLayoutHint {
 }
 
 #[test]
-fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
+fn append_auto_layout_zones_uses_driver_supplied_compact_custom_geometry() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
-        name: "Razer Seiren V3 Chroma".to_owned(),
-        vendor: "Razer".to_owned(),
-        family: DeviceFamily::new_static("razer", "Razer"),
+        name: "Compact Custom Device".to_owned(),
+        vendor: "Layout Driver".to_owned(),
+        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
         model: None,
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
+        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(seiren_v3_layout_hint()),
+            layout_hint: Some(compact_perimeter_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1388,8 +1388,11 @@ fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
         version: 1,
     };
 
-    let added =
-        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:1532:056f:test", &info);
+    let added = discovery::append_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:driver:compact:test",
+        &info,
+    );
 
     assert_eq!(added, 1);
     match &layout.zones[0].topology {
@@ -1406,22 +1409,22 @@ fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
 }
 
 #[test]
-fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
+fn append_auto_layout_zones_uses_driver_supplied_asymmetric_custom_geometry() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
-        name: "Razer Basilisk V3".to_owned(),
-        vendor: "Razer".to_owned(),
-        family: DeviceFamily::new_static("razer", "Razer"),
+        name: "Asymmetric Custom Device".to_owned(),
+        vendor: "Layout Driver".to_owned(),
+        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
         model: None,
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
+        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 11,
             topology: DeviceTopologyHint::Matrix { rows: 1, cols: 11 },
             color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(basilisk_v3_layout_hint()),
+            layout_hint: Some(asymmetric_pointer_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1440,8 +1443,11 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
         version: 1,
     };
 
-    let added =
-        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:1532:0099:test", &info);
+    let added = discovery::append_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:driver:asymmetric:test",
+        &info,
+    );
 
     assert_eq!(added, 1);
     match &layout.zones[0].topology {
@@ -1458,30 +1464,30 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
 }
 
 #[test]
-fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry() {
+fn append_auto_layout_zones_preserves_driver_supplied_colocated_ring_geometry() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
-        name: "Corsair iCUE LINK System Hub".to_owned(),
-        vendor: "Corsair".to_owned(),
-        family: DeviceFamily::new_static("corsair", "Corsair"),
+        name: "Stacked Ring Controller".to_owned(),
+        vendor: "Layout Driver".to_owned(),
+        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
         model: None,
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
+        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
-                name: "iCUE LINK H-Series AIO (AIO123)".to_owned(),
+                name: "Outer Ring".to_owned(),
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(corsair_aio_layout_hint()),
+                layout_hint: Some(outer_ring_layout_hint()),
             },
             ZoneInfo {
-                name: "iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
+                name: "Inner Ring".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
                 color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(corsair_lcd_layout_hint()),
+                layout_hint: Some(inner_ring_layout_hint()),
             },
         ],
         firmware_version: None,
@@ -1501,23 +1507,26 @@ fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry()
         version: 1,
     };
 
-    let added =
-        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:1b1c:0c3f:test", &info);
+    let added = discovery::append_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:driver:stacked-rings:test",
+        &info,
+    );
 
     assert_eq!(added, 2);
-    let aio = layout
+    let outer = layout
         .zones
         .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK H-Series AIO (AIO123)"))
-        .expect("expected AIO auto-layout zone");
-    let lcd = layout
+        .find(|zone| zone.zone_name.as_deref() == Some("Outer Ring"))
+        .expect("expected outer ring auto-layout zone");
+    let inner = layout
         .zones
         .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK Cooler Pump LCD (LCD123)"))
-        .expect("expected pump LCD auto-layout zone");
+        .find(|zone| zone.zone_name.as_deref() == Some("Inner Ring"))
+        .expect("expected inner ring auto-layout zone");
 
-    assert_eq!(aio.position, lcd.position);
-    match &aio.topology {
+    assert_eq!(outer.position, inner.position);
+    match &outer.topology {
         LedTopology::Custom { positions } => {
             assert_eq!(positions.len(), 20);
             assert!((positions[0].x - 1.0).abs() < 0.001);
@@ -1527,7 +1536,7 @@ fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry()
         }
         other => panic!("expected custom topology, got {other:?}"),
     }
-    match &lcd.topology {
+    match &inner.topology {
         LedTopology::Custom { positions } => {
             assert_eq!(positions.len(), 24);
             assert!((positions[0].x - 1.0).abs() < 0.001);
@@ -1537,10 +1546,16 @@ fn append_auto_layout_zones_for_corsair_link_pump_uses_custom_layered_geometry()
         }
         other => panic!("expected custom topology, got {other:?}"),
     }
-    assert_eq!(aio.size, NormalizedPosition::new(0.16, 0.16));
-    assert_eq!(lcd.size, NormalizedPosition::new(0.19, 0.19));
-    assert_eq!(aio.shape, Some(hypercolor_types::spatial::ZoneShape::Ring));
-    assert_eq!(lcd.shape, Some(hypercolor_types::spatial::ZoneShape::Ring));
+    assert_eq!(outer.size, NormalizedPosition::new(0.16, 0.16));
+    assert_eq!(inner.size, NormalizedPosition::new(0.19, 0.19));
+    assert_eq!(
+        outer.shape,
+        Some(hypercolor_types::spatial::ZoneShape::Ring)
+    );
+    assert_eq!(
+        inner.shape,
+        Some(hypercolor_types::spatial::ZoneShape::Ring)
+    );
 }
 
 #[test]
@@ -1635,22 +1650,22 @@ fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panick
 }
 
 #[test]
-fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
+fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
-        name: "Razer Seiren V3 Chroma".to_owned(),
-        vendor: "Razer".to_owned(),
-        family: DeviceFamily::new_static("razer", "Razer"),
+        name: "Compact Custom Device".to_owned(),
+        vendor: "Layout Driver".to_owned(),
+        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
         model: None,
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
+        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Strip,
             color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(seiren_v3_layout_hint()),
+            layout_hint: Some(compact_perimeter_layout_hint()),
         }],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
@@ -1662,9 +1677,9 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![DeviceZone {
-            id: "auto-usb-1532-056f-test-main".to_owned(),
-            name: "Razer Seiren V3 Chroma".to_owned(),
-            device_id: "usb:1532:056f:test".to_owned(),
+            id: "auto-usb-driver-compact-test-main".to_owned(),
+            name: "Compact Custom Device".to_owned(),
+            device_id: "usb:driver:compact:test".to_owned(),
             zone_name: Some("Main".to_owned()),
 
             position: NormalizedPosition::new(0.5, 0.5),
@@ -1693,8 +1708,11 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
         version: 1,
     };
 
-    let repaired =
-        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:1532:056f:test", &info);
+    let repaired = discovery::reconcile_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:driver:compact:test",
+        &info,
+    );
 
     assert_eq!(repaired, 1);
     match &layout.zones[0].topology {
@@ -1705,30 +1723,30 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
 }
 
 #[test]
-fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_touching_rotation() {
+fn reconcile_auto_layout_zones_repairs_driver_supplied_geometry_without_touching_rotation() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
-        name: "Corsair iCUE LINK System Hub".to_owned(),
-        vendor: "Corsair".to_owned(),
-        family: DeviceFamily::new_static("corsair", "Corsair"),
+        name: "Stacked Ring Controller".to_owned(),
+        vendor: "Layout Driver".to_owned(),
+        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
         model: None,
         connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("corsair", "usb", ConnectionType::Usb),
+        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
         zones: vec![
             ZoneInfo {
-                name: "iCUE LINK H-Series AIO (AIO123)".to_owned(),
+                name: "Outer Ring".to_owned(),
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(corsair_aio_layout_hint()),
+                layout_hint: Some(outer_ring_layout_hint()),
             },
             ZoneInfo {
-                name: "iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
+                name: "Inner Ring".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
                 color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(corsair_lcd_layout_hint()),
+                layout_hint: Some(inner_ring_layout_hint()),
             },
         ],
         firmware_version: None,
@@ -1742,10 +1760,10 @@ fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_to
         canvas_height: 200,
         zones: vec![
             DeviceZone {
-                id: "auto-usb-1b1c-0c3f-test-aio".to_owned(),
-                name: "Corsair iCUE LINK System Hub: iCUE LINK H-Series AIO (AIO123)".to_owned(),
-                device_id: "usb:1b1c:0c3f:test".to_owned(),
-                zone_name: Some("iCUE LINK H-Series AIO (AIO123)".to_owned()),
+                id: "auto-usb-driver-stacked-rings-test-outer-ring".to_owned(),
+                name: "Stacked Ring Controller: Outer Ring".to_owned(),
+                device_id: "usb:driver:stacked-rings:test".to_owned(),
+                zone_name: Some("Outer Ring".to_owned()),
                 position: NormalizedPosition::new(0.42, 0.55),
                 size: NormalizedPosition::new(0.08, 0.08),
                 rotation: 0.25,
@@ -1767,10 +1785,10 @@ fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_to
                 brightness: None,
             },
             DeviceZone {
-                id: "auto-usb-1b1c-0c3f-test-lcd".to_owned(),
-                name: "Corsair iCUE LINK System Hub: iCUE LINK Cooler Pump LCD (LCD123)".to_owned(),
-                device_id: "usb:1b1c:0c3f:test".to_owned(),
-                zone_name: Some("iCUE LINK Cooler Pump LCD (LCD123)".to_owned()),
+                id: "auto-usb-driver-stacked-rings-test-inner-ring".to_owned(),
+                name: "Stacked Ring Controller: Inner Ring".to_owned(),
+                device_id: "usb:driver:stacked-rings:test".to_owned(),
+                zone_name: Some("Inner Ring".to_owned()),
                 position: NormalizedPosition::new(0.42, 0.47),
                 size: NormalizedPosition::new(0.08, 0.08),
                 rotation: 3.0,
@@ -1799,30 +1817,33 @@ fn reconcile_auto_layout_zones_for_corsair_link_pump_repairs_geometry_without_to
         version: 1,
     };
 
-    let repaired =
-        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:1b1c:0c3f:test", &info);
+    let repaired = discovery::reconcile_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:driver:stacked-rings:test",
+        &info,
+    );
 
     assert_eq!(repaired, 2);
-    let aio = layout
+    let outer = layout
         .zones
         .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK H-Series AIO (AIO123)"))
-        .expect("expected repaired AIO zone");
-    let lcd = layout
+        .find(|zone| zone.zone_name.as_deref() == Some("Outer Ring"))
+        .expect("expected repaired outer ring zone");
+    let inner = layout
         .zones
         .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("iCUE LINK Cooler Pump LCD (LCD123)"))
-        .expect("expected repaired LCD zone");
+        .find(|zone| zone.zone_name.as_deref() == Some("Inner Ring"))
+        .expect("expected repaired inner ring zone");
 
-    assert!((aio.rotation - 0.25).abs() < f32::EPSILON);
-    assert!((lcd.rotation - 3.0).abs() < f32::EPSILON);
-    assert_eq!(aio.size, NormalizedPosition::new(0.16, 0.16));
-    assert_eq!(lcd.size, NormalizedPosition::new(0.19, 0.19));
-    match &aio.topology {
+    assert!((outer.rotation - 0.25).abs() < f32::EPSILON);
+    assert!((inner.rotation - 3.0).abs() < f32::EPSILON);
+    assert_eq!(outer.size, NormalizedPosition::new(0.16, 0.16));
+    assert_eq!(inner.size, NormalizedPosition::new(0.19, 0.19));
+    match &outer.topology {
         LedTopology::Custom { positions } => assert_eq!(positions.len(), 20),
         other => panic!("expected custom topology, got {other:?}"),
     }
-    match &lcd.topology {
+    match &inner.topology {
         LedTopology::Custom { positions } => assert_eq!(positions.len(), 24),
         other => panic!("expected custom topology, got {other:?}"),
     }
