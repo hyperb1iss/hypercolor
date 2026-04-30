@@ -470,7 +470,26 @@ mod tests {
         AppState::new()
     }
 
-    struct EnabledDiscoveryDriver;
+    struct TestDriverModule {
+        descriptor: &'static DriverDescriptor,
+        default_enabled: bool,
+    }
+
+    impl TestDriverModule {
+        const fn new(descriptor: &'static DriverDescriptor) -> Self {
+            Self {
+                descriptor,
+                default_enabled: true,
+            }
+        }
+
+        const fn default_disabled(descriptor: &'static DriverDescriptor) -> Self {
+            Self {
+                descriptor,
+                default_enabled: false,
+            }
+        }
+    }
 
     static ENABLED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
         "enabled-driver",
@@ -480,50 +499,6 @@ mod tests {
         true,
     );
 
-    impl DriverModule for EnabledDiscoveryDriver {
-        fn descriptor(&self) -> &'static DriverDescriptor {
-            &ENABLED_DESCRIPTOR
-        }
-
-        fn module_descriptor(&self) -> DriverModuleDescriptor {
-            self.descriptor().module_descriptor()
-        }
-
-        fn build_output_backend(
-            &self,
-            host: &dyn hypercolor_driver_api::DriverHost,
-            config: DriverConfigView<'_>,
-        ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-            let _ = (host, config);
-            Ok(None)
-        }
-
-        fn has_output_backend(&self) -> bool {
-            false
-        }
-
-        fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
-            Some(self)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl DiscoveryCapability for EnabledDiscoveryDriver {
-        async fn discover(
-            &self,
-            host: &dyn hypercolor_driver_api::DriverHost,
-            request: &DiscoveryRequest,
-            config: DriverConfigView<'_>,
-        ) -> anyhow::Result<DiscoveryResult> {
-            let _ = (host, request, config);
-            Ok(DiscoveryResult {
-                devices: Vec::new(),
-            })
-        }
-    }
-
-    struct DefaultDisabledDiscoveryDriver;
-
     static DEFAULT_DISABLED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
         "default-disabled",
         "Default Disabled",
@@ -532,14 +507,22 @@ mod tests {
         false,
     );
 
-    impl DriverModule for DefaultDisabledDiscoveryDriver {
+    static SMBUS_MODULE_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+        "smbus-driver",
+        "SMBus Driver",
+        DriverTransport::Smbus,
+        false,
+        false,
+    );
+
+    impl DriverModule for TestDriverModule {
         fn descriptor(&self) -> &'static DriverDescriptor {
-            &DEFAULT_DISABLED_DESCRIPTOR
+            self.descriptor
         }
 
         fn module_descriptor(&self) -> DriverModuleDescriptor {
             let mut descriptor = self.descriptor().module_descriptor();
-            descriptor.default_enabled = false;
+            descriptor.default_enabled = self.default_enabled;
             descriptor
         }
 
@@ -557,12 +540,12 @@ mod tests {
         }
 
         fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
-            Some(self)
+            self.descriptor.supports_discovery.then_some(self)
         }
     }
 
     #[async_trait::async_trait]
-    impl DiscoveryCapability for DefaultDisabledDiscoveryDriver {
+    impl DiscoveryCapability for TestDriverModule {
         async fn discover(
             &self,
             host: &dyn hypercolor_driver_api::DriverHost,
@@ -647,7 +630,7 @@ mod tests {
     fn resolve_targets_rejects_disabled_driver_module() {
         let mut registry = DriverModuleRegistry::new();
         registry
-            .register(EnabledDiscoveryDriver)
+            .register(TestDriverModule::new(&ENABLED_DESCRIPTOR))
             .expect("driver should register");
         let mut cfg = HypercolorConfig::default();
         cfg.drivers.insert(
@@ -666,7 +649,9 @@ mod tests {
     fn resolve_targets_honors_driver_default_enabled_flag() {
         let mut registry = DriverModuleRegistry::new();
         registry
-            .register(DefaultDisabledDiscoveryDriver)
+            .register(TestDriverModule::default_disabled(
+                &DEFAULT_DISABLED_DESCRIPTOR,
+            ))
             .expect("driver should register");
         let cfg = HypercolorConfig::default();
 
@@ -684,7 +669,9 @@ mod tests {
     fn resolve_targets_rejects_explicit_default_disabled_driver() {
         let mut registry = DriverModuleRegistry::new();
         registry
-            .register(DefaultDisabledDiscoveryDriver)
+            .register(TestDriverModule::default_disabled(
+                &DEFAULT_DISABLED_DESCRIPTOR,
+            ))
             .expect("driver should register");
         let cfg = HypercolorConfig::default();
         let requested = vec!["default-disabled".to_owned()];
@@ -697,16 +684,17 @@ mod tests {
 
     #[test]
     fn resolve_targets_rejects_disabled_smbus_hal_driver() {
-        let state = builtin_registry();
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::new(&SMBUS_MODULE_DESCRIPTOR))
+            .expect("driver should register");
         let mut cfg = HypercolorConfig::default();
         cfg.drivers.insert(
-            "asus".to_owned(),
-            hypercolor_types::config::DriverConfigEntry::disabled(
-                std::collections::BTreeMap::default(),
-            ),
+            "smbus-driver".to_owned(),
+            DriverConfigEntry::disabled(std::collections::BTreeMap::default()),
         );
         let requested = vec!["smbus".to_owned()];
-        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, &registry)
             .expect_err("smbus must fail when all SMBus HAL modules are disabled");
         assert!(error.contains("no enabled SMBus HAL driver modules"));
     }
@@ -747,8 +735,11 @@ mod tests {
 
     #[test]
     fn output_backend_id_for_device_uses_device_origin() {
-        let info =
-            device_info_with_origin(DeviceOrigin::native("ableton", "usb", ConnectionType::Usb));
+        let info = device_info_with_origin(DeviceOrigin::native(
+            "fixture-driver",
+            "usb",
+            ConnectionType::Usb,
+        ));
 
         assert_eq!(info.output_backend_id(), "usb");
     }
