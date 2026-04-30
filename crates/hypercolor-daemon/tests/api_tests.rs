@@ -2800,6 +2800,93 @@ async fn patch_govee_driver_control_surface_persists_backend_settings() {
 }
 
 #[tokio::test]
+async fn patch_hue_driver_control_surface_persists_backend_settings() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:hue/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:hue",
+                        "changes": [
+                            {
+                                "field_id": "use_cie_xy",
+                                "value": { "kind": "bool", "value": false }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], "driver:hue");
+    assert_eq!(json["data"]["values"]["use_cie_xy"]["value"], false);
+    assert_eq!(
+        json["data"]["impacts"],
+        serde_json::json!(["backend_rebind"])
+    );
+
+    let config = manager.get();
+    let hue = config.drivers.get("hue").expect("hue config should exist");
+    assert_eq!(hue.settings["use_cie_xy"], false);
+}
+
+#[tokio::test]
+async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
+    let (state, manager, _tmp) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/control-surfaces/driver:nanoleaf/values")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface_id": "driver:nanoleaf",
+                        "changes": [
+                            {
+                                "field_id": "transition_time",
+                                "value": { "kind": "integer", "value": 8 }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["surface_id"], "driver:nanoleaf");
+    assert_eq!(json["data"]["values"]["transition_time"]["value"], 8);
+    assert_eq!(
+        json["data"]["impacts"],
+        serde_json::json!(["backend_rebind"])
+    );
+
+    let config = manager.get();
+    let nanoleaf = config
+        .drivers
+        .get("nanoleaf")
+        .expect("nanoleaf config should exist");
+    assert_eq!(nanoleaf.settings["transition_time"], 8);
+}
+
+#[tokio::test]
 async fn patch_driver_control_surface_dry_run_does_not_mutate_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
