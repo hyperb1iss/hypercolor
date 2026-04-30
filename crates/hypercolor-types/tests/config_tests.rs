@@ -97,16 +97,9 @@ fn network_defaults_match_spec() {
 }
 
 #[test]
-fn driver_registry_defaults_include_builtin_drivers() {
+fn driver_registry_defaults_are_driver_agnostic() {
     let drivers = default_driver_configs();
-    assert!(drivers["wled"].enabled);
-    assert!(drivers["hue"].enabled);
-    assert!(drivers["nanoleaf"].enabled);
-    assert!(drivers["govee"].enabled);
-    assert!(drivers["wled"].settings.is_empty());
-    assert!(drivers["hue"].settings.is_empty());
-    assert!(drivers["nanoleaf"].settings.is_empty());
-    assert!(drivers["govee"].settings.is_empty());
+    assert!(drivers.is_empty());
 }
 
 #[test]
@@ -221,8 +214,7 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
-    assert!(restored.drivers["wled"].enabled);
-    assert!(restored.drivers["govee"].enabled);
+    assert!(restored.drivers.is_empty());
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
     assert!(!restored.features.wasm_plugins);
@@ -247,8 +239,7 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
-    assert!(config.drivers["wled"].enabled);
-    assert!(config.drivers["wled"].settings.is_empty());
+    assert!(config.drivers.is_empty());
 }
 
 #[test]

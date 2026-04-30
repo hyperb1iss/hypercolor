@@ -259,24 +259,7 @@ impl Default for DriverConfigEntry {
 
 #[must_use]
 pub fn default_driver_configs() -> DriverConfigs {
-    let mut drivers = DriverConfigs::new();
-    drivers.insert(
-        "wled".to_owned(),
-        DriverConfigEntry::enabled(BTreeMap::new()),
-    );
-    drivers.insert(
-        "hue".to_owned(),
-        DriverConfigEntry::enabled(BTreeMap::new()),
-    );
-    drivers.insert(
-        "nanoleaf".to_owned(),
-        DriverConfigEntry::enabled(BTreeMap::new()),
-    );
-    drivers.insert(
-        "govee".to_owned(),
-        DriverConfigEntry::enabled(BTreeMap::new()),
-    );
-    drivers
+    DriverConfigs::new()
 }
 
 // ─── Daemon ──────────────────────────────────────────────────────────────────

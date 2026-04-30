@@ -95,8 +95,38 @@ pub fn register_driver_modules(
 
 /// Ensure config entries exist for compiled-in driver modules with dynamic catalogs.
 pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
-    #[cfg(not(feature = "hal"))]
+    #[cfg(not(any(
+        feature = "wled",
+        feature = "govee",
+        feature = "hue",
+        feature = "nanoleaf",
+        feature = "hal"
+    )))]
     let _ = config;
+
+    #[cfg(feature = "wled")]
+    config
+        .drivers
+        .entry(hypercolor_driver_wled::DESCRIPTOR.id.to_owned())
+        .or_default();
+
+    #[cfg(feature = "govee")]
+    config
+        .drivers
+        .entry(hypercolor_driver_govee::DESCRIPTOR.id.to_owned())
+        .or_default();
+
+    #[cfg(feature = "hue")]
+    config
+        .drivers
+        .entry(hypercolor_driver_hue::DESCRIPTOR.id.to_owned())
+        .or_default();
+
+    #[cfg(feature = "nanoleaf")]
+    config
+        .drivers
+        .entry(hypercolor_driver_nanoleaf::DESCRIPTOR.id.to_owned())
+        .or_default();
 
     #[cfg(feature = "hal")]
     for descriptor in hal::hal_module_descriptors() {
