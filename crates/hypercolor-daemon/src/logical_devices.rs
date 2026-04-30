@@ -377,11 +377,11 @@ mod tests {
         let physical_device_id = DeviceId::new();
         let mut store = HashMap::new();
         store.insert(
-            "wled:old-id".to_owned(),
+            "driver:old-id".to_owned(),
             LogicalDevice {
-                id: "wled:old-id".to_owned(),
+                id: "driver:old-id".to_owned(),
                 physical_device_id,
-                name: "Desk Strip".to_owned(),
+                name: "Fixture Device".to_owned(),
                 led_start: 0,
                 led_count: 60,
                 enabled: true,
@@ -392,14 +392,14 @@ mod tests {
         let canonical = ensure_default_logical_device(
             &mut store,
             physical_device_id,
-            "wled:new-id",
-            "Desk Strip",
+            "driver:new-id",
+            "Fixture Device",
             60,
         );
 
-        assert_eq!(canonical.id, "wled:new-id");
+        assert_eq!(canonical.id, "driver:new-id");
         assert_eq!(canonical.kind, LogicalDeviceKind::Default);
-        assert!(!store.contains_key("wled:old-id"));
+        assert!(!store.contains_key("driver:old-id"));
     }
 
     #[test]
@@ -410,11 +410,11 @@ mod tests {
 
         let mut store = HashMap::new();
         store.insert(
-            "wled:canonical".to_owned(),
+            "driver:canonical".to_owned(),
             LogicalDevice {
-                id: "wled:canonical".to_owned(),
+                id: "driver:canonical".to_owned(),
                 physical_device_id,
-                name: "Desk Strip".to_owned(),
+                name: "Fixture Device".to_owned(),
                 led_start: 0,
                 led_count: 60,
                 enabled: true,
@@ -422,11 +422,11 @@ mod tests {
             },
         );
         store.insert(
-            "wled:canonical:left".to_owned(),
+            "driver:canonical:left".to_owned(),
             LogicalDevice {
-                id: "wled:canonical:left".to_owned(),
+                id: "driver:canonical:left".to_owned(),
                 physical_device_id,
-                name: "Desk Left".to_owned(),
+                name: "Fixture Segment".to_owned(),
                 led_start: 0,
                 led_count: 20,
                 enabled: true,
@@ -437,9 +437,9 @@ mod tests {
         save_segments(&path, &store).expect("save logical device store");
         let loaded = load_segments(&path).expect("load logical device store");
 
-        assert!(loaded.contains_key("wled:canonical:left"));
+        assert!(loaded.contains_key("driver:canonical:left"));
         assert!(
-            !loaded.contains_key("wled:canonical"),
+            !loaded.contains_key("driver:canonical"),
             "live canonical defaults should still be rebuilt at runtime"
         );
     }
@@ -452,18 +452,18 @@ mod tests {
         let payload = format!(
             r#"[
   {{
-    "id": "wled:default",
+    "id": "driver:default",
     "physical_device_id": "{physical_device_id}",
-    "name": "Desk Strip",
+    "name": "Fixture Device",
     "led_start": 0,
     "led_count": 60,
     "enabled": true,
     "kind": "default"
   }},
   {{
-    "id": "wled:left",
+    "id": "driver:left",
     "physical_device_id": "{physical_device_id}",
-    "name": "Desk Left",
+    "name": "Fixture Segment",
     "led_start": 0,
     "led_count": 20,
     "enabled": true,
@@ -476,6 +476,6 @@ mod tests {
         let loaded = load_segments(&path).expect("load logical device store");
 
         assert_eq!(loaded.len(), 1);
-        assert!(loaded.contains_key("wled:left"));
+        assert!(loaded.contains_key("driver:left"));
     }
 }

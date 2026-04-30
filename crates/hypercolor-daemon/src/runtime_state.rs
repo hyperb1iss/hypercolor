@@ -213,7 +213,7 @@ mod tests {
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
             driver_runtime_cache: BTreeMap::from([(
-                "wled".to_owned(),
+                "cache-driver".to_owned(),
                 BTreeMap::from([(
                     "probe_ips".to_owned(),
                     serde_json::json!(["10.0.0.8", "10.0.0.9"]),

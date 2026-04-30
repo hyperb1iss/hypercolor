@@ -172,12 +172,16 @@ mod tests {
     fn get_or_default_preserves_slot_ids_when_zone_names_change() {
         let original = DeviceInfo {
             id: DeviceId::new(),
-            name: "Hue Area".to_owned(),
-            vendor: "Philips Hue".to_owned(),
-            family: DeviceFamily::new_static("hue", "Philips Hue"),
-            model: Some("Bridge".to_owned()),
+            name: "Network Area".to_owned(),
+            vendor: "Network Vendor".to_owned(),
+            family: DeviceFamily::new_static("network-driver", "Network Driver"),
+            model: Some("Network Bridge".to_owned()),
             connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
+            origin: DeviceOrigin::native(
+                "network-driver",
+                "network-backend",
+                ConnectionType::Network,
+            ),
             zones: vec![
                 ZoneInfo {
                     name: "Channel 0".to_owned(),
@@ -200,14 +204,14 @@ mod tests {
         let renamed = DeviceInfo {
             zones: vec![
                 ZoneInfo {
-                    name: "Left Lamp".to_owned(),
+                    name: "Left Zone".to_owned(),
                     led_count: 1,
                     topology: DeviceTopologyHint::Point,
                     color_format: DeviceColorFormat::Rgb,
                     layout_hint: None,
                 },
                 ZoneInfo {
-                    name: "Right Lamp".to_owned(),
+                    name: "Right Zone".to_owned(),
                     led_count: 1,
                     topology: DeviceTopologyHint::Point,
                     color_format: DeviceColorFormat::Rgb,
@@ -235,8 +239,8 @@ mod tests {
 
         let resolved = store.get_or_default(&renamed);
 
-        assert_eq!(resolved.slots[0].name, "Left Lamp");
-        assert_eq!(resolved.slots[1].name, "Right Lamp");
+        assert_eq!(resolved.slots[0].name, "Left Zone");
+        assert_eq!(resolved.slots[1].name, "Right Zone");
         assert_eq!(resolved.slots[0].id, original_slot_ids[0]);
         assert_eq!(resolved.slots[1].id, original_slot_ids[1]);
         assert!(

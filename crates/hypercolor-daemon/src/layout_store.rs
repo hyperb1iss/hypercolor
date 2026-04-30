@@ -102,8 +102,8 @@ mod tests {
             canvas_height: 200,
             zones: vec![DeviceZone {
                 id: "zone-1".into(),
-                name: "Desk Strip".into(),
-                device_id: "wled:desk".into(),
+                name: "Saved Fixture".into(),
+                device_id: "layout-driver:saved".into(),
                 zone_name: None,
                 position: NormalizedPosition::new(0.5, 0.5),
                 size: NormalizedPosition::new(0.4, 0.1),
