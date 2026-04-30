@@ -21,14 +21,14 @@ fn device_events_have_device_category() {
         HypercolorEvent::DeviceDiscovered {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend: "fixture-backend".into(),
+            backend_id: "fixture-backend".into(),
             led_count: 60,
             address: Some("192.168.1.100".into()),
         },
         HypercolorEvent::DeviceConnected {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend: "fixture-backend".into(),
+            backend_id: "fixture-backend".into(),
             led_count: 60,
             zones: vec![],
         },
@@ -472,7 +472,7 @@ fn high_priority_events() {
         HypercolorEvent::DeviceConnected {
             device_id: "d1".into(),
             name: "Strip".into(),
-            backend: "fixture-backend".into(),
+            backend_id: "fixture-backend".into(),
             led_count: 60,
             zones: vec![],
         },
@@ -663,7 +663,7 @@ fn serialize_device_discovered_roundtrip() {
     let event = HypercolorEvent::DeviceDiscovered {
         device_id: "fixture_device_001".into(),
         name: "Desk Strip".into(),
-        backend: "fixture-backend".into(),
+        backend_id: "fixture-backend".into(),
         led_count: 144,
         address: Some("192.168.1.42".into()),
     };
@@ -674,14 +674,14 @@ fn serialize_device_discovered_roundtrip() {
     if let HypercolorEvent::DeviceDiscovered {
         device_id,
         name,
-        backend,
+        backend_id,
         led_count,
         address,
     } = deserialized
     {
         assert_eq!(device_id, "fixture_device_001");
         assert_eq!(name, "Desk Strip");
-        assert_eq!(backend, "fixture-backend");
+        assert_eq!(backend_id, "fixture-backend");
         assert_eq!(led_count, 144);
         assert_eq!(address, Some("192.168.1.42".into()));
     } else {

@@ -578,7 +578,7 @@ async fn process_discovered_device(
             .publish(HypercolorEvent::DeviceDiscovered {
                 device_id: device_ref.id.clone(),
                 name: device_ref.name.clone(),
-                backend: device_ref.backend.clone(),
+                backend_id: device_ref.backend_id.clone(),
                 led_count: device_ref.led_count,
                 address: None,
             });
@@ -590,7 +590,7 @@ async fn process_discovered_device(
         info!(
             device = %device_ref.name,
             device_id = %device_ref.id,
-            backend = %device_ref.backend,
+            backend_id = %device_ref.backend_id,
             led_count = device_ref.led_count,
             "{message}"
         );

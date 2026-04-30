@@ -28,7 +28,7 @@ pub struct EffectRef {
 pub struct DeviceRef {
     pub id: String,
     pub name: String,
-    pub backend: String,
+    pub backend_id: String,
     pub led_count: u32,
 }
 
@@ -395,7 +395,7 @@ pub enum HypercolorEvent {
     DeviceDiscovered {
         device_id: String,
         name: String,
-        backend: String,
+        backend_id: String,
         led_count: u32,
         /// Network address, USB path, or other locator.
         address: Option<String>,
@@ -406,7 +406,7 @@ pub enum HypercolorEvent {
     DeviceConnected {
         device_id: String,
         name: String,
-        backend: String,
+        backend_id: String,
         led_count: u32,
         zones: Vec<ZoneRef>,
     },

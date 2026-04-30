@@ -3468,7 +3468,7 @@ Events are pushed to clients subscribed to the `events` channel. All events use 
 | ---------------------------- | --------------------------------------------------- | --------------------------------------------------- |
 | `effect_changed`             | `previous`, `current`, `trigger`                    | Active effect changed                               |
 | `effect_control_changed`     | `effect_id`, `control_id`, `old_value`, `new_value` | Control value updated                               |
-| `device_connected`           | `device_id`, `name`, `backend`, `led_count`         | Device came online                                  |
+| `device_connected`           | `device_id`, `name`, `backend_id`, `led_count`      | Device came online                                  |
 | `device_disconnected`        | `device_id`, `reason`                               | Device went offline                                 |
 | `device_discovery_started`   | `backends`                                          | Discovery scan began                                |
 | `device_discovery_completed` | `found`, `duration_ms`                              | Discovery scan finished                             |
