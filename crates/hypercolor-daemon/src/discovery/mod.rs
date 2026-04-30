@@ -460,7 +460,7 @@ mod tests {
         DriverDescriptor, DriverModule, DriverTransport,
     };
     use hypercolor_network::DriverModuleRegistry;
-    use hypercolor_types::config::HypercolorConfig;
+    use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
         DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, ZoneInfo,
@@ -468,6 +468,58 @@ mod tests {
 
     fn builtin_registry() -> AppState {
         AppState::new()
+    }
+
+    struct EnabledDiscoveryDriver;
+
+    static ENABLED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+        "enabled-driver",
+        "Enabled Driver",
+        DriverTransport::Network,
+        true,
+        true,
+    );
+
+    impl DriverModule for EnabledDiscoveryDriver {
+        fn descriptor(&self) -> &'static DriverDescriptor {
+            &ENABLED_DESCRIPTOR
+        }
+
+        fn module_descriptor(&self) -> DriverModuleDescriptor {
+            self.descriptor().module_descriptor()
+        }
+
+        fn build_output_backend(
+            &self,
+            host: &dyn hypercolor_driver_api::DriverHost,
+            config: DriverConfigView<'_>,
+        ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
+            let _ = (host, config);
+            Ok(None)
+        }
+
+        fn has_output_backend(&self) -> bool {
+            false
+        }
+
+        fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+            Some(self)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveryCapability for EnabledDiscoveryDriver {
+        async fn discover(
+            &self,
+            host: &dyn hypercolor_driver_api::DriverHost,
+            request: &DiscoveryRequest,
+            config: DriverConfigView<'_>,
+        ) -> anyhow::Result<DiscoveryResult> {
+            let _ = (host, request, config);
+            Ok(DiscoveryResult {
+                devices: Vec::new(),
+            })
+        }
     }
 
     struct DefaultDisabledDiscoveryDriver;
@@ -592,17 +644,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_rejects_disabled_wled() {
-        let state = builtin_registry();
+    fn resolve_targets_rejects_disabled_driver_module() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(EnabledDiscoveryDriver)
+            .expect("driver should register");
         let mut cfg = HypercolorConfig::default();
-        cfg.drivers
-            .get_mut("wled")
-            .expect("wled config should exist")
-            .enabled = false;
-        let requested = vec!["wled".to_owned()];
-        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
-            .expect_err("wled must fail");
-        assert!(error.contains("disabled"));
+        cfg.drivers.insert(
+            "enabled-driver".to_owned(),
+            DriverConfigEntry::disabled(std::collections::BTreeMap::default()),
+        );
+        let requested = vec!["enabled-driver".to_owned()];
+
+        let error = resolve_targets(Some(&requested), &cfg, &registry)
+            .expect_err("disabled driver must fail");
+
+        assert!(error.contains("drivers.enabled-driver.enabled=false"));
     }
 
     #[test]
@@ -639,34 +696,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_rejects_disabled_nanoleaf() {
-        let state = builtin_registry();
-        let mut cfg = HypercolorConfig::default();
-        cfg.drivers
-            .get_mut("nanoleaf")
-            .expect("nanoleaf config should exist")
-            .enabled = false;
-        let requested = vec!["nanoleaf".to_owned()];
-        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
-            .expect_err("nanoleaf must fail");
-        assert!(error.contains("disabled"));
-    }
-
-    #[test]
-    fn resolve_targets_rejects_disabled_hue() {
-        let state = builtin_registry();
-        let mut cfg = HypercolorConfig::default();
-        cfg.drivers
-            .get_mut("hue")
-            .expect("hue config should exist")
-            .enabled = false;
-        let requested = vec!["hue".to_owned()];
-        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
-            .expect_err("hue must fail");
-        assert!(error.contains("disabled"));
-    }
-
-    #[test]
     fn resolve_targets_rejects_disabled_smbus_hal_driver() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
@@ -700,17 +729,19 @@ mod tests {
         assert!(DiscoveryTarget::smbus().preserves_renderable_on_discovery_miss());
         assert!(!DiscoveryTarget::usb().preserves_renderable_on_discovery_miss());
         assert!(!DiscoveryTarget::blocks().preserves_renderable_on_discovery_miss());
-        assert!(!DiscoveryTarget::driver("wled").preserves_renderable_on_discovery_miss());
+        assert!(
+            !DiscoveryTarget::driver("network-driver").preserves_renderable_on_discovery_miss()
+        );
     }
 
     #[test]
-    fn resolve_targets_keeps_wled_when_mdns_is_disabled() {
+    fn resolve_targets_ignores_mdns_when_building_target_list() {
         let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.mdns_enabled = false;
 
         let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
-            .expect("wled should still resolve");
+            .expect("default targets should still resolve");
         assert_eq!(resolved, expected_default_targets(&state));
     }
 
