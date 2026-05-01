@@ -28,6 +28,12 @@ pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
 
 pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &["usb", "smbus", "blocks"];
+pub const USB_HOST_DRIVER_TRANSPORTS: &[DriverTransportKind] = &[
+    DriverTransportKind::Usb,
+    DriverTransportKind::Midi,
+    DriverTransportKind::Serial,
+];
+pub const SMBUS_HOST_DRIVER_TRANSPORTS: &[DriverTransportKind] = &[DriverTransportKind::Smbus];
 
 #[cfg(not(feature = "builtin-drivers"))]
 pub fn build_builtin_driver_module_registry(
@@ -197,12 +203,50 @@ pub fn enabled_module_ids_for_transport(
     module_kind: DriverModuleKind,
     transport: &DriverTransportKind,
 ) -> BTreeSet<String> {
+    enabled_module_ids_for_transports(
+        registry,
+        config,
+        module_kind,
+        std::slice::from_ref(transport),
+    )
+}
+
+/// Enabled driver module IDs for one module kind and any matching transport category.
+#[must_use]
+pub fn enabled_module_ids_for_transports(
+    registry: &DriverModuleRegistry,
+    config: &HypercolorConfig,
+    module_kind: DriverModuleKind,
+    transports: &[DriverTransportKind],
+) -> BTreeSet<String> {
     module_descriptors_for_kind(registry, module_kind)
         .iter()
-        .filter(|descriptor| descriptor.transports.iter().any(|item| item == transport))
+        .filter(|descriptor| {
+            descriptor
+                .transports
+                .iter()
+                .any(|item| transports.iter().any(|transport| item == transport))
+        })
         .filter(|descriptor| module_enabled(config, descriptor))
         .map(|descriptor| descriptor.id.clone())
         .collect()
+}
+
+/// Host-owned discovery target that services one driver transport category.
+#[must_use]
+pub const fn host_transport_target_for_driver_transport(
+    transport: &DriverTransportKind,
+) -> Option<&'static str> {
+    match transport {
+        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => {
+            Some("usb")
+        }
+        DriverTransportKind::Smbus => Some("smbus"),
+        DriverTransportKind::Bridge => Some("blocks"),
+        DriverTransportKind::Network
+        | DriverTransportKind::Virtual
+        | DriverTransportKind::Custom(_) => None,
+    }
 }
 
 /// Config key responsible for enabling a driver module.
@@ -293,7 +337,12 @@ pub fn register_enabled_device_backends(
     backend_manager.register_backend(Box::new(
         UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
             usb_protocol_configs,
-            enabled_module_ids(registry, config, DriverModuleKind::Hal),
+            enabled_module_ids_for_transports(
+                registry,
+                config,
+                DriverModuleKind::Hal,
+                USB_HOST_DRIVER_TRANSPORTS,
+            ),
         ),
     ));
 
@@ -309,7 +358,12 @@ pub fn host_transport_scanner(
 ) -> Option<Box<dyn TransportScanner>> {
     match target_id {
         "usb" => Some(Box::new(UsbScanner::with_enabled_driver_ids(
-            enabled_module_ids(registry, config, DriverModuleKind::Hal),
+            enabled_module_ids_for_transports(
+                registry,
+                config,
+                DriverModuleKind::Hal,
+                USB_HOST_DRIVER_TRANSPORTS,
+            ),
         ))),
         "smbus" => Some(Box::new(SmBusScanner::new())),
         "blocks" => {

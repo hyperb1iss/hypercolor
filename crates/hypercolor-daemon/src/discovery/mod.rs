@@ -151,7 +151,7 @@ enum DiscoveryTargetAvailability {
     },
     EnabledModules {
         module_kind: DriverModuleKind,
-        transport: Option<DriverTransportKind>,
+        transports: &'static [DriverTransportKind],
         disabled_message: &'static str,
     },
 }
@@ -173,8 +173,8 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         scan_on_session_resume: true,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
-            transport: None,
-            disabled_message: "Discovery target 'usb' has no enabled HAL driver modules",
+            transports: crate::network::USB_HOST_DRIVER_TRANSPORTS,
+            disabled_message: "Discovery target 'usb' has no enabled USB/MIDI/serial HAL driver modules",
         },
     },
     HostDiscoveryTargetDescriptor {
@@ -184,7 +184,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         scan_on_session_resume: true,
         availability: DiscoveryTargetAvailability::EnabledModules {
             module_kind: DriverModuleKind::Hal,
-            transport: Some(DriverTransportKind::Smbus),
+            transports: crate::network::SMBUS_HOST_DRIVER_TRANSPORTS,
             disabled_message: "Discovery target 'smbus' has no enabled SMBus HAL driver modules",
         },
     },
@@ -412,20 +412,19 @@ pub fn resolve_targets(
             }
             DiscoveryTargetAvailability::EnabledModules {
                 module_kind,
-                transport,
+                transports,
                 disabled_message,
             } => {
-                let enabled = transport.as_ref().map_or_else(
-                    || crate::network::enabled_module_ids(driver_registry, config, *module_kind),
-                    |transport| {
-                        crate::network::enabled_module_ids_for_transport(
-                            driver_registry,
-                            config,
-                            *module_kind,
-                            transport,
-                        )
-                    },
-                );
+                let enabled = if transports.is_empty() {
+                    crate::network::enabled_module_ids(driver_registry, config, *module_kind)
+                } else {
+                    crate::network::enabled_module_ids_for_transports(
+                        driver_registry,
+                        config,
+                        *module_kind,
+                        transports,
+                    )
+                };
                 if enabled.is_empty() {
                     if explicit_request {
                         return Err((*disabled_message).to_owned());
@@ -480,7 +479,7 @@ pub fn rescan_targets_for_driver(
     let target_ids = descriptor
         .transports
         .iter()
-        .filter_map(host_target_for_driver_transport)
+        .filter_map(crate::network::host_transport_target_for_driver_transport)
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
@@ -491,19 +490,6 @@ pub fn rescan_targets_for_driver(
     }
 
     resolve_targets(Some(&target_ids), config, driver_registry)
-}
-
-fn host_target_for_driver_transport(transport: &DriverTransportKind) -> Option<&'static str> {
-    match transport {
-        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => {
-            Some("usb")
-        }
-        DriverTransportKind::Smbus => Some("smbus"),
-        DriverTransportKind::Bridge => Some("blocks"),
-        DriverTransportKind::Network
-        | DriverTransportKind::Virtual
-        | DriverTransportKind::Custom(_) => None,
-    }
 }
 
 struct DiscoveryFlagGuard {
@@ -773,6 +759,21 @@ mod tests {
         let error = resolve_targets(Some(&requested), &cfg, &registry)
             .expect_err("smbus must fail when all SMBus HAL modules are disabled");
         assert!(error.contains("no enabled SMBus HAL driver modules"));
+    }
+
+    #[test]
+    fn resolve_targets_rejects_usb_when_only_smbus_hal_modules_are_enabled() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::new(&SMBUS_MODULE_DESCRIPTOR))
+            .expect("driver should register");
+        let cfg = HypercolorConfig::default();
+        let requested = vec!["usb".to_owned()];
+
+        let error = resolve_targets(Some(&requested), &cfg, &registry)
+            .expect_err("usb must fail when no USB-family HAL modules are enabled");
+
+        assert!(error.contains("no enabled USB/MIDI/serial HAL driver modules"));
     }
 
     #[test]

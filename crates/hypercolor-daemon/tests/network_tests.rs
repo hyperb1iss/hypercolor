@@ -87,6 +87,20 @@ fn enabled_module_ids_can_filter_by_transport() {
 }
 
 #[test]
+fn enabled_module_ids_for_usb_host_transports_excludes_smbus_modules() {
+    let registry = fixture_hal_registry();
+    let enabled = network::enabled_module_ids_for_transports(
+        &registry,
+        &HypercolorConfig::default(),
+        DriverModuleKind::Hal,
+        network::USB_HOST_DRIVER_TRANSPORTS,
+    );
+
+    assert!(enabled.contains("hal-fixture-usb"));
+    assert!(!enabled.contains("hal-fixture-smbus"));
+}
+
+#[test]
 fn enabled_module_ids_include_default_enabled_hal_modules() {
     let registry = fixture_hal_registry();
     let enabled = network::enabled_module_ids(
