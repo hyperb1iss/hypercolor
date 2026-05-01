@@ -22,7 +22,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DeviceId, DriverModuleKind, DriverTransportKind};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DriverModuleKind, DriverTransportKind};
 use hypercolor_types::spatial::SpatialLayout;
 use serde::Serialize;
 use tokio::runtime::Handle;
@@ -252,6 +252,15 @@ impl DiscoveryTarget {
 
     pub(super) const fn scanner(&self) -> &DiscoveryTargetScanner {
         &self.scanner
+    }
+
+    pub(super) fn matches_device(&self, info: &DeviceInfo) -> bool {
+        match self.scanner {
+            DiscoveryTargetScanner::DriverModule => info.driver_id().eq_ignore_ascii_case(&self.id),
+            DiscoveryTargetScanner::HostTransport => {
+                info.output_backend_id().eq_ignore_ascii_case(&self.id)
+            }
+        }
     }
 
     fn availability(&self) -> &DiscoveryTargetAvailability {
@@ -809,6 +818,31 @@ mod tests {
         ));
 
         assert_eq!(info.output_backend_id(), "usb");
+    }
+
+    #[test]
+    fn discovery_targets_match_devices_by_target_kind() {
+        let shared_backend_device = device_info_with_origin(DeviceOrigin::native(
+            "network-driver",
+            "shared-network",
+            ConnectionType::Network,
+        ));
+        assert!(DiscoveryTarget::driver("network-driver").matches_device(&shared_backend_device));
+        assert!(
+            !DiscoveryTarget::driver("shared-network").matches_device(&shared_backend_device),
+            "driver discovery targets should scope by driver ownership, not output route"
+        );
+
+        let usb_device = device_info_with_origin(DeviceOrigin::native(
+            "fixture-driver",
+            "usb",
+            ConnectionType::Usb,
+        ));
+        assert!(DiscoveryTarget::usb().matches_device(&usb_device));
+        assert!(
+            !DiscoveryTarget::smbus().matches_device(&usb_device),
+            "host transport targets should scope by output route"
+        );
     }
 
     #[test]

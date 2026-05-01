@@ -175,12 +175,11 @@ pub async fn execute_discovery_scan(
         flag: Arc::clone(&runtime.in_progress),
     };
     let target_names = super::target_names(&targets);
-    let scanned_target_ids = target_names.iter().cloned().collect::<HashSet<_>>();
-    let transient_miss_target_ids = targets
+    let transient_miss_targets = targets
         .iter()
         .filter(|target| target.preserves_renderable_on_discovery_miss())
-        .map(|target| target.as_str().to_owned())
-        .collect::<HashSet<_>>();
+        .cloned()
+        .collect::<Vec<_>>();
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
 
     runtime
@@ -214,7 +213,7 @@ pub async fn execute_discovery_scan(
     }
 
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
-    for target in targets {
+    for target in &targets {
         match target.scanner() {
             DiscoveryTargetScanner::DriverModule => {
                 let driver_id = target.as_str().to_owned();
@@ -303,8 +302,10 @@ pub async fn execute_discovery_scan(
         .any(|scanner| scanner.error.is_some());
     let mut scoped_registry_ids = HashSet::new();
     for tracked in runtime.device_registry.list().await {
-        let backend_id = tracked.info.output_backend_id().to_owned();
-        if scanned_target_ids.contains(&backend_id) {
+        if targets
+            .iter()
+            .any(|target| target.matches_device(&tracked.info))
+        {
             scoped_registry_ids.insert(tracked.info.id);
         }
     }
@@ -351,7 +352,7 @@ pub async fn execute_discovery_scan(
             vanished_ids.insert(id);
         }
     }
-    retain_transient_target_devices(&runtime, &transient_miss_target_ids, &mut vanished_ids).await;
+    retain_transient_target_devices(&runtime, &transient_miss_targets, &mut vanished_ids).await;
 
     let mut vanished_ids: Vec<DeviceId> = vanished_ids.into_iter().collect();
     vanished_ids.sort_by_key(DeviceId::as_uuid);
@@ -426,10 +427,10 @@ pub async fn execute_discovery_scan(
 
 async fn retain_transient_target_devices(
     runtime: &DiscoveryRuntime,
-    transient_miss_target_ids: &HashSet<String>,
+    transient_miss_targets: &[DiscoveryTarget],
     vanished_ids: &mut HashSet<DeviceId>,
 ) {
-    if vanished_ids.is_empty() || transient_miss_target_ids.is_empty() {
+    if vanished_ids.is_empty() || transient_miss_targets.is_empty() {
         return;
     }
 
@@ -443,7 +444,10 @@ async fn retain_transient_target_devices(
             continue;
         }
 
-        if !transient_miss_target_ids.contains(tracked.info.output_backend_id()) {
+        if !transient_miss_targets
+            .iter()
+            .any(|target| target.matches_device(&tracked.info))
+        {
             continue;
         }
 
