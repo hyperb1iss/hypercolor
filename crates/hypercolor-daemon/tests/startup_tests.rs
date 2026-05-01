@@ -1363,7 +1363,7 @@ fn inner_ring_layout_hint() -> ZoneLayoutHint {
 }
 
 #[test]
-fn append_auto_layout_zones_uses_driver_supplied_compact_custom_geometry() {
+fn append_auto_layout_zones_uses_device_declared_compact_custom_geometry() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
@@ -1418,7 +1418,7 @@ fn append_auto_layout_zones_uses_driver_supplied_compact_custom_geometry() {
 }
 
 #[test]
-fn append_auto_layout_zones_uses_driver_supplied_asymmetric_custom_geometry() {
+fn append_auto_layout_zones_uses_device_declared_asymmetric_custom_geometry() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
@@ -1473,7 +1473,7 @@ fn append_auto_layout_zones_uses_driver_supplied_asymmetric_custom_geometry() {
 }
 
 #[test]
-fn append_auto_layout_zones_preserves_driver_supplied_colocated_ring_geometry() {
+fn append_auto_layout_zones_preserves_device_declared_colocated_ring_geometry() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,
@@ -1732,7 +1732,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
 }
 
 #[test]
-fn reconcile_auto_layout_zones_repairs_driver_supplied_geometry_without_touching_rotation() {
+fn reconcile_auto_layout_zones_repairs_device_declared_geometry_without_touching_rotation() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {
         id: device_id,

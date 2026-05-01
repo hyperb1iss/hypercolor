@@ -262,12 +262,12 @@ pub struct ZoneInfo {
     /// Wire-level color format for this zone.
     pub color_format: DeviceColorFormat,
 
-    /// Optional driver-provided spatial presentation hint.
+    /// Optional device-declared spatial presentation hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_hint: Option<ZoneLayoutHint>,
 }
 
-/// Driver-owned spatial hint used when auto-generating or repairing layouts.
+/// Device-declared spatial hint used when auto-generating or repairing layouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ZoneLayoutHint {
     /// Rich topology to use instead of deriving one from [`DeviceTopologyHint`].
@@ -701,7 +701,7 @@ impl DeviceOrigin {
 
 // ── DeviceFamily ──────────────────────────────────────────────────────────
 
-/// Device family classification for presentation and driver-owned metadata.
+/// Device family classification for presentation metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DeviceFamily {
     id: Cow<'static, str>,
