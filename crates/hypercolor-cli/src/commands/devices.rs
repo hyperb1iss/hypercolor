@@ -45,9 +45,13 @@ pub struct DeviceListArgs {
     #[arg(long)]
     pub status: Option<String>,
 
-    /// Filter by backend/protocol.
+    /// Filter by output backend route.
     #[arg(long)]
-    pub backend: Option<String>,
+    pub backend_id: Option<String>,
+
+    /// Filter by owning driver module.
+    #[arg(long)]
+    pub driver: Option<String>,
 }
 
 /// Arguments for `devices discover`.
@@ -186,8 +190,11 @@ async fn execute_list(
     if let Some(status) = &args.status {
         query_parts.push(format!("status={}", urlencoded(status)));
     }
-    if let Some(backend) = &args.backend {
-        query_parts.push(format!("backend={}", urlencoded(backend)));
+    if let Some(backend_id) = &args.backend_id {
+        query_parts.push(format!("backend_id={}", urlencoded(backend_id)));
+    }
+    if let Some(driver) = &args.driver {
+        query_parts.push(format!("driver={}", urlencoded(driver)));
     }
     if !query_parts.is_empty() {
         path = format!("{path}?{}", query_parts.join("&"));
@@ -208,13 +215,14 @@ async fn execute_list(
         }
         OutputFormat::Table => {
             if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
-                let headers = ["Device", "Backend", "LEDs", "Status", "Firmware"];
+                let headers = ["Device", "Driver", "Route", "LEDs", "Status", "Firmware"];
                 let rows: Vec<Vec<String>> = devices
                     .iter()
                     .map(|d| {
                         vec![
                             ctx.painter.name(&extract_str(d, "name")),
-                            ctx.painter.muted(&extract_str(d, "backend")),
+                            ctx.painter.muted(&origin_field(d, "driver_id")),
+                            ctx.painter.muted(&origin_field(d, "backend_id")),
                             ctx.painter.number(
                                 &d.get("total_leds")
                                     .and_then(serde_json::Value::as_u64)
@@ -313,8 +321,16 @@ async fn execute_info(
             ctx.info(&extract_str(&response, "name"));
             println!();
             ctx.info(&format!(
-                "Backend      {}",
-                extract_str(&response, "backend")
+                "Driver       {}",
+                origin_field(&response, "driver_id")
+            ));
+            ctx.info(&format!(
+                "Route        {}",
+                origin_field(&response, "backend_id")
+            ));
+            ctx.info(&format!(
+                "Transport    {}",
+                origin_field(&response, "transport")
             ));
             ctx.info(&format!(
                 "LED Count    {}",
@@ -338,6 +354,15 @@ async fn execute_info(
     }
 
     Ok(())
+}
+
+fn origin_field(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get("origin")
+        .and_then(|origin| origin.get(key))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-")
+        .to_owned()
 }
 
 async fn execute_controls(

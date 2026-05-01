@@ -9,6 +9,7 @@ use hypercolor_types::controls::{
     ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
     ControlSurfaceDocument, ControlValueMap,
 };
+use hypercolor_types::device::DeviceOrigin;
 use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
     ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
@@ -441,7 +442,7 @@ struct DeviceListResponse {
 struct ApiDeviceSummary {
     id: String,
     name: String,
-    backend: String,
+    origin: DeviceOrigin,
     status: String,
     total_leds: u32,
 }
@@ -583,7 +584,7 @@ fn map_device_summary(device: ApiDeviceSummary) -> DeviceSummary {
     DeviceSummary {
         id: device.id,
         name: device.name,
-        family: device.backend,
+        family: device.origin.driver_id,
         led_count: device.total_leds,
         state: device.status,
         fps: None,

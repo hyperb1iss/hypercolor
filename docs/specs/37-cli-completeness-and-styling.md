@@ -400,9 +400,9 @@ shape.
 ### 6.3 Extended Subcommand: `devices`
 
 ```
-hypercolor devices list                                          # (existing)
+hypercolor devices list [--backend-id ...] [--driver ...]        # (existing)
 hypercolor devices info <id>                                     # (existing)
-hypercolor devices discover [--backend ...] [--timeout ...]      # (existing)
+hypercolor devices discover [--target ...] [--timeout ...]       # (existing)
 hypercolor devices pair <id>                                     # (existing)
 hypercolor devices unpair <id>                                   # (new)     DELETE /devices/{id}/pair
 hypercolor devices identify <id>                                 # (existing)

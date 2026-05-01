@@ -997,8 +997,12 @@ hypercolor list devices --quiet
   {
     "id": "wled_living_room_strip",
     "name": "WLED Living Room",
-    "backend": "wled",
-    "protocol": "ddp",
+    "origin": {
+      "driver_id": "wled",
+      "backend_id": "wled",
+      "transport": "network",
+      "protocol_id": "ddp"
+    },
     "leds": 120,
     "status": "connected",
     "latency_ms": 0.8,
@@ -1126,7 +1130,7 @@ pub struct DeviceRenameArgs {
 hypercolor device discover
 
 # Discover WLED devices only, with 30s timeout
-hypercolor device discover --backend wled --timeout 30
+hypercolor devices discover --target wled --timeout 30
 
 # Flash a device to identify which one it is
 hypercolor device identify "WLED Living Room"
@@ -1210,8 +1214,12 @@ hypercolor device rename "WLED Living Room" "Living Room Strip"
 {
   "id": "wled_living_room_strip",
   "name": "WLED Living Room",
-  "backend": "wled",
-  "protocol": "ddp",
+  "origin": {
+    "driver_id": "wled",
+    "backend_id": "wled",
+    "transport": "network",
+    "protocol_id": "ddp"
+  },
   "address": "192.168.1.42",
   "port": 4048,
   "led_count": 120,
