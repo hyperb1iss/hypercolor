@@ -319,10 +319,12 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
     for id in &report.new_devices {
         if let Some(tracked) = registry.get(id).await {
             println!(
-                "  + {} [{}] output_backend={}",
+                "  + {} [{}] driver={} route={} transport={}",
                 tracked.info.name,
                 id,
-                output_backend_id(&tracked.info),
+                tracked.info.driver_id(),
+                tracked.info.output_backend_id(),
+                transport_label(&tracked.info),
             );
         }
     }
@@ -330,10 +332,12 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
     for id in &report.reappeared_devices {
         if let Some(tracked) = registry.get(id).await {
             println!(
-                "  ~ {} [{}] output_backend={}",
+                "  ~ {} [{}] driver={} route={} transport={}",
                 tracked.info.name,
                 id,
-                output_backend_id(&tracked.info),
+                tracked.info.driver_id(),
+                tracked.info.output_backend_id(),
+                transport_label(&tracked.info),
             );
         }
     }
@@ -399,8 +403,8 @@ fn normalize_targets(
     Ok(out)
 }
 
-fn output_backend_id(info: &DeviceInfo) -> &str {
-    info.output_backend_id()
+fn transport_label(info: &DeviceInfo) -> String {
+    format!("{:?}", info.origin.transport).to_ascii_lowercase()
 }
 
 fn add_host_transport_scanner(
