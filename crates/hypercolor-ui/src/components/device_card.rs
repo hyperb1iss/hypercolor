@@ -239,25 +239,55 @@ pub fn device_class_label(class: &DeviceClass) -> &'static str {
 }
 
 /// Infer connection type from device metadata.
-fn connection_type(device: &DeviceSummary) -> &'static str {
-    match device.connection.transport.as_str() {
-        "network" => "Network",
-        "smbus" => "SMBus",
-        "bridge" => "Bridge",
-        "midi" => "MIDI",
-        "serial" => "Serial",
-        "virtual" => "Virtual",
-        _ => "USB",
+fn connection_type(device: &DeviceSummary) -> String {
+    if let Some(label) = device
+        .connection
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        return label.to_owned();
+    }
+
+    match device.connection.transport.trim() {
+        "network" => "Network".to_owned(),
+        "usb" => "USB".to_owned(),
+        "smbus" => "SMBus".to_owned(),
+        "bridge" => "Bridge".to_owned(),
+        "midi" => "MIDI".to_owned(),
+        "serial" => "Serial".to_owned(),
+        "virtual" => "Virtual".to_owned(),
+        "" => "Device".to_owned(),
+        transport => humanize_identifier_label(transport),
     }
 }
 
 /// Connection type → icon.
-fn connection_icon(conn: &str) -> icondata_core::Icon {
-    match conn {
-        "Network" => LuGlobe,
-        "Bridge" => LuNetwork,
+fn connection_icon(device: &DeviceSummary) -> icondata_core::Icon {
+    match device.connection.transport.trim() {
+        "network" => LuGlobe,
+        "bridge" => LuNetwork,
         _ => LuCable,
     }
+}
+
+fn humanize_identifier_label(identifier: &str) -> String {
+    identifier
+        .split(['-', '_', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if part.len() <= 4 {
+                part.to_ascii_uppercase()
+            } else {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
+                })
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Zone topology → inline SVG shape hint for zone display.
@@ -319,7 +349,7 @@ pub fn DeviceCard(
     let zone_count = device.zones.len();
     let total_leds = device.total_leds;
     let conn_type = connection_type(&device);
-    let conn_icon = connection_icon(conn_type);
+    let conn_icon = connection_icon(&device);
     let firmware = device.firmware_version.clone();
     let brightness = device.brightness;
     let status = status_label(&device.status);
