@@ -171,6 +171,14 @@ impl DisplayFrameRuntime {
             .collect()
     }
 
+    /// Whether a device currently has at least one live preview subscriber.
+    #[must_use]
+    pub fn has_subscriber(&self, device_id: DeviceId) -> bool {
+        self.watchers
+            .get(&device_id)
+            .is_some_and(|sender| sender.receiver_count() > 0)
+    }
+
     /// Forget any frame captured for a device and close the watch channel
     /// so subscribers observe the stream ending. Typically invoked from
     /// the display output worker on disconnect.

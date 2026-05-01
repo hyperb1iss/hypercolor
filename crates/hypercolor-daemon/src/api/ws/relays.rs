@@ -667,10 +667,9 @@ pub(super) fn sync_preview_receiver(
 ///
 /// Pacing mirrors `relay_canvas`: the sleep branch is guarded by
 /// `pending_send` so the task never tight-loops when nothing has
-/// changed. `dead_target_id` tracks the last device observed as gone so
-/// we don't auto-resubscribe to a silent channel until the client sends
-/// a new subscription — without this, a removed device would spin the
-/// registry write lock once per loop iteration.
+/// changed. If the underlying watch sender closes, the relay reattaches
+/// to the same requested device so normal display-worker rebuilds do not
+/// strand the client's subscription.
 pub(super) async fn relay_display_preview(
     display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
@@ -694,15 +693,12 @@ pub(super) async fn relay_display_preview(
     }
 
     let mut active: Option<ActiveTarget> = None;
-    let mut dead_target_id: Option<DeviceId> = None;
     let mut backpressure = BackpressureReporter::default();
 
     loop {
         // Re-derive the desired target from the current subscription
-        // state. We skip retargeting when the desired id matches a
-        // device we've already observed as gone — the client must send
-        // a fresh subscribe (possibly for the same id, after reconnect)
-        // to re-arm the relay.
+        // state. A closed receiver does not imply permanent device removal:
+        // display worker config changes also close and recreate the sender.
         let desired = {
             let subs = subscriptions.borrow();
             if subs.channels.contains(WsChannel::DisplayPreview) {
@@ -727,12 +723,6 @@ pub(super) async fn relay_display_preview(
                 }
             }
             (_, None) => {
-                active = None;
-                dead_target_id = None;
-            }
-            (_, Some((want_id, _))) if dead_target_id == Some(want_id) => {
-                // Avoid spin-resubscribing to a removed device. Wait
-                // for the next subscription change before trying again.
                 active = None;
             }
             (_, Some((want_id, want_fps))) => {
@@ -760,20 +750,12 @@ pub(super) async fn relay_display_preview(
                 break;
             }
             let _ = subscriptions.borrow_and_update();
-            // Any subscription change clears the dead-target latch so
-            // the client can retarget the same (possibly reconnected)
-            // device without first bouncing to a different id.
-            dead_target_id = None;
             continue;
         };
 
         tokio::select! {
             changed = target.rx.changed() => {
                 if changed.is_err() {
-                    // Sender dropped — device gone. Latch the id so we
-                    // don't auto-resubscribe until the subscription
-                    // changes, and clear active.
-                    dead_target_id = Some(target.device_id);
                     active = None;
                     continue;
                 }
@@ -786,17 +768,11 @@ pub(super) async fn relay_display_preview(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                dead_target_id = None;
                 continue;
             }
             () = tokio::time::sleep(preview_send_delay(target.last_sent_at, target.fps, Instant::now())), if target.pending_send => {
                 let snapshot = target.rx.borrow().as_ref().map(Arc::clone);
                 let Some(snapshot) = snapshot else {
-                    // Sender signaled device removal via None. Clear
-                    // pending_send to avoid re-entering this branch
-                    // immediately; the next rx.changed() or subscription
-                    // change will re-arm us.
-                    dead_target_id = Some(target.device_id);
                     active = None;
                     continue;
                 };

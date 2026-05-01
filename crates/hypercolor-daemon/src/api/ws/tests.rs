@@ -1,16 +1,17 @@
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use axum::response::IntoResponse;
-use tokio::sync::watch;
+use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
-use hypercolor_types::device::{ConnectionType, DeviceOrigin};
+use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors};
 use hypercolor_types::scene::{RenderGroupId, RenderGroupRole, SceneId};
 
@@ -42,12 +43,13 @@ use super::protocol::{
 };
 use super::relays::{
     build_device_metrics_message, build_metrics_message, publish_subscriptions, relay_canvas,
-    relay_device_metrics, relay_frames, relay_metrics, relay_screen_canvas, relay_spectrum,
-    relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
+    relay_device_metrics, relay_display_preview, relay_frames, relay_metrics, relay_screen_canvas,
+    relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
 };
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
@@ -684,6 +686,58 @@ async fn assert_backpressure_notice_does_not_repeat(
     let _ = relay_handle.await;
 }
 
+async fn publish_display_preview_snapshot(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    device_id: DeviceId,
+    frame_number: u64,
+) {
+    display_frames.write().await.set_frame(
+        device_id,
+        DisplayFrameSnapshot {
+            jpeg_data: Arc::new(vec![0xff, 0xd8, frame_number.to_le_bytes()[0], 0xff, 0xd9]),
+            width: 32,
+            height: 32,
+            circular: false,
+            frame_number,
+            captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(frame_number),
+        },
+    );
+}
+
+async fn wait_for_display_preview_subscribers(
+    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
+    expected: usize,
+) {
+    tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if display_frames
+                .read()
+                .await
+                .metrics_snapshot()
+                .preview_subscribers
+                == expected
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("display preview subscriber count should settle");
+}
+
+fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
+    assert_eq!(payload.first().copied(), Some(WS_DISPLAY_PREVIEW_HEADER));
+    let bytes = payload
+        .get(1..5)
+        .expect("display preview payload should include a frame number");
+    u32::from_le_bytes(
+        bytes
+            .try_into()
+            .expect("display preview frame number should be four bytes"),
+    )
+}
+
 #[tokio::test]
 async fn relay_canvas_clears_pending_send_after_backpressure() {
     let state = Arc::new(AppState::new());
@@ -754,6 +808,60 @@ async fn relay_web_viewport_canvas_clears_pending_send_after_backpressure() {
     assert_backpressure_notice_does_not_repeat("web_viewport_canvas", relay_handle, &mut json_rx)
         .await;
     let _ = binary_rx.recv().await;
+}
+
+#[tokio::test]
+async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let device_id = DeviceId::new();
+    let mut subscriptions = SubscriptionState::default();
+    subscriptions.channels.insert(WsChannel::DisplayPreview);
+    subscriptions.config.display_preview.device_id = Some(device_id.to_string());
+    subscriptions.config.display_preview.fps = 30;
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
+
+    let relay_handle = tokio::spawn(relay_display_preview(
+        Arc::clone(&display_frames),
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+
+    wait_for_display_preview_subscribers(&display_frames, 1).await;
+    publish_display_preview_snapshot(&display_frames, device_id, 1).await;
+    let first = tokio::time::timeout(Duration::from_millis(250), binary_rx.recv())
+        .await
+        .expect("display preview relay should emit the first frame")
+        .expect("display preview relay should stay connected");
+    assert_eq!(display_preview_payload_frame_number(&first), 1);
+
+    display_frames.write().await.remove(device_id);
+    tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            let runtime = display_frames.read().await;
+            if runtime.frame(device_id).is_none()
+                && runtime.metrics_snapshot().preview_subscribers == 1
+            {
+                break;
+            }
+            drop(runtime);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("display preview relay should reattach after the sender closes");
+
+    publish_display_preview_snapshot(&display_frames, device_id, 2).await;
+    let second = tokio::time::timeout(Duration::from_millis(250), binary_rx.recv())
+        .await
+        .expect("display preview relay should emit after the stream reopens")
+        .expect("display preview relay should deliver the reopened stream frame");
+    assert_eq!(display_preview_payload_frame_number(&second), 2);
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
 }
 
 #[test]

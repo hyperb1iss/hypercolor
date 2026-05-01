@@ -511,7 +511,8 @@ async fn run_display_worker(
         let geometry = target.geometry;
         let brightness = target.brightness;
         let frame_format = target.frame_format;
-        let include_preview_jpeg = target.preview_subscribed;
+        let include_preview_jpeg = target.frame_format == DisplayFrameFormat::Jpeg
+            || display_frames.read().await.has_subscriber(device_id);
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
             let encoded = match encode_source {

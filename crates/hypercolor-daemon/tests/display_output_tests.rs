@@ -822,6 +822,107 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
 }
 
 #[tokio::test]
+async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "push2:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info_with_format(
+            device_id,
+            320,
+            200,
+            DeviceColorFormat::Rgb,
+        ))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::clone(&display_frames),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(255, 0, 0, 255)),
+            1,
+            16,
+        ));
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    assert_eq!(&writes[0][..3], &[255, 0, 0]);
+    assert!(display_frames.read().await.frame(device_id).is_none());
+
+    let mut preview_rx = display_frames.write().await.subscribe(device_id);
+    assert!(preview_rx.borrow_and_update().is_none());
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(0, 255, 0, 255)),
+            2,
+            32,
+        ));
+
+    tokio::time::timeout(DISPLAY_TEST_TIMEOUT, preview_rx.changed())
+        .await
+        .expect("display preview subscriber should receive the next frame")
+        .expect("display preview watch should stay open");
+    let Some(preview) = preview_rx.borrow().clone() else {
+        panic!("display preview subscriber should receive a JPEG snapshot");
+    };
+    assert_eq!(preview.frame_number, 1);
+    let image = decode_jpeg(preview.jpeg_data.as_slice());
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+    assert!(
+        pixel[1] > 200,
+        "expected RGB display preview JPEG to reflect the green frame, got {pixel:?}"
+    );
+
+    let writes = wait_for_display_write_count(&display_writes, 2).await;
+    assert_eq!(&writes[1][..3], &[0, 255, 0]);
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_preview_runtime() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());

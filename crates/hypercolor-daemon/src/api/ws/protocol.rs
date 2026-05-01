@@ -942,6 +942,10 @@ pub(super) struct MetricsDisplayOutput {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
 pub(super) struct MetricsDisplayLane {
     pub(super) display_frames_total: u64,
     pub(super) display_frames_delayed_for_led_total: u64,
