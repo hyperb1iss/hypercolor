@@ -323,28 +323,31 @@ pub fn register_enabled_device_backends(
         backend_manager.register_backend(Box::new(BlocksBackend::new(socket_path)));
     }
 
-    if !enabled_module_ids_for_transport(
+    if !enabled_module_ids_for_transports(
         registry,
         config,
         DriverModuleKind::Hal,
-        &DriverTransportKind::Smbus,
+        SMBUS_HOST_DRIVER_TRANSPORTS,
     )
     .is_empty()
     {
         backend_manager.register_backend(Box::new(SmBusBackend::new()));
     }
 
-    backend_manager.register_backend(Box::new(
-        UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
-            usb_protocol_configs,
-            enabled_module_ids_for_transports(
-                registry,
-                config,
-                DriverModuleKind::Hal,
-                USB_HOST_DRIVER_TRANSPORTS,
+    let usb_driver_ids = enabled_module_ids_for_transports(
+        registry,
+        config,
+        DriverModuleKind::Hal,
+        USB_HOST_DRIVER_TRANSPORTS,
+    );
+    if !usb_driver_ids.is_empty() {
+        backend_manager.register_backend(Box::new(
+            UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
+                usb_protocol_configs,
+                usb_driver_ids,
             ),
-        ),
-    ));
+        ));
+    }
 
     Ok(())
 }

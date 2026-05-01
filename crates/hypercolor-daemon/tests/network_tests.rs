@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::BackendManager;
+use hypercolor_core::device::{BackendManager, UsbProtocolConfigStore};
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
@@ -113,6 +113,58 @@ fn enabled_module_ids_include_default_enabled_hal_modules() {
         "hal-fixture-smbus".to_owned(),
         "hal-fixture-usb".to_owned(),
     ])));
+}
+
+#[test]
+fn register_enabled_device_backends_skips_usb_when_no_usb_family_modules_are_enabled() {
+    let host = NullHost::new();
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(FixtureHalDriver {
+            descriptor: &HAL_SMBUS_DESCRIPTOR,
+        })
+        .expect("SMBus fixture module should register");
+    let config = HypercolorConfig::default();
+    let mut backend_manager = BackendManager::new();
+
+    network::register_enabled_device_backends(
+        &mut backend_manager,
+        &registry,
+        &host,
+        &config,
+        UsbProtocolConfigStore::new(),
+    )
+    .expect("backend registration should succeed");
+
+    let backend_ids = backend_manager.backend_ids();
+    assert!(backend_ids.iter().any(|backend_id| *backend_id == "smbus"));
+    assert!(!backend_ids.iter().any(|backend_id| *backend_id == "usb"));
+}
+
+#[test]
+fn register_enabled_device_backends_skips_smbus_when_only_usb_modules_are_enabled() {
+    let host = NullHost::new();
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(FixtureHalDriver {
+            descriptor: &HAL_USB_DESCRIPTOR,
+        })
+        .expect("USB fixture module should register");
+    let config = HypercolorConfig::default();
+    let mut backend_manager = BackendManager::new();
+
+    network::register_enabled_device_backends(
+        &mut backend_manager,
+        &registry,
+        &host,
+        &config,
+        UsbProtocolConfigStore::new(),
+    )
+    .expect("backend registration should succeed");
+
+    let backend_ids = backend_manager.backend_ids();
+    assert!(backend_ids.iter().any(|backend_id| *backend_id == "usb"));
+    assert!(!backend_ids.iter().any(|backend_id| *backend_id == "smbus"));
 }
 
 static HAL_USB_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
