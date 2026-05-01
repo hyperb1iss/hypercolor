@@ -26,11 +26,11 @@ use super::cache::{
     try_encode_cached_canvas_binary_with_header_scaled, try_encode_cached_canvas_preview_binary,
 };
 use super::protocol::{
-    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayOutput,
-    MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory, MetricsPacing,
-    MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces, MetricsStages,
-    MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig, SubscriptionState, WsChannel,
-    event_message_parts, should_relay_event,
+    ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
+    MetricsDisplayOutput, MetricsEffectHealth, MetricsFps, MetricsFrameTime, MetricsMemory,
+    MetricsPacing, MetricsPayload, MetricsPreview, MetricsPreviewDemand, MetricsRenderSurfaces,
+    MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage, SpectrumConfig,
+    SubscriptionState, WsChannel, event_message_parts, should_relay_event,
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
@@ -1317,15 +1317,17 @@ pub(super) async fn build_metrics_message(
                 write_successes_total: display_output.write_successes_total,
                 write_failures_total: display_output.write_failures_total,
                 retry_attempts_total: display_output.retry_attempts_total,
-                usb_display_frames_total: usb_actor_metrics.display_frames_total,
-                usb_display_frames_delayed_for_led_total: usb_actor_metrics
-                    .display_frames_delayed_for_led_total,
-                usb_display_led_priority_wait_total_ms: us_to_ms_f64(
-                    usb_actor_metrics.display_led_priority_wait_total_us,
-                ),
-                usb_display_led_priority_wait_max_ms: us_to_ms_f64(
-                    usb_actor_metrics.display_led_priority_wait_max_us,
-                ),
+                display_lane: MetricsDisplayLane {
+                    display_frames_total: usb_actor_metrics.display_frames_total,
+                    display_frames_delayed_for_led_total: usb_actor_metrics
+                        .display_frames_delayed_for_led_total,
+                    display_led_priority_wait_total_ms: us_to_ms_f64(
+                        usb_actor_metrics.display_led_priority_wait_total_us,
+                    ),
+                    display_led_priority_wait_max_ms: us_to_ms_f64(
+                        usb_actor_metrics.display_led_priority_wait_max_us,
+                    ),
+                },
                 last_failure_age_ms: display_output.last_failure_age_ms,
             },
             copies: MetricsCopies {

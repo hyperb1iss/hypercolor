@@ -45,4 +45,4 @@ A passing soak shows:
 - Full-frame copy counters stay at zero after warmup.
 - Render-surface pool saturation does not grow after warmup.
 - Servo stalls, breaker opens, and lifecycle failures do not grow.
-- USB display-priority wait stays within one LED frame interval.
+- Display-lane priority wait stays within one LED frame interval.

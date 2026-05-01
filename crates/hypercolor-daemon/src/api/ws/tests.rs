@@ -407,21 +407,21 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["display_output"]["write_failures_total"], 1);
     assert_eq!(json["display_output"]["retry_attempts_total"], 1);
     assert_eq!(
-        json["display_output"]["usb_display_frames_total"],
+        json["display_output"]["display_lane"]["display_frames_total"],
         usb_actor_metrics.display_frames_total
     );
     assert_eq!(
-        json["display_output"]["usb_display_frames_delayed_for_led_total"],
+        json["display_output"]["display_lane"]["display_frames_delayed_for_led_total"],
         usb_actor_metrics.display_frames_delayed_for_led_total
     );
     assert_eq!(
-        json["display_output"]["usb_display_led_priority_wait_total_ms"],
+        json["display_output"]["display_lane"]["display_led_priority_wait_total_ms"],
         std::time::Duration::from_micros(usb_actor_metrics.display_led_priority_wait_total_us)
             .as_secs_f64()
             * 1000.0
     );
     assert_eq!(
-        json["display_output"]["usb_display_led_priority_wait_max_ms"],
+        json["display_output"]["display_lane"]["display_led_priority_wait_max_ms"],
         std::time::Duration::from_micros(usb_actor_metrics.display_led_priority_wait_max_us)
             .as_secs_f64()
             * 1000.0

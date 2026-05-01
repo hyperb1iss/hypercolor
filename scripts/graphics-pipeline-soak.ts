@@ -20,7 +20,7 @@ type Config = {
     maxServoBreakerDelta: number
     maxServoFailureDelta: number
     maxServoQueueWaitMs: number
-    maxUsbPriorityWaitMs: number
+    maxDisplayLanePriorityWaitMs: number
     out?: string
     json: boolean
 }
@@ -82,7 +82,7 @@ const defaults: Config = {
     maxServoBreakerDelta: 0,
     maxServoFailureDelta: 0,
     maxServoQueueWaitMs: 100,
-    maxUsbPriorityWaitMs: 16.7,
+    maxDisplayLanePriorityWaitMs: 16.7,
     json: false,
 }
 
@@ -114,7 +114,8 @@ Options:
   --max-servo-breaker-delta <n>        Maximum Servo breaker opens [${defaults.maxServoBreakerDelta}]
   --max-servo-failure-delta <n>        Maximum total Servo lifecycle failures [${defaults.maxServoFailureDelta}]
   --max-servo-queue-wait-ms <ms>       Maximum Servo render queue wait [${defaults.maxServoQueueWaitMs}]
-  --max-usb-priority-wait-ms <ms>      Maximum LED-priority display wait [${defaults.maxUsbPriorityWaitMs}]
+  --max-display-lane-priority-wait-ms <ms>
+                                      Maximum LED-priority display wait [${defaults.maxDisplayLanePriorityWaitMs}]
   --out <path>                         Write JSON report
   --json                               Print JSON only
   --help                               Show this help
@@ -197,8 +198,8 @@ function parseArgs(argv: string[]): Config {
             case "--max-servo-queue-wait-ms":
                 config.maxServoQueueWaitMs = parseNonNegativeNumber(arg, value)
                 break
-            case "--max-usb-priority-wait-ms":
-                config.maxUsbPriorityWaitMs = parseNonNegativeNumber(arg, value)
+            case "--max-display-lane-priority-wait-ms":
+                config.maxDisplayLanePriorityWaitMs = parseNonNegativeNumber(arg, value)
                 break
             case "--out":
                 config.out = value
@@ -471,9 +472,13 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     )
     checks.push(
         checkAtMost(
-            "USB LED-priority display wait ms",
-            maxAt(observed, ["display_output", "usb_display_led_priority_wait_max_ms"]),
-            config.maxUsbPriorityWaitMs,
+            "display lane LED-priority wait ms",
+            requiredMaxAt(observed, [
+                "display_output",
+                "display_lane",
+                "display_led_priority_wait_max_ms",
+            ]),
+            config.maxDisplayLanePriorityWaitMs,
         ),
     )
 
@@ -491,7 +496,13 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         effectFallbackDelta: delta(first.data, last.data, ["effect_health", "fallbacks_applied_total"]),
         servoFailureDelta,
         servoQueueWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"])),
-        usbPriorityWaitMaxMs: round(maxAt(observed, ["display_output", "usb_display_led_priority_wait_max_ms"])),
+        displayLanePriorityWaitMaxMs: round(
+            requiredMaxAt(observed, [
+                "display_output",
+                "display_lane",
+                "display_led_priority_wait_max_ms",
+            ]),
+        ),
     }
 
     return {
@@ -521,6 +532,10 @@ function maxAt(samples: MetricSample[], path: string[]): number {
     return samples.reduce((max, sample) => Math.max(max, numberAt(sample.data, path)), 0)
 }
 
+function requiredMaxAt(samples: MetricSample[], path: string[]): number {
+    return samples.reduce((max, sample) => Math.max(max, requiredNumberAt(sample.data, path)), 0)
+}
+
 function median(values: number[]): number {
     if (values.length === 0) {
         return 0
@@ -541,6 +556,14 @@ function objectAt(root: JsonObject, path: string[]): JsonObject | undefined {
 function numberAt(root: JsonObject, path: string[]): number {
     const value = valueAt(root, path)
     return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+function requiredNumberAt(root: JsonObject, path: string[]): number {
+    const value = valueAt(root, path)
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`Missing numeric metric: ${path.join(".")}`)
+    }
+    return value
 }
 
 function stringAt(root: JsonObject, path: string[]): string {
