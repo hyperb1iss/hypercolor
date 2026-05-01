@@ -15,7 +15,7 @@ pub(crate) fn inventory_device_payload(
         "family": info.family.to_string(),
         "origin": &info.origin,
         "presentation": crate::network::device_presentation(state.driver_registry.as_ref(), info),
-        "connection_type": format!("{:?}", info.connection_type),
+        "transport": info.origin.transport.as_id(),
         "state": device_state.variant_name(),
         "led_count": info.total_led_count(),
         "zones": info.zones.len()

@@ -1098,6 +1098,8 @@ async fn mcp_device_inventory_exposes_driver_origin_and_presentation() {
     assert_eq!(resource_device["origin"]["driver_id"], "wled");
     assert_eq!(resource_device["origin"]["backend_id"], "usb");
     assert_eq!(resource_device["origin"]["transport"], "usb");
+    assert_eq!(resource_device["transport"], "usb");
+    assert!(resource_device.get("connection_type").is_none());
     assert_eq!(resource_device["presentation"]["label"], "WLED");
 
     let filtered = execute_tool_with_state(
@@ -1113,6 +1115,7 @@ async fn mcp_device_inventory_exposes_driver_origin_and_presentation() {
     .expect("get_devices should support driver and backend filters");
     assert_eq!(filtered["summary"]["total"], 1);
     assert_eq!(filtered["devices"][0]["origin"]["driver_id"], "wled");
+    assert_eq!(filtered["devices"][0]["transport"], "usb");
 
     let filtered_out = execute_tool_with_state(
         "get_devices",
