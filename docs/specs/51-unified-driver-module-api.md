@@ -830,8 +830,9 @@ pub trait DriverCredentialStore: Send + Sync {
 The key format is no longer parsed by splitting `"hue:..."`. The caller passes
 `driver_id` separately.
 
-Native compatibility can continue translating existing `Credentials` enum
-variants during migration, but the daemon host boundary should be generic.
+Credential payloads are opaque driver-owned JSON at the host boundary. Since
+Hypercolor has not shipped, stale enum-shaped credential files should be
+migrated once and removed rather than kept behind a compatibility adapter.
 
 ### 10.7 Presentation
 
@@ -1182,8 +1183,9 @@ with:
 pub driver_runtime_cache: BTreeMap<String, serde_json::Value>,
 ```
 
-Compatibility helpers can read old fields and write the new shape once during
-migration.
+Local pre-release snapshots can be migrated once into the new shape. The
+runtime schema should not keep compatibility reads for removed WLED-specific
+fields.
 
 ### 14.4 Credentials
 
@@ -1191,8 +1193,8 @@ migration.
 boundary calls. Driver credentials become opaque encrypted JSON payloads scoped
 by `(driver_id, key)`.
 
-Native compatibility may preserve `Credentials::HueBridge` and friends
-internally until the credential file format is migrated.
+Stale `Credentials::HueBridge`-style payloads are pre-release data. Migrate
+local files once, then keep the credential store generic.
 
 ### 14.5 AppState
 
@@ -1643,7 +1645,8 @@ Work:
 - add `driver_runtime: BTreeMap<String, Value>`
 - migrate WLED probe cache into `driver_runtime.wled`
 - change `DriverCredentialStore` to `(driver_id, key, value)`
-- keep compatibility reads for existing credential enum variants
+- remove compatibility reads for existing credential enum variants after the
+  one-time local migration
 - remove WLED-specific cache matching from `DaemonDriverHost`
 
 Verify:
