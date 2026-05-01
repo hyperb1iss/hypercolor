@@ -349,7 +349,17 @@ impl DriverLifecycleActions for DaemonDriverHost {
         let driver_registry = Arc::clone(&self.driver_registry);
         let driver_host = Arc::new(self.clone());
         let config = self.current_config();
-        let targets = vec![discovery::DiscoveryTarget::driver(driver_id.clone())];
+        let targets = match discovery::rescan_targets_for_driver(
+            &driver_id,
+            config.as_ref(),
+            &driver_registry,
+        ) {
+            Ok(targets) => targets,
+            Err(error) => {
+                warn!(driver_id, error = %error, "Skipped driver control rescan");
+                return Ok(());
+            }
+        };
 
         task_spawner.spawn(async move {
             if discovery::execute_discovery_scan_if_idle(

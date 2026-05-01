@@ -441,6 +441,62 @@ pub fn target_names(targets: &[DiscoveryTarget]) -> Vec<String> {
         .collect()
 }
 
+/// Resolve the discovery targets needed to rescan one driver module.
+///
+/// Network drivers usually own discovery directly. HAL catalog drivers are
+/// discovered through host-owned transport scanners, so their rescans map back
+/// to the relevant transport targets.
+pub fn rescan_targets_for_driver(
+    driver_id: &str,
+    config: &HypercolorConfig,
+    driver_registry: &DriverModuleRegistry,
+) -> Result<Vec<DiscoveryTarget>, String> {
+    let normalized = driver_id.trim().to_ascii_lowercase();
+    let Some(driver) = driver_registry.get(&normalized) else {
+        return Err(format!("Unknown driver module '{driver_id}'"));
+    };
+
+    let descriptor = driver.module_descriptor();
+    if !crate::network::module_enabled(config, &descriptor) {
+        let config_flag = crate::network::driver_config_flag(&normalized);
+        return Err(format!(
+            "Driver module '{normalized}' is disabled by config ({config_flag}=false)"
+        ));
+    }
+
+    if driver.discovery().is_some() {
+        return Ok(vec![DiscoveryTarget::driver(normalized)]);
+    }
+
+    let target_ids = descriptor
+        .transports
+        .iter()
+        .filter_map(host_target_for_driver_transport)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    if target_ids.is_empty() {
+        return Err(format!(
+            "Driver module '{normalized}' does not expose discovery and has no host transport target"
+        ));
+    }
+
+    resolve_targets(Some(&target_ids), config, driver_registry)
+}
+
+fn host_target_for_driver_transport(transport: &DriverTransportKind) -> Option<&'static str> {
+    match transport {
+        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => {
+            Some("usb")
+        }
+        DriverTransportKind::Smbus => Some("smbus"),
+        DriverTransportKind::Bridge => Some("blocks"),
+        DriverTransportKind::Network
+        | DriverTransportKind::Virtual
+        | DriverTransportKind::Custom(_) => None,
+    }
+}
+
 struct DiscoveryFlagGuard {
     flag: Arc<AtomicBool>,
 }
@@ -453,7 +509,10 @@ impl Drop for DiscoveryFlagGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiscoveryTarget, default_timeout, normalize_timeout_ms, resolve_targets};
+    use super::{
+        DiscoveryTarget, default_timeout, normalize_timeout_ms, rescan_targets_for_driver,
+        resolve_targets,
+    };
     use crate::api::AppState;
     use hypercolor_driver_api::{
         DeviceBackend, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
@@ -511,6 +570,14 @@ mod tests {
         "smbus-driver",
         "SMBus Driver",
         DriverTransport::Smbus,
+        false,
+        false,
+    );
+
+    static USB_MODULE_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+        "usb-driver",
+        "USB Driver",
+        DriverTransport::Usb,
         false,
         false,
     );
@@ -742,5 +809,63 @@ mod tests {
         ));
 
         assert_eq!(info.output_backend_id(), "usb");
+    }
+
+    #[test]
+    fn rescan_targets_for_network_driver_use_driver_discovery() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::new(&ENABLED_DESCRIPTOR))
+            .expect("driver should register");
+        let cfg = HypercolorConfig::default();
+
+        let targets = rescan_targets_for_driver("enabled-driver", &cfg, &registry)
+            .expect("network discovery driver should resolve");
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(DiscoveryTarget::as_str)
+                .collect::<Vec<_>>(),
+            vec!["enabled-driver"]
+        );
+    }
+
+    #[test]
+    fn rescan_targets_for_hal_driver_use_host_transport() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::new(&USB_MODULE_DESCRIPTOR))
+            .expect("driver should register");
+        let cfg = HypercolorConfig::default();
+
+        let targets = rescan_targets_for_driver("usb-driver", &cfg, &registry)
+            .expect("HAL driver should resolve through USB transport");
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(DiscoveryTarget::as_str)
+                .collect::<Vec<_>>(),
+            vec!["usb"]
+        );
+    }
+
+    #[test]
+    fn rescan_targets_reject_disabled_hal_driver() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::new(&USB_MODULE_DESCRIPTOR))
+            .expect("driver should register");
+        let mut cfg = HypercolorConfig::default();
+        cfg.drivers.insert(
+            "usb-driver".to_owned(),
+            DriverConfigEntry::disabled(std::collections::BTreeMap::default()),
+        );
+
+        let error = rescan_targets_for_driver("usb-driver", &cfg, &registry)
+            .expect_err("disabled driver rescans should fail");
+
+        assert!(error.contains("drivers.usb-driver.enabled=false"));
     }
 }
