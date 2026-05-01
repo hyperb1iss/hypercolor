@@ -1,6 +1,7 @@
 use hypercolor_types::device::DriverTransportKind;
 
 use crate::api::DriverSummary;
+use crate::label_utils::humanize_identifier_label;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryDriverSetting {
@@ -72,6 +73,6 @@ fn transport_label(transport: &DriverTransportKind) -> String {
         DriverTransportKind::Serial => "serial".to_owned(),
         DriverTransportKind::Bridge => "bridge services".to_owned(),
         DriverTransportKind::Virtual => "virtual transport".to_owned(),
-        DriverTransportKind::Custom(label) => label.clone(),
+        DriverTransportKind::Custom(label) => humanize_identifier_label(label),
     }
 }

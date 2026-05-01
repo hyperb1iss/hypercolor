@@ -4,6 +4,8 @@
 mod api;
 #[path = "../src/driver_settings.rs"]
 mod driver_settings;
+#[path = "../src/label_utils.rs"]
+mod label_utils;
 
 use hypercolor_types::device::{
     DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
@@ -76,6 +78,13 @@ fn discovery_settings_follow_driver_descriptors() {
             false,
             vec![DriverTransportKind::Bridge],
         ),
+        driver(
+            "external",
+            "External Driver",
+            true,
+            false,
+            vec![DriverTransportKind::Custom("open-link-hub".to_string())],
+        ),
     ]);
 
     assert_eq!(
@@ -92,6 +101,12 @@ fn discovery_settings_follow_driver_descriptors() {
                 label: "Bridge Driver Scan".to_string(),
                 description: "Discover Bridge Driver devices over bridge services".to_string(),
                 key: "drivers.bridge.enabled".to_string(),
+            },
+            DiscoveryDriverSetting {
+                id: "external".to_string(),
+                label: "External Driver Scan".to_string(),
+                description: "Discover External Driver devices over Open Link Hub".to_string(),
+                key: "drivers.external.enabled".to_string(),
             }
         ]
     );

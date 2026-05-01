@@ -14,6 +14,7 @@ mod display_utils;
 mod driver_settings;
 mod effect_search;
 mod icons;
+mod label_utils;
 mod layout_geometry;
 mod layout_history;
 mod layout_page_state;

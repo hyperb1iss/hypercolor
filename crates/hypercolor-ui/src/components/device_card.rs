@@ -6,6 +6,7 @@ use leptos_icons::Icon;
 use crate::api::DeviceSummary;
 use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
+use crate::label_utils::humanize_identifier_label;
 use crate::storage;
 use crate::style_utils::device_accent_colors;
 use hypercolor_types::device::DeviceClassHint;
@@ -270,24 +271,6 @@ fn connection_icon(device: &DeviceSummary) -> icondata_core::Icon {
         "bridge" => LuNetwork,
         _ => LuCable,
     }
-}
-
-fn humanize_identifier_label(identifier: &str) -> String {
-    identifier
-        .split(['-', '_', ' '])
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            if part.len() <= 4 {
-                part.to_ascii_uppercase()
-            } else {
-                let mut chars = part.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
-                })
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Zone topology → inline SVG shape hint for zone display.
