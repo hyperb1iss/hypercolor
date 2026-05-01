@@ -130,7 +130,7 @@ Response includes pagination metadata:
 
 ```
 GET /api/v1/effects?audio_reactive=true&author=hyperb1iss
-GET /api/v1/devices?status=connected&backend_id=wled
+GET /api/v1/devices?status=connected&backend_id=wled&driver=wled
 ```
 
 **Search:**
@@ -1480,7 +1480,7 @@ Device management.
 
 | Method          | Signature        | Description                                       |
 | --------------- | ---------------- | ------------------------------------------------- |
-| `ListDevices`   | `() -> a(sssub)` | Returns (id, name, backend, led_count, connected) |
+| `ListDevices`   | `() -> aa{sv}`   | Returns device maps with id, name, origin, led_count, and status |
 | `GetDevice`     | `(s) -> a{sv}`   | Full device details by ID                         |
 | `Discover`      | `()`             | Trigger device discovery scan                     |
 | `EnableDevice`  | `(s)`            | Enable a device by ID                             |

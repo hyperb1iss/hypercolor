@@ -351,7 +351,7 @@ List all known RGB devices with connection status, LED count, and zone informati
 {
   "name": "list_devices",
   "title": "List RGB Devices",
-  "description": "Enumerate all known RGB devices with their connection status, backend type (WLED, USB HID, Hue), LED count, and zone configuration. Use the status filter to show only connected or disconnected devices.",
+  "description": "Enumerate all known RGB devices with their connection status, driver origin, output route, LED count, and zone configuration. Use the status filter to show only connected or disconnected devices.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1239,7 +1239,7 @@ The following resources are returned by `resources/list`:
   "uri": "hypercolor://devices",
   "name": "Device Inventory",
   "title": "Connected RGB Devices",
-  "description": "Full inventory of all known RGB devices with connection status, backend type, LED count, zone configuration, and connection details. Updates when devices connect/disconnect.",
+  "description": "Full inventory of all known RGB devices with connection status, driver origin, output route, LED count, zone configuration, and connection details. Updates when devices connect/disconnect.",
   "mimeType": "application/json",
   "annotations": {
     "audience": ["assistant"],
