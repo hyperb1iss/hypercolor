@@ -513,6 +513,33 @@ impl DeviceLifecycleManager {
                     address,
                 };
             }
+            if let Some(rest) = value.strip_prefix("usb:") {
+                let mut parts = rest.splitn(3, ':');
+                if let (Some(raw_vendor), Some(raw_product), Some(identity_key)) =
+                    (parts.next(), parts.next(), parts.next())
+                    && let (Ok(vendor_id), Ok(product_id)) = (
+                        u16::from_str_radix(raw_vendor, 16),
+                        u16::from_str_radix(raw_product, 16),
+                    )
+                {
+                    let identity_key = identity_key.trim();
+                    return DeviceIdentifier::UsbHid {
+                        vendor_id,
+                        product_id,
+                        serial: (!identity_key.is_empty() && identity_key != "unknown")
+                            .then(|| identity_key.to_owned()),
+                        usb_path: None,
+                    };
+                }
+            }
+            if let Some(rest) = value.strip_prefix("bridge:")
+                && let Some((service, device_serial)) = rest.split_once(':')
+            {
+                return DeviceIdentifier::Bridge {
+                    service: service.to_owned(),
+                    device_serial: device_serial.to_owned(),
+                };
+            }
             if let Some(rest) = value.strip_prefix("net:") {
                 let owner_prefix = format!("{}:", Self::layout_owner_id(device_info));
                 let mdns_hostname = rest
@@ -527,11 +554,15 @@ impl DeviceLifecycleManager {
             }
         }
 
-        DeviceIdentifier::Network {
-            mac_address: format!("{backend_id}:{}", device_info.id),
-            last_ip: None,
-            mdns_hostname: Some(device_info.name.clone()),
-        }
+        fallback_identifier(device_info, backend_id)
+    }
+}
+
+fn fallback_identifier(device_info: &DeviceInfo, backend_id: &str) -> DeviceIdentifier {
+    DeviceIdentifier::Network {
+        mac_address: format!("{backend_id}:{}", device_info.id),
+        last_ip: None,
+        mdns_hostname: Some(device_info.name.clone()),
     }
 }
 
@@ -572,7 +603,8 @@ mod tests {
     use super::{DeviceLifecycleManager, LifecycleAction, ReconnectPolicy};
     use crate::types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-        DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+        DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+        ZoneInfo,
     };
     use std::time::Duration;
 
@@ -867,5 +899,71 @@ mod tests {
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "usb-driver:dev-hidraw2");
+    }
+
+    #[test]
+    fn usb_fingerprints_build_usb_connection_handles() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "USB Fixture",
+            DeviceFamily::new_static("usb-driver", "USB Driver"),
+        );
+        info.connection_type = ConnectionType::Usb;
+        info.origin = DeviceOrigin::native("usb-driver", "usb", ConnectionType::Usb);
+        let fingerprint = DeviceFingerprint("usb:1532:0099:001-6-4-4".to_owned());
+
+        lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+        lifecycle
+            .on_connected(info.id)
+            .expect("USB connect transition should work");
+
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected USB device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::UsbHid {
+                vendor_id: 0x1532,
+                product_id: 0x0099,
+                serial: Some(serial),
+                usb_path: None,
+            } if serial == "001-6-4-4"
+        ));
+        assert_eq!(handle.backend_id(), "usb");
+    }
+
+    #[test]
+    fn bridge_fingerprints_build_bridge_connection_handles() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "Bridge Fixture",
+            DeviceFamily::new_static("bridge-driver", "Bridge Driver"),
+        );
+        info.connection_type = ConnectionType::Bridge;
+        info.origin = DeviceOrigin::native("bridge-driver", "blocks", ConnectionType::Bridge);
+        let fingerprint = DeviceFingerprint("bridge:blocksd:LPMJW6".to_owned());
+
+        lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+        lifecycle
+            .on_connected(info.id)
+            .expect("bridge connect transition should work");
+
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected bridge device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::Bridge {
+                service,
+                device_serial,
+            } if service == "blocksd" && device_serial == "LPMJW6"
+        ));
+        assert_eq!(handle.backend_id(), "blocks");
     }
 }
