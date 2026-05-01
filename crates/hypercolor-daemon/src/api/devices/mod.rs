@@ -939,7 +939,7 @@ fn device_connection_summary(
         .or_else(|| label.clone());
 
     DeviceConnectionSummary {
-        transport: connection_transport_id(&info.origin.transport),
+        transport: info.origin.transport.as_id().to_owned(),
         label,
         endpoint,
         ip,
@@ -974,19 +974,6 @@ fn metadata_value<'a>(metadata: Option<&'a HashMap<String, String>>, key: &str) 
         .map(String::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-fn connection_transport_id(transport: &DriverTransportKind) -> String {
-    match transport {
-        DriverTransportKind::Network => "network".to_owned(),
-        DriverTransportKind::Usb => "usb".to_owned(),
-        DriverTransportKind::Smbus => "smbus".to_owned(),
-        DriverTransportKind::Midi => "midi".to_owned(),
-        DriverTransportKind::Serial => "serial".to_owned(),
-        DriverTransportKind::Bridge => "bridge".to_owned(),
-        DriverTransportKind::Virtual => "virtual".to_owned(),
-        DriverTransportKind::Custom(value) => value.clone(),
-    }
 }
 
 fn percent_to_brightness(percent: u8) -> f32 {

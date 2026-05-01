@@ -328,6 +328,27 @@ fn driver_transport_kind_round_trips_custom_transport() {
 }
 
 #[test]
+fn driver_transport_kind_exposes_stable_api_ids() {
+    let cases = [
+        (DriverTransportKind::Network, "network"),
+        (DriverTransportKind::Usb, "usb"),
+        (DriverTransportKind::Smbus, "smbus"),
+        (DriverTransportKind::Midi, "midi"),
+        (DriverTransportKind::Serial, "serial"),
+        (DriverTransportKind::Bridge, "bridge"),
+        (DriverTransportKind::Virtual, "virtual"),
+        (
+            DriverTransportKind::Custom("openlinkhub".into()),
+            "openlinkhub",
+        ),
+    ];
+
+    for (transport, expected) in cases {
+        assert_eq!(transport.as_id(), expected);
+    }
+}
+
+#[test]
 fn driver_transport_kind_preserves_bridge_connections() {
     let transport = DriverTransportKind::from(ConnectionType::Bridge);
 

@@ -456,6 +456,23 @@ pub enum DriverTransportKind {
     Custom(String),
 }
 
+impl DriverTransportKind {
+    /// Stable API identifier for this transport category.
+    #[must_use]
+    pub fn as_id(&self) -> &str {
+        match self {
+            Self::Network => "network",
+            Self::Usb => "usb",
+            Self::Smbus => "smbus",
+            Self::Midi => "midi",
+            Self::Serial => "serial",
+            Self::Bridge => "bridge",
+            Self::Virtual => "virtual",
+            Self::Custom(value) => value,
+        }
+    }
+}
+
 impl From<ConnectionType> for DriverTransportKind {
     fn from(value: ConnectionType) -> Self {
         match value {

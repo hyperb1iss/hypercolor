@@ -404,7 +404,7 @@ fn normalize_targets(
 }
 
 fn transport_label(info: &DeviceInfo) -> String {
-    format!("{:?}", info.origin.transport).to_ascii_lowercase()
+    info.origin.transport.as_id().to_owned()
 }
 
 fn add_host_transport_scanner(

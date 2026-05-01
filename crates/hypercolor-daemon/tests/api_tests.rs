@@ -45,7 +45,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    ZoneInfo,
+    DriverTransportKind, ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
@@ -9213,6 +9213,70 @@ async fn list_devices_includes_connection_summary_when_available() {
     assert_eq!(connection["ip"], "192.168.1.42");
     assert_eq!(connection["hostname"], "wled-desk");
     assert_eq!(connection["endpoint"], "wled-desk");
+}
+
+#[tokio::test]
+async fn list_devices_preserves_custom_connection_transport_id() {
+    let state = Arc::new(isolated_state());
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "External Hub".to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("external-hub", "External Hub"),
+        model: None,
+        connection_type: ConnectionType::Bridge,
+        origin: DeviceOrigin::new(
+            "external-hub",
+            "external-hub",
+            DriverTransportKind::Custom("openlinkhub".to_owned()),
+        ),
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 24,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 24,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("serial".to_owned(), "hub-001".to_owned());
+    let _ = state
+        .device_registry
+        .add_with_fingerprint_and_metadata(
+            info,
+            DeviceFingerprint("openlinkhub:hub-001".to_owned()),
+            metadata,
+        )
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    let connection = &json["data"]["items"][0]["connection"];
+    assert_eq!(connection["transport"], "openlinkhub");
+    assert_eq!(connection["label"], "hub-001");
+    assert_eq!(connection["endpoint"], "hub-001");
 }
 
 #[cfg(feature = "builtin-drivers")]
