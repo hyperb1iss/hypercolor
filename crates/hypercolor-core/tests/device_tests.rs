@@ -223,7 +223,6 @@ impl TransportScanner for DelayedScanner {
 /// Build a [`DiscoveredDevice`] for scanner tests.
 fn mock_discovered(name: &str, fingerprint: &str) -> DiscoveredDevice {
     DiscoveredDevice {
-        connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
         name: name.to_owned(),
         family: DeviceFamily::new_static("wled", "WLED"),
@@ -1297,7 +1296,6 @@ async fn orchestrator_tracks_reappeared_devices() {
 
     // Scanner rediscovers the same device (same DeviceId in info)
     let rediscovered = DiscoveredDevice {
-        connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
         name: "Known Device".to_owned(),
         family: DeviceFamily::new_static("wled", "WLED"),
@@ -1337,7 +1335,6 @@ async fn orchestrator_tracks_vanished_devices() {
     orchestrator.add_scanner(Box::new(MockScanner::new(
         "mDNS",
         vec![DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             name: keep.name.clone(),
             family: keep.family.clone(),
@@ -1370,7 +1367,6 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
     orchestrator.add_scanner(Box::new(MockScanner::new(
         "mDNS",
         vec![DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
             name: "Stable".to_owned(),
             family: DeviceFamily::new_static("wled", "WLED"),

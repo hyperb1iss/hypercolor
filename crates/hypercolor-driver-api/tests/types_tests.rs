@@ -568,7 +568,6 @@ fn discovered_device_converts_from_core_payload() {
         },
     };
     let discovered = DriverDiscoveredDevice::from(DiscoveredDevice {
-        connection_type: ConnectionType::Network,
         origin: info.origin.clone(),
         name: "Bridge".to_owned(),
         family: DeviceFamily::new_static("fixture-bridge", "Fixture Bridge"),

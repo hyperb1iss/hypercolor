@@ -113,7 +113,6 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
     metadata.insert("block_type".to_owned(), dev.block_type.clone());
 
     DiscoveredDevice {
-        connection_type: ConnectionType::Bridge,
         origin: info.origin.clone(),
         name: info.name.clone(),
         family: DeviceFamily::new_static("roli", "ROLI"),

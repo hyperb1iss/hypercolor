@@ -228,7 +228,6 @@ impl WledScanner {
         }
 
         DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: device_info.origin.clone(),
             name,
             family: DeviceFamily::new_static("wled", "WLED"),
@@ -304,7 +303,6 @@ impl WledScanner {
         }
 
         Some(DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: device_info.origin.clone(),
             name,
             family: DeviceFamily::new_static("wled", "WLED"),

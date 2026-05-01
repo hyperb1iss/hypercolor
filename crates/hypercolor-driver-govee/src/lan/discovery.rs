@@ -190,7 +190,6 @@ fn build_discovered_device(device: GoveeLanDevice) -> DiscoveredDevice {
     }
 
     DiscoveredDevice {
-        connection_type: ConnectionType::Network,
         origin: info.origin.clone(),
         name: info.name.clone(),
         family: DeviceFamily::new_static("govee", "Govee"),

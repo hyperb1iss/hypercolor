@@ -137,7 +137,6 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
     .expect("scan response should parse");
     let mut devices = vec![hypercolor_driver_api::DriverDiscoveredDevice::from(
         hypercolor_driver_api::DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native("govee", "govee", ConnectionType::Network),
             name: build_device_info(&lan_device).name,
             family: DeviceFamily::new_static("govee", "Govee"),

@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use hypercolor_hal::probe_smbus_devices_in_root;
-use hypercolor_types::device::ConnectionType;
 
 use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
@@ -46,7 +45,6 @@ impl TransportScanner for SmBusScanner {
         Ok(probes
             .into_iter()
             .map(|probe| DiscoveredDevice {
-                connection_type: ConnectionType::SmBus,
                 origin: probe.info.origin.clone(),
                 name: probe.info.name.clone(),
                 family: probe.info.family.clone(),

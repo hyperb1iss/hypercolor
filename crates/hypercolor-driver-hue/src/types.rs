@@ -123,7 +123,6 @@ impl HueDiscoveredBridge {
         let fingerprint = DeviceFingerprint(format!("hue:{}", self.bridge_id));
 
         DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: self.info.origin.clone(),
             name: self.info.name.clone(),
             family: DeviceFamily::new_static("hue", "Philips Hue"),

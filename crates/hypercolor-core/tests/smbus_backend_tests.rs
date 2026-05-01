@@ -249,7 +249,6 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
 
 fn discovered_smbus_device(device_id: DeviceId) -> DiscoveredDevice {
     DiscoveredDevice {
-        connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
         name: "ASUS Aura DRAM (SMBus 0x71)".to_owned(),

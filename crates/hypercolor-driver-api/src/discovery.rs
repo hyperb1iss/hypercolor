@@ -3,9 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use hypercolor_types::device::{
-    ConnectionType, DeviceFamily, DeviceFingerprint, DeviceInfo, DeviceOrigin,
-};
+use hypercolor_types::device::{DeviceFamily, DeviceFingerprint, DeviceInfo, DeviceOrigin};
 
 /// A single-transport device scanner.
 #[async_trait::async_trait]
@@ -54,9 +52,6 @@ impl DiscoveryConnectBehavior {
 /// Raw discovery result from a single scanner.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {
-    /// How this device connects to the host.
-    pub connection_type: ConnectionType,
-
     /// Driver ownership and output routing metadata.
     pub origin: DeviceOrigin,
 

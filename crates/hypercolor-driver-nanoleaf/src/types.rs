@@ -87,7 +87,6 @@ impl NanoleafDiscoveredDevice {
         let fingerprint = DeviceFingerprint(format!("nanoleaf:{}", self.device_key));
 
         DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: self.info.origin.clone(),
             name: self.info.name.clone(),
             family: DeviceFamily::new_static("nanoleaf", "Nanoleaf"),

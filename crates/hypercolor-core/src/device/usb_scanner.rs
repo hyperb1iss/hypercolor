@@ -153,7 +153,6 @@ impl TransportScanner for UsbScanner {
             }
 
             discovered.push(DiscoveredDevice {
-                connection_type: ConnectionType::Usb,
                 origin: info.origin.clone(),
                 name: descriptor.name.to_owned(),
                 family: descriptor.family.clone(),

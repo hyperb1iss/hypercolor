@@ -212,7 +212,6 @@ fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
     let info = make_device_info(name, led_count);
     let fp = DeviceFingerprint(format!("test:{name}"));
     DiscoveredDevice {
-        connection_type: ConnectionType::Network,
         origin: info.origin.clone(),
         name: name.to_string(),
         family: DeviceFamily::new_static("wled", "WLED"),
@@ -1449,7 +1448,6 @@ async fn multiple_scanners_aggregate_results() {
             },
         };
         DiscoveredDevice {
-            connection_type: ConnectionType::Usb,
             origin: info.origin.clone(),
             name: "USB HID Controller".to_string(),
             family: DeviceFamily::named("prism"),

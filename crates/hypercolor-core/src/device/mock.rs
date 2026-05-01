@@ -258,7 +258,6 @@ impl MockTransportScanner {
         );
 
         self.devices.push(DiscoveredDevice {
-            connection_type: ConnectionType::Network,
             origin: info.origin.clone(),
             name: config.name.clone(),
             family: DeviceFamily::named("Mock"),
