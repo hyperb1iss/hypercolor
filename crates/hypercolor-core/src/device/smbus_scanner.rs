@@ -45,9 +45,6 @@ impl TransportScanner for SmBusScanner {
         Ok(probes
             .into_iter()
             .map(|probe| DiscoveredDevice {
-                origin: probe.info.origin.clone(),
-                name: probe.info.name.clone(),
-                family: probe.info.family.clone(),
                 fingerprint: probe.fingerprint,
                 connect_behavior: DiscoveryConnectBehavior::AutoConnect,
                 info: probe.info,

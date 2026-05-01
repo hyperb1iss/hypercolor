@@ -228,9 +228,6 @@ impl WledScanner {
         }
 
         DiscoveredDevice {
-            origin: device_info.origin.clone(),
-            name,
-            family: DeviceFamily::new_static("wled", "WLED"),
             fingerprint,
             connect_behavior: if wled_info.is_some() {
                 DiscoveryConnectBehavior::AutoConnect
@@ -303,9 +300,6 @@ impl WledScanner {
         }
 
         Some(DiscoveredDevice {
-            origin: device_info.origin.clone(),
-            name,
-            family: DeviceFamily::new_static("wled", "WLED"),
             fingerprint,
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: device_info,

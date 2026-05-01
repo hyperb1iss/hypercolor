@@ -190,9 +190,6 @@ fn build_discovered_device(device: GoveeLanDevice) -> DiscoveredDevice {
     }
 
     DiscoveredDevice {
-        origin: info.origin.clone(),
-        name: info.name.clone(),
-        family: DeviceFamily::new_static("govee", "Govee"),
         fingerprint: fingerprint_for_mac(&device.mac),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,

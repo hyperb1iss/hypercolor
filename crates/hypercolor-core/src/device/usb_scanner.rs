@@ -153,9 +153,6 @@ impl TransportScanner for UsbScanner {
             }
 
             discovered.push(DiscoveredDevice {
-                origin: info.origin.clone(),
-                name: descriptor.name.to_owned(),
-                family: descriptor.family.clone(),
                 fingerprint,
                 connect_behavior: DiscoveryConnectBehavior::AutoConnect,
                 info,

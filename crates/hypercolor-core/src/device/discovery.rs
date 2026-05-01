@@ -297,10 +297,6 @@ impl DiscoveryOrchestrator {
                 .or_insert_with(|| value.clone());
         }
 
-        if existing.name.is_empty() && !incoming.name.is_empty() {
-            existing.name.clone_from(&incoming.name);
-        }
-
         if existing.info.name.is_empty() && !incoming.info.name.is_empty() {
             existing.info.name.clone_from(&incoming.info.name);
         }

@@ -480,9 +480,6 @@ impl TransportScanner for DebugDriverScanner {
 
 fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevice {
     DiscoveredDevice {
-        origin: device.info.origin.clone(),
-        name: device.info.name.clone(),
-        family: device.info.family.clone(),
         fingerprint: device.fingerprint,
         connect_behavior: device.connect_behavior,
         info: device.info,

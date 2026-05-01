@@ -258,9 +258,6 @@ impl MockTransportScanner {
         );
 
         self.devices.push(DiscoveredDevice {
-            origin: info.origin.clone(),
-            name: config.name.clone(),
-            family: DeviceFamily::named("Mock"),
             fingerprint: DeviceFingerprint(fingerprint_key),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,

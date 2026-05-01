@@ -223,9 +223,6 @@ impl TransportScanner for DelayedScanner {
 /// Build a [`DiscoveredDevice`] for scanner tests.
 fn mock_discovered(name: &str, fingerprint: &str) -> DiscoveredDevice {
     DiscoveredDevice {
-        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-        name: name.to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
         fingerprint: DeviceFingerprint(fingerprint.to_owned()),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: mock_device_info(name),
@@ -609,7 +606,7 @@ async fn registry_preserves_scanner_metadata() {
 async fn registry_add_discovered_persists_explicit_origin() {
     let registry = DeviceRegistry::new();
     let mut discovered = mock_discovered("Origin Device", "net:origin-device");
-    discovered.origin = DeviceOrigin::native("wled", "wled-alt", ConnectionType::Network);
+    discovered.info.origin = DeviceOrigin::native("wled", "wled-alt", ConnectionType::Network);
 
     let id = registry.add_discovered(discovered).await;
     let tracked = registry
@@ -1296,9 +1293,6 @@ async fn orchestrator_tracks_reappeared_devices() {
 
     // Scanner rediscovers the same device (same DeviceId in info)
     let rediscovered = DiscoveredDevice {
-        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-        name: "Known Device".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
         fingerprint,
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: existing,
@@ -1335,9 +1329,6 @@ async fn orchestrator_tracks_vanished_devices() {
     orchestrator.add_scanner(Box::new(MockScanner::new(
         "mDNS",
         vec![DiscoveredDevice {
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            name: keep.name.clone(),
-            family: keep.family.clone(),
             fingerprint: keep_fingerprint,
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: keep,
@@ -1367,9 +1358,6 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
     orchestrator.add_scanner(Box::new(MockScanner::new(
         "mDNS",
         vec![DiscoveredDevice {
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            name: "Stable".to_owned(),
-            family: DeviceFamily::new_static("wled", "WLED"),
             fingerprint,
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: rediscovered,

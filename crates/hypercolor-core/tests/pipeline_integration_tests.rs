@@ -212,9 +212,6 @@ fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
     let info = make_device_info(name, led_count);
     let fp = DeviceFingerprint(format!("test:{name}"));
     DiscoveredDevice {
-        origin: info.origin.clone(),
-        name: name.to_string(),
-        family: DeviceFamily::new_static("wled", "WLED"),
         fingerprint: fp,
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,
@@ -555,7 +552,7 @@ async fn discovery_deduplicates_across_scanners() {
     // Two scanners report the same device with the same fingerprint
     let device1 = make_discovered_device("shared-device", 30);
     let mut device2 = make_discovered_device("shared-device", 30);
-    device2.name = "shared-device-v2".to_string();
+    device2.info.name = "shared-device-v2".to_string();
 
     orchestrator.add_scanner(Box::new(TestScanner::new("scanner-a", vec![device1])));
     orchestrator.add_scanner(Box::new(TestScanner::new("scanner-b", vec![device2])));
@@ -1448,9 +1445,6 @@ async fn multiple_scanners_aggregate_results() {
             },
         };
         DiscoveredDevice {
-            origin: info.origin.clone(),
-            name: "USB HID Controller".to_string(),
-            family: DeviceFamily::named("prism"),
             fingerprint: DeviceFingerprint("usb:prism-1".to_string()),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,

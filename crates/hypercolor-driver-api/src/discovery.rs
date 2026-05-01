@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use hypercolor_types::device::{DeviceFamily, DeviceFingerprint, DeviceInfo, DeviceOrigin};
+use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 
 /// A single-transport device scanner.
 #[async_trait::async_trait]
@@ -52,15 +52,6 @@ impl DiscoveryConnectBehavior {
 /// Raw discovery result from a single scanner.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {
-    /// Driver ownership and output routing metadata.
-    pub origin: DeviceOrigin,
-
-    /// Preliminary device name from the transport layer.
-    pub name: String,
-
-    /// Device family, if identifiable from the transport layer.
-    pub family: DeviceFamily,
-
     /// Stable identity fingerprint for deduplication.
     pub fingerprint: DeviceFingerprint,
 

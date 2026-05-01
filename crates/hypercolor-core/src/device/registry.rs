@@ -119,8 +119,7 @@ impl DeviceRegistry {
     }
 
     /// Register a scanner-produced device with explicit connection behavior.
-    pub async fn add_discovered(&self, mut discovered: DiscoveredDevice) -> DeviceId {
-        discovered.info.origin = discovered.origin;
+    pub async fn add_discovered(&self, discovered: DiscoveredDevice) -> DeviceId {
         self.add_entry(
             discovered.info,
             discovered.fingerprint,

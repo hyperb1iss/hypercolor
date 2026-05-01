@@ -568,9 +568,6 @@ fn discovered_device_converts_from_core_payload() {
         },
     };
     let discovered = DriverDiscoveredDevice::from(DiscoveredDevice {
-        origin: info.origin.clone(),
-        name: "Bridge".to_owned(),
-        family: DeviceFamily::new_static("fixture-bridge", "Fixture Bridge"),
         info,
         fingerprint: DeviceFingerprint("net:fixture:bridge".to_owned()),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.8".to_owned())]),
