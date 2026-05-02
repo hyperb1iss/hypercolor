@@ -106,7 +106,6 @@ fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::Devic
         id: "physical:prism8".to_owned(),
         layout_device_id: "usb:prism8:test".to_owned(),
         name: name.to_owned(),
-        backend: "test".to_owned(),
         origin: hypercolor_types::device::DeviceOrigin::new(
             "fixture-driver",
             "test",

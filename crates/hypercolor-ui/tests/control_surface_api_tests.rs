@@ -1,9 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-#[path = "../src/api/mod.rs"]
-mod api;
-
-use api::{
+use hypercolor_ui::control_surface_api::{
     ControlSurfaceListQuery, control_surface_action_url, control_surface_list_url,
     control_surface_values_url,
 };

@@ -15,7 +15,6 @@ use crate::components::device_card::{
     ALL_DEVICE_CLASSES, brand_colors, brand_label, classify_brand, classify_device,
     device_class_icon, device_class_label, driver_identifier_label, save_category_override,
 };
-use crate::components::device_control_surfaces::DeviceControlSurfaces;
 use crate::components::device_pairing_modal::needs_pairing;
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
@@ -521,8 +520,6 @@ pub fn DeviceDetail(
                             </button>
                         </div>
                     </div>
-
-                    <DeviceControlSurfaces device_id=device_id />
 
                     // ── Empty topology hint (when no zones) ─────────────────
                     {dev.zones.is_empty().then(|| {
