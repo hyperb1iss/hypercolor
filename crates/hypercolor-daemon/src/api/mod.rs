@@ -887,6 +887,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/devices", axum::routing::get(devices::list_devices))
         .route("/drivers", axum::routing::get(drivers::list_drivers))
         .route(
+            "/drivers/{id}/config",
+            axum::routing::get(drivers::get_driver_config),
+        )
+        .route(
             "/drivers/{id}/controls",
             axum::routing::get(controls::get_driver_control_surface),
         )

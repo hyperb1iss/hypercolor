@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::session::SessionConfig;
 
@@ -221,7 +222,7 @@ impl Default for HypercolorConfig {
 pub type DriverConfigs = BTreeMap<String, DriverConfigEntry>;
 
 /// Host-owned wrapper around one driver's settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DriverConfigEntry {
     #[serde(default = "defaults::bool_true")]
     pub enabled: bool,

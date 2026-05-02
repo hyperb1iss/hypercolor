@@ -3,7 +3,7 @@
 //! Tests use `axum::Router` directly with tower's `ServiceExt` and
 //! `Request::builder()` — no TCP server needed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -38,7 +38,7 @@ use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
     ControlActionStatus, ControlAvailabilityExpr, ControlChange, ControlOwner,
@@ -2186,6 +2186,94 @@ async fn list_drivers_returns_registered_module_descriptors() {
     }));
     assert!(nollie.get("control_surface_id").is_none());
     assert!(nollie.get("control_surface_path").is_none());
+}
+
+#[tokio::test]
+async fn get_driver_config_returns_current_and_default_entries() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+            .expect("config manager should build"),
+    );
+    let mut config = HypercolorConfig::default();
+    config.drivers.insert(
+        "wled".to_owned(),
+        DriverConfigEntry::enabled(BTreeMap::from([(
+            "known_ips".to_owned(),
+            serde_json::json!(["192.168.1.50"]),
+        )])),
+    );
+    config_manager.update(config);
+
+    let mut state = isolated_state();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/wled/config")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let data = &json["data"];
+    assert_eq!(data["driver_id"], "wled");
+    assert_eq!(data["config_key"], "drivers.wled");
+    assert_eq!(data["configurable"], true);
+    assert_eq!(data["current"]["enabled"], true);
+    assert_eq!(
+        data["current"]["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+    assert_eq!(data["default"]["enabled"], true);
+    assert_eq!(data["default"]["known_ips"], serde_json::json!([]));
+    assert_eq!(data["default"]["default_protocol"], "ddp");
+}
+
+#[tokio::test]
+async fn get_driver_config_handles_non_configurable_modules() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/nollie/config")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let data = &json["data"];
+    assert_eq!(data["driver_id"], "nollie");
+    assert_eq!(data["config_key"], "drivers.nollie");
+    assert_eq!(data["configurable"], false);
+    assert_eq!(data["current"]["enabled"], true);
+    assert!(data.get("default").is_none());
+}
+
+#[tokio::test]
+async fn get_unknown_driver_config_returns_not_found() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/drivers/missing/config")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
