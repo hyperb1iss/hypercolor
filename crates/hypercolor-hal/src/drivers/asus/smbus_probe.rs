@@ -5,7 +5,7 @@ use std::path::Path;
 
 use hypercolor_types::device::{
     ConnectionType, DeviceFamily, DeviceFingerprint, DeviceIdentifier, DeviceInfo, DeviceOrigin,
-    ZoneInfo,
+    SMBUS_OUTPUT_BACKEND_ID, ZoneInfo,
 };
 use thiserror::Error;
 
@@ -622,7 +622,7 @@ fn build_device_info(
         family: DeviceFamily::new_static("asus", "ASUS"),
         model: Some(controller_kind.model_id().to_owned()),
         connection_type: ConnectionType::SmBus,
-        origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
+        origin: DeviceOrigin::native("asus", SMBUS_OUTPUT_BACKEND_ID, ConnectionType::SmBus)
             .with_protocol_id(ASUS_AURA_SMBUS_PROTOCOL_ID),
         zones,
         firmware_version: firmware_name,

@@ -7,7 +7,7 @@ use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use hypercolor_hal::protocol::{Protocol, ProtocolZone};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceIdentifier,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, USB_OUTPUT_BACKEND_ID,
 };
 
 use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
@@ -82,8 +82,12 @@ impl UsbScanner {
             family: descriptor.family.clone(),
             model: descriptor_model_id(descriptor),
             connection_type: ConnectionType::Usb,
-            origin: DeviceOrigin::native(descriptor.driver_id(), "usb", ConnectionType::Usb)
-                .with_protocol_id(descriptor.protocol.id),
+            origin: DeviceOrigin::native(
+                descriptor.driver_id(),
+                USB_OUTPUT_BACKEND_ID,
+                ConnectionType::Usb,
+            )
+            .with_protocol_id(descriptor.protocol.id),
             zones,
             firmware_version: Some(hex_version(usb.device_version())),
             capabilities,

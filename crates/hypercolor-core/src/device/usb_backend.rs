@@ -22,7 +22,9 @@ use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::attachment::DeviceAttachmentProfile;
-use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
+use hypercolor_types::device::{
+    DeviceId, DeviceInfo, OwnedDisplayFramePayload, USB_OUTPUT_BACKEND_ID, ZoneInfo,
+};
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -1277,7 +1279,7 @@ fn format_error_chain(error: &anyhow::Error) -> String {
 impl DeviceBackend for UsbBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
-            id: "usb".to_owned(),
+            id: USB_OUTPUT_BACKEND_ID.to_owned(),
             name: "USB HID (HAL)".to_owned(),
             description: "Native USB devices via HAL protocol + transport".to_owned(),
         }

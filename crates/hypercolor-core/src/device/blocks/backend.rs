@@ -9,8 +9,9 @@ use tracing::{debug, info};
 
 use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    ZoneInfo,
 };
 
 use super::connection::{self, BlocksConnection};
@@ -134,7 +135,7 @@ impl BlocksBackend {
 impl DeviceBackend for BlocksBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
-            id: "blocks".to_owned(),
+            id: BLOCKS_OUTPUT_BACKEND_ID.to_owned(),
             name: "ROLI Blocks (blocksd)".to_owned(),
             description: "ROLI Lightpad, LUMI Keys, and Seaboard via blocksd daemon".to_owned(),
         }
@@ -295,7 +296,7 @@ fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
         family: DeviceFamily::new_static("roli", "ROLI"),
         model: Some(block_type.display_name().to_owned()),
         connection_type: ConnectionType::Bridge,
-        origin: DeviceOrigin::native("roli", "blocks", ConnectionType::Bridge),
+        origin: DeviceOrigin::native("roli", BLOCKS_OUTPUT_BACKEND_ID, ConnectionType::Bridge),
         zones: vec![ZoneInfo {
             name: "Grid".to_owned(),
             led_count,

@@ -456,6 +456,15 @@ pub enum DriverTransportKind {
     Custom(String),
 }
 
+/// Shared host output backend route for USB-family drivers.
+pub const USB_OUTPUT_BACKEND_ID: &str = "usb";
+
+/// Shared host output backend route for SMBus/I2C drivers.
+pub const SMBUS_OUTPUT_BACKEND_ID: &str = "smbus";
+
+/// Shared host output backend route for ROLI Blocks bridge devices.
+pub const BLOCKS_OUTPUT_BACKEND_ID: &str = "blocks";
+
 impl DriverTransportKind {
     /// Stable API identifier for this transport category.
     #[must_use]

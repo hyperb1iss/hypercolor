@@ -17,8 +17,9 @@ use hypercolor_driver_api::{DriverConfigView, DriverHost};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceInfo, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
-    DriverProtocolDescriptor, DriverTransportKind,
+    BLOCKS_OUTPUT_BACKEND_ID, DeviceClassHint, DeviceInfo, DriverModuleDescriptor,
+    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
+    SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
 };
 
 pub use host::DaemonDriverHost;
@@ -27,9 +28,9 @@ pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin
 #[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
 
-pub const USB_HOST_TRANSPORT_TARGET_ID: &str = "usb";
-pub const SMBUS_HOST_TRANSPORT_TARGET_ID: &str = "smbus";
-pub const BLOCKS_HOST_TRANSPORT_TARGET_ID: &str = "blocks";
+pub const USB_HOST_TRANSPORT_TARGET_ID: &str = USB_OUTPUT_BACKEND_ID;
+pub const SMBUS_HOST_TRANSPORT_TARGET_ID: &str = SMBUS_OUTPUT_BACKEND_ID;
+pub const BLOCKS_HOST_TRANSPORT_TARGET_ID: &str = BLOCKS_OUTPUT_BACKEND_ID;
 pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &[
     USB_HOST_TRANSPORT_TARGET_ID,
     SMBUS_HOST_TRANSPORT_TARGET_ID,

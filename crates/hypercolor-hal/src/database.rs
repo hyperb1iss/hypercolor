@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use hypercolor_types::device::{
-    DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor,
-    DriverTransportKind,
+    BLOCKS_OUTPUT_BACKEND_ID, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
+    DriverProtocolDescriptor, DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
 };
 
 pub use crate::registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
@@ -79,7 +79,7 @@ static PROTOCOL_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock:
         family_id: "asus".to_owned(),
         model_id: None,
         transport: DriverTransportKind::Smbus,
-        route_backend_id: "smbus".to_owned(),
+        route_backend_id: SMBUS_OUTPUT_BACKEND_ID.to_owned(),
         presentation: None,
     });
     descriptors.sort_by(|left, right| {
@@ -186,9 +186,11 @@ fn protocol_descriptor(descriptor: &DeviceDescriptor) -> DriverProtocolDescripto
 const fn route_backend_id(transport: &DriverTransportKind) -> &'static str {
     match transport {
         DriverTransportKind::Network => "network",
-        DriverTransportKind::Smbus => "smbus",
-        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => "usb",
-        DriverTransportKind::Bridge => "bridge",
+        DriverTransportKind::Smbus => SMBUS_OUTPUT_BACKEND_ID,
+        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => {
+            USB_OUTPUT_BACKEND_ID
+        }
+        DriverTransportKind::Bridge => BLOCKS_OUTPUT_BACKEND_ID,
         DriverTransportKind::Virtual => "virtual",
         DriverTransportKind::Custom(_) => "custom",
     }

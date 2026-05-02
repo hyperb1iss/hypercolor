@@ -11,7 +11,7 @@ use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, Respons
 use hypercolor_hal::smbus_registry::build_smbus_protocol;
 use hypercolor_hal::transport::smbus::SmBusTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo};
 use tracing::{debug, trace, warn};
 
 use super::smbus_scanner::SmBusScanner;
@@ -96,7 +96,7 @@ impl Default for SmBusBackend {
 impl DeviceBackend for SmBusBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
-            id: "smbus".to_owned(),
+            id: SMBUS_OUTPUT_BACKEND_ID.to_owned(),
             name: "SMBus (HAL)".to_owned(),
             description: "Native SMBus/I2C devices via HAL protocol + transport".to_owned(),
         }
