@@ -58,6 +58,10 @@ const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
 const DEVICE_FIELD_DEDUP_THRESHOLD: &str = "dedup_threshold";
 const DEVICE_FIELD_RGBW: &str = "rgbw";
 
+const PROTOCOL_DESCRIPTION: &str =
+    "Realtime pixel transport. DDP is preferred; use E1.31 only for sACN workflows.";
+const DEDUP_THRESHOLD_DESCRIPTION: &str = "UDP frame suppression tolerance. Keep the default unless network load is causing trouble; 0 disables it.";
+
 static WLED_INFO_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -379,7 +383,12 @@ impl DriverControlProvider for WledDriverModule {
                     wled_effective_device_values(&driver_values, &existing_device_values);
                 let previous_revision = wled_device_control_revision(device, &values);
                 for change in &changes.changes {
-                    values.insert(change.field_id.clone(), change.value.clone());
+                    let value = if change.field_id == DEVICE_FIELD_PROTOCOL {
+                        wled_protocol_control_value(Some(&change.value))
+                    } else {
+                        change.value.clone()
+                    };
+                    values.insert(change.field_id.clone(), value);
                 }
                 let revision = wled_device_control_revision(device, &values);
                 control_host
@@ -670,6 +679,7 @@ fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {
         wled_driver_field(
             FIELD_KNOWN_IPS,
             "Known IPs",
+            None,
             Some("connection"),
             ControlValueType::List {
                 item_type: Box::new(ControlValueType::IpAddress),
@@ -681,7 +691,8 @@ fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {
         ),
         wled_driver_field(
             FIELD_DEFAULT_PROTOCOL,
-            "Default Protocol",
+            "Default Streaming Protocol",
+            Some(PROTOCOL_DESCRIPTION),
             Some("output"),
             ControlValueType::Enum {
                 options: vec![
@@ -695,6 +706,7 @@ fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {
         wled_driver_field(
             FIELD_REALTIME_HTTP_ENABLED,
             "Realtime HTTP",
+            None,
             Some("output"),
             ControlValueType::Bool,
             ApplyImpact::BackendRebind,
@@ -702,7 +714,8 @@ fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {
         ),
         wled_driver_field(
             FIELD_DEDUP_THRESHOLD,
-            "Dedup Threshold",
+            "Frame Dedup Tolerance",
+            Some(DEDUP_THRESHOLD_DESCRIPTION),
             Some("output"),
             ControlValueType::Integer {
                 min: Some(0),
@@ -718,6 +731,7 @@ fn wled_driver_control_fields() -> Vec<ControlFieldDescriptor> {
 fn wled_driver_field(
     id: &str,
     label: &str,
+    description: Option<&str>,
     group_id: Option<&str>,
     value_type: ControlValueType,
     apply_impact: ApplyImpact,
@@ -730,7 +744,7 @@ fn wled_driver_field(
         },
         group_id: group_id.map(str::to_owned),
         label: label.to_owned(),
-        description: None,
+        description: description.map(str::to_owned),
         value_type,
         default_value: None,
         access: ControlAccess::ReadWrite,
@@ -743,29 +757,18 @@ fn wled_driver_field(
 }
 
 fn wled_device_control_fields() -> Vec<ControlFieldDescriptor> {
-    vec![
-        wled_device_config_field(
-            DEVICE_FIELD_PROTOCOL,
-            "Protocol",
-            ControlValueType::Enum {
-                options: vec![
-                    ControlEnumOption::new("ddp", "DDP"),
-                    ControlEnumOption::new("e131", "E1.31"),
-                ],
-            },
-            0,
-        ),
-        wled_device_config_field(
-            DEVICE_FIELD_DEDUP_THRESHOLD,
-            "Dedup Threshold",
-            ControlValueType::Integer {
-                min: Some(0),
-                max: Some(i64::from(u8::MAX)),
-                step: Some(1),
-            },
-            10,
-        ),
-    ]
+    vec![wled_device_config_field(
+        DEVICE_FIELD_PROTOCOL,
+        "Streaming Protocol",
+        Some(PROTOCOL_DESCRIPTION),
+        ControlValueType::Enum {
+            options: vec![
+                ControlEnumOption::new("ddp", "DDP"),
+                ControlEnumOption::new("e131", "E1.31"),
+            ],
+        },
+        0,
+    )]
 }
 
 fn wled_device_readonly_field(
@@ -797,6 +800,7 @@ fn wled_device_readonly_field(
 fn wled_device_config_field(
     id: &str,
     label: &str,
+    description: Option<&str>,
     value_type: ControlValueType,
     ordering: i32,
 ) -> ControlFieldDescriptor {
@@ -807,7 +811,7 @@ fn wled_device_config_field(
         },
         group_id: Some("output".to_owned()),
         label: label.to_owned(),
-        description: None,
+        description: description.map(str::to_owned),
         value_type,
         default_value: None,
         access: ControlAccess::ReadWrite,
@@ -858,26 +862,33 @@ fn wled_effective_device_values(
     driver_values: &ControlValueMap,
     device_values: &ControlValueMap,
 ) -> ControlValueMap {
-    let mut values = ControlValueMap::from([
-        (
-            DEVICE_FIELD_PROTOCOL.to_owned(),
-            driver_values
-                .get(FIELD_DEFAULT_PROTOCOL)
-                .cloned()
-                .unwrap_or_else(|| ControlValue::Enum("ddp".to_owned())),
-        ),
-        (
-            DEVICE_FIELD_DEDUP_THRESHOLD.to_owned(),
-            driver_values
-                .get(FIELD_DEDUP_THRESHOLD)
-                .cloned()
-                .unwrap_or(ControlValue::Integer(i64::from(default_dedup_threshold()))),
-        ),
-    ]);
+    let mut values = ControlValueMap::from([(
+        DEVICE_FIELD_PROTOCOL.to_owned(),
+        wled_protocol_control_value(driver_values.get(FIELD_DEFAULT_PROTOCOL)),
+    )]);
     for (key, value) in device_values {
-        values.insert(key.clone(), value.clone());
+        match key.as_str() {
+            DEVICE_FIELD_PROTOCOL => {
+                values.insert(key.clone(), wled_protocol_control_value(Some(value)));
+            }
+            DEVICE_FIELD_DEDUP_THRESHOLD => {}
+            _ => {
+                values.insert(key.clone(), value.clone());
+            }
+        }
     }
     values
+}
+
+fn wled_protocol_control_value(value: Option<&ControlValue>) -> ControlValue {
+    match value {
+        Some(ControlValue::Enum(protocol) | ControlValue::String(protocol))
+            if matches!(protocol.as_str(), "ddp" | "e131") =>
+        {
+            ControlValue::Enum(protocol.clone())
+        }
+        _ => ControlValue::Enum("ddp".to_owned()),
+    }
 }
 
 fn wled_apply_response(

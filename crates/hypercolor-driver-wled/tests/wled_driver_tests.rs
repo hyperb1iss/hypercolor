@@ -207,12 +207,17 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
     let driver_values = ControlValueMap::from([
         (
             "default_protocol".to_owned(),
-            ControlValue::Enum("e131".to_owned()),
+            ControlValue::String("e131".to_owned()),
         ),
         ("dedup_threshold".to_owned(), ControlValue::Integer(9)),
     ]);
-    let device_values =
-        ControlValueMap::from([("dedup_threshold".to_owned(), ControlValue::Integer(3))]);
+    let device_values = ControlValueMap::from([
+        (
+            "protocol".to_owned(),
+            ControlValue::String("ddp".to_owned()),
+        ),
+        ("dedup_threshold".to_owned(), ControlValue::Integer(3)),
+    ]);
 
     let surface = wled_device_control_surface(&device, &driver_values, &device_values);
 
@@ -234,9 +239,12 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
             .iter()
             .any(|field| { field.id == "protocol" && field.access == ControlAccess::ReadWrite })
     );
-    assert!(surface.fields.iter().any(|field| {
-        field.id == "dedup_threshold" && field.access == ControlAccess::ReadWrite
-    }));
+    assert!(
+        !surface
+            .fields
+            .iter()
+            .any(|field| { field.id == "dedup_threshold" })
+    );
     assert!(
         surface
             .fields
@@ -245,9 +253,9 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
     );
     assert_eq!(
         surface.values["protocol"],
-        ControlValue::Enum("e131".to_owned())
+        ControlValue::Enum("ddp".to_owned())
     );
-    assert_eq!(surface.values["dedup_threshold"], ControlValue::Integer(3));
+    assert!(!surface.values.contains_key("dedup_threshold"));
     assert_eq!(
         surface.values["ip"],
         ControlValue::IpAddress("10.0.0.5".to_owned())

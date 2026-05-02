@@ -2507,6 +2507,23 @@ async fn list_control_surfaces_preserves_driver_action_confirmation() {
 async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
+    state
+        .device_settings
+        .write()
+        .await
+        .set_driver_control_values(
+            &device_id.to_string(),
+            ControlValueMap::from([
+                (
+                    "protocol".to_owned(),
+                    SurfaceControlValue::String("e131".to_owned()),
+                ),
+                (
+                    "dedup_threshold".to_owned(),
+                    SurfaceControlValue::Integer(8),
+                ),
+            ]),
+        );
     let app = test_app_with_state(state);
     let surface_id = format!("driver:wled:device:{device_id}");
 
@@ -2524,6 +2541,9 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["surface_id"], surface_id);
     assert_eq!(json["data"]["scope"]["device"]["driver_id"], "wled");
+    assert_eq!(json["data"]["values"]["protocol"]["kind"], "enum");
+    assert_eq!(json["data"]["values"]["protocol"]["value"], "e131");
+    assert!(json["data"]["values"]["dedup_threshold"].is_null());
     assert_eq!(json["data"]["values"]["led_count"]["value"], 60);
 }
 
@@ -2550,10 +2570,6 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
                             {
                                 "field_id": "protocol",
                                 "value": { "kind": "enum", "value": "e131" }
-                            },
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 6 }
                             }
                         ]
                     })
@@ -2568,7 +2584,6 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["surface_id"], surface_id);
     assert_eq!(json["data"]["values"]["protocol"]["value"], "e131");
-    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 6);
     assert_eq!(
         json["data"]["impacts"],
         serde_json::json!(["device_reconnect"])
@@ -2594,10 +2609,7 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
         .find(|surface| surface["surface_id"] == surface_id)
         .expect("driver-owned device surface should be present");
     assert_eq!(driver_device_surface["values"]["protocol"]["value"], "e131");
-    assert_eq!(
-        driver_device_surface["values"]["dedup_threshold"]["value"],
-        6
-    );
+    assert!(driver_device_surface["values"]["dedup_threshold"].is_null());
 
     let raw = fs::read_to_string(tmp.path().join("data/device-settings.json"))
         .expect("device settings should be persisted");
@@ -2631,8 +2643,8 @@ async fn patch_driver_owned_device_control_surface_publishes_values_changed_even
                         "dry_run": false,
                         "changes": [
                             {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 8 }
+                                "field_id": "protocol",
+                                "value": { "kind": "enum", "value": "e131" }
                             }
                         ]
                     })
@@ -2679,8 +2691,8 @@ async fn patch_driver_owned_device_control_surface_publishes_values_changed_even
             assert_eq!(event_surface_id, surface_id);
             assert_eq!(revision, updated_revision);
             assert_eq!(
-                values.get("dedup_threshold"),
-                Some(&SurfaceControlValue::Integer(8))
+                values.get("protocol"),
+                Some(&SurfaceControlValue::Enum("e131".to_owned()))
             );
         }
         _ => panic!("expected values_changed control surface event"),
@@ -2728,10 +2740,6 @@ async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_valu
                             {
                                 "field_id": "protocol",
                                 "value": { "kind": "enum", "value": "e131" }
-                            },
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 6 }
                             }
                         ]
                     })
@@ -2747,7 +2755,7 @@ async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_valu
     assert_eq!(json["data"]["previous_revision"], revision);
     assert_eq!(json["data"]["revision"], revision);
     assert_eq!(json["data"]["values"]["protocol"]["value"], "ddp");
-    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 2);
+    assert!(json["data"]["values"]["dedup_threshold"].is_null());
 
     let refreshed = app
         .oneshot(
@@ -2761,10 +2769,7 @@ async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_valu
     assert_eq!(refreshed.status(), StatusCode::OK);
     let refreshed_json = body_json(refreshed).await;
     assert_eq!(refreshed_json["data"]["values"]["protocol"]["value"], "ddp");
-    assert_eq!(
-        refreshed_json["data"]["values"]["dedup_threshold"]["value"],
-        2
-    );
+    assert!(refreshed_json["data"]["values"]["dedup_threshold"].is_null());
     assert!(
         fs::read_to_string(tmp.path().join("data/device-settings.json")).is_err(),
         "dry-run should not write driver device control settings"
