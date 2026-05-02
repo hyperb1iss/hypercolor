@@ -30,7 +30,8 @@ use hypercolor_hal::drivers::razer::{
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{
-    DeviceFamily, DeviceTopologyHint, DriverModuleKind, DriverTransportKind,
+    DRIVER_MODULE_API_SCHEMA_VERSION, DeviceFamily, DeviceTopologyHint, DriverModuleKind,
+    DriverTransportKind,
 };
 
 const PID_BLADE_14_2022: u16 = 0x028C;
@@ -942,6 +943,7 @@ fn module_descriptors_group_hal_protocols_by_family() {
     assert_eq!(nollie.transports, vec![DriverTransportKind::Usb]);
     assert!(nollie.capabilities.protocol_catalog);
     assert!(!nollie.capabilities.output_backend);
+    assert_eq!(nollie.api_schema_version, DRIVER_MODULE_API_SCHEMA_VERSION);
     assert!(nollie.default_enabled);
 
     let asus = modules

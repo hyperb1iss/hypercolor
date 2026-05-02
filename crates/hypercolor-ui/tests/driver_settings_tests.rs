@@ -8,8 +8,8 @@ mod driver_settings;
 mod label_utils;
 
 use hypercolor_types::device::{
-    DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
-    DriverTransportKind,
+    DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
+    DriverModuleKind, DriverPresentation, DriverTransportKind,
 };
 
 use api::{DriverListResponse, DriverSummary};
@@ -34,7 +34,7 @@ fn driver(
                 pairing,
                 ..DriverCapabilitySet::empty()
             },
-            api_schema_version: 1,
+            api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
             default_enabled: true,
         },
@@ -132,7 +132,7 @@ fn driver_list_response_deserializes_daemon_data() {
                     "presentation": false,
                     "controls": false
                 },
-                "api_schema_version": 1,
+                "api_schema_version": __SCHEMA_VERSION__,
                 "config_version": 1,
                 "default_enabled": true
             },
@@ -153,9 +153,13 @@ fn driver_list_response_deserializes_daemon_data() {
                 "route_backend_id": "network"
             }]
         }]
-    }"#;
+    }"#
+    .replace(
+        "__SCHEMA_VERSION__",
+        &DRIVER_MODULE_API_SCHEMA_VERSION.to_string(),
+    );
 
-    let response: DriverListResponse = serde_json::from_str(json).expect("driver list response");
+    let response: DriverListResponse = serde_json::from_str(&json).expect("driver list response");
 
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].descriptor.id, "testnet");

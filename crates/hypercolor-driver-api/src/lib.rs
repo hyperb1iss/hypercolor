@@ -16,8 +16,9 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceEvent, ControlValueMap,
 };
 use hypercolor_types::device::{
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
+    DRIVER_MODULE_API_SCHEMA_VERSION, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState,
+    DriverCapabilitySet, DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
+    DriverTransportKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,7 @@ pub use net::{CredentialStore, MdnsBrowser, MdnsService};
 
 /// Current driver API schema version. Bump this on any breaking change to
 /// the [`DriverHost`] trait, [`DriverDescriptor`] fields, or related types.
-pub const DRIVER_API_SCHEMA_VERSION: u32 = 2;
+pub const DRIVER_API_SCHEMA_VERSION: u32 = DRIVER_MODULE_API_SCHEMA_VERSION;
 
 /// Static metadata about a modular driver.
 #[derive(Debug, Clone, PartialEq, Eq)]

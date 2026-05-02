@@ -1,11 +1,12 @@
 //! Tests for device identity, capabilities, and state types.
 
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceColorSpace,
-    DeviceError, DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId,
-    DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DeviceUserSettings, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverTransportKind, ZoneInfo, ZoneLayoutHint,
+    ConnectionType, DRIVER_MODULE_API_SCHEMA_VERSION, DeviceCapabilities, DeviceClassHint,
+    DeviceColorFormat, DeviceColorSpace, DeviceError, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin,
+    DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverCapabilitySet,
+    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportKind, ZoneInfo,
+    ZoneLayoutHint,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 use uuid::Uuid;
@@ -433,7 +434,7 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
             presentation: true,
             ..DriverCapabilitySet::empty()
         },
-        api_schema_version: 1,
+        api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
         config_version: 1,
         default_enabled: true,
     };

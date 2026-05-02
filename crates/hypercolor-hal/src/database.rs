@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use hypercolor_types::device::{
-    BLOCKS_OUTPUT_BACKEND_ID, DriverCapabilitySet, DriverModuleDescriptor, DriverModuleKind,
-    DriverProtocolDescriptor, DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
+    BLOCKS_OUTPUT_BACKEND_ID, DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet,
+    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverTransportKind,
+    SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
 };
 
 pub use crate::registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
@@ -133,7 +134,7 @@ impl HalModuleAccumulator {
                 presentation: false,
                 controls: false,
             },
-            api_schema_version: 1,
+            api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
             default_enabled: true,
         }

@@ -427,6 +427,9 @@ pub enum DriverModuleKind {
     Virtual,
 }
 
+/// Current schema version for value-shaped driver module descriptors.
+pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 2;
+
 /// API-facing transport category for a driver module.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
