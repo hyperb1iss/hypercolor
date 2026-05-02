@@ -139,7 +139,9 @@ pub async fn get_driver_config(
         |manager| Arc::clone(&manager.get()),
     );
     let current = network::driver_config_entry(&config, &driver_id);
-    let default = driver.config().map(|provider| provider.default_config());
+    let default = driver
+        .config()
+        .map(hypercolor_driver_api::DriverConfigProvider::default_config);
 
     ApiResponse::ok(DriverConfigResponse {
         config_key: format!("drivers.{driver_id}"),

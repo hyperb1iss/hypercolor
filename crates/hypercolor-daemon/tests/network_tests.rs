@@ -137,8 +137,8 @@ fn register_enabled_device_backends_skips_usb_when_no_usb_family_modules_are_ena
     .expect("backend registration should succeed");
 
     let backend_ids = backend_manager.backend_ids();
-    assert!(backend_ids.iter().any(|backend_id| *backend_id == "smbus"));
-    assert!(!backend_ids.iter().any(|backend_id| *backend_id == "usb"));
+    assert!(backend_ids.contains(&"smbus"));
+    assert!(!backend_ids.contains(&"usb"));
 }
 
 #[test]
@@ -163,8 +163,8 @@ fn register_enabled_device_backends_skips_smbus_when_only_usb_modules_are_enable
     .expect("backend registration should succeed");
 
     let backend_ids = backend_manager.backend_ids();
-    assert!(backend_ids.iter().any(|backend_id| *backend_id == "usb"));
-    assert!(!backend_ids.iter().any(|backend_id| *backend_id == "smbus"));
+    assert!(backend_ids.contains(&"usb"));
+    assert!(!backend_ids.contains(&"smbus"));
 }
 
 static HAL_USB_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
