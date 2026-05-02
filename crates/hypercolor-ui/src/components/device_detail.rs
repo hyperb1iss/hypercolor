@@ -12,11 +12,9 @@ use crate::api::{self, DeviceAuthState};
 use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
-    ALL_DEVICE_CLASSES, brand_colors, brand_label, classify_brand, classify_device,
-    device_class_icon, device_class_label, driver_identifier_label, save_category_override,
+    brand_colors, brand_label, classify_brand, driver_identifier_label,
 };
 use crate::components::device_pairing_modal::needs_pairing;
-use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
 
@@ -197,8 +195,6 @@ pub fn DeviceDetail(
                 let last_error = dev.auth.as_ref().and_then(|a| a.last_error.clone());
                 let dev_name_for_edit = dev.name.clone();
                 let push_brightness = push_brightness.clone();
-                let dev_for_category = dev.clone();
-
                 let hero_bg = format!(
                     "background: \
                      radial-gradient(ellipse at 15% 0%, rgba({rgb_for_border}, 0.32) 0%, transparent 55%), \
@@ -320,42 +316,6 @@ pub fn DeviceDetail(
                                     }
                                 })}
                             </div>
-
-                            // Device category (editable)
-                            {
-                                let dev_id_for_cat = dev_for_category.id.clone();
-                                let current_class = classify_device(&dev_for_category);
-                                let current_icon = device_class_icon(&current_class);
-                                let (cat_label, set_cat_label) = signal(device_class_label(&current_class).to_string());
-                                let cat_options = Signal::stored(
-                                    ALL_DEVICE_CLASSES.iter()
-                                        .map(|c| {
-                                            let label = device_class_label(c).to_string();
-                                            (label.clone(), label)
-                                        })
-                                        .collect::<Vec<_>>()
-                                );
-                                view! {
-                                    <div class="flex items-center gap-2 mb-3">
-                                        <Icon icon=current_icon width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" />
-                                        <div class="min-w-[120px]">
-                                            <SilkSelect
-                                                value=Signal::derive(move || cat_label.get())
-                                                options=cat_options
-                                                on_change=Callback::new({
-                                                    let did = dev_id_for_cat.clone();
-                                                    move |val: String| {
-                                                        save_category_override(&did, &val);
-                                                        set_cat_label.set(val);
-                                                    }
-                                                })
-                                                class="bg-surface-overlay/40 border border-edge-subtle/50 px-2 py-0.5 text-[10px] font-mono text-fg-tertiary hover:text-fg-secondary"
-                                            />
-                                        </div>
-                                        <span class="text-[8px] text-fg-tertiary/25">"(category)"</span>
-                                    </div>
-                                }
-                            }
 
                             // ── Pairing panel ────────────────────────────────
                             {match auth_state.as_ref() {

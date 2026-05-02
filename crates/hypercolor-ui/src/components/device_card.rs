@@ -7,7 +7,6 @@ use crate::api::DeviceSummary;
 use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
 use crate::label_utils::humanize_identifier_label;
-use crate::storage;
 use crate::style_utils::device_accent_colors;
 use hypercolor_types::device::DeviceClassHint;
 
@@ -119,36 +118,8 @@ pub enum DeviceClass {
     Other,
 }
 
-/// All device classes for the category picker.
-pub const ALL_DEVICE_CLASSES: &[DeviceClass] = &[
-    DeviceClass::Keyboard,
-    DeviceClass::Mouse,
-    DeviceClass::Hub,
-    DeviceClass::Controller,
-    DeviceClass::NetworkController,
-    DeviceClass::SmartLight,
-    DeviceClass::Audio,
-    DeviceClass::Display,
-    DeviceClass::Other,
-];
-
-/// Parse a device class from its label string.
-pub fn parse_device_class(label: &str) -> Option<DeviceClass> {
-    ALL_DEVICE_CLASSES
-        .iter()
-        .find(|c| device_class_label(c) == label)
-        .copied()
-}
-
-/// Classify a device by name/zone heuristics (auto-detection).
+/// Classify a device by driver metadata, then generic name/transport heuristics.
 pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
-    // Check localStorage override first
-    if let Some(override_label) = load_category_override(&device.id)
-        && let Some(class) = parse_device_class(&override_label)
-    {
-        return class;
-    }
-
     if let Some(class) = device
         .presentation
         .default_device_class
@@ -199,14 +170,6 @@ fn device_class_from_hint(hint: DeviceClassHint) -> Option<DeviceClass> {
         DeviceClassHint::Audio => DeviceClass::Audio,
         DeviceClassHint::Other => return None,
     })
-}
-
-fn load_category_override(device_id: &str) -> Option<String> {
-    storage::get(&format!("hc-device-category-{device_id}"))
-}
-
-pub fn save_category_override(device_id: &str, label: &str) {
-    storage::set(&format!("hc-device-category-{device_id}"), label);
 }
 
 /// Device class → icon.
