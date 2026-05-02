@@ -53,14 +53,21 @@ impl DebugTarget {
     }
 
     fn is_usb(&self) -> bool {
-        matches!(self, Self::HostTransport(target_id) if target_id == "usb")
+        matches!(
+            self,
+            Self::HostTransport(target_id)
+                if target_id == hypercolor_daemon::network::USB_HOST_TRANSPORT_TARGET_ID
+        )
     }
 }
 
 #[derive(Debug, Args)]
 struct DetectArgs {
     /// Discovery targets to scan (repeat or comma-separate values).
-    #[arg(long, value_delimiter = ',', default_values_t = ["usb".to_owned(), "smbus".to_owned()])]
+    #[arg(long, value_delimiter = ',', default_values_t = [
+        hypercolor_daemon::network::USB_HOST_TRANSPORT_TARGET_ID.to_owned(),
+        hypercolor_daemon::network::SMBUS_HOST_TRANSPORT_TARGET_ID.to_owned(),
+    ])]
     targets: Vec<String>,
 
     /// Periodic scan interval in seconds.
@@ -187,7 +194,9 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
                             &driver_registry,
                             Arc::clone(&driver_host),
                             &config,
-                            &[DebugTarget::host_transport("usb")],
+                            &[DebugTarget::host_transport(
+                                hypercolor_daemon::network::USB_HOST_TRANSPORT_TARGET_ID,
+                            )],
                             &args,
                             discovery_timeout,
                             "usb-hotplug",

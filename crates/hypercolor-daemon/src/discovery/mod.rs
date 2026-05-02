@@ -167,7 +167,7 @@ struct HostDiscoveryTargetDescriptor {
 
 static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
     HostDiscoveryTargetDescriptor {
-        id: "usb",
+        id: crate::network::USB_HOST_TRANSPORT_TARGET_ID,
         scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: false,
         scan_on_session_resume: true,
@@ -178,7 +178,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         },
     },
     HostDiscoveryTargetDescriptor {
-        id: "smbus",
+        id: crate::network::SMBUS_HOST_TRANSPORT_TARGET_ID,
         scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: true,
         scan_on_session_resume: true,
@@ -189,7 +189,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
         },
     },
     HostDiscoveryTargetDescriptor {
-        id: "blocks",
+        id: crate::network::BLOCKS_HOST_TRANSPORT_TARGET_ID,
         scanner: DiscoveryTargetScanner::HostTransport,
         preserves_renderable_on_miss: false,
         scan_on_session_resume: false,
@@ -223,19 +223,22 @@ impl DiscoveryTarget {
     /// Create the host USB discovery target.
     #[must_use]
     pub fn usb() -> Self {
-        Self::host("usb").expect("usb discovery target descriptor should exist")
+        Self::host(crate::network::USB_HOST_TRANSPORT_TARGET_ID)
+            .expect("usb discovery target descriptor should exist")
     }
 
     /// Create the host SMBus discovery target.
     #[must_use]
     pub fn smbus() -> Self {
-        Self::host("smbus").expect("smbus discovery target descriptor should exist")
+        Self::host(crate::network::SMBUS_HOST_TRANSPORT_TARGET_ID)
+            .expect("smbus discovery target descriptor should exist")
     }
 
     /// Create the host Blocks bridge discovery target.
     #[must_use]
     pub fn blocks() -> Self {
-        Self::host("blocks").expect("blocks discovery target descriptor should exist")
+        Self::host(crate::network::BLOCKS_HOST_TRANSPORT_TARGET_ID)
+            .expect("blocks discovery target descriptor should exist")
     }
 
     /// Stable discovery target identifier used in request/response payloads.

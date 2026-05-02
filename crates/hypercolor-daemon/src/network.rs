@@ -27,7 +27,14 @@ pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin
 #[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
 
-pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &["usb", "smbus", "blocks"];
+pub const USB_HOST_TRANSPORT_TARGET_ID: &str = "usb";
+pub const SMBUS_HOST_TRANSPORT_TARGET_ID: &str = "smbus";
+pub const BLOCKS_HOST_TRANSPORT_TARGET_ID: &str = "blocks";
+pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &[
+    USB_HOST_TRANSPORT_TARGET_ID,
+    SMBUS_HOST_TRANSPORT_TARGET_ID,
+    BLOCKS_HOST_TRANSPORT_TARGET_ID,
+];
 pub const USB_HOST_DRIVER_TRANSPORTS: &[DriverTransportKind] = &[
     DriverTransportKind::Usb,
     DriverTransportKind::Midi,
@@ -239,10 +246,10 @@ pub const fn host_transport_target_for_driver_transport(
 ) -> Option<&'static str> {
     match transport {
         DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => {
-            Some("usb")
+            Some(USB_HOST_TRANSPORT_TARGET_ID)
         }
-        DriverTransportKind::Smbus => Some("smbus"),
-        DriverTransportKind::Bridge => Some("blocks"),
+        DriverTransportKind::Smbus => Some(SMBUS_HOST_TRANSPORT_TARGET_ID),
+        DriverTransportKind::Bridge => Some(BLOCKS_HOST_TRANSPORT_TARGET_ID),
         DriverTransportKind::Network
         | DriverTransportKind::Virtual
         | DriverTransportKind::Custom(_) => None,
@@ -360,7 +367,7 @@ pub fn host_transport_scanner(
     config: &HypercolorConfig,
 ) -> Option<Box<dyn TransportScanner>> {
     match target_id {
-        "usb" => Some(Box::new(UsbScanner::with_enabled_driver_ids(
+        USB_HOST_TRANSPORT_TARGET_ID => Some(Box::new(UsbScanner::with_enabled_driver_ids(
             enabled_module_ids_for_transports(
                 registry,
                 config,
@@ -368,8 +375,8 @@ pub fn host_transport_scanner(
                 USB_HOST_DRIVER_TRANSPORTS,
             ),
         ))),
-        "smbus" => Some(Box::new(SmBusScanner::new())),
-        "blocks" => {
+        SMBUS_HOST_TRANSPORT_TARGET_ID => Some(Box::new(SmBusScanner::new())),
+        BLOCKS_HOST_TRANSPORT_TARGET_ID => {
             let socket_path = config
                 .discovery
                 .blocks_socket_path
