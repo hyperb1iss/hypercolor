@@ -60,6 +60,15 @@ impl DriverModuleRegistry {
             });
         }
 
+        let module_descriptor = driver.module_descriptor();
+        if module_descriptor.api_schema_version != DRIVER_API_SCHEMA_VERSION {
+            return Err(DriverModuleRegistryError::SchemaVersionMismatch {
+                id,
+                expected: DRIVER_API_SCHEMA_VERSION,
+                found: module_descriptor.api_schema_version,
+            });
+        }
+
         if self.drivers.contains_key(&id) {
             return Err(DriverModuleRegistryError::DuplicateDriverId { id });
         }

@@ -16,8 +16,8 @@ use hypercolor_types::controls::{
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
-    DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleDescriptor, DriverModuleKind,
+    DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
 };
 use std::sync::LazyLock;
 
@@ -633,6 +633,7 @@ fn registry_can_return_registered_driver() {
 }
 
 struct MismatchedSchemaDriver;
+struct MismatchedModuleSchemaDriver;
 
 static MISMATCHED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::with_schema_version(
     "mismatch",
@@ -658,6 +659,18 @@ impl DriverModule for MismatchedSchemaDriver {
     }
 }
 
+impl DriverModule for MismatchedModuleSchemaDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &DISCOVERY_ONLY_DESCRIPTOR
+    }
+
+    fn module_descriptor(&self) -> DriverModuleDescriptor {
+        let mut descriptor = self.descriptor().module_descriptor();
+        descriptor.api_schema_version = u32::MAX;
+        descriptor
+    }
+}
+
 #[test]
 fn registry_rejects_schema_version_mismatch() {
     let mut registry = DriverModuleRegistry::new();
@@ -669,6 +682,23 @@ fn registry_rejects_schema_version_mismatch() {
         error,
         DriverModuleRegistryError::SchemaVersionMismatch {
             id: "mismatch".to_owned(),
+            expected: DRIVER_API_SCHEMA_VERSION,
+            found: u32::MAX,
+        }
+    );
+}
+
+#[test]
+fn registry_rejects_module_descriptor_schema_version_mismatch() {
+    let mut registry = DriverModuleRegistry::new();
+    let error = registry
+        .register(MismatchedModuleSchemaDriver)
+        .expect_err("mismatched module descriptor schema should fail");
+
+    assert_eq!(
+        error,
+        DriverModuleRegistryError::SchemaVersionMismatch {
+            id: "discovery-only".to_owned(),
             expected: DRIVER_API_SCHEMA_VERSION,
             found: u32::MAX,
         }
