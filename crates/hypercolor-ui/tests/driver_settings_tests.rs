@@ -12,7 +12,7 @@ use hypercolor_types::device::{
     DriverModuleKind, DriverPresentation, DriverTransportKind,
 };
 
-use api::{DriverListResponse, DriverSummary};
+use api::{DriverConfigResponse, DriverListResponse, DriverSummary, driver_config_url};
 use driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
 
 fn driver(
@@ -171,4 +171,64 @@ fn driver_list_response_deserializes_daemon_data() {
     assert_eq!(response.items[0].config_key, "drivers.testnet");
     assert_eq!(response.items[0].protocols[0].protocol_id, "testnet/proto");
     assert_eq!(response.items[0].protocols[0].route_backend_id, "network");
+}
+
+#[test]
+fn driver_config_url_encodes_driver_id_path_segment() {
+    assert_eq!(
+        driver_config_url("external driver/one"),
+        "/api/v1/drivers/external%20driver%2Fone/config"
+    );
+}
+
+#[test]
+fn driver_config_response_deserializes_flattened_entries() {
+    let json = r#"{
+        "driver_id": "wled",
+        "config_key": "drivers.wled",
+        "configurable": true,
+        "current": {
+            "enabled": true,
+            "known_ips": ["192.168.1.50"]
+        },
+        "default": {
+            "enabled": true,
+            "known_ips": [],
+            "default_protocol": "ddp"
+        }
+    }"#;
+
+    let response: DriverConfigResponse =
+        serde_json::from_str(json).expect("driver config response");
+
+    assert_eq!(response.driver_id, "wled");
+    assert_eq!(response.config_key, "drivers.wled");
+    assert!(response.configurable);
+    assert_eq!(
+        response.current.settings["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+    let default = response.default.expect("default config should deserialize");
+    assert_eq!(default.settings["default_protocol"], "ddp");
+}
+
+#[test]
+fn driver_config_response_handles_non_configurable_entries() {
+    let json = r#"{
+        "driver_id": "nollie",
+        "config_key": "drivers.nollie",
+        "configurable": false,
+        "current": {
+            "enabled": false
+        }
+    }"#;
+
+    let response: DriverConfigResponse =
+        serde_json::from_str(json).expect("non-configurable driver config response");
+
+    assert_eq!(response.driver_id, "nollie");
+    assert!(!response.configurable);
+    assert!(!response.current.enabled);
+    assert!(response.current.settings.is_empty());
+    assert!(response.default.is_none());
 }
