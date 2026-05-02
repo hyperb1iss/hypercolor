@@ -21,9 +21,9 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, DriverTransport,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -34,7 +34,7 @@ use hypercolor_types::controls::{
     ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
     ControlValueType, ControlVisibility,
 };
-use hypercolor_types::device::{DeviceClassHint, DriverPresentation};
+use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 
 pub use backend::{HueBackend, HueConfig};
 pub use bridge::{DEFAULT_HUE_API_PORT, DEFAULT_HUE_STREAM_PORT, HueBridgeClient, HueNupnpBridge};
@@ -53,8 +53,13 @@ const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Click Pair Bridge.",
 ];
 
-pub static DESCRIPTOR: DriverDescriptor =
-    DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
+pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "hue",
+    "Philips Hue",
+    DriverTransportKind::Network,
+    true,
+    true,
+);
 
 const FIELD_BRIDGE_IPS: &str = "bridge_ips";
 const FIELD_USE_CIE_XY: &str = "use_cie_xy";

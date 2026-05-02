@@ -19,7 +19,7 @@ use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveryCapability, DiscoveryRequest,
     DiscoveryResult, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverHost,
-    DriverModule, DriverTransport, ValidatedControlChanges,
+    DriverModule, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -154,7 +154,7 @@ impl DeviceBackend for NoopBackend {
 static ACTION_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
     "action_test",
     "Action Test",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );
@@ -276,7 +276,7 @@ impl DriverControlProvider for ActionTestDriver {
 static RESCAN_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
     "rescan_test",
     "Rescan Test",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     true,
     false,
 );
@@ -403,7 +403,7 @@ impl DriverControlProvider for RescanTestDriver {
 static UNSUPPORTED_IMPACT_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
     "unsupported_impact_test",
     "Unsupported Impact Test",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );

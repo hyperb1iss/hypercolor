@@ -17,8 +17,7 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverProtocolDescriptor,
-    DriverTransportKind,
+    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -35,27 +34,7 @@ pub use net::{CredentialStore, MdnsBrowser, MdnsService};
 
 /// Current driver API schema version. Bump this on any breaking change to
 /// the [`DriverHost`] trait, [`DriverDescriptor`] fields, or related types.
-pub const DRIVER_API_SCHEMA_VERSION: u32 = 1;
-
-/// Stable transport category for a driver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DriverTransport {
-    /// A driver that communicates with devices over IP networking.
-    Network,
-    /// A driver that owns USB transport or protocol handling.
-    Usb,
-    /// A driver that owns local SMBus/I2C transport or protocol handling.
-    Smbus,
-    /// A driver that communicates with devices over MIDI.
-    Midi,
-    /// A driver that communicates over a host serial transport.
-    Serial,
-    /// A driver that talks to an out-of-process bridge.
-    Bridge,
-    /// A driver that exposes in-process or synthetic devices.
-    Virtual,
-}
+pub const DRIVER_API_SCHEMA_VERSION: u32 = 2;
 
 /// Static metadata about a modular driver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +44,7 @@ pub struct DriverDescriptor {
     /// Human-readable driver name for logs and UI.
     pub display_name: &'static str,
     /// Transport class used by this driver.
-    pub transport: DriverTransport,
+    pub transport: DriverTransportKind,
     /// Whether the driver contributes discovery support.
     pub supports_discovery: bool,
     /// Whether the driver contributes pairing support.
@@ -82,7 +61,7 @@ impl DriverDescriptor {
     pub const fn new(
         id: &'static str,
         display_name: &'static str,
-        transport: DriverTransport,
+        transport: DriverTransportKind,
         supports_discovery: bool,
         supports_pairing: bool,
     ) -> Self {
@@ -106,7 +85,7 @@ impl DriverDescriptor {
     pub const fn with_schema_version(
         id: &'static str,
         display_name: &'static str,
-        transport: DriverTransport,
+        transport: DriverTransportKind,
         supports_discovery: bool,
         supports_pairing: bool,
         schema_version: u32,
@@ -130,7 +109,7 @@ impl DriverDescriptor {
             display_name: self.display_name.to_owned(),
             vendor_name: None,
             module_kind: self.transport.module_kind(),
-            transports: vec![self.transport.into()],
+            transports: vec![self.transport.clone()],
             capabilities: DriverCapabilitySet {
                 config: false,
                 discovery: self.supports_discovery,
@@ -145,32 +124,6 @@ impl DriverDescriptor {
             api_schema_version: self.schema_version,
             config_version: 1,
             default_enabled: true,
-        }
-    }
-}
-
-impl DriverTransport {
-    #[must_use]
-    pub const fn module_kind(self) -> DriverModuleKind {
-        match self {
-            Self::Network => DriverModuleKind::Network,
-            Self::Usb | Self::Smbus | Self::Midi | Self::Serial => DriverModuleKind::Hal,
-            Self::Bridge => DriverModuleKind::Bridge,
-            Self::Virtual => DriverModuleKind::Virtual,
-        }
-    }
-}
-
-impl From<DriverTransport> for DriverTransportKind {
-    fn from(value: DriverTransport) -> Self {
-        match value {
-            DriverTransport::Network => Self::Network,
-            DriverTransport::Usb => Self::Usb,
-            DriverTransport::Smbus => Self::Smbus,
-            DriverTransport::Midi => Self::Midi,
-            DriverTransport::Serial => Self::Serial,
-            DriverTransport::Bridge => Self::Bridge,
-            DriverTransport::Virtual => Self::Virtual,
         }
     }
 }

@@ -15,8 +15,7 @@ use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
     DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor,
     DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, TrackedDeviceCtx,
-    ValidatedControlChanges,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -27,7 +26,9 @@ use hypercolor_types::controls::{
     ControlOwner, ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
     ControlValueMap, ControlValueType, ControlVisibility,
 };
-use hypercolor_types::device::{DeviceClassHint, DeviceId, DriverPresentation};
+use hypercolor_types::device::{
+    DeviceClassHint, DeviceId, DriverPresentation, DriverTransportKind,
+};
 use serde::{Deserialize, Serialize};
 
 pub use backend::{
@@ -42,7 +43,7 @@ pub use e131::{
 pub use scanner::{WledKnownTarget, WledScanner};
 
 pub static DESCRIPTOR: DriverDescriptor =
-    DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
+    DriverDescriptor::new("wled", "WLED", DriverTransportKind::Network, true, false);
 
 const FIELD_KNOWN_IPS: &str = "known_ips";
 const FIELD_DEFAULT_PROTOCOL: &str = "default_protocol";

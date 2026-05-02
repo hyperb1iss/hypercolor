@@ -349,6 +349,27 @@ fn driver_transport_kind_exposes_stable_api_ids() {
 }
 
 #[test]
+fn driver_transport_kind_maps_to_module_kind() {
+    let cases = [
+        (DriverTransportKind::Network, DriverModuleKind::Network),
+        (DriverTransportKind::Usb, DriverModuleKind::Hal),
+        (DriverTransportKind::Smbus, DriverModuleKind::Hal),
+        (DriverTransportKind::Midi, DriverModuleKind::Hal),
+        (DriverTransportKind::Serial, DriverModuleKind::Hal),
+        (DriverTransportKind::Bridge, DriverModuleKind::Bridge),
+        (DriverTransportKind::Virtual, DriverModuleKind::Virtual),
+        (
+            DriverTransportKind::Custom("openlinkhub".into()),
+            DriverModuleKind::Virtual,
+        ),
+    ];
+
+    for (transport, expected) in cases {
+        assert_eq!(transport.module_kind(), expected);
+    }
+}
+
+#[test]
 fn driver_transport_kind_preserves_bridge_connections() {
     let transport = DriverTransportKind::from(ConnectionType::Bridge);
 

@@ -471,6 +471,17 @@ impl DriverTransportKind {
             Self::Custom(value) => value,
         }
     }
+
+    /// Host module category implied by this transport.
+    #[must_use]
+    pub const fn module_kind(&self) -> DriverModuleKind {
+        match self {
+            Self::Network => DriverModuleKind::Network,
+            Self::Usb | Self::Smbus | Self::Midi | Self::Serial => DriverModuleKind::Hal,
+            Self::Bridge => DriverModuleKind::Bridge,
+            Self::Virtual | Self::Custom(_) => DriverModuleKind::Virtual,
+        }
+    }
 }
 
 impl From<ConnectionType> for DriverTransportKind {

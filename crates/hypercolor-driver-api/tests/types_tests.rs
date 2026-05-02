@@ -6,7 +6,7 @@ use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice, DriverDiscoveryState,
     DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, DriverTransport, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
     PairingFieldDescriptor, PairingFlowKind, ValidatedControlChanges, support,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
@@ -26,14 +26,14 @@ fn driver_descriptor_constructor_sets_expected_flags() {
     let descriptor = DriverDescriptor::new(
         "fixture-network",
         "Fixture Network",
-        DriverTransport::Network,
+        DriverTransportKind::Network,
         true,
         true,
     );
 
     assert_eq!(descriptor.id, "fixture-network");
     assert_eq!(descriptor.display_name, "Fixture Network");
-    assert_eq!(descriptor.transport, DriverTransport::Network);
+    assert_eq!(descriptor.transport, DriverTransportKind::Network);
     assert!(descriptor.supports_discovery);
     assert!(descriptor.supports_pairing);
 }
@@ -43,7 +43,7 @@ fn driver_descriptor_converts_to_module_descriptor() {
     let descriptor = DriverDescriptor::new(
         "fixture-network",
         "Fixture Network",
-        DriverTransport::Network,
+        DriverTransportKind::Network,
         true,
         true,
     );
@@ -66,32 +66,32 @@ fn driver_descriptor_converts_to_module_descriptor() {
 fn driver_descriptor_maps_non_network_transports() {
     let cases = [
         (
-            DriverTransport::Usb,
+            DriverTransportKind::Usb,
             DriverModuleKind::Hal,
             DriverTransportKind::Usb,
         ),
         (
-            DriverTransport::Smbus,
+            DriverTransportKind::Smbus,
             DriverModuleKind::Hal,
             DriverTransportKind::Smbus,
         ),
         (
-            DriverTransport::Midi,
+            DriverTransportKind::Midi,
             DriverModuleKind::Hal,
             DriverTransportKind::Midi,
         ),
         (
-            DriverTransport::Serial,
+            DriverTransportKind::Serial,
             DriverModuleKind::Hal,
             DriverTransportKind::Serial,
         ),
         (
-            DriverTransport::Bridge,
+            DriverTransportKind::Bridge,
             DriverModuleKind::Bridge,
             DriverTransportKind::Bridge,
         ),
         (
-            DriverTransport::Virtual,
+            DriverTransportKind::Virtual,
             DriverModuleKind::Virtual,
             DriverTransportKind::Virtual,
         ),
@@ -300,7 +300,7 @@ struct ControlOnlyDriver;
 static CONTROL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "control-only",
     "Control Only",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );
@@ -343,7 +343,7 @@ struct ProtocolOnlyDriver;
 static PROTOCOL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "protocol-only",
     "Protocol Only",
-    DriverTransport::Usb,
+    DriverTransportKind::Usb,
     false,
     false,
 );
@@ -378,7 +378,7 @@ struct PresentationOnlyDriver;
 static PRESENTATION_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "presentation-only",
     "Presentation Only",
-    DriverTransport::Usb,
+    DriverTransportKind::Usb,
     false,
     false,
 );

@@ -1,14 +1,15 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use hypercolor_driver_api::validation::{ValidationError, validate_ip, validate_port};
-use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor, DriverTransport};
+use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor};
+use hypercolor_types::device::DriverTransportKind;
 
 #[test]
 fn schema_version_constant_is_stamped_onto_new_descriptors() {
     let descriptor = DriverDescriptor::new(
         "fixture-network",
         "Fixture Network",
-        DriverTransport::Network,
+        DriverTransportKind::Network,
         true,
         true,
     );
@@ -20,7 +21,7 @@ fn with_schema_version_accepts_explicit_value() {
     let descriptor = DriverDescriptor::with_schema_version(
         "legacy",
         "Legacy",
-        DriverTransport::Network,
+        DriverTransportKind::Network,
         true,
         false,
         0,

@@ -13,10 +13,9 @@ use hypercolor_driver_api::{
     DeviceBackend, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
     DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverControlProvider,
     DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, DriverTransport, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, TransportScanner,
-    ValidatedControlChanges,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, PairDeviceOutcome, PairDeviceRequest,
+    PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFieldDescriptor,
+    PairingFlowKind, TrackedDeviceCtx, TransportScanner, ValidatedControlChanges,
 };
 use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
@@ -28,7 +27,8 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation,
+    DriverTransportKind, ZoneInfo,
 };
 use serde_json::json;
 use tracing::warn;
@@ -73,7 +73,7 @@ const GOVEE_PAIRING_INSTRUCTIONS: &[&str] = &[
 ];
 
 pub static DESCRIPTOR: DriverDescriptor =
-    DriverDescriptor::new("govee", "Govee", DriverTransport::Network, true, true);
+    DriverDescriptor::new("govee", "Govee", DriverTransportKind::Network, true, true);
 
 #[derive(Clone)]
 pub struct GoveeDriverModule {

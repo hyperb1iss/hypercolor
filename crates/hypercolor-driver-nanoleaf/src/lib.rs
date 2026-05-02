@@ -22,9 +22,9 @@ use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, DriverTransport,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DeviceBackend, TransportScanner};
 use hypercolor_types::config::DriverConfigEntry;
@@ -36,7 +36,7 @@ use hypercolor_types::controls::{
     ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue, ControlValueMap,
     ControlValueType, ControlVisibility,
 };
-use hypercolor_types::device::{DeviceClassHint, DriverPresentation};
+use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -59,8 +59,13 @@ const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Click Pair Device.",
 ];
 
-pub static DESCRIPTOR: DriverDescriptor =
-    DriverDescriptor::new("nanoleaf", "Nanoleaf", DriverTransport::Network, true, true);
+pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "nanoleaf",
+    "Nanoleaf",
+    DriverTransportKind::Network,
+    true,
+    true,
+);
 
 const FIELD_DEVICE_IPS: &str = "device_ips";
 const FIELD_TRANSITION_TIME: &str = "transition_time";

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use hypercolor_driver_api::{
     DeviceBackend, DriverConfigView, DriverDescriptor, DriverHost, DriverModule,
-    DriverProtocolCatalog, DriverTransport,
+    DriverProtocolCatalog,
 };
 use hypercolor_hal::ProtocolDatabase;
 use hypercolor_types::device::{
@@ -22,7 +22,8 @@ impl HalCatalogDriverModule {
         let transport = module_descriptor
             .transports
             .first()
-            .map_or(DriverTransport::Usb, driver_transport);
+            .cloned()
+            .unwrap_or(DriverTransportKind::Usb);
         let descriptor = DriverDescriptor::new(
             leak_string(module_descriptor.id.clone()),
             leak_string(module_descriptor.display_name.clone()),
@@ -91,17 +92,4 @@ pub fn hal_module_descriptors() -> &'static [DriverModuleDescriptor] {
 
 fn leak_string(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
-}
-
-const fn driver_transport(transport: &DriverTransportKind) -> DriverTransport {
-    match transport {
-        DriverTransportKind::Network => DriverTransport::Network,
-        DriverTransportKind::Usb => DriverTransport::Usb,
-        DriverTransportKind::Smbus => DriverTransport::Smbus,
-        DriverTransportKind::Midi => DriverTransport::Midi,
-        DriverTransportKind::Serial => DriverTransport::Serial,
-        DriverTransportKind::Bridge => DriverTransport::Bridge,
-        DriverTransportKind::Virtual => DriverTransport::Virtual,
-        DriverTransportKind::Custom(_) => DriverTransport::Virtual,
-    }
 }

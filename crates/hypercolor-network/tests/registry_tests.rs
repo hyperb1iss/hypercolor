@@ -6,7 +6,7 @@ use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
     DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveryState,
     DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, DriverTransport, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
+    DriverRuntimeActions, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
@@ -258,7 +258,7 @@ struct DiscoveryOnlyDriver;
 static DISCOVERY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "discovery-only",
     "Discovery Only",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     true,
     false,
 );
@@ -291,7 +291,7 @@ struct PairingOnlyDriver;
 static PAIRING_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "pairing-only",
     "Pairing Only",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     true,
 );
@@ -320,7 +320,7 @@ struct ControlOnlyDriver;
 static CONTROL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "control-only",
     "Control Only",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );
@@ -376,7 +376,7 @@ struct ProtocolOnlyDriver;
 static PROTOCOL_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "protocol-only",
     "Protocol Only",
-    DriverTransport::Usb,
+    DriverTransportKind::Usb,
     false,
     false,
 );
@@ -424,7 +424,7 @@ struct PresentationOnlyDriver;
 static PRESENTATION_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "presentation-only",
     "Presentation Only",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );
@@ -637,7 +637,7 @@ struct MismatchedSchemaDriver;
 static MISMATCHED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::with_schema_version(
     "mismatch",
     "Schema Mismatch",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     true,
     false,
     u32::MAX,

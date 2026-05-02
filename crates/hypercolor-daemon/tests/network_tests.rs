@@ -9,7 +9,7 @@ use hypercolor_daemon::network;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
     DriverDiscoveryState, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverProtocolCatalog, DriverRuntimeActions, DriverTransport,
+    DriverProtocolCatalog, DriverRuntimeActions,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -170,7 +170,7 @@ fn register_enabled_device_backends_skips_smbus_when_only_usb_modules_are_enable
 static HAL_USB_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "hal-fixture-usb",
     "HAL Fixture USB",
-    DriverTransport::Usb,
+    DriverTransportKind::Usb,
     false,
     false,
 );
@@ -178,7 +178,7 @@ static HAL_USB_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 static HAL_SMBUS_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "hal-fixture-smbus",
     "HAL Fixture SMBus",
-    DriverTransport::Smbus,
+    DriverTransportKind::Smbus,
     false,
     false,
 );
@@ -334,7 +334,7 @@ struct ConfiglessDriver;
 static CONFIGLESS_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "external",
     "External Driver",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     true,
     false,
 );
@@ -368,7 +368,7 @@ struct CapabilityOnlyDriver;
 static CAPABILITY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "capability-only",
     "Capability Only",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );
@@ -397,7 +397,7 @@ struct ProtocolCatalogDriver;
 static PROTOCOL_CATALOG_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "protocol-catalog",
     "Protocol Catalog",
-    DriverTransport::Usb,
+    DriverTransportKind::Usb,
     false,
     false,
 );
@@ -452,7 +452,7 @@ struct PresentationDriver;
 static PRESENTATION_DRIVER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     "presentation-driver",
     "Presentation Driver",
-    DriverTransport::Network,
+    DriverTransportKind::Network,
     false,
     false,
 );

@@ -511,13 +511,13 @@ mod tests {
     use crate::api::AppState;
     use hypercolor_driver_api::{
         DeviceBackend, DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-        DriverDescriptor, DriverModule, DriverTransport,
+        DriverDescriptor, DriverModule,
     };
     use hypercolor_network::DriverModuleRegistry;
     use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, ZoneInfo,
+        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, DriverTransportKind, ZoneInfo,
     };
 
     fn builtin_registry() -> AppState {
@@ -548,7 +548,7 @@ mod tests {
     static ENABLED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
         "enabled-driver",
         "Enabled Driver",
-        DriverTransport::Network,
+        DriverTransportKind::Network,
         true,
         true,
     );
@@ -556,7 +556,7 @@ mod tests {
     static DEFAULT_DISABLED_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
         "default-disabled",
         "Default Disabled",
-        DriverTransport::Network,
+        DriverTransportKind::Network,
         true,
         false,
     );
@@ -564,7 +564,7 @@ mod tests {
     static SMBUS_MODULE_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
         "smbus-driver",
         "SMBus Driver",
-        DriverTransport::Smbus,
+        DriverTransportKind::Smbus,
         false,
         false,
     );
@@ -572,7 +572,7 @@ mod tests {
     static USB_MODULE_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
         "usb-driver",
         "USB Driver",
-        DriverTransport::Usb,
+        DriverTransportKind::Usb,
         false,
         false,
     );
