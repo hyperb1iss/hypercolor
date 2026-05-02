@@ -8,6 +8,7 @@ pub mod control_panel;
 pub mod device_brightness_slider;
 pub mod device_card;
 pub mod device_detail;
+pub mod device_driver_controls;
 pub mod device_metrics_strip;
 pub mod device_pairing_modal;
 pub mod display_preview_surface;

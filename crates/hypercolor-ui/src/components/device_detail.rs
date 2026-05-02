@@ -14,6 +14,7 @@ use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
     brand_colors, brand_label, classify_brand, driver_identifier_label,
 };
+use crate::components::device_driver_controls::DeviceDriverControls;
 use crate::components::device_pairing_modal::needs_pairing;
 use crate::icons::*;
 use crate::toasts;
@@ -480,6 +481,8 @@ pub fn DeviceDetail(
                             </button>
                         </div>
                     </div>
+
+                    <DeviceDriverControls device_id=device_id />
 
                     // ── Empty topology hint (when no zones) ─────────────────
                     {dev.zones.is_empty().then(|| {
