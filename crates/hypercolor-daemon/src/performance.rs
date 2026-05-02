@@ -249,6 +249,17 @@ impl PerformanceTracker {
         }
     }
 
+    /// Clear render-frame timing data while preserving long-lived health counters.
+    pub(crate) fn clear_frame_timings(&mut self) {
+        self.latest_frame = None;
+        self.frame_times_us.clear();
+        self.jitter_us.clear();
+        self.wake_delay_us.clear();
+        self.push_us.clear();
+        self.publish_us.clear();
+        self.pacing_history.clear();
+    }
+
     /// Snapshot the latest timings and rolling frame-time summary.
     #[must_use]
     pub(crate) fn snapshot(&self) -> PerformanceSnapshot {

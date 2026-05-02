@@ -4,7 +4,7 @@ use std::time::Duration;
 use hypercolor_core::device::{
     AsyncWriteFailure, DeviceLifecycleManager, DiscoveryConnectBehavior, LifecycleAction,
 };
-use hypercolor_types::device::{DeviceError, DeviceId, DeviceState};
+use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceState};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
@@ -250,6 +250,53 @@ pub async fn release_renderable_devices(runtime: &DiscoveryRuntime) -> usize {
     }
 
     sync_active_layout_for_renderable_devices(runtime, None).await;
+    released
+}
+
+/// Temporarily release every renderable network device without disabling it.
+pub async fn release_renderable_network_devices(runtime: &DiscoveryRuntime) -> usize {
+    let tracked_device_ids = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle
+            .tracked_device_ids()
+            .into_iter()
+            .filter(|device_id| {
+                lifecycle
+                    .state(*device_id)
+                    .is_some_and(|state| state.is_renderable())
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut released = 0_usize;
+
+    for device_id in tracked_device_ids {
+        let is_network = runtime
+            .device_registry
+            .get(&device_id)
+            .await
+            .is_some_and(|tracked| tracked.info.connection_type == ConnectionType::Network);
+        if !is_network {
+            continue;
+        }
+
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_device_vanished(device_id)
+        };
+
+        if actions.is_empty() {
+            continue;
+        }
+
+        execute_lifecycle_actions(runtime.clone(), actions).await;
+        sync_registry_state(runtime, device_id).await;
+        released = released.saturating_add(1);
+    }
+
+    if released > 0 {
+        sync_active_layout_for_renderable_devices(runtime, None).await;
+    }
     released
 }
 

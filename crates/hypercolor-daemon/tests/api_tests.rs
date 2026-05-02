@@ -28,13 +28,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupTarget};
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_core::engine::RenderLoopState;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
 use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
@@ -60,6 +63,7 @@ use hypercolor_types::scene::{
     RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope,
     TransitionSpec, UnassignedBehavior,
 };
+use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -68,6 +72,16 @@ use hypercolor_types::spatial::{
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn assert_canvas_frame_black(frame: &CanvasFrame) {
+    assert!(
+        frame
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255),
+        "canvas frame should be opaque black"
+    );
+}
 
 fn isolated_state() -> AppState {
     isolated_state_with_tempdir().0
@@ -4124,6 +4138,92 @@ async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
         .primary_group()
         .expect("primary group shell should remain after stop");
     assert!(primary.effect_id.is_none());
+}
+
+#[tokio::test]
+async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+
+    let group_id = hypercolor_types::scene::RenderGroupId::new();
+    let display_device_id = DeviceId::new();
+    state.event_bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id: display_device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 1.0,
+        },
+    );
+    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let mut red_canvas = Canvas::new(2, 2);
+    red_canvas.fill(Rgba::new(255, 0, 0, 255));
+    group_sender.send_replace(CanvasFrame::from_canvas(&red_canvas, 7, 7));
+    let group_receiver = group_sender.subscribe();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let stop_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Paused
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(power_state.sleeping);
+    assert_eq!(power_state.session_brightness, 0.0);
+    assert_eq!(power_state.off_output_behavior, OffOutputBehavior::Release);
+    let canvas_receiver = state.event_bus.canvas_receiver();
+    let canvas_frame = canvas_receiver.borrow().clone();
+    assert_canvas_frame_black(&canvas_frame);
+    let scene_canvas_receiver = state.event_bus.scene_canvas_receiver();
+    let scene_canvas_frame = scene_canvas_receiver.borrow().clone();
+    assert_canvas_frame_black(&scene_canvas_frame);
+    let group_frame = group_receiver.borrow().clone();
+    assert_canvas_frame_black(&group_frame);
+
+    let resume_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resume_response.status(), StatusCode::OK);
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Running
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(!power_state.sleeping);
+    assert_eq!(power_state.session_brightness, 1.0);
 }
 
 #[tokio::test]

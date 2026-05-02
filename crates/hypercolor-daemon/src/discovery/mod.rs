@@ -44,7 +44,8 @@ pub(crate) use lifecycle::execute_lifecycle_actions;
 pub(crate) use lifecycle::handle_async_write_failures;
 pub use lifecycle::{
     UserEnabledStateResult, activate_pairable_device, apply_user_enabled_state,
-    disconnect_tracked_device, release_renderable_devices, shutdown_renderable_devices,
+    disconnect_tracked_device, release_renderable_devices, release_renderable_network_devices,
+    shutdown_renderable_devices,
 };
 pub use scan::{DiscoveryScanResult, execute_discovery_scan, execute_discovery_scan_if_idle};
 

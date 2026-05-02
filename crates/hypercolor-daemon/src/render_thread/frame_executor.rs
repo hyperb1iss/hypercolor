@@ -409,7 +409,11 @@ pub(crate) async fn execute_frame(
         (execution.next_wake, execution.next_skip_decision)
     };
 
-    if !scene_snapshot.effect_demand.effect_running {
+    if should_record_idle_black_frame(
+        scene_snapshot.effect_demand.effect_running,
+        scene_snapshot.effect_demand.screen_capture_active,
+        reuses_published_frame,
+    ) {
         frame_loop.throttle.note_idle_frame_without_effect();
     }
 
@@ -417,6 +421,14 @@ pub(crate) async fn execute_frame(
         next_wake,
         next_skip_decision,
     }
+}
+
+fn should_record_idle_black_frame(
+    effect_running: bool,
+    screen_capture_active: bool,
+    reuses_published_frame: bool,
+) -> bool {
+    !effect_running && !screen_capture_active && !reuses_published_frame
 }
 
 #[cfg(test)]
@@ -500,6 +512,14 @@ mod tests {
     fn gpu_preview_advances_when_requested_and_unresolved() {
         let render_stage = render_stage(CompositorBackendKind::Gpu, true, false);
         assert!(needs_gpu_preview_advance(&render_stage));
+    }
+
+    #[test]
+    fn idle_black_frame_is_recorded_only_after_current_idle_output() {
+        assert!(super::should_record_idle_black_frame(false, false, false));
+        assert!(!super::should_record_idle_black_frame(false, false, true));
+        assert!(!super::should_record_idle_black_frame(false, true, false));
+        assert!(!super::should_record_idle_black_frame(true, false, false));
     }
 
     fn sample_layout(zone_ids: &[&str]) -> SpatialLayout {

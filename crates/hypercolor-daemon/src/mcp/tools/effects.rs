@@ -7,13 +7,12 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
 use crate::api::effects::{
-    active_primary_effect, apply_associated_layout, effect_ref, normalize_control_payload,
+    StopActiveEffectError, active_primary_effect, apply_associated_layout, effect_ref,
+    normalize_control_payload, stop_active_effect_and_quiesce_output, wake_output_for_effect_start,
 };
 use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
-use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind,
-};
+use hypercolor_types::event::{ChangeTrigger, HypercolorEvent, RenderGroupChangeKind};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -312,6 +311,7 @@ pub(super) async fn handle_set_effect_with_state(
             ),
         });
     }
+    wake_output_for_effect_start(state).await;
 
     let controls = params
         .get("controls")
@@ -497,42 +497,34 @@ pub(super) async fn handle_stop_effect_with_state(
         .and_then(Value::as_u64)
         .unwrap_or(300);
 
-    let Some((group, metadata)) = active_primary_effect(state).await else {
-        return Ok(json!({
-            "stopped": false,
-            "transition_ms": transition_ms,
-            "effect": null
-        }));
+    let stop_result = match stop_active_effect_and_quiesce_output(state).await {
+        Ok(result) => result,
+        Err(StopActiveEffectError::NoActiveEffect) => {
+            return Ok(json!({
+                "stopped": false,
+                "transition_ms": transition_ms,
+                "effect": null
+            }));
+        }
+        Err(StopActiveEffectError::ActiveGroupMissing) => {
+            return Err(ToolError::Internal(
+                "active primary group disappeared".into(),
+            ));
+        }
+        Err(StopActiveEffectError::ActiveScene(error)) => {
+            return Err(ToolError::Conflict(
+                error.message("stopping the active effect"),
+            ));
+        }
     };
-    let (scene_id, cleared_group) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("stopping the active effect")))?;
-        let cleared_group = scene_manager
-            .clear_group_effect(group.id)
-            .cloned()
-            .ok_or_else(|| ToolError::Internal("active primary group disappeared".into()))?;
-        (scene_id, cleared_group)
-    };
-
-    state.event_bus.publish(HypercolorEvent::EffectStopped {
-        effect: effect_ref(&metadata),
-        reason: EffectStopReason::Stopped,
-    });
-    publish_render_group_changed(
-        state,
-        scene_id,
-        &cleared_group,
-        RenderGroupChangeKind::Updated,
-    );
-    save_runtime_session_snapshot(state).await;
 
     Ok(json!({
         "stopped": true,
         "transition_ms": transition_ms,
+        "released_network_devices": stop_result.released_network_devices,
         "effect": {
-            "id": metadata.id.to_string(),
-            "name": metadata.name
+            "id": stop_result.effect.id,
+            "name": stop_result.effect.name
         }
     }))
 }
@@ -555,6 +547,7 @@ pub(super) async fn handle_set_color_with_state(
     let solid_effect = find_effect_metadata(state, "solid_color", "Solid Color")
         .await
         .ok_or_else(|| ToolError::Internal("solid color effect is not registered".into()))?;
+    wake_output_for_effect_start(state).await;
 
     let brightness = if let Some(brightness_u64) = params.get("brightness").and_then(Value::as_u64)
     {

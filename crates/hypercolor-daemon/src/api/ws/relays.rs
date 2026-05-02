@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use hypercolor_core::device::usb_actor_metrics_snapshot;
+use hypercolor_core::engine::RenderLoopState;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, watch};
@@ -34,6 +35,7 @@ use super::protocol::{
 };
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
+use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
 use crate::session::OutputPowerState;
 
@@ -1092,13 +1094,33 @@ pub(super) async fn build_metrics_message(
         )
     };
     let performance_snapshot = state.performance.read().await.snapshot();
+    let render_active = render_stats.state == RenderLoopState::Running;
     let target_fps = render_stats.tier.fps();
     let ceiling_fps = render_stats.max_tier.fps();
     let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
-    let actual_fps = paced_fps(avg_frame_secs, target_fps);
-    let avg_ms = avg_frame_secs * 1000.0;
-    let frame_time = frame_time_summary(performance_snapshot.frame_time, avg_ms);
-    let latest_frame = performance_snapshot.latest_frame.unwrap_or_default();
+    let actual_fps = if render_active {
+        paced_fps(avg_frame_secs, target_fps)
+    } else {
+        0.0
+    };
+    let avg_ms = if render_active {
+        avg_frame_secs * 1000.0
+    } else {
+        0.0
+    };
+    let frame_time = frame_time_summary(
+        if render_active {
+            performance_snapshot.frame_time
+        } else {
+            RenderFrameTimeSummary::default()
+        },
+        avg_ms,
+    );
+    let latest_frame = if render_active {
+        performance_snapshot.latest_frame.unwrap_or_default()
+    } else {
+        LatestFrameMetrics::default()
+    };
     let frame_age_ms = if latest_frame.timestamp_ms > 0 {
         (render_elapsed_ms - f64::from(latest_frame.timestamp_ms)).max(0.0)
     } else {

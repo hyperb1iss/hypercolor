@@ -237,24 +237,33 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let render_loop_status = {
         let rl = state.render_loop.read().await;
         let snapshot = rl.stats();
+        let actual_fps = if snapshot.state == RenderLoopState::Running {
+            round_1(paced_fps(
+                snapshot.avg_frame_time.as_secs_f64(),
+                snapshot.tier.fps(),
+            ))
+        } else {
+            0.0
+        };
         RenderLoopStatus {
             state: snapshot.state.to_string(),
             fps_tier: snapshot.tier.to_string(),
             target_fps: snapshot.tier.fps(),
             ceiling_fps: snapshot.max_tier.fps(),
-            actual_fps: round_1(paced_fps(
-                snapshot.avg_frame_time.as_secs_f64(),
-                snapshot.tier.fps(),
-            )),
+            actual_fps,
             consecutive_misses: snapshot.consecutive_misses,
             total_frames: snapshot.total_frames,
         }
     };
     let running = render_loop_is_operational(render_loop_status.state.as_str());
     let performance = state.performance.read().await.snapshot();
-    let latest_frame = performance
-        .latest_frame
-        .map(|frame| latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0));
+    let latest_frame = if render_loop_status.state == "running" {
+        performance.latest_frame.map(|frame| {
+            latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0)
+        })
+    } else {
+        None
+    };
     let servo_health = servo_effect_health_counts();
     let effect_health = EffectHealthStatus {
         errors_total: performance.effect_health.errors_total,

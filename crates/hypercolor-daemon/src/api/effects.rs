@@ -10,31 +10,39 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
+use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::effect::{
     EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
     parse_html_effect_metadata,
 };
 use hypercolor_core::scene::ControlsVersionMismatch;
+use hypercolor_types::canvas::Canvas;
+use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlValue, EffectCategory, EffectId, EffectMetadata,
     EffectSource, PresetTemplate,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, HypercolorEvent,
+    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
     RenderGroupChangeKind,
 };
 use hypercolor_types::scene::RenderGroup;
+use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{active_scene_id_for_runtime_mutation, publish_render_group_changed};
+use crate::api::{
+    ActiveSceneMutationError, active_scene_id_for_runtime_mutation, publish_render_group_changed,
+};
+use crate::discovery;
 use crate::effect_layouts;
 use crate::scene_transactions::apply_layout_update;
+use crate::session::OutputPowerState;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -208,6 +216,220 @@ pub struct ApplyEffectResponse {
 enum ResolveLayoutLinkError {
     NotFound(String),
     AmbiguousName(String),
+}
+
+#[derive(Debug)]
+pub(crate) struct StopActiveEffectResult {
+    pub effect: EffectRef,
+    pub released_network_devices: usize,
+}
+
+#[derive(Debug)]
+pub(crate) enum StopActiveEffectError {
+    NoActiveEffect,
+    ActiveScene(ActiveSceneMutationError),
+    ActiveGroupMissing,
+}
+
+impl From<ActiveSceneMutationError> for StopActiveEffectError {
+    fn from(value: ActiveSceneMutationError) -> Self {
+        Self::ActiveScene(value)
+    }
+}
+
+pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
+    let current = *state.power_state.borrow();
+    if !current.sleeping {
+        resume_paused_render_loop(state).await;
+        return;
+    }
+
+    if current.off_output_behavior == OffOutputBehavior::Release {
+        reconnect_network_outputs(state).await;
+    }
+
+    state.power_state.send_replace(OutputPowerState {
+        global_brightness: current.global_brightness,
+        session_brightness: 1.0,
+        sleeping: false,
+        off_output_behavior: current.off_output_behavior,
+        off_output_color: current.off_output_color,
+    });
+    resume_paused_render_loop(state).await;
+}
+
+pub(crate) async fn stop_active_effect_and_quiesce_output(
+    state: &AppState,
+) -> Result<StopActiveEffectResult, StopActiveEffectError> {
+    let Some((group, previous_effect)) = active_primary_effect(state).await else {
+        return Err(StopActiveEffectError::NoActiveEffect);
+    };
+
+    let (scene_id, cleared_group) = {
+        let mut scene_manager = state.scene_manager.write().await;
+        let scene_id = active_scene_id_for_runtime_mutation(&scene_manager)?;
+        let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
+            return Err(StopActiveEffectError::ActiveGroupMissing);
+        };
+        (scene_id, cleared_group)
+    };
+
+    let effect = effect_ref(&previous_effect);
+    state.event_bus.publish(HypercolorEvent::EffectStopped {
+        effect: effect.clone(),
+        reason: EffectStopReason::Stopped,
+    });
+    publish_render_group_changed(
+        state,
+        scene_id,
+        &cleared_group,
+        RenderGroupChangeKind::Updated,
+    );
+
+    let released_network_devices = quiesce_output_after_effect_stop(state).await;
+    super::save_runtime_session_snapshot(state).await;
+
+    Ok(StopActiveEffectResult {
+        effect,
+        released_network_devices,
+    })
+}
+
+async fn resume_paused_render_loop(state: &AppState) {
+    let mut render_loop = state.render_loop.write().await;
+    render_loop.resume();
+}
+
+async fn reconnect_network_outputs(state: &AppState) {
+    let Some(config_manager) = state.config_manager.as_ref() else {
+        return;
+    };
+    let config_guard = config_manager.get();
+    let config = Arc::clone(&*config_guard);
+    let target_ids = state
+        .driver_registry
+        .discovery_drivers()
+        .into_iter()
+        .filter_map(|driver| {
+            let descriptor = driver.module_descriptor();
+            let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
+                || descriptor
+                    .transports
+                    .contains(&DriverTransportKind::Network);
+            is_network_driver.then_some(descriptor.id)
+        })
+        .collect::<Vec<_>>();
+    if target_ids.is_empty() {
+        return;
+    }
+    let targets = match discovery::resolve_targets(
+        Some(&target_ids),
+        &config,
+        state.driver_registry.as_ref(),
+    ) {
+        Ok(targets) => targets,
+        Err(error) => {
+            warn!(%error, "Skipping network reconnect scan after output release");
+            return;
+        }
+    };
+    if targets.is_empty() {
+        return;
+    }
+
+    if discovery::execute_discovery_scan_if_idle(
+        super::discovery_runtime(state),
+        Arc::clone(&state.driver_registry),
+        Arc::clone(&state.driver_host),
+        config,
+        targets,
+        discovery::default_timeout(),
+    )
+    .await
+    .is_none()
+    {
+        debug!("Skipping network reconnect scan because discovery is already running");
+    }
+}
+
+async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.pause();
+    }
+
+    let current = *state.power_state.borrow();
+    state.power_state.send_replace(OutputPowerState {
+        global_brightness: current.global_brightness,
+        session_brightness: 0.0,
+        sleeping: true,
+        off_output_behavior: OffOutputBehavior::Release,
+        off_output_color: [0, 0, 0],
+    });
+
+    let runtime = super::discovery_runtime(state);
+    let released_network_devices = discovery::release_renderable_network_devices(&runtime).await;
+
+    publish_black_output_snapshot(state).await;
+    state.performance.write().await.clear_frame_timings();
+    released_network_devices
+}
+
+async fn publish_black_output_snapshot(state: &AppState) {
+    let (layout, canvas, zones) = {
+        let spatial = state.spatial_engine.read().await;
+        let layout = spatial.layout();
+        let canvas = Canvas::new(layout.canvas_width, layout.canvas_height);
+        let zones = spatial.sample(&canvas);
+        (layout, canvas, zones)
+    };
+    let frame_number = next_black_frame_number(state);
+    let elapsed_ms = elapsed_ms_u32(state);
+
+    let write_stats = {
+        let mut backend_manager = state.backend_manager.lock().await;
+        backend_manager.write_frame(&zones, layout.as_ref()).await
+    };
+    if !write_stats.errors.is_empty() {
+        warn!(
+            error_count = write_stats.errors.len(),
+            "One-shot black frame encountered output errors while stopping effect"
+        );
+    }
+
+    let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
+    let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();
+    for group_id in display_group_targets.keys().copied() {
+        state
+            .event_bus
+            .group_canvas_sender(group_id)
+            .send_replace(canvas_frame.clone());
+    }
+    state
+        .event_bus
+        .frame_sender()
+        .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
+    state
+        .event_bus
+        .scene_canvas_sender()
+        .send_replace(canvas_frame.clone());
+    state.event_bus.canvas_sender().send_replace(canvas_frame);
+    state
+        .preview_runtime
+        .record_canvas_publication(frame_number, elapsed_ms);
+}
+
+fn next_black_frame_number(state: &AppState) -> u32 {
+    state
+        .event_bus
+        .frame_receiver()
+        .borrow()
+        .frame_number
+        .saturating_add(1)
+}
+
+fn elapsed_ms_u32(state: &AppState) -> u32 {
+    u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -510,6 +732,8 @@ pub async fn apply_effect(
             metadata.name
         ));
     }
+    wake_output_for_effect_start(state.as_ref()).await;
+
     let applied_transition = match validate_transition_request(body.as_ref()) {
         Ok(transition) => transition,
         Err(error) => return ApiError::bad_request(error),
@@ -651,35 +875,19 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
 pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
-    let Some((group, previous_effect)) = active_primary_effect(state.as_ref()).await else {
-        return ApiError::not_found("No effect is currently active");
-    };
-
-    let (scene_id, cleared_group) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
-            Ok(scene_id) => scene_id,
-            Err(error) => return error.api_response("stopping the active effect"),
-        };
-        let Some(cleared_group) = scene_manager.clear_group_effect(group.id).cloned() else {
+    let stop_result = match stop_active_effect_and_quiesce_output(state.as_ref()).await {
+        Ok(result) => result,
+        Err(StopActiveEffectError::NoActiveEffect | StopActiveEffectError::ActiveGroupMissing) => {
             return ApiError::not_found("No effect is currently active");
-        };
-        (scene_id, cleared_group)
+        }
+        Err(StopActiveEffectError::ActiveScene(error)) => {
+            return error.api_response("stopping the active effect");
+        }
     };
-    state.event_bus.publish(HypercolorEvent::EffectStopped {
-        effect: effect_ref(&previous_effect),
-        reason: EffectStopReason::Stopped,
-    });
-    publish_render_group_changed(
-        state.as_ref(),
-        scene_id,
-        &cleared_group,
-        RenderGroupChangeKind::Updated,
-    );
-    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "stopped": true,
+        "released_network_devices": stop_result.released_network_devices,
     }))
 }
 
