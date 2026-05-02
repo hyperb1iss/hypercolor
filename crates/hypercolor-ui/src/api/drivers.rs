@@ -50,6 +50,7 @@ pub async fn fetch_drivers() -> Result<Vec<DriverSummary>, String> {
         .map_err(Into::into)
 }
 
+#[allow(dead_code)]
 pub async fn fetch_driver_config(driver_id: &str) -> Result<DriverConfigResponse, String> {
     client::fetch_json(&driver_config_url(driver_id))
         .await

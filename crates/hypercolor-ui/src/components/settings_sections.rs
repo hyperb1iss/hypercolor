@@ -9,7 +9,7 @@ use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use crate::api;
 use crate::app::WsContext;
 use crate::components::settings_controls::*;
-use crate::driver_settings::discovery_driver_settings;
+use crate::driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
 use crate::icons::*;
 use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
@@ -569,23 +569,92 @@ pub fn DiscoverySection(
                 on_change=on_change
                 min=30.0 max=3600.0 step=30.0
             />
-            {move || discovery_drivers.get().into_iter().map(|setting| {
-                let driver_id = setting.id.clone();
-                let enabled = Signal::derive(move || {
-                    read_config(config, |cfg| driver_enabled(cfg, &driver_id))
-                });
-                view! {
-                    <SettingToggle
-                        label=setting.label
-                        description=setting.description
-                        key=setting.key
-                        value=enabled
-                        on_change=on_change
-                    />
-                }
-            }).collect_view()}
+            <div class="pt-2 space-y-2">
+                <For
+                    each=move || discovery_drivers.get()
+                    key=|setting| setting.id.clone()
+                    children=move |setting| {
+                        let driver_id = setting.id.clone();
+                        let enabled = Signal::derive(move || {
+                            read_config(config, |cfg| driver_enabled(cfg, &driver_id))
+                        });
+                        view! {
+                            <DiscoveryDriverRow
+                                setting=setting
+                                value=enabled
+                                on_change=on_change
+                            />
+                        }
+                    }
+                />
+            </div>
             <SectionReset section_label="Discovery" on_reset=Callback::new(move |()| on_reset.run("discovery".to_string())) />
         </section>
+    }
+}
+
+#[component]
+fn DiscoveryDriverRow(
+    setting: DiscoveryDriverSetting,
+    #[prop(into)] value: Signal<bool>,
+    on_change: Callback<(String, serde_json::Value)>,
+) -> impl IntoView {
+    let click_key = setting.key.clone();
+    let keydown_key = setting.key.clone();
+    let click_change = on_change;
+    let keydown_change = on_change;
+    view! {
+        <div class="setting-row py-3">
+            <div class="flex items-center justify-between gap-4">
+                <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="text-sm text-fg-primary font-medium mr-1">{setting.label}</span>
+                        {setting.transport_labels.into_iter().map(|label| view! {
+                            <span class="text-[10px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded text-fg-tertiary/75 bg-surface-overlay/60 border border-edge-subtle/50">
+                                {label}
+                            </span>
+                        }).collect_view()}
+                        {setting.supports_pairing.then(|| view! {
+                            <span class="text-[10px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded"
+                                style="color: rgba(128, 255, 234, 0.78); background: rgba(128, 255, 234, 0.07); border: 1px solid rgba(128, 255, 234, 0.12)">
+                                "Pairing"
+                            </span>
+                        })}
+                    </div>
+                </div>
+                <button
+                    role="switch"
+                    aria-checked=move || value.get().to_string()
+                    class="relative w-11 h-6 rounded-full transition-all duration-200 shrink-0 cursor-pointer"
+                    style=move || if value.get() {
+                        "background: rgba(225, 53, 255, 0.5); box-shadow: 0 0 10px rgba(225, 53, 255, 0.25)"
+                    } else {
+                        "background: rgba(139, 133, 160, 0.2)"
+                    }
+                    on:click=move |_| {
+                        click_change.run((click_key.clone(), serde_json::json!(!value.get_untracked())));
+                    }
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if matches!(ev.key().as_str(), " " | "Enter") {
+                            ev.prevent_default();
+                            keydown_change.run((
+                                keydown_key.clone(),
+                                serde_json::json!(!value.get_untracked()),
+                            ));
+                        }
+                    }
+                >
+                    <span
+                        class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
+                        style=move || if value.get() {
+                            "transform: translateX(22px); background: rgb(225, 53, 255)"
+                        } else {
+                            "transform: translateX(0); background: rgba(200, 200, 210, 0.6)"
+                        }
+                    />
+                </button>
+            </div>
+        </div>
     }
 }
 

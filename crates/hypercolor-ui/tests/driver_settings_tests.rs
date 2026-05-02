@@ -92,21 +92,24 @@ fn discovery_settings_follow_driver_descriptors() {
         vec![
             DiscoveryDriverSetting {
                 id: "leaf".to_string(),
-                label: "Leaf Driver Scan".to_string(),
-                description: "Discover and pair Leaf Driver devices over the network".to_string(),
+                label: "Leaf Driver".to_string(),
                 key: "drivers.leaf.enabled".to_string(),
+                transport_labels: vec!["Network".to_string()],
+                supports_pairing: true,
             },
             DiscoveryDriverSetting {
                 id: "bridge".to_string(),
-                label: "Bridge Driver Scan".to_string(),
-                description: "Discover Bridge Driver devices over bridge services".to_string(),
+                label: "Bridge Driver".to_string(),
                 key: "drivers.bridge.enabled".to_string(),
+                transport_labels: vec!["Bridge".to_string()],
+                supports_pairing: false,
             },
             DiscoveryDriverSetting {
                 id: "external".to_string(),
-                label: "External Driver Scan".to_string(),
-                description: "Discover External Driver devices over Open Link Hub".to_string(),
+                label: "External Driver".to_string(),
                 key: "drivers.external.enabled".to_string(),
+                transport_labels: vec!["Open Link Hub".to_string()],
+                supports_pairing: false,
             }
         ]
     );
