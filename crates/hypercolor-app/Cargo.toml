@@ -19,6 +19,8 @@ workspace = true
 hypercolor-core = { workspace = true }
 hypercolor-types = { workspace = true }
 tauri = { version = "2", features = ["devtools", "tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 tokio = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }

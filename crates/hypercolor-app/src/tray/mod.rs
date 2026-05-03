@@ -4,17 +4,16 @@ use std::path::Path;
 
 use hypercolor_core::config::paths::data_dir;
 use tauri::{
-    AppHandle, Manager, Runtime,
+    AppHandle, Runtime,
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
 };
 
-use crate::{DEFAULT_DAEMON_URL, state::AppState};
+use crate::{DEFAULT_DAEMON_URL, state::AppState, window};
 
 pub mod icons;
 pub mod menu;
 
 const TRAY_ID: &str = "main";
-const WINDOW_LABEL: &str = "main";
 
 /// Register the native tray icon and its event handlers.
 ///
@@ -50,7 +49,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
 
 fn handle_tray_event<R: Runtime>(tray: &TrayIcon<R>, event: TrayIconEvent) {
     if should_toggle_window(&event)
-        && let Err(error) = toggle_main_window(tray.app_handle())
+        && let Err(error) = window::toggle_main(tray.app_handle())
     {
         tracing::warn!(%error, "failed to toggle main window from tray");
     }
@@ -58,7 +57,7 @@ fn handle_tray_event<R: Runtime>(tray: &TrayIcon<R>, event: TrayIconEvent) {
 
 fn run_menu_action<R: Runtime>(app: &AppHandle<R>, action: menu::MenuAction) -> anyhow::Result<()> {
     match action {
-        menu::MenuAction::ShowWindow | menu::MenuAction::Settings => show_main_window(app)?,
+        menu::MenuAction::ShowWindow | menu::MenuAction::Settings => window::show_main(app)?,
         menu::MenuAction::OpenWebUi => {
             open::that_detached(daemon_url())?;
         }
@@ -88,26 +87,6 @@ fn daemon_url() -> String {
 fn open_or_create_dir(path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(path)?;
     open::that_detached(path)?;
-    Ok(())
-}
-
-fn show_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        window.show()?;
-        window.set_focus()?;
-    }
-    Ok(())
-}
-
-fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        if window.is_visible()? {
-            window.hide()?;
-        } else {
-            window.show()?;
-            window.set_focus()?;
-        }
-    }
     Ok(())
 }
 

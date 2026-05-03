@@ -14,8 +14,40 @@ fn tauri_config() -> serde_json::Value {
     serde_json::from_str(&text).expect("tauri.conf.json should be valid JSON")
 }
 
+fn default_capability() -> serde_json::Value {
+    let path = manifest_dir().join("capabilities").join("default.json");
+    let text = fs::read_to_string(&path).expect("default capability should be readable");
+    serde_json::from_str(&text).expect("default capability should be valid JSON")
+}
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn default_capability_grants_window_and_autostart_permissions() {
+    let capability = default_capability();
+    let permissions = capability
+        .get("permissions")
+        .and_then(serde_json::Value::as_array)
+        .expect("permissions should be an array");
+
+    for expected in [
+        "core:default",
+        "autostart:allow-enable",
+        "autostart:allow-disable",
+        "autostart:allow-is-enabled",
+        "core:tray:default",
+        "core:window:allow-show",
+        "core:window:allow-hide",
+        "core:window:allow-set-focus",
+        "core:window:allow-unminimize",
+    ] {
+        assert!(
+            permissions.iter().any(|value| value == expected),
+            "capability should include {expected}"
+        );
+    }
 }
 
 #[test]
