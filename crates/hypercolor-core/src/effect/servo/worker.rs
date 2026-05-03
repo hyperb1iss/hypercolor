@@ -1237,42 +1237,20 @@ impl ServoWorkerRuntime {
             .ok_or_else(|| anyhow!("Servo webview is not initialized"))
     }
 
-    fn close_webview(&mut self, session_id: ServoSessionId) -> Result<()> {
-        // Dropping the last WebView handle synchronously issues Servo's
-        // `CloseWebView` message. `notify_closed` is only documented for
-        // `window.close()`, so waiting on it here just turns every effect
-        // switch into a timeout path.
-        let Some(webview) = self.session_mut(session_id)?.webview.take() else {
-            return Ok(());
-        };
-        drop(webview);
-        self.servo.spin_event_loop();
-        Ok(())
-    }
-
-    fn replace_webview(
+    fn navigate_webview(
         &mut self,
         session_id: ServoSessionId,
         url: Url,
         timeout: Duration,
     ) -> Result<()> {
-        // Dropping the last handle closes the old webview and lets Servo tear
-        // down page-scoped resources before we build the next one.
-        self.close_webview(session_id)
-            .context("failed to close previous Servo webview")?;
         {
             let session = self.session_mut(session_id)?;
             session.delegate.reset_navigation_state();
+            session.script_buffer.clear();
+            session.readback_buffers = ServoReadbackBuffers::default();
+            session.last_canvas = None;
         }
-        let (rendering_context, delegate) = {
-            let session = self.session(session_id)?;
-            (
-                Rc::clone(&session.rendering_context),
-                session.delegate.clone(),
-            )
-        };
-        let webview = Self::build_webview(&self.servo, rendering_context, delegate, url.clone());
-        self.session_mut(session_id)?.webview = Some(webview);
+        self.active_webview(session_id)?.load(url.clone());
         self.wait_for_load_completion(session_id, timeout, Some(url.as_str()))
     }
 
@@ -1283,24 +1261,12 @@ impl ServoWorkerRuntime {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let had_loaded_effect = self.session(session_id)?.loaded_html_path.is_some();
         self.resize_if_needed(session_id, width, height)?;
         let url = file_url_for_path(html_path)?;
         self.session_mut(session_id)?.loaded_html_path = Some(html_path.to_path_buf());
         debug!(url = %url, "Loading Servo effect page");
-        if had_loaded_effect {
-            self.replace_webview(session_id, url.clone(), LOAD_TIMEOUT)
-                .context(
-                    "failed to replace previous Servo effect page before loading new effect",
-                )?;
-        } else {
-            self.session(session_id)?.delegate.reset_navigation_state();
-            {
-                let webview = self.active_webview(session_id)?;
-                webview.load(url.clone());
-            }
-            self.wait_for_load_completion(session_id, LOAD_TIMEOUT, Some(url.as_str()))?;
-        }
+        self.navigate_webview(session_id, url.clone(), LOAD_TIMEOUT)
+            .context("failed to load Servo effect page")?;
         let recent_console_entries = self
             .session(session_id)?
             .delegate
@@ -1333,27 +1299,12 @@ impl ServoWorkerRuntime {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let had_loaded_content = self
-            .session(session_id)?
-            .delegate
-            .last_url()
-            .as_deref()
-            .is_some_and(|current| current != "about:blank");
         self.resize_if_needed(session_id, width, height)?;
         let parsed_url = Url::parse(url).with_context(|| format!("failed to parse URL '{url}'"))?;
         self.session_mut(session_id)?.loaded_html_path = None;
         debug!(url = %parsed_url, "Loading Servo URL");
-        if had_loaded_content {
-            self.replace_webview(session_id, parsed_url.clone(), URL_LOAD_TIMEOUT)
-                .context("failed to replace previous Servo page before loading URL")?;
-        } else {
-            self.session(session_id)?.delegate.reset_navigation_state();
-            {
-                let webview = self.active_webview(session_id)?;
-                webview.load(parsed_url.clone());
-            }
-            self.wait_for_load_completion(session_id, URL_LOAD_TIMEOUT, Some(parsed_url.as_str()))?;
-        }
+        self.navigate_webview(session_id, parsed_url.clone(), URL_LOAD_TIMEOUT)
+            .context("failed to load Servo URL")?;
         let recent_console = summarize_console_messages(
             &self
                 .session(session_id)?
@@ -1378,7 +1329,7 @@ impl ServoWorkerRuntime {
 
         let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
         debug!("Unloading Servo effect page");
-        self.replace_webview(session_id, url.clone(), UNLOAD_TIMEOUT)?;
+        self.navigate_webview(session_id, url.clone(), UNLOAD_TIMEOUT)?;
         self.session_mut(session_id)?.loaded_html_path = None;
         Ok(())
     }

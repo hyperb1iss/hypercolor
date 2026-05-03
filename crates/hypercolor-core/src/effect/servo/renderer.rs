@@ -14,6 +14,8 @@ use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, Eff
 use hypercolor_types::sensor::SystemSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -38,6 +40,9 @@ const DEFAULT_EFFECT_FPS_CAP: u32 = 30;
 const DEFAULT_DISPLAY_FPS_CAP: u32 = 30;
 const MAX_EFFECT_FPS_CAP: u32 = 60;
 const SOFT_STALL_FRAME_INTERVALS: u32 = 3;
+
+#[cfg(not(test))]
+static REUSABLE_SERVO_SESSION: OnceLock<Mutex<Option<ServoSessionHandle>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnimationCadence {
@@ -102,14 +107,7 @@ struct LoadedServoSession {
 impl LoadedServoSession {
     fn discard(self) {
         let runtime_html_path = self.runtime_html_path.clone();
-        match self.session.close_detached() {
-            Ok(()) => record_servo_detached_destroy(true),
-            Err(error) => {
-                record_servo_detached_destroy(false);
-                note_servo_session_error("Failed to queue abandoned Servo session destroy", &error);
-                warn!(%error, "Failed to queue abandoned Servo session destroy");
-            }
-        }
+        recycle_servo_session(self.session, "abandoned Servo session");
         if let Some(path) = runtime_html_path.as_ref() {
             cleanup_runtime_html_path(path);
         }
@@ -541,6 +539,70 @@ fn lock_servo_load_task_state(
     }
 }
 
+#[cfg(not(test))]
+fn reusable_servo_session_slot() -> &'static Mutex<Option<ServoSessionHandle>> {
+    REUSABLE_SERVO_SESSION.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(not(test))]
+fn lock_reusable_servo_session_slot() -> std::sync::MutexGuard<'static, Option<ServoSessionHandle>>
+{
+    match reusable_servo_session_slot().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(not(test))]
+fn take_reusable_servo_session(width: u32, height: u32) -> Option<ServoSessionHandle> {
+    let mut session = lock_reusable_servo_session_slot().take()?;
+    session.prepare_for_reuse(width, height);
+    debug!(
+        canvas_width = width,
+        canvas_height = height,
+        "Reusing shared Servo effect session"
+    );
+    Some(session)
+}
+
+#[cfg(test)]
+fn take_reusable_servo_session(_width: u32, _height: u32) -> Option<ServoSessionHandle> {
+    None
+}
+
+#[cfg(not(test))]
+fn recycle_servo_session(mut session: ServoSessionHandle, reason: &'static str) {
+    session.discard_frame_state();
+    let mut maybe_session = Some(session);
+    {
+        let mut slot = lock_reusable_servo_session_slot();
+        if slot.is_none() {
+            *slot = maybe_session.take();
+            debug!(reason, "Recycled shared Servo effect session");
+        }
+    }
+
+    if let Some(session) = maybe_session {
+        close_servo_session_detached(session, "extra reusable Servo session");
+    }
+}
+
+#[cfg(test)]
+fn recycle_servo_session(session: ServoSessionHandle, reason: &'static str) {
+    close_servo_session_detached(session, reason);
+}
+
+fn close_servo_session_detached(session: ServoSessionHandle, reason: &'static str) {
+    match session.close_detached() {
+        Ok(()) => record_servo_detached_destroy(true),
+        Err(error) => {
+            record_servo_detached_destroy(false);
+            note_servo_session_error("Failed to queue Servo session destroy", &error);
+            warn!(%error, reason, "Failed to queue Servo session destroy");
+        }
+    }
+}
+
 fn load_servo_session(
     effect_name: &str,
     html_source: PathBuf,
@@ -565,41 +627,33 @@ fn load_servo_session(
             )
         })?;
 
-    let session_create_started = Instant::now();
-    let mut session = match ServoSessionHandle::new_shared(SessionConfig {
-        render_width: canvas_width,
-        render_height: canvas_height,
-        inject_engine_globals: true,
-    }) {
-        Ok(session) => {
-            record_servo_session_create(session_create_started.elapsed(), true);
+    let mut session =
+        if let Some(session) = take_reusable_servo_session(canvas_width, canvas_height) {
             session
-        }
-        Err(error) => {
-            record_servo_session_create(session_create_started.elapsed(), false);
-            cleanup_runtime_html_option(runtime_html_path.as_ref());
-            note_servo_session_error("Servo effect session creation failed", &error);
-            return Err(error);
-        }
-    };
+        } else {
+            let session_create_started = Instant::now();
+            match ServoSessionHandle::new_shared(SessionConfig {
+                render_width: canvas_width,
+                render_height: canvas_height,
+                inject_engine_globals: true,
+            }) {
+                Ok(session) => {
+                    record_servo_session_create(session_create_started.elapsed(), true);
+                    session
+                }
+                Err(error) => {
+                    record_servo_session_create(session_create_started.elapsed(), false);
+                    cleanup_runtime_html_option(runtime_html_path.as_ref());
+                    note_servo_session_error("Servo effect session creation failed", &error);
+                    return Err(error);
+                }
+            }
+        };
 
     let page_load_started = Instant::now();
     if let Err(error) = session.load_html_file(&runtime_source) {
         record_servo_page_load(page_load_started.elapsed(), false);
-        match session.close_detached() {
-            Ok(()) => record_servo_detached_destroy(true),
-            Err(close_error) => {
-                record_servo_detached_destroy(false);
-                note_servo_session_error(
-                    "Failed to queue Servo effect session destroy after page-load failure",
-                    &close_error,
-                );
-                warn!(
-                    error = %close_error,
-                    "Failed to queue Servo effect session destroy after page-load failure"
-                );
-            }
-        }
+        close_servo_session_detached(session, "Servo effect session after page-load failure");
         cleanup_runtime_html_option(runtime_html_path.as_ref());
         note_servo_session_error("Servo effect page load failed", &error);
         return Err(error);
@@ -671,17 +725,7 @@ impl EffectRenderer for ServoRenderer {
     fn destroy(&mut self) {
         self.load_task = None;
         if let Some(session) = self.session.take() {
-            match session.close_detached() {
-                Ok(()) => record_servo_detached_destroy(true),
-                Err(error) => {
-                    record_servo_detached_destroy(false);
-                    note_servo_session_error(
-                        "Failed to queue Servo effect session destroy",
-                        &error,
-                    );
-                    warn!(%error, "Failed to queue Servo effect session destroy");
-                }
-            }
+            recycle_servo_session(session, "Servo effect session");
         }
         self.pending_scripts.clear();
         self.queued_frame = None;
