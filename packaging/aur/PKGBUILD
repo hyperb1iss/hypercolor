@@ -14,7 +14,9 @@ depends=(
   'gcc-libs'
   'glibc'
   'gtk3'
+  'webkit2gtk-4.1'
   'libappindicator-gtk3'
+  'libayatana-appindicator'
 )
 optdepends=(
   'libusb: USB device support'
@@ -47,9 +49,10 @@ package() {
   # Binaries
   install -Dm755 bin/hypercolor-daemon "${pkgdir}/usr/bin/hypercolor-daemon"
   install -Dm755 bin/hypercolor        "${pkgdir}/usr/bin/hypercolor"
-  install -Dm755 bin/hypercolor-tray "${pkgdir}/usr/bin/hypercolor-tray"
-  install -Dm755 bin/hypercolor-tui  "${pkgdir}/usr/bin/hypercolor-tui"
-  install -Dm755 bin/hypercolor-open "${pkgdir}/usr/bin/hypercolor-open"
+  install -Dm755 bin/hypercolor-app    "${pkgdir}/usr/bin/hypercolor-app"
+  install -Dm755 bin/hypercolor-tray   "${pkgdir}/usr/bin/hypercolor-tray"
+  install -Dm755 bin/hypercolor-tui    "${pkgdir}/usr/bin/hypercolor-tui"
+  install -Dm755 bin/hypercolor-open   "${pkgdir}/usr/bin/hypercolor-open"
 
   # Web UI + bundled assets
   install -dm755 "${pkgdir}/usr/share/hypercolor"

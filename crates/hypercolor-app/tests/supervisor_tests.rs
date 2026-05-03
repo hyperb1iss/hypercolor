@@ -2,7 +2,7 @@ use std::path::Path;
 
 use hypercolor_app::supervisor::{
     DEFAULT_DAEMON_BIND, SupervisorState, bind_from_daemon_url, build_daemon_command,
-    daemon_executable_name, health_url, sibling_daemon_path, sibling_ui_dir,
+    daemon_executable_name, health_url, sibling_daemon_path, sibling_ui_dir, ui_dir_candidates,
 };
 use url::Url;
 
@@ -35,6 +35,34 @@ fn sibling_paths_resolve_from_app_executable() {
     assert_eq!(
         ui_dir.file_name().and_then(|name| name.to_str()),
         Some("ui")
+    );
+}
+
+#[test]
+fn ui_dir_candidates_include_tauri_and_tarball_layouts() {
+    let app_path = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor\bin\hypercolor-app.exe")
+    } else {
+        Path::new("/opt/hypercolor/bin/hypercolor-app")
+    };
+
+    let candidates = ui_dir_candidates(app_path);
+    let candidate_strings = candidates
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>();
+
+    assert!(
+        candidate_strings
+            .iter()
+            .any(|path| path.ends_with("bin\\ui")
+                || path.ends_with("bin/ui")
+                || path.ends_with("Hypercolor\\ui"))
+    );
+    assert!(
+        candidate_strings
+            .iter()
+            .any(|path| path.replace('\\', "/").ends_with("share/hypercolor/ui"))
     );
 }
 

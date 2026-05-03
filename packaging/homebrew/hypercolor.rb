@@ -29,7 +29,14 @@ class Hypercolor < Formula
 
   def install
     # Binaries
-    %w[hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open].each do |b|
+    %w[
+      hypercolor-daemon
+      hypercolor
+      hypercolor-app
+      hypercolor-tray
+      hypercolor-tui
+      hypercolor-open
+    ].each do |b|
       bin.install "bin/#{b}" if File.exist?("bin/#{b}")
     end
 
@@ -50,6 +57,9 @@ class Hypercolor < Formula
 
       To open the web UI:
         hypercolor-open
+
+      To launch the unified desktop app:
+        hypercolor-app
 
       The daemon listens on http://127.0.0.1:9420 by default.
     EOS

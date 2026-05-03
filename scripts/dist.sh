@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a ready-to-ship Hypercolor release bundle.
-# Includes the daemon, CLI, tray applet, TUI launcher, UI, bundled effects/faces,
+# Includes the daemon, CLI, unified desktop app, tray applet, TUI launcher, UI, bundled effects/faces,
 # docs, agent skills, and host integration files in one directory.
 #
 # Usage:
@@ -147,6 +147,10 @@ info "Building tray applet"
 ./scripts/cargo-cache-build.sh cargo build --release \
   -p hypercolor-tray --bin hypercolor-tray "${TARGET_FLAG[@]}"
 
+info "Building unified desktop app"
+./scripts/cargo-cache-build.sh cargo build --release \
+  -p hypercolor-app --bin hypercolor-app "${TARGET_FLAG[@]}"
+
 if [[ "${CI_MODE}" -eq 1 ]]; then
   [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
   info "Using pre-built web assets from ${WEB_ASSETS_DIR}"
@@ -235,6 +239,7 @@ fi
 
 install -m755 "${RELEASE_DIR}/hypercolor-daemon" "${DIST_DIR}/bin/hypercolor-daemon"
 install -m755 "${RELEASE_DIR}/hypercolor" "${DIST_DIR}/bin/hypercolor"
+install -m755 "${RELEASE_DIR}/hypercolor-app" "${DIST_DIR}/bin/hypercolor-app"
 install -m755 "${RELEASE_DIR}/hypercolor-tray" "${DIST_DIR}/bin/hypercolor-tray"
 install -m755 packaging/bin/hypercolor-tui "${DIST_DIR}/bin/hypercolor-tui"
 install -m755 packaging/bin/hypercolor-open "${DIST_DIR}/bin/hypercolor-open"
@@ -316,6 +321,7 @@ cat > "${DIST_DIR}/manifest.json" <<EOF
   "binaries": [
     "hypercolor-daemon",
     "hypercolor",
+    "hypercolor-app",
     "hypercolor-tray",
     "hypercolor-tui",
     "hypercolor-open"

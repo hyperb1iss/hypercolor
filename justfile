@@ -18,6 +18,7 @@ alias c := check
 alias t := test
 alias l := lint
 alias f := fmt
+alias a := app
 alias py := python-verify
 
 # ─── Core ─────────────────────────────────────────────────
@@ -324,6 +325,24 @@ tray *args='':
 [windows]
 tray *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-tray -- {{ args }}
+
+# Run the unified desktop app
+[unix]
+app *args='':
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-app --bin hypercolor-app -- {{ args }}
+
+[windows]
+app *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-app --bin hypercolor-app -- {{ args }}
+
+# Build the unified desktop app
+[unix]
+app-build *args='':
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
+
+[windows]
+app-build *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
 
 # Run the daemon in release mode with the full renderer set enabled
 [unix]

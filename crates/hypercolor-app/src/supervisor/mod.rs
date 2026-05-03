@@ -100,6 +100,20 @@ pub fn sibling_ui_dir(current_exe: &Path) -> Option<PathBuf> {
         .map(|install_dir| install_dir.join("ui"))
 }
 
+/// Resolve likely installed web UI directories for supported package layouts.
+#[must_use]
+pub fn ui_dir_candidates(current_exe: &Path) -> Vec<PathBuf> {
+    let Some(install_dir) = current_exe.parent() else {
+        return Vec::new();
+    };
+
+    let mut candidates = vec![install_dir.join("ui")];
+    if let Some(prefix_dir) = install_dir.parent() {
+        candidates.push(prefix_dir.join("share").join("hypercolor").join("ui"));
+    }
+    candidates
+}
+
 /// Build the daemon command used by the app supervisor.
 #[must_use]
 pub fn build_daemon_command(
@@ -155,7 +169,9 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
     let current_exe = std::env::current_exe().context("failed to resolve app executable path")?;
     let daemon_path = sibling_daemon_path(&current_exe)
         .context("failed to resolve daemon path from app executable")?;
-    let ui_dir = sibling_ui_dir(&current_exe).filter(|path| path.join("index.html").exists());
+    let ui_dir = ui_dir_candidates(&current_exe)
+        .into_iter()
+        .find(|path| path.join("index.html").exists());
     let bind = bind_from_daemon_url(&daemon_url).unwrap_or_else(|| DEFAULT_DAEMON_BIND.to_owned());
     let state = app.state::<SupervisorState>().inner().clone();
 
