@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::watch;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use windows_service::define_windows_service;
 use windows_service::service::{
@@ -233,14 +233,33 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<bool>) -> Result<()>
     info!(pipe = PIPE_NAME, "Hypercolor SMBus broker listening");
 
     while !*shutdown.borrow() {
-        let server = create_server_pipe().context("failed to create SMBus broker pipe")?;
+        let server = match create_server_pipe() {
+            Ok(server) => server,
+            Err(error) => {
+                warn!(
+                    error = %format_args!("{error:#}"),
+                    "failed to create SMBus broker pipe; retrying"
+                );
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+        };
         tokio::select! {
             connect_result = server.connect() => {
-                connect_result.context("SMBus broker pipe connection failed")?;
-                handle_connected_client(server, Arc::clone(&state)).await;
+                match connect_result {
+                    Ok(()) => {
+                        tokio::spawn(handle_connected_client(server, Arc::clone(&state)));
+                    }
+                    Err(error) => {
+                        warn!(%error, "SMBus broker pipe connection failed; accepting next client");
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                }
             }
             changed = shutdown.changed() => {
-                changed.context("SMBus broker shutdown channel closed")?;
+                if changed.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -270,9 +289,7 @@ async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerS
 fn create_server_pipe() -> Result<NamedPipeServer> {
     let mut security = PipeSecurity::new().context("failed to build SMBus broker pipe ACL")?;
     let mut options = ServerOptions::new();
-    options
-        .first_pipe_instance(true)
-        .reject_remote_clients(true);
+    options.reject_remote_clients(true);
     let pipe = unsafe {
         // SAFETY: `PipeSecurity` owns a valid SECURITY_ATTRIBUTES structure for
         // the duration of this CreateNamedPipeW call. Tokio copies the raw
