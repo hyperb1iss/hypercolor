@@ -685,11 +685,12 @@ v2 feature via explicit "Export bundle" / "Import bundle" actions, not roaming-b
 provided OR the dev fallback `crates/hypercolor-ui/dist` exists. Effects are resolved
 from `data_dir()/effects/bundled` or the dev fallback `<repo>/effects/`.
 
-**Solution:** the installer does both:
+**Solution:** the native app does both before supervising the daemon:
 
 1. Copy `ui/` into the install directory (read-only program files).
-2. Copy `effects/` (the SDK-built HTML files) into the **data directory**, not the
-   install directory. The path resolver finds them automatically.
+2. Stage `effects/bundled/` inside the Tauri resources, then copy those SDK-built
+   HTML files into the **data directory** on app startup. The path resolver finds
+   them automatically before the daemon scans effects.
 3. Pass `--ui-dir <install_dir>/ui` when spawning the daemon.
 
 **Why effects go to data dir, not install dir:** users may add their own effects to
@@ -829,9 +830,7 @@ mode only. App always uses file logs.
   EnVar::AddValue "Path" "$INSTDIR"
   Pop $0  ; discard
 
-  ; Copy bundled effects to data dir for path resolver
-  CreateDirectory "$LOCALAPPDATA\hypercolor\effects\bundled"
-  CopyFiles /SILENT "$INSTDIR\resources\effects\hypercolor\*" "$LOCALAPPDATA\hypercolor\effects\bundled\"
+  ; Bundled effects are copied by the app at startup from Tauri resources.
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

@@ -1,11 +1,10 @@
 // Hypercolor App — unified native desktop front door.
 //
-// This starts as the existing Tauri webview shell. Tray, app lifecycle,
-// daemon supervision, and installer payload wiring land in follow-up slices.
+// Owns the Tauri window, tray, daemon supervision, and bundle resource wiring.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, webview::WebviewWindowBuilder};
 
 fn main() -> anyhow::Result<()> {
     let _log_guard = hypercolor_app::logging::init()?;
@@ -64,6 +63,23 @@ fn main() -> anyhow::Result<()> {
 
             hypercolor_app::tray::register(app.handle())?;
             tracing::info!("tray icon registered");
+
+            let resource_dir = app.path().resource_dir().ok();
+            match hypercolor_app::resources::install_bundled_runtime_assets(resource_dir.as_deref())
+            {
+                Ok(Some(report)) => {
+                    tracing::info!(
+                        source = %report.source.display(),
+                        destination = %report.destination.display(),
+                        copied_files = report.copied_files,
+                        "installed bundled app resources"
+                    );
+                }
+                Ok(None) => tracing::debug!("no bundled app resources found to install"),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to install bundled app resources");
+                }
+            }
 
             hypercolor_app::supervisor::start(app.handle(), url)?;
             tracing::info!("daemon supervisor started");

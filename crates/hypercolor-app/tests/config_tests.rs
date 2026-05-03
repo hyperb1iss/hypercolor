@@ -67,10 +67,7 @@ fn default_capability_allows_local_daemon_remote_ipc() {
         .and_then(serde_json::Value::as_array)
         .expect("remote.urls should be configured");
 
-    for expected in [
-        "http://127.0.0.1:9420/*",
-        "http://localhost:9420/*",
-    ] {
+    for expected in ["http://127.0.0.1:9420/*", "http://localhost:9420/*"] {
         assert!(
             urls.iter().any(|value| value == expected),
             "capability should allow IPC from {expected}"
