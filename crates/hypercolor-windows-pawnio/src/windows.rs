@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::{CStr, c_char, c_void};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use libloading::{Library, Symbol};
 use thiserror::Error;
@@ -74,6 +74,8 @@ type PawnIoExecute = unsafe extern "system" fn(
     *mut usize,
 ) -> i32;
 type PawnIoClose = unsafe extern "system" fn(PawnIoHandle) -> i32;
+
+static PAWNIO_RUNTIME: OnceLock<Arc<PawnIoRuntime>> = OnceLock::new();
 
 /// PawnIO result type.
 pub type PawnIoResult<T> = Result<T, PawnIoError>;
@@ -481,6 +483,24 @@ struct PawnIoRuntime {
 
 impl PawnIoRuntime {
     fn load() -> PawnIoResult<Arc<Self>> {
+        if let Some(runtime) = PAWNIO_RUNTIME.get() {
+            return Ok(Arc::clone(runtime));
+        }
+
+        let runtime = Self::load_uncached()?;
+        if PAWNIO_RUNTIME.set(Arc::clone(&runtime)).is_ok() {
+            return Ok(runtime);
+        }
+
+        PAWNIO_RUNTIME
+            .get()
+            .cloned()
+            .ok_or_else(|| PawnIoError::InvalidInput {
+                detail: "PawnIO runtime cache was empty after initialization race".to_owned(),
+            })
+    }
+
+    fn load_uncached() -> PawnIoResult<Arc<Self>> {
         let library_path = resolve_pawnio_library_path()?;
         let library = unsafe {
             // SAFETY: The path is resolved from configured PawnIO install locations.
