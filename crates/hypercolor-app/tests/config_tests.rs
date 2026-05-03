@@ -73,6 +73,50 @@ fn tauri_config_has_bundle_config() {
 }
 
 #[test]
+fn tauri_config_declares_installer_targets() {
+    let config = tauri_config();
+    let targets = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("targets"))
+        .and_then(serde_json::Value::as_array)
+        .expect("bundle.targets should be an array");
+
+    for expected in ["nsis", "dmg", "app"] {
+        assert!(
+            targets.iter().any(|target| target == expected),
+            "bundle.targets should include {expected}"
+        );
+    }
+}
+
+#[test]
+fn tauri_config_prefers_current_user_nsis_installs() {
+    let config = tauri_config();
+    let install_mode = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("windows"))
+        .and_then(|windows| windows.get("nsis"))
+        .and_then(|nsis| nsis.get("installMode"))
+        .and_then(serde_json::Value::as_str);
+
+    assert_eq!(install_mode, Some("currentUser"));
+}
+
+#[test]
+fn tauri_config_declares_dmg_layout() {
+    let config = tauri_config();
+    let dmg = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("macOS"))
+        .and_then(|macos| macos.get("dmg"))
+        .expect("bundle.macOS.dmg should be configured");
+
+    assert!(dmg.get("windowSize").is_some());
+    assert!(dmg.get("appPosition").is_some());
+    assert!(dmg.get("applicationFolderPosition").is_some());
+}
+
+#[test]
 fn tauri_config_icon_files_exist() {
     let config = tauri_config();
     let icons = config
