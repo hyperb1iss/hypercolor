@@ -21,7 +21,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
-use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevKeyboardInput;
 use hypercolor_core::input::audio::AudioInput;
@@ -53,6 +53,7 @@ use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, Simula
 use super::DaemonState;
 use super::config::resolve_server_identity;
 use super::resolve_compositor_acceleration_mode;
+use crate::render_thread::ConfiguredFpsTier;
 
 impl DaemonState {
     /// Initialize all subsystems from a loaded configuration.
@@ -162,6 +163,8 @@ impl DaemonState {
         // ── Render Loop ─────────────────────────────────────────────────
         let render_loop = RenderLoop::new(config.daemon.target_fps);
         let render_loop = Arc::new(RwLock::new(render_loop));
+        let configured_max_fps_tier =
+            ConfiguredFpsTier::new(FpsTier::from_fps(config.daemon.target_fps));
         info!(target_fps = config.daemon.target_fps, "Render loop created");
 
         let performance = Arc::new(RwLock::new(PerformanceTracker::default()));
@@ -443,6 +446,7 @@ impl DaemonState {
             event_bus,
             preview_runtime,
             render_loop,
+            configured_max_fps_tier,
             spatial_engine,
             backend_manager,
             usb_protocol_configs,

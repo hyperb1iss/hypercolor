@@ -1,6 +1,8 @@
 //! `hyper service` — daemon service lifecycle management.
 
-use anyhow::{Context, Result, bail};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 
 use crate::output::OutputContext;

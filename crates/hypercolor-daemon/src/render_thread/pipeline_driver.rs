@@ -54,9 +54,25 @@ async fn handle_inactive_render_loop(
     };
 
     clear_capture_demand(state, runtime).await;
+    clear_inactive_render_groups(state, runtime).await;
     runtime.frame_policy.inactive_loop_execution(loop_state)
 }
 
 async fn clear_capture_demand(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
     runtime.frame_loop.capture_demand.clear(state).await;
+}
+
+async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
+    let active_group_count = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_render_groups()
+            .iter()
+            .filter(|group| group.enabled && group.effect_id.is_some())
+            .count()
+    };
+
+    if active_group_count == 0 {
+        runtime.render.render_group_runtime.clear_inactive_groups();
+    }
 }

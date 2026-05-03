@@ -403,6 +403,9 @@ pub(crate) async fn execute_frame(
 
     let (next_wake, next_skip_decision) = {
         let mut rl = state.render_loop.write().await;
+        runtime
+            .frame_policy
+            .set_configured_max_tier(state.configured_max_fps_tier.get());
         let execution = runtime
             .frame_policy
             .complete_render_frame(&mut rl, frame_summary.admission);

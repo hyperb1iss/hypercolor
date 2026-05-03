@@ -16,6 +16,7 @@ mod menu;
 mod state;
 
 use std::sync::mpsc;
+#[cfg(not(target_os = "windows"))]
 use std::time::Duration;
 
 use tracing::{error, info};
@@ -97,29 +98,6 @@ fn pump_events(_timeout: Duration) {
     std::thread::sleep(Duration::from_millis(16));
 }
 
-/// On Windows, pump the Win32 message loop for tray icon events.
-#[cfg(target_os = "windows")]
-fn pump_events(timeout: Duration) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
-    };
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let mut msg: MSG = unsafe { std::mem::zeroed() };
-        let has_msg = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-        if has_msg != 0 {
-            unsafe {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        } else if std::time::Instant::now() >= deadline {
-            break;
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-}
-
 /// Fallback for other platforms: just sleep.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn pump_events(timeout: Duration) {
@@ -127,10 +105,16 @@ fn pump_events(timeout: Duration) {
 }
 
 /// Poll interval for the main event loop (milliseconds).
+#[cfg(not(target_os = "windows"))]
 const POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 fn main() -> anyhow::Result<()> {
-    // Initialize tracing subscriber.
+    init_tracing();
+    info!("Starting Hypercolor tray applet");
+    run_tray_app()
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -139,10 +123,95 @@ fn main() -> anyhow::Result<()> {
         .with_target(false)
         .compact()
         .init();
+}
 
-    info!("Starting Hypercolor tray applet");
+#[cfg(target_os = "windows")]
+enum WindowsTrayEvent {
+    Daemon(DaemonMessage),
+    Menu(tray_icon::menu::MenuEvent),
+    Tray(tray_icon::TrayIconEvent),
+}
 
-    // Initialize platform (NSApplication on macOS).
+#[cfg(target_os = "windows")]
+fn run_tray_app() -> anyhow::Result<()> {
+    use tao::{
+        event::{Event, StartCause},
+        event_loop::{ControlFlow, EventLoopBuilder},
+    };
+
+    init_platform();
+
+    let event_loop = EventLoopBuilder::<WindowsTrayEvent>::with_user_event().build();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
+    let (daemon_tx, daemon_rx) = mpsc::channel::<DaemonMessage>();
+
+    let proxy = event_loop.create_proxy();
+    std::thread::spawn(move || {
+        while let Ok(message) = daemon_rx.recv() {
+            if proxy.send_event(WindowsTrayEvent::Daemon(message)).is_err() {
+                break;
+            }
+        }
+    });
+
+    let proxy = event_loop.create_proxy();
+    tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(WindowsTrayEvent::Tray(event));
+    }));
+
+    let proxy = event_loop.create_proxy();
+    tray_icon::menu::MenuEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(WindowsTrayEvent::Menu(event));
+    }));
+
+    spawn_daemon_client(daemon_tx, cmd_rx);
+
+    let mut app_state = AppState::disconnected();
+    let mut tray_icon = None;
+
+    info!("Tray applet running; waiting for daemon connection");
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        match event {
+            Event::NewEvents(StartCause::Init) if tray_icon.is_none() => {
+                match create_tray_icon(&app_state) {
+                    Ok(icon) => {
+                        tray_icon = Some(icon);
+                    }
+                    Err(error) => {
+                        error!("Failed to create tray icon: {error}");
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+            }
+            Event::UserEvent(WindowsTrayEvent::Daemon(message)) => {
+                apply_daemon_message(&mut app_state, message);
+                if let Some(tray_icon) = &tray_icon {
+                    update_tray(tray_icon, &app_state);
+                }
+            }
+            Event::UserEvent(WindowsTrayEvent::Menu(event))
+                if handle_menu_event(&event, &app_state, &cmd_tx) =>
+            {
+                *control_flow = ControlFlow::Exit;
+            }
+            Event::UserEvent(WindowsTrayEvent::Menu(_)) => {}
+            Event::UserEvent(WindowsTrayEvent::Tray(event)) => {
+                handle_tray_icon_event(event, &cmd_tx);
+            }
+            Event::LoopDestroyed => {
+                drop(tray_icon.take());
+                info!("Tray applet exiting");
+            }
+            _ => {}
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_tray_app() -> anyhow::Result<()> {
     init_platform();
 
     // Pump the event loop once before creating the tray icon.
@@ -153,16 +222,8 @@ fn main() -> anyhow::Result<()> {
     // Initial state: disconnected.
     let mut app_state = AppState::disconnected();
 
-    // Build initial icon and menu.
-    let icon = build_icon(IconState::Disconnected)?;
-    let tray_menu = build_menu(&app_state)?;
-
-    // Create the tray icon (after the event loop is primed).
-    let tray_icon = TrayIconBuilder::new()
-        .with_tooltip("Hypercolor")
-        .with_icon(icon)
-        .with_menu(Box::new(tray_menu))
-        .build()?;
+    // Create the tray icon (after the event loop is primed on macOS).
+    let tray_icon = create_tray_icon(&app_state)?;
 
     // Pump again to let the system process the new tray icon registration.
     pump_events(Duration::from_millis(1));
@@ -173,17 +234,7 @@ fn main() -> anyhow::Result<()> {
     // Channels: tray UI -> daemon client (commands).
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
 
-    // Spawn tokio runtime in a background thread for async daemon communication.
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build tokio runtime");
-        rt.block_on(async {
-            let mut client = DaemonClient::new(daemon_tx, cmd_rx);
-            client.run().await;
-        });
-    });
+    spawn_daemon_client(daemon_tx, cmd_rx);
 
     // Get event receivers for menu and tray icon events.
     let menu_channel = tray_icon::menu::MenuEvent::receiver();
@@ -200,32 +251,8 @@ fn main() -> anyhow::Result<()> {
 
         // Process all pending daemon messages.
         while let Ok(msg) = daemon_rx.try_recv() {
-            match msg {
-                DaemonMessage::Connected(new_state) => {
-                    info!(
-                        "Connected to daemon (devices={}, effects={})",
-                        new_state.device_count,
-                        new_state.effects.len()
-                    );
-                    app_state = new_state;
-                    update_tray(&tray_icon, &app_state);
-                }
-                DaemonMessage::Disconnected => {
-                    info!("Disconnected from daemon");
-                    mark_disconnected(&mut app_state);
-                    sync_active_server(&mut app_state);
-                    update_tray(&tray_icon, &app_state);
-                }
-                DaemonMessage::ServersUpdated(servers) => {
-                    app_state.servers = servers;
-                    sync_active_server(&mut app_state);
-                    update_tray(&tray_icon, &app_state);
-                }
-                DaemonMessage::StateUpdate(update) => {
-                    apply_state_update(&mut app_state, update);
-                    update_tray(&tray_icon, &app_state);
-                }
-            }
+            apply_daemon_message(&mut app_state, msg);
+            update_tray(&tray_icon, &app_state);
         }
 
         // Process menu click events.
@@ -239,13 +266,7 @@ fn main() -> anyhow::Result<()> {
         // Note: on macOS, click events are NOT fired when a menu is set —
         // the menu shows automatically. This handler is for Linux.
         while let Ok(event) = tray_channel.try_recv() {
-            if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                ..
-            } = event
-            {
-                let _ = cmd_tx.send(TrayCommand::OpenWebUi);
-            }
+            handle_tray_icon_event(event, &cmd_tx);
         }
     }
 
@@ -254,6 +275,81 @@ fn main() -> anyhow::Result<()> {
     drop(tray_icon);
     info!("Tray applet exiting");
     Ok(())
+}
+
+fn create_tray_icon(state: &AppState) -> anyhow::Result<tray_icon::TrayIcon> {
+    let icon = build_icon(icon_state_for(state))?;
+    let tray_menu = build_menu(state)?;
+
+    Ok(TrayIconBuilder::new()
+        .with_tooltip("Hypercolor")
+        .with_icon(icon)
+        .with_menu(Box::new(tray_menu))
+        .build()?)
+}
+
+fn icon_state_for(state: &AppState) -> IconState {
+    if !state.connected {
+        IconState::Disconnected
+    } else if state.paused {
+        IconState::Paused
+    } else {
+        IconState::Active
+    }
+}
+
+fn spawn_daemon_client(
+    daemon_tx: mpsc::Sender<DaemonMessage>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TrayCommand>,
+) {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+        rt.block_on(async {
+            let mut client = DaemonClient::new(daemon_tx, cmd_rx);
+            client.run().await;
+        });
+    });
+}
+
+fn apply_daemon_message(app_state: &mut AppState, message: DaemonMessage) {
+    match message {
+        DaemonMessage::Connected(new_state) => {
+            info!(
+                "Connected to daemon (devices={}, effects={})",
+                new_state.device_count,
+                new_state.effects.len()
+            );
+            *app_state = new_state;
+        }
+        DaemonMessage::Disconnected => {
+            info!("Disconnected from daemon");
+            mark_disconnected(app_state);
+            sync_active_server(app_state);
+        }
+        DaemonMessage::ServersUpdated(servers) => {
+            app_state.servers = servers;
+            sync_active_server(app_state);
+        }
+        DaemonMessage::StateUpdate(update) => {
+            apply_state_update(app_state, update);
+        }
+    }
+}
+
+fn handle_tray_icon_event(
+    event: tray_icon::TrayIconEvent,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<TrayCommand>,
+) {
+    if let tray_icon::TrayIconEvent::Click {
+        button: tray_icon::MouseButton::Left,
+        ..
+    } = event
+    {
+        let _ = cmd_tx.send(TrayCommand::OpenWebUi);
+    }
 }
 
 /// Apply an incremental state update to the app state.

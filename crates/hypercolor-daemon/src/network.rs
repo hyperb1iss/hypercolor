@@ -8,9 +8,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hypercolor_core::device::{
-    BackendManager, BlocksBackend, BlocksScanner, SmBusBackend, SmBusScanner, TransportScanner,
-    UsbBackend, UsbProtocolConfigStore, UsbScanner,
+    BackendManager, SmBusBackend, SmBusScanner, TransportScanner, UsbBackend,
+    UsbProtocolConfigStore, UsbScanner,
 };
+#[cfg(unix)]
+use hypercolor_core::device::{BlocksBackend, BlocksScanner};
 #[cfg(not(feature = "builtin-drivers"))]
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
@@ -34,6 +36,7 @@ pub const BLOCKS_HOST_TRANSPORT_TARGET_ID: &str = BLOCKS_OUTPUT_BACKEND_ID;
 pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &[
     USB_HOST_TRANSPORT_TARGET_ID,
     SMBUS_HOST_TRANSPORT_TARGET_ID,
+    #[cfg(unix)]
     BLOCKS_HOST_TRANSPORT_TARGET_ID,
 ];
 pub const USB_HOST_DRIVER_TRANSPORTS: &[DriverTransportKind] = &[
@@ -250,7 +253,16 @@ pub const fn host_transport_target_for_driver_transport(
             Some(USB_HOST_TRANSPORT_TARGET_ID)
         }
         DriverTransportKind::Smbus => Some(SMBUS_HOST_TRANSPORT_TARGET_ID),
-        DriverTransportKind::Bridge => Some(BLOCKS_HOST_TRANSPORT_TARGET_ID),
+        DriverTransportKind::Bridge => {
+            #[cfg(unix)]
+            {
+                Some(BLOCKS_HOST_TRANSPORT_TARGET_ID)
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        }
         DriverTransportKind::Network
         | DriverTransportKind::Virtual
         | DriverTransportKind::Custom(_) => None,
@@ -322,6 +334,7 @@ pub fn register_enabled_device_backends(
     register_enabled_driver_output_backends(backend_manager, registry, host, config)
         .context("failed to register driver module output backends")?;
 
+    #[cfg(unix)]
     if config.discovery.blocks_scan {
         let socket_path = config
             .discovery
@@ -377,6 +390,7 @@ pub fn host_transport_scanner(
             ),
         ))),
         SMBUS_HOST_TRANSPORT_TARGET_ID => Some(Box::new(SmBusScanner::new())),
+        #[cfg(unix)]
         BLOCKS_HOST_TRANSPORT_TARGET_ID => {
             let socket_path = config
                 .discovery
@@ -385,6 +399,8 @@ pub fn host_transport_scanner(
                 .map_or_else(BlocksBackend::default_socket_path, std::path::PathBuf::from);
             Some(Box::new(BlocksScanner::new(socket_path)))
         }
+        #[cfg(not(unix))]
+        BLOCKS_HOST_TRANSPORT_TARGET_ID => None,
         _ => None,
     }
 }

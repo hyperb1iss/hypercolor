@@ -9,6 +9,8 @@ use crate::icons::*;
 use crate::preview_telemetry::PreviewPresenterTelemetry;
 use crate::ws::PerformanceMetrics;
 
+use super::fps_display::stabilize_fps_for_display;
+
 const EMA_ALPHA: f64 = 0.3;
 
 fn use_ema(
@@ -40,7 +42,11 @@ pub(super) fn HeroGauges(
     #[prop(into)] preview_fps_series: Signal<Vec<f64>>,
 ) -> impl IntoView {
     // Engine FPS gauge values — EMA-smoothed for stable display
-    let engine_raw = Memo::new(move |_| metrics.get().map(|m| m.fps.actual));
+    let engine_raw = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| stabilize_fps_for_display(m.fps.actual, m.fps.target))
+    });
     let engine_value = use_ema(move || engine_raw.get(), EMA_ALPHA);
     let engine_max = Memo::new(move |_| {
         metrics
@@ -98,12 +104,14 @@ pub(super) fn HeroGauges(
 
     // Preview gauge — EMA-smoothed
     let preview_raw = Memo::new(move |_| {
-        let present = preview_present.get().present_fps;
-        let fps = if present > 0.0 {
-            f64::from(present)
+        let stream_fps = f64::from(preview_fps.get());
+        let present_fps = f64::from(preview_present.get().present_fps);
+        let fps = if stream_fps > 0.0 {
+            stream_fps
         } else {
-            f64::from(preview_fps.get())
+            present_fps
         };
+        let fps = stabilize_fps_for_display(fps, preview_target_fps.get());
         if fps > 0.0 { Some(fps) } else { None }
     });
     let preview_value = use_ema(move || preview_raw.get(), EMA_ALPHA);

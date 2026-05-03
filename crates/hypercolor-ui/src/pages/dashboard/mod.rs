@@ -32,6 +32,7 @@ use crate::preview_telemetry::PreviewTelemetryContext;
 use crate::ws::PerformanceMetrics;
 
 mod charts;
+mod fps_display;
 mod gauges;
 mod header;
 mod layout;
@@ -39,6 +40,7 @@ mod panel_frame;
 mod timeline;
 
 use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ThroughputPanel};
+use fps_display::{stabilize_fps_for_display, stabilize_fps_for_display_f32};
 use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
 use header::{StatusSkeleton, StatusStrip};
 use layout::{DashboardLayout, PanelId};
@@ -69,7 +71,6 @@ const DASHBOARD_PREVIEW_INLINE_MAX_REQUEST_WIDTH: f64 = 704.0;
 const DASHBOARD_PREVIEW_REQUEST_QUANTUM: f64 = 64.0;
 const DASHBOARD_PREVIEW_INLINE_MAX_DPR: f64 = 1.25;
 const DASHBOARD_PREVIEW_FULLSCREEN_MAX_DPR: f64 = 1.5;
-const DASHBOARD_PREVIEW_RECOVERY_SAMPLES: u8 = 6;
 
 /// Practical upper bound for the draggable preview column: viewport width
 /// minus the reserve for sidebar, padding, handle, and favorites panel.
@@ -109,22 +110,6 @@ fn dashboard_preview_request_width(preview_width_px: f64, fullscreen: bool) -> u
     }
 }
 
-fn dashboard_preview_cap_downshift(current: u32) -> u32 {
-    match current {
-        cap if cap > 45 => 45,
-        45 => 30,
-        _ => current,
-    }
-}
-
-fn dashboard_preview_cap_upshift(current: u32) -> u32 {
-    match current {
-        cap if cap < 45 => 45,
-        45 => DASHBOARD_PREVIEW_FPS_CAP,
-        _ => current,
-    }
-}
-
 // ── Rolling metrics history ──────────────────────────────────────────
 
 /// Compact snapshot of the telemetry values we want to graph over time.
@@ -144,7 +129,7 @@ struct MetricsSample {
 }
 
 impl MetricsSample {
-    fn from_metrics(m: &PerformanceMetrics, preview_fps: f32) -> Self {
+    fn from_metrics(m: &PerformanceMetrics, preview_fps: f32, preview_target_fps: u32) -> Self {
         let t = &m.timeline;
         // Phase durations are derived from the cumulative milestone timeline.
         // Any given milestone may briefly regress by a hair under load, so
@@ -161,13 +146,13 @@ impl MetricsSample {
         };
 
         Self {
-            engine_fps: m.fps.actual,
+            engine_fps: stabilize_fps_for_display(m.fps.actual, m.fps.target),
             frame_time_avg: m.frame_time.avg_ms,
             frame_time_p95: m.frame_time.p95_ms,
             jitter_p95: m.pacing.jitter_p95_ms,
             wake_p95: m.pacing.wake_delay_p95_ms,
             frame_age: m.pacing.frame_age_ms,
-            preview_fps,
+            preview_fps: stabilize_fps_for_display_f32(preview_fps, preview_target_fps),
             ws_bytes_per_sec: m.websocket.bytes_sent_per_sec,
             phase,
         }
@@ -182,9 +167,6 @@ pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let preview_telemetry = expect_context::<PreviewTelemetryContext>();
     let status_resource = LocalResource::new(api::fetch_status);
-    let (dashboard_preview_cap, set_dashboard_preview_cap) = signal(DASHBOARD_PREVIEW_FPS_CAP);
-    let preview_recovery_streak = StoredValue::new(0_u8);
-    let last_skipped_frames = StoredValue::new(0_u32);
     let fullscreenchange_listener: StoredValue<Option<EventHandle>, LocalStorage> =
         StoredValue::new_local(None);
 
@@ -222,7 +204,7 @@ pub fn DashboardPage() -> impl IntoView {
     // fullscreen we size to the whole viewport so the upscaled frame
     // stays sharp on wide monitors.
     Effect::new(move |_| {
-        ws.set_preview_cap.set(dashboard_preview_cap.get());
+        ws.set_preview_cap.set(DASHBOARD_PREVIEW_FPS_CAP);
         let effective_width = if fullscreen.get() {
             viewport_width_px()
         } else {
@@ -291,63 +273,18 @@ pub fn DashboardPage() -> impl IntoView {
         fullscreenchange_listener.set_value(Some(listener));
     }
 
-    Effect::new(move |_| {
-        let telemetry = preview_telemetry.presenter.get();
-        let target_fps = ws.preview_target_fps.get();
-        if target_fps == 0 {
-            preview_recovery_streak.set_value(0);
-            last_skipped_frames.set_value(telemetry.skipped_frames);
-            return;
-        }
-
-        let current_cap = dashboard_preview_cap.get();
-        let present_fps = f64::from(telemetry.present_fps);
-        let arrival_to_present_ms = telemetry.arrival_to_present_ms;
-        let skipped_frames = telemetry.skipped_frames;
-        let skipped_delta = skipped_frames.saturating_sub(last_skipped_frames.get_value());
-        last_skipped_frames.set_value(skipped_frames);
-
-        let lagging = skipped_delta > 0
-            || arrival_to_present_ms >= 20.0
-            || (present_fps > 0.0
-                && present_fps + if target_fps >= 45 { 6.0 } else { 4.0 } < f64::from(target_fps));
-        if lagging {
-            preview_recovery_streak.set_value(0);
-            let next_cap = dashboard_preview_cap_downshift(current_cap);
-            if next_cap != current_cap {
-                set_dashboard_preview_cap.set(next_cap);
-            }
-            return;
-        }
-
-        let healthy = present_fps > 0.0
-            && arrival_to_present_ms > 0.0
-            && arrival_to_present_ms <= 10.0
-            && present_fps + 1.5 >= f64::from(target_fps);
-        if !healthy {
-            preview_recovery_streak.set_value(0);
-            return;
-        }
-
-        let recovery_streak = preview_recovery_streak.get_value().saturating_add(1);
-        if recovery_streak >= DASHBOARD_PREVIEW_RECOVERY_SAMPLES {
-            preview_recovery_streak.set_value(0);
-            let next_cap = dashboard_preview_cap_upshift(current_cap);
-            if next_cap != current_cap {
-                set_dashboard_preview_cap.set(next_cap);
-            }
-        } else {
-            preview_recovery_streak.set_value(recovery_streak);
-        }
-    });
-
     // Rolling history — one signal driven by the metrics stream.
     let history = RwSignal::new(VecDeque::<MetricsSample>::with_capacity(HISTORY_SIZE));
     let metrics_signal = ws.metrics;
     let preview_fps_signal = ws.preview_fps;
+    let preview_target_fps_signal = ws.preview_target_fps;
     Effect::new(move |_| {
         if let Some(m) = metrics_signal.get() {
-            let sample = MetricsSample::from_metrics(&m, preview_fps_signal.get_untracked());
+            let sample = MetricsSample::from_metrics(
+                &m,
+                preview_fps_signal.get_untracked(),
+                preview_target_fps_signal.get_untracked(),
+            );
             history.update(|h| {
                 if h.len() >= HISTORY_SIZE {
                     h.pop_front();

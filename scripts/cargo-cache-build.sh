@@ -6,6 +6,8 @@ set -euo pipefail
 # enables compiler caches so whole-workspace builds warm up instead of starting
 # from scratch on every clean target dir.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Servo builds spawn hundreds of parallel rustc+sccache clients; source hashing
 # trips EMFILE on macOS launchd's default soft limit (256).
 current_nofile="$(ulimit -Sn)"
@@ -36,6 +38,15 @@ prune_stale_turbojpeg_cmake_cache() {
 prune_stale_turbojpeg_cmake_cache
 
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+
+if [ "$HOST_TRIPLE" = "x86_64-pc-windows-msvc" ]; then
+  PS_WRAPPER="$SCRIPT_DIR/cargo-cache-build.ps1"
+  if command -v cygpath >/dev/null 2>&1; then
+    PS_WRAPPER="$(cygpath -w "$PS_WRAPPER")"
+  fi
+  exec powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_WRAPPER" "$@"
+fi
+
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
 ENABLE_RUST_SCCACHE=1

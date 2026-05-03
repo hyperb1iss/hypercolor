@@ -39,7 +39,7 @@ pub mod sparkleflinger;
 
 use std::any::Any;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -99,6 +99,54 @@ impl CanvasDims {
     pub fn set(&self, width: u32, height: u32) {
         self.0.0.store(width, Ordering::Relaxed);
         self.0.1.store(height, Ordering::Relaxed);
+    }
+}
+
+/// Shared, atomically-updatable configured FPS ceiling.
+///
+/// The render loop can temporarily lower its runtime admission ceiling, but
+/// config changes must still flow into the render thread without rebuilding
+/// the pipeline runtime.
+#[derive(Clone)]
+pub struct ConfiguredFpsTier(Arc<AtomicU8>);
+
+impl ConfiguredFpsTier {
+    pub fn new(tier: FpsTier) -> Self {
+        Self(Arc::new(AtomicU8::new(fps_tier_to_u8(tier))))
+    }
+
+    pub fn get(&self) -> FpsTier {
+        u8_to_fps_tier(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn set(&self, tier: FpsTier) {
+        self.0.store(fps_tier_to_u8(tier), Ordering::Relaxed);
+    }
+}
+
+impl From<FpsTier> for ConfiguredFpsTier {
+    fn from(value: FpsTier) -> Self {
+        Self::new(value)
+    }
+}
+
+const fn fps_tier_to_u8(tier: FpsTier) -> u8 {
+    match tier {
+        FpsTier::Minimal => 0,
+        FpsTier::Low => 1,
+        FpsTier::Medium => 2,
+        FpsTier::High => 3,
+        FpsTier::Full => 4,
+    }
+}
+
+const fn u8_to_fps_tier(value: u8) -> FpsTier {
+    match value {
+        0 => FpsTier::Minimal,
+        1 => FpsTier::Low,
+        2 => FpsTier::Medium,
+        3 => FpsTier::High,
+        _ => FpsTier::Full,
     }
 }
 
@@ -172,7 +220,7 @@ pub struct RenderThreadState {
     pub render_acceleration_mode: RenderAccelerationMode,
 
     /// Ceiling derived from user configuration before runtime admission.
-    pub configured_max_fps_tier: FpsTier,
+    pub configured_max_fps_tier: ConfiguredFpsTier,
 }
 
 impl RenderThreadState {

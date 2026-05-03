@@ -35,6 +35,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+spin_sleep = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 arc-swap = { workspace = true }

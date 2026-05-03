@@ -65,6 +65,10 @@ impl EffectPool {
         Ok(())
     }
 
+    pub fn clear(&mut self) {
+        self.slots.clear();
+    }
+
     pub fn render_group_into(
         &mut self,
         group: &RenderGroup,
@@ -529,6 +533,22 @@ mod tests {
 
         pool.reconcile(&[], &EffectRegistry::new(Vec::new()))
             .expect("prune should succeed");
+
+        assert!(destroyed.load(Ordering::SeqCst));
+        assert!(pool.slots.is_empty());
+    }
+
+    #[test]
+    fn clear_destroys_slots() {
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let group_id = RenderGroupId::new();
+        let mut pool = EffectPool::new();
+        pool.slots.insert(
+            group_id,
+            spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
+        );
+
+        pool.clear();
 
         assert!(destroyed.load(Ordering::SeqCst));
         assert!(pool.slots.is_empty());

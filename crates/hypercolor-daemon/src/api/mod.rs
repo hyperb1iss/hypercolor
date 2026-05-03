@@ -51,7 +51,7 @@ use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::EffectRegistry;
-use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -83,6 +83,7 @@ use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::profile_store::ProfileStore;
+use crate::render_thread::ConfiguredFpsTier;
 use crate::runtime_state;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -121,6 +122,9 @@ pub struct AppState {
 
     /// Render loop — frame timing and pipeline skeleton.
     pub render_loop: Arc<RwLock<RenderLoop>>,
+
+    /// Configured render FPS ceiling shared with the render thread.
+    pub configured_max_fps_tier: ConfiguredFpsTier,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,
@@ -384,6 +388,7 @@ impl AppState {
         let event_bus = Arc::new(HypercolorBus::new());
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
+        let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
         let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
         let usb_protocol_configs = UsbProtocolConfigStore::new();
@@ -457,6 +462,7 @@ impl AppState {
             event_bus,
             preview_runtime,
             render_loop,
+            configured_max_fps_tier,
             spatial_engine,
             backend_manager,
             usb_protocol_configs,
@@ -542,6 +548,7 @@ impl AppState {
             event_bus: Arc::clone(&daemon.event_bus),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
             render_loop: Arc::clone(&daemon.render_loop),
+            configured_max_fps_tier: daemon.configured_max_fps_tier.clone(),
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),
             usb_protocol_configs: daemon.usb_protocol_configs.clone(),

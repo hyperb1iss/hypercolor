@@ -27,24 +27,44 @@ verify: fmt-check lint test
     @echo '✅ All checks passed'
 
 # Build the workspace with the daemon's full feature set
+[unix]
 build *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} {{ args }}
 
+[windows]
+build *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} {{ args }}
+
 # Build with the runtime-tuned preview profile and full daemon features
+[unix]
 build-preview *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --profile preview {{ args }}
+
+[windows]
+build-preview *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} --profile preview {{ args }}
 
 # Build a full release bundle with binaries, assets, docs, and agent skills
 release *args='':
     ./scripts/dist.sh {{ args }}
 
 # Build release binaries only without assembling a distribution bundle
+[unix]
 release-bin *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --release {{ args }}
 
+[windows]
+release-bin *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} --release {{ args }}
+
 # Type-check without building
+[unix]
 check *args='':
     ./scripts/cargo-cache-build.sh cargo check {{ workspace_args }} {{ args }}
+
+[windows]
+check *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo check {{ workspace_args }} {{ args }}
 
 # ─── Python Client ────────────────────────────────────────
 
@@ -100,16 +120,31 @@ python-verify: python-lint python-fmt-check python-typecheck python-ws-protocol-
 # ─── Testing ──────────────────────────────────────────────
 
 # Run all tests
+[unix]
 test *args='':
     ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ args }}
 
+[windows]
+test *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ args }}
+
 # Run tests for a specific crate
+[unix]
 test-crate crate *args='':
     ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ args }}
 
+[windows]
+test-crate crate *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ args }}
+
 # Run a specific test by name
+[unix]
 test-one name *args='':
     ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
+
+[windows]
+test-one name *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ name }} {{ args }}
 
 # Manually run the Cinder/Leptos extension design audit snapshot generator
 cinder-audit:
@@ -175,12 +210,22 @@ bench-compare name:
 # ─── Linting & Formatting ────────────────────────────────
 
 # Run clippy with deny warnings
+[unix]
 lint *args='':
     ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
 
+[windows]
+lint *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
+
 # Fix clippy suggestions automatically
+[unix]
 lint-fix *args='':
     ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets --fix --allow-dirty --allow-staged {{ args }}
+
+[windows]
+lint-fix *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo clippy {{ workspace_args }} --all-targets --fix --allow-dirty --allow-staged {{ args }}
 
 # Apply automatic Rust and SDK fixes
 fix *args='':
@@ -212,14 +257,24 @@ format: fmt prettier
 # ─── Supply Chain ─────────────────────────────────────────
 
 # Audit dependencies (licenses, advisories, bans)
+[unix]
 deny *args='':
     ./scripts/cargo-cache-build.sh cargo deny check {{ args }}
+
+[windows]
+deny *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo deny check {{ args }}
 
 # ─── Documentation ────────────────────────────────────────
 
 # Build docs for all crates
+[unix]
 doc *args='':
     ./scripts/cargo-cache-build.sh cargo doc {{ workspace_args }} --no-deps {{ args }}
+
+[windows]
+doc *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo doc {{ workspace_args }} --no-deps {{ args }}
 
 # Build and open docs in browser
 doc-open: (doc "--open")
@@ -235,24 +290,49 @@ docs-build:
 # ─── Running ──────────────────────────────────────────────
 
 # Run the daemon with the full renderer set enabled
+[unix]
 daemon *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview -- --log-level debug {{ args }}
 
+[windows]
+daemon *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview -- --log-level debug {{ args }}
+
 # Run the daemon with the GPU compositor explicitly selected
+[unix]
 daemon-wgpu *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features wgpu -- --log-level debug --compositor-acceleration-mode gpu {{ args }}
 
+[windows]
+daemon-wgpu *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features wgpu -- --log-level debug --compositor-acceleration-mode gpu {{ args }}
+
 # Run the CLI
+[unix]
 cli *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
 
+[windows]
+cli *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
+
 # Run the system tray applet
+[unix]
 tray *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tray -- {{ args }}
 
+[windows]
+tray *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-tray -- {{ args }}
+
 # Run the daemon in release mode with the full renderer set enabled
+[unix]
 daemon-release *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
+
+[windows]
+daemon-release *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
 
 # Create or update a virtual display simulator, apply an effect, and print a browser preview URL
 simulator-demo *args='':
@@ -263,20 +343,40 @@ simulator-smoke *args='':
     ./scripts/simulator-demo.sh --ephemeral --wait-frame {{ args }}
 
 # Run Servo daemon (dev profile) with cache wrapper
+[unix]
 daemon-servo *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
 
+[windows]
+daemon-servo *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
+
 # Run Servo daemon with the GPU compositor enabled
+[unix]
 daemon-servo-wgpu *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }}
 
+[windows]
+daemon-servo-wgpu *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }}
+
 # Run Servo daemon in release mode with cache wrapper
+[unix]
 daemon-servo-release *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
 
+[windows]
+daemon-servo-release *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
+
 # Build Servo daemon release artifacts once (faster repeat launches)
+[unix]
 build-servo-release:
     ./scripts/servo-cache-build.sh cargo build -p hypercolor-daemon --release --features servo
+
+[windows]
+build-servo-release:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --release --features servo
 
 # Run prebuilt Servo daemon release binary from cache target dir
 run-servo-release-bin *args='':
@@ -353,6 +453,7 @@ prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
 # Run Servo GPU daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
+[unix]
 dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -362,6 +463,10 @@ dev *args='':
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait
+
+[windows]
+dev *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-windows.ps1 {{ args }}
 
 # Start the UI dev server (Trunk + hot reload on :9430)
 ui-dev:

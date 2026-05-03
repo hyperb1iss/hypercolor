@@ -147,6 +147,7 @@ pub(super) enum DiscoveryTargetScanner {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum DiscoveryTargetAvailability {
     DriverModule,
+    #[cfg(unix)]
     BlocksScan {
         disabled_message: &'static str,
     },
@@ -189,6 +190,7 @@ static HOST_DISCOVERY_TARGETS: &[HostDiscoveryTargetDescriptor] = &[
             disabled_message: "Discovery target 'smbus' has no enabled SMBus HAL driver modules",
         },
     },
+    #[cfg(unix)]
     HostDiscoveryTargetDescriptor {
         id: crate::network::BLOCKS_HOST_TRANSPORT_TARGET_ID,
         scanner: DiscoveryTargetScanner::HostTransport,
@@ -236,6 +238,7 @@ impl DiscoveryTarget {
     }
 
     /// Create the host Blocks bridge discovery target.
+    #[cfg(unix)]
     #[must_use]
     pub fn blocks() -> Self {
         Self::host(crate::network::BLOCKS_HOST_TRANSPORT_TARGET_ID)
@@ -406,6 +409,7 @@ pub fn resolve_targets(
                     continue;
                 }
             }
+            #[cfg(unix)]
             DiscoveryTargetAvailability::BlocksScan { disabled_message } => {
                 if !config.discovery.blocks_scan {
                     if explicit_request {
@@ -635,6 +639,7 @@ mod tests {
         targets.extend([
             DiscoveryTarget::usb(),
             DiscoveryTarget::smbus(),
+            #[cfg(unix)]
             DiscoveryTarget::blocks(),
         ]);
         targets
@@ -780,6 +785,7 @@ mod tests {
         assert!(error.contains("no enabled USB/MIDI/serial HAL driver modules"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_targets_rejects_disabled_blocks_scan() {
         let state = builtin_registry();
@@ -797,6 +803,7 @@ mod tests {
     fn discovery_target_transient_miss_policy_is_target_owned() {
         assert!(DiscoveryTarget::smbus().preserves_renderable_on_discovery_miss());
         assert!(!DiscoveryTarget::usb().preserves_renderable_on_discovery_miss());
+        #[cfg(unix)]
         assert!(!DiscoveryTarget::blocks().preserves_renderable_on_discovery_miss());
         assert!(
             !DiscoveryTarget::driver("network-driver").preserves_renderable_on_discovery_miss()

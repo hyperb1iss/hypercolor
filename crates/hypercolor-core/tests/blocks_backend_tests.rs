@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::path::Path;
 
 use hypercolor_core::device::{BlocksBackend, DeviceBackend};

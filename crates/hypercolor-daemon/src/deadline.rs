@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
+#[cfg(any(not(windows), test))]
 pub(crate) const PRECISE_WAKE_GUARD: Duration = Duration::from_micros(1_000);
+#[cfg(not(windows))]
 const PRECISE_WAKE_SPIN_THRESHOLD: Duration = Duration::from_micros(150);
 
 pub(crate) fn advance_deadline(
@@ -14,12 +16,19 @@ pub(crate) fn advance_deadline(
         .max(now)
 }
 
+#[cfg(any(not(windows), test))]
 pub(crate) fn coarse_sleep_deadline(deadline: Instant, now: Instant) -> Option<Instant> {
     deadline
         .checked_sub(PRECISE_WAKE_GUARD)
         .filter(|coarse_deadline| *coarse_deadline > now)
 }
 
+#[cfg(windows)]
+pub(crate) async fn wait_until_deadline(deadline: Instant) {
+    spin_sleep::sleep_until(deadline);
+}
+
+#[cfg(not(windows))]
 pub(crate) async fn wait_until_deadline(deadline: Instant) {
     let now = Instant::now();
     if let Some(coarse_deadline) = coarse_sleep_deadline(deadline, now) {
@@ -40,7 +49,7 @@ pub(crate) async fn wait_until_deadline(deadline: Instant) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use std::time::{Duration, Instant};
 

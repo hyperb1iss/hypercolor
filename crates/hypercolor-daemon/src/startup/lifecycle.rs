@@ -7,7 +7,6 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
-use hypercolor_core::engine::FpsTier;
 use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
@@ -93,7 +92,7 @@ impl DaemonState {
             screen_capture_configured: config.capture.enabled,
             canvas_dims: CanvasDims::new(config.daemon.canvas_width, config.daemon.canvas_height),
             render_acceleration_mode: self.render_acceleration.effective_mode,
-            configured_max_fps_tier: FpsTier::from_fps(config.daemon.target_fps),
+            configured_max_fps_tier: self.configured_max_fps_tier.clone(),
         };
         self.render_thread = Some(
             RenderThread::try_spawn(rt_state)

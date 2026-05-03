@@ -472,9 +472,10 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
 
     if key.is_none_or(|k| k == "daemon.target_fps") {
         let tier = FpsTier::from_fps(config.daemon.target_fps);
+        state.configured_max_fps_tier.set(tier);
         let mut loop_guard = state.render_loop.write().await;
-        loop_guard.set_tier(tier);
         loop_guard.fps_controller_mut().set_max_tier(tier);
+        loop_guard.set_tier(tier);
         info!(
             target_fps = config.daemon.target_fps,
             resolved_tier = %tier,

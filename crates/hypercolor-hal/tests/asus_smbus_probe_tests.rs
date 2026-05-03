@@ -1,9 +1,12 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 
+#[cfg(unix)]
+use hypercolor_hal::drivers::asus::resolve_parent_pci_id_from_sysfs_path;
 use hypercolor_hal::drivers::asus::{
     SmBusControllerKind, build_aura_smbus_protocol, dram_capable_pci_id,
-    probe_asus_smbus_devices_in_root, resolve_parent_pci_id_from_sysfs_path,
+    probe_asus_smbus_devices_in_root,
 };
 use hypercolor_hal::protocol::Protocol;
 use tempfile::tempdir;
@@ -33,6 +36,7 @@ async fn asus_smbus_probe_ignores_non_device_i2c_nodes() {
 }
 
 #[test]
+#[cfg(unix)]
 fn asus_smbus_probe_walks_up_sysfs_tree_for_parent_pci_id() {
     let tempdir = tempdir().expect("tempdir should create");
     let pci_root = tempdir.path().join("0000:00:15.0");

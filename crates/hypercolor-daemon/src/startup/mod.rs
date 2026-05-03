@@ -44,7 +44,7 @@ use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
-use crate::render_thread::RenderThread;
+use crate::render_thread::{ConfiguredFpsTier, RenderThread};
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::{OutputPowerState, SessionController};
@@ -101,6 +101,9 @@ pub struct DaemonState {
 
     /// Render loop — frame timing and FPS tier management.
     pub render_loop: Arc<RwLock<RenderLoop>>,
+
+    /// Configured render FPS ceiling shared with the render thread.
+    pub configured_max_fps_tier: ConfiguredFpsTier,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,

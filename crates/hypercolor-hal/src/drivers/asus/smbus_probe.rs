@@ -3,16 +3,20 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 use hypercolor_types::device::{
-    ConnectionType, DeviceFamily, DeviceFingerprint, DeviceIdentifier, DeviceInfo, DeviceOrigin,
-    SMBUS_OUTPUT_BACKEND_ID, ZoneInfo,
+    ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo,
 };
+use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 use thiserror::Error;
 
-use crate::drivers::asus::smbus::{
-    AuraSmBusProtocol, encode_ene_transaction, ene_dram_remap_sequence,
-};
-use crate::protocol::{Protocol, ProtocolError, ProtocolZone, ResponseStatus};
+use crate::drivers::asus::smbus::AuraSmBusProtocol;
+#[cfg(target_os = "linux")]
+use crate::drivers::asus::smbus::{encode_ene_transaction, ene_dram_remap_sequence};
+use crate::protocol::{Protocol, ProtocolError};
+#[cfg(target_os = "linux")]
+use crate::protocol::{ProtocolZone, ResponseStatus};
+#[cfg(target_os = "linux")]
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
 #[cfg(target_os = "linux")]

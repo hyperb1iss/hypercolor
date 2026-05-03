@@ -38,7 +38,7 @@ use super::worker_client::{
     ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState, UNLOAD_TIMEOUT,
     WORKER_READY_TIMEOUT, WorkerCommand,
 };
-use crate::effect::servo_bootstrap::bootstrap_software_rendering_context;
+use crate::effect::servo_bootstrap::bootstrap_rendering_context;
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
@@ -50,6 +50,7 @@ const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 const MAX_GL_ERROR_BATCH: usize = 8;
+const MAX_SERVO_READBACK_RETIREES: usize = 8;
 
 /// Per-frame Servo render timings, split by stage. All durations in
 /// microseconds; the shared `_us` suffix is deliberate.
@@ -529,7 +530,7 @@ fn file_url_for_path(path: &Path) -> Result<Url> {
     })
 }
 
-/// Read Servo's composited framebuffer into a fresh `Canvas`.
+/// Read Servo's composited framebuffer into a reusable `Canvas` buffer.
 ///
 /// Bypasses `servo-paint-api::Framebuffer::read_framebuffer_to_image`, which
 /// allocates, calls `glReadPixels`, clones the whole `Vec<u8>` so it can
@@ -538,12 +539,17 @@ fn file_url_for_path(path: &Path) -> Result<Url> {
 /// `glReadPixels` DMA. Profile attributed that pair to ~45% of the Servo
 /// worker thread as raw libc memmove.
 ///
-/// Here we read directly into an owned `Vec<u8>` and swap rows in place —
-/// each byte moves at most once, so the flip is half the cost of Servo's
-/// default and there's no separate clone. The `bind_vertex_array(0)` call
-/// is the OSMesa workaround that Servo's upstream implementation keeps for
-/// its own reasons; preserve it so the headless adapter stays honest.
-fn read_framebuffer_into_canvas(session: &ServoSession, width: i32, height: i32) -> Result<Canvas> {
+/// Here we read directly into retired canvas storage when downstream has
+/// released it, then swap rows in place. Each byte moves at most once after
+/// the GL readback, and the hot path stops allocating a new RGBA buffer every
+/// rendered frame. The `bind_vertex_array(0)` call is the OSMesa workaround
+/// that Servo's upstream implementation keeps for its own reasons; preserve
+/// it so the headless adapter stays honest.
+fn read_framebuffer_into_canvas(
+    session: &mut ServoSession,
+    width: i32,
+    height: i32,
+) -> Result<Canvas> {
     use gleam::gl;
 
     if width <= 0 || height <= 0 {
@@ -564,10 +570,6 @@ fn read_framebuffer_into_canvas(session: &ServoSession, width: i32, height: i32)
     }
     gl.bind_vertex_array(0);
 
-    let mut pixels = gl.read_pixels(0, 0, width, height, gl::RGBA, gl::UNSIGNED_BYTE);
-    let gl_errors = collect_gl_errors_until_clear(gl::NO_ERROR, || gl.get_error());
-    log_servo_readback_gl_errors(&gl_errors);
-
     let stride = usize::try_from(width)
         .ok()
         .and_then(|w| w.checked_mul(4))
@@ -575,15 +577,19 @@ fn read_framebuffer_into_canvas(session: &ServoSession, width: i32, height: i32)
     let expected_len = stride
         .checked_mul(usize::try_from(height).context("servo readback height overflow")?)
         .context("servo readback buffer length overflow")?;
-    if pixels.len() != expected_len {
-        bail!(
-            "Servo readback returned {} bytes; expected {} ({}×{}×4)",
-            pixels.len(),
-            expected_len,
-            width,
-            height
-        );
-    }
+
+    let mut pixels = session.readback_buffers.take_buffer(expected_len);
+    gl.read_pixels_into_buffer(
+        0,
+        0,
+        width,
+        height,
+        gl::RGBA,
+        gl::UNSIGNED_BYTE,
+        &mut pixels,
+    );
+    let gl_errors = collect_gl_errors_until_clear(gl::NO_ERROR, || gl.get_error());
+    log_servo_readback_gl_errors(&gl_errors);
 
     flip_rows_in_place(&mut pixels, stride);
 
@@ -893,11 +899,46 @@ struct ServoSession {
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
+    readback_buffers: ServoReadbackBuffers,
     /// Most recent successful readback, retained so ticks where Servo has
     /// nothing new to composite can skip `read_to_image` entirely. Cloning a
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
     /// nothing beyond the flag check.
     last_canvas: Option<Canvas>,
+}
+
+#[derive(Default)]
+struct ServoReadbackBuffers {
+    retired_canvases: VecDeque<Canvas>,
+}
+
+impl ServoReadbackBuffers {
+    fn take_buffer(&mut self, len: usize) -> Vec<u8> {
+        let mut retained = VecDeque::with_capacity(self.retired_canvases.len());
+        let mut reusable = None;
+
+        while let Some(canvas) = self.retired_canvases.pop_front() {
+            if reusable.is_none() && canvas.shared_ref_count() == 1 && canvas.rgba_len() == len {
+                let (pixels, _copied) = canvas.into_rgba_bytes_with_copy_info();
+                reusable = Some(pixels);
+                continue;
+            }
+
+            if retained.len() < MAX_SERVO_READBACK_RETIREES {
+                retained.push_back(canvas);
+            }
+        }
+
+        self.retired_canvases = retained;
+        reusable.unwrap_or_else(|| vec![0_u8; len])
+    }
+
+    fn retire_canvas(&mut self, canvas: Canvas) {
+        self.retired_canvases.push_back(canvas);
+        while self.retired_canvases.len() > MAX_SERVO_READBACK_RETIREES {
+            self.retired_canvases.pop_front();
+        }
+    }
 }
 
 struct ServoWorkerRuntime {
@@ -1146,6 +1187,7 @@ impl ServoWorkerRuntime {
                 delegate,
                 loaded_html_path: None,
                 script_buffer: String::new(),
+                readback_buffers: ServoReadbackBuffers::default(),
                 last_canvas: None,
             },
         );
@@ -1159,9 +1201,7 @@ impl ServoWorkerRuntime {
     }
 
     fn create_rendering_context(width: u32, height: u32) -> Result<Rc<dyn RenderingContext>> {
-        Ok(Rc::new(bootstrap_software_rendering_context(
-            width, height,
-        )?))
+        bootstrap_rendering_context(width, height)
     }
 
     fn build_webview(
@@ -1434,10 +1474,17 @@ impl ServoWorkerRuntime {
                 i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
 
             let readback_start = Instant::now();
-            let canvas =
-                read_framebuffer_into_canvas(self.session(session_id)?, width_i32, height_i32)?;
+            let canvas = {
+                let session = self.session_mut(session_id)?;
+                read_framebuffer_into_canvas(session, width_i32, height_i32)?
+            };
             timings.readback_us = elapsed_micros(readback_start);
-            self.session_mut(session_id)?.last_canvas = Some(canvas.clone());
+            {
+                let session = self.session_mut(session_id)?;
+                if let Some(previous) = session.last_canvas.replace(canvas.clone()) {
+                    session.readback_buffers.retire_canvas(previous);
+                }
+            }
             timings.total_us = elapsed_micros(frame_start);
             log_servo_render_stage_timings(
                 session_id,
@@ -2342,6 +2389,37 @@ mod tests {
         let mut pixels = vec![0u8; 16];
         flip_rows_in_place(&mut pixels, 0);
         assert_eq!(pixels, vec![0u8; 16]);
+    }
+
+    #[test]
+    fn servo_readback_buffers_reuse_exclusive_retired_canvas_storage() {
+        let pixels = vec![0x7f; 16];
+        let original_ptr = pixels.as_ptr();
+        let mut buffers = ServoReadbackBuffers::default();
+        buffers.retire_canvas(Canvas::from_vec(pixels, 2, 2));
+
+        let reused = buffers.take_buffer(16);
+
+        assert_eq!(reused.as_ptr(), original_ptr);
+        assert!(buffers.retired_canvases.is_empty());
+    }
+
+    #[test]
+    fn servo_readback_buffers_wait_for_downstream_canvas_release() {
+        let pixels = vec![0x3f; 16];
+        let original_ptr = pixels.as_ptr();
+        let canvas = Canvas::from_vec(pixels, 2, 2);
+        let downstream = canvas.clone();
+        let mut buffers = ServoReadbackBuffers::default();
+        buffers.retire_canvas(canvas);
+
+        let first = buffers.take_buffer(16);
+        assert_ne!(first.as_ptr(), original_ptr);
+        assert_eq!(buffers.retired_canvases.len(), 1);
+
+        drop(downstream);
+        let reused = buffers.take_buffer(16);
+        assert_eq!(reused.as_ptr(), original_ptr);
     }
 
     #[test]

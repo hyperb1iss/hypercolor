@@ -290,8 +290,8 @@ function storeMetadata(def: EffectDef): void {
 }
 
 export const __testing = {
-    resolveControlValues,
     resolveControls,
+    resolveControlValues,
 }
 
 // ── Public API ───────────────────────────────────────────────────────────

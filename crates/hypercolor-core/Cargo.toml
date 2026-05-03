@@ -14,7 +14,13 @@ workspace = true
 [features]
 nvidia = ["dep:nvml-wrapper"]
 default = []
-servo = ["dep:servo", "dep:dpi", "dep:gleam"]
+servo = [
+    "dep:servo",
+    "dep:dpi",
+    "dep:gleam",
+    "dep:raw-window-handle",
+    "dep:tao",
+]
 
 [dependencies]
 hypercolor-types = { workspace = true }
@@ -42,9 +48,7 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 cpal = { workspace = true }
 device_query = { workspace = true }
-evdev = { workspace = true }
 tokio-util = { workspace = true }
-zbus = { workspace = true }
 zerocopy = { workspace = true }
 fast_image_resize = { workspace = true }
 dpi = { workspace = true, optional = true }
@@ -59,6 +63,13 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 libpulse-binding = { workspace = true }
 ashpd = { workspace = true }
 pipewire = { workspace = true }
+evdev = { workspace = true }
+zbus = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit", "no-wgl"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

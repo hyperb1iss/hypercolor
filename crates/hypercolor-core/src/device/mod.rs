@@ -4,6 +4,7 @@
 //! needed to discover physical hardware, establish connections, and push
 //! LED color data to devices over any transport (USB HID, UDP, TCP, HTTP).
 
+#[cfg(unix)]
 pub mod blocks;
 mod discovery;
 mod discovery_server;
@@ -20,6 +21,7 @@ pub mod usb_backend;
 pub mod usb_hotplug;
 pub mod usb_scanner;
 
+#[cfg(unix)]
 pub use blocks::{BlocksBackend, BlocksScanner};
 pub use discovery::{DiscoveryOrchestrator, DiscoveryProgress, DiscoveryReport, ScannerScanReport};
 pub use discovery_server::discover_servers;

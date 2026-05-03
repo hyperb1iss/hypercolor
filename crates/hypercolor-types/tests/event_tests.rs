@@ -651,7 +651,7 @@ fn serialize_resumed_roundtrip() {
 #[test]
 fn serialize_session_changed_roundtrip() {
     let event = HypercolorEvent::SessionChanged(SessionEvent::IdleEntered {
-        idle_duration: std::time::Duration::from_secs(120),
+        idle_duration: std::time::Duration::from_mins(2),
     });
     let json = serde_json::to_string(&event).expect("serialize SessionChanged");
     let deserialized: HypercolorEvent =

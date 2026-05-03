@@ -237,6 +237,27 @@ impl RenderGroupRuntime {
             .unwrap_or_default()
     }
 
+    pub(crate) fn clear_inactive_groups(&mut self) {
+        if !self.has_inactive_group_resources() {
+            return;
+        }
+
+        self.effect_pool.clear();
+        self.target_canvases.clear();
+        self.scene_projection_cache.clear();
+        self.spatial_engines.clear();
+        self.direct_surface_pools.clear();
+        self.retained_direct_group_frames.clear();
+        self.reconciled_dependency_key = None;
+        self.retained_frame = None;
+        self.last_effect_error = None;
+        self.recovered_effect_error = None;
+        self.combined_led_layout =
+            Arc::new(empty_group_layout(self.scene_width, self.scene_height));
+        self.combined_led_spatial_engine =
+            SpatialEngine::new(self.combined_led_layout.as_ref().clone());
+    }
+
     pub(crate) fn reuse_scene(
         &self,
         dependency_key: SceneDependencyKey,
@@ -258,6 +279,17 @@ impl RenderGroupRuntime {
             scene_compose_us: 0,
             logical_layer_count: retained.logical_layer_count,
         })
+    }
+
+    fn has_inactive_group_resources(&self) -> bool {
+        self.effect_pool.slot_count() > 0
+            || !self.target_canvases.is_empty()
+            || !self.scene_projection_cache.is_empty()
+            || !self.spatial_engines.is_empty()
+            || !self.direct_surface_pools.is_empty()
+            || !self.retained_direct_group_frames.is_empty()
+            || self.retained_frame.is_some()
+            || self.reconciled_dependency_key.is_some()
     }
 
     #[expect(
@@ -1395,6 +1427,24 @@ mod tests {
 
         assert_eq!(runtime.take_recovered_effect_error(), Some(error));
         assert_eq!(runtime.take_recovered_effect_error(), None);
+    }
+
+    #[test]
+    fn clear_inactive_groups_releases_cached_group_state() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let group = sample_group(4, 4);
+        runtime.target_canvases.insert(group.id, Canvas::new(4, 4));
+        runtime
+            .spatial_engines
+            .insert(group.id, SpatialEngine::new(group.layout.clone()));
+        runtime.reconciled_dependency_key = Some(SceneDependencyKey::new(1, 1));
+
+        assert!(runtime.has_inactive_group_resources());
+
+        runtime.clear_inactive_groups();
+
+        assert!(!runtime.has_inactive_group_resources());
+        assert!(runtime.combined_led_layout.zones.is_empty());
     }
 
     #[test]

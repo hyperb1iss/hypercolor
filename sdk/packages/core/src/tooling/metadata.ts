@@ -1,4 +1,4 @@
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 
 import type { ExtractedArtifactMetadata } from './types'
 
@@ -36,5 +36,5 @@ export async function extractArtifactMetadata(entryPath: string): Promise<Extrac
 }
 
 export function artifactIdFromEntry(entryPath: string): string {
-    return dirname(entryPath).split('/').at(-1) ?? dirname(entryPath)
+    return basename(dirname(entryPath))
 }

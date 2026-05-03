@@ -79,6 +79,10 @@ impl FramePolicy {
         }
     }
 
+    pub(crate) fn set_configured_max_tier(&mut self, configured_max_tier: FpsTier) {
+        self.admission.set_configured_max_tier(configured_max_tier);
+    }
+
     pub(crate) fn complete_render_frame(
         &mut self,
         render_loop: &mut RenderLoop,
@@ -186,6 +190,23 @@ mod tests {
         assert!(matches!(second.next_wake, NextWake::Interval(_)));
         assert_eq!(second.next_skip_decision, SkipDecision::None);
         assert_eq!(render_loop.stats().max_tier, FpsTier::High);
+    }
+
+    #[test]
+    fn render_frame_completion_uses_live_configured_ceiling() {
+        let mut render_loop = RenderLoop::new(30);
+        render_loop.start();
+        render_loop.fps_controller_mut().set_max_tier(FpsTier::Full);
+        render_loop.set_tier(FpsTier::Full);
+        assert!(render_loop.tick());
+
+        let mut policy = FramePolicy::new(FpsTier::Medium);
+        policy.set_configured_max_tier(FpsTier::Full);
+        let execution = policy.complete_render_frame(&mut render_loop, clean_sample());
+
+        assert!(matches!(execution.next_wake, NextWake::Interval(_)));
+        assert_eq!(render_loop.stats().tier, FpsTier::Full);
+        assert_eq!(render_loop.stats().max_tier, FpsTier::Full);
     }
 
     #[test]

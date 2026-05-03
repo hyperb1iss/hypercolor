@@ -561,7 +561,7 @@ mod tests {
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(320, 200),
             render_acceleration_mode: RenderAccelerationMode::Cpu,
-            configured_max_fps_tier: FpsTier::Full,
+            configured_max_fps_tier: FpsTier::Full.into(),
         }
     }
 

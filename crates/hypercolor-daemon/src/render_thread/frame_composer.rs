@@ -160,6 +160,7 @@ impl ComposeContext<'_> {
     }
 
     fn compose_idle_frame_set(&mut self, stage_start: Instant) -> RenderStageStats {
+        self.compose.render_group_runtime.clear_inactive_groups();
         let ProducedFrame {
             frame: source_frame,
             opaque_hint: source_frame_opaque,

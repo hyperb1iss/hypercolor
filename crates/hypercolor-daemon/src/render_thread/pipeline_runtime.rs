@@ -1006,7 +1006,7 @@ impl PipelineRuntime {
             initial_spatial_engine,
             state.screen_capture_configured,
             state.render_acceleration_mode,
-            state.configured_max_fps_tier,
+            state.configured_max_fps_tier.get(),
         )
     }
 

@@ -84,6 +84,22 @@ impl FrameAdmissionController {
         }
     }
 
+    pub(crate) fn set_configured_max_tier(&mut self, configured_max_tier: FpsTier) {
+        if self.configured_max_tier == configured_max_tier {
+            return;
+        }
+
+        let previous = self.configured_max_tier;
+        self.configured_max_tier = configured_max_tier;
+        self.consecutive_full_eligible_frames = 0;
+
+        if configured_max_tier < FpsTier::Full {
+            self.current_ceiling_tier = configured_max_tier;
+        } else if previous < FpsTier::Full {
+            self.current_ceiling_tier = FpsTier::Full;
+        }
+    }
+
     pub(crate) fn record_frame(&mut self, sample: FrameAdmissionSample) -> FpsTier {
         self.recent_total_us[self.recent_total_next] = sample.total_us;
         self.recent_total_next =
@@ -300,6 +316,38 @@ mod tests {
         let mut admission = FrameAdmissionController::new(FpsTier::Medium);
         let decision = admission.record_frame(sample(5_000, 1_000, 300));
         assert_eq!(decision, FpsTier::Medium);
+    }
+
+    #[test]
+    fn configured_ceiling_can_be_raised_live_to_full() {
+        let mut admission = FrameAdmissionController::new(FpsTier::Medium);
+        assert_eq!(
+            admission.record_frame(sample(5_000, 1_000, 300)),
+            FpsTier::Medium
+        );
+
+        admission.set_configured_max_tier(FpsTier::Full);
+
+        assert_eq!(
+            admission.record_frame(sample(5_000, 1_000, 300)),
+            FpsTier::Full
+        );
+    }
+
+    #[test]
+    fn configured_ceiling_can_be_lowered_live() {
+        let mut admission = FrameAdmissionController::new(FpsTier::Full);
+        assert_eq!(
+            admission.record_frame(sample(5_000, 1_000, 300)),
+            FpsTier::Full
+        );
+
+        admission.set_configured_max_tier(FpsTier::Low);
+
+        assert_eq!(
+            admission.record_frame(sample(5_000, 1_000, 300)),
+            FpsTier::Low
+        );
     }
 
     #[test]

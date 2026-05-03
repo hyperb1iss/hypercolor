@@ -31,7 +31,7 @@ use super::worker::{
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
-use crate::effect::traits::{EffectRenderer, FrameInput};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::engine::FpsTier;
 
 const DEFAULT_EFFECT_FPS_CAP: u32 = 30;
@@ -470,6 +470,13 @@ impl ServoRenderer {
     }
 }
 
+fn copy_completed_canvas_into_target(source: &Canvas, target: &mut Canvas) {
+    prepare_target_canvas(target, source.width(), source.height());
+    target
+        .as_rgba_bytes_mut()
+        .copy_from_slice(source.as_rgba_bytes());
+}
+
 fn start_servo_load_task(
     effect_name: String,
     html_source: PathBuf,
@@ -650,7 +657,7 @@ impl EffectRenderer for ServoRenderer {
             && canvas.width() == input.canvas_width
             && canvas.height() == input.canvas_height
         {
-            target.clone_from(canvas);
+            copy_completed_canvas_into_target(canvas, target);
         } else {
             Self::render_placeholder_into(target, input);
         }
@@ -1513,6 +1520,27 @@ mod tests {
         assert_eq!(target.width(), 4);
         assert_eq!(target.height(), 3);
         assert_eq!(target.get_pixel(0, 0), Rgba::new(7, 127, 39, 255));
+    }
+
+    #[test]
+    fn render_into_copies_completed_frame_into_existing_target_storage() {
+        let mut renderer = ServoRenderer::new();
+        renderer.initialized = true;
+        renderer.last_canvas = Some(solid_canvas(4, 3, 9, 8, 7));
+
+        let audio = custom_audio(0.5);
+        let interaction = custom_interaction(&[], &[]);
+        let input = frame_input_with(1.0 / 30.0, 7, &audio, &interaction, 4, 3);
+        let mut target = Canvas::new(4, 3);
+        let target_ptr = target.as_rgba_bytes().as_ptr();
+
+        renderer
+            .render_into(&input, &mut target)
+            .expect("completed frame render should succeed");
+
+        assert_eq!(target.as_rgba_bytes().as_ptr(), target_ptr);
+        assert_eq!(target.get_pixel(0, 0), Rgba::new(9, 8, 7, 255));
+        assert_eq!(target.get_pixel(3, 2), Rgba::new(9, 8, 7, 255));
     }
 
     #[test]
