@@ -553,9 +553,13 @@ jobs:
           $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
 
       - name: Build native sidecar binaries
+        shell: pwsh
         run: |
           cargo build --release --locked -p hypercolor-daemon --features servo
           cargo build --release --locked -p hypercolor-cli
+          if ($env:RUNNER_OS -eq "Windows") {
+            cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
+          }
 
       - name: Stage downloaded web assets
         shell: pwsh

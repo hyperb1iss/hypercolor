@@ -1,5 +1,6 @@
 param(
     [string]$Version = "0.2.5",
+    [string]$ExpectedSha256 = "1149B87F4DC757E72654D5A402863251815EBFC8AD4E3BB030DBCFFB3DE74153",
     [string]$Destination = "$env:LOCALAPPDATA\hypercolor\pawnio\modules"
 )
 
@@ -17,6 +18,11 @@ $extractRoot = Join-Path $env:TEMP "hypercolor-pawnio-modules-$Version"
 
 Write-Host "Downloading PawnIO modules $Version"
 Invoke-WebRequest $url -OutFile $zip
+
+$actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash
+if ($actualSha256 -ne $ExpectedSha256) {
+    throw "SHA256 mismatch for $zip; expected $ExpectedSha256, got $actualSha256"
+}
 
 if (Test-Path $extractRoot) {
     Remove-Item -LiteralPath $extractRoot -Recurse -Force

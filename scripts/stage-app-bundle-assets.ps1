@@ -1,6 +1,7 @@
 param(
     [string] $Profile = 'release',
-    [string] $Target = ''
+    [string] $Target = '',
+    [switch] $SkipPawnIo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +80,32 @@ function Copy-Sidecar {
     Copy-Item -LiteralPath $source -Destination $targetPath -Force
 }
 
+function Copy-ToolScript {
+    param([string] $Name)
+
+    $source = Join-Path $RepoRoot "scripts\$Name"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "missing tool script: $source"
+    }
+
+    Copy-Item -LiteralPath $source -Destination (Join-Path $StageResources 'tools') -Force
+}
+
+function Copy-WindowsToolBinary {
+    param([string] $Name)
+
+    $source = Join-Path $ProfileDir "$Name$Exe"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "missing built Windows tool binary: $source; build release binaries before staging app bundle assets"
+    }
+
+    Copy-Item -LiteralPath $source -Destination (Join-Path (Join-Path $StageResources 'tools') "$Name$Exe") -Force
+}
+
+function Test-WindowsTarget {
+    $Target -like '*windows*' -or $Target -like '*-pc-windows-*'
+}
+
 Set-Location $RepoRoot
 
 $HostTarget = Get-HypercolorHostTriple
@@ -122,11 +149,20 @@ if (Test-Path -LiteralPath $effectsDist) {
     Write-Warning 'effects/hypercolor not found; bundled effects left as-is'
 }
 
-Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\install-windows-service.ps1') `
-    -Destination (Join-Path $StageResources 'tools') -Force
-Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\uninstall-windows-service.ps1') `
-    -Destination (Join-Path $StageResources 'tools') -Force
-Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\diagnose-windows.ps1') `
-    -Destination (Join-Path $StageResources 'tools') -Force
+Copy-ToolScript 'install-windows-service.ps1'
+Copy-ToolScript 'uninstall-windows-service.ps1'
+Copy-ToolScript 'diagnose-windows.ps1'
+Copy-ToolScript 'install-windows-smbus-service.ps1'
+Copy-ToolScript 'install-pawnio-modules.ps1'
+Copy-ToolScript 'install-bundled-pawnio.ps1'
+
+if (Test-WindowsTarget) {
+    Copy-WindowsToolBinary 'hypercolor-smbus-service'
+
+    if (-not $SkipPawnIo) {
+        & (Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1') `
+            -Destination (Join-Path (Join-Path $StageResources 'tools') 'pawnio')
+    }
+}
 
 Write-Host "staged hypercolor-app bundle assets for $Target ($Profile)"
