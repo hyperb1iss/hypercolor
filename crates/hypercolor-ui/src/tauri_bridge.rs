@@ -130,6 +130,52 @@ pub async fn launch_pawnio_helper(
     Err("native app bridge is unavailable".to_owned())
 }
 
+/// Read the native app autostart state when the Tauri bridge exists.
+///
+/// # Errors
+///
+/// Returns an error when the autostart plugin rejects or returns malformed data.
+#[cfg(target_arch = "wasm32")]
+pub async fn get_autostart_enabled() -> Result<Option<bool>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let value = invoke_command(&invoke, "plugin:autostart|is_enabled", None).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn get_autostart_enabled() -> Result<Option<bool>, String> {
+    Ok(None)
+}
+
+/// Enable or disable native app autostart.
+///
+/// # Errors
+///
+/// Returns an error when the Tauri bridge is unavailable or the autostart
+/// plugin rejects the requested state change.
+#[cfg(target_arch = "wasm32")]
+pub async fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Err("native app bridge is unavailable".to_owned());
+    };
+
+    let command = if enabled {
+        "plugin:autostart|enable"
+    } else {
+        "plugin:autostart|disable"
+    };
+    let _ = invoke_command(&invoke, command, None).await?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn set_autostart_enabled(_enabled: bool) -> Result<(), String> {
+    Err("native app bridge is unavailable".to_owned())
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn invoke_command(
     invoke: &js_sys::Function,

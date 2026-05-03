@@ -461,6 +461,7 @@ pub fn SessionSection(
     view! {
         <section id="section-session" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Session & Power" icon=LuPower />
+            <NativeStartupPanel />
             <SettingToggle
                 label="Session Awareness"
                 description="React to actual suspend/resume, screen lock, and other desktop power events"
@@ -537,6 +538,132 @@ pub fn SessionSection(
             />
             <SectionReset section_label="Session" on_reset=Callback::new(move |()| on_reset.run("session".to_string())) />
         </section>
+    }
+}
+
+#[component]
+fn NativeStartupPanel() -> impl IntoView {
+    let native_available = tauri_bridge::is_tauri_available();
+    let autostart = LocalResource::new(tauri_bridge::get_autostart_enabled);
+    let (updating, set_updating) = signal(false);
+    let toggle = move |enabled: bool| {
+        if updating.get_untracked() {
+            return;
+        }
+
+        let next_enabled = !enabled;
+        set_updating.set(true);
+        leptos::task::spawn_local(async move {
+            let result = tauri_bridge::set_autostart_enabled(next_enabled).await;
+            set_updating.set(false);
+
+            match result {
+                Ok(()) => {
+                    if next_enabled {
+                        toasts::toast_success("Hypercolor will start at sign in");
+                    } else {
+                        toasts::toast_success("Hypercolor startup disabled");
+                    }
+                    autostart.refetch();
+                }
+                Err(error) => {
+                    toasts::toast_error(&format!("Startup setting failed: {error}"));
+                    autostart.refetch();
+                }
+            }
+        });
+    };
+
+    view! {
+        <Show when=move || native_available>
+            {move || match autostart.get() {
+                None => view! {
+                    <NativeStartupFrame>
+                        <div class="flex items-center gap-2 text-xs text-fg-tertiary/60">
+                            <Icon icon=LuLoader width="13px" height="13px" />
+                            "Checking startup setting"
+                        </div>
+                    </NativeStartupFrame>
+                }.into_any(),
+                Some(Ok(None)) => ().into_any(),
+                Some(Err(error)) => view! {
+                    <NativeStartupFrame>
+                        <div class="flex items-center gap-2 text-xs text-error-red/80">
+                            <Icon icon=LuTriangleAlert width="13px" height="13px" />
+                            {format!("Startup setting unavailable: {error}")}
+                        </div>
+                    </NativeStartupFrame>
+                }.into_any(),
+                Some(Ok(Some(enabled))) => view! {
+                    <NativeStartupToggle
+                        enabled=enabled
+                        updating=updating
+                        on_toggle=Callback::new(move |()| toggle(enabled))
+                    />
+                }.into_any(),
+            }}
+        </Show>
+    }
+}
+
+#[component]
+fn NativeStartupToggle(
+    enabled: bool,
+    #[prop(into)] updating: Signal<bool>,
+    on_toggle: Callback<()>,
+) -> impl IntoView {
+    view! {
+        <NativeStartupFrame>
+            <div class="flex items-start justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm text-fg-primary font-medium">"Start at Sign In"</span>
+                        <span
+                            class="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                            style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.08)"
+                        >
+                            "app"
+                        </span>
+                    </div>
+                    <div class="text-xs text-fg-tertiary/70 mt-0.5">
+                        "Launch Hypercolor in the system tray when you sign in"
+                    </div>
+                </div>
+                <button
+                    role="switch"
+                    aria-checked=enabled.to_string()
+                    disabled=move || updating.get()
+                    class="relative w-11 h-6 rounded-full transition-all duration-200 shrink-0 mt-0.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+                    style=move || if enabled {
+                        "background: rgba(225, 53, 255, 0.5); box-shadow: 0 0 10px rgba(225, 53, 255, 0.25)"
+                    } else {
+                        "background: rgba(139, 133, 160, 0.2)"
+                    }
+                    on:click=move |_| on_toggle.run(())
+                >
+                    <span
+                        class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
+                        style=move || if enabled {
+                            "transform: translateX(22px); background: rgb(225, 53, 255)"
+                        } else {
+                            "transform: translateX(0); background: rgba(200, 200, 210, 0.6)"
+                        }
+                    />
+                </button>
+            </div>
+        </NativeStartupFrame>
+    }
+}
+
+#[component]
+fn NativeStartupFrame(children: Children) -> impl IntoView {
+    view! {
+        <div
+            class="mb-4 px-3 py-3 rounded-lg setting-row"
+            style="background: rgba(139, 133, 160, 0.035); border: 1px solid rgba(139, 133, 160, 0.06)"
+        >
+            {children()}
+        </div>
     }
 }
 
