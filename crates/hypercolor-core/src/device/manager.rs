@@ -2062,16 +2062,6 @@ impl BackendManager {
                     let end = segment.end();
                     apply_zone_brightness(&mut staging.output[start..end], route.zone_brightness);
                     staging.mark_written_range(start, end);
-                    if remapped_len != segment.length {
-                        debug!(
-                            zone_id = %zone_id,
-                            layout_device_id = %route.layout_device_id,
-                            segment_start = segment.start,
-                            segment_length = segment.length,
-                            sampled_led_count = remapped_len,
-                            "normalized sampled zone colors to mapped segment length"
-                        );
-                    }
                 }
 
                 (!wrote_segment && segment.length > 0).then_some((
