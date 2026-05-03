@@ -1,0 +1,17 @@
+{
+  "productName": "Hypercolor",
+  "version": "0.1.0",
+  "identifier": "tech.hyperbliss.hypercolor",
+  "app": {
+    "windows": [],
+    "security": {}
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ]
+  }
+}
