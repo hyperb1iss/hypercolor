@@ -8,10 +8,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn tauri_config() -> serde_json::Value {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tauri.conf.json");
+    config_json("tauri.conf.json")
+}
+
+fn tauri_bundle_config() -> serde_json::Value {
+    config_json("tauri.bundle.conf.json")
+}
+
+fn config_json(file_name: &str) -> serde_json::Value {
+    let mut path = manifest_dir();
+    path.push(file_name);
     let text = fs::read_to_string(&path).expect("tauri.conf.json should be readable");
-    serde_json::from_str(&text).expect("tauri.conf.json should be valid JSON")
+    serde_json::from_str(&text).expect("tauri config should be valid JSON")
 }
 
 fn default_capability() -> serde_json::Value {
@@ -114,6 +122,49 @@ fn tauri_config_declares_dmg_layout() {
     assert!(dmg.get("windowSize").is_some());
     assert!(dmg.get("appPosition").is_some());
     assert!(dmg.get("applicationFolderPosition").is_some());
+}
+
+#[test]
+fn tauri_config_declares_sidecar_binaries() {
+    let config = tauri_bundle_config();
+    let external_bins = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("externalBin"))
+        .and_then(serde_json::Value::as_array)
+        .expect("bundle.externalBin should be an array");
+
+    for expected in ["binaries/hypercolor-daemon", "binaries/hypercolor"] {
+        assert!(
+            external_bins.iter().any(|bin| bin == expected),
+            "bundle.externalBin should include {expected}"
+        );
+    }
+}
+
+#[test]
+fn tauri_config_declares_staged_resources() {
+    let config = tauri_config();
+    let resources = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("resources"))
+        .and_then(serde_json::Value::as_object)
+        .expect("bundle.resources should be a map");
+    let root = manifest_dir();
+
+    for (source, target) in [
+        ("resources/ui/", "ui/"),
+        ("resources/effects/bundled/", "effects/bundled/"),
+        ("resources/tools/", "tools/"),
+    ] {
+        assert_eq!(
+            resources.get(source).and_then(serde_json::Value::as_str),
+            Some(target)
+        );
+        assert!(
+            root.join(Path::new(source)).exists(),
+            "resource source should exist: {source}"
+        );
+    }
 }
 
 #[test]

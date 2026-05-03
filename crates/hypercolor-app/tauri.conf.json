@@ -18,6 +18,11 @@
       "icons/128x128.png",
       "icons/icon.ico"
     ],
+    "resources": {
+      "resources/ui/": "ui/",
+      "resources/effects/bundled/": "effects/bundled/",
+      "resources/tools/": "tools/"
+    },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {

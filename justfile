@@ -344,6 +344,24 @@ app-build *args='':
 app-build *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
 
+# Stage sidecars and resources used by native Tauri bundles
+[unix]
+app-bundle-assets *args='':
+    ./scripts/stage-app-bundle-assets.sh {{ args }}
+
+[windows]
+app-bundle-assets *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stage-app-bundle-assets.ps1 {{ args }}
+
+# Build native Tauri bundles for the unified desktop app
+[unix]
+app-bundle *args='':
+    cd crates/hypercolor-app && cargo tauri build --config tauri.bundle.conf.json {{ args }}
+
+[windows]
+app-bundle *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json {{ args }}"
+
 # Run the daemon in release mode with the full renderer set enabled
 [unix]
 daemon-release *args='':

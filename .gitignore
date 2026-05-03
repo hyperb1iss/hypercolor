@@ -49,6 +49,15 @@ bun.lock
 crates/hypercolor-ui/dist/
 crates/hypercolor-ui/.dist-dev/
 
+# Tauri app bundle staging
+/crates/hypercolor-app/binaries/
+/crates/hypercolor-app/resources/ui/*
+!/crates/hypercolor-app/resources/ui/.gitkeep
+/crates/hypercolor-app/resources/effects/bundled/*
+!/crates/hypercolor-app/resources/effects/bundled/.gitkeep
+/crates/hypercolor-app/resources/tools/*
+!/crates/hypercolor-app/resources/tools/.gitkeep
+
 # Zola docs build output
 docs/public/
 
