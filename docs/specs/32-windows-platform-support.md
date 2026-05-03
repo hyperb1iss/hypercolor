@@ -245,11 +245,11 @@ This phase has its own deep dive in §9. Summary here:
 
 Windows has no `/dev/i2c-*` equivalent. Three complementary approaches are needed (matching OpenRGB's proven model):
 
-| Strategy   | Covers                                             | Mechanism                                                   | Admin Required   |
-| ---------- | -------------------------------------------------- | ----------------------------------------------------------- | ---------------- |
-| **PawnIO** | Motherboard SMBus (Intel i801, AMD PIIX4, Nuvoton) | Userspace I/O executor with chipset-specific binary modules | Yes              |
-| **NvAPI**  | NVIDIA GPU I2C                                     | NVIDIA driver SDK (`nvapi64.dll`)                           | No (driver only) |
-| **ADL**    | AMD GPU I2C                                        | AMD Display Library (`atiadlxx.dll`)                        | No (driver only) |
+| Strategy   | Covers                                             | Mechanism                                                   | Privilege Model             |
+| ---------- | -------------------------------------------------- | ----------------------------------------------------------- | --------------------------- |
+| **PawnIO** | Motherboard SMBus (Intel i801, AMD PIIX4, Nuvoton) | Userspace I/O executor with chipset-specific binary modules | `HypercolorSmBus` broker    |
+| **NvAPI**  | NVIDIA GPU I2C                                     | NVIDIA driver SDK (`nvapi64.dll`)                           | User-mode daemon            |
+| **ADL**    | AMD GPU I2C                                        | AMD Display Library (`atiadlxx.dll`)                        | User-mode daemon            |
 
 ### 6.2 Transport Abstraction
 
@@ -258,10 +258,10 @@ The existing `SmBusTransport` already encodes operations as platform-independent
 ```
 SmBusOperation (platform-agnostic)
     ↓ encode
-Linux: i2cdev ioctl     →  /dev/i2c-N
-Windows: PawnIO execute  →  SmbusI801.bin / SmbusPIIX4.bin
-Windows: NvAPI i2c_xfer  →  nvapi64.dll
-Windows: ADL WriteAndReadI2C → atiadlxx.dll
+Linux: i2cdev ioctl              →  /dev/i2c-N
+Windows broker: PawnIO execute   →  SmbusI801.bin / SmbusPIIX4.bin
+Windows user: NvAPI i2c_xfer     →  nvapi64.dll
+Windows user: ADL WriteAndReadI2C → atiadlxx.dll
 ```
 
 **New files:**
@@ -282,7 +282,9 @@ Linux uses sysfs to discover I2C buses and their parent PCI devices. Windows equ
 
 ### 6.4 PawnIO Integration
 
-PawnIO is an open-source (LGPL 2.1) userspace executor created by namazso. It bundles binary modules for specific chipset SMBus controllers:
+PawnIO is a third-party userspace executor created by namazso. Hypercolor bundles
+the official PawnIO installer plus the LGPL-2.1 module release artifacts needed
+for the chipset SMBus controllers it currently loads:
 
 - `SmbusI801.bin` — Intel i801 (most Intel boards)
 - `SmbusPIIX4.bin` — AMD PIIX4 (most AMD boards, dual bus with port selection)
@@ -290,10 +292,12 @@ PawnIO is an open-source (LGPL 2.1) userspace executor created by namazso. It bu
 
 **Integration approach:**
 
-1. Bundle PawnIO DLL and `.bin` modules with the Hypercolor Windows installer
-2. Load PawnIO at runtime via `libloading` (Rust FFI)
-3. Implement `Transport` trait using `pawnio_execute("ioctl_smbus_xfer", ...)`
-4. Global mutex (`Global\Access_SMBUS.HTP.Method`) for multi-process safety (matches OpenRGB convention)
+1. Stage `PawnIO_setup.exe` and required `.bin` modules with the Hypercolor Windows installer
+2. Install PawnIO only after explicit user action and UAC consent
+3. Run motherboard/DRAM SMBus transactions through the narrow `HypercolorSmBus` broker
+4. Load PawnIO at runtime via `libloading` (Rust FFI)
+5. Implement `Transport` trait using `pawnio_execute("ioctl_smbus_xfer", ...)`
+6. Global mutex (`Global\Access_SMBUS.HTP.Method`) for multi-process safety (matches OpenRGB convention)
 
 **PawnIO API (FFI bindings):**
 
@@ -331,7 +335,7 @@ extern "C" {
 - Use `ADL2_Display_WriteAndReadI2C` for I2C transactions
 - Enumerate adapters to find GPUs with I2C buses
 
-Both are runtime-optional: if the DLL isn't present, that GPU vendor's SMBus is unavailable (graceful degradation).
+Both are runtime-optional: if the DLL isn't present, that GPU vendor's SMBus is unavailable (graceful degradation). They should not run in the `HypercolorSmBus` service because they are display-driver APIs and may depend on the interactive user session.
 
 ### 6.6 DRAM Considerations
 
@@ -341,7 +345,7 @@ ASUS Aura DRAM uses a remap hub at I2C address 0x77 to move DRAM controller addr
 
 ### Deliverable
 
-ASUS Aura motherboard LEDs, GPU LEDs, and DRAM LEDs controllable on Windows. Admin elevation required for motherboard SMBus; GPU I2C works at user privilege.
+ASUS Aura motherboard LEDs, GPU LEDs, and DRAM LEDs controllable on Windows. The privileged broker is only for PawnIO-backed motherboard and DRAM SMBus; GPU I2C works at user privilege through vendor driver DLLs.
 
 ---
 
@@ -396,7 +400,7 @@ Hypercolor survives sleep/wake cycles, pauses effects on lock, and starts automa
 ### 8.1 Installer Requirements
 
 1. Install binaries to `%PROGRAMFILES%\Hypercolor\`
-2. Install PawnIO runtime (with admin elevation prompt)
+2. Include pinned PawnIO payloads and install them only after explicit user consent
 3. Install web UI assets to `%LOCALAPPDATA%\Hypercolor\ui\`
 4. Register tray applet autostart
 5. Create Start Menu shortcuts
@@ -410,12 +414,13 @@ Hypercolor survives sleep/wake cycles, pauses effects on lock, and starts automa
 
 ### 8.3 Admin Elevation
 
-SMBus access via PawnIO requires admin. Two strategies:
+SMBus access via PawnIO requires elevated hardware access. The app keeps that
+surface in a narrow broker instead of elevating the whole daemon:
 
-1. **Elevation on demand** — Daemon starts unprivileged; when SMBus devices are requested, prompt for UAC elevation via a helper process
-2. **Always elevated** — Install as Windows Service running as `LocalSystem` (has full hardware access)
+1. **Default desktop mode** — Daemon starts unprivileged; USB, HID, GPU vendor SDK, audio, UI, and network backends work from the user session.
+2. **SMBus broker mode** — Install `HypercolorSmBus` as a Windows Service for PawnIO-backed motherboard and DRAM SMBus transactions.
 
-Recommended: **tray app for USB devices (no elevation)**, **optional service install for SMBus devices (elevated)**. This mirrors how OpenRGB works — USB devices work for everyone, SMBus requires "run as administrator."
+Recommended: **tray app for normal devices (no elevation)**, **optional service install for PawnIO SMBus devices (elevated)**. This mirrors how OpenRGB separates ordinary USB/device-driver paths from SMBus access while avoiding a fully elevated daemon.
 
 ### Deliverable
 
@@ -447,14 +452,20 @@ PawnIO is a lightweight executor framework that runs chipset-specific binary mod
 
 ```mermaid
 graph TD
-    subgraph Daemon["Hypercolor Daemon (userspace, admin)"]
-        Transport["SmBusPawnioTransport<br/>pawnio_open()<br/>pawnio_load('SmbusI801.bin')<br/>pawnio_execute('ioctl_smbus_xfer')<br/>pawnio_close()"]
+    subgraph User["Hypercolor Daemon (user session)"]
+        Client["SmBus client<br/>named pipe RPC"]
+        NvApi["NvAPI / ADL GPU I2C<br/>vendor driver DLLs"]
     end
 
-    subgraph Runtime["PawnIO Runtime (DLL)"]
-        Exec["Executes binary module functions<br/>Direct I/O port access (admin priv)"]
+    subgraph Broker["HypercolorSmBus Service (elevated)"]
+        Transport["PawnIO SMBus transport<br/>pawnio_open()<br/>pawnio_load()<br/>pawnio_execute('ioctl_smbus_xfer')"]
     end
 
+    subgraph Runtime["PawnIO Runtime"]
+        Exec["Executes binary module functions<br/>Direct I/O port access"]
+    end
+
+    Client -->|"restricted RPC"| Transport
     Transport -->|"FFI (libloading)"| Exec
 ```
 
@@ -571,18 +582,23 @@ trait SmBusBackend: Send + Sync {
 | `cpal`            | WASAPI audio capture                              | `cfg(target_os = "windows")` in core          |
 | `windows`         | Win32 session/power events, named mutex, registry | `cfg(target_os = "windows")` in core + daemon |
 | `windows-service` | Optional Windows Service mode                     | `cfg(target_os = "windows")` in daemon        |
-| `libloading`      | PawnIO DLL + NvAPI + ADL runtime loading          | `cfg(target_os = "windows")` in HAL           |
+| `libloading`      | PawnIO DLL + NvAPI + ADL runtime loading          | `cfg(target_os = "windows")`; PawnIO wrapper lives in `hypercolor-windows-pawnio` |
 
 ### Bundled Artifacts (Windows only)
 
-| Artifact           | Source                                      | License  |
-| ------------------ | ------------------------------------------- | -------- |
-| `PawnIO.dll`       | [PawnIO](https://github.com/namazso/PawnIO) | LGPL 2.1 |
-| `SmbusI801.bin`    | PawnIO modules                              | LGPL 2.1 |
-| `SmbusPIIX4.bin`   | PawnIO modules                              | LGPL 2.1 |
-| `SmbusNCT6793.bin` | PawnIO modules                              | LGPL 2.1 |
+| Artifact             | Source                                        | License / Handling |
+| -------------------- | --------------------------------------------- | ------------------ |
+| `PawnIO_setup.exe`   | [PawnIO.Setup](https://github.com/namazso/PawnIO.Setup) | Third-party installer, staged by hash |
+| `SmbusI801.bin`      | [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules) | LGPL 2.1 module artifact |
+| `SmbusPIIX4.bin`     | PawnIO.Modules                                | LGPL 2.1 module artifact |
+| `SmbusNCT6793.bin`   | PawnIO.Modules                                | LGPL 2.1 module artifact |
+| `manifest.json`      | Generated by `scripts/fetch-pawnio-assets.ps1` | Versions, URLs, SHA256 pins |
 
-LGPL 2.1 is compatible with Apache-2.0 for dynamic linking. PawnIO is loaded via `libloading` (dynamic), not statically linked.
+Do not commit the binary payloads. Release staging downloads the pinned upstream
+artifacts, verifies SHA256, writes a manifest, and places them under the Tauri
+`tools\pawnio\` resources directory. PawnIO is loaded dynamically through
+`PawnIOLib.dll` after the user installs the runtime; it is not statically linked
+into Hypercolor.
 
 ### Existing Dependencies That Already Support Windows
 
@@ -619,6 +635,11 @@ strategy:
 | 3b    | GPU I2C           | ASUS ROG GPU (NVIDIA or AMD)          |
 | 3c    | DRAM              | ASUS Aura RGB RAM                     |
 
+Linux already has the `/dev/i2c-*`/`i2c-dev` transport path used by the ASUS
+SMBus scanner, but broad motherboard, DRAM, and GPU coverage remains
+hardware-untested. NvAPI and ADL are Windows-only; Linux GPU I2C support would
+use exposed I2C buses or a future vendor-specific backend.
+
 ### Mock Testing
 
 - PawnIO: Mock the `pawnio_execute` FFI for unit tests
@@ -635,7 +656,7 @@ strategy:
 | ASUS locks SMBus to Armoury Crate                      | High   | Medium     | Armoury Crate doesn't lock the bus — OpenRGB coexists. Global mutex prevents conflicts.         |
 | PawnIO doesn't cover niche chipsets                    | Medium | Low        | i801 + PIIX4 cover 95%+ of gaming boards. NCT6793 for edge cases.                               |
 | GPU vendor SDK API changes                             | Medium | Low        | NvAPI and ADL are stable for years. Dynamic loading isolates breakage.                          |
-| Admin requirement deters users                         | Medium | Medium     | USB devices work without admin. Only SMBus needs elevation. Clear messaging in UI.              |
+| Admin requirement deters users                         | Medium | Medium     | USB, network, and GPU SDK paths work without admin. Only PawnIO SMBus needs the broker.         |
 | DRAM remap hub inaccessible                            | Low    | Medium     | DRAM is Phase 3 / lower priority. USB peripherals and motherboard LEDs are the primary targets. |
 | Windows Defender SmartScreen blocks unsigned installer | Medium | High       | Get EV code signing cert or distribute via winget/scoop with checksums.                         |
 

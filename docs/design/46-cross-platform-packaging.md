@@ -660,6 +660,11 @@ Resolved from `crates/hypercolor-core/src/config/paths.rs` (don't change).
 | Binaries (per-user install) | `%LOCALAPPDATA%\Programs\Hypercolor\` | `~/.local/bin/` (curl install) or `/usr/bin/` (AUR/deb) | `/Applications/Hypercolor.app/Contents/MacOS/` |
 | UI (`ui/index.html`, WASM, etc.) | `<install_dir>\ui\` | `<install_dir>/share/hypercolor/ui/` | `Hypercolor.app/Contents/Resources/ui/` |
 | Daemon `--ui-dir` arg | `<install_dir>\ui` | `<install_dir>/share/hypercolor/ui` | `Hypercolor.app/Contents/Resources/ui` |
+| Windows tools | `<install_dir>\tools\` | n/a | n/a |
+
+Windows tool resources include the service installer helpers, diagnostics, the
+`hypercolor-smbus-service.exe` broker, and a pinned PawnIO payload under
+`tools\pawnio\` for machines with motherboard or DRAM SMBus devices.
 
 ### 8.2 Roaming vs Local — The Split
 
@@ -1087,15 +1092,28 @@ stateDiagram-v2
 `crates/hypercolor-app/src/first_run/pawnio_check.rs`:
 
 1. Check for `C:\Program Files\PawnIO\PawnIOLib.dll`.
-2. Check for the `PawnIO` service in `services.msc` (use `sc query PawnIO`).
-3. If missing, show panel: *"Some hardware (motherboard SMBus, GPU RGB, DDR memory)
-   needs PawnIO. It's a free third-party tool that ships its own installer."*
-4. Buttons: **[Install PawnIO]** opens browser to releases page;
+2. Check for bundled `tools\pawnio\PawnIO_setup.exe` and `tools\pawnio\modules\*.bin`.
+3. Check for the `PawnIO` service in `services.msc` (use `sc query PawnIO`).
+4. If missing, show panel: *"Motherboard and DDR memory RGB may need PawnIO.
+   Hypercolor includes the official PawnIO installer and only asks Windows for
+   elevation when you choose to enable this hardware path."*
+5. Buttons: **[Install hardware support]** runs `tools\install-bundled-pawnio.ps1`
+   under UAC elevation;
    **[Skip — I don't have that hardware]** dismisses;
    **[Remind me later]** delays until next launch.
 
-**Don't bundle PawnIO MSI.** Users should consent to a kernel driver installation
-explicitly. Lighter installer, cleaner consent.
+**Bundle PawnIO.** The Windows app stages the official `PawnIO_setup.exe`
+and the three SMBus modules Hypercolor currently loads: `SmbusI801.bin`,
+`SmbusPIIX4.bin`, and `SmbusNCT6793.bin`. `scripts/fetch-pawnio-assets.ps1`
+pins release versions and verifies SHA256 before copying them into the Tauri
+resource tree. The installer remains explicit: nothing privileged runs until the
+user presses the hardware-support button and accepts UAC.
+
+**Privilege boundary:** only motherboard/DRAM SMBus access goes through the
+`HypercolorSmBus` broker. NvAPI and ADL GPU I2C are vendor driver APIs and stay
+in the regular user-mode daemon. USB HID, WinUSB devices, and network devices
+also stay user-mode; WinUSB driver binding is an install-time prerequisite, not a
+daemon privilege reason.
 
 ### 12.2 Windows — SCM Service Detection
 
