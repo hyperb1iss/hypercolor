@@ -53,6 +53,7 @@ pub(super) fn encode_led_frame(
     state: &mut Push2State,
     normalized: &[[u8; 3]],
     commands: &mut Vec<ProtocolCommand>,
+    force_palette_write: bool,
 ) {
     let rgb_colors = &normalized[..PUSH2_RGB_LED_COUNT];
     let white_button_colors = &normalized[PUSH2_RGB_LED_COUNT..PUSH2_MIDI_LED_COUNT];
@@ -77,7 +78,7 @@ pub(super) fn encode_led_frame(
         let slot = if let Some(preferred) =
             preferred_rgb_slot(state, rgb_colors, index, entry, &assigned_slots)
         {
-            if state.palette[usize::from(preferred)] != entry {
+            if force_palette_write || state.palette[usize::from(preferred)] != entry {
                 let message = set_palette_entry_message(preferred, entry);
                 command_buffer.push_slice(
                     &message,
@@ -91,9 +92,21 @@ pub(super) fn encode_led_frame(
             }
             preferred
         } else if let Some(existing) = find_existing_slot(state, entry, &assigned_slots) {
+            if force_palette_write {
+                let message = set_palette_entry_message(existing, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(existing)] = entry;
+                palette_dirty = true;
+            }
             existing
         } else if let Some(free_slot) = next_free_inactive_slot(&assigned_slots, &live_rgb_slots) {
-            if state.palette[usize::from(free_slot)] != entry {
+            if force_palette_write || state.palette[usize::from(free_slot)] != entry {
                 let message = set_palette_entry_message(free_slot, entry);
                 command_buffer.push_slice(
                     &message,
@@ -109,7 +122,7 @@ pub(super) fn encode_led_frame(
         } else {
             let free_slot = next_free_slot(&assigned_slots)
                 .expect("Push 2 RGB zones use at most 92 unique colors");
-            if state.palette[usize::from(free_slot)] != entry {
+            if force_palette_write || state.palette[usize::from(free_slot)] != entry {
                 let message = set_palette_entry_message(free_slot, entry);
                 command_buffer.push_slice(
                     &message,
@@ -130,7 +143,7 @@ pub(super) fn encode_led_frame(
     for (index, color) in white_button_colors.iter().enumerate() {
         let (slot, entry) = white_button_palette_slot(*color);
         white_button_slots[index] = slot;
-        if slot != 0 && state.palette[usize::from(slot)] != entry {
+        if slot != 0 && (force_palette_write || state.palette[usize::from(slot)] != entry) {
             let message = set_palette_entry_message(slot, entry);
             command_buffer.push_slice(
                 &message,

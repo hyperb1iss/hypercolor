@@ -271,6 +271,53 @@ fn push2_brightness_and_diagnostics_use_primary_sysex() {
 }
 
 #[test]
+fn push2_keepalive_reasserts_user_mode_and_resends_last_led_frame() {
+    let protocol = Push2Protocol::new();
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
+    colors[0] = [255, 0, 0];
+
+    let first_frame = protocol.encode_frame(&colors);
+    assert!(
+        first_frame
+            .iter()
+            .any(|command| command.data == vec![0x90, 36, 0x01]),
+        "first frame should light pad 0 from palette slot 1"
+    );
+
+    assert!(
+        protocol.encode_frame(&colors).is_empty(),
+        "steady-state frame should normally be diff-suppressed"
+    );
+
+    let keepalive = protocol
+        .keepalive()
+        .expect("Push 2 should run a MIDI resync keepalive");
+    assert_eq!(keepalive.interval, Duration::from_secs(5));
+
+    let resync = protocol.keepalive_commands();
+    assert_eq!(
+        resync[0].data,
+        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0x01, 0xF7]
+    );
+    assert_eq!(
+        resync[1].data,
+        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x17, 0x6B, 0xF7]
+    );
+    assert!(
+        resync.iter().any(
+            |command| command.data.first() == Some(&0xF0) && command.data.get(6) == Some(&0x03)
+        ),
+        "resync should force palette writes even when the software cache is already warm"
+    );
+    assert!(
+        resync
+            .iter()
+            .any(|command| command.data == vec![0x90, 36, 0x01]),
+        "resync should resend key mappings from the last frame"
+    );
+}
+
+#[test]
 fn push2_display_encoding_emits_header_and_bulk_packets() {
     let protocol = Push2Protocol::new();
     let commands = protocol

@@ -14,8 +14,8 @@ use hypercolor_types::device::{
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
+    ResponseStatus, TransferType,
 };
 
 const PUSH2_RGB_LED_COUNT: usize = 92;
@@ -37,6 +37,7 @@ const PUSH2_DISPLAY_LINE_PIXELS: usize = PUSH2_DISPLAY_WIDTH * 2;
 const PUSH2_DISPLAY_LINE_PADDING: usize = 128;
 const PUSH2_DISPLAY_LINE_SIZE: usize = PUSH2_DISPLAY_LINE_PIXELS + PUSH2_DISPLAY_LINE_PADDING;
 const PUSH2_DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const PUSH2_RESYNC_INTERVAL: Duration = Duration::from_secs(5);
 const PUSH2_IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7];
 const PUSH2_MANUFACTURER_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
 const PUSH2_DISPLAY_XOR_MASK: [u8; 4] = [0xE7, 0xF3, 0xE7, 0xFF];
@@ -92,6 +93,8 @@ struct Push2State {
     factory_palette_valid: [bool; PUSH2_PALETTE_SIZE],
     prev_led_indices: [u8; PUSH2_MIDI_LED_COUNT],
     prev_touch_strip: [u8; PUSH2_TOUCH_STRIP_LED_COUNT],
+    last_colors: [[u8; 3]; PUSH2_TOTAL_LEDS],
+    last_frame_seen: bool,
 }
 
 impl Default for Push2State {
@@ -102,6 +105,8 @@ impl Default for Push2State {
             factory_palette_valid: [false; PUSH2_PALETTE_SIZE],
             prev_led_indices: [0; PUSH2_MIDI_LED_COUNT],
             prev_touch_strip: [0; PUSH2_TOUCH_STRIP_LED_COUNT],
+            last_colors: [[0; 3]; PUSH2_TOTAL_LEDS],
+            last_frame_seen: false,
         }
     }
 }
@@ -163,6 +168,8 @@ impl Protocol for Push2Protocol {
             .expect("Push 2 state lock should not be poisoned");
         state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
+        state.last_colors = [[0; 3]; PUSH2_TOTAL_LEDS];
+        state.last_frame_seen = false;
         drop(state);
 
         let mut commands = Vec::with_capacity(3 + PUSH2_PALETTE_SIZE + PUSH2_MIDI_LED_COUNT + 1);
@@ -235,7 +242,9 @@ impl Protocol for Push2Protocol {
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
-        led_palette::encode_led_frame(&mut state, normalized, commands);
+        state.last_colors.copy_from_slice(normalized);
+        state.last_frame_seen = true;
+        led_palette::encode_led_frame(&mut state, normalized, commands, false);
     }
 
     #[expect(clippy::similar_names, reason = "lsb/msb are standard acronyms")]
@@ -262,6 +271,48 @@ impl Protocol for Push2Protocol {
             push2_sysex(PUSH2_CMD_REQUEST_STATS, &[]),
             true,
         )]
+    }
+
+    fn keepalive(&self) -> Option<ProtocolKeepalive> {
+        Some(ProtocolKeepalive {
+            commands: vec![
+                primary_command(
+                    push2_sysex(PUSH2_CMD_SET_MIDI_MODE, &[PUSH2_MIDI_MODE_USER]),
+                    false,
+                ),
+                primary_command(
+                    push2_sysex(
+                        PUSH2_CMD_SET_TOUCH_STRIP_CONFIG,
+                        &[PUSH2_TOUCH_STRIP_HOST_CONFIG],
+                    ),
+                    false,
+                ),
+            ],
+            interval: PUSH2_RESYNC_INTERVAL,
+        })
+    }
+
+    fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
+        let mut commands = self
+            .keepalive()
+            .map_or_else(Vec::new, |keepalive| keepalive.commands);
+        let mut state = self
+            .state
+            .write()
+            .expect("Push 2 state lock should not be poisoned");
+
+        if !state.last_frame_seen {
+            return commands;
+        }
+
+        let last_colors = state.last_colors;
+        state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
+        state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
+
+        let mut frame_commands = Vec::new();
+        led_palette::encode_led_frame(&mut state, &last_colors, &mut frame_commands, true);
+        commands.extend(frame_commands);
+        commands
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
