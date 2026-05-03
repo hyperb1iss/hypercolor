@@ -204,6 +204,12 @@ impl Transport for UsbHidApiTransport {
         match self.report_mode {
             HidRawReportMode::FeatureReport => "USB HIDAPI (Feature Report)",
             HidRawReportMode::OutputReport => "USB HIDAPI (Output/Input Report)",
+            HidRawReportMode::FeatureReportWithReportId => {
+                "USB HIDAPI (Feature Report, report ID in payload)"
+            }
+            HidRawReportMode::OutputReportWithReportId => {
+                "USB HIDAPI (Output/Input Report, report ID in payload)"
+            }
         }
     }
 
@@ -215,10 +221,10 @@ impl Transport for UsbHidApiTransport {
         let feature_report_state = Arc::clone(&self.feature_report_state);
         let report_id = self.report_id;
         let report_mode = self.report_mode;
-        let packet = encode_feature_report_packet(data, report_id);
+        let packet = encode_hidapi_packet(data, report_id, report_mode);
 
         match report_mode {
-            HidRawReportMode::FeatureReport => {
+            HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
@@ -236,7 +242,7 @@ impl Transport for UsbHidApiTransport {
                     detail: format!("hidapi send task failed: {error}"),
                 })?
             }
-            HidRawReportMode::OutputReport => {
+            HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
@@ -268,7 +274,7 @@ impl Transport for UsbHidApiTransport {
         let report_mode = self.report_mode;
 
         match report_mode {
-            HidRawReportMode::FeatureReport => {
+            HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
@@ -284,6 +290,7 @@ impl Transport for UsbHidApiTransport {
                         report_id,
                         max_packet_len,
                         transaction_id,
+                        report_mode_payload_includes_report_id(report_mode),
                     )
                 })
                 .await
@@ -301,7 +308,7 @@ impl Transport for UsbHidApiTransport {
 
                 Ok(response)
             }
-            HidRawReportMode::OutputReport => {
+            HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
@@ -344,10 +351,10 @@ impl Transport for UsbHidApiTransport {
         let max_packet_len = self.max_packet_len;
         let report_mode = self.report_mode;
         let feature_report_state = Arc::clone(&self.feature_report_state);
-        let packet = encode_feature_report_packet(data, report_id);
+        let packet = encode_hidapi_packet(data, report_id, report_mode);
 
         match report_mode {
-            HidRawReportMode::FeatureReport => {
+            HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
@@ -369,6 +376,7 @@ impl Transport for UsbHidApiTransport {
                         report_id,
                         max_packet_len,
                         feature_report_state.as_ref(),
+                        report_mode_payload_includes_report_id(report_mode),
                     )
                 })
                 .await
@@ -386,7 +394,7 @@ impl Transport for UsbHidApiTransport {
 
                 Ok(response)
             }
-            HidRawReportMode::OutputReport => {
+            HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
@@ -477,6 +485,7 @@ fn receive_feature_report_locked(
     report_id: u8,
     max_packet_len: usize,
     transaction_id: Option<u8>,
+    payload_includes_report_id: bool,
 ) -> Result<Vec<u8>, TransportError> {
     let device = lock_hidapi_device(device)?;
     let mut buffer =
@@ -491,6 +500,7 @@ fn receive_feature_report_locked(
         &buffer,
         report_id,
         max_packet_len,
+        payload_includes_report_id,
     ))
 }
 
@@ -500,6 +510,7 @@ fn send_receive_feature_report_locked(
     report_id: u8,
     max_packet_len: usize,
     feature_report_state: &Mutex<FeatureReportRequestState>,
+    payload_includes_report_id: bool,
 ) -> Result<Vec<u8>, TransportError> {
     let device = lock_hidapi_device(device)?;
     store_feature_report_transaction_id(feature_report_state, packet);
@@ -520,6 +531,7 @@ fn send_receive_feature_report_locked(
         &buffer,
         report_id,
         max_packet_len,
+        payload_includes_report_id,
     ))
 }
 
@@ -554,11 +566,28 @@ fn c_string_for_path(path: &str) -> Result<CString, TransportError> {
     })
 }
 
-fn encode_feature_report_packet(payload: &[u8], report_id: u8) -> Vec<u8> {
+fn encode_hidapi_packet(payload: &[u8], report_id: u8, report_mode: HidRawReportMode) -> Vec<u8> {
+    if report_mode_payload_includes_report_id(report_mode) {
+        if payload.is_empty() {
+            return vec![report_id];
+        }
+        return payload.to_vec();
+    }
+
     let mut packet = Vec::with_capacity(payload.len().saturating_add(1));
     packet.push(report_id);
     packet.extend_from_slice(payload);
     packet
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn encode_hidapi_packet_for_testing(
+    payload: &[u8],
+    report_id: u8,
+    report_mode: HidRawReportMode,
+) -> Vec<u8> {
+    encode_hidapi_packet(payload, report_id, report_mode)
 }
 
 fn encode_feature_report_request_buffer(
@@ -590,14 +619,23 @@ fn decode_feature_report_packet(
     buffer: &[u8],
     report_id: u8,
     expected_payload_len: usize,
+    payload_includes_report_id: bool,
 ) -> Vec<u8> {
-    if buffer.len() == expected_payload_len.saturating_add(1)
+    if !payload_includes_report_id
+        && buffer.len() == expected_payload_len.saturating_add(1)
         && buffer.first().copied() == Some(report_id)
     {
         return buffer[1..].to_vec();
     }
 
     buffer.to_vec()
+}
+
+fn report_mode_payload_includes_report_id(report_mode: HidRawReportMode) -> bool {
+    matches!(
+        report_mode,
+        HidRawReportMode::FeatureReportWithReportId | HidRawReportMode::OutputReportWithReportId
+    )
 }
 
 fn map_hidapi_error(error: &hidapi::HidError) -> TransportError {

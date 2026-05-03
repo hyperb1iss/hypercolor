@@ -190,4 +190,10 @@ pub enum HidRawReportMode {
     /// Send output reports and receive input reports through the platform HID
     /// stack.
     OutputReport,
+    /// Send and receive HID feature reports where protocol packets already
+    /// include the HID report ID byte.
+    FeatureReportWithReportId,
+    /// Send output reports and receive input reports where protocol packets
+    /// already include the HID report ID byte.
+    OutputReportWithReportId,
 }

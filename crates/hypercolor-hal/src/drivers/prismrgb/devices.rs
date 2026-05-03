@@ -3,6 +3,8 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
+#[cfg(windows)]
+use crate::registry::HidRawReportMode;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
 use super::protocol::{PrismRgbModel, PrismRgbProtocol};
@@ -26,6 +28,22 @@ pub fn build_prism_mini_protocol() -> Box<dyn Protocol> {
     Box::new(PrismRgbProtocol::new(PrismRgbModel::PrismMini))
 }
 
+#[cfg(windows)]
+const fn prismrgb_hid_transport(interface: u8) -> TransportType {
+    TransportType::UsbHidApi {
+        interface: Some(interface),
+        report_id: 0x00,
+        report_mode: HidRawReportMode::OutputReportWithReportId,
+        usage_page: None,
+        usage: None,
+    }
+}
+
+#[cfg(not(windows))]
+const fn prismrgb_hid_transport(interface: u8) -> TransportType {
+    TransportType::UsbHid { interface }
+}
+
 macro_rules! prismrgb_descriptor {
     (
         vid: $vid:expr,
@@ -40,9 +58,7 @@ macro_rules! prismrgb_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
-            transport: TransportType::UsbHid {
-                interface: $interface,
-            },
+            transport: prismrgb_hid_transport($interface),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,

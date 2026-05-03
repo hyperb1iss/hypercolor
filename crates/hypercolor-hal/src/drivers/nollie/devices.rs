@@ -3,6 +3,8 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
+#[cfg(windows)]
+use crate::registry::HidRawReportMode;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
 use super::protocol::{NollieModel, NollieProtocol, ProtocolVersion};
@@ -46,6 +48,22 @@ pub fn build_nollie_32_protocol() -> Box<dyn Protocol> {
     }))
 }
 
+#[cfg(windows)]
+const fn nollie_hid_transport(interface: u8) -> TransportType {
+    TransportType::UsbHidApi {
+        interface: Some(interface),
+        report_id: 0x00,
+        report_mode: HidRawReportMode::OutputReportWithReportId,
+        usage_page: None,
+        usage: None,
+    }
+}
+
+#[cfg(not(windows))]
+const fn nollie_hid_transport(interface: u8) -> TransportType {
+    TransportType::UsbHid { interface }
+}
+
 macro_rules! nollie_descriptor {
     (
         vid: $vid:expr,
@@ -60,7 +78,7 @@ macro_rules! nollie_descriptor {
             product_id: $pid,
             name: $name,
             family: $family,
-            transport: TransportType::UsbHid { interface: 0 },
+            transport: nollie_hid_transport(0),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,

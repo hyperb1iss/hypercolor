@@ -55,6 +55,24 @@ fn expected_razer_shared_hid_transport(
     }
 }
 
+fn expected_report_id_payload_hid_transport(interface: u8) -> TransportType {
+    #[cfg(windows)]
+    {
+        TransportType::UsbHidApi {
+            interface: Some(interface),
+            report_id: 0x00,
+            report_mode: HidRawReportMode::OutputReportWithReportId,
+            usage_page: None,
+            usage: None,
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        TransportType::UsbHid { interface }
+    }
+}
+
 #[test]
 fn lookup_returns_asus_motherboard_descriptor() {
     let descriptor = ProtocolDatabase::lookup(ASUS_VID, PID_AURA_MOTHERBOARD_GEN3)
@@ -104,7 +122,10 @@ fn lookup_returns_prism_8_descriptor() {
     );
     assert_eq!(descriptor.driver_id(), "nollie");
     assert_eq!(descriptor.protocol.id, "nollie/prism-8");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_report_id_payload_hid_transport(0)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "PrismRGB Prism 8");
@@ -431,7 +452,10 @@ fn lookup_returns_nollie_8_v2_descriptor() {
         DeviceFamily::new_static("nollie", "Nollie")
     );
     assert_eq!(descriptor.protocol.id, "nollie/nollie-8-v2");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_report_id_payload_hid_transport(0)
+    );
 }
 
 #[test]
@@ -445,7 +469,10 @@ fn lookup_returns_nollie_1_descriptor() {
         DeviceFamily::new_static("nollie", "Nollie")
     );
     assert_eq!(descriptor.protocol.id, "nollie/nollie-1");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_report_id_payload_hid_transport(0)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.total_leds(), 630);
@@ -501,7 +528,10 @@ fn lookup_returns_prism_s_descriptor() {
         DeviceFamily::new_static("prismrgb", "PrismRGB")
     );
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-s");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 2 });
+    assert_eq!(
+        descriptor.transport,
+        expected_report_id_payload_hid_transport(2)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.total_leds(), 282);
@@ -519,7 +549,10 @@ fn lookup_returns_prism_mini_descriptor() {
         DeviceFamily::new_static("prismrgb", "PrismRGB")
     );
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-mini");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 2 });
+    assert_eq!(
+        descriptor.transport,
+        expected_report_id_payload_hid_transport(2)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.total_leds(), 128);
