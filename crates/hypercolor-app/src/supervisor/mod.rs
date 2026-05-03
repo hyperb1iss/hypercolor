@@ -16,6 +16,8 @@ use url::Url;
 /// Default daemon bind address used by the app-spawned daemon.
 pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
 
+const DAEMON_EXECUTABLE_STEM: &str = "hypercolor-daemon";
+
 /// Timeout for one lightweight health probe.
 pub const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 
@@ -80,7 +82,71 @@ pub const fn daemon_executable_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "hypercolor-daemon.exe"
     } else {
-        "hypercolor-daemon"
+        DAEMON_EXECUTABLE_STEM
+    }
+}
+
+/// Resolve the target triples Tauri sidecars may use for the current target.
+#[must_use]
+pub const fn target_triple_candidates() -> &'static [&'static str] {
+    if cfg!(all(
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )) {
+        &["x86_64-pc-windows-msvc"]
+    } else if cfg!(all(
+        target_os = "windows",
+        target_arch = "aarch64",
+        target_env = "msvc"
+    )) {
+        &["aarch64-pc-windows-msvc"]
+    } else if cfg!(all(
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "gnu"
+    )) {
+        &["x86_64-pc-windows-gnu"]
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        &["aarch64-apple-darwin"]
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        &["x86_64-apple-darwin"]
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "gnu"
+    )) {
+        &["x86_64-unknown-linux-gnu"]
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "gnu"
+    )) {
+        &["aarch64-unknown-linux-gnu"]
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "musl"
+    )) {
+        &["x86_64-unknown-linux-musl"]
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "musl"
+    )) {
+        &["aarch64-unknown-linux-musl"]
+    } else {
+        &[]
+    }
+}
+
+/// Resolve the Tauri externalBin sidecar name for a target triple.
+#[must_use]
+pub fn tauri_sidecar_daemon_name(target_triple: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{DAEMON_EXECUTABLE_STEM}-{target_triple}.exe")
+    } else {
+        format!("{DAEMON_EXECUTABLE_STEM}-{target_triple}")
     }
 }
 
@@ -90,6 +156,26 @@ pub fn sibling_daemon_path(current_exe: &Path) -> Option<PathBuf> {
     current_exe
         .parent()
         .map(|install_dir| install_dir.join(daemon_executable_name()))
+}
+
+/// Resolve likely daemon executable paths for supported package layouts.
+#[must_use]
+pub fn daemon_path_candidates(current_exe: &Path, resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(install_dir) = current_exe.parent() {
+        push_daemon_candidates(&mut candidates, install_dir);
+    }
+
+    if let Some(resource_dir) = resource_dir {
+        push_daemon_candidates(&mut candidates, resource_dir);
+    }
+
+    if let Some(resource_dir) = macos_app_resource_dir(current_exe) {
+        push_daemon_candidates(&mut candidates, &resource_dir);
+    }
+
+    candidates
 }
 
 /// Resolve the installed web UI directory next to the app executable.
@@ -102,16 +188,42 @@ pub fn sibling_ui_dir(current_exe: &Path) -> Option<PathBuf> {
 
 /// Resolve likely installed web UI directories for supported package layouts.
 #[must_use]
-pub fn ui_dir_candidates(current_exe: &Path) -> Vec<PathBuf> {
-    let Some(install_dir) = current_exe.parent() else {
-        return Vec::new();
-    };
+pub fn ui_dir_candidates(current_exe: &Path, resource_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
 
-    let mut candidates = vec![install_dir.join("ui")];
-    if let Some(prefix_dir) = install_dir.parent() {
-        candidates.push(prefix_dir.join("share").join("hypercolor").join("ui"));
+    if let Some(install_dir) = current_exe.parent() {
+        push_unique_path(&mut candidates, install_dir.join("ui"));
+
+        if let Some(prefix_dir) = install_dir.parent() {
+            push_share_ui_candidate(&mut candidates, prefix_dir);
+        }
     }
+
+    if let Some(resource_dir) = resource_dir {
+        push_resource_ui_candidates(&mut candidates, resource_dir);
+    }
+
+    if let Some(resource_dir) = macos_app_resource_dir(current_exe) {
+        push_resource_ui_candidates(&mut candidates, &resource_dir);
+    }
+
     candidates
+}
+
+/// Resolve the macOS `.app` resource directory from a `Contents/MacOS` executable.
+#[must_use]
+pub fn macos_app_resource_dir(current_exe: &Path) -> Option<PathBuf> {
+    let executable_dir = current_exe.parent()?;
+    if executable_dir.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
+        return None;
+    }
+
+    let contents_dir = executable_dir.parent()?;
+    if contents_dir.file_name().and_then(|name| name.to_str()) != Some("Contents") {
+        return None;
+    }
+
+    Some(contents_dir.join("Resources"))
 }
 
 /// Build the daemon command used by the app supervisor.
@@ -167,9 +279,15 @@ pub async fn probe_health(client: &reqwest::Client, base: &Url, timeout: Duratio
 /// Returns an error if the app executable path or daemon URL cannot be resolved.
 pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
     let current_exe = std::env::current_exe().context("failed to resolve app executable path")?;
-    let daemon_path = sibling_daemon_path(&current_exe)
-        .context("failed to resolve daemon path from app executable")?;
-    let ui_dir = ui_dir_candidates(&current_exe)
+    let resource_dir = app.path().resource_dir().ok();
+    let daemon_candidates = daemon_path_candidates(&current_exe, resource_dir.as_deref());
+    let daemon_path = daemon_candidates
+        .iter()
+        .find(|path| path.is_file())
+        .or_else(|| daemon_candidates.first())
+        .cloned()
+        .context("failed to resolve daemon path from app executable or resource directory")?;
+    let ui_dir = ui_dir_candidates(&current_exe, resource_dir.as_deref())
         .into_iter()
         .find(|path| path.join("index.html").exists());
     let bind = bind_from_daemon_url(&daemon_url).unwrap_or_else(|| DEFAULT_DAEMON_BIND.to_owned());
@@ -204,6 +322,35 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
     });
 
     Ok(())
+}
+
+fn push_daemon_candidates(candidates: &mut Vec<PathBuf>, directory: &Path) {
+    push_unique_path(candidates, directory.join(daemon_executable_name()));
+
+    for target_triple in target_triple_candidates() {
+        push_unique_path(
+            candidates,
+            directory.join(tauri_sidecar_daemon_name(target_triple)),
+        );
+    }
+}
+
+fn push_resource_ui_candidates(candidates: &mut Vec<PathBuf>, resource_dir: &Path) {
+    push_unique_path(candidates, resource_dir.join("ui"));
+    push_share_ui_candidate(candidates, resource_dir);
+}
+
+fn push_share_ui_candidate(candidates: &mut Vec<PathBuf>, base_dir: &Path) {
+    push_unique_path(
+        candidates,
+        base_dir.join("share").join("hypercolor").join("ui"),
+    );
+}
+
+fn push_unique_path(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
 }
 
 /// Spawn a daemon process and bind it to the app lifetime.

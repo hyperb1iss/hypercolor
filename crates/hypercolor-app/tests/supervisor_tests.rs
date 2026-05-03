@@ -2,7 +2,9 @@ use std::path::Path;
 
 use hypercolor_app::supervisor::{
     DEFAULT_DAEMON_BIND, SupervisorState, bind_from_daemon_url, build_daemon_command,
-    daemon_executable_name, health_url, sibling_daemon_path, sibling_ui_dir, ui_dir_candidates,
+    daemon_executable_name, daemon_path_candidates, health_url, macos_app_resource_dir,
+    sibling_daemon_path, sibling_ui_dir, target_triple_candidates, tauri_sidecar_daemon_name,
+    ui_dir_candidates,
 };
 use url::Url;
 
@@ -39,31 +41,108 @@ fn sibling_paths_resolve_from_app_executable() {
 }
 
 #[test]
-fn ui_dir_candidates_include_tauri_and_tarball_layouts() {
+fn daemon_path_candidates_include_sibling_and_resource_layouts() {
+    let app_path = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor\bin\hypercolor-app.exe")
+    } else {
+        Path::new("/opt/hypercolor/bin/hypercolor-app")
+    };
+    let resource_dir = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor")
+    } else {
+        Path::new("/opt/hypercolor/resources")
+    };
+
+    let candidates = daemon_path_candidates(app_path, Some(resource_dir));
+
+    assert!(
+        candidates.contains(
+            &app_path
+                .parent()
+                .expect("app path should have parent")
+                .join(daemon_executable_name())
+        )
+    );
+    assert!(candidates.contains(&resource_dir.join(daemon_executable_name())));
+}
+
+#[test]
+fn daemon_path_candidates_include_tauri_sidecar_names() {
+    let app_path = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor\hypercolor-app.exe")
+    } else {
+        Path::new("/opt/hypercolor/bin/hypercolor-app")
+    };
+    let resource_dir = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor")
+    } else {
+        Path::new("/opt/hypercolor/resources")
+    };
+
+    let candidates = daemon_path_candidates(app_path, Some(resource_dir));
+
+    for target_triple in target_triple_candidates() {
+        assert!(candidates.contains(&resource_dir.join(tauri_sidecar_daemon_name(target_triple))));
+    }
+}
+
+#[test]
+fn ui_dir_candidates_include_sibling_and_tarball_layouts() {
     let app_path = if cfg!(target_os = "windows") {
         Path::new(r"C:\Program Files\Hypercolor\bin\hypercolor-app.exe")
     } else {
         Path::new("/opt/hypercolor/bin/hypercolor-app")
     };
 
-    let candidates = ui_dir_candidates(app_path);
-    let candidate_strings = candidates
-        .iter()
-        .map(|path| path.to_string_lossy())
-        .collect::<Vec<_>>();
+    let candidates = ui_dir_candidates(app_path, None);
 
     assert!(
-        candidate_strings
-            .iter()
-            .any(|path| path.ends_with("bin\\ui")
-                || path.ends_with("bin/ui")
-                || path.ends_with("Hypercolor\\ui"))
+        candidates.contains(
+            &app_path
+                .parent()
+                .expect("app path should have parent")
+                .join("ui")
+        )
     );
     assert!(
-        candidate_strings
+        path_strings(&candidates)
             .iter()
-            .any(|path| path.replace('\\', "/").ends_with("share/hypercolor/ui"))
+            .any(|path| path.ends_with("share/hypercolor/ui"))
     );
+}
+
+#[test]
+fn ui_dir_candidates_include_resource_dir_layouts() {
+    let app_path = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor\hypercolor-app.exe")
+    } else {
+        Path::new("/opt/hypercolor/bin/hypercolor-app")
+    };
+    let resource_dir = if cfg!(target_os = "windows") {
+        Path::new(r"C:\Program Files\Hypercolor")
+    } else {
+        Path::new("/opt/hypercolor/resources")
+    };
+
+    let candidates = ui_dir_candidates(app_path, Some(resource_dir));
+
+    assert!(candidates.contains(&resource_dir.join("ui")));
+    assert!(candidates.contains(&resource_dir.join("share").join("hypercolor").join("ui")));
+}
+
+#[test]
+fn candidates_include_macos_app_resources_from_contents_macos_exe() {
+    let app_path = Path::new("/Applications/Hypercolor.app/Contents/MacOS/hypercolor-app");
+    let resource_dir = macos_app_resource_dir(app_path).expect("resource dir should resolve");
+
+    assert!(normalized(&resource_dir).ends_with("Hypercolor.app/Contents/Resources"));
+
+    let daemon_candidates = daemon_path_candidates(app_path, None);
+    let ui_candidates = ui_dir_candidates(app_path, None);
+
+    assert!(daemon_candidates.contains(&resource_dir.join(daemon_executable_name())));
+    assert!(ui_candidates.contains(&resource_dir.join("ui")));
+    assert!(ui_candidates.contains(&resource_dir.join("share").join("hypercolor").join("ui")));
 }
 
 #[test]
@@ -117,4 +196,12 @@ fn supervisor_state_starts_without_child_process() {
     let state = SupervisorState::default();
 
     assert_eq!(state.child_pid(), None);
+}
+
+fn path_strings(paths: &[std::path::PathBuf]) -> Vec<String> {
+    paths.iter().map(|path| normalized(path)).collect()
+}
+
+fn normalized(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
