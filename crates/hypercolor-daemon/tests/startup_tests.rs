@@ -2015,32 +2015,29 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
     let mut saw_stopped = false;
     let mut saw_fallback_event = false;
     let mut saw_group_update = false;
+    let expected_effect_id = metadata.id.to_string();
     tokio::time::timeout(Duration::from_secs(3), async {
         while !(saw_stopped && saw_fallback_event && saw_group_update) {
             let event = rx.recv().await.expect("effect-error fallback event");
             match event.event {
-                HypercolorEvent::EffectStopped { effect, reason } => {
-                    if effect.id == metadata.id.to_string() && reason == EffectStopReason::Error {
-                        saw_stopped = true;
-                    }
+                HypercolorEvent::EffectStopped { effect, reason }
+                    if effect.id == expected_effect_id && reason == EffectStopReason::Error =>
+                {
+                    saw_stopped = true;
                 }
                 HypercolorEvent::EffectError {
                     effect_id,
                     fallback,
                     ..
-                } => {
-                    if effect_id == metadata.id.to_string()
-                        && fallback.as_deref() == Some("clear_groups")
-                    {
-                        saw_fallback_event = true;
-                    }
+                } if effect_id == expected_effect_id
+                    && fallback.as_deref() == Some("clear_groups") =>
+                {
+                    saw_fallback_event = true;
                 }
                 HypercolorEvent::RenderGroupChanged {
                     group_id: changed, ..
-                } => {
-                    if changed == group_id {
-                        saw_group_update = true;
-                    }
+                } if changed == group_id => {
+                    saw_group_update = true;
                 }
                 _ => {}
             }

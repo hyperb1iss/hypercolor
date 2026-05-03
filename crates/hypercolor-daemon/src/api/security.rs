@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::api::envelope::ApiError;
 
-const RATE_WINDOW: Duration = Duration::from_secs(60);
+const RATE_WINDOW: Duration = Duration::from_mins(1);
 const READ_LIMIT_PER_MIN: u32 = 120;
 const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;

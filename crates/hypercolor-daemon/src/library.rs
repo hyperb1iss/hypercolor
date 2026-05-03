@@ -3,6 +3,7 @@
 //! The API uses [`LibraryStore`] so storage can move from in-memory to a
 //! database backend (e.g. Turso/libsql) without rewriting handlers.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -264,7 +265,7 @@ impl LibraryStore for InMemoryLibraryStore {
     async fn list_favorites(&self) -> Vec<FavoriteEffect> {
         let data = self.data.read().await;
         let mut favorites: Vec<FavoriteEffect> = data.favorites.values().cloned().collect();
-        favorites.sort_by(|left, right| right.added_at_ms.cmp(&left.added_at_ms));
+        favorites.sort_by_key(|favorite| Reverse(favorite.added_at_ms));
         favorites
     }
 
@@ -369,7 +370,7 @@ impl LibraryStore for JsonLibraryStore {
     async fn list_favorites(&self) -> Vec<FavoriteEffect> {
         let data = self.data.read().await;
         let mut favorites: Vec<FavoriteEffect> = data.favorites.values().cloned().collect();
-        favorites.sort_by(|left, right| right.added_at_ms.cmp(&left.added_at_ms));
+        favorites.sort_by_key(|favorite| Reverse(favorite.added_at_ms));
         favorites
     }
 

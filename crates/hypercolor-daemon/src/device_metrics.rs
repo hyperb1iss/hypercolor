@@ -93,7 +93,7 @@ impl DeviceMetricsCollector {
             stats_by_device.insert(stats.device_id, stats);
         }
 
-        items.sort_by(|left, right| left.id.to_string().cmp(&right.id.to_string()));
+        items.sort_by_cached_key(|item| item.id.to_string());
 
         let snapshot = DeviceMetricsSnapshot { taken_at_ms, items };
         self.snapshot.store(Arc::new(snapshot.clone()));

@@ -437,7 +437,7 @@ pub(super) async fn handle_list_effects_with_state(
         })
         .collect::<Vec<_>>();
 
-    filtered.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    filtered.sort_by_cached_key(|metadata| metadata.name.to_lowercase());
 
     let total = filtered.len();
     let limit = usize::try_from(limit_u64).unwrap_or(20);

@@ -176,6 +176,7 @@ fn filter_frame_zones(
 #[tokio::test]
 async fn metrics_message_includes_latest_frame_timeline() {
     let state = Arc::new(AppState::new());
+    state.render_loop.write().await.start();
     let mut preview_rx = state.preview_runtime.canvas_receiver();
     let mut screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
     preview_rx.update_demand(PreviewStreamDemand {

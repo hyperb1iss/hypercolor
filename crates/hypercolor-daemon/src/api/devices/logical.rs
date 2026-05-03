@@ -120,7 +120,7 @@ pub async fn list_logical_devices(
             .collect()
     };
 
-    items.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    items.sort_by_cached_key(|item| item.name.to_lowercase());
     let total = items.len();
     let paged_items: Vec<LogicalDeviceSummary> =
         items.into_iter().skip(offset).take(limit).collect();

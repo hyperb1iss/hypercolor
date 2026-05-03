@@ -698,6 +698,7 @@ mod tests {
     #[tokio::test]
     async fn status_includes_latest_frame_surface_stats() {
         let state = Arc::new(AppState::new());
+        state.render_loop.write().await.start();
         let mut preview_rx = state.preview_runtime.canvas_receiver();
         let mut screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
         preview_rx.update_demand(PreviewStreamDemand {

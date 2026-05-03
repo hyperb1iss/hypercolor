@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-#[cfg(any(not(windows), test))]
-pub(crate) const PRECISE_WAKE_GUARD: Duration = Duration::from_micros(1_000);
+#[cfg(not(windows))]
+pub(crate) const PRECISE_WAKE_GUARD: Duration = Duration::from_millis(1);
 #[cfg(not(windows))]
 const PRECISE_WAKE_SPIN_THRESHOLD: Duration = Duration::from_micros(150);
 
@@ -16,7 +16,7 @@ pub(crate) fn advance_deadline(
         .max(now)
 }
 
-#[cfg(any(not(windows), test))]
+#[cfg(not(windows))]
 pub(crate) fn coarse_sleep_deadline(deadline: Instant, now: Instant) -> Option<Instant> {
     deadline
         .checked_sub(PRECISE_WAKE_GUARD)

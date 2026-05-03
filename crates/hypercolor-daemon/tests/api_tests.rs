@@ -5137,13 +5137,11 @@ async fn patch_current_controls_publishes_render_group_and_control_events() {
                         role,
                         kind,
                         ..
-                    } => {
-                        if scene_id == SceneId::DEFAULT
-                            && role == RenderGroupRole::Primary
-                            && kind == RenderGroupChangeKind::ControlsPatched
-                        {
-                            saw_render_group_change = true;
-                        }
+                    } if scene_id == SceneId::DEFAULT
+                        && role == RenderGroupRole::Primary
+                        && kind == RenderGroupChangeKind::ControlsPatched =>
+                    {
+                        saw_render_group_change = true;
                     }
                     HypercolorEvent::EffectControlChanged {
                         control_id,
@@ -5151,14 +5149,12 @@ async fn patch_current_controls_publishes_render_group_and_control_events() {
                         new_value,
                         trigger,
                         ..
-                    } => {
-                        if control_id == "speed"
-                            && old_value == hypercolor_types::event::EventControlValue::Number(5.0)
-                            && new_value == hypercolor_types::event::EventControlValue::Number(7.5)
-                            && trigger == ChangeTrigger::Api
-                        {
-                            saw_control_change = true;
-                        }
+                    } if control_id == "speed"
+                        && old_value == hypercolor_types::event::EventControlValue::Number(5.0)
+                        && new_value == hypercolor_types::event::EventControlValue::Number(7.5)
+                        && trigger == ChangeTrigger::Api =>
+                    {
+                        saw_control_change = true;
                     }
                     _ => {}
                 },
