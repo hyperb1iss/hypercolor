@@ -12,7 +12,9 @@ and an optional Windows Service entry point for elevated hardware access. Use
 `just windows-diagnose` to inspect the current process owner, PawnIO service/files,
 and daemon API state. Use `just windows-service-install` from an elevated PowerShell
 session to install the `Hypercolor` service; the recipe does not start it unless
-`-Start` is passed.
+`-Start` is passed. The installer validates that the selected daemon binary supports
+SCM mode, prefers the cache-wrapper preview build, and sets service-local PawnIO
+environment variables so `LocalSystem` can find the user's downloaded SMBus modules.
 
 ---
 

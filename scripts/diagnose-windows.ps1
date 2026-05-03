@@ -69,6 +69,13 @@ foreach ($name in @("Hypercolor", "PawnIO", "pawnio", "SignalRgb.Service")) {
     $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($svc) {
         Write-Check $name ($svc.Status -eq "Running") "$($svc.Status), $($svc.StartType)"
+        if ($name -eq "Hypercolor") {
+            $svcReg = "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
+            $envValue = (Get-ItemProperty -Path $svcReg -Name Environment -ErrorAction SilentlyContinue).Environment
+            foreach ($entry in @($envValue)) {
+                Write-Host "       env $entry"
+            }
+        }
     } else {
         Write-Check $name $false "not installed"
     }
