@@ -90,6 +90,18 @@ fn menu_ids_map_to_app_actions() {
         action_for_menu_id(ids::OPEN_WEB_UI),
         Some(MenuAction::OpenWebUi)
     );
+    assert_eq!(
+        action_for_menu_id(ids::OPEN_LOGS_FOLDER),
+        Some(MenuAction::OpenLogsFolder)
+    );
+    assert_eq!(
+        action_for_menu_id(ids::OPEN_USER_EFFECTS_FOLDER),
+        Some(MenuAction::OpenUserEffectsFolder)
+    );
+    assert_eq!(
+        action_for_menu_id(ids::SETTINGS),
+        Some(MenuAction::Settings)
+    );
     assert_eq!(action_for_menu_id(ids::QUIT), Some(MenuAction::Quit));
     assert_eq!(
         action_for_menu_id("effect:aurora"),

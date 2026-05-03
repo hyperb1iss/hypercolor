@@ -1,15 +1,13 @@
 //! Native tray integration for the unified desktop app.
 
-use std::path::Path;
-
-use hypercolor_core::config::paths::data_dir;
 use tauri::{
     AppHandle, Runtime,
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
 };
 
-use crate::{DEFAULT_DAEMON_URL, state::AppState, window};
+use crate::{state::AppState, window};
 
+pub mod actions;
 pub mod icons;
 pub mod menu;
 
@@ -56,35 +54,24 @@ fn handle_tray_event<R: Runtime>(tray: &TrayIcon<R>, event: TrayIconEvent) {
 }
 
 fn run_menu_action<R: Runtime>(app: &AppHandle<R>, action: menu::MenuAction) -> anyhow::Result<()> {
-    match action {
-        menu::MenuAction::ShowWindow | menu::MenuAction::Settings => window::show_main(app)?,
-        menu::MenuAction::OpenWebUi => {
-            open::that_detached(daemon_url())?;
+    match actions::target_for_action(&action) {
+        actions::ActionTarget::ShowWindow => window::show_main(app)?,
+        actions::ActionTarget::OpenWebUi(url) => {
+            open::that_detached(url)?;
         }
-        menu::MenuAction::OpenLogsFolder => {
-            open_or_create_dir(&data_dir().join("logs"))?;
+        actions::ActionTarget::OpenDirectory(path) => {
+            open_or_create_dir(&path)?;
         }
-        menu::MenuAction::OpenUserEffectsFolder => {
-            open_or_create_dir(&data_dir().join("effects").join("user"))?;
-        }
-        menu::MenuAction::Quit => app.exit(0),
-        menu::MenuAction::TogglePause
-        | menu::MenuAction::RefreshServers
-        | menu::MenuAction::StopEffect
-        | menu::MenuAction::ApplyEffect(_)
-        | menu::MenuAction::ApplyProfile(_)
-        | menu::MenuAction::SwitchServer(_) => {
+        actions::ActionTarget::ShowSettings => window::show_settings(app)?,
+        actions::ActionTarget::Quit => app.exit(0),
+        actions::ActionTarget::DaemonPlaceholder => {
             tracing::debug!(?action, "daemon menu action queued for client wiring");
         }
     }
     Ok(())
 }
 
-fn daemon_url() -> String {
-    std::env::var("HYPERCOLOR_URL").unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_owned())
-}
-
-fn open_or_create_dir(path: &Path) -> anyhow::Result<()> {
+fn open_or_create_dir(path: &std::path::Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(path)?;
     open::that_detached(path)?;
     Ok(())
