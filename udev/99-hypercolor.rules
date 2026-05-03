@@ -24,9 +24,16 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", MODE="0660
 # ─── PrismRGB / Nollie / GCS ──────────────────────────────────────────────────
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d5", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d5", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16d5", MODE="0660", GROUP="users", TAG+="uaccess"
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d1", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d1", MODE="0660", GROUP="users", TAG+="uaccess"
 
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d2", MODE="0660", GROUP="users", TAG+="uaccess"
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d3", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d3", MODE="0660", GROUP="users", TAG+="uaccess"
 
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"

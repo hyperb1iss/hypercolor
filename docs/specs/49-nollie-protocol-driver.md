@@ -1,6 +1,6 @@
 # 49 -- Nollie Protocol Driver
 
-> Native USB HID driver for the Nollie ARGB controller family. Six controller variants across two protocol generations, with full coverage for the Nollie 28/12, Nollie1, Nollie 8 v2, Nollie16v3, and Nollie32 (including ATX/GPU Strimer cables).
+> Native USB HID/CDC driver for the Nollie ARGB controller family. Coverage now follows the official `nolliecontroller` source tree, including current NOS2 devices, CDC serial variants, discontinued legacy HID boards, and exact component LED maps.
 
 **Status:** Draft
 **Crate:** `hypercolor-hal`
@@ -41,11 +41,20 @@ This spec extends Hypercolor's coverage to the rest of the Nollie family: the en
 - First-class Strimer cable support (mode byte, per-cable packet generation, subdevice topology hints)
 - Tests cover packetization, channel remap, group markers, color encoding, init/shutdown, mode switching
 
+### 2026-05-03 Official Source Refresh
+
+Bliss provided the official `~/dev/nolliecontroller` source tree. That source supersedes earlier community-only assumptions in this spec:
+
+- NOS2 HID devices use VID `0x16D5` with direct 1024-byte per-physical-channel packets, not the grouped `0x40` Gen-2 format used by VID `0x3061`.
+- CDC variants exist for Nollie1 (`0x16D5:0x2A01`) and Nollie8 (`0x16D5:0x2A08`) using 64-byte serial writes at 115200 8N1.
+- Discontinued devices under VID `0x16D1`, VID `0x16D2`, and VID `0x16D3` are supported with their official 65-byte packet formats.
+- PID `0x16D2:0x1617` and `0x16D2:0x1618` are Nollie L1/L2 v1.2 in the official source, not Nollie 28/12 rev B/C.
+- `0x16D5:0x1F01` remains ambiguous: existing Hypercolor support treats it as PrismRGB Prism 8, while the NOS2 source also identifies it as Nollie 8 v2. Without a reliable runtime discriminator, the registry keeps the existing Prism 8 descriptor.
+
 ### Non-goals
 
 - Driver-level support for hardware effect playback (we always stream; the hardware effect is the idle fallback only)
 - Firmware flashing (no public bootloader path)
-- USB CDC / virtual-COM transports (Nollie is HID-only)
 - Mixing Strimer cables with main channels in a single zone (kept as separate subdevices)
 
 ### Relationship to Other Specs
@@ -84,9 +93,9 @@ The driver should:
 
 This is an **open question** — we should not ship the 525-vs-630 firmware-threshold rule as fact until validated on hardware.
 
-### 2.3 Per-PID Notes for Nollie 28/12
+### 2.3 Per-PID Notes for Nollie 28/12 and L1/L2
 
-Three PIDs identify cosmetic variants of the same Gen-1 12-channel controller (different PCB color, same firmware). All three should resolve to `NollieModel::Nollie28_12` and share the entire protocol implementation. The "28/12" naming reflects the maximum LED count quoted by Nollie marketing (28 strips × 12 LEDs = 336, or 12 channels × 42 LEDs = 504, depending on the configuration).
+The official source maps only `0x16D2:0x1616` to Nollie 28/12 v1.2 (`12 × 42`, RGB, dense 21-LED packets). Earlier drafts treated `0x1617` and `0x1618` as Nollie 28/12 rev B/C, but the official files identify those PIDs as Nollie L1/L2 v1.2 (`8 × 525`, RGB, 25 packets per channel). Hypercolor follows the official source.
 
 ### 2.4 Protocol Database Registration
 
