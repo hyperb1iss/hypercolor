@@ -32,6 +32,23 @@ pub mod ids {
     pub const SERVER_PREFIX: &str = "server:";
 }
 
+/// Action represented by a native menu item ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuAction {
+    ShowWindow,
+    OpenWebUi,
+    OpenLogsFolder,
+    OpenUserEffectsFolder,
+    Settings,
+    TogglePause,
+    RefreshServers,
+    StopEffect,
+    Quit,
+    ApplyEffect(String),
+    ApplyProfile(String),
+    SwitchServer(usize),
+}
+
 /// Platform-neutral tray menu description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuEntry {
@@ -124,6 +141,35 @@ where
     }
 
     Ok(menu)
+}
+
+/// Resolve a native menu item ID into an app action.
+#[must_use]
+pub fn action_for_menu_id(id: &str) -> Option<MenuAction> {
+    match id {
+        ids::SHOW_WINDOW => Some(MenuAction::ShowWindow),
+        ids::OPEN_WEB_UI => Some(MenuAction::OpenWebUi),
+        ids::OPEN_LOGS_FOLDER => Some(MenuAction::OpenLogsFolder),
+        ids::OPEN_USER_EFFECTS_FOLDER => Some(MenuAction::OpenUserEffectsFolder),
+        ids::SETTINGS => Some(MenuAction::Settings),
+        ids::PAUSE_RESUME => Some(MenuAction::TogglePause),
+        ids::REFRESH_SERVERS => Some(MenuAction::RefreshServers),
+        ids::STOP_EFFECT => Some(MenuAction::StopEffect),
+        ids::QUIT => Some(MenuAction::Quit),
+        other => dynamic_action_for_menu_id(other),
+    }
+}
+
+fn dynamic_action_for_menu_id(id: &str) -> Option<MenuAction> {
+    if let Some(effect_id) = id.strip_prefix(ids::EFFECT_PREFIX) {
+        return Some(MenuAction::ApplyEffect(effect_id.to_owned()));
+    }
+    if let Some(profile_id) = id.strip_prefix(ids::PROFILE_PREFIX) {
+        return Some(MenuAction::ApplyProfile(profile_id.to_owned()));
+    }
+    id.strip_prefix(ids::SERVER_PREFIX)
+        .and_then(|index| index.parse::<usize>().ok())
+        .map(MenuAction::SwitchServer)
 }
 
 fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {

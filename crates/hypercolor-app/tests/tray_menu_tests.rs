@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_app::{
     state::{AppState, EffectInfo, ProfileInfo, ServerEntry},
-    tray::menu::{MenuEntry, ids, menu_model},
+    tray::menu::{MenuAction, MenuEntry, action_for_menu_id, ids, menu_model},
 };
 use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 
@@ -78,6 +78,33 @@ fn connected_menu_hides_stop_effect_without_current_effect() {
 
     assert_item(&entries, "current_effect", "No effect active", false);
     assert_no_item(&entries, ids::STOP_EFFECT);
+}
+
+#[test]
+fn menu_ids_map_to_app_actions() {
+    assert_eq!(
+        action_for_menu_id(ids::SHOW_WINDOW),
+        Some(MenuAction::ShowWindow)
+    );
+    assert_eq!(
+        action_for_menu_id(ids::OPEN_WEB_UI),
+        Some(MenuAction::OpenWebUi)
+    );
+    assert_eq!(action_for_menu_id(ids::QUIT), Some(MenuAction::Quit));
+    assert_eq!(
+        action_for_menu_id("effect:aurora"),
+        Some(MenuAction::ApplyEffect("aurora".to_owned()))
+    );
+    assert_eq!(
+        action_for_menu_id("profile:movie"),
+        Some(MenuAction::ApplyProfile("movie".to_owned()))
+    );
+    assert_eq!(
+        action_for_menu_id("server:2"),
+        Some(MenuAction::SwitchServer(2))
+    );
+    assert_eq!(action_for_menu_id("server:not-a-number"), None);
+    assert_eq!(action_for_menu_id("current_effect"), None);
 }
 
 fn connected_state() -> AppState {

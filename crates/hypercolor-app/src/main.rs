@@ -7,8 +7,6 @@
 
 use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
 
-const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:9420";
-
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -17,8 +15,8 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let daemon_url =
-        std::env::var("HYPERCOLOR_URL").unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_string());
+    let daemon_url = std::env::var("HYPERCOLOR_URL")
+        .unwrap_or_else(|_| hypercolor_app::DEFAULT_DAEMON_URL.to_string());
 
     tracing::info!(url = %daemon_url, "launching Hypercolor app shell");
 
@@ -40,11 +38,19 @@ fn main() -> anyhow::Result<()> {
             window.open_devtools();
 
             tracing::info!("window created");
+
+            hypercolor_app::tray::register(app.handle())?;
+            tracing::info!("tray icon registered");
+
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                tracing::info!(label = %window.label(), "window destroyed");
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                tracing::info!(label = %window.label(), "hiding window instead of closing");
+                if let Err(error) = window.hide() {
+                    tracing::warn!(%error, label = %window.label(), "failed to hide window");
+                }
+                api.prevent_close();
             }
         })
         .run(tauri::generate_context!())
