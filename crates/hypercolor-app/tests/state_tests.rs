@@ -124,7 +124,7 @@ fn parse_status_response() {
             "render_loop": {
                 "state": "running",
                 "fps_tier": "standard",
-                "total_frames": 216000
+                "total_frames": 216_000
             },
             "event_bus_subscribers": 1
         }

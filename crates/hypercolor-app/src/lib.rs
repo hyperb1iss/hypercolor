@@ -2,3 +2,4 @@
 
 pub mod daemon_client;
 pub mod state;
+pub mod tray;
