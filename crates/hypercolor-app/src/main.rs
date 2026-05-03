@@ -8,12 +8,7 @@
 use tauri::{WebviewUrl, webview::WebviewWindowBuilder};
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "hypercolor_app=debug,tauri=info,wry=warn".to_string()),
-        )
-        .init();
+    let _log_guard = hypercolor_app::logging::init()?;
 
     let cli = hypercolor_app::cli::AppArgs::parse_env();
     if cli.quit {
