@@ -65,11 +65,11 @@ Write-Section "Privileges"
 Write-Check "Elevated shell" (Test-IsAdministrator) "current shell admin token"
 
 Write-Section "Services"
-foreach ($name in @("Hypercolor", "PawnIO", "pawnio", "SignalRgb.Service")) {
+foreach ($name in @("HypercolorSmBus", "Hypercolor", "PawnIO", "pawnio", "SignalRgb.Service")) {
     $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($svc) {
         Write-Check $name ($svc.Status -eq "Running") "$($svc.Status), $($svc.StartType)"
-        if ($name -eq "Hypercolor") {
+        if ($name -eq "Hypercolor" -or $name -eq "HypercolorSmBus") {
             $svcReg = "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
             $envValue = (Get-ItemProperty -Path $svcReg -Name Environment -ErrorAction SilentlyContinue).Environment
             foreach ($entry in @($envValue)) {
@@ -92,7 +92,9 @@ foreach ($module in @("SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin")) {
 }
 
 Write-Section "Hypercolor Processes"
-$processes = Get-CimInstance Win32_Process -Filter "name='hypercolor-daemon.exe'" -ErrorAction SilentlyContinue
+$processes = @()
+$processes += @(Get-CimInstance Win32_Process -Filter "name='hypercolor-daemon.exe'" -ErrorAction SilentlyContinue)
+$processes += @(Get-CimInstance Win32_Process -Filter "name='hypercolor-smbus-service.exe'" -ErrorAction SilentlyContinue)
 if ($processes) {
     foreach ($process in $processes) {
         $owner = "unknown"
@@ -102,11 +104,11 @@ if ($processes) {
                 $owner = "$($ownerInfo.Domain)\$($ownerInfo.User)"
             }
         } catch {}
-        Write-Check "hypercolor-daemon.exe" $true "pid=$($process.ProcessId) owner=$owner"
+        Write-Check $process.Name $true "pid=$($process.ProcessId) owner=$owner"
         Write-Host "       $($process.CommandLine)"
     }
 } else {
-    Write-Check "hypercolor-daemon.exe" $false "not running"
+    Write-Check "hypercolor-daemon.exe / hypercolor-smbus-service.exe" $false "not running"
 }
 
 Write-Section "API"
@@ -134,5 +136,5 @@ try {
 }
 
 Write-Host ""
-Write-Host "$Yellow Tip:$Reset if Hypercolor is installed but stopped, start it from elevated PowerShell with:"
-Write-Host "      Start-Service Hypercolor"
+Write-Host "$Yellow Tip:$Reset Hypercolor should usually run as your user. Only the SMBus broker should be a service:"
+Write-Host "      Start-Service HypercolorSmBus"

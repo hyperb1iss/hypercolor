@@ -4778,10 +4778,16 @@ dependencies = [
 name = "hypercolor-windows-pawnio"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "libloading 0.8.9",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
  "windows-registry",
+ "windows-service",
  "windows-sys 0.61.2",
 ]
 

@@ -12,6 +12,8 @@ use windows_sys::Win32::System::Threading::{
     CreateMutexA, INFINITE, ReleaseMutex, WaitForSingleObject,
 };
 
+mod broker;
+
 const PAWNIO_INSTALL_ENV: &str = "HYPERCOLOR_PAWNIO_HOME";
 const PAWNIO_MODULE_ENV: &str = "HYPERCOLOR_PAWNIO_MODULE_DIR";
 const LOCAL_MODULE_SUBDIR: &[&str] = &["hypercolor", "pawnio", "modules"];
@@ -134,6 +136,20 @@ pub enum PawnIoError {
         /// Human-readable detail.
         detail: String,
     },
+    /// Local SMBus broker is not accepting connections.
+    #[error("Hypercolor SMBus broker is unavailable: {detail}")]
+    BrokerUnavailable {
+        /// Human-readable detail.
+        detail: String,
+    },
+    /// Local SMBus broker reported a request failure.
+    #[error("Hypercolor SMBus broker {operation} failed: {detail}")]
+    BrokerCall {
+        /// Broker operation name.
+        operation: &'static str,
+        /// Human-readable detail.
+        detail: String,
+    },
 }
 
 /// SMBus transfer direction.
@@ -252,10 +268,23 @@ pub struct WindowsSmBusBusInfo {
 
 /// Open PawnIO SMBus bus.
 pub struct WindowsSmBusBus {
+    inner: WindowsSmBusBusInner,
+}
+
+enum WindowsSmBusBusInner {
+    Direct(DirectWindowsSmBusBus),
+    Brokered(BrokeredWindowsSmBusBus),
+}
+
+struct DirectWindowsSmBusBus {
     runtime: Arc<PawnIoRuntime>,
     handle: PawnIoHandle,
     info: WindowsSmBusBusInfo,
     global_mutex: Option<GlobalSmBusMutex>,
+}
+
+struct BrokeredWindowsSmBusBus {
+    info: WindowsSmBusBusInfo,
 }
 
 // SAFETY: PawnIO handles are executor handles owned by this wrapper. HAL keeps
@@ -270,7 +299,10 @@ impl WindowsSmBusBus {
     /// Return bus metadata.
     #[must_use]
     pub fn info(&self) -> &WindowsSmBusBusInfo {
-        &self.info
+        match &self.inner {
+            WindowsSmBusBusInner::Direct(bus) => &bus.info,
+            WindowsSmBusBusInner::Brokered(bus) => &bus.info,
+        }
     }
 
     /// Execute an SMBus transaction.
@@ -279,6 +311,110 @@ impl WindowsSmBusBus {
     ///
     /// Returns [`PawnIoError`] when PawnIO rejects the transaction.
     pub fn smbus_xfer(
+        &self,
+        address: u8,
+        direction: SmBusDirection,
+        command: u8,
+        transaction: &mut SmBusTransaction,
+    ) -> PawnIoResult<()> {
+        match &self.inner {
+            WindowsSmBusBusInner::Direct(bus) => {
+                bus.smbus_xfer(address, direction, command, transaction)
+            }
+            WindowsSmBusBusInner::Brokered(bus) => {
+                broker::smbus_xfer(&bus.info.path, address, direction, command, transaction)
+            }
+        }
+    }
+
+    /// Probe address with SMBus quick write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PawnIoError`] when PawnIO fails before reaching the device.
+    pub fn probe_quick_write(&self, address: u8) -> PawnIoResult<bool> {
+        let mut transaction = SmBusTransaction::Quick;
+        Ok(self
+            .smbus_xfer(address, SmBusDirection::Write, 0, &mut transaction)
+            .is_ok())
+    }
+
+    /// Probe address with simple read fallbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PawnIoError`] when PawnIO fails before reaching the device.
+    pub fn probe_presence(&self, address: u8) -> PawnIoResult<bool> {
+        if self.probe_quick_write(address)? {
+            return Ok(true);
+        }
+
+        let mut read_byte = SmBusTransaction::Byte { value: 0 };
+        if self
+            .smbus_xfer(address, SmBusDirection::Read, 0, &mut read_byte)
+            .is_ok()
+        {
+            return Ok(true);
+        }
+
+        let mut read_byte_data = SmBusTransaction::ByteData { value: 0 };
+        Ok(self
+            .smbus_xfer(address, SmBusDirection::Read, 0, &mut read_byte_data)
+            .is_ok())
+    }
+
+    fn direct(
+        runtime: Arc<PawnIoRuntime>,
+        handle: PawnIoHandle,
+        info: WindowsSmBusBusInfo,
+    ) -> Self {
+        Self {
+            inner: WindowsSmBusBusInner::Direct(DirectWindowsSmBusBus {
+                runtime,
+                handle,
+                info,
+                global_mutex: open_global_smbus_mutex(),
+            }),
+        }
+    }
+
+    pub(super) fn brokered(info: WindowsSmBusBusInfo) -> Self {
+        Self {
+            inner: WindowsSmBusBusInner::Brokered(BrokeredWindowsSmBusBus { info }),
+        }
+    }
+
+    fn open(
+        runtime: Arc<PawnIoRuntime>,
+        spec: SmBusModuleSpec,
+        port: Option<u8>,
+    ) -> PawnIoResult<Self> {
+        let module_path = resolve_module_path(spec.module_name)?;
+        let handle = runtime.open_loaded_module(&module_path)?;
+        if let Some(port) = port {
+            select_piix4_port(runtime.as_ref(), handle, port)?;
+        }
+        set_sleep_mode(runtime.as_ref(), handle);
+
+        let identity = read_identity(runtime.as_ref(), handle)?;
+        let info = WindowsSmBusBusInfo {
+            path: bus_path(spec.path_prefix, port),
+            module_name: spec.module_name,
+            port,
+            name: identity.name,
+            pci_vendor: identity.pci_vendor,
+            pci_device: identity.pci_device,
+            pci_subsystem_vendor: identity.pci_subsystem_vendor,
+            pci_subsystem_device: identity.pci_subsystem_device,
+            module_path,
+        };
+
+        Ok(Self::direct(runtime, handle, info))
+    }
+}
+
+impl DirectWindowsSmBusBus {
+    fn smbus_xfer(
         &self,
         address: u8,
         direction: SmBusDirection,
@@ -318,80 +454,13 @@ impl WindowsSmBusBus {
         unpack_transaction_data(transaction, &out)?;
         Ok(())
     }
-
-    /// Probe address with SMBus quick write.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PawnIoError`] when PawnIO fails before reaching the device.
-    pub fn probe_quick_write(&self, address: u8) -> PawnIoResult<bool> {
-        let mut transaction = SmBusTransaction::Quick;
-        Ok(self
-            .smbus_xfer(address, SmBusDirection::Write, 0, &mut transaction)
-            .is_ok())
-    }
-
-    /// Probe address with simple read fallbacks.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PawnIoError`] when PawnIO fails before reaching the device.
-    pub fn probe_presence(&self, address: u8) -> PawnIoResult<bool> {
-        if self.probe_quick_write(address)? {
-            return Ok(true);
-        }
-
-        let mut read_byte = SmBusTransaction::Byte { value: 0 };
-        if self
-            .smbus_xfer(address, SmBusDirection::Read, 0, &mut read_byte)
-            .is_ok()
-        {
-            return Ok(true);
-        }
-
-        let mut read_byte_data = SmBusTransaction::ByteData { value: 0 };
-        Ok(self
-            .smbus_xfer(address, SmBusDirection::Read, 0, &mut read_byte_data)
-            .is_ok())
-    }
-
-    fn open(
-        runtime: Arc<PawnIoRuntime>,
-        spec: SmBusModuleSpec,
-        port: Option<u8>,
-    ) -> PawnIoResult<Self> {
-        let module_path = resolve_module_path(spec.module_name)?;
-        let handle = runtime.open_loaded_module(&module_path)?;
-        if let Some(port) = port {
-            select_piix4_port(runtime.as_ref(), handle, port)?;
-        }
-        set_sleep_mode(runtime.as_ref(), handle);
-
-        let identity = read_identity(runtime.as_ref(), handle)?;
-        let info = WindowsSmBusBusInfo {
-            path: bus_path(spec.path_prefix, port),
-            module_name: spec.module_name,
-            port,
-            name: identity.name,
-            pci_vendor: identity.pci_vendor,
-            pci_device: identity.pci_device,
-            pci_subsystem_vendor: identity.pci_subsystem_vendor,
-            pci_subsystem_device: identity.pci_subsystem_device,
-            module_path,
-        };
-
-        Ok(Self {
-            runtime,
-            handle,
-            info,
-            global_mutex: open_global_smbus_mutex(),
-        })
-    }
 }
 
 impl Drop for WindowsSmBusBus {
     fn drop(&mut self) {
-        let _ = self.runtime.close(self.handle);
+        if let WindowsSmBusBusInner::Direct(bus) = &self.inner {
+            let _ = bus.runtime.close(bus.handle);
+        }
     }
 }
 
@@ -618,6 +687,20 @@ fn last_win32_error() -> u32 {
 ///
 /// Returns [`PawnIoError`] when PawnIO is unavailable or no module can be loaded.
 pub fn enumerate_smbus_buses() -> PawnIoResult<Vec<WindowsSmBusBusInfo>> {
+    if !broker::direct_mode_enabled() {
+        match broker::enumerate_smbus_buses() {
+            Ok(buses) => return Ok(buses),
+            Err(PawnIoError::BrokerUnavailable { detail }) => {
+                trace!(%detail, "SMBus broker unavailable; falling back to direct PawnIO")
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    direct_enumerate_smbus_buses()
+}
+
+pub(super) fn direct_enumerate_smbus_buses() -> PawnIoResult<Vec<WindowsSmBusBusInfo>> {
     let runtime = PawnIoRuntime::load()?;
     let mut buses = Vec::new();
 
@@ -626,10 +709,10 @@ pub fn enumerate_smbus_buses() -> PawnIoResult<Vec<WindowsSmBusBusInfo>> {
             match WindowsSmBusBus::open(Arc::clone(&runtime), *spec, port) {
                 Ok(bus) => {
                     debug!(
-                        bus_path = bus.info.path,
-                        name = bus.info.name,
-                        pci_vendor = format_args!("0x{:04X}", bus.info.pci_vendor),
-                        pci_device = format_args!("0x{:04X}", bus.info.pci_device),
+                        bus_path = %bus.info().path,
+                        name = %bus.info().name,
+                        pci_vendor = format_args!("0x{:04X}", bus.info().pci_vendor),
+                        pci_device = format_args!("0x{:04X}", bus.info().pci_device),
                         "discovered PawnIO SMBus bus"
                     );
                     buses.push(bus.info().clone());
@@ -655,8 +738,32 @@ pub fn enumerate_smbus_buses() -> PawnIoResult<Vec<WindowsSmBusBusInfo>> {
 ///
 /// Returns [`PawnIoError`] when the bus path cannot be opened.
 pub fn open_smbus_bus(path: &str) -> PawnIoResult<WindowsSmBusBus> {
+    if !broker::direct_mode_enabled() {
+        match broker::open_smbus_bus(path) {
+            Ok(bus) => return Ok(bus),
+            Err(PawnIoError::BrokerUnavailable { detail }) => {
+                trace!(%detail, "SMBus broker unavailable; falling back to direct PawnIO")
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    direct_open_smbus_bus(path)
+}
+
+pub(super) fn direct_open_smbus_bus(path: &str) -> PawnIoResult<WindowsSmBusBus> {
     let (spec, port) = parse_bus_path(path)?;
     WindowsSmBusBus::open(PawnIoRuntime::load()?, spec, port)
+}
+
+/// Run the Windows SMBus broker service entry point.
+///
+/// # Errors
+///
+/// Returns an error when the process cannot attach to the Service Control
+/// Manager or the broker runtime cannot start.
+pub fn run_smbus_service() -> anyhow::Result<()> {
+    broker::run_smbus_service()
 }
 
 fn load_symbol<T: Copy>(
@@ -910,6 +1017,16 @@ fn bus_path(prefix: &str, port: Option<u8>) -> String {
     }
 }
 
+pub(super) fn module_name_from_wire(name: &str) -> PawnIoResult<&'static str> {
+    SMBUS_MODULES
+        .iter()
+        .map(|spec| spec.module_name)
+        .find(|module_name| *module_name == name)
+        .ok_or_else(|| PawnIoError::InvalidInput {
+            detail: format!("unknown PawnIO SMBus module '{name}'"),
+        })
+}
+
 fn check_pawnio_status(operation: &'static str, status: i32) -> PawnIoResult<()> {
     if status == S_OK {
         return Ok(());
@@ -926,14 +1043,14 @@ fn hresult_detail(status: i32) -> String {
     match status {
         ERROR_NOT_SUPPORTED => "operation is not supported by this PawnIO module".to_owned(),
         ERROR_ACCESS_DENIED => {
-            "access denied; run Hypercolor as Administrator or configure PawnIO device ACLs"
+            "access denied; start the HypercolorSmBus broker service or configure PawnIO device ACLs"
                 .to_owned()
         }
         other if other == hresult_from_win32(ERROR_NOT_SUPPORTED) => {
             "operation is not supported by this PawnIO module".to_owned()
         }
         other if other == hresult_from_win32(ERROR_ACCESS_DENIED) => {
-            "access denied; run Hypercolor as Administrator or configure PawnIO device ACLs"
+            "access denied; start the HypercolorSmBus broker service or configure PawnIO device ACLs"
                 .to_owned()
         }
         other => {

@@ -339,6 +339,22 @@ daemon-release *args='':
 windows-diagnose *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose-windows.ps1 {{ args }}
 
+# Build the narrow Windows SMBus broker service binary.
+[windows]
+windows-smbus-service-build:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-windows-pawnio --bin hypercolor-smbus-service --profile preview
+
+# Install the narrow Windows SMBus broker service. Run from an elevated shell.
+[windows]
+windows-smbus-service-install *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-windows-pawnio --bin hypercolor-smbus-service --profile preview
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows-smbus-service.ps1 {{ args }}
+
+# Uninstall the narrow Windows SMBus broker service. Run from an elevated shell.
+[windows]
+windows-smbus-service-uninstall *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-windows-service.ps1 -ServiceName HypercolorSmBus {{ args }}
+
 # Install the Windows service. Run from an elevated shell.
 [windows]
 windows-service-install *args='':
