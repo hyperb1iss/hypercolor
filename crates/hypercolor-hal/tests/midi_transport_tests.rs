@@ -25,6 +25,18 @@ fn classify_push2_port_recognizes_linux_and_macos_names() {
         Some("live")
     );
     assert_eq!(
+        classify_push2_port_for_testing("Ableton Push 2"),
+        Some("live")
+    );
+    assert_eq!(
+        classify_push2_port_for_testing("MIDIIN2 (Ableton Push 2)"),
+        Some("user")
+    );
+    assert_eq!(
+        classify_push2_port_for_testing("MIDIOUT2 (Ableton Push 2)"),
+        Some("user")
+    );
+    assert_eq!(
         classify_push2_port_for_testing("Unrelated Controller"),
         None
     );

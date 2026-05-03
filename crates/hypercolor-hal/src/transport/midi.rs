@@ -441,12 +441,30 @@ fn classify_push2_port(name: &str) -> Option<Push2MidiPortRole> {
         return Some(Push2MidiPortRole::Live);
     }
 
+    if matches_windows_numbered_push2_user_port(&normalized) {
+        return Some(Push2MidiPortRole::User);
+    }
+    if normalized.trim() == "ableton push 2" {
+        return Some(Push2MidiPortRole::Live);
+    }
+
     let (_, suffix) = normalized.rsplit_once(':')?;
     match suffix.trim().parse::<u8>().ok()? {
         0 => Some(Push2MidiPortRole::Live),
         1 => Some(Push2MidiPortRole::User),
         _ => None,
     }
+}
+
+fn matches_windows_numbered_push2_user_port(normalized: &str) -> bool {
+    matches_windows_numbered_push2_port(normalized, "midiin2")
+        || matches_windows_numbered_push2_port(normalized, "midiout2")
+}
+
+fn matches_windows_numbered_push2_port(normalized: &str, prefix: &str) -> bool {
+    normalized
+        .strip_prefix(prefix)
+        .is_some_and(|suffix| suffix.starts_with(' ') || suffix.starts_with('('))
 }
 
 fn filter_push2_port_matches<P>(
