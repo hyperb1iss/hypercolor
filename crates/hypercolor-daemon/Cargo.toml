@@ -33,6 +33,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+single-instance = "0.3.3"
 tokio = { workspace = true }
 async-trait = { workspace = true }
 spin_sleep = { workspace = true }

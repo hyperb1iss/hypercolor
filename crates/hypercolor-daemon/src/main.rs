@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use hypercolor_daemon::daemon::{self, DaemonRunOptions};
 use hypercolor_daemon::startup::install_signal_handlers;
 use hypercolor_types::config::RenderAccelerationMode;
+use single_instance::SingleInstance;
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]
@@ -69,6 +70,12 @@ impl From<RenderAccelerationModeArg> for RenderAccelerationMode {
 
 fn main() -> Result<()> {
     let args = DaemonArgs::parse();
+    let instance = SingleInstance::new(&daemon_instance_name())
+        .context("failed to acquire daemon single-instance guard")?;
+    if !instance.is_single() {
+        eprintln!("hypercolor-daemon is already running; exiting");
+        return Ok(());
+    }
 
     #[cfg(target_os = "windows")]
     if args.windows_service {
@@ -82,11 +89,26 @@ fn main() -> Result<()> {
     })
 }
 
+fn daemon_instance_name() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::temp_dir()
+            .join("hypercolor-daemon.lock")
+            .display()
+            .to_string()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "hypercolor-daemon".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{DaemonArgs, RenderAccelerationModeArg};
+    use super::{DaemonArgs, RenderAccelerationModeArg, daemon_instance_name};
     use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 
     #[test]
@@ -140,5 +162,12 @@ mod tests {
             RenderAccelerationMode::from(RenderAccelerationModeArg::Gpu),
             RenderAccelerationMode::Gpu
         );
+    }
+
+    #[test]
+    fn daemon_instance_name_is_stable() {
+        let name = daemon_instance_name();
+
+        assert!(name.contains("hypercolor-daemon"));
     }
 }
