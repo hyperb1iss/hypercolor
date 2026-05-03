@@ -27,6 +27,7 @@ mod route_ui;
 mod settings_audio_devices;
 mod storage;
 mod style_utils;
+mod tauri_bridge;
 mod thumbnails;
 mod toasts;
 mod ws;

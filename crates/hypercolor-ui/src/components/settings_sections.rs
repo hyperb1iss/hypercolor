@@ -14,6 +14,10 @@ use crate::icons::*;
 use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
 };
+use crate::tauri_bridge::{
+    self, PawnIoHelperOptions, PawnIoSupportStatus, bundled_payload_ready, smbus_support_ready,
+};
+use crate::toasts;
 
 fn read_config<T>(
     config: Signal<Option<HypercolorConfig>>,
@@ -553,6 +557,7 @@ pub fn DiscoverySection(
     view! {
         <section id="section-discovery" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
+            <HardwareSupportPanel />
             <SettingToggle
                 label="mDNS Discovery"
                 description="Use multicast DNS to find devices on the local network"
@@ -590,6 +595,151 @@ pub fn DiscoverySection(
             </div>
             <SectionReset section_label="Discovery" on_reset=Callback::new(move |()| on_reset.run("discovery".to_string())) />
         </section>
+    }
+}
+
+#[component]
+fn HardwareSupportPanel() -> impl IntoView {
+    let native_available = tauri_bridge::is_tauri_available();
+    let status = LocalResource::new(tauri_bridge::detect_pawnio_support);
+    let (installing, set_installing) = signal(false);
+    let install = move |_| {
+        if installing.get_untracked() {
+            return;
+        }
+
+        set_installing.set(true);
+        leptos::task::spawn_local(async move {
+            let result = tauri_bridge::launch_pawnio_helper(PawnIoHelperOptions::default()).await;
+            set_installing.set(false);
+
+            match result {
+                Ok(_) => {
+                    toasts::toast_success("Windows hardware support installed");
+                    status.refetch();
+                }
+                Err(error) => {
+                    toasts::toast_error(&format!("Hardware support install failed: {error}"));
+                    status.refetch();
+                }
+            }
+        });
+    };
+
+    view! {
+        <Show when=move || native_available>
+            {move || match status.get() {
+                None => view! {
+                    <HardwareSupportFrame>
+                        <div class="flex items-center gap-2 text-xs text-fg-tertiary/60">
+                            <Icon icon=LuLoader width="13px" height="13px" />
+                            "Checking Windows hardware support"
+                        </div>
+                    </HardwareSupportFrame>
+                }.into_any(),
+                Some(Ok(None)) => ().into_any(),
+                Some(Err(error)) => view! {
+                    <HardwareSupportFrame>
+                        <div class="flex items-center gap-2 text-xs text-error-red/80">
+                            <Icon icon=LuTriangleAlert width="13px" height="13px" />
+                            {format!("Hardware support status unavailable: {error}")}
+                        </div>
+                    </HardwareSupportFrame>
+                }.into_any(),
+                Some(Ok(Some(current))) if !current.platform_supported => ().into_any(),
+                Some(Ok(Some(current))) => view! {
+                    <HardwareSupportStatusPanel
+                        status=current
+                        installing=installing
+                        on_install=Callback::new(install)
+                    />
+                }.into_any(),
+            }}
+        </Show>
+    }
+}
+
+#[component]
+fn HardwareSupportStatusPanel(
+    status: PawnIoSupportStatus,
+    #[prop(into)] installing: Signal<bool>,
+    on_install: Callback<()>,
+) -> impl IntoView {
+    let ready = smbus_support_ready(&status);
+    let payload_ready = bundled_payload_ready(&status);
+    let can_install = status.install_available && !ready;
+    let service_running = status.smbus_service.state.as_deref() == Some("RUNNING");
+    let install_label = if ready {
+        "Ready"
+    } else if installing.get_untracked() {
+        "Installing"
+    } else {
+        "Install support"
+    };
+
+    view! {
+        <HardwareSupportFrame>
+            <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <Icon icon=LuShieldCheck width="15px" height="15px" style="color: rgba(128, 255, 234, 0.72)" />
+                        <span class="text-sm text-fg-primary font-medium">"Windows SMBus Support"</span>
+                    </div>
+                    <div class="text-xs text-fg-tertiary/70 mt-1">
+                        "PawnIO runtime and HypercolorSmBus broker for motherboard and memory RGB"
+                    </div>
+                </div>
+                <button
+                    class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 disabled:cursor-not-allowed"
+                    style=move || if ready {
+                        "color: rgba(80, 250, 123, 0.75); background: rgba(80, 250, 123, 0.08); border: 1px solid rgba(80, 250, 123, 0.12)"
+                    } else if can_install && !installing.get() {
+                        "color: rgb(10, 12, 18); background: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.5); box-shadow: 0 0 12px rgba(128, 255, 234, 0.2)"
+                    } else {
+                        "color: rgba(139, 133, 160, 0.55); background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.12)"
+                    }
+                    disabled=move || ready || !can_install || installing.get()
+                    on:click=move |_| on_install.run(())
+                >
+                    {move || if installing.get() { "Installing" } else { install_label }}
+                </button>
+            </div>
+            <div class="flex flex-wrap gap-2 pt-3">
+                <SupportPill label="Runtime" ready=status.pawnio_runtime_installed />
+                <SupportPill label="Broker" ready=status.smbus_service.installed />
+                <SupportPill label="Running" ready=service_running />
+                <SupportPill label="Payload" ready=payload_ready />
+            </div>
+        </HardwareSupportFrame>
+    }
+}
+
+#[component]
+fn HardwareSupportFrame(children: Children) -> impl IntoView {
+    view! {
+        <div
+            class="mb-4 rounded-lg px-3 py-3"
+            style="background: rgba(128, 255, 234, 0.035); border: 1px solid rgba(128, 255, 234, 0.08)"
+        >
+            {children()}
+        </div>
+    }
+}
+
+#[component]
+fn SupportPill(label: &'static str, ready: bool) -> impl IntoView {
+    view! {
+        <span
+            class="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[10px] font-mono uppercase tracking-wide"
+            style=if ready {
+                "color: rgba(80, 250, 123, 0.78); background: rgba(80, 250, 123, 0.08); border: 1px solid rgba(80, 250, 123, 0.12)"
+            } else {
+                "color: rgba(241, 250, 140, 0.72); background: rgba(241, 250, 140, 0.07); border: 1px solid rgba(241, 250, 140, 0.12)"
+            }
+        >
+            <Icon icon=if ready { LuCheck } else { LuTriangleAlert } width="11px" height="11px" />
+            {label}
+        </span>
     }
 }
 
