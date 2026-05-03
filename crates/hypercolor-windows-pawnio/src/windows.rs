@@ -453,7 +453,9 @@ impl DirectWindowsSmBusBus {
             });
         }
 
-        unpack_transaction_data(transaction, &out)?;
+        if should_unpack_transaction_response(direction) {
+            unpack_transaction_data(transaction, &out)?;
+        }
         Ok(())
     }
 }
@@ -881,6 +883,10 @@ fn pack_transaction_data(transaction: &SmBusTransaction, output: &mut [u64]) -> 
     Ok(())
 }
 
+const fn should_unpack_transaction_response(direction: SmBusDirection) -> bool {
+    matches!(direction, SmBusDirection::Read)
+}
+
 fn unpack_transaction_data(transaction: &mut SmBusTransaction, input: &[u64]) -> PawnIoResult<()> {
     match transaction {
         SmBusTransaction::Quick => {}
@@ -1092,8 +1098,8 @@ const fn hresult_from_win32(error: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        SmBusBlockData, SmBusTransaction, bus_path, pack_transaction_data, parse_bus_path,
-        unpack_transaction_data,
+        SmBusBlockData, SmBusDirection, SmBusTransaction, bus_path, pack_transaction_data,
+        parse_bus_path, should_unpack_transaction_response, unpack_transaction_data,
     };
 
     #[test]
@@ -1129,5 +1135,11 @@ mod tests {
             panic!("expected block transaction");
         };
         assert_eq!(data.as_slice(), &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn write_transactions_do_not_unpack_pawnio_scratch_output() {
+        assert!(!should_unpack_transaction_response(SmBusDirection::Write));
+        assert!(should_unpack_transaction_response(SmBusDirection::Read));
     }
 }
