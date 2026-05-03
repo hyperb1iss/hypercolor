@@ -18,6 +18,9 @@ pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
 
 const DAEMON_EXECUTABLE_STEM: &str = "hypercolor-daemon";
 
+/// Linux systemd user service name for the daemon.
+pub const SYSTEMD_USER_SERVICE: &str = "hypercolor.service";
+
 /// Timeout for one lightweight health probe.
 pub const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 
@@ -34,6 +37,28 @@ pub struct DaemonCommand {
     pub program: PathBuf,
     /// Daemon command-line arguments.
     pub args: Vec<String>,
+}
+
+/// Current state of the Linux systemd user service from the app supervisor's perspective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemdUserServiceProbe {
+    /// The unit is active, so the app should connect to it instead of spawning a child.
+    Active,
+    /// The unit is enabled but not currently active, so the app may ask systemd to start it.
+    EnabledInactive,
+    /// The unit is missing, disabled, or otherwise unavailable for app startup.
+    Unavailable,
+}
+
+/// Supervisor action selected for a Linux systemd user service probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemdUserServicePlan {
+    /// Reuse the already-active service.
+    Reuse,
+    /// Start the enabled service through systemd.
+    Start,
+    /// Spawn the bundled daemon as an app-owned child process.
+    SpawnChild,
 }
 
 /// App-managed daemon supervisor state.
@@ -319,6 +344,40 @@ pub fn startup_retry_delay(remaining: Duration, poll_interval: Duration) -> Opti
     }
 }
 
+/// Parse `systemctl --user is-active` output.
+#[must_use]
+pub fn systemctl_is_active_output(output: &str) -> bool {
+    first_systemctl_output_line(output) == "active"
+}
+
+/// Parse `systemctl --user is-enabled` output for states that represent an
+/// installed unit intended to be user-managed.
+#[must_use]
+pub fn systemctl_is_enabled_output(output: &str) -> bool {
+    matches!(
+        first_systemctl_output_line(output),
+        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias"
+    )
+}
+
+/// Select the supervisor action for a Linux systemd user service probe.
+#[must_use]
+pub const fn systemd_user_service_plan(probe: SystemdUserServiceProbe) -> SystemdUserServicePlan {
+    match probe {
+        SystemdUserServiceProbe::Active => SystemdUserServicePlan::Reuse,
+        SystemdUserServiceProbe::EnabledInactive => SystemdUserServicePlan::Start,
+        SystemdUserServiceProbe::Unavailable => SystemdUserServicePlan::SpawnChild,
+    }
+}
+
+fn first_systemctl_output_line(output: &str) -> &str {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+}
+
 /// Start supervising the daemon in the background.
 ///
 /// # Errors
@@ -344,6 +403,11 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
         let client = reqwest::Client::new();
         if probe_health(&client, &daemon_url, HEALTH_PROBE_TIMEOUT).await {
             tracing::info!(url = %daemon_url, "daemon already running; reusing existing instance");
+            return;
+        }
+
+        #[cfg(target_os = "linux")]
+        if try_start_systemd_user_service(&client, &daemon_url).await {
             return;
         }
 
@@ -386,6 +450,120 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
     });
 
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn try_start_systemd_user_service(client: &reqwest::Client, daemon_url: &Url) -> bool {
+    match systemd_user_service_plan(detect_systemd_user_service()) {
+        SystemdUserServicePlan::Reuse => {
+            tracing::info!(
+                service = SYSTEMD_USER_SERVICE,
+                "systemd user service active; waiting for daemon health"
+            );
+            if wait_until_healthy(
+                client,
+                daemon_url,
+                DAEMON_STARTUP_TIMEOUT,
+                DAEMON_STARTUP_POLL_INTERVAL,
+            )
+            .await
+            {
+                tracing::info!(
+                    service = SYSTEMD_USER_SERVICE,
+                    "systemd-managed daemon reported healthy"
+                );
+            } else {
+                tracing::warn!(
+                    service = SYSTEMD_USER_SERVICE,
+                    timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                    "systemd user service is active but the daemon did not become healthy"
+                );
+            }
+            true
+        }
+        SystemdUserServicePlan::Start => {
+            tracing::info!(
+                service = SYSTEMD_USER_SERVICE,
+                "starting enabled systemd user service"
+            );
+            match start_systemd_user_service() {
+                Ok(status) if status.success() => {
+                    if wait_until_healthy(
+                        client,
+                        daemon_url,
+                        DAEMON_STARTUP_TIMEOUT,
+                        DAEMON_STARTUP_POLL_INTERVAL,
+                    )
+                    .await
+                    {
+                        tracing::info!(
+                            service = SYSTEMD_USER_SERVICE,
+                            "systemd-managed daemon reported healthy"
+                        );
+                    } else {
+                        tracing::warn!(
+                            service = SYSTEMD_USER_SERVICE,
+                            timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                            "started systemd user service but daemon did not become healthy"
+                        );
+                    }
+                    true
+                }
+                Ok(status) => {
+                    tracing::warn!(
+                        service = SYSTEMD_USER_SERVICE,
+                        status = ?status.code(),
+                        "failed to start systemd user service"
+                    );
+                    false
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        service = SYSTEMD_USER_SERVICE,
+                        %error,
+                        "failed to run systemctl for systemd user service"
+                    );
+                    false
+                }
+            }
+        }
+        SystemdUserServicePlan::SpawnChild => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_systemd_user_service() -> SystemdUserServiceProbe {
+    if systemctl_user_output(&["is-active", SYSTEMD_USER_SERVICE])
+        .as_deref()
+        .is_ok_and(systemctl_is_active_output)
+    {
+        return SystemdUserServiceProbe::Active;
+    }
+
+    if systemctl_user_output(&["is-enabled", SYSTEMD_USER_SERVICE])
+        .as_deref()
+        .is_ok_and(systemctl_is_enabled_output)
+    {
+        SystemdUserServiceProbe::EnabledInactive
+    } else {
+        SystemdUserServiceProbe::Unavailable
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl_user_output(args: &[&str]) -> std::io::Result<String> {
+    let output = Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn start_systemd_user_service() -> std::io::Result<std::process::ExitStatus> {
+    Command::new("systemctl")
+        .args(["--user", "start", SYSTEMD_USER_SERVICE])
+        .status()
 }
 
 fn push_daemon_candidates(candidates: &mut Vec<PathBuf>, directory: &Path) {

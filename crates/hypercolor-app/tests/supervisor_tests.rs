@@ -1,10 +1,12 @@
 use std::path::Path;
 
 use hypercolor_app::supervisor::{
-    DEFAULT_DAEMON_BIND, SupervisorState, bind_from_daemon_url, build_daemon_command,
-    daemon_executable_name, daemon_path_candidates, health_url, macos_app_resource_dir,
-    sibling_daemon_path, sibling_ui_dir, startup_retry_delay, target_triple_candidates,
-    tauri_sidecar_daemon_name, ui_dir_candidates,
+    DEFAULT_DAEMON_BIND, SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServicePlan,
+    SystemdUserServiceProbe, bind_from_daemon_url, build_daemon_command, daemon_executable_name,
+    daemon_path_candidates, health_url, macos_app_resource_dir, sibling_daemon_path,
+    sibling_ui_dir, startup_retry_delay, systemctl_is_active_output, systemctl_is_enabled_output,
+    systemd_user_service_plan, target_triple_candidates, tauri_sidecar_daemon_name,
+    ui_dir_candidates,
 };
 use std::time::Duration;
 use url::Url;
@@ -212,6 +214,48 @@ fn startup_retry_delay_caps_to_remaining_budget() {
     assert_eq!(
         startup_retry_delay(Duration::ZERO, Duration::from_millis(250)),
         None
+    );
+}
+
+#[test]
+fn systemd_user_service_name_matches_packaged_unit() {
+    assert_eq!(SYSTEMD_USER_SERVICE, "hypercolor.service");
+}
+
+#[test]
+fn systemctl_active_parser_accepts_only_active_state() {
+    assert!(systemctl_is_active_output("active\n"));
+    assert!(systemctl_is_active_output("\n active \n"));
+    assert!(!systemctl_is_active_output("activating\n"));
+    assert!(!systemctl_is_active_output("inactive\n"));
+    assert!(!systemctl_is_active_output(""));
+}
+
+#[test]
+fn systemctl_enabled_parser_accepts_user_managed_enabled_states() {
+    assert!(systemctl_is_enabled_output("enabled\n"));
+    assert!(systemctl_is_enabled_output("enabled-runtime\n"));
+    assert!(systemctl_is_enabled_output("linked\n"));
+    assert!(systemctl_is_enabled_output("linked-runtime\n"));
+    assert!(systemctl_is_enabled_output("alias\n"));
+    assert!(!systemctl_is_enabled_output("disabled\n"));
+    assert!(!systemctl_is_enabled_output("static\n"));
+    assert!(!systemctl_is_enabled_output("masked\n"));
+}
+
+#[test]
+fn systemd_user_service_plan_prefers_systemd_when_available() {
+    assert_eq!(
+        systemd_user_service_plan(SystemdUserServiceProbe::Active),
+        SystemdUserServicePlan::Reuse
+    );
+    assert_eq!(
+        systemd_user_service_plan(SystemdUserServiceProbe::EnabledInactive),
+        SystemdUserServicePlan::Start
+    );
+    assert_eq!(
+        systemd_user_service_plan(SystemdUserServiceProbe::Unavailable),
+        SystemdUserServicePlan::SpawnChild
     );
 }
 
