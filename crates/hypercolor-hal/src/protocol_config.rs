@@ -11,6 +11,7 @@ use crate::protocol::Protocol;
 
 const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
 const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
+const NOLLIE32_NOS2_PROTOCOL_IDS: &[&str] = &["nollie/nollie-32-nos2", "nollie/nollie-32-nos2-alt"];
 const ATX_STRIMER_LEDS: usize = 120;
 const GPU_DUAL_STRIMER_LEDS: usize = 108;
 const GPU_TRIPLE_STRIMER_LEDS: usize = 162;
@@ -19,6 +20,7 @@ const GPU_TRIPLE_STRIMER_LEDS: usize = 162;
 pub enum ProtocolRuntimeConfig {
     PrismS(PrismSConfig),
     Nollie32(Nollie32Config),
+    Nollie32Nos2(Nollie32Config),
 }
 
 impl ProtocolRuntimeConfig {
@@ -27,6 +29,7 @@ impl ProtocolRuntimeConfig {
         match self {
             Self::PrismS(_) => PRISM_S_PROTOCOL_ID,
             Self::Nollie32(_) => NOLLIE32_PROTOCOL_ID,
+            Self::Nollie32Nos2(_) => "nollie/nollie-32-nos2",
         }
     }
 
@@ -41,6 +44,9 @@ impl ProtocolRuntimeConfig {
                     protocol_version: ProtocolVersion::V2,
                 })
                 .with_nollie32_config(config),
+            ),
+            Self::Nollie32Nos2(config) => Box::new(
+                NollieProtocol::new(NollieModel::Nollie32Nos2).with_nollie32_config(config),
             ),
         }
     }
@@ -62,6 +68,13 @@ impl ProtocolRuntimeConfig {
                     0
                 }
             }
+            Self::Nollie32Nos2(config) => {
+                if config.atx_cable_present {
+                    ATX_STRIMER_LEDS
+                } else {
+                    0
+                }
+            }
         }
     }
 
@@ -74,6 +87,7 @@ impl ProtocolRuntimeConfig {
                 None => 0,
             },
             Self::Nollie32(config) => config.gpu_cable_type.led_count(),
+            Self::Nollie32Nos2(config) => config.gpu_cable_type.led_count(),
         }
     }
 }
@@ -91,6 +105,12 @@ pub fn runtime_config_for_attachment_profile(
 
     if has_protocol(device, NOLLIE32_PROTOCOL_ID) {
         return Some(ProtocolRuntimeConfig::Nollie32(
+            nollie32_config_for_attachment_profile(profile, binding_led_count),
+        ));
+    }
+
+    if has_any_protocol(device, NOLLIE32_NOS2_PROTOCOL_IDS) {
+        return Some(ProtocolRuntimeConfig::Nollie32Nos2(
             nollie32_config_for_attachment_profile(profile, binding_led_count),
         ));
     }
@@ -154,4 +174,12 @@ fn nollie32_config_for_attachment_profile(
 
 fn has_protocol(device: &DeviceInfo, protocol_id: &str) -> bool {
     device.origin.protocol_id.as_deref() == Some(protocol_id)
+}
+
+fn has_any_protocol(device: &DeviceInfo, protocol_ids: &[&str]) -> bool {
+    device
+        .origin
+        .protocol_id
+        .as_deref()
+        .is_some_and(|value| protocol_ids.contains(&value))
 }

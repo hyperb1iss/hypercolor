@@ -49,6 +49,8 @@ fn load_builtins_embeds_generated_catalog() {
     assert!(registry.get("nollie-atx-strimer").is_some());
     assert!(registry.get("nollie-gpu-strimer-6x27").is_some());
     assert!(registry.get("nollie-channel-630-leds").is_some());
+    assert!(registry.get("nollie-fan-gc120").is_some());
+    assert!(registry.get("nollie-fan-gc140").is_some());
 }
 
 #[test]

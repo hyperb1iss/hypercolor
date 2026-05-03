@@ -20,8 +20,10 @@ use hypercolor_hal::drivers::lianli::{
     TL_REPORT_ID,
 };
 use hypercolor_hal::drivers::nollie::{
-    GEN1_HID_REPORT_SIZE, NOLLIE_GEN2_VENDOR_ID, NOLLIE_VENDOR_ID, PID_NOLLIE_1, PID_NOLLIE_8_V2,
-    PID_NOLLIE_16_V3, PID_NOLLIE_28_12_A, PID_NOLLIE_32, PID_PRISM_8, PRISM_VENDOR_ID,
+    GEN1_HID_REPORT_SIZE, GEN2_COLOR_REPORT_SIZE, NOLLIE_GEN2_VENDOR_ID, NOLLIE_LEGACY_VENDOR_ID,
+    NOLLIE_MATRIX_VENDOR_ID, NOLLIE_VENDOR_ID, PID_NOLLIE_1, PID_NOLLIE_4, PID_NOLLIE_8_V2,
+    PID_NOLLIE_16_V3, PID_NOLLIE_28_12_A, PID_NOLLIE_32, PID_NOLLIE_CDC_8, PID_NOLLIE_L1_V12,
+    PID_NOLLIE_LEGACY_8, PID_NOLLIE_MATRIX, PID_NOLLIE_NOS2_32_ALT, PID_PRISM_8, PRISM_VENDOR_ID,
 };
 use hypercolor_hal::drivers::prismrgb::{
     HID_REPORT_SIZE as PRISMRGB_REPORT_SIZE, PID_PRISM_MINI, PID_PRISM_S, PRISM_GCS_VENDOR_ID,
@@ -590,6 +592,57 @@ fn lookup_returns_nollie_gen2_descriptors() {
 }
 
 #[test]
+fn lookup_returns_nollie_nos2_and_cdc_descriptors() {
+    let nollie32 = ProtocolDatabase::lookup(PRISM_VENDOR_ID, PID_NOLLIE_NOS2_32_ALT)
+        .expect("Nollie 32 NOS2 descriptor should exist");
+    assert_eq!(nollie32.name, "Nollie 32 NOS2");
+    assert_eq!(nollie32.protocol.id, "nollie/nollie-32-nos2-alt");
+    assert_eq!(
+        nollie32.transport,
+        expected_report_id_payload_hid_transport(0, GEN2_COLOR_REPORT_SIZE)
+    );
+
+    let cdc = ProtocolDatabase::lookup(PRISM_VENDOR_ID, PID_NOLLIE_CDC_8)
+        .expect("Nollie 8 CDC descriptor should exist");
+    assert_eq!(cdc.name, "Nollie 8 CDC");
+    assert_eq!(cdc.protocol.id, "nollie/nollie-8-cdc");
+    assert_eq!(
+        cdc.transport,
+        TransportType::UsbSerial { baud_rate: 115_200 }
+    );
+}
+
+#[test]
+fn lookup_returns_nollie_legacy_source_descriptors() {
+    let l1 = ProtocolDatabase::lookup(NOLLIE_VENDOR_ID, PID_NOLLIE_L1_V12)
+        .expect("Nollie L1 v1.2 descriptor should exist");
+    assert_eq!(l1.name, "Nollie L1 v1.2");
+    assert_eq!(l1.protocol.id, "nollie/nollie-l1-v12");
+    assert_eq!(
+        l1.transport,
+        expected_report_id_payload_hid_transport(2, GEN1_HID_REPORT_SIZE)
+    );
+
+    let legacy_8 = ProtocolDatabase::lookup(NOLLIE_LEGACY_VENDOR_ID, PID_NOLLIE_LEGACY_8)
+        .expect("Nollie 8 legacy descriptor should exist");
+    assert_eq!(legacy_8.name, "Nollie 8");
+    assert_eq!(legacy_8.protocol.id, "nollie/nollie-8-legacy");
+
+    let matrix = ProtocolDatabase::lookup(NOLLIE_MATRIX_VENDOR_ID, PID_NOLLIE_MATRIX)
+        .expect("Nollie Matrix descriptor should exist");
+    assert_eq!(matrix.name, "Nollie Matrix");
+    assert_eq!(matrix.protocol.id, "nollie/nollie-matrix");
+
+    let nollie4 = ProtocolDatabase::lookup(NOLLIE_GEN2_VENDOR_ID, PID_NOLLIE_4)
+        .expect("Nollie 4 descriptor should exist");
+    assert_eq!(nollie4.name, "Nollie 4");
+    assert_eq!(
+        nollie4.transport,
+        expected_report_id_payload_hid_transport(3, GEN1_HID_REPORT_SIZE)
+    );
+}
+
+#[test]
 fn lookup_returns_prism_s_descriptor() {
     let descriptor = ProtocolDatabase::lookup(PRISM_GCS_VENDOR_ID, PID_PRISM_S)
         .expect("Prism S descriptor should exist");
@@ -1046,7 +1099,10 @@ fn module_descriptors_group_hal_protocols_by_family() {
         .expect("Nollie module descriptor should exist");
     assert_eq!(nollie.display_name, "Nollie");
     assert_eq!(nollie.module_kind, DriverModuleKind::Hal);
-    assert_eq!(nollie.transports, vec![DriverTransportKind::Usb]);
+    assert_eq!(
+        nollie.transports,
+        vec![DriverTransportKind::Usb, DriverTransportKind::Serial]
+    );
     assert!(nollie.capabilities.protocol_catalog);
     assert!(!nollie.capabilities.output_backend);
     assert_eq!(nollie.api_schema_version, DRIVER_MODULE_API_SCHEMA_VERSION);

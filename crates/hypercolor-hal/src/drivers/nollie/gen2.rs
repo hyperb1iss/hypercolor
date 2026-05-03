@@ -75,7 +75,27 @@ pub(super) fn encode_frame_into(
         NollieModel::Nollie1
         | NollieModel::Nollie8
         | NollieModel::Nollie28_12
-        | NollieModel::Prism8 => {}
+        | NollieModel::Prism8
+        | NollieModel::Nollie1Cdc
+        | NollieModel::Nollie8Cdc
+        | NollieModel::Nollie16v3Nos2
+        | NollieModel::Nollie32Nos2
+        | NollieModel::NollieMatrix
+        | NollieModel::NollieLegacy8
+        | NollieModel::NollieLegacy2
+        | NollieModel::NollieLegacyTt
+        | NollieModel::NollieLegacy16_1
+        | NollieModel::NollieLegacy16_2
+        | NollieModel::NollieLegacy28_12
+        | NollieModel::NollieLegacy28L1
+        | NollieModel::NollieLegacy28L2
+        | NollieModel::Nollie8V12
+        | NollieModel::Nollie16_1V12
+        | NollieModel::Nollie16_2V12
+        | NollieModel::NollieL1V12
+        | NollieModel::NollieL2V12
+        | NollieModel::Nollie4
+        | NollieModel::Nollie8Youth => {}
     }
 }
 
@@ -136,7 +156,27 @@ fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<ChannelEntry
         NollieModel::Nollie1
         | NollieModel::Nollie8
         | NollieModel::Nollie28_12
-        | NollieModel::Prism8 => {}
+        | NollieModel::Prism8
+        | NollieModel::Nollie1Cdc
+        | NollieModel::Nollie8Cdc
+        | NollieModel::Nollie16v3Nos2
+        | NollieModel::Nollie32Nos2
+        | NollieModel::NollieMatrix
+        | NollieModel::NollieLegacy8
+        | NollieModel::NollieLegacy2
+        | NollieModel::NollieLegacyTt
+        | NollieModel::NollieLegacy16_1
+        | NollieModel::NollieLegacy16_2
+        | NollieModel::NollieLegacy28_12
+        | NollieModel::NollieLegacy28L1
+        | NollieModel::NollieLegacy28L2
+        | NollieModel::Nollie8V12
+        | NollieModel::Nollie16_1V12
+        | NollieModel::Nollie16_2V12
+        | NollieModel::NollieL1V12
+        | NollieModel::NollieL2V12
+        | NollieModel::Nollie4
+        | NollieModel::Nollie8Youth => {}
     }
 
     entries.sort_by_key(|entry| entry.physical);
@@ -340,7 +380,27 @@ fn default_counts(model: NollieModel, config: Nollie32Config) -> [u16; GEN2_PHYS
         NollieModel::Nollie1
         | NollieModel::Nollie8
         | NollieModel::Nollie28_12
-        | NollieModel::Prism8 => {}
+        | NollieModel::Prism8
+        | NollieModel::Nollie1Cdc
+        | NollieModel::Nollie8Cdc
+        | NollieModel::Nollie16v3Nos2
+        | NollieModel::Nollie32Nos2
+        | NollieModel::NollieMatrix
+        | NollieModel::NollieLegacy8
+        | NollieModel::NollieLegacy2
+        | NollieModel::NollieLegacyTt
+        | NollieModel::NollieLegacy16_1
+        | NollieModel::NollieLegacy16_2
+        | NollieModel::NollieLegacy28_12
+        | NollieModel::NollieLegacy28L1
+        | NollieModel::NollieLegacy28L2
+        | NollieModel::Nollie8V12
+        | NollieModel::Nollie16_1V12
+        | NollieModel::Nollie16_2V12
+        | NollieModel::NollieL1V12
+        | NollieModel::NollieL2V12
+        | NollieModel::Nollie4
+        | NollieModel::Nollie8Youth => {}
     }
     counts
 }

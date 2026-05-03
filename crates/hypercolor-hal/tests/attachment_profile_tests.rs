@@ -60,6 +60,13 @@ fn nollie32_info() -> DeviceInfo {
     }
 }
 
+fn nollie32_nos2_info() -> DeviceInfo {
+    let mut info = nollie32_info();
+    info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+        .with_protocol_id("nollie/nollie-32-nos2");
+    info
+}
+
 fn binding(slot_id: &str, template_id: &str) -> AttachmentBinding {
     AttachmentBinding {
         slot_id: slot_id.to_owned(),
@@ -133,4 +140,18 @@ fn nollie32_gpu_slot_rebases_when_atx_is_not_enabled() {
         .expect("GPU slot should exist");
 
     assert_eq!(gpu.led_start, 5120);
+}
+
+#[test]
+fn nollie32_nos2_attachment_slots_append_strimer_cables() {
+    let slots = effective_attachment_slots(
+        &nollie32_nos2_info(),
+        &[binding("atx-strimer", "nollie-atx-strimer")],
+    );
+    let gpu = slots
+        .iter()
+        .find(|slot| slot.id == "gpu-strimer")
+        .expect("GPU slot should exist");
+
+    assert_eq!(gpu.led_start, 5240);
 }

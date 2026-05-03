@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use hypercolor_hal::drivers::nollie::{
-    GpuCableType, Nollie32Config, NollieModel, NollieProtocol, ProtocolVersion,
-    build_nollie_8_v2_protocol, build_prism_8_protocol,
+    CDC_SERIAL_REPORT_SIZE, GpuCableType, Nollie32Config, NollieModel, NollieProtocol,
+    ProtocolVersion, build_nollie_8_v2_protocol, build_prism_8_protocol,
 };
 use hypercolor_hal::protocol::Protocol;
 use hypercolor_types::device::DeviceTopologyHint;
@@ -74,20 +74,116 @@ fn nollie1_uses_dense_packet_ids_and_omits_render_commit() {
 }
 
 #[test]
-fn nollie28_12_uses_interval_two_rgb_packets_without_commit() {
+fn nollie28_12_uses_interval_two_rgb_packets_and_commit() {
     let protocol = NollieProtocol::new(NollieModel::Nollie28_12);
     let mut colors = vec![[0_u8, 0_u8, 0_u8]; 504];
     colors[0] = [100, 40, 20];
 
     let commands = protocol.encode_frame(&colors);
-    assert_eq!(commands.len(), 24);
+    assert_eq!(commands.len(), 25);
     assert_eq!(commands[0].data[1], 0);
     assert_eq!(commands[1].data[1], 1);
     assert_eq!(commands[2].data[1], 2);
     assert_eq!(commands[23].data[1], 23);
+    assert_eq!(commands[24].data[1], 0xFF);
     assert_eq!(commands[0].data[2], 100);
     assert_eq!(commands[0].data[3], 40);
     assert_eq!(commands[0].data[4], 20);
+}
+
+#[test]
+fn nollie_cdc_uses_64_byte_serial_blocks_and_show_packet() {
+    let protocol = NollieProtocol::new(NollieModel::Nollie8Cdc);
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 1_008];
+    colors[126] = [10, 20, 30];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 49);
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data.len() == CDC_SERIAL_REPORT_SIZE)
+    );
+    assert_eq!(commands[0].data[0], 0);
+    assert_eq!(commands[6].data[0], 6);
+    assert_eq!(commands[6].data[1], 20);
+    assert_eq!(commands[6].data[2], 10);
+    assert_eq!(commands[6].data[3], 30);
+    assert_eq!(commands[48].data[0], 0xFF);
+}
+
+#[test]
+fn nollie16v3_nos2_uses_direct_1024_byte_packets_and_alt_remap() {
+    let protocol = NollieProtocol::new(NollieModel::Nollie16v3Nos2);
+    let commands = protocol.encode_frame(&vec![[1, 2, 3]; 4_096]);
+
+    assert_eq!(commands.len(), 16);
+    assert!(commands.iter().all(|command| command.data.len() == 1_024));
+    assert_eq!(commands[0].data[1], 0);
+    assert_eq!(commands[0].data[2], 0);
+    assert_eq!(commands[0].data[5], 2);
+    assert_eq!(commands[0].data[6], 1);
+    assert_eq!(commands[0].data[7], 3);
+
+    let flag = commands
+        .iter()
+        .find(|command| command.data[1] == 15)
+        .expect("NOS2 marker channel should be present");
+    assert_eq!(flag.data[2], 1);
+}
+
+#[test]
+fn nollie32_nos2_marks_low_and_high_physical_groups_with_strimers() {
+    let protocol =
+        NollieProtocol::new(NollieModel::Nollie32Nos2).with_nollie32_config(Nollie32Config {
+            atx_cable_present: true,
+            gpu_cable_type: GpuCableType::Triple8Pin,
+        });
+    let commands = protocol.encode_frame(&vec![[1, 2, 3]; 5_402]);
+
+    assert_eq!(commands.len(), 32);
+    let low = commands
+        .iter()
+        .find(|command| command.data[1] == 15)
+        .expect("low marker channel should be present");
+    assert_eq!(low.data[2], 1);
+    let high = commands
+        .iter()
+        .find(|command| command.data[1] == 31)
+        .expect("high marker channel should be present");
+    assert_eq!(high.data[2], 2);
+}
+
+#[test]
+fn discontinued_legacy_header_models_use_official_five_byte_header() {
+    let protocol = NollieProtocol::new(NollieModel::NollieLegacy2);
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 1_024];
+    colors[0] = [100, 40, 20];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 52);
+    assert_eq!(commands[0].data[1], 1);
+    assert_eq!(commands[0].data[2], 0);
+    assert_eq!(commands[0].data[3], 26);
+    assert_eq!(commands[0].data[4], 1);
+    assert_eq!(commands[0].data[5], 100);
+    assert_eq!(commands[0].data[6], 40);
+    assert_eq!(commands[0].data[7], 20);
+}
+
+#[test]
+fn nollie4_stream65_prepends_led_count_config_and_concatenates_channels() {
+    let protocol = NollieProtocol::new(NollieModel::Nollie4);
+    let commands = protocol.encode_frame(&vec![[1, 2, 3]; 2_544]);
+
+    assert_eq!(commands[0].data[1], 0x86);
+    assert_eq!(commands[0].data[3], 0x02);
+    assert_eq!(commands[0].data[4], 0x7C);
+    assert_eq!(commands[1].data[1], 0);
+    assert_eq!(commands[2].data[1], 1);
+    assert_eq!(commands[1].data[2], 2);
+    assert_eq!(commands[1].data[3], 1);
+    assert_eq!(commands[1].data[4], 3);
 }
 
 #[test]

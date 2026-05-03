@@ -45,6 +45,13 @@ fn nollie32_info() -> DeviceInfo {
     }
 }
 
+fn nollie32_nos2_info() -> DeviceInfo {
+    let mut info = nollie32_info();
+    info.origin = DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
+        .with_protocol_id("nollie/nollie-32-nos2");
+    info
+}
+
 fn profile(bindings: Vec<AttachmentBinding>) -> DeviceAttachmentProfile {
     DeviceAttachmentProfile {
         schema_version: 1,
@@ -143,6 +150,27 @@ fn nollie32_runtime_config_derives_cable_flags() {
     let config = ProtocolRuntimeConfig::Nollie32(config);
     assert_eq!(config.atx_attachment_leds(), 120);
     assert_eq!(config.gpu_attachment_leds(), 162);
+}
+
+#[test]
+fn nollie32_nos2_runtime_config_builds_nos2_protocol() {
+    let config = runtime_config_for_attachment_profile(
+        &nollie32_nos2_info(),
+        &profile(vec![binding("gpu-strimer", "gpu-dual")]),
+        template_leds,
+    )
+    .expect("Nollie32 NOS2 runtime config");
+
+    let ProtocolRuntimeConfig::Nollie32Nos2(config) = config else {
+        panic!("expected Nollie32 NOS2 config");
+    };
+
+    assert!(!config.atx_cable_present);
+    assert_eq!(config.gpu_cable_type, GpuCableType::Dual8Pin);
+
+    let protocol = ProtocolRuntimeConfig::Nollie32Nos2(config).build_protocol();
+    assert_eq!(protocol.name(), "Nollie 32 NOS2");
+    assert_eq!(protocol.total_leds(), 5_228);
 }
 
 #[test]

@@ -43,7 +43,7 @@ pub(super) fn init_sequence() -> Vec<ProtocolCommand> {
 
 pub(super) fn shutdown_sequence(model: NollieModel) -> Vec<ProtocolCommand> {
     let mut commands = Vec::new();
-    if matches!(model, NollieModel::Nollie1 | NollieModel::Nollie28_12) {
+    if matches!(model, NollieModel::Nollie1) {
         let mut commit = vec![0_u8; GEN1_HID_REPORT_SIZE];
         commit[1] = 0xFF;
         commands.push(command_from_packet(
@@ -145,7 +145,28 @@ const fn channel_count(model: NollieModel) -> usize {
         NollieModel::Nollie1 => CHANNELS_NOLLIE_1,
         NollieModel::Nollie8 | NollieModel::Prism8 => CHANNELS_NOLLIE_8,
         NollieModel::Nollie28_12 => CHANNELS_NOLLIE_28_12,
-        NollieModel::Nollie16v3 | NollieModel::Nollie32 { .. } => 0,
+        NollieModel::Nollie16v3
+        | NollieModel::Nollie32 { .. }
+        | NollieModel::Nollie1Cdc
+        | NollieModel::Nollie8Cdc
+        | NollieModel::Nollie16v3Nos2
+        | NollieModel::Nollie32Nos2
+        | NollieModel::NollieMatrix
+        | NollieModel::NollieLegacy8
+        | NollieModel::NollieLegacy2
+        | NollieModel::NollieLegacyTt
+        | NollieModel::NollieLegacy16_1
+        | NollieModel::NollieLegacy16_2
+        | NollieModel::NollieLegacy28_12
+        | NollieModel::NollieLegacy28L1
+        | NollieModel::NollieLegacy28L2
+        | NollieModel::Nollie8V12
+        | NollieModel::Nollie16_1V12
+        | NollieModel::Nollie16_2V12
+        | NollieModel::NollieL1V12
+        | NollieModel::NollieL2V12
+        | NollieModel::Nollie4
+        | NollieModel::Nollie8Youth => 0,
     }
 }
 
@@ -154,7 +175,28 @@ const fn leds_per_channel(model: NollieModel) -> usize {
         NollieModel::Nollie1 => LEDS_NOLLIE_1,
         NollieModel::Nollie8 | NollieModel::Prism8 => LEDS_NOLLIE_8,
         NollieModel::Nollie28_12 => LEDS_NOLLIE_28_12,
-        NollieModel::Nollie16v3 | NollieModel::Nollie32 { .. } => 0,
+        NollieModel::Nollie16v3
+        | NollieModel::Nollie32 { .. }
+        | NollieModel::Nollie1Cdc
+        | NollieModel::Nollie8Cdc
+        | NollieModel::Nollie16v3Nos2
+        | NollieModel::Nollie32Nos2
+        | NollieModel::NollieMatrix
+        | NollieModel::NollieLegacy8
+        | NollieModel::NollieLegacy2
+        | NollieModel::NollieLegacyTt
+        | NollieModel::NollieLegacy16_1
+        | NollieModel::NollieLegacy16_2
+        | NollieModel::NollieLegacy28_12
+        | NollieModel::NollieLegacy28L1
+        | NollieModel::NollieLegacy28L2
+        | NollieModel::Nollie8V12
+        | NollieModel::Nollie16_1V12
+        | NollieModel::Nollie16_2V12
+        | NollieModel::NollieL1V12
+        | NollieModel::NollieL2V12
+        | NollieModel::Nollie4
+        | NollieModel::Nollie8Youth => 0,
     }
 }
 
@@ -163,7 +205,28 @@ const fn packet_interval(model: NollieModel) -> usize {
         NollieModel::Nollie1 => 30,
         NollieModel::Nollie8 | NollieModel::Prism8 => 6,
         NollieModel::Nollie28_12 => 2,
-        NollieModel::Nollie16v3 | NollieModel::Nollie32 { .. } => 0,
+        NollieModel::Nollie16v3
+        | NollieModel::Nollie32 { .. }
+        | NollieModel::Nollie1Cdc
+        | NollieModel::Nollie8Cdc
+        | NollieModel::Nollie16v3Nos2
+        | NollieModel::Nollie32Nos2
+        | NollieModel::NollieMatrix
+        | NollieModel::NollieLegacy8
+        | NollieModel::NollieLegacy2
+        | NollieModel::NollieLegacyTt
+        | NollieModel::NollieLegacy16_1
+        | NollieModel::NollieLegacy16_2
+        | NollieModel::NollieLegacy28_12
+        | NollieModel::NollieLegacy28L1
+        | NollieModel::NollieLegacy28L2
+        | NollieModel::Nollie8V12
+        | NollieModel::Nollie16_1V12
+        | NollieModel::Nollie16_2V12
+        | NollieModel::NollieL1V12
+        | NollieModel::NollieL2V12
+        | NollieModel::Nollie4
+        | NollieModel::Nollie8Youth => 0,
     }
 }
 

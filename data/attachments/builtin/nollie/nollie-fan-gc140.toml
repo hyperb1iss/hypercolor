@@ -1,9 +1,9 @@
 schema_version = 1
-id = "nollie-fan-gc120"
-name = "Nollie GC120 - 26 LED"
+id = "nollie-fan-gc140"
+name = "Nollie GC140 - 34 LED"
 category = "fan"
 origin = "built_in"
-description = "Nollie GC120 - 26 LED"
+description = "Nollie GC140 - 34 LED"
 vendor = "Nollie"
 compatible_slots = []
 tags = [
@@ -36,6 +36,14 @@ led_names = [
     "Led24",
     "Led25",
     "Led26",
+    "Led27",
+    "Led28",
+    "Led29",
+    "Led30",
+    "Led31",
+    "Led32",
+    "Led33",
+    "Led34",
 ]
 led_mapping = [
     0,
@@ -64,115 +72,155 @@ led_mapping = [
     23,
     24,
     25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
 ]
 
 [default_size]
-width = 0.24
-height = 0.24
+width = 0.28
+height = 0.28
 
 [topology]
 type = "custom"
 
 [[topology.positions]]
-x = 0.44444444
-y = 0.66666667
-
-[[topology.positions]]
 x = 0.33333333
-y = 0.55555556
+y = 0.41666667
 
 [[topology.positions]]
-x = 0.33333333
-y = 0.44444444
-
-[[topology.positions]]
-x = 0.44444444
+x = 0.41666667
 y = 0.33333333
 
 [[topology.positions]]
-x = 0.55555556
+x = 0.5
+y = 0.33333333
+
+[[topology.positions]]
+x = 0.58333333
 y = 0.33333333
 
 [[topology.positions]]
 x = 0.66666667
-y = 0.44444444
+y = 0.41666667
 
 [[topology.positions]]
 x = 0.66666667
-y = 0.55555556
+y = 0.58333333
 
 [[topology.positions]]
-x = 0.55555556
+x = 0.58333333
 y = 0.66666667
 
 [[topology.positions]]
-x = 0.77777778
+x = 0.5
+y = 0.66666667
+
+[[topology.positions]]
+x = 0.41666667
+y = 0.66666667
+
+[[topology.positions]]
+x = 0.33333333
+y = 0.58333333
+
+[[topology.positions]]
+x = 0.0
+y = 0.75
+
+[[topology.positions]]
+x = 0.08333333
+y = 0.83333333
+
+[[topology.positions]]
+x = 0.16666667
+y = 0.91666667
+
+[[topology.positions]]
+x = 0.25
 y = 1.0
 
 [[topology.positions]]
-x = 0.88888889
-y = 0.88888889
-
-[[topology.positions]]
-x = 1.0
-y = 0.77777778
-
-[[topology.positions]]
-x = 1.0
-y = 0.66666667
-
-[[topology.positions]]
-x = 1.0
-y = 0.44444444
-
-[[topology.positions]]
-x = 1.0
-y = 0.33333333
-
-[[topology.positions]]
-x = 1.0
-y = 0.22222222
-
-[[topology.positions]]
-x = 0.88888889
-y = 0.11111111
-
-[[topology.positions]]
-x = 0.77777778
-y = 0.0
-
-[[topology.positions]]
-x = 0.22222222
+x = 0.33333333
 y = 1.0
 
 [[topology.positions]]
-x = 0.11111111
-y = 0.88888889
+x = 0.41666667
+y = 1.0
+
+[[topology.positions]]
+x = 0.58333333
+y = 1.0
+
+[[topology.positions]]
+x = 0.66666667
+y = 1.0
+
+[[topology.positions]]
+x = 0.75
+y = 1.0
+
+[[topology.positions]]
+x = 0.83333333
+y = 0.91666667
+
+[[topology.positions]]
+x = 0.91666667
+y = 0.83333333
+
+[[topology.positions]]
+x = 1.0
+y = 0.75
 
 [[topology.positions]]
 x = 0.0
-y = 0.77777778
+y = 0.25
 
 [[topology.positions]]
-x = 0.0
-y = 0.66666667
+x = 0.08333333
+y = 0.16666667
 
 [[topology.positions]]
-x = 0.0
-y = 0.44444444
+x = 0.16666667
+y = 0.08333333
 
 [[topology.positions]]
-x = 0.0
-y = 0.33333333
-
-[[topology.positions]]
-x = 0.0
-y = 0.22222222
-
-[[topology.positions]]
-x = 0.11111111
-y = 0.11111111
-
-[[topology.positions]]
-x = 0.22222222
+x = 0.25
 y = 0.0
+
+[[topology.positions]]
+x = 0.33333333
+y = 0.0
+
+[[topology.positions]]
+x = 0.41666667
+y = 0.0
+
+[[topology.positions]]
+x = 0.58333333
+y = 0.0
+
+[[topology.positions]]
+x = 0.66666667
+y = 0.0
+
+[[topology.positions]]
+x = 0.75
+y = 0.0
+
+[[topology.positions]]
+x = 0.83333333
+y = 0.08333333
+
+[[topology.positions]]
+x = 0.91666667
+y = 0.16666667
+
+[[topology.positions]]
+x = 1.0
+y = 0.25

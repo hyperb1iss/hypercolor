@@ -7,6 +7,7 @@ use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
 
 const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
 const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
+const NOLLIE32_NOS2_PROTOCOL_IDS: &[&str] = &["nollie/nollie-32-nos2", "nollie/nollie-32-nos2-alt"];
 const GENERIC_CHANNEL_PROTOCOL_IDS: &[&str] = &[
     "nollie/prism-8",
     "nollie/nollie-8-v2",
@@ -89,7 +90,7 @@ fn normalize_prism_s_slot_offsets(
 }
 
 fn append_nollie32_cable_slots(device: &DeviceInfo, slots: &mut Vec<AttachmentSlot>) {
-    if !has_protocol(device, NOLLIE32_PROTOCOL_ID) {
+    if !is_nollie32_protocol(device) {
         return;
     }
 
@@ -138,7 +139,7 @@ fn normalize_nollie32_slot_offsets(
     bindings: &[AttachmentBinding],
     slots: &mut [AttachmentSlot],
 ) {
-    if !has_protocol(device, NOLLIE32_PROTOCOL_ID) {
+    if !is_nollie32_protocol(device) {
         return;
     }
 
@@ -166,4 +167,13 @@ fn normalize_nollie32_slot_offsets(
 
 fn has_protocol(device: &DeviceInfo, protocol_id: &str) -> bool {
     device.origin.protocol_id.as_deref() == Some(protocol_id)
+}
+
+fn is_nollie32_protocol(device: &DeviceInfo) -> bool {
+    has_protocol(device, NOLLIE32_PROTOCOL_ID)
+        || device
+            .origin
+            .protocol_id
+            .as_deref()
+            .is_some_and(|value| NOLLIE32_NOS2_PROTOCOL_IDS.contains(&value))
 }
