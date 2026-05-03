@@ -3,6 +3,12 @@
   "identifier": "default",
   "description": "Default capability for the main window",
   "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:9420/*",
+      "http://localhost:9420/*"
+    ]
+  },
   "permissions": [
     "core:default",
     "autostart:allow-enable",

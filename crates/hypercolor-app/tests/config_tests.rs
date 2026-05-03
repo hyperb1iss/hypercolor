@@ -59,6 +59,26 @@ fn default_capability_grants_window_and_autostart_permissions() {
 }
 
 #[test]
+fn default_capability_allows_local_daemon_remote_ipc() {
+    let capability = default_capability();
+    let urls = capability
+        .get("remote")
+        .and_then(|remote| remote.get("urls"))
+        .and_then(serde_json::Value::as_array)
+        .expect("remote.urls should be configured");
+
+    for expected in [
+        "http://127.0.0.1:9420/*",
+        "http://localhost:9420/*",
+    ] {
+        assert!(
+            urls.iter().any(|value| value == expected),
+            "capability should allow IPC from {expected}"
+        );
+    }
+}
+
+#[test]
 fn tauri_config_is_valid_json() {
     let _ = tauri_config();
 }

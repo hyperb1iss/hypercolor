@@ -7,5 +7,6 @@ pub mod daemon_client;
 pub mod logging;
 pub mod state;
 pub mod supervisor;
+pub mod support;
 pub mod tray;
 pub mod window;

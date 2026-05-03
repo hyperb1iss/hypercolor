@@ -1097,8 +1097,8 @@ stateDiagram-v2
 4. If missing, show panel: *"Motherboard and DDR memory RGB may need PawnIO.
    Hypercolor includes the official PawnIO installer and only asks Windows for
    elevation when you choose to enable this hardware path."*
-5. Buttons: **[Install hardware support]** runs `tools\install-bundled-pawnio.ps1`
-   under UAC elevation;
+5. Buttons: **[Install hardware support]** runs
+   `tools\install-windows-hardware-support.ps1` under UAC elevation;
    **[Skip — I don't have that hardware]** dismisses;
    **[Remind me later]** delays until next launch.
 
@@ -1114,6 +1114,12 @@ user presses the hardware-support button and accepts UAC.
 in the regular user-mode daemon. USB HID, WinUSB devices, and network devices
 also stay user-mode; WinUSB driver binding is an install-time prerequisite, not a
 daemon privilege reason.
+
+**Native app commands:** the Tauri shell exposes `detect_pawnio_support` and
+`launch_pawnio_helper` to the loopback daemon UI. The first command reports
+bundled payload, PawnIO runtime, and service state; the second launches the
+single elevated helper that installs PawnIO, copies modules, registers
+`HypercolorSmBus`, and starts it unless the UI asks not to.
 
 ### 12.2 Windows — SCM Service Detection
 

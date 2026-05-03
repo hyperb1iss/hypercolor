@@ -23,6 +23,10 @@ fn main() -> anyhow::Result<()> {
 
     tauri::Builder::default()
         .manage(hypercolor_app::supervisor::SupervisorState::default())
+        .invoke_handler(tauri::generate_handler![
+            hypercolor_app::support::detect_pawnio_support,
+            hypercolor_app::support::launch_pawnio_helper
+        ])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let forwarded = hypercolor_app::cli::AppArgs::parse(args);
             if forwarded.quit {

@@ -155,6 +155,7 @@ Copy-ToolScript 'diagnose-windows.ps1'
 Copy-ToolScript 'install-windows-smbus-service.ps1'
 Copy-ToolScript 'install-pawnio-modules.ps1'
 Copy-ToolScript 'install-bundled-pawnio.ps1'
+Copy-ToolScript 'install-windows-hardware-support.ps1'
 
 if (Test-WindowsTarget) {
     Copy-WindowsToolBinary 'hypercolor-smbus-service'

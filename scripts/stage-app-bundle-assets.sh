@@ -244,6 +244,7 @@ stage_tool_script diagnose-windows.ps1
 stage_tool_script install-windows-smbus-service.ps1
 stage_tool_script install-pawnio-modules.ps1
 stage_tool_script install-bundled-pawnio.ps1
+stage_tool_script install-windows-hardware-support.ps1
 
 if is_windows_target; then
   stage_tool_binary hypercolor-smbus-service

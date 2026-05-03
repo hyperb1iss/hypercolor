@@ -69,10 +69,11 @@ function Resolve-PawnIoHome {
         return (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
     }
 
-    foreach ($candidate in @(
-        (Join-Path $env:ProgramFiles "PawnIO"),
-        (Join-Path ${env:ProgramFiles(x86)} "PawnIO")
-    )) {
+    $programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+        Where-Object { $_ }
+
+    foreach ($root in $programRoots) {
+        $candidate = Join-Path $root "PawnIO"
         if (Test-Path -LiteralPath (Join-Path $candidate "PawnIOLib.dll")) {
             return (Resolve-Path -LiteralPath $candidate).Path
         }
@@ -89,13 +90,13 @@ function Resolve-PawnIoModuleDir {
     }
 
     $candidates = @()
-    if ($env:LOCALAPPDATA) {
-        $candidates += (Join-Path $env:LOCALAPPDATA "hypercolor\pawnio\modules")
-    }
     $pawnIoHomePath = Resolve-PawnIoHome $PawnIoHome
     if ($pawnIoHomePath) {
         $candidates += (Join-Path $pawnIoHomePath "modules")
         $candidates += $pawnIoHomePath
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA "hypercolor\pawnio\modules")
     }
 
     foreach ($candidate in $candidates) {
