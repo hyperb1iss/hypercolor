@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
@@ -195,13 +195,19 @@ pub fn decode_operations(data: &[u8]) -> Result<Vec<SmBusOperation>, TransportEr
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
 use i2cdev::core::I2CDevice;
 #[cfg(target_os = "linux")]
 use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
+
+#[cfg(target_os = "windows")]
+use hypercolor_windows_pawnio::{
+    PawnIoError, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
+    WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
+};
 
 /// Linux `SMBus` transport backed by `/dev/i2c-*`.
 #[cfg(target_os = "linux")]
@@ -377,43 +383,260 @@ impl Transport for SmBusTransport {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Windows `SMBus` transport backed by PawnIO modules.
+#[cfg(target_os = "windows")]
+pub struct SmBusTransport {
+    path: String,
+    address: u16,
+    bus: Arc<Mutex<WindowsSmBusBus>>,
+    closed: AtomicBool,
+    op_lock: tokio::sync::Mutex<()>,
+}
+
+#[cfg(target_os = "windows")]
+impl SmBusTransport {
+    /// Open one `SMBus` slave on one PawnIO bus path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when PawnIO cannot open the bus.
+    pub fn open(path: &str, address: u16) -> Result<Self, TransportError> {
+        let bus = open_smbus_bus(path).map_err(map_windows_pawnio_error)?;
+
+        Ok(Self {
+            path: path.to_owned(),
+            address,
+            bus: Arc::new(Mutex::new(bus)),
+            closed: AtomicBool::new(false),
+            op_lock: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    /// Probe whether one `SMBus` address responds on one PawnIO bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the bus path itself cannot be opened.
+    pub fn probe_presence(path: &str, address: u16) -> Result<bool, TransportError> {
+        let address = u8_address(address)?;
+        let bus = open_smbus_bus(path).map_err(map_windows_pawnio_error)?;
+        bus.probe_presence(address)
+            .map_err(map_windows_pawnio_error)
+    }
+
+    /// Probe whether one `SMBus` address acknowledges a quick-write transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the bus path itself cannot be opened.
+    pub fn probe_quick_write(path: &str, address: u16) -> Result<bool, TransportError> {
+        let address = u8_address(address)?;
+        let bus = open_smbus_bus(path).map_err(map_windows_pawnio_error)?;
+        bus.probe_quick_write(address)
+            .map_err(map_windows_pawnio_error)
+    }
+
+    /// Enumerate PawnIO SMBus buses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when PawnIO cannot be loaded.
+    pub fn enumerate_buses() -> Result<Vec<WindowsSmBusBusInfo>, TransportError> {
+        enumerate_smbus_buses().map_err(map_windows_pawnio_error)
+    }
+
+    fn check_open(&self) -> Result<(), TransportError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TransportError::Closed);
+        }
+        Ok(())
+    }
+
+    fn execute_operations_locked(
+        bus: &Mutex<WindowsSmBusBus>,
+        path: &str,
+        address: u16,
+        operations: &[SmBusOperation],
+    ) -> Result<Vec<u8>, TransportError> {
+        let address = u8_address(address)?;
+        let bus = bus.lock().map_err(|_| TransportError::IoError {
+            detail: "SMBus bus lock poisoned".to_owned(),
+        })?;
+        let mut reads = Vec::new();
+
+        for operation in operations {
+            match operation {
+                SmBusOperation::WriteWordData { register, value } => {
+                    let mut transaction = SmBusTransaction::WordData { value: *value };
+                    bus.smbus_xfer(address, SmBusDirection::Write, *register, &mut transaction)
+                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                }
+                SmBusOperation::WriteByteData { register, value } => {
+                    let mut transaction = SmBusTransaction::ByteData { value: *value };
+                    bus.smbus_xfer(address, SmBusDirection::Write, *register, &mut transaction)
+                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                }
+                SmBusOperation::ReadByteData { register } => {
+                    let mut transaction = SmBusTransaction::ByteData { value: 0 };
+                    bus.smbus_xfer(address, SmBusDirection::Read, *register, &mut transaction)
+                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                    if let SmBusTransaction::ByteData { value } = transaction {
+                        reads.push(value);
+                    }
+                }
+                SmBusOperation::WriteBlockData { register, data } => {
+                    let mut transaction = SmBusTransaction::BlockData {
+                        data: SmBusBlockData::new(data).map_err(map_windows_pawnio_error)?,
+                    };
+                    bus.smbus_xfer(address, SmBusDirection::Write, *register, &mut transaction)
+                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                }
+                SmBusOperation::Delay { duration } => std::thread::sleep(*duration),
+            }
+        }
+
+        Ok(reads)
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[async_trait]
+impl Transport for SmBusTransport {
+    fn name(&self) -> &'static str {
+        "Windows PawnIO SMBus"
+    }
+
+    async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
+        self.check_open()?;
+        let operations = decode_operations(data)?;
+        let _guard = self.op_lock.lock().await;
+        let bus = Arc::clone(&self.bus);
+        let path = self.path.clone();
+        let address = self.address;
+
+        tokio::task::spawn_blocking(move || {
+            Self::execute_operations_locked(bus.as_ref(), &path, address, &operations)
+        })
+        .await
+        .map_err(|error| TransportError::IoError {
+            detail: format!("SMBus send task failed: {error}"),
+        })??;
+
+        Ok(())
+    }
+
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
+        self.check_open()?;
+        Err(TransportError::Timeout {
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+
+    async fn send_receive(
+        &self,
+        data: &[u8],
+        _timeout: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.check_open()?;
+        let operations = decode_operations(data)?;
+        let _guard = self.op_lock.lock().await;
+        let bus = Arc::clone(&self.bus);
+        let path = self.path.clone();
+        let address = self.address;
+
+        tokio::task::spawn_blocking(move || {
+            Self::execute_operations_locked(bus.as_ref(), &path, address, &operations)
+        })
+        .await
+        .map_err(|error| TransportError::IoError {
+            detail: format!("SMBus send/receive task failed: {error}"),
+        })?
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        self.closed.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn u8_address(address: u16) -> Result<u8, TransportError> {
+    u8::try_from(address).map_err(|_| TransportError::IoError {
+        detail: format!("SMBus address 0x{address:02X} exceeds u8 range"),
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn map_windows_smbus_io_error(path: &str, address: u8, error: PawnIoError) -> TransportError {
+    let detail = error.to_string();
+    let lowered = detail.to_ascii_lowercase();
+
+    if lowered.contains("access denied") || lowered.contains("administrator") {
+        return TransportError::PermissionDenied { detail };
+    }
+
+    if lowered.contains("not found") || lowered.contains("not installed") {
+        return TransportError::NotFound { detail };
+    }
+
+    TransportError::IoError {
+        detail: format!("{detail} (path={path}, address=0x{address:02X})"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn map_windows_pawnio_error(error: PawnIoError) -> TransportError {
+    let detail = error.to_string();
+    let lowered = detail.to_ascii_lowercase();
+
+    if lowered.contains("access denied") || lowered.contains("administrator") {
+        return TransportError::PermissionDenied { detail };
+    }
+
+    if lowered.contains("not found") || lowered.contains("not installed") {
+        return TransportError::NotFound { detail };
+    }
+
+    TransportError::IoError { detail }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub struct SmBusTransport;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 impl SmBusTransport {
-    /// `SMBus` transport is only available on Linux.
+    /// `SMBus` transport is only available on Linux and Windows.
     pub fn open(_path: &str, _address: u16) -> Result<Self, TransportError> {
         Err(TransportError::IoError {
-            detail: "SMBus transport is only available on Linux".to_owned(),
+            detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })
     }
 
-    /// `SMBus` transport is only available on Linux.
+    /// `SMBus` transport is only available on Linux and Windows.
     pub fn probe_presence(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
-            detail: "SMBus transport is only available on Linux".to_owned(),
+            detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })
     }
 
-    /// `SMBus` transport is only available on Linux.
+    /// `SMBus` transport is only available on Linux and Windows.
     pub fn probe_quick_write(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
-            detail: "SMBus transport is only available on Linux".to_owned(),
+            detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[async_trait]
 impl Transport for SmBusTransport {
     fn name(&self) -> &'static str {
-        "Linux SMBus"
+        "SMBus"
     }
 
     async fn send(&self, _data: &[u8]) -> Result<(), TransportError> {
         Err(TransportError::IoError {
-            detail: "SMBus transport is only available on Linux".to_owned(),
+            detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })
     }
 

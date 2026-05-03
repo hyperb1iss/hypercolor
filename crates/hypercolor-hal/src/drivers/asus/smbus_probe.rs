@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use std::sync::Once;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_types::device::{
     ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo,
 };
@@ -13,28 +13,28 @@ use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 use thiserror::Error;
 
 use crate::drivers::asus::smbus::AuraSmBusProtocol;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::drivers::asus::smbus::{encode_ene_transaction, ene_dram_remap_sequence};
 use crate::protocol::{Protocol, ProtocolError};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::protocol::{ProtocolZone, ResponseStatus};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::collections::HashSet;
-#[cfg(target_os = "linux")]
-use tracing::{debug, trace};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use tracing::{debug, trace, warn};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::Transport;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::smbus::SmBusTransport;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 static SMBUS_UNAVAILABLE_WARN_ONCE: Once = Once::new();
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const ASUS_MOTHERBOARD_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
     (0x40, SmBusControllerKind::Motherboard),
     (0x4E, SmBusControllerKind::Motherboard),
@@ -48,11 +48,11 @@ const ASUS_GPU_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
     (0x67, SmBusControllerKind::Gpu),
 ];
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const ASUS_DRAM_REMAP_HUB_ADDRESS: u16 = 0x77;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const ASUS_DRAM_REMAP_SLOT_COUNT: usize = 8;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 const ASUS_DRAM_SMBUS_ADDRESSES: &[u16] = &[
     0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x4F,
     0x66, 0x67, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
@@ -180,7 +180,58 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
     Ok(discovered)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+#[allow(
+    clippy::unused_async,
+    reason = "the scanner uses one async probe interface across supported platforms"
+)]
+pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
+    let _ = dev_root;
+    let buses = match SmBusTransport::enumerate_buses() {
+        Ok(buses) => buses,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "Windows PawnIO SMBus enumeration failed; ASUS Aura RAM will not be discovered"
+            );
+            return Ok(Vec::new());
+        }
+    };
+
+    let mut discovered = Vec::new();
+    for bus in buses {
+        let pci_id = Some((bus.pci_vendor, bus.pci_device));
+        let bus_path = bus.path;
+
+        if motherboard_capable_bus_pci_id(pci_id) {
+            for &(address, controller_kind) in ASUS_MOTHERBOARD_SMBUS_ADDRESSES {
+                if let Some(probe) = probe_bus_address(&bus_path, address, controller_kind).await? {
+                    discovered.push(probe);
+                }
+            }
+        } else {
+            trace!(
+                bus_path,
+                pci_id = ?pci_id,
+                "skipping ASUS Aura motherboard SMBus probe on incompatible Windows PawnIO bus"
+            );
+        }
+
+        if dram_capable_bus_pci_id(pci_id) {
+            discovered.extend(probe_dram_bus(&bus_path).await?);
+        } else {
+            trace!(
+                bus_path,
+                pci_id = ?pci_id,
+                "skipping ASUS Aura DRAM probe on incompatible Windows PawnIO bus"
+            );
+        }
+    }
+
+    Ok(discovered)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[allow(
     clippy::unused_async,
     reason = "the scanner uses one async probe interface across supported and excluded platforms"
@@ -188,19 +239,14 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
     let _ = dev_root;
     SMBUS_UNAVAILABLE_WARN_ONCE.call_once(|| {
-        #[cfg(target_os = "windows")]
         tracing::warn!(
-            "ASUS Aura SMBus discovery is not available on Windows yet; RGB RAM and SMBus motherboard controllers require a PawnIO/OpenRGB bridge"
-        );
-        #[cfg(not(target_os = "windows"))]
-        tracing::warn!(
-            "ASUS Aura SMBus discovery is only implemented on Linux; RGB RAM and SMBus motherboard controllers will not be discovered"
+            "ASUS Aura SMBus discovery is only implemented on Linux and Windows; RGB RAM and SMBus motherboard controllers will not be discovered"
         );
     });
     Ok(Vec::new())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
     let hub_present = bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS);
     if hub_present {
@@ -301,7 +347,7 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
     Ok(discovered)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn probe_bus_address(
     bus_path: &str,
     address: u16,
@@ -333,7 +379,7 @@ async fn probe_bus_address(
     probed
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 #[allow(
     clippy::too_many_lines,
     reason = "SMBus probe walks sequential register reads with per-vendor branching"
@@ -515,7 +561,7 @@ pub fn dram_capable_pci_id(vendor_id: u16, device_id: u16) -> bool {
     SYSTEM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn dram_capable_bus_pci_id(pci_id: Option<(u16, u16)>) -> bool {
     let Some((vendor_id, device_id)) = pci_id else {
         return false;
@@ -524,7 +570,7 @@ fn dram_capable_bus_pci_id(pci_id: Option<(u16, u16)>) -> bool {
     dram_capable_pci_id(vendor_id, device_id)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn motherboard_capable_bus_pci_id(pci_id: Option<(u16, u16)>) -> bool {
     let Some((vendor_id, device_id)) = pci_id else {
         return false;
@@ -565,7 +611,7 @@ pub fn resolve_parent_pci_id_from_sysfs_path(path: &Path) -> Option<(u16, u16)> 
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
     ASUS_DRAM_SMBUS_ADDRESSES
         .iter()
@@ -574,17 +620,17 @@ fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
         .collect()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn bus_address_responds(bus_path: &str, address: u16) -> bool {
     SmBusTransport::probe_presence(bus_path, address).unwrap_or(false)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn bus_address_quick_responds(bus_path: &str, address: u16) -> bool {
     SmBusTransport::probe_quick_write(bus_path, address).unwrap_or(false)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn next_available_dram_address(
     start_index: usize,
     occupied_addresses: &HashSet<u16>,
@@ -597,7 +643,7 @@ fn next_available_dram_address(
         .find(|(_, address)| !occupied_addresses.contains(address))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn dram_probe_addresses(occupied_addresses: &HashSet<u16>, remapped_addresses: &[u16]) -> Vec<u16> {
     let mut probe_addresses = Vec::new();
     let mut seen = HashSet::new();
@@ -617,7 +663,7 @@ fn dram_probe_addresses(occupied_addresses: &HashSet<u16>, remapped_addresses: &
     probe_addresses
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn build_device_info(
     controller_kind: SmBusControllerKind,
     protocol: &AuraSmBusProtocol,
@@ -649,7 +695,7 @@ fn build_device_info(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn protocol_zone_to_zone_info(zone: ProtocolZone) -> ZoneInfo {
     ZoneInfo {
         name: zone.name,

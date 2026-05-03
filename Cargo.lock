@@ -4634,6 +4634,7 @@ dependencies = [
  "futures-util",
  "hidapi",
  "hypercolor-types",
+ "hypercolor-windows-pawnio",
  "i2cdev",
  "image",
  "midir",
@@ -4770,6 +4771,17 @@ dependencies = [
  "toml 0.8.2",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "hypercolor-windows-pawnio"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows-registry",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

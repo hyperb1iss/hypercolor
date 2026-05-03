@@ -1,0 +1,25 @@
+[package]
+name = "hypercolor-windows-pawnio"
+description = "Windows PawnIO SMBus adapter for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[dependencies]
+libloading = "0.8.9"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-registry = "0.6.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
