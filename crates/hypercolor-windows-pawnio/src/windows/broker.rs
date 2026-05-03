@@ -159,7 +159,7 @@ fn run_service() -> Result<()> {
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            ServiceControl::Stop | ServiceControl::Shutdown | ServiceControl::Preshutdown => {
+            ServiceControl::Stop | ServiceControl::Shutdown => {
                 let _ = shutdown_tx.send(true);
                 ServiceControlHandlerResult::NoError
             }
@@ -181,9 +181,7 @@ fn run_service() -> Result<()> {
     report_status(
         &status_handle,
         ServiceState::Running,
-        ServiceControlAccept::STOP
-            | ServiceControlAccept::SHUTDOWN
-            | ServiceControlAccept::PRESHUTDOWN,
+        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         0,
         Duration::ZERO,
     )?;
