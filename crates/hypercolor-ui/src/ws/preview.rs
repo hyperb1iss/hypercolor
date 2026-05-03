@@ -66,6 +66,14 @@ pub(super) fn desired_preview_fps(
     }
 }
 
+pub(super) const fn should_stream_preview(
+    app_window_visible: bool,
+    engine_target_fps: u32,
+    consumer_count: u32,
+) -> bool {
+    app_window_visible && engine_target_fps > 0 && consumer_count > 0
+}
+
 fn preview_canvas_format_for_host(hostname: &str) -> &'static str {
     match hostname {
         host if is_loopback_host(host) => "rgb",
@@ -313,9 +321,25 @@ const fn remote_preview_width_for_fps(requested_fps: u32) -> Option<u32> {
 mod tests {
     use super::{
         PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
-        preview_canvas_format_for_host, preview_canvas_request_dimensions_for_host,
-        remote_preview_width_for_fps, web_viewport_preview_request_dimensions,
+        desired_preview_fps, preview_canvas_format_for_host,
+        preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
+        should_stream_preview, web_viewport_preview_request_dimensions,
     };
+
+    #[test]
+    fn hidden_page_caps_preview_fps() {
+        assert_eq!(desired_preview_fps(60, 60, false), 6);
+        assert_eq!(desired_preview_fps(20, 15, false), 6);
+        assert_eq!(desired_preview_fps(5, 60, false), 5);
+    }
+
+    #[test]
+    fn hidden_tauri_window_disables_preview_streaming() {
+        assert!(should_stream_preview(true, 60, 1));
+        assert!(!should_stream_preview(false, 60, 1));
+        assert!(!should_stream_preview(true, 0, 1));
+        assert!(!should_stream_preview(true, 60, 0));
+    }
 
     #[test]
     fn remote_preview_width_tracks_requested_fps() {

@@ -47,6 +47,9 @@ fn main() -> anyhow::Result<()> {
                 .title("Hypercolor")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 500.0)
+                .initialization_script(hypercolor_app::window::visibility_state_script(
+                    !cli.start_minimized,
+                ))
                 .visible(!cli.start_minimized)
                 .build()?;
 

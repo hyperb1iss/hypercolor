@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use hypercolor_leptos_ext::events::{
-    EventHandle, document as browser_document, document_event_target, on,
+    EventHandle, document as browser_document, document_event_target, on, window as browser_window,
 };
 use hypercolor_leptos_ext::prelude::{
     TimeoutHandle, current_page_location, now_ms, random_unit, set_timeout as browser_set_timeout,
@@ -14,6 +14,7 @@ use hypercolor_leptos_ext::ws::transport::{
 };
 use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MessageEvent;
 
 use super::messages::{
@@ -26,11 +27,13 @@ use super::preview::{
     clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
     request_preview_subscription, request_screen_preview_subscription,
     request_web_viewport_preview_subscription, send_canvas_unsubscribe,
-    send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
+    send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use crate::api::DeviceMetricsSnapshot;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
+const TAURI_WINDOW_VISIBILITY_EVENT: &str = "hypercolor-window-visibility";
+const TAURI_WINDOW_VISIBLE_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
 
 fn quantize_preview_fps(value: f64) -> f32 {
     #[allow(clippy::cast_possible_truncation)]
@@ -114,6 +117,7 @@ impl WsManager {
         let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) = signal(0_u32);
         let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
+        let (app_window_visible, set_app_window_visible) = signal(tauri_window_is_visible());
         let (last_backpressure_at_ms, set_last_backpressure_at_ms) = signal(None::<f64>);
         let (backpressure_probe_epoch, set_backpressure_probe_epoch) = signal(0_u64);
 
@@ -130,6 +134,8 @@ impl WsManager {
         let socket_callbacks: StoredValue<Option<WebSocketEventHandlers>, LocalStorage> =
             StoredValue::new_local(None);
         let visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
+            StoredValue::new_local(None);
+        let tauri_visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
             StoredValue::new_local(None);
         let reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
@@ -322,7 +328,8 @@ impl WsManager {
             let client_cap = preview_page_cap.get().min(preview_transport_cap.get());
             let width_cap = preview_width_cap.get();
             let is_visible = page_visible.get();
-            if engine_target == 0 || consumer_count == 0 {
+            let window_visible = app_window_visible.get();
+            if !should_stream_preview(window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_preview_subscription(
                         requested_preview,
@@ -352,7 +359,8 @@ impl WsManager {
             let engine_target = engine_preview_target.get();
             let consumer_count = screen_preview_consumers.get();
             let is_visible = page_visible.get();
-            if engine_target == 0 || consumer_count == 0 {
+            let window_visible = app_window_visible.get();
+            if !should_stream_preview(window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_screen_preview_subscription(
                         requested_screen_preview,
@@ -377,7 +385,8 @@ impl WsManager {
             let engine_target = engine_preview_target.get();
             let consumer_count = web_viewport_preview_consumers.get();
             let is_visible = page_visible.get();
-            if engine_target == 0 || consumer_count == 0 {
+            let window_visible = app_window_visible.get();
+            if !should_stream_preview(window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_web_viewport_preview_subscription(
                         requested_web_viewport_preview,
@@ -474,6 +483,7 @@ impl WsManager {
             let state = connection_state.get();
             let device = display_preview_device.get();
             let is_visible = page_visible.get();
+            let window_visible = app_window_visible.get();
             if state != ConnectionState::Connected {
                 set_display_preview_frame.set(None);
                 return;
@@ -481,7 +491,7 @@ impl WsManager {
             let Some(ws) = ws_handle.get_value() else {
                 return;
             };
-            match (is_visible, device) {
+            match (window_visible && is_visible, device) {
                 (true, Some(device_id)) if !device_id.is_empty() => {
                     super::preview::send_display_preview_subscribe(&ws, &device_id, 15);
                 }
@@ -508,6 +518,24 @@ impl WsManager {
                 },
             );
             visibility_change_callback.set_value(Some(on_visibility_change));
+        }
+
+        // Tauri native-window visibility listener. Browser tab visibility only
+        // caps preview FPS; a hidden app window should unsubscribe entirely.
+        if let Some(window) = browser_window() {
+            tauri_visibility_change_callback.update_value(|handle| {
+                if let Some(mut handle) = handle.take() {
+                    handle.cancel();
+                }
+            });
+            let on_tauri_visibility_change = on(
+                window.unchecked_ref(),
+                TAURI_WINDOW_VISIBILITY_EVENT,
+                move |_| {
+                    set_app_window_visible.set(tauri_window_is_visible());
+                },
+            );
+            tauri_visibility_change_callback.set_value(Some(on_tauri_visibility_change));
         }
 
         // Initial connection
@@ -614,4 +642,18 @@ fn build_ws_url() -> String {
 
 fn document_is_visible() -> bool {
     browser_document().is_none_or(|document| !document.hidden())
+}
+
+fn tauri_window_is_visible() -> bool {
+    let Some(window) = browser_window() else {
+        return true;
+    };
+
+    js_sys::Reflect::get(
+        window.as_ref(),
+        &JsValue::from_str(TAURI_WINDOW_VISIBLE_GLOBAL),
+    )
+    .ok()
+    .and_then(|value| value.as_bool())
+    .unwrap_or(true)
 }
