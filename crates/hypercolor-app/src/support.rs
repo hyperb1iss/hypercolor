@@ -15,6 +15,7 @@ const PAWNIO_HOME_ENV: &str = "HYPERCOLOR_PAWNIO_HOME";
 const PAWNIO_DLL_NAME: &str = "PawnIOLib.dll";
 const PAWNIO_SERVICE_NAME: &str = "PawnIO";
 const SMBUS_SERVICE_NAME: &str = "HypercolorSmBus";
+const DAEMON_SERVICE_NAME: &str = "Hypercolor";
 const HARDWARE_SUPPORT_SCRIPT_NAME: &str = "install-windows-hardware-support.ps1";
 const PAWNIO_SETUP_NAME: &str = "PawnIO_setup.exe";
 const SMBUS_SERVICE_EXE_NAME: &str = "hypercolor-smbus-service.exe";
@@ -108,6 +109,22 @@ pub struct PawnIoHelperLaunchResult {
     pub exit_code: Option<i32>,
 }
 
+/// Status of the optional full Hypercolor daemon Windows SCM service.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsDaemonServiceStatus {
+    /// Whether the current platform can query Windows SCM services.
+    pub platform_supported: bool,
+    /// Windows service name used by the legacy/headless daemon service.
+    pub service_name: String,
+    /// Raw service install/state information.
+    pub service: ServiceSupportStatus,
+    /// Whether the service currently reports `RUNNING`.
+    pub running: bool,
+    /// Whether the app should reuse the service instead of proposing per-user replacement.
+    pub reuse_recommended: bool,
+}
+
 /// Detect PawnIO and SMBus support status for the app UI.
 ///
 /// # Errors
@@ -120,6 +137,16 @@ pub fn detect_pawnio_support(app: AppHandle) -> Result<PawnIoSupportStatus, Stri
     Ok(detect_pawnio_support_from_resource_dir(
         resource_dir.as_deref(),
     ))
+}
+
+/// Detect the optional Windows SCM daemon service.
+#[tauri::command]
+#[must_use]
+pub fn detect_windows_daemon_service() -> WindowsDaemonServiceStatus {
+    windows_daemon_service_status_from_query(
+        cfg!(target_os = "windows"),
+        query_service_status(DAEMON_SERVICE_NAME),
+    )
 }
 
 /// Launch the bundled elevated PawnIO + SMBus broker installer.
@@ -252,6 +279,24 @@ pub fn launch_pawnio_helper_from_resource_dir(
     Ok(PawnIoHelperLaunchResult {
         exit_code: status.code(),
     })
+}
+
+/// Build the full daemon service status from a service query result.
+#[must_use]
+pub fn windows_daemon_service_status_from_query(
+    platform_supported: bool,
+    service: ServiceSupportStatus,
+) -> WindowsDaemonServiceStatus {
+    let running =
+        platform_supported && service.installed && service.state.as_deref() == Some("RUNNING");
+
+    WindowsDaemonServiceStatus {
+        platform_supported,
+        service_name: DAEMON_SERVICE_NAME.to_owned(),
+        service,
+        running,
+        reuse_recommended: running,
+    }
 }
 
 /// Parse the service state from `sc.exe query` output.

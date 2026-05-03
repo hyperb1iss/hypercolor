@@ -15,7 +15,8 @@ use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
 };
 use crate::tauri_bridge::{
-    self, PawnIoHelperOptions, PawnIoSupportStatus, bundled_payload_ready, smbus_support_ready,
+    self, PawnIoHelperOptions, PawnIoSupportStatus, WindowsDaemonServiceStatus,
+    bundled_payload_ready, smbus_support_ready, windows_daemon_service_conflict,
 };
 use crate::toasts;
 
@@ -462,6 +463,7 @@ pub fn SessionSection(
         <section id="section-session" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Session & Power" icon=LuPower />
             <NativeStartupPanel />
+            <WindowsDaemonServicePanel />
             <SettingToggle
                 label="Session Awareness"
                 description="React to actual suspend/resume, screen lock, and other desktop power events"
@@ -664,6 +666,78 @@ fn NativeStartupFrame(children: Children) -> impl IntoView {
         >
             {children()}
         </div>
+    }
+}
+
+#[component]
+fn WindowsDaemonServicePanel() -> impl IntoView {
+    let native_available = tauri_bridge::is_tauri_available();
+    let status = LocalResource::new(tauri_bridge::detect_windows_daemon_service);
+    let refresh = Callback::new(move |()| status.refetch());
+
+    view! {
+        <Show when=move || native_available>
+            {move || match status.get() {
+                Some(Ok(Some(current))) if windows_daemon_service_conflict(&current) => view! {
+                    <WindowsDaemonServiceStatusPanel
+                        status=current
+                        on_refresh=refresh
+                    />
+                }.into_any(),
+                Some(Err(error)) => view! {
+                    <NativeStartupFrame>
+                        <div class="flex items-center gap-2 text-xs text-error-red/80">
+                            <Icon icon=LuTriangleAlert width="13px" height="13px" />
+                            {format!("Windows service status unavailable: {error}")}
+                        </div>
+                    </NativeStartupFrame>
+                }.into_any(),
+                _ => ().into_any(),
+            }}
+        </Show>
+    }
+}
+
+#[component]
+fn WindowsDaemonServiceStatusPanel(
+    status: WindowsDaemonServiceStatus,
+    on_refresh: Callback<()>,
+) -> impl IntoView {
+    let service_state = status
+        .service
+        .state
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+
+    view! {
+        <NativeStartupFrame>
+            <div class="flex items-start justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2">
+                        <Icon icon=LuActivity width="15px" height="15px" style="color: rgba(241, 250, 140, 0.76)" />
+                        <span class="text-sm text-fg-primary font-medium">"Windows Service Mode"</span>
+                        <span
+                            class="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                            style="color: rgba(241, 250, 140, 0.78); background: rgba(241, 250, 140, 0.08); border: 1px solid rgba(241, 250, 140, 0.12)"
+                        >
+                            {service_state}
+                        </span>
+                    </div>
+                    <div class="text-xs text-fg-tertiary/70 mt-0.5">
+                        {format!("Using the {} SCM daemon service", status.service_name)}
+                    </div>
+                </div>
+                <button
+                    type="button"
+                    aria-label="Refresh Windows service status"
+                    title="Refresh Windows service status"
+                    class="inline-flex h-7 w-7 items-center justify-center rounded transition-colors shrink-0"
+                    style="color: rgba(241, 250, 140, 0.76); background: rgba(241, 250, 140, 0.07); border: 1px solid rgba(241, 250, 140, 0.12)"
+                    on:click=move |_| on_refresh.run(())
+                >
+                    <Icon icon=LuRefreshCw width="13px" height="13px" />
+                </button>
+            </div>
+        </NativeStartupFrame>
     }
 }
 

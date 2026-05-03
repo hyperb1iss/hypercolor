@@ -4,8 +4,9 @@ use std::{
 };
 
 use hypercolor_app::support::{
-    PawnIoHelperOptions, build_pawnio_helper_command, detect_pawnio_support_from_resource_dir,
-    parse_sc_query_state,
+    PawnIoHelperOptions, ServiceSupportStatus, build_pawnio_helper_command,
+    detect_pawnio_support_from_resource_dir, parse_sc_query_state,
+    windows_daemon_service_status_from_query,
 };
 
 #[test]
@@ -129,6 +130,34 @@ SERVICE_NAME: HypercolorSmBus
     assert_eq!(parse_sc_query_state(output), Some("RUNNING".to_owned()));
 }
 
+#[test]
+fn windows_daemon_service_status_recommends_reuse_only_when_running_on_windows() {
+    let running =
+        windows_daemon_service_status_from_query(true, service_status(true, Some("RUNNING")));
+    assert_eq!(running.service_name, "Hypercolor");
+    assert!(running.running);
+    assert!(running.reuse_recommended);
+
+    let stopped =
+        windows_daemon_service_status_from_query(true, service_status(true, Some("STOPPED")));
+    assert!(!stopped.running);
+    assert!(!stopped.reuse_recommended);
+
+    let non_windows =
+        windows_daemon_service_status_from_query(false, service_status(true, Some("RUNNING")));
+    assert!(!non_windows.running);
+    assert!(!non_windows.reuse_recommended);
+}
+
+#[test]
+fn windows_daemon_service_status_handles_missing_service() {
+    let status = windows_daemon_service_status_from_query(true, service_status(false, None));
+
+    assert!(!status.service.installed);
+    assert!(!status.running);
+    assert!(!status.reuse_recommended);
+}
+
 fn create_bundled_payload(resource_dir: &Path) {
     let tools_dir = resource_dir.join("tools");
     touch(&tools_dir.join("install-windows-hardware-support.ps1"));
@@ -161,6 +190,13 @@ fn cleanup_temp_resource_dir(dir: &Path) {
     let temp = std::env::temp_dir();
     if dir.starts_with(&temp) && dir.exists() {
         fs::remove_dir_all(dir).expect("temp resource dir should be removable");
+    }
+}
+
+fn service_status(installed: bool, state: Option<&str>) -> ServiceSupportStatus {
+    ServiceSupportStatus {
+        installed,
+        state: state.map(str::to_owned),
     }
 }
 

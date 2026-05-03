@@ -58,6 +58,17 @@ pub struct PawnIoHelperLaunchResult {
     pub exit_code: Option<i32>,
 }
 
+/// Optional full Hypercolor daemon Windows SCM service status.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsDaemonServiceStatus {
+    pub platform_supported: bool,
+    pub service_name: String,
+    pub service: ServiceSupportStatus,
+    pub running: bool,
+    pub reuse_recommended: bool,
+}
+
 /// Returns true when the UI is running inside a Tauri WebView.
 #[must_use]
 #[cfg(target_arch = "wasm32")]
@@ -84,6 +95,15 @@ pub fn smbus_support_ready(status: &PawnIoSupportStatus) -> bool {
         && status.smbus_service.state.as_deref() == Some("RUNNING")
 }
 
+/// Returns true when the native app is connected to a running Windows SCM daemon service.
+#[must_use]
+pub const fn windows_daemon_service_conflict(status: &WindowsDaemonServiceStatus) -> bool {
+    status.platform_supported
+        && status.service.installed
+        && status.running
+        && status.reuse_recommended
+}
+
 /// Detect native PawnIO support when the Tauri bridge exists.
 ///
 /// # Errors
@@ -101,6 +121,26 @@ pub async fn detect_pawnio_support() -> Result<Option<PawnIoSupportStatus>, Stri
 
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn detect_pawnio_support() -> Result<Option<PawnIoSupportStatus>, String> {
+    Ok(None)
+}
+
+/// Detect the optional full Hypercolor Windows SCM daemon service.
+///
+/// # Errors
+///
+/// Returns an error when the native command rejects or returns malformed data.
+#[cfg(target_arch = "wasm32")]
+pub async fn detect_windows_daemon_service() -> Result<Option<WindowsDaemonServiceStatus>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+
+    let value = invoke_command(&invoke, "detect_windows_daemon_service", None).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn detect_windows_daemon_service() -> Result<Option<WindowsDaemonServiceStatus>, String> {
     Ok(None)
 }
 
@@ -253,7 +293,7 @@ fn js_error_string(value: JsValue) -> String {
 mod tests {
     use super::{
         PawnIoModuleStatus, PawnIoSupportStatus, ServiceSupportStatus, bundled_payload_ready,
-        smbus_support_ready,
+        smbus_support_ready, windows_daemon_service_conflict,
     };
 
     #[test]
@@ -280,6 +320,23 @@ mod tests {
         status.smbus_service.state = Some("RUNNING".to_string());
         status.pawnio_runtime_installed = false;
         assert!(!smbus_support_ready(&status));
+    }
+
+    #[test]
+    fn windows_daemon_service_conflict_requires_supported_running_service() {
+        let mut status = windows_service_status();
+        assert!(windows_daemon_service_conflict(&status));
+
+        status.running = false;
+        assert!(!windows_daemon_service_conflict(&status));
+
+        status.running = true;
+        status.reuse_recommended = false;
+        assert!(!windows_daemon_service_conflict(&status));
+
+        status.reuse_recommended = true;
+        status.platform_supported = false;
+        assert!(!windows_daemon_service_conflict(&status));
     }
 
     fn status() -> PawnIoSupportStatus {
@@ -317,6 +374,19 @@ mod tests {
         PawnIoModuleStatus {
             name: name.to_string(),
             bundled: true,
+        }
+    }
+
+    fn windows_service_status() -> super::WindowsDaemonServiceStatus {
+        super::WindowsDaemonServiceStatus {
+            platform_supported: true,
+            service_name: "Hypercolor".to_string(),
+            service: ServiceSupportStatus {
+                installed: true,
+                state: Some("RUNNING".to_string()),
+            },
+            running: true,
+            reuse_recommended: true,
         }
     }
 }
