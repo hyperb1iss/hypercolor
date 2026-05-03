@@ -142,6 +142,66 @@ fn tauri_config_declares_dmg_layout() {
 }
 
 #[test]
+fn tauri_config_declares_macos_hardened_runtime_metadata() {
+    let config = tauri_config();
+    let macos = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("macOS"))
+        .expect("bundle.macOS should be configured");
+
+    assert_eq!(
+        macos
+            .get("hardenedRuntime")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    for (key, file_name) in [
+        ("entitlements", "entitlements.plist"),
+        ("infoPlist", "Info.plist"),
+    ] {
+        assert_eq!(
+            macos.get(key).and_then(serde_json::Value::as_str),
+            Some(file_name)
+        );
+        assert!(
+            manifest_dir().join(file_name).exists(),
+            "configured macOS bundle file should exist: {file_name}"
+        );
+    }
+}
+
+#[test]
+fn macos_bundle_plists_declare_required_permissions() {
+    let root = manifest_dir();
+    let entitlements = fs::read_to_string(root.join("entitlements.plist"))
+        .expect("entitlements.plist should be readable");
+    let info_plist =
+        fs::read_to_string(root.join("Info.plist")).expect("Info.plist should be readable");
+
+    for key in [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.network.client",
+        "com.apple.security.network.server",
+        "com.apple.security.device.audio-input",
+        "com.apple.security.device.usb",
+    ] {
+        assert!(
+            entitlements.contains(key),
+            "entitlements.plist should declare {key}"
+        );
+    }
+
+    for key in [
+        "NSMicrophoneUsageDescription",
+        "NSAppleEventsUsageDescription",
+    ] {
+        assert!(info_plist.contains(key), "Info.plist should declare {key}");
+    }
+}
+
+#[test]
 fn tauri_config_declares_sidecar_binaries() {
     let config = tauri_bundle_config();
     let external_bins = config
