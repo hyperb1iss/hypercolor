@@ -3,9 +3,10 @@ use std::path::Path;
 use hypercolor_app::supervisor::{
     DEFAULT_DAEMON_BIND, SupervisorState, bind_from_daemon_url, build_daemon_command,
     daemon_executable_name, daemon_path_candidates, health_url, macos_app_resource_dir,
-    sibling_daemon_path, sibling_ui_dir, target_triple_candidates, tauri_sidecar_daemon_name,
-    ui_dir_candidates,
+    sibling_daemon_path, sibling_ui_dir, startup_retry_delay, target_triple_candidates,
+    tauri_sidecar_daemon_name, ui_dir_candidates,
 };
+use std::time::Duration;
 use url::Url;
 
 #[test]
@@ -196,6 +197,22 @@ fn supervisor_state_starts_without_child_process() {
     let state = SupervisorState::default();
 
     assert_eq!(state.child_pid(), None);
+}
+
+#[test]
+fn startup_retry_delay_caps_to_remaining_budget() {
+    assert_eq!(
+        startup_retry_delay(Duration::from_millis(50), Duration::from_millis(250)),
+        Some(Duration::from_millis(50))
+    );
+    assert_eq!(
+        startup_retry_delay(Duration::from_millis(500), Duration::from_millis(250)),
+        Some(Duration::from_millis(250))
+    );
+    assert_eq!(
+        startup_retry_delay(Duration::ZERO, Duration::from_millis(250)),
+        None
+    );
 }
 
 fn path_strings(paths: &[std::path::PathBuf]) -> Vec<String> {

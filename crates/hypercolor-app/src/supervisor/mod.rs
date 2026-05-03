@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -20,6 +20,12 @@ const DAEMON_EXECUTABLE_STEM: &str = "hypercolor-daemon";
 
 /// Timeout for one lightweight health probe.
 pub const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Maximum time to wait for an app-spawned daemon to become healthy.
+pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Delay between daemon startup health probes.
+pub const DAEMON_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Platform-neutral command description for spawning the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +51,10 @@ impl SupervisorState {
 
     fn replace_child(&self, daemon: ManagedDaemon) {
         *self.child_guard() = Some(daemon);
+    }
+
+    fn clear_child(&self) {
+        *self.child_guard() = None;
     }
 
     fn child_guard(&self) -> MutexGuard<'_, Option<ManagedDaemon>> {
@@ -272,6 +282,43 @@ pub async fn probe_health(client: &reqwest::Client, base: &Url, timeout: Duratio
     response.is_ok_and(|response| response.status().is_success())
 }
 
+/// Wait until a daemon reports healthy or the startup timeout expires.
+pub async fn wait_until_healthy(
+    client: &reqwest::Client,
+    base: &Url,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> bool {
+    let started = Instant::now();
+
+    loop {
+        if probe_health(client, base, HEALTH_PROBE_TIMEOUT).await {
+            return true;
+        }
+
+        let elapsed = started.elapsed();
+        let Some(remaining) = timeout.checked_sub(elapsed) else {
+            return false;
+        };
+
+        let Some(delay) = startup_retry_delay(remaining, poll_interval) else {
+            return false;
+        };
+
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// Cap a startup retry delay at the remaining startup budget.
+#[must_use]
+pub fn startup_retry_delay(remaining: Duration, poll_interval: Duration) -> Option<Duration> {
+    if remaining.is_zero() {
+        None
+    } else {
+        Some(remaining.min(poll_interval))
+    }
+}
+
 /// Start supervising the daemon in the background.
 ///
 /// # Errors
@@ -314,6 +361,23 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
                 let pid = daemon.id();
                 state.replace_child(daemon);
                 tracing::info!(pid, "app-owned daemon spawned");
+                if wait_until_healthy(
+                    &client,
+                    &daemon_url,
+                    DAEMON_STARTUP_TIMEOUT,
+                    DAEMON_STARTUP_POLL_INTERVAL,
+                )
+                .await
+                {
+                    tracing::info!(pid, "app-owned daemon reported healthy");
+                } else {
+                    tracing::warn!(
+                        pid,
+                        timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                        "app-owned daemon did not become healthy before timeout"
+                    );
+                    state.clear_child();
+                }
             }
             Err(error) => {
                 tracing::warn!(%error, "failed to spawn app-owned daemon");
