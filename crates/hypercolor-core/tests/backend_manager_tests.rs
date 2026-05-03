@@ -2370,6 +2370,97 @@ async fn write_frame_places_colors_into_configured_segments() {
 }
 
 #[tokio::test]
+async fn write_frame_fills_segment_from_single_sampled_color() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "mock:point-zone",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 4)),
+    );
+
+    let layout = make_layout(vec![make_zone("zone_point", "mock:point-zone", 1)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_point".into(),
+        colors: vec![[24, 48, 96]],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 4);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(frame.len(), 4);
+    assert!(
+        frame
+            .iter()
+            .all(|color| *color == expected_led_color([24, 48, 96]))
+    );
+}
+
+#[tokio::test]
+async fn write_frame_resamples_segment_when_sample_count_differs() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "mock:resampled-zone",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 4)),
+    );
+
+    let layout = make_layout(vec![make_zone("zone_resampled", "mock:resampled-zone", 2)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_resampled".into(),
+        colors: vec![[255, 0, 0], [0, 0, 255]],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 4);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(
+        frame.as_slice(),
+        &[
+            expected_led_color([255, 0, 0]),
+            expected_led_color([255, 0, 0]),
+            expected_led_color([0, 0, 255]),
+            expected_led_color([0, 0, 255]),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn write_frame_routes_multi_zone_device_by_zone_name() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));

@@ -2055,16 +2055,26 @@ impl BackendManager {
                     staging.output.resize(segment_end, [0, 0, 0]);
                 }
 
-                let copy_len = segment.length.min(remapped_len);
-                if copy_len > 0 {
+                let wrote_segment =
+                    write_segment_colors(&mut staging.output, segment, remapped_colors);
+                if wrote_segment {
                     let start = segment.start;
-                    let end = start.saturating_add(copy_len);
-                    staging.output[start..end].copy_from_slice(&remapped_colors[..copy_len]);
+                    let end = segment.end();
                     apply_zone_brightness(&mut staging.output[start..end], route.zone_brightness);
                     staging.mark_written_range(start, end);
+                    if remapped_len != segment.length {
+                        debug!(
+                            zone_id = %zone_id,
+                            layout_device_id = %route.layout_device_id,
+                            segment_start = segment.start,
+                            segment_length = segment.length,
+                            sampled_led_count = remapped_len,
+                            "normalized sampled zone colors to mapped segment length"
+                        );
+                    }
                 }
 
-                (copy_len != segment.length).then_some((
+                (!wrote_segment && segment.length > 0).then_some((
                     segment.start,
                     segment.length,
                     remapped_len,
@@ -2490,6 +2500,44 @@ fn remap_zone_colors<'a>(
     }
 
     scratch.as_slice()
+}
+
+fn write_segment_colors(
+    output: &mut Vec<[u8; 3]>,
+    segment: SegmentRange,
+    colors: &[[u8; 3]],
+) -> bool {
+    if segment.length == 0 {
+        return true;
+    }
+    if colors.is_empty() {
+        return false;
+    }
+
+    let start = segment.start;
+    let end = segment.end();
+    if output.len() < end {
+        output.resize(end, [0, 0, 0]);
+    }
+    let target = &mut output[start..end];
+
+    match colors.len().cmp(&segment.length) {
+        std::cmp::Ordering::Equal => target.copy_from_slice(colors),
+        std::cmp::Ordering::Less | std::cmp::Ordering::Greater => {
+            if colors.len() == 1 {
+                target.fill(colors[0]);
+            } else {
+                let source_len = colors.len();
+                let target_len = target.len();
+                for (index, color) in target.iter_mut().enumerate() {
+                    let source_index = index.saturating_mul(source_len) / target_len;
+                    *color = colors[source_index.min(source_len - 1)];
+                }
+            }
+        }
+    }
+
+    true
 }
 
 fn normalized_led_mapping(led_mapping: Option<&[u32]>) -> Option<Box<[u32]>> {
