@@ -1,6 +1,6 @@
 use hypercolor_app::state::{
-    ApiEnvelope, AppState, EffectListResponse, ServerResponse, StatusResponse, WsEventMessage,
-    WsHello,
+    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, ServerResponse,
+    StateUpdate, StatusResponse, WsEventMessage, WsHello,
 };
 use serde_json::json;
 
@@ -181,4 +181,60 @@ fn parse_effect_list_response() {
     assert_eq!(list.items.len(), 2);
     assert_eq!(list.items[0].name, "Effect A");
     assert_eq!(list.items[1].id, "bbb");
+}
+
+#[test]
+fn state_update_applies_dynamic_tray_changes() {
+    let mut state = AppState::default();
+
+    state.apply_daemon_message(DaemonMessage::Connected(AppState {
+        connected: true,
+        running: true,
+        brightness: 50,
+        ..AppState::default()
+    }));
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::EffectChanged {
+        id: "aurora".to_owned(),
+        name: "Aurora".to_owned(),
+    }));
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::BrightnessChanged(
+        80,
+    )));
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::EffectsRefreshed(
+        vec![EffectInfo {
+            id: "wave".to_owned(),
+            name: "Wave".to_owned(),
+        }],
+    )));
+
+    assert!(state.connected);
+    assert!(!state.paused);
+    assert_eq!(state.brightness, 80);
+    assert_eq!(
+        state
+            .current_effect
+            .as_ref()
+            .map(|effect| effect.id.as_str()),
+        Some("aurora")
+    );
+    assert_eq!(state.effects[0].name, "Wave");
+}
+
+#[test]
+fn disconnected_message_preserves_discovered_servers() {
+    let mut state = AppState {
+        connected: true,
+        running: true,
+        active_server: Some(0),
+        device_count: 4,
+        servers: Vec::new(),
+        ..AppState::default()
+    };
+
+    state.apply_daemon_message(DaemonMessage::Disconnected);
+
+    assert!(!state.connected);
+    assert!(!state.running);
+    assert_eq!(state.device_count, 0);
+    assert_eq!(state.active_server, None);
 }

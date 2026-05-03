@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
 
     tauri::Builder::default()
         .manage(hypercolor_app::supervisor::SupervisorState::default())
+        .manage(hypercolor_app::tray::TrayRuntime::default())
         .invoke_handler(tauri::generate_handler![
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::launch_pawnio_helper

@@ -1,5 +1,6 @@
 use hypercolor_app::{
     logging,
+    state::TrayCommand,
     tray::{
         actions::{self, ActionTarget},
         menu::MenuAction,
@@ -52,29 +53,29 @@ fn user_effects_dir_matches_core_layout() {
 }
 
 #[test]
-fn daemon_actions_remain_placeholders_for_client_wiring() {
+fn daemon_actions_resolve_to_daemon_client_commands() {
     assert_eq!(
         actions::target_for_action(&MenuAction::ApplyEffect("aurora".to_owned())),
-        ActionTarget::DaemonPlaceholder
+        ActionTarget::DaemonCommand(TrayCommand::ApplyEffect("aurora".to_owned()))
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::ApplyProfile("movie".to_owned())),
-        ActionTarget::DaemonPlaceholder
+        ActionTarget::DaemonCommand(TrayCommand::ApplyProfile("movie".to_owned()))
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::SwitchServer(1)),
-        ActionTarget::DaemonPlaceholder
+        ActionTarget::DaemonCommand(TrayCommand::SwitchServer(1))
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::TogglePause),
-        ActionTarget::DaemonPlaceholder
+        ActionTarget::DaemonCommand(TrayCommand::TogglePause)
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::RefreshServers),
-        ActionTarget::DaemonPlaceholder
+        ActionTarget::DaemonCommand(TrayCommand::RefreshServers)
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::StopEffect),
-        ActionTarget::DaemonPlaceholder
+        ActionTarget::DaemonCommand(TrayCommand::StopEffect)
     );
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use hypercolor_core::config::paths::data_dir;
 
-use crate::{DEFAULT_DAEMON_URL, logging};
+use crate::{DEFAULT_DAEMON_URL, logging, state::TrayCommand};
 
 use super::menu::MenuAction;
 
@@ -16,7 +16,7 @@ pub enum ActionTarget {
     OpenDirectory(PathBuf),
     ShowSettings,
     Quit,
-    DaemonPlaceholder,
+    DaemonCommand(TrayCommand),
 }
 
 /// Resolve the native target for a menu action.
@@ -29,12 +29,18 @@ pub fn target_for_action(action: &MenuAction) -> ActionTarget {
         MenuAction::OpenUserEffectsFolder => ActionTarget::OpenDirectory(user_effects_dir()),
         MenuAction::Settings => ActionTarget::ShowSettings,
         MenuAction::Quit => ActionTarget::Quit,
-        MenuAction::TogglePause
-        | MenuAction::RefreshServers
-        | MenuAction::StopEffect
-        | MenuAction::ApplyEffect(_)
-        | MenuAction::ApplyProfile(_)
-        | MenuAction::SwitchServer(_) => ActionTarget::DaemonPlaceholder,
+        MenuAction::TogglePause => ActionTarget::DaemonCommand(TrayCommand::TogglePause),
+        MenuAction::RefreshServers => ActionTarget::DaemonCommand(TrayCommand::RefreshServers),
+        MenuAction::StopEffect => ActionTarget::DaemonCommand(TrayCommand::StopEffect),
+        MenuAction::ApplyEffect(id) => {
+            ActionTarget::DaemonCommand(TrayCommand::ApplyEffect(id.clone()))
+        }
+        MenuAction::ApplyProfile(id) => {
+            ActionTarget::DaemonCommand(TrayCommand::ApplyProfile(id.clone()))
+        }
+        MenuAction::SwitchServer(index) => {
+            ActionTarget::DaemonCommand(TrayCommand::SwitchServer(*index))
+        }
     }
 }
 

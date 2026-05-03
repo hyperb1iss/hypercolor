@@ -59,6 +59,62 @@ impl AppState {
             active_server: None,
         }
     }
+
+    /// Apply a daemon client message to this state snapshot.
+    pub fn apply_daemon_message(&mut self, message: DaemonMessage) {
+        match message {
+            DaemonMessage::Connected(next_state) => *self = next_state,
+            DaemonMessage::Disconnected => {
+                self.connected = false;
+                self.running = false;
+                self.paused = false;
+                self.current_effect = None;
+                self.active_scene_name = None;
+                self.scene_snapshot_locked = false;
+                self.device_count = 0;
+                self.server_identity = None;
+                self.active_server = None;
+            }
+            DaemonMessage::ServersUpdated(servers) => {
+                self.servers = servers;
+            }
+            DaemonMessage::StateUpdate(update) => self.apply_state_update(update),
+        }
+    }
+
+    fn apply_state_update(&mut self, update: StateUpdate) {
+        match update {
+            StateUpdate::EffectChanged { id, name } => {
+                self.current_effect = Some(EffectInfo { id, name });
+                self.paused = false;
+            }
+            StateUpdate::EffectStopped => {
+                self.current_effect = None;
+            }
+            StateUpdate::SceneChanged {
+                name,
+                snapshot_locked,
+            } => {
+                self.active_scene_name = name;
+                self.scene_snapshot_locked = snapshot_locked;
+            }
+            StateUpdate::BrightnessChanged(brightness) => {
+                self.brightness = brightness;
+            }
+            StateUpdate::Paused => {
+                self.paused = true;
+            }
+            StateUpdate::Resumed => {
+                self.paused = false;
+            }
+            StateUpdate::DeviceCountChanged(device_count) => {
+                self.device_count = device_count;
+            }
+            StateUpdate::EffectsRefreshed(effects) => {
+                self.effects = effects;
+            }
+        }
+    }
 }
 
 impl Default for AppState {
@@ -68,14 +124,14 @@ impl Default for AppState {
 }
 
 /// Lightweight effect information for display in the tray menu.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectInfo {
     pub id: String,
     pub name: String,
 }
 
 /// Lightweight profile information for display in the tray menu.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileInfo {
     pub id: String,
     pub name: String,
@@ -127,7 +183,7 @@ pub enum StateUpdate {
 }
 
 /// Commands from the tray UI thread to the async daemon client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum TrayCommand {
     /// Apply the given effect by ID.
