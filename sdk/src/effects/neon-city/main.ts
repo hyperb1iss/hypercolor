@@ -34,6 +34,18 @@ interface Beacon {
     size: number
 }
 
+interface BuildingLayout {
+    x: number
+    y: number
+    width: number
+    height: number
+    layer: number
+    spireTipX: number
+    spireTipY: number
+    aircraftWarning: boolean
+    pulse: number
+}
+
 interface PaletteSet {
     bgTop: string
     bgBottom: string
@@ -209,8 +221,44 @@ function hexToRgba(hex: string, alpha: number): string {
     return `rgba(${color.r}, ${color.g}, ${color.b}, ${clamp(alpha, 0, 1).toFixed(3)})`
 }
 
+function fillRectAlpha(
+    ctx: CanvasRenderingContext2D,
+    color: string,
+    alpha: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+): void {
+    ctx.globalAlpha = clamp(alpha, 0, 1)
+    ctx.fillStyle = color
+    ctx.fillRect(x, y, width, height)
+    ctx.globalAlpha = 1
+}
+
+function fillPathAlpha(ctx: CanvasRenderingContext2D, color: string, alpha: number): void {
+    ctx.globalAlpha = clamp(alpha, 0, 1)
+    ctx.fillStyle = color
+    ctx.fill()
+    ctx.globalAlpha = 1
+}
+
 function getPalette(name: string): PaletteSet {
     return PALETTES[name as (typeof COLOR_MODES)[number]] ?? PALETTES['Void Matter']
+}
+
+function emptyBuildingLayout(): BuildingLayout {
+    return {
+        aircraftWarning: false,
+        height: 0,
+        layer: 0,
+        pulse: 0,
+        spireTipX: 0,
+        spireTipY: 0,
+        width: 0,
+        x: 0,
+        y: 0,
+    }
 }
 
 function computeCounts(density: number): { buildings: number; lanes: number; beacons: number } {
@@ -273,6 +321,7 @@ export default canvas.stateful(
         let buildings: Building[] = []
         let lanes: TransitLane[] = []
         let beacons: Beacon[] = []
+        const layouts: BuildingLayout[] = []
         let counts = computeCounts(56)
         let lastDensity = 56
         let initialized = false
@@ -382,7 +431,8 @@ export default canvas.stateful(
             sceneIndex: number,
             time: number,
         ): void {
-            ctx.strokeStyle = hexToRgba(palette.grid, 0.08 + haze * 0.1)
+            ctx.globalAlpha = clamp(0.08 + haze * 0.1, 0, 1)
+            ctx.strokeStyle = palette.grid
             ctx.lineWidth = 1
 
             const horizon = sceneHorizon(h, sceneIndex)
@@ -403,10 +453,10 @@ export default canvas.stateful(
                     ctx.stroke()
                 }
             }
+            ctx.globalAlpha = 1
 
             const pulseY = horizon - 10 + Math.sin(time * 1.3) * 6
-            ctx.fillStyle = hexToRgba(palette.haze, 0.05 + haze * 0.1)
-            ctx.fillRect(0, pulseY, w, 8)
+            fillRectAlpha(ctx, palette.haze, 0.05 + haze * 0.1, 0, pulseY, w, 8)
         }
 
         function drawSkySweep(
@@ -444,15 +494,16 @@ export default canvas.stateful(
             height: number,
             palette: PaletteSet,
             glow: number,
-        ): { spireTipX: number; spireTipY: number } | null {
-            const facade = ctx.createLinearGradient(x, y, x, y + height)
-            facade.addColorStop(0, building.accentStrip > 0.48 ? palette.buildingB : palette.buildingA)
-            facade.addColorStop(1, palette.buildingA)
+            layout: BuildingLayout,
+        ): void {
+            const facade = building.accentStrip > 0.48 ? palette.buildingB : palette.buildingA
             ctx.fillStyle = facade
             ctx.fillRect(x, y, width, height)
+            fillRectAlpha(ctx, palette.buildingA, 0.32, x, y + height * 0.45, width, height * 0.55)
 
-            ctx.fillStyle = hexToRgba(palette.grid, 0.12 + glow * 0.08)
-            ctx.fillRect(x, y, width, Math.max(2, height * 0.03))
+            fillRectAlpha(ctx, palette.grid, 0.12 + glow * 0.08, x, y, width, Math.max(2, height * 0.03))
+            layout.spireTipX = x + width * 0.5
+            layout.spireTipY = y
 
             if (building.silhouette === 'stepped') {
                 const stepW = width * 0.68
@@ -461,15 +512,16 @@ export default canvas.stateful(
                 const stepY = y - stepH
                 ctx.fillStyle = palette.buildingB
                 ctx.fillRect(stepX, stepY, stepW, stepH)
-                ctx.fillStyle = hexToRgba(palette.grid, 0.18 + glow * 0.1)
-                ctx.fillRect(stepX, stepY, stepW, Math.max(1, stepH * 0.2))
+                fillRectAlpha(ctx, palette.grid, 0.18 + glow * 0.1, stepX, stepY, stepW, Math.max(1, stepH * 0.2))
 
                 const capW = stepW * 0.45
                 const capX = stepX + (stepW - capW) * 0.5
                 const capH = Math.max(2, stepH * 0.55)
                 ctx.fillStyle = palette.buildingA
                 ctx.fillRect(capX, stepY - capH, capW, capH)
-                return { spireTipX: capX + capW * 0.5, spireTipY: stepY - capH }
+                layout.spireTipX = capX + capW * 0.5
+                layout.spireTipY = stepY - capH
+                return
             }
 
             if (building.silhouette === 'spire') {
@@ -477,12 +529,12 @@ export default canvas.stateful(
                 const spireX = x + width * 0.5 - spireW * 0.5
                 const spireH = height * (0.3 + building.spireHeight * 0.5)
                 const spireY = y - spireH
-                const spireGrad = ctx.createLinearGradient(spireX, spireY, spireX, y)
-                spireGrad.addColorStop(0, palette.buildingA)
-                spireGrad.addColorStop(1, palette.buildingB)
-                ctx.fillStyle = spireGrad
+                ctx.fillStyle = palette.buildingB
                 ctx.fillRect(spireX, spireY, spireW, spireH)
-                return { spireTipX: spireX + spireW * 0.5, spireTipY: spireY }
+                fillRectAlpha(ctx, palette.grid, 0.1 + glow * 0.08, spireX, spireY, spireW, spireH * 0.35)
+                layout.spireTipX = spireX + spireW * 0.5
+                layout.spireTipY = spireY
+                return
             }
 
             if (building.silhouette === 'dome') {
@@ -494,12 +546,10 @@ export default canvas.stateful(
                 ctx.ellipse(cx, cy, domeR, domeR * 0.72, 0, Math.PI, 0, false)
                 ctx.closePath()
                 ctx.fill()
-                ctx.fillStyle = hexToRgba(palette.grid, 0.14 + glow * 0.08)
-                ctx.fillRect(cx - domeR, cy - 1, domeR * 2, 2)
-                return { spireTipX: cx, spireTipY: cy - domeR * 0.72 }
+                fillRectAlpha(ctx, palette.grid, 0.14 + glow * 0.08, cx - domeR, cy - 1, domeR * 2, 2)
+                layout.spireTipX = cx
+                layout.spireTipY = cy - domeR * 0.72
             }
-
-            return null
         }
 
         function drawBuildings(
@@ -511,28 +561,8 @@ export default canvas.stateful(
             haze: number,
             sceneIndex: number,
             time: number,
-        ): Array<{
-            x: number
-            y: number
-            width: number
-            height: number
-            layer: number
-            spireTipX: number
-            spireTipY: number
-            aircraftWarning: boolean
-            pulse: number
-        }> {
-            const layouts: Array<{
-                x: number
-                y: number
-                width: number
-                height: number
-                layer: number
-                spireTipX: number
-                spireTipY: number
-                aircraftWarning: boolean
-                pulse: number
-            }> = []
+        ): number {
+            let layoutCount = 0
             const ground = sceneGround(h, sceneIndex)
 
             for (const building of buildings) {
@@ -547,18 +577,24 @@ export default canvas.stateful(
                 const height = building.height * h * (sceneIndex === 1 ? 1.08 : sceneIndex === 2 ? 0.88 : 1)
                 const y = ground - height
 
-                const silhouetteResult = drawBuildingSilhouette(ctx, building, x, y, width, height, palette, glow)
-                const spireTipX = silhouetteResult?.spireTipX ?? x + width * 0.5
-                const spireTipY = silhouetteResult?.spireTipY ?? y
+                const layout = layouts[layoutCount] ?? emptyBuildingLayout()
+                layouts[layoutCount] = layout
+                drawBuildingSilhouette(ctx, building, x, y, width, height, palette, glow, layout)
+                const spireTipX = layout.spireTipX
+                const spireTipY = layout.spireTipY
 
                 const crownGlow = 0.08 + glow * 0.22
                 if (building.rimLight > 0.34 && building.silhouette !== 'dome') {
                     const crownHeight = Math.max(2, height * (0.016 + building.rimLight * 0.035))
-                    ctx.fillStyle = hexToRgba(
+                    fillRectAlpha(
+                        ctx,
                         building.accentStrip > 0.5 ? palette.windowWarm : palette.windowCool,
                         crownGlow,
+                        x,
+                        y - crownHeight,
+                        width,
+                        crownHeight,
                     )
-                    ctx.fillRect(x, y - crownHeight, width, crownHeight)
                 }
 
                 if (building.accentStrip > 0.58) {
@@ -568,8 +604,15 @@ export default canvas.stateful(
                         (0.18 +
                             0.16 *
                                 (0.5 + 0.5 * Math.sin(time * (1.0 + building.layer) + building.pulse + building.x * 4)))
-                    ctx.fillStyle = hexToRgba(palette.traffic, 0.1 + glow * 0.18)
-                    ctx.fillRect(stripX, y + height * 0.1, Math.max(2, width * 0.045), stripHeight)
+                    fillRectAlpha(
+                        ctx,
+                        palette.traffic,
+                        0.1 + glow * 0.18,
+                        stripX,
+                        y + height * 0.1,
+                        Math.max(2, width * 0.045),
+                        stripHeight,
+                    )
                 }
 
                 const windowPad = 3
@@ -612,8 +655,15 @@ export default canvas.stateful(
                             const wh = cellHeight * 0.46
                             const color = hash(id * 7.2) > 0.68 ? palette.windowWarm : palette.windowCool
 
-                            ctx.fillStyle = hexToRgba(color, 0.1 + flicker * (0.34 + glow * 0.18) + scanBand * 0.08)
-                            ctx.fillRect(wx, wy, ww, wh)
+                            fillRectAlpha(
+                                ctx,
+                                color,
+                                0.1 + flicker * (0.34 + glow * 0.18) + scanBand * 0.08,
+                                wx,
+                                wy,
+                                ww,
+                                wh,
+                            )
                         }
                     }
                 }
@@ -621,29 +671,42 @@ export default canvas.stateful(
                 const atmosphereDepth = 1 - building.layer
                 const fadeAmount = atmosphereDepth * (0.18 + haze * 0.32)
                 if (fadeAmount > 0.02) {
-                    ctx.fillStyle = hexToRgba(palette.bgBottom, fadeAmount)
                     const extentTop = Math.min(y, spireTipY) - 2
-                    ctx.fillRect(x - 2, extentTop, width + 4, ground - extentTop + 2)
+                    fillRectAlpha(
+                        ctx,
+                        palette.bgBottom,
+                        fadeAmount,
+                        x - 2,
+                        extentTop,
+                        width + 4,
+                        ground - extentTop + 2,
+                    )
                     if (haze > 0.25) {
-                        ctx.fillStyle = hexToRgba(palette.haze, atmosphereDepth * haze * 0.06)
-                        ctx.fillRect(x - 2, extentTop, width + 4, ground - extentTop + 2)
+                        fillRectAlpha(
+                            ctx,
+                            palette.haze,
+                            atmosphereDepth * haze * 0.06,
+                            x - 2,
+                            extentTop,
+                            width + 4,
+                            ground - extentTop + 2,
+                        )
                     }
                 }
 
-                layouts.push({
-                    aircraftWarning: building.aircraftWarning,
-                    height,
-                    layer: building.layer,
-                    pulse: building.pulse,
-                    spireTipX,
-                    spireTipY,
-                    width,
-                    x,
-                    y,
-                })
+                layout.aircraftWarning = building.aircraftWarning
+                layout.height = height
+                layout.layer = building.layer
+                layout.pulse = building.pulse
+                layout.spireTipX = spireTipX
+                layout.spireTipY = spireTipY
+                layout.width = width
+                layout.x = x
+                layout.y = y
+                layoutCount++
             }
 
-            return layouts
+            return layoutCount
         }
 
         function drawTransit(
@@ -677,22 +740,51 @@ export default canvas.stateful(
                     const rightX = Math.max(headX, tailX)
                     const bodyW = rightX - leftX
 
-                    ctx.fillStyle = hexToRgba(palette.traffic, 0.05 + glow * 0.08)
-                    ctx.fillRect(leftX - bodyW * 0.1, y - lane.thickness * 1.8, bodyW * 1.2, lane.thickness * 3.6)
-
-                    const bodyGrad = ctx.createLinearGradient(tailX, y, headX, y)
-                    bodyGrad.addColorStop(0, hexToRgba(palette.traffic, 0))
-                    bodyGrad.addColorStop(0.65, hexToRgba(palette.traffic, 0.28 + glow * 0.28))
-                    bodyGrad.addColorStop(1, hexToRgba(palette.windowCool, 0.55 + glow * 0.32))
-                    ctx.fillStyle = bodyGrad
-                    ctx.fillRect(leftX, y - lane.thickness * 0.9, bodyW, lane.thickness * 1.8)
+                    fillRectAlpha(
+                        ctx,
+                        palette.traffic,
+                        0.05 + glow * 0.08,
+                        leftX - bodyW * 0.1,
+                        y - lane.thickness * 1.8,
+                        bodyW * 1.2,
+                        lane.thickness * 3.6,
+                    )
+                    fillRectAlpha(
+                        ctx,
+                        palette.traffic,
+                        0.18 + glow * 0.18,
+                        leftX,
+                        y - lane.thickness * 0.9,
+                        bodyW,
+                        lane.thickness * 1.8,
+                    )
+                    const highlightW = bodyW * 0.36
+                    const highlightX = dir > 0 ? headX - highlightW : headX
+                    fillRectAlpha(
+                        ctx,
+                        palette.windowCool,
+                        0.16 + glow * 0.18,
+                        highlightX,
+                        y - lane.thickness * 0.75,
+                        highlightW,
+                        lane.thickness * 1.5,
+                    )
 
                     const headPixelX = headX - dir * 2
-                    ctx.fillStyle = hexToRgba(palette.windowCool, 0.7 + glow * 0.22)
-                    ctx.fillRect(headPixelX - 1.5, y - lane.thickness * 0.5, 3, lane.thickness)
+                    fillRectAlpha(
+                        ctx,
+                        palette.windowCool,
+                        0.7 + glow * 0.22,
+                        headPixelX - 1.5,
+                        y - lane.thickness * 0.5,
+                        3,
+                        lane.thickness,
+                    )
 
-                    ctx.fillStyle = hexToRgba(palette.traffic, 0.35 + glow * 0.2)
-                    ctx.fillRect(
+                    fillRectAlpha(
+                        ctx,
+                        palette.traffic,
+                        0.35 + glow * 0.2,
                         tailX + dir * segmentLength * 0.05,
                         y - lane.thickness * 0.4,
                         segmentLength * 0.08,
@@ -726,8 +818,7 @@ export default canvas.stateful(
                 const stripeT = (i + 0.5) / stripeCount
                 const y = ground + stripeT * stripeBand + Math.sin(time * 0.6 + i * 1.7) * 1.5
                 const stripeAlpha = 0.05 + (1 - stripeT) * 0.08 * (0.4 + glow * 0.5)
-                ctx.fillStyle = hexToRgba(palette.windowCool, stripeAlpha)
-                ctx.fillRect(0, y, w, 1)
+                fillRectAlpha(ctx, palette.windowCool, stripeAlpha, 0, y, w, 1)
             }
         }
 
@@ -740,7 +831,8 @@ export default canvas.stateful(
             time: number,
         ): void {
             const count = Math.floor(90 + haze * 60)
-            ctx.strokeStyle = hexToRgba(palette.haze, 0.1 + haze * 0.14)
+            ctx.globalAlpha = clamp(0.1 + haze * 0.14, 0, 1)
+            ctx.strokeStyle = palette.haze
             ctx.lineWidth = 0.9
             ctx.beginPath()
             for (let i = 0; i < count; i++) {
@@ -754,26 +846,19 @@ export default canvas.stateful(
                 ctx.lineTo(x - len * 0.18, y + len)
             }
             ctx.stroke()
+            ctx.globalAlpha = 1
         }
 
         function drawBeaconsLayer(
             ctx: CanvasRenderingContext2D,
-            layouts: Array<{
-                x: number
-                y: number
-                width: number
-                height: number
-                spireTipX: number
-                spireTipY: number
-                aircraftWarning: boolean
-                pulse: number
-            }>,
+            layoutCount: number,
             palette: PaletteSet,
             glow: number,
             time: number,
         ): void {
             for (const beacon of beacons) {
-                const building = layouts[beacon.building % Math.max(1, layouts.length)]
+                if (layoutCount === 0) continue
+                const building = layouts[beacon.building % layoutCount]
                 if (!building) continue
 
                 const x = building.x + building.width * (0.18 + beacon.offset * 0.64)
@@ -781,39 +866,59 @@ export default canvas.stateful(
                 const blink = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(time * 2.4 + beacon.pulse))
                 const size = 1 + beacon.size
 
-                ctx.fillStyle = hexToRgba(palette.beacon, 0.18 + blink * (0.34 + glow * 0.14))
-                ctx.fillRect(x - size * 0.5, y - size * 2.4, size, size * 2)
+                fillRectAlpha(
+                    ctx,
+                    palette.beacon,
+                    0.18 + blink * (0.34 + glow * 0.14),
+                    x - size * 0.5,
+                    y - size * 2.4,
+                    size,
+                    size * 2,
+                )
 
-                ctx.fillStyle = hexToRgba(palette.beacon, 0.12 + blink * (0.12 + glow * 0.1))
-                ctx.fillRect(x - 0.5, y - 10 - size * 2.2, 1, 10)
+                fillRectAlpha(
+                    ctx,
+                    palette.beacon,
+                    0.12 + blink * (0.12 + glow * 0.1),
+                    x - 0.5,
+                    y - 10 - size * 2.2,
+                    1,
+                    10,
+                )
 
                 const sweepWidth = 8 + size * 4
                 const sweepAlpha = 0.03 + blink * (0.04 + glow * 0.05)
-                ctx.fillStyle = hexToRgba(palette.beacon, sweepAlpha)
                 ctx.beginPath()
                 ctx.moveTo(x, y - 10)
                 ctx.lineTo(x - sweepWidth, y - 28 - size * 2)
                 ctx.lineTo(x + sweepWidth, y - 28 - size * 2)
                 ctx.closePath()
-                ctx.fill()
+                fillPathAlpha(ctx, palette.beacon, sweepAlpha)
             }
         }
 
         function drawAircraftWarnings(
             ctx: CanvasRenderingContext2D,
-            layouts: Array<{ spireTipX: number; spireTipY: number; aircraftWarning: boolean; pulse: number }>,
+            layoutCount: number,
             palette: PaletteSet,
             glow: number,
             time: number,
         ): void {
-            for (const building of layouts) {
+            for (let i = 0; i < layoutCount; i++) {
+                const building = layouts[i]
                 if (!building.aircraftWarning) continue
                 const slowBlink = (0.5 + 0.5 * Math.sin(time * 1.1 + building.pulse * 1.7)) ** 3
                 const intensity = 0.25 + slowBlink * (0.5 + glow * 0.25)
-                ctx.fillStyle = hexToRgba(palette.beacon, intensity)
-                ctx.fillRect(building.spireTipX - 1, building.spireTipY - 2, 2, 2)
-                ctx.fillStyle = hexToRgba(palette.beacon, intensity * 0.35)
-                ctx.fillRect(building.spireTipX - 2.5, building.spireTipY - 3.5, 5, 5)
+                fillRectAlpha(ctx, palette.beacon, intensity, building.spireTipX - 1, building.spireTipY - 2, 2, 2)
+                fillRectAlpha(
+                    ctx,
+                    palette.beacon,
+                    intensity * 0.35,
+                    building.spireTipX - 2.5,
+                    building.spireTipY - 3.5,
+                    5,
+                    5,
+                )
             }
         }
 
@@ -847,7 +952,7 @@ export default canvas.stateful(
                 drawRainStreaks(ctx, w, h, palette, haze, t)
             }
 
-            const layouts = drawBuildings(ctx, w, h, palette, glow, haze, sceneIndex, t)
+            const layoutCount = drawBuildings(ctx, w, h, palette, glow, haze, sceneIndex, t)
             drawTransit(ctx, w, h, palette, trafficFlow / 100, glow, sceneIndex, t)
 
             if (isRainGrid) {
@@ -855,13 +960,14 @@ export default canvas.stateful(
             }
 
             if (beaconsEnabled) {
-                drawBeaconsLayer(ctx, layouts, palette, glow, t)
-                drawAircraftWarnings(ctx, layouts, palette, glow, t)
+                drawBeaconsLayer(ctx, layoutCount, palette, glow, t)
+                drawAircraftWarnings(ctx, layoutCount, palette, glow, t)
             }
         }
     },
     {
         author: 'Hypercolor',
+        category: 'scenic',
         description:
             'A neon skyline breathes after dark. A moon bleeds haze across endless towers; windows flicker like a population pulse; transit vehicles knife through rain with white-hot headlights; aircraft warning beacons pulse on every spire.',
         presets: [
