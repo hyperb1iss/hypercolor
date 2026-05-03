@@ -479,6 +479,129 @@ jobs:
           path: staging/
           if-no-files-found: error
 
+  # ── Build Native App Installers ───────────────────────────────
+  build-native-app:
+    name: Native App (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [rust-check, rust-test, rust-deny, sdk, ui, e2e, web-assets]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            bundles: nsis
+            artifact-kind: nsis
+            artifact-path: |
+              target/release/bundle/nsis/*.exe
+              crates/hypercolor-app/target/release/bundle/nsis/*.exe
+          - target: macos-arm64
+            os: macos-latest
+            rust-target: aarch64-apple-darwin
+            bundles: dmg,app
+            artifact-kind: dmg-app
+            artifact-path: |
+              target/release/bundle/dmg/*.dmg
+              target/release/bundle/macos/*.app
+              crates/hypercolor-app/target/release/bundle/dmg/*.dmg
+              crates/hypercolor-app/target/release/bundle/macos/*.app
+          - target: macos-x64
+            os: macos-15-intel
+            rust-target: x86_64-apple-darwin
+            bundles: dmg,app
+            artifact-kind: dmg-app
+            artifact-path: |
+              target/release/bundle/dmg/*.dmg
+              target/release/bundle/macos/*.app
+              crates/hypercolor-app/target/release/bundle/dmg/*.dmg
+              crates/hypercolor-app/target/release/bundle/macos/*.app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-app-${{ matrix.target }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+
+      - name: Download web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: web-assets/
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Patch app version from tag
+        shell: pwsh
+        run: |
+          $configPath = "crates/hypercolor-app/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.version = "${{ steps.version.outputs.version }}"
+          $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
+
+      - name: Build native sidecar binaries
+        run: |
+          cargo build --release --locked -p hypercolor-daemon --features servo
+          cargo build --release --locked -p hypercolor-cli
+
+      - name: Stage downloaded web assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Copy-Tree($Source, $Destination) {
+            if (Test-Path -LiteralPath $Destination) {
+              Remove-Item -LiteralPath $Destination -Recurse -Force
+            }
+            New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+            if (Test-Path -LiteralPath $Source) {
+              Get-ChildItem -LiteralPath $Source -Force |
+                ForEach-Object {
+                  Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+                }
+            }
+          }
+
+          Copy-Tree "web-assets/ui" "crates/hypercolor-ui/dist"
+          Copy-Tree "web-assets/effects" "effects/hypercolor"
+
+      - name: Stage app bundle payload
+        shell: pwsh
+        run: ./scripts/stage-app-bundle-assets.ps1
+
+      - name: Build Tauri native bundle
+        working-directory: crates/hypercolor-app
+        shell: pwsh
+        env:
+          TAURI_BUNDLES: ${{ matrix.bundles }}
+        run: |
+          $configArgs = @()
+          if (Test-Path "tauri.bundle.conf.json") {
+            $configArgs += @("--config", "tauri.bundle.conf.json")
+          }
+          cargo tauri build --ci --no-sign --bundles $env:TAURI_BUNDLES @configArgs
+
+      - name: Upload native app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
+
   # ── Build Release Tarballs ────────────────────────────────────
   build-release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -616,7 +739,7 @@ jobs:
   # ── Create GitHub Release ──────────────────────────────────────
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, python-publish]
+    needs: [build-release, build-native-app, python-publish]
     uses: hyperb1iss/shared-workflows/.github/workflows/github-release.yml@main
     with:
       attach-artifacts: true
