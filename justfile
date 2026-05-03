@@ -334,6 +334,21 @@ daemon-release *args='':
 daemon-release *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --release -- {{ args }}
 
+# Diagnose Windows service, PawnIO, and daemon API state
+[windows]
+windows-diagnose *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose-windows.ps1 {{ args }}
+
+# Install the Windows service. Run from an elevated shell.
+[windows]
+windows-service-install *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows-service.ps1 {{ args }}
+
+# Uninstall the Windows service. Run from an elevated shell.
+[windows]
+windows-service-uninstall *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-windows-service.ps1 {{ args }}
+
 # Create or update a virtual display simulator, apply an effect, and print a browser preview URL
 simulator-demo *args='':
     ./scripts/simulator-demo.sh {{ args }}

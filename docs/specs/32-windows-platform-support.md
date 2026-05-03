@@ -2,9 +2,17 @@
 
 > Full Windows support for Hypercolor: USB peripherals, SMBus motherboard/GPU/DRAM RGB, audio-reactive input, session awareness, and native service lifecycle — shipping as both a tray applet and an optional Windows Service.
 
-**Status:** Draft
+**Status:** Active implementation
 **Author:** Nova
 **Date:** 2026-03-13
+
+**Implementation snapshot (2026-05-03):** Windows now has a native development path,
+cross-platform HID routing for supported USB devices, PawnIO-backed SMBus transport,
+and an optional Windows Service entry point for elevated hardware access. Use
+`just windows-diagnose` to inspect the current process owner, PawnIO service/files,
+and daemon API state. Use `just windows-service-install` from an elevated PowerShell
+session to install the `Hypercolor` service; the recipe does not start it unless
+`-Start` is passed.
 
 ---
 

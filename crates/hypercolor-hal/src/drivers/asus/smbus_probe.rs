@@ -197,6 +197,12 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
             return Ok(Vec::new());
         }
     };
+    if buses.is_empty() {
+        warn!(
+            "Windows PawnIO loaded, but no supported SMBus modules exposed a bus; ASUS Aura RAM will not be discovered"
+        );
+        return Ok(Vec::new());
+    }
 
     let mut discovered = Vec::new();
     for bus in buses {
