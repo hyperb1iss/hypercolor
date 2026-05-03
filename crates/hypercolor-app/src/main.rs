@@ -27,6 +27,7 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(url = %daemon_url, "launching Hypercolor app shell");
 
     tauri::Builder::default()
+        .manage(hypercolor_app::supervisor::SupervisorState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let forwarded = hypercolor_app::cli::AppArgs::parse(args);
             if forwarded.quit {
@@ -47,7 +48,7 @@ fn main() -> anyhow::Result<()> {
 
             tracing::info!(%url, "creating webview window");
 
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.clone()))
                 .title("Hypercolor")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 500.0)
@@ -61,6 +62,9 @@ fn main() -> anyhow::Result<()> {
 
             hypercolor_app::tray::register(app.handle())?;
             tracing::info!("tray icon registered");
+
+            hypercolor_app::supervisor::start(app.handle(), url)?;
+            tracing::info!("daemon supervisor started");
 
             Ok(())
         })

@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use hypercolor_app::supervisor::{
-    DEFAULT_DAEMON_BIND, bind_from_daemon_url, build_daemon_command, daemon_executable_name,
-    health_url, sibling_daemon_path, sibling_ui_dir,
+    DEFAULT_DAEMON_BIND, SupervisorState, bind_from_daemon_url, build_daemon_command,
+    daemon_executable_name, health_url, sibling_daemon_path, sibling_ui_dir,
 };
 use url::Url;
 
@@ -82,4 +82,11 @@ fn health_url_targets_root_health_endpoint() {
     let url = Url::parse("http://127.0.0.1:9420/app/").expect("url should parse");
 
     assert_eq!(health_url(&url).as_str(), "http://127.0.0.1:9420/health");
+}
+
+#[test]
+fn supervisor_state_starts_without_child_process() {
+    let state = SupervisorState::default();
+
+    assert_eq!(state.child_pid(), None);
 }
