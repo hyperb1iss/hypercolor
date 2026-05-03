@@ -4385,10 +4385,18 @@ name = "hypercolor-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
+ "hypercolor-core",
+ "hypercolor-types",
+ "open",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
  "url",
