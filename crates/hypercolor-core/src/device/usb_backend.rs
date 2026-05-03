@@ -422,6 +422,7 @@ impl UsbBackend {
                 interface,
                 report_id,
                 report_mode,
+                max_report_len,
                 usage_page,
                 usage,
             } => Self::open_hidapi_transport(
@@ -429,6 +430,7 @@ impl UsbBackend {
                 interface,
                 report_id,
                 report_mode,
+                max_report_len,
                 usage_page,
                 usage,
             ),
@@ -1237,6 +1239,7 @@ impl UsbBackend {
         interface: Option<u8>,
         report_id: u8,
         report_mode: hypercolor_hal::registry::HidRawReportMode,
+        max_report_len: usize,
         usage_page: Option<u16>,
         usage: Option<u16>,
     ) -> Result<Box<dyn Transport>> {
@@ -1246,6 +1249,7 @@ impl UsbBackend {
             interface,
             report_id,
             report_mode,
+            max_report_len,
             pending.serial.as_deref(),
             pending.usb_path.as_deref(),
             usage_page,

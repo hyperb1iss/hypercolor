@@ -215,6 +215,12 @@ impl Transport for UsbHidRawTransport {
         match self.report_mode {
             HidRawReportMode::FeatureReport => "USB HIDRAW (Feature Report)",
             HidRawReportMode::OutputReport => "USB HIDRAW (Output/Input Report)",
+            HidRawReportMode::FeatureReportWithReportId => {
+                "USB HIDRAW (Feature Report, report ID in payload)"
+            }
+            HidRawReportMode::OutputReportWithReportId => {
+                "USB HIDRAW (Output/Input Report, report ID in payload)"
+            }
         }
     }
 
@@ -223,11 +229,14 @@ impl Transport for UsbHidRawTransport {
 
         let _guard = self.op_lock.lock().await;
         let mut handles = self.handles.lock().await;
-        let packet = encode_feature_report_packet(data, self.report_id);
+        let packet = encode_hidraw_packet(data, self.report_id, self.report_mode);
         store_feature_report_transaction_id(&self.feature_report_state, &packet);
 
         match (&mut *handles, self.report_mode) {
-            (HidrawHandleState::Feature(handle), HidRawReportMode::FeatureReport) => {
+            (
+                HidrawHandleState::Feature(handle),
+                HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId,
+            ) => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{:02X}", self.report_id),
@@ -241,7 +250,10 @@ impl Transport for UsbHidRawTransport {
                     .await
                     .map_err(map_async_hid_error)
             }
-            (HidrawHandleState::OutputInput { writer, .. }, HidRawReportMode::OutputReport) => {
+            (
+                HidrawHandleState::OutputInput { writer, .. },
+                HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId,
+            ) => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{:02X}", self.report_id),
@@ -266,7 +278,10 @@ impl Transport for UsbHidRawTransport {
         let mut handles = self.handles.lock().await;
 
         match (&mut *handles, self.report_mode) {
-            (HidrawHandleState::Feature(handle), HidRawReportMode::FeatureReport) => {
+            (
+                HidrawHandleState::Feature(handle),
+                HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId,
+            ) => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{:02X}", self.report_id),
@@ -285,8 +300,12 @@ impl Transport for UsbHidRawTransport {
                     .await
                     .map_err(map_async_hid_error)?;
                 buffer.truncate(read);
-                let response =
-                    decode_feature_report_packet(&buffer, self.report_id, self.max_packet_len);
+                let response = decode_feature_report_packet(
+                    &buffer,
+                    self.report_id,
+                    self.max_packet_len,
+                    report_mode_payload_includes_report_id(self.report_mode),
+                );
 
                 trace!(
                     device_path = %self.device_path,
@@ -298,7 +317,10 @@ impl Transport for UsbHidRawTransport {
 
                 Ok(response)
             }
-            (HidrawHandleState::OutputInput { reader, .. }, HidRawReportMode::OutputReport) => {
+            (
+                HidrawHandleState::OutputInput { reader, .. },
+                HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId,
+            ) => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{:02X}", self.report_id),
@@ -339,11 +361,14 @@ impl Transport for UsbHidRawTransport {
 
         let _guard = self.op_lock.lock().await;
         let mut handles = self.handles.lock().await;
-        let packet = encode_feature_report_packet(data, self.report_id);
+        let packet = encode_hidraw_packet(data, self.report_id, self.report_mode);
         store_feature_report_transaction_id(&self.feature_report_state, &packet);
 
         match (&mut *handles, self.report_mode) {
-            (HidrawHandleState::Feature(handle), HidRawReportMode::FeatureReport) => {
+            (
+                HidrawHandleState::Feature(handle),
+                HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId,
+            ) => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{:02X}", self.report_id),
@@ -375,8 +400,12 @@ impl Transport for UsbHidRawTransport {
                     .await
                     .map_err(map_async_hid_error)?;
                 buffer.truncate(read);
-                let response =
-                    decode_feature_report_packet(&buffer, self.report_id, self.max_packet_len);
+                let response = decode_feature_report_packet(
+                    &buffer,
+                    self.report_id,
+                    self.max_packet_len,
+                    report_mode_payload_includes_report_id(self.report_mode),
+                );
 
                 trace!(
                     device_path = %self.device_path,
@@ -388,7 +417,10 @@ impl Transport for UsbHidRawTransport {
 
                 Ok(response)
             }
-            (HidrawHandleState::OutputInput { reader, writer }, HidRawReportMode::OutputReport) => {
+            (
+                HidrawHandleState::OutputInput { reader, writer },
+                HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId,
+            ) => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{:02X}", self.report_id),
@@ -444,12 +476,12 @@ async fn open_handles(
     report_mode: HidRawReportMode,
 ) -> Result<HidrawHandleState, TransportError> {
     match report_mode {
-        HidRawReportMode::FeatureReport => device
+        HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId => device
             .open_feature_handle()
             .await
             .map(HidrawHandleState::Feature)
             .map_err(map_async_hid_error),
-        HidRawReportMode::OutputReport => {
+        HidRawReportMode::OutputReport | HidRawReportMode::OutputReportWithReportId => {
             let (reader, writer) = device.open().await.map_err(map_async_hid_error)?;
             Ok(HidrawHandleState::OutputInput { reader, writer })
         }
@@ -568,6 +600,17 @@ fn saturating_timeout_ms(timeout: Duration) -> u64 {
 #[doc(hidden)]
 #[must_use]
 pub fn encode_feature_report_packet(payload: &[u8], report_id: u8) -> Vec<u8> {
+    encode_hidraw_packet(payload, report_id, HidRawReportMode::FeatureReport)
+}
+
+fn encode_hidraw_packet(payload: &[u8], report_id: u8, report_mode: HidRawReportMode) -> Vec<u8> {
+    if report_mode_payload_includes_report_id(report_mode) {
+        if payload.is_empty() {
+            return vec![report_id];
+        }
+        return payload.to_vec();
+    }
+
     let mut packet = Vec::with_capacity(payload.len().saturating_add(1));
     packet.push(report_id);
     packet.extend_from_slice(payload);
@@ -597,14 +640,23 @@ pub fn decode_feature_report_packet(
     buffer: &[u8],
     report_id: u8,
     expected_payload_len: usize,
+    payload_includes_report_id: bool,
 ) -> Vec<u8> {
-    if buffer.len() == expected_payload_len.saturating_add(1)
+    if !payload_includes_report_id
+        && buffer.len() == expected_payload_len.saturating_add(1)
         && buffer.first().copied() == Some(report_id)
     {
         return buffer[1..].to_vec();
     }
 
     buffer.to_vec()
+}
+
+fn report_mode_payload_includes_report_id(report_mode: HidRawReportMode) -> bool {
+    matches!(
+        report_mode,
+        HidRawReportMode::FeatureReportWithReportId | HidRawReportMode::OutputReportWithReportId
+    )
 }
 
 fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {

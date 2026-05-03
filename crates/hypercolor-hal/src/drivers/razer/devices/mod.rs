@@ -28,6 +28,7 @@ use crate::registry::{
     DeviceDescriptor, HidRawReportMode, ProtocolBinding, ProtocolFactory, TransportType,
 };
 
+use super::crc::RAZER_REPORT_LEN;
 use super::protocol::RazerProtocol;
 use super::seiren_v3::SeirenV3Protocol;
 use super::types::{
@@ -868,6 +869,7 @@ fn hidapi_descriptor(
             interface,
             report_id,
             report_mode: HidRawReportMode::FeatureReport,
+            max_report_len: RAZER_REPORT_LEN + 1,
             usage_page,
             usage,
         },

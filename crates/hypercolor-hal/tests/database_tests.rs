@@ -2,23 +2,30 @@ use std::collections::BTreeSet;
 
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::asus::{
-    ASUS_VID, AURA_REPORT_ID, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
+    ASUS_VID, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
+};
+use hypercolor_hal::drivers::corsair::framing::{
+    LCD_REPORT_SIZE, LINK_WRITE_BUF_SIZE, LN_WRITE_BUF_SIZE,
 };
 use hypercolor_hal::drivers::corsair::{
-    CORSAIR_VID, PID_COMMANDER_PRO, PID_ELITE_CAPELLIX_LCD, PID_ELITE_CAPELLIX_LCD_ALT,
-    PID_ICUE_LINK_LCD, PID_ICUE_LINK_SYSTEM_HUB, PID_LIGHTING_NODE_CORE, PID_LIGHTING_NODE_PRO,
-    PID_NAUTILUS_RS_LCD, PID_XC7_RGB_ELITE_LCD, PID_XD6_ELITE_LCD,
+    CORSAIR_LCD_REPORT_ID, CORSAIR_VID, PID_COMMANDER_PRO, PID_ELITE_CAPELLIX_LCD,
+    PID_ELITE_CAPELLIX_LCD_ALT, PID_ICUE_LINK_LCD, PID_ICUE_LINK_SYSTEM_HUB,
+    PID_LIGHTING_NODE_CORE, PID_LIGHTING_NODE_PRO, PID_NAUTILUS_RS_LCD, PID_XC7_RGB_ELITE_LCD,
+    PID_XD6_ELITE_LCD,
 };
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::lianli::{
     LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
-    PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL_INFINITY, TL_REPORT_ID,
+    PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL_INFINITY, TL_PACKET_LEN,
+    TL_REPORT_ID,
 };
 use hypercolor_hal::drivers::nollie::{
-    NOLLIE_GEN2_VENDOR_ID, NOLLIE_VENDOR_ID, PID_NOLLIE_1, PID_NOLLIE_8_V2, PID_NOLLIE_16_V3,
-    PID_NOLLIE_28_12_A, PID_NOLLIE_32, PID_PRISM_8, PRISM_VENDOR_ID,
+    GEN1_HID_REPORT_SIZE, NOLLIE_GEN2_VENDOR_ID, NOLLIE_VENDOR_ID, PID_NOLLIE_1, PID_NOLLIE_8_V2,
+    PID_NOLLIE_16_V3, PID_NOLLIE_28_12_A, PID_NOLLIE_32, PID_PRISM_8, PRISM_VENDOR_ID,
 };
-use hypercolor_hal::drivers::prismrgb::{PID_PRISM_MINI, PID_PRISM_S, PRISM_GCS_VENDOR_ID};
+use hypercolor_hal::drivers::prismrgb::{
+    HID_REPORT_SIZE as PRISMRGB_REPORT_SIZE, PID_PRISM_MINI, PID_PRISM_S, PRISM_GCS_VENDOR_ID,
+};
 use hypercolor_hal::drivers::push2::{
     ABLETON_VENDOR_ID, PID_PUSH_2, PUSH2_DISPLAY_ENDPOINT, PUSH2_DISPLAY_INTERFACE,
     PUSH2_MIDI_INTERFACE,
@@ -26,7 +33,7 @@ use hypercolor_hal::drivers::push2::{
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
     PID_BLADE_15_LATE_2021_ADVANCED, PID_BLADE_PRO_2016, PID_HUNTSMAN_V2, PID_MAMBA_ELITE,
-    PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_VENDOR_ID,
+    PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_REPORT_LEN, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{
@@ -50,18 +57,20 @@ fn expected_razer_shared_hid_transport(
         interface: Some(interface),
         report_id,
         report_mode: HidRawReportMode::FeatureReport,
+        max_report_len: RAZER_REPORT_LEN + 1,
         usage_page,
         usage,
     }
 }
 
-fn expected_report_id_payload_hid_transport(interface: u8) -> TransportType {
+fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize) -> TransportType {
     #[cfg(windows)]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
             report_id: 0x00,
             report_mode: HidRawReportMode::OutputReportWithReportId,
+            max_report_len,
             usage_page: None,
             usage: None,
         }
@@ -69,6 +78,56 @@ fn expected_report_id_payload_hid_transport(interface: u8) -> TransportType {
 
     #[cfg(not(windows))]
     {
+        TransportType::UsbHid { interface }
+    }
+}
+
+fn expected_asus_hid_transport(interface: u8) -> TransportType {
+    #[cfg(windows)]
+    {
+        TransportType::UsbHidApi {
+            interface: Some(interface),
+            report_id: AURA_REPORT_ID,
+            report_mode: HidRawReportMode::OutputReport,
+            max_report_len: AURA_REPORT_PAYLOAD_LEN + 1,
+            usage_page: None,
+            usage: None,
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        TransportType::UsbHidRaw {
+            interface,
+            report_id: AURA_REPORT_ID,
+            report_mode: HidRawReportMode::OutputReport,
+            usage_page: None,
+            usage: None,
+        }
+    }
+}
+
+fn expected_windows_hidapi_or_usb_hid(
+    interface: u8,
+    report_id: u8,
+    max_report_len: usize,
+) -> TransportType {
+    #[cfg(windows)]
+    {
+        TransportType::UsbHidApi {
+            interface: Some(interface),
+            report_id,
+            report_mode: HidRawReportMode::OutputReportWithReportId,
+            max_report_len,
+            usage_page: None,
+            usage: None,
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = report_id;
+        let _ = max_report_len;
         TransportType::UsbHid { interface }
     }
 }
@@ -81,16 +140,7 @@ fn lookup_returns_asus_motherboard_descriptor() {
     assert_eq!(descriptor.name, "ASUS Aura Motherboard (Gen 3)");
     assert_eq!(descriptor.family, DeviceFamily::new_static("asus", "ASUS"));
     assert_eq!(descriptor.protocol.id, "asus/motherboard-gen3");
-    assert_eq!(
-        descriptor.transport,
-        TransportType::UsbHidRaw {
-            interface: 2,
-            report_id: AURA_REPORT_ID,
-            report_mode: HidRawReportMode::OutputReport,
-            usage_page: None,
-            usage: None,
-        }
-    );
+    assert_eq!(descriptor.transport, expected_asus_hid_transport(2));
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "ASUS Aura Motherboard");
@@ -124,7 +174,7 @@ fn lookup_returns_prism_8_descriptor() {
     assert_eq!(descriptor.protocol.id, "nollie/prism-8");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(0)
+        expected_report_id_payload_hid_transport(0, GEN1_HID_REPORT_SIZE)
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -173,7 +223,8 @@ fn lookup_returns_lianli_tl_fan_descriptor() {
         TransportType::UsbHidApi {
             interface: None,
             report_id: TL_REPORT_ID,
-            report_mode: HidRawReportMode::OutputReport,
+            report_mode: HidRawReportMode::OutputReportWithReportId,
+            max_report_len: TL_PACKET_LEN,
             usage_page: Some(LIANLI_TL_USAGE_PAGE),
             usage: None,
         }
@@ -305,7 +356,10 @@ fn lookup_returns_icue_link_system_hub_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/icue-link-system-hub");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, 0x00, LINK_WRITE_BUF_SIZE)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair iCUE LINK System Hub");
@@ -324,7 +378,10 @@ fn lookup_returns_lighting_node_core_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/lighting-node-core");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, 0x00, LN_WRITE_BUF_SIZE)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair Lighting Node Core");
@@ -343,7 +400,10 @@ fn lookup_returns_lighting_node_pro_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/lighting-node-pro");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, 0x00, LN_WRITE_BUF_SIZE)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair Lighting Node Pro");
@@ -362,7 +422,10 @@ fn lookup_returns_commander_pro_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/commander-pro");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, 0x00, LN_WRITE_BUF_SIZE)
+    );
 }
 
 #[test]
@@ -376,7 +439,10 @@ fn lookup_returns_elite_capellix_lcd_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/elite-capellix-lcd");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, CORSAIR_LCD_REPORT_ID, LCD_REPORT_SIZE)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair Elite Capellix LCD");
@@ -395,7 +461,10 @@ fn lookup_returns_icue_link_lcd_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/icue-link-lcd");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, CORSAIR_LCD_REPORT_ID, LCD_REPORT_SIZE)
+    );
 }
 
 #[test]
@@ -426,7 +495,10 @@ fn lookup_returns_xc7_rgb_elite_lcd_descriptor() {
         DeviceFamily::new_static("corsair", "Corsair")
     );
     assert_eq!(descriptor.protocol.id, "corsair/xc7-rgb-elite-lcd");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        expected_windows_hidapi_or_usb_hid(0, CORSAIR_LCD_REPORT_ID, LCD_REPORT_SIZE)
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair XC7 RGB Elite LCD");
@@ -454,7 +526,7 @@ fn lookup_returns_nollie_8_v2_descriptor() {
     assert_eq!(descriptor.protocol.id, "nollie/nollie-8-v2");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(0)
+        expected_report_id_payload_hid_transport(0, GEN1_HID_REPORT_SIZE)
     );
 }
 
@@ -471,7 +543,7 @@ fn lookup_returns_nollie_1_descriptor() {
     assert_eq!(descriptor.protocol.id, "nollie/nollie-1");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(0)
+        expected_report_id_payload_hid_transport(0, GEN1_HID_REPORT_SIZE)
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -530,7 +602,7 @@ fn lookup_returns_prism_s_descriptor() {
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-s");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(2)
+        expected_report_id_payload_hid_transport(2, PRISMRGB_REPORT_SIZE)
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -551,7 +623,7 @@ fn lookup_returns_prism_mini_descriptor() {
     assert_eq!(descriptor.protocol.id, "prismrgb/prism-mini");
     assert_eq!(
         descriptor.transport,
-        expected_report_id_payload_hid_transport(2)
+        expected_report_id_payload_hid_transport(2, PRISMRGB_REPORT_SIZE)
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -820,6 +892,7 @@ fn lookup_returns_thunderbolt_4_dock_descriptor_with_interface_wildcard() {
             interface: None,
             report_id: 0x00,
             report_mode: HidRawReportMode::FeatureReport,
+            max_report_len: RAZER_REPORT_LEN + 1,
             usage_page: Some(0x000C),
             usage: Some(0x0001),
         }

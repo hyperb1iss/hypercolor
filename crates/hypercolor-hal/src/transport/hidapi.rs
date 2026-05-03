@@ -20,8 +20,6 @@ use crate::transport::{Transport, TransportError};
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
-const DEFAULT_MAX_PACKET_LEN: usize = 90;
-
 #[derive(Clone)]
 struct HidApiCandidate {
     path: String,
@@ -42,7 +40,7 @@ pub struct UsbHidApiTransport {
     device_path: String,
     report_id: u8,
     report_mode: HidRawReportMode,
-    max_packet_len: usize,
+    max_report_len: usize,
     device: Arc<Mutex<HidDevice>>,
     feature_report_state: Arc<Mutex<FeatureReportRequestState>>,
     closed: AtomicBool,
@@ -70,6 +68,7 @@ impl UsbHidApiTransport {
         interface_number: Option<u8>,
         report_id: u8,
         report_mode: HidRawReportMode,
+        max_report_len: usize,
         serial: Option<&str>,
         usb_path: Option<&str>,
         usage_page: Option<u16>,
@@ -182,7 +181,7 @@ impl UsbHidApiTransport {
             device_path,
             report_id,
             report_mode,
-            max_packet_len: DEFAULT_MAX_PACKET_LEN,
+            max_report_len,
             device: Arc::new(Mutex::new(device)),
             feature_report_state: Arc::new(Mutex::new(FeatureReportRequestState::default())),
             closed: AtomicBool::new(false),
@@ -214,13 +213,83 @@ impl Transport for UsbHidApiTransport {
     }
 
     async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
+        self.send_with_mode(data, self.report_mode).await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: crate::protocol::TransferType,
+    ) -> Result<(), TransportError> {
+        self.send_with_mode(data, self.mode_for_transfer(transfer_type))
+            .await
+    }
+
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
+        self.receive_with_mode(timeout, self.report_mode).await
+    }
+
+    async fn receive_with_type(
+        &self,
+        timeout: Duration,
+        transfer_type: crate::protocol::TransferType,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.receive_with_mode(timeout, self.mode_for_transfer(transfer_type))
+            .await
+    }
+
+    async fn send_receive(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.send_receive_with_mode(data, timeout, self.report_mode)
+            .await
+    }
+
+    async fn send_receive_with_type(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        transfer_type: crate::protocol::TransferType,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.send_receive_with_mode(data, timeout, self.mode_for_transfer(transfer_type))
+            .await
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        self.closed.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl UsbHidApiTransport {
+    fn mode_for_transfer(&self, transfer_type: crate::protocol::TransferType) -> HidRawReportMode {
+        match transfer_type {
+            crate::protocol::TransferType::Primary | crate::protocol::TransferType::Bulk => {
+                self.report_mode
+            }
+            crate::protocol::TransferType::HidReport => {
+                if report_mode_payload_includes_report_id(self.report_mode) {
+                    HidRawReportMode::FeatureReportWithReportId
+                } else {
+                    HidRawReportMode::FeatureReport
+                }
+            }
+        }
+    }
+
+    async fn send_with_mode(
+        &self,
+        data: &[u8],
+        report_mode: HidRawReportMode,
+    ) -> Result<(), TransportError> {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
         let feature_report_state = Arc::clone(&self.feature_report_state);
         let report_id = self.report_id;
-        let report_mode = self.report_mode;
         let packet = encode_hidapi_packet(data, report_id, report_mode);
 
         match report_mode {
@@ -263,22 +332,25 @@ impl Transport for UsbHidApiTransport {
         }
     }
 
-    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
+    async fn receive_with_mode(
+        &self,
+        timeout: Duration,
+        report_mode: HidRawReportMode,
+    ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
         let feature_report_state = Arc::clone(&self.feature_report_state);
         let report_id = self.report_id;
-        let max_packet_len = self.max_packet_len;
-        let report_mode = self.report_mode;
+        let max_report_len = self.max_report_len;
 
         match report_mode {
             HidRawReportMode::FeatureReport | HidRawReportMode::FeatureReportWithReportId => {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
-                    max_packet_len,
+                    max_report_len,
                     "hidapi feature report receive requested"
                 );
 
@@ -288,7 +360,7 @@ impl Transport for UsbHidApiTransport {
                     receive_feature_report_locked(
                         device.as_ref(),
                         report_id,
-                        max_packet_len,
+                        max_report_len,
                         transaction_id,
                         report_mode_payload_includes_report_id(report_mode),
                     )
@@ -312,13 +384,13 @@ impl Transport for UsbHidApiTransport {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
-                    max_packet_len,
+                    max_report_len,
                     timeout_ms = timeout.as_millis(),
                     "hidapi input report receive requested"
                 );
 
                 let response = tokio::task::spawn_blocking(move || {
-                    receive_input_report_locked(device.as_ref(), max_packet_len, timeout)
+                    receive_input_report_locked(device.as_ref(), max_report_len, timeout)
                 })
                 .await
                 .map_err(|error| TransportError::IoError {
@@ -338,18 +410,18 @@ impl Transport for UsbHidApiTransport {
         }
     }
 
-    async fn send_receive(
+    async fn send_receive_with_mode(
         &self,
         data: &[u8],
         timeout: Duration,
+        report_mode: HidRawReportMode,
     ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
         let report_id = self.report_id;
-        let max_packet_len = self.max_packet_len;
-        let report_mode = self.report_mode;
+        let max_report_len = self.max_report_len;
         let feature_report_state = Arc::clone(&self.feature_report_state);
         let packet = encode_hidapi_packet(data, report_id, report_mode);
 
@@ -365,7 +437,7 @@ impl Transport for UsbHidApiTransport {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
-                    max_packet_len,
+                    max_report_len,
                     "hidapi feature report receive requested"
                 );
 
@@ -374,7 +446,7 @@ impl Transport for UsbHidApiTransport {
                         device.as_ref(),
                         &packet,
                         report_id,
-                        max_packet_len,
+                        max_report_len,
                         feature_report_state.as_ref(),
                         report_mode_payload_includes_report_id(report_mode),
                     )
@@ -405,7 +477,7 @@ impl Transport for UsbHidApiTransport {
                 trace!(
                     device_path = %self.device_path,
                     report_id = format_args!("0x{report_id:02X}"),
-                    max_packet_len,
+                    max_report_len,
                     timeout_ms = timeout.as_millis(),
                     "hidapi input report receive requested"
                 );
@@ -414,7 +486,7 @@ impl Transport for UsbHidApiTransport {
                     send_receive_output_report_locked(
                         device.as_ref(),
                         &packet,
-                        max_packet_len,
+                        max_report_len,
                         timeout,
                     )
                 })
@@ -434,11 +506,6 @@ impl Transport for UsbHidApiTransport {
                 Ok(response)
             }
         }
-    }
-
-    async fn close(&self) -> Result<(), TransportError> {
-        self.closed.store(true, Ordering::Release);
-        Ok(())
     }
 }
 
@@ -483,13 +550,13 @@ fn send_output_report_locked(
 fn receive_feature_report_locked(
     device: &Mutex<HidDevice>,
     report_id: u8,
-    max_packet_len: usize,
+    max_report_len: usize,
     transaction_id: Option<u8>,
     payload_includes_report_id: bool,
 ) -> Result<Vec<u8>, TransportError> {
     let device = lock_hidapi_device(device)?;
     let mut buffer =
-        encode_feature_report_request_buffer(report_id, max_packet_len, transaction_id);
+        encode_feature_report_request_buffer(report_id, max_report_len, transaction_id);
 
     let read = device
         .get_feature_report(&mut buffer)
@@ -499,7 +566,7 @@ fn receive_feature_report_locked(
     Ok(decode_feature_report_packet(
         &buffer,
         report_id,
-        max_packet_len,
+        max_report_len,
         payload_includes_report_id,
     ))
 }
@@ -508,7 +575,7 @@ fn send_receive_feature_report_locked(
     device: &Mutex<HidDevice>,
     packet: &[u8],
     report_id: u8,
-    max_packet_len: usize,
+    max_report_len: usize,
     feature_report_state: &Mutex<FeatureReportRequestState>,
     payload_includes_report_id: bool,
 ) -> Result<Vec<u8>, TransportError> {
@@ -520,7 +587,7 @@ fn send_receive_feature_report_locked(
 
     let transaction_id = load_feature_report_transaction_id(feature_report_state);
     let mut buffer =
-        encode_feature_report_request_buffer(report_id, max_packet_len, transaction_id);
+        encode_feature_report_request_buffer(report_id, max_report_len, transaction_id);
 
     let read = device
         .get_feature_report(&mut buffer)
@@ -530,19 +597,19 @@ fn send_receive_feature_report_locked(
     Ok(decode_feature_report_packet(
         &buffer,
         report_id,
-        max_packet_len,
+        max_report_len,
         payload_includes_report_id,
     ))
 }
 
 fn receive_input_report_locked(
     device: &Mutex<HidDevice>,
-    max_packet_len: usize,
+    max_report_len: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, TransportError> {
     let device = lock_hidapi_device(device)?;
     let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+    let mut buffer = vec![0_u8; max_report_len];
     let read = device
         .read_timeout(&mut buffer, timeout_ms)
         .map_err(|error| map_hidapi_error(&error))?;
@@ -553,11 +620,11 @@ fn receive_input_report_locked(
 fn send_receive_output_report_locked(
     device: &Mutex<HidDevice>,
     packet: &[u8],
-    max_packet_len: usize,
+    max_report_len: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, TransportError> {
     send_output_report_locked(device, packet)?;
-    receive_input_report_locked(device, max_packet_len, timeout)
+    receive_input_report_locked(device, max_report_len, timeout)
 }
 
 fn c_string_for_path(path: &str) -> Result<CString, TransportError> {
@@ -592,10 +659,13 @@ pub fn encode_hidapi_packet_for_testing(
 
 fn encode_feature_report_request_buffer(
     report_id: u8,
-    max_packet_len: usize,
+    max_report_len: usize,
     transaction_id: Option<u8>,
 ) -> Vec<u8> {
-    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+    let mut buffer = vec![0_u8; max_report_len];
+    if buffer.is_empty() {
+        return buffer;
+    }
     buffer[0] = report_id;
     if let Some(transaction_id) = transaction_id
         && buffer.len() > 2
@@ -603,6 +673,16 @@ fn encode_feature_report_request_buffer(
         buffer[2] = transaction_id;
     }
     buffer
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn encode_feature_report_request_buffer_for_testing(
+    report_id: u8,
+    max_report_len: usize,
+    transaction_id: Option<u8>,
+) -> Vec<u8> {
+    encode_feature_report_request_buffer(report_id, max_report_len, transaction_id)
 }
 
 fn store_feature_report_transaction_id(state: &Mutex<FeatureReportRequestState>, packet: &[u8]) {
@@ -618,17 +698,33 @@ fn load_feature_report_transaction_id(state: &Mutex<FeatureReportRequestState>) 
 fn decode_feature_report_packet(
     buffer: &[u8],
     report_id: u8,
-    expected_payload_len: usize,
+    expected_report_len: usize,
     payload_includes_report_id: bool,
 ) -> Vec<u8> {
     if !payload_includes_report_id
-        && buffer.len() == expected_payload_len.saturating_add(1)
+        && buffer.len() == expected_report_len
         && buffer.first().copied() == Some(report_id)
     {
         return buffer[1..].to_vec();
     }
 
     buffer.to_vec()
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn decode_feature_report_packet_for_testing(
+    buffer: &[u8],
+    report_id: u8,
+    expected_report_len: usize,
+    payload_includes_report_id: bool,
+) -> Vec<u8> {
+    decode_feature_report_packet(
+        buffer,
+        report_id,
+        expected_report_len,
+        payload_includes_report_id,
+    )
 }
 
 fn report_mode_payload_includes_report_id(report_mode: HidRawReportMode) -> bool {

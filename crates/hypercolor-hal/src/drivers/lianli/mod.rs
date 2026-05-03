@@ -22,4 +22,4 @@ pub use devices::{
 };
 pub use ene::Ene6k77Protocol;
 pub use legacy::LegacyUniHubProtocol;
-pub use tl::TlFanProtocol;
+pub use tl::{TL_PACKET_LEN, TlFanProtocol};

@@ -3,8 +3,9 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::drivers::corsair::CORSAIR_VID;
+use crate::drivers::corsair::framing::LCD_REPORT_SIZE;
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::CorsairLcdProtocol;
 
@@ -67,6 +68,25 @@ pub fn build_xd6_elite_lcd_protocol() -> Box<dyn Protocol> {
     build_protocol("Corsair XD6 Elite LCD", 0x01, 0x40)
 }
 
+#[cfg(windows)]
+const fn corsair_lcd_transport() -> TransportType {
+    TransportType::UsbHidApi {
+        interface: Some(CORSAIR_LCD_INTERFACE),
+        report_id: CORSAIR_LCD_REPORT_ID,
+        report_mode: HidRawReportMode::OutputReportWithReportId,
+        max_report_len: LCD_REPORT_SIZE,
+        usage_page: None,
+        usage: None,
+    }
+}
+
+#[cfg(not(windows))]
+const fn corsair_lcd_transport() -> TransportType {
+    TransportType::UsbHid {
+        interface: CORSAIR_LCD_INTERFACE,
+    }
+}
+
 macro_rules! lcd_descriptor {
     (
         pid: $pid:expr,
@@ -79,9 +99,7 @@ macro_rules! lcd_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("corsair", "Corsair"),
-            transport: TransportType::UsbHid {
-                interface: CORSAIR_LCD_INTERFACE,
-            },
+            transport: corsair_lcd_transport(),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,

@@ -3,8 +3,9 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::drivers::corsair::CORSAIR_VID;
+use crate::drivers::corsair::framing::LN_WRITE_BUF_SIZE;
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::CorsairLightingNodeProtocol;
 
@@ -62,6 +63,23 @@ pub fn build_spec_omega_rgb_protocol() -> Box<dyn Protocol> {
     build_protocol("Corsair SPEC OMEGA RGB", 2)
 }
 
+#[cfg(windows)]
+const fn corsair_lighting_node_transport() -> TransportType {
+    TransportType::UsbHidApi {
+        interface: Some(0),
+        report_id: 0x00,
+        report_mode: HidRawReportMode::OutputReportWithReportId,
+        max_report_len: LN_WRITE_BUF_SIZE,
+        usage_page: None,
+        usage: None,
+    }
+}
+
+#[cfg(not(windows))]
+const fn corsair_lighting_node_transport() -> TransportType {
+    TransportType::UsbHid { interface: 0 }
+}
+
 macro_rules! lighting_node_descriptor {
     (
         pid: $pid:expr,
@@ -75,7 +93,7 @@ macro_rules! lighting_node_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("corsair", "Corsair"),
-            transport: TransportType::UsbHid { interface: 0 },
+            transport: corsair_lighting_node_transport(),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,

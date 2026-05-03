@@ -20,7 +20,7 @@ use crate::protocol::{
 
 use super::common::{LianLiHubVariant, TL_REPORT_ID};
 
-const TL_PACKET_LEN: usize = 64;
+pub const TL_PACKET_LEN: usize = 64;
 const TL_PAYLOAD_LEN: usize = 58;
 const TL_SET_LIGHT_LEN: usize = 20;
 const TL_LEDS_PER_FAN: usize = 26;

@@ -2,7 +2,7 @@ use std::error::Error;
 use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::drivers::razer::{RAZER_VENDOR_ID, RazerReport, razer_crc};
+use hypercolor_hal::drivers::razer::{RAZER_REPORT_LEN, RAZER_VENDOR_ID, RazerReport, razer_crc};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_hal::transport::Transport;
@@ -129,6 +129,7 @@ fn expected_mamba_transport() -> TransportType {
             interface: Some(0),
             report_id: 0x00,
             report_mode: HidRawReportMode::FeatureReport,
+            max_report_len: RAZER_REPORT_LEN + 1,
             usage_page: Some(0x0001),
             usage: Some(0x0002),
         }
@@ -182,6 +183,7 @@ async fn open_mamba_transport(
         Some(interface),
         report_id,
         report_mode,
+        RAZER_REPORT_LEN + 1,
         usb.serial_number(),
         Some(&device_usb_path),
         usage_page,
@@ -262,6 +264,7 @@ async fn mamba_elite_protocol_smoke() -> Result<(), Box<dyn Error>> {
             interface,
             report_id,
             report_mode,
+            max_report_len: _,
             usage_page,
             usage,
         } => (

@@ -11,7 +11,7 @@ use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::{QmkKeyboardConfig, QmkProtocol};
-use super::types::{ProtocolRevision, USAGE_ID, USAGE_PAGE};
+use super::types::{PACKET_SIZE, ProtocolRevision, USAGE_ID, USAGE_PAGE};
 
 // ── Well-known QMK keyboard VIDs ─────────────────────────────────────────
 
@@ -157,7 +157,8 @@ macro_rules! qmk_descriptor {
             transport: TransportType::UsbHidApi {
                 interface: None,
                 report_id: 0x00,
-                report_mode: HidRawReportMode::OutputReport,
+                report_mode: HidRawReportMode::OutputReportWithReportId,
+                max_report_len: PACKET_SIZE,
                 usage_page: Some(USAGE_PAGE),
                 usage: Some(USAGE_ID),
             },

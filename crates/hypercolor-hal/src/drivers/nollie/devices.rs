@@ -7,7 +7,9 @@ use crate::protocol::Protocol;
 use crate::registry::HidRawReportMode;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
-use super::protocol::{NollieModel, NollieProtocol, ProtocolVersion};
+use super::protocol::{
+    GEN1_HID_REPORT_SIZE, GEN2_COLOR_REPORT_SIZE, NollieModel, NollieProtocol, ProtocolVersion,
+};
 
 pub const PRISM_VENDOR_ID: u16 = 0x16D5;
 pub const NOLLIE_VENDOR_ID: u16 = 0x16D2;
@@ -49,18 +51,19 @@ pub fn build_nollie_32_protocol() -> Box<dyn Protocol> {
 }
 
 #[cfg(windows)]
-const fn nollie_hid_transport(interface: u8) -> TransportType {
+const fn nollie_hid_transport(interface: u8, max_report_len: usize) -> TransportType {
     TransportType::UsbHidApi {
         interface: Some(interface),
         report_id: 0x00,
         report_mode: HidRawReportMode::OutputReportWithReportId,
+        max_report_len,
         usage_page: None,
         usage: None,
     }
 }
 
 #[cfg(not(windows))]
-const fn nollie_hid_transport(interface: u8) -> TransportType {
+const fn nollie_hid_transport(interface: u8, _max_report_len: usize) -> TransportType {
     TransportType::UsbHid { interface }
 }
 
@@ -71,6 +74,7 @@ macro_rules! nollie_descriptor {
         name: $name:expr,
         family: $family:expr,
         protocol_id: $protocol_id:expr,
+        max_report_len: $max_report_len:expr,
         builder: $builder:path
     ) => {
         DeviceDescriptor {
@@ -78,7 +82,7 @@ macro_rules! nollie_descriptor {
             product_id: $pid,
             name: $name,
             family: $family,
-            transport: nollie_hid_transport(0),
+            transport: nollie_hid_transport(0, $max_report_len),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
@@ -95,6 +99,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "PrismRGB Prism 8",
         family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
         protocol_id: "nollie/prism-8",
+        max_report_len: GEN1_HID_REPORT_SIZE,
         builder: build_prism_8_protocol
     ),
     nollie_descriptor!(
@@ -103,6 +108,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 1",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-1",
+        max_report_len: GEN1_HID_REPORT_SIZE,
         builder: build_nollie_1_protocol
     ),
     nollie_descriptor!(
@@ -111,6 +117,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 8 v2",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-8-v2",
+        max_report_len: GEN1_HID_REPORT_SIZE,
         builder: build_nollie_8_v2_protocol
     ),
     nollie_descriptor!(
@@ -119,6 +126,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 28/12",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-28-12",
+        max_report_len: GEN1_HID_REPORT_SIZE,
         builder: build_nollie_28_12_protocol
     ),
     nollie_descriptor!(
@@ -127,6 +135,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 28/12 (rev B)",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-28-12-b",
+        max_report_len: GEN1_HID_REPORT_SIZE,
         builder: build_nollie_28_12_protocol
     ),
     nollie_descriptor!(
@@ -135,6 +144,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 28/12 (rev C)",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-28-12-c",
+        max_report_len: GEN1_HID_REPORT_SIZE,
         builder: build_nollie_28_12_protocol
     ),
     nollie_descriptor!(
@@ -143,6 +153,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 16 v3",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-16-v3",
+        max_report_len: GEN2_COLOR_REPORT_SIZE,
         builder: build_nollie_16_v3_protocol
     ),
     nollie_descriptor!(
@@ -151,6 +162,7 @@ static NOLLIE_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Nollie 32",
         family: DeviceFamily::new_static("nollie", "Nollie"),
         protocol_id: "nollie/nollie-32",
+        max_report_len: GEN2_COLOR_REPORT_SIZE,
         builder: build_nollie_32_protocol
     ),
 ];

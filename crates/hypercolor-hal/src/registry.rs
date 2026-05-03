@@ -115,6 +115,9 @@ pub enum TransportType {
         report_id: u8,
         /// Whether HID I/O should use feature reports or output/input reports.
         report_mode: HidRawReportMode,
+        /// Full HID report buffer length used for reads and feature-report
+        /// requests, including the report ID byte when the OS API expects it.
+        max_report_len: usize,
         /// Optional HID usage page filter for devices that expose multiple
         /// collections on the same interface.
         usage_page: Option<u16>,

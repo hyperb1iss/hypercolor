@@ -8,7 +8,7 @@ use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, Trans
 use super::common::{LianLiHubVariant, TL_REPORT_ID};
 use super::ene::Ene6k77Protocol;
 use super::legacy::LegacyUniHubProtocol;
-use super::tl::TlFanProtocol;
+use super::tl::{TL_PACKET_LEN, TlFanProtocol};
 
 /// ENE-based Lian Li vendor ID.
 pub const LIANLI_ENE_VENDOR_ID: u16 = 0x0CF2;
@@ -209,7 +209,8 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         transport: TransportType::UsbHidApi {
             interface: None,
             report_id: TL_REPORT_ID,
-            report_mode: HidRawReportMode::OutputReport,
+            report_mode: HidRawReportMode::OutputReportWithReportId,
+            max_report_len: TL_PACKET_LEN,
             usage_page: Some(LIANLI_TL_USAGE_PAGE),
             usage: None,
         },

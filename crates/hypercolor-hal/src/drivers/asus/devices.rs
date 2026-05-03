@@ -6,7 +6,7 @@ use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::AuraUsbProtocol;
-use super::types::{ASUS_VID, AURA_REPORT_ID, AuraControllerGen};
+use super::types::{ASUS_VID, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN, AuraControllerGen};
 
 /// ASUS Aura addressable-only controller, generation 1.
 pub const PID_AURA_ADDRESSABLE_GEN1: u16 = 0x1867;
@@ -81,6 +81,29 @@ pub fn build_aura_terminal_protocol() -> Box<dyn Protocol> {
     Box::new(AuraUsbProtocol::new(AuraControllerGen::Terminal))
 }
 
+#[cfg(windows)]
+const fn aura_hid_transport(interface: u8) -> TransportType {
+    TransportType::UsbHidApi {
+        interface: Some(interface),
+        report_id: AURA_REPORT_ID,
+        report_mode: HidRawReportMode::OutputReport,
+        max_report_len: AURA_REPORT_PAYLOAD_LEN + 1,
+        usage_page: None,
+        usage: None,
+    }
+}
+
+#[cfg(not(windows))]
+const fn aura_hid_transport(interface: u8) -> TransportType {
+    TransportType::UsbHidRaw {
+        interface,
+        report_id: AURA_REPORT_ID,
+        report_mode: HidRawReportMode::OutputReport,
+        usage_page: None,
+        usage: None,
+    }
+}
+
 macro_rules! asus_descriptor {
     (
         pid: $pid:expr,
@@ -93,13 +116,7 @@ macro_rules! asus_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("asus", "ASUS"),
-            transport: TransportType::UsbHidRaw {
-                interface: 2,
-                report_id: AURA_REPORT_ID,
-                report_mode: HidRawReportMode::OutputReport,
-                usage_page: None,
-                usage: None,
-            },
+            transport: aura_hid_transport(2),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
