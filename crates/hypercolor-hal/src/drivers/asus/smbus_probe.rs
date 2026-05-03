@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(not(target_os = "linux"))]
+use std::sync::Once;
 
 #[cfg(target_os = "linux")]
 use hypercolor_types::device::{
@@ -28,6 +30,9 @@ use tracing::{debug, trace};
 use crate::transport::Transport;
 #[cfg(target_os = "linux")]
 use crate::transport::smbus::SmBusTransport;
+
+#[cfg(not(target_os = "linux"))]
+static SMBUS_UNAVAILABLE_WARN_ONCE: Once = Once::new();
 
 #[cfg(target_os = "linux")]
 const ASUS_MOTHERBOARD_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
@@ -182,6 +187,16 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
 )]
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
     let _ = dev_root;
+    SMBUS_UNAVAILABLE_WARN_ONCE.call_once(|| {
+        #[cfg(target_os = "windows")]
+        tracing::warn!(
+            "ASUS Aura SMBus discovery is not available on Windows yet; RGB RAM and SMBus motherboard controllers require a PawnIO/OpenRGB bridge"
+        );
+        #[cfg(not(target_os = "windows"))]
+        tracing::warn!(
+            "ASUS Aura SMBus discovery is only implemented on Linux; RGB RAM and SMBus motherboard controllers will not be discovered"
+        );
+    });
     Ok(Vec::new())
 }
 
