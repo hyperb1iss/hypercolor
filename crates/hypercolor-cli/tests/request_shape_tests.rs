@@ -245,6 +245,61 @@ async fn cloud_connection_fetches_daemon_connection_status() -> Result<()> {
 }
 
 #[tokio::test]
+async fn cloud_entitlement_fetches_daemon_entitlement_status() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/cloud/entitlement",
+            get(
+                |State(captured_uri): State<SharedUri>, uri: Uri| async move {
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    Json(serde_json::json!({
+                        "data": {
+                            "cached": true,
+                            "jwt_present": true,
+                            "stale": false,
+                            "cached_at": "2026-05-15T17:00:00.000Z",
+                            "expires_at": "2033-05-18T03:33:20.000Z",
+                            "update_until": "2036-07-18T13:20:00.000Z",
+                            "tier": "free",
+                            "device_install_id": "00000000-0000-0000-0000-000000000000",
+                            "features": ["hc.cloud_sync"],
+                            "channels": ["stable"]
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(port, &["cloud", "entitlement"]).await?;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "hyper CLI failed (status={}):\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            stderr
+        );
+    }
+
+    let body: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("stdout should be json")?;
+    assert_eq!(body["cached"], true);
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/cloud/entitlement")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn cloud_logout_deletes_daemon_session_with_confirmation() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let router = Router::new()

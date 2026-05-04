@@ -22,6 +22,8 @@ pub enum CloudCommand {
     Logout(CloudLogoutArgs),
     /// Show daemon cloud socket readiness.
     Connection,
+    /// Show cached cloud entitlement status.
+    Entitlement,
     /// Show daemon cloud feature/configuration status.
     Status,
     /// Show local cloud login/session status.
@@ -53,10 +55,50 @@ pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContex
         CloudCommand::Login(login_args) => execute_login(login_args, client, ctx).await,
         CloudCommand::Logout(logout_args) => execute_logout(logout_args, client, ctx).await,
         CloudCommand::Connection => execute_connection(client, ctx).await,
+        CloudCommand::Entitlement => execute_entitlement(client, ctx).await,
         CloudCommand::Status => execute_status(client, ctx).await,
         CloudCommand::Session => execute_session(client, ctx).await,
         CloudCommand::Identity => execute_identity(client, ctx).await,
     }
+}
+
+async fn execute_entitlement(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client.get("/cloud/entitlement").await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            let cached = response
+                .get("cached")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            println!("{}", if cached { "cached" } else { "missing" });
+        }
+        OutputFormat::Table => {
+            let cached = response
+                .get("cached")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let stale = response
+                .get("stale")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            println!();
+            ctx.info(&format!("Entitlement {}", ctx.painter.yesno(cached)));
+            ctx.info(&format!("Stale       {}", ctx.painter.yesno(stale)));
+            ctx.info(&format!(
+                "Tier        {}",
+                ctx.painter.keyword(&extract_str(&response, "tier"))
+            ));
+            ctx.info(&format!(
+                "Expires     {}",
+                extract_str(&response, "expires_at")
+            ));
+            println!();
+        }
+    }
+
+    Ok(())
 }
 
 async fn execute_connection(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
