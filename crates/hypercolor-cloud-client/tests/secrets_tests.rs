@@ -3,8 +3,8 @@ use std::sync::Mutex;
 
 use hypercolor_cloud_client::{
     CloudClientError, CloudSecretKey, RefreshTokenOwner, SecretStore, delete_daemon_identity,
-    delete_refresh_token, load_or_create_identity, load_refresh_token, persist_identity,
-    store_refresh_token,
+    delete_refresh_token, load_identity, load_or_create_identity, load_refresh_token,
+    persist_identity, store_refresh_token,
 };
 use hypercolor_daemon_link::IdentityPrivateKey;
 
@@ -38,6 +38,29 @@ impl SecretStore for MemorySecretStore {
             .remove(&key);
         Ok(())
     }
+}
+
+#[test]
+fn load_identity_returns_none_without_creating_material() {
+    let store = MemorySecretStore::default();
+
+    assert!(
+        load_identity(&store)
+            .expect("identity read should succeed")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_secret(CloudSecretKey::DaemonId)
+            .expect("daemon id read should succeed")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_secret(CloudSecretKey::DaemonIdentityKey)
+            .expect("identity key read should succeed")
+            .is_none()
+    );
 }
 
 #[test]

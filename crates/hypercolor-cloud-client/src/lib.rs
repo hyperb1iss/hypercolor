@@ -15,8 +15,8 @@ pub use devices::{DEVICE_REGISTRATION_PATH, DeviceRegistrationInput, signed_devi
 pub use error::CloudClientError;
 pub use secrets::{
     CloudIdentity, CloudSecretKey, KEYRING_SERVICE, KeyringSecretStore, RefreshTokenOwner,
-    SecretStore, delete_daemon_identity, delete_refresh_token, load_or_create_identity,
-    load_refresh_token, persist_identity, store_refresh_token,
+    SecretStore, delete_daemon_identity, delete_refresh_token, load_identity,
+    load_or_create_identity, load_refresh_token, persist_identity, store_refresh_token,
 };
 
 pub use hypercolor_cloud_api as api;

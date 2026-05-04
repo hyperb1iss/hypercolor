@@ -133,6 +133,16 @@ impl CloudIdentity {
 pub fn load_or_create_identity(
     store: &impl SecretStore,
 ) -> Result<CloudIdentity, CloudClientError> {
+    if let Some(identity) = load_identity(store)? {
+        return Ok(identity);
+    }
+
+    let identity = CloudIdentity::new(Uuid::new_v4(), IdentityKeypair::generate());
+    persist_identity(store, &identity)?;
+    Ok(identity)
+}
+
+pub fn load_identity(store: &impl SecretStore) -> Result<Option<CloudIdentity>, CloudClientError> {
     match (
         store.get_secret(CloudSecretKey::DaemonId)?,
         store.get_secret(CloudSecretKey::DaemonIdentityKey)?,
@@ -142,13 +152,9 @@ pub fn load_or_create_identity(
                 .map_err(|error| CloudClientError::InvalidDaemonId(error.to_string()))?;
             let private_key = IdentityPrivateKey::new(private_key)?;
             let keypair = IdentityKeypair::from_private_key(&private_key)?;
-            Ok(CloudIdentity::new(daemon_id, keypair))
+            Ok(Some(CloudIdentity::new(daemon_id, keypair)))
         }
-        (None, None) => {
-            let identity = CloudIdentity::new(Uuid::new_v4(), IdentityKeypair::generate());
-            persist_identity(store, &identity)?;
-            Ok(identity)
-        }
+        (None, None) => Ok(None),
         _ => Err(CloudClientError::IncompleteIdentity),
     }
 }
