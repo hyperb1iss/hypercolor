@@ -19,6 +19,11 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::cloud_entitlements::{
+    CachedCloudEntitlement, delete_cached_entitlement, entitlement_cache_path,
+    iso8601_from_unix_seconds, load_cached_entitlement, store_entitlement_response,
+    unix_now_seconds,
+};
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CloudStatus {
@@ -70,6 +75,7 @@ pub struct CloudSessionStatus {
 pub struct CloudLogoutStatus {
     pub authenticated: bool,
     pub refresh_token_deleted: bool,
+    pub entitlement_cache_deleted: bool,
     pub identity_preserved: bool,
     pub daemon_id: Option<String>,
     pub pending_login_sessions_cleared: usize,
@@ -113,7 +119,23 @@ pub struct CloudLoginPoll {
     pub device_install_id: Option<String>,
     pub device_registered: bool,
     pub registration_token_issued: bool,
+    pub entitlement_cached: bool,
+    pub entitlement_error: Option<String>,
     pub error: Option<CloudLoginError>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CloudEntitlementStatus {
+    pub cached: bool,
+    pub jwt_present: bool,
+    pub stale: bool,
+    pub cached_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub update_until: Option<String>,
+    pub tier: Option<String>,
+    pub device_install_id: Option<String>,
+    pub features: Vec<String>,
+    pub channels: Vec<String>,
 }
 
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
@@ -143,6 +165,16 @@ pub async fn get_session() -> Response {
     }
 }
 
+pub async fn get_entitlement_cache() -> Response {
+    match load_cached_entitlement(entitlement_cache_path()).await {
+        Ok(Some(entitlement)) => ApiResponse::ok(CloudEntitlementStatus::from_cached(&entitlement)),
+        Ok(None) => ApiResponse::ok(CloudEntitlementStatus::empty()),
+        Err(error) => {
+            ApiError::internal(format!("failed to read cloud entitlement cache: {error}"))
+        }
+    }
+}
+
 pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
     let store = match KeyringSecretStore::new_native() {
         Ok(store) => store,
@@ -157,7 +189,15 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
     };
 
     match logout_from_store(&store, cleared_sessions) {
-        Ok(status) => ApiResponse::ok(status),
+        Ok(mut status) => match delete_cached_entitlement(entitlement_cache_path()).await {
+            Ok(deleted) => {
+                status.entitlement_cache_deleted = deleted;
+                ApiResponse::ok(status)
+            }
+            Err(error) => {
+                ApiError::internal(format!("failed to clear cloud entitlement cache: {error}"))
+            }
+        },
         Err(error) => ApiError::internal(format!("failed to clear cloud session: {error}")),
     }
 }
@@ -292,6 +332,7 @@ pub fn logout_from_store(
     Ok(CloudLogoutStatus {
         authenticated: false,
         refresh_token_deleted,
+        entitlement_cache_deleted: false,
         identity_preserved,
         daemon_id,
         pending_login_sessions_cleared,
@@ -311,6 +352,8 @@ impl CloudLoginPoll {
             device_install_id: None,
             device_registered: false,
             registration_token_issued: false,
+            entitlement_cached: false,
+            entitlement_error: None,
             error: Some(CloudLoginError::from_token_error(error)),
         }
     }
@@ -330,7 +373,57 @@ impl CloudLoginPoll {
             device_install_id: None,
             device_registered: false,
             registration_token_issued: false,
+            entitlement_cached: false,
+            entitlement_error: None,
             error: Some(CloudLoginError::from_token_error(error)),
+        }
+    }
+}
+
+impl CloudEntitlementStatus {
+    fn empty() -> Self {
+        Self {
+            cached: false,
+            jwt_present: false,
+            stale: false,
+            cached_at: None,
+            expires_at: None,
+            update_until: None,
+            tier: None,
+            device_install_id: None,
+            features: Vec::new(),
+            channels: Vec::new(),
+        }
+    }
+
+    fn from_cached(entitlement: &CachedCloudEntitlement) -> Self {
+        Self {
+            cached: true,
+            jwt_present: !entitlement.jwt.is_empty(),
+            stale: entitlement.is_stale_at_unix(unix_now_seconds()),
+            cached_at: Some(entitlement.cached_at.clone()),
+            expires_at: Some(entitlement.expires_at.clone()),
+            update_until: Some(iso8601_from_unix_seconds(entitlement.claims.update_until)),
+            tier: Some(entitlement.claims.tier.clone()),
+            device_install_id: Some(
+                entitlement
+                    .claims
+                    .device_install_id
+                    .hyphenated()
+                    .to_string(),
+            ),
+            features: entitlement
+                .claims
+                .features
+                .iter()
+                .map(|feature| feature.as_str().to_owned())
+                .collect(),
+            channels: entitlement
+                .claims
+                .channels
+                .iter()
+                .map(|channel| channel.as_str().to_owned())
+                .collect(),
         }
     }
 }
@@ -373,6 +466,8 @@ async fn complete_authorized_login(
         .register_device(&token.access_token, &request)
         .await
         .map_err(|error| error.to_string())?;
+    let (entitlement_cached, entitlement_error) =
+        cache_entitlement_from_access_token(client, &token.access_token).await;
 
     Ok(CloudLoginPoll {
         login_id: login_id.hyphenated().to_string(),
@@ -384,8 +479,25 @@ async fn complete_authorized_login(
         device_install_id: Some(registration.device.id.hyphenated().to_string()),
         device_registered: true,
         registration_token_issued: !registration.registration_token.is_empty(),
+        entitlement_cached,
+        entitlement_error,
         error: None,
     })
+}
+
+async fn cache_entitlement_from_access_token(
+    client: &CloudClient,
+    access_token: &str,
+) -> (bool, Option<String>) {
+    match client.fetch_entitlement_token(access_token).await {
+        Ok(entitlement) => {
+            match store_entitlement_response(entitlement_cache_path(), &entitlement).await {
+                Ok(_) => (true, None),
+                Err(error) => (false, Some(error.to_string())),
+            }
+        }
+        Err(error) => (false, Some(error.to_string())),
+    }
 }
 
 fn cloud_client(

@@ -12,7 +12,7 @@ pub use auth::{
     DeviceTokenErrorCode, DeviceTokenRequest, DeviceTokenResponse,
 };
 pub use devices::{DeviceInstallation, DeviceRegistrationRequest, DeviceRegistrationResponse};
-pub use entitlements::{EntitlementClaims, FeatureKey, RateLimits};
+pub use entitlements::{EntitlementClaims, EntitlementTokenResponse, FeatureKey, RateLimits};
 pub use envelope::{ApiEnvelope, ApiMeta, ProblemDetails};
 pub use sync::{Etag, SyncChange, SyncEntity, SyncEntityKind, SyncOp};
 pub use updates::{

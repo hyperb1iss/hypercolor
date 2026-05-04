@@ -11,6 +11,17 @@ pub enum ReleaseChannel {
     Nightly,
 }
 
+impl ReleaseChannel {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+            Self::Nightly => "nightly",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateManifest {
     pub schema_version: u32,

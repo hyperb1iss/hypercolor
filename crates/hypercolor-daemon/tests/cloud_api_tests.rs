@@ -13,7 +13,10 @@ use hypercolor_cloud_client::{
     api as cloud_api, load_or_create_identity, load_refresh_token, store_refresh_token,
 };
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState, cloud};
+use hypercolor_daemon::{
+    api::{self, AppState, cloud},
+    cloud_entitlements,
+};
 use hypercolor_types::config::HypercolorConfig;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -164,6 +167,68 @@ async fn cloud_login_prunes_expired_pending_sessions() {
     assert!(sessions.contains_key(&live_id));
 }
 
+#[tokio::test]
+async fn cloud_entitlement_cache_round_trips_and_deletes_token() {
+    let tempdir = TempDir::new().expect("temp cache dir should be created");
+    let path = tempdir.path().join("entitlement.json");
+    let token = entitlement_token_fixture();
+
+    let cached = cloud_entitlements::store_entitlement_response(&path, &token)
+        .await
+        .expect("entitlement should cache");
+    let loaded = cloud_entitlements::load_cached_entitlement(&path)
+        .await
+        .expect("entitlement should load")
+        .expect("entitlement cache should exist");
+
+    assert_eq!(cached.jwt, "header.payload.signature");
+    assert_eq!(loaded.claims.tier, "free");
+    assert!(!loaded.is_stale_at_unix(1_999_999_999));
+    assert!(
+        cloud_entitlements::delete_cached_entitlement(&path)
+            .await
+            .expect("entitlement should delete")
+    );
+    assert!(
+        !cloud_entitlements::delete_cached_entitlement(&path)
+            .await
+            .expect("missing entitlement should not fail")
+    );
+}
+
+#[tokio::test]
+async fn cloud_entitlement_status_summarizes_cache_without_jwt() {
+    let (_tempdir, _guard) = set_temp_data_dir();
+    cloud_entitlements::store_entitlement_response(
+        cloud_entitlements::entitlement_cache_path(),
+        &entitlement_token_fixture(),
+    )
+    .await
+    .expect("entitlement should cache");
+    let app = api::build_router(Arc::new(AppState::new()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/cloud/entitlement")
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let data = &body["data"];
+    assert_eq!(data["cached"], true);
+    assert_eq!(data["jwt_present"], true);
+    assert_eq!(data["stale"], false);
+    assert_eq!(data["jwt"], serde_json::Value::Null);
+    assert_eq!(data["tier"], "free");
+    assert_eq!(data["features"][0], "hc.cloud_sync");
+    assert_eq!(data["channels"][0], "stable");
+}
+
 #[test]
 fn cloud_session_status_reports_auth_and_identity_without_creating_identity() {
     let store = MemorySecretStore::default();
@@ -209,6 +274,7 @@ fn cloud_logout_deletes_refresh_token_and_preserves_identity() {
 
     assert!(!logout.authenticated);
     assert!(logout.refresh_token_deleted);
+    assert!(!logout.entitlement_cache_deleted);
     assert!(logout.identity_preserved);
     assert_eq!(
         logout.daemon_id,
@@ -227,6 +293,20 @@ fn cloud_logout_deletes_refresh_token_and_preserves_identity() {
     );
 }
 
+fn set_temp_data_dir() -> (TempDir, DataDirOverrideGuard) {
+    let tempdir = TempDir::new().expect("temp data dir should be created");
+    ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
+    (tempdir, DataDirOverrideGuard)
+}
+
+struct DataDirOverrideGuard;
+
+impl Drop for DataDirOverrideGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_data_dir_override(None);
+    }
+}
+
 fn cloud_test_state(auth_base_url: &str) -> Arc<AppState> {
     let tempdir = TempDir::new().expect("temp dir should be created");
     let manager = ConfigManager::new(tempdir.path().join("config.toml"))
@@ -239,6 +319,35 @@ fn cloud_test_state(auth_base_url: &str) -> Arc<AppState> {
     let mut state = AppState::new();
     state.config_manager = Some(Arc::new(manager));
     Arc::new(state)
+}
+
+fn entitlement_token_fixture() -> cloud_api::EntitlementTokenResponse {
+    cloud_api::EntitlementTokenResponse {
+        jwt: "header.payload.signature".into(),
+        claims: cloud_api::EntitlementClaims {
+            iss: "https://api.hypercolor.lighting".into(),
+            sub: uuid::Uuid::nil().to_string(),
+            aud: vec!["hypercolor-daemon".into(), "hypercolor-updater".into()],
+            iat: 1_999_999_000,
+            exp: 2_000_000_000,
+            jti: "01JTEST".into(),
+            kid: "ent-2026-01".into(),
+            token_version: 1,
+            device_install_id: uuid::Uuid::nil(),
+            tier: "free".into(),
+            features: vec![cloud_api::FeatureKey::CloudSync],
+            channels: vec![cloud_api::ReleaseChannel::Stable],
+            rate_limits: cloud_api::RateLimits {
+                remote_bandwidth_gb_month: 10,
+                remote_concurrent_tunnels: 5,
+                studio_sessions_month: 5,
+                studio_max_session_seconds: 30,
+                studio_max_session_tokens: 100_000,
+                studio_default_model: "claude-haiku-4-5".into(),
+            },
+            update_until: 2_100_000_000,
+        },
+    }
 }
 
 #[derive(Debug, Default)]

@@ -51,6 +51,12 @@ pub struct EntitlementClaims {
     pub update_until: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntitlementTokenResponse {
+    pub jwt: String,
+    pub claims: EntitlementClaims,
+}
+
 impl EntitlementClaims {
     #[must_use]
     pub fn has_feature(&self, feature: FeatureKey) -> bool {

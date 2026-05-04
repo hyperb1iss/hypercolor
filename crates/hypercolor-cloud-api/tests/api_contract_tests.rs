@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use hypercolor_cloud_api::{
     DEVICE_CODE_GRANT_TYPE, DeviceCodeRequest, DeviceTokenError, DeviceTokenErrorCode,
-    DeviceTokenRequest, EntitlementClaims, Etag, FeatureKey, RateLimits, ReleaseChannel,
-    SyncEntityKind,
+    DeviceTokenRequest, EntitlementClaims, EntitlementTokenResponse, Etag, FeatureKey, RateLimits,
+    ReleaseChannel, SyncEntityKind,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -50,6 +50,43 @@ fn entitlement_claims_keep_update_channel_scope() {
     assert!(!claims.has_feature(FeatureKey::Remote));
     assert!(claims.allows_channel(ReleaseChannel::Stable));
     assert!(!claims.allows_channel(ReleaseChannel::Nightly));
+    assert_eq!(ReleaseChannel::Stable.as_str(), "stable");
+}
+
+#[test]
+fn entitlement_token_response_wraps_jwt_and_claims() {
+    let claims = EntitlementClaims {
+        iss: "https://api.hypercolor.lighting".into(),
+        sub: Uuid::nil().to_string(),
+        aud: vec!["hypercolor-daemon".into()],
+        iat: 1_714_780_000,
+        exp: 1_714_783_600,
+        jti: "01JTEST".into(),
+        kid: "ent-2026-01".into(),
+        token_version: 1,
+        device_install_id: Uuid::nil(),
+        tier: "free".into(),
+        features: vec![FeatureKey::CloudSync],
+        channels: vec![ReleaseChannel::Stable],
+        rate_limits: RateLimits {
+            remote_bandwidth_gb_month: 10,
+            remote_concurrent_tunnels: 5,
+            studio_sessions_month: 5,
+            studio_max_session_seconds: 30,
+            studio_max_session_tokens: 100_000,
+            studio_default_model: "claude-haiku-4-5".into(),
+        },
+        update_until: 1_746_319_600,
+    };
+    let token = EntitlementTokenResponse {
+        jwt: "header.payload.signature".into(),
+        claims,
+    };
+    let value = serde_json::to_value(&token).expect("serialize entitlement token");
+
+    assert_eq!(value["jwt"], json!("header.payload.signature"));
+    assert_eq!(value["claims"]["tier"], json!("free"));
+    assert_eq!(value["claims"]["features"][0], json!("hc.cloud_sync"));
 }
 
 #[test]

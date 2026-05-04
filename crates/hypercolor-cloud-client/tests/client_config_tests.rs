@@ -1,6 +1,6 @@
 use hypercolor_cloud_client::config::{DEVICE_CODE_PATH, DEVICE_TOKEN_PATH};
 use hypercolor_cloud_client::{
-    CloudClientConfig, DeviceRegistrationInput, api, signed_device_registration,
+    CloudClientConfig, DeviceRegistrationInput, ENTITLEMENTS_PATH, api, signed_device_registration,
 };
 use hypercolor_daemon_link::{
     IdentityKeypair, IdentityNonce, registration_proof_message, verify_identity_signature,
@@ -20,6 +20,13 @@ fn cloud_client_config_builds_api_urls() {
     assert_eq!(
         devices.as_str(),
         "https://api.hypercolor.lighting/v1/me/devices"
+    );
+    let entitlements = config
+        .api_url(ENTITLEMENTS_PATH)
+        .expect("entitlements url should build");
+    assert_eq!(
+        entitlements.as_str(),
+        "https://api.hypercolor.lighting/v1/me/entitlements"
     );
 }
 

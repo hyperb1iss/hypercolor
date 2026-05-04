@@ -1234,6 +1234,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(cloud::get_session).delete(cloud::logout),
         )
         .route(
+            "/cloud/entitlement",
+            axum::routing::get(cloud::get_entitlement_cache),
+        )
+        .route(
             "/cloud/identity",
             axum::routing::post(cloud::ensure_identity),
         )

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod config;
 pub mod devices;
+pub mod entitlements;
 pub mod error;
 pub mod secrets;
 
@@ -12,6 +13,7 @@ pub use auth::{
 };
 pub use config::{CloudClient, CloudClientConfig};
 pub use devices::{DEVICE_REGISTRATION_PATH, DeviceRegistrationInput, signed_device_registration};
+pub use entitlements::ENTITLEMENTS_PATH;
 pub use error::CloudClientError;
 pub use secrets::{
     CloudIdentity, CloudSecretKey, KEYRING_SERVICE, KeyringSecretStore, RefreshTokenOwner,
