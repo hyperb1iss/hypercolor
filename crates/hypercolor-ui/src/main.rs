@@ -30,6 +30,7 @@ mod style_utils;
 mod tauri_bridge;
 mod thumbnails;
 mod toasts;
+mod vendors;
 mod ws;
 
 use app::App;

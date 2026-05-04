@@ -6,12 +6,13 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::channel_names;
 use crate::components::device_card::{
-    brand_colors, brand_label, classify_brand, driver_identifier_label,
+    brand_colors, brand_label, brand_vendor, classify_brand, driver_identifier_label,
 };
 use crate::compound_selection::{self, CompoundDepth};
 use crate::icons::*;
 use crate::layout_utils;
 use crate::style_utils::uuid_v4_hex;
+use crate::vendors::{VendorMark, VendorMarkSize};
 
 use super::topology::topology_icon;
 use super::{PaletteState, fetch_attachments_for};
@@ -57,6 +58,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
         .or(dev.connection.endpoint.clone());
     let brand = classify_brand(&dev);
     let (primary_rgb, secondary_rgb) = brand_colors(&brand);
+    let vendor = brand_vendor(&brand);
     let driver_label = brand_label(&brand).unwrap_or_else(|| {
         let identifier = if dev.origin.driver_id.trim().is_empty() {
             &dev.origin.backend_id
@@ -267,17 +269,20 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                 />
                 <div class="flex-1 min-w-0">
                     <div class="flex items-center gap-1.5">
+                        {vendor.map(|v| view! { <VendorMark vendor=v size=VendorMarkSize::Xs /> })}
                         <span class="text-[11px] font-medium text-fg-primary truncate">
                             {device_name}
                         </span>
-                        <span
-                            class="text-[8px] font-mono uppercase tracking-wider px-1 py-0.5 rounded border shrink-0"
-                            style=format!(
-                                "color: rgba({primary_rgb}, 0.8); border-color: rgba({primary_rgb}, 0.2); background: rgba({primary_rgb}, 0.06)"
-                            )
-                        >
-                            {driver_label}
-                        </span>
+                        {vendor.is_none().then(|| view! {
+                            <span
+                                class="text-[8px] font-mono uppercase tracking-wider px-1 py-0.5 rounded border shrink-0"
+                                style=format!(
+                                    "color: rgba({primary_rgb}, 0.8); border-color: rgba({primary_rgb}, 0.2); background: rgba({primary_rgb}, 0.06)"
+                                )
+                            >
+                                {driver_label}
+                            </span>
+                        })}
                     </div>
                     {connection_label.as_ref().map(|label| {
                         view! {

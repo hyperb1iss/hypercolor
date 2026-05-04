@@ -12,12 +12,13 @@ use crate::api::{self, DeviceAuthState};
 use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
-    brand_colors, brand_label, classify_brand, driver_identifier_label,
+    brand_colors, brand_label, brand_vendor, classify_brand, driver_identifier_label,
 };
 use crate::components::device_driver_controls::DeviceDriverControls;
 use crate::components::device_pairing_modal::needs_pairing;
 use crate::icons::*;
 use crate::toasts;
+use crate::vendors::{VendorMark, VendorMarkSize};
 
 /// Device detail sidebar.
 #[component]
@@ -162,6 +163,7 @@ pub fn DeviceDetail(
                 let brand = classify_brand(&dev);
                 let (rgb, secondary_rgb) = brand_colors(&brand);
                 let vendor_label = brand_label(&brand);
+                let vendor = brand_vendor(&brand);
                 let driver_label = vendor_label.clone().unwrap_or_else(|| {
                     let identifier = if dev.origin.driver_id.trim().is_empty() {
                         &dev.origin.backend_id
@@ -220,15 +222,21 @@ pub fn DeviceDetail(
                              style="background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 6px)" />
 
                         <div class="relative px-4 py-3">
-                            // Driver chip (single, subtle — status lives in the dot next to the name)
-                            {vendor_label.clone().map(|label| {
+                            // Brand mark + driver label — status lives in the dot next to the name
+                            {(vendor.is_some() || vendor_label.is_some()).then(|| {
                                 let chip_rgb = rgb.clone();
+                                let label = vendor_label.clone();
                                 view! {
-                                    <div class="mb-2">
-                                        <span class="text-[9px] font-mono font-bold tracking-[0.16em]"
-                                              style=format!("color: rgba({chip_rgb}, 0.9)")>
-                                            {label}
-                                        </span>
+                                    <div class="mb-2 flex items-center gap-2">
+                                        {vendor.map(|v| view! {
+                                            <VendorMark vendor=v size=VendorMarkSize::Sm />
+                                        })}
+                                        {label.map(|label| view! {
+                                            <span class="text-[10px] font-mono font-bold tracking-[0.16em]"
+                                                  style=format!("color: rgba({chip_rgb}, 0.9)")>
+                                                {label}
+                                            </span>
+                                        })}
                                     </div>
                                 }
                             })}

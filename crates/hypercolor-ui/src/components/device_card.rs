@@ -8,6 +8,7 @@ use crate::components::device_metrics_strip::DeviceMetricsStrip;
 use crate::icons::*;
 use crate::label_utils::humanize_identifier_label;
 use crate::style_utils::device_accent_colors;
+use crate::vendors::{self, VendorBrand, VendorMark, VendorMarkSize};
 use hypercolor_types::device::DeviceClassHint;
 
 // ── Driver presentation ─────────────────────────────────────────────────────
@@ -17,6 +18,7 @@ pub struct DeviceBrand {
     label: Option<String>,
     primary_rgb: String,
     secondary_rgb: String,
+    vendor: Option<VendorBrand>,
 }
 
 pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
@@ -36,15 +38,29 @@ pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
     };
     let (fallback_primary, fallback_secondary) = device_accent_colors(color_key);
     let (_, backend_secondary) = device_accent_colors(fallback_key);
+
+    // Vendor registry takes second priority — driver presentation overrides win,
+    // hash-based accent loses, brand registry sits between.
+    let vendor =
+        vendors::resolve_first(&[&device.origin.driver_id, &device.origin.backend_id]).copied();
+
     let primary_rgb = device
         .presentation
         .accent_rgb
         .map(rgb_triplet)
+        .or_else(|| vendor.map(|v| v.primary_rgb.to_owned()))
         .unwrap_or(fallback_primary);
     let secondary_rgb = device
         .presentation
         .secondary_rgb
         .map(rgb_triplet)
+        .or_else(|| {
+            if device.presentation.accent_rgb.is_some() {
+                None
+            } else {
+                vendor.map(|v| v.secondary_rgb.to_owned())
+            }
+        })
         .unwrap_or_else(|| {
             if device.presentation.accent_rgb.is_some() {
                 backend_secondary
@@ -61,12 +77,14 @@ pub fn classify_brand(device: &DeviceSummary) -> DeviceBrand {
             let label = device.presentation.label.trim();
             (!label.is_empty()).then(|| label.to_owned())
         })
+        .or_else(|| vendor.map(|v| v.display_name.to_ascii_uppercase()))
         .or_else(|| driver_identifier_label(&device.origin.backend_id));
 
     DeviceBrand {
         label,
         primary_rgb,
         secondary_rgb,
+        vendor,
     }
 }
 
@@ -80,6 +98,10 @@ pub fn brand_colors(brand: &DeviceBrand) -> (String, String) {
 
 pub fn brand_label(brand: &DeviceBrand) -> Option<String> {
     brand.label.clone()
+}
+
+pub fn brand_vendor(brand: &DeviceBrand) -> Option<VendorBrand> {
+    brand.vendor
 }
 
 pub fn driver_identifier_label(identifier: &str) -> Option<String> {
@@ -285,6 +307,7 @@ pub fn DeviceCard(
     let vendor_label = brand_label(&brand);
     let vendor_label_for_chip = vendor_label.clone();
     let vendor_label_for_separator = vendor_label.clone();
+    let vendor = brand_vendor(&brand);
 
     let primary_sel = primary.clone();
     let status_rgb = status_dot_rgb(&device.status).to_string();
@@ -428,11 +451,18 @@ pub fn DeviceCard(
             }
 
             <div class="relative flex flex-col h-full p-3.5 gap-2.5">
-                // ── Row 1: Icon + device name + driver/type + status dot ──
+                // ── Row 1: Brand mark + device name + driver/type + status dot ──
                 <div class="flex items-start gap-2.5">
-                    <div class="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style=icon_bg>
-                        <Icon icon=icon width="20px" height="20px" />
-                    </div>
+                    {match vendor {
+                        Some(v) => view! {
+                            <VendorMark vendor=v size=VendorMarkSize::Md />
+                        }.into_any(),
+                        None => view! {
+                            <div class="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style=icon_bg>
+                                <Icon icon=icon width="20px" height="20px" />
+                            </div>
+                        }.into_any(),
+                    }}
                     <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2">
                             <h3 class="text-[14px] font-semibold text-fg-primary truncate leading-tight flex-1">
@@ -459,7 +489,12 @@ pub fn DeviceCard(
                             {vendor_label_for_separator.map(|_| view! {
                                 <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
                             })}
-                            <span class="text-[10px]" style=format!("color: rgba({primary}, 0.60)", primary = primary.clone())>
+                            <span class="flex items-center gap-1 text-[10px]" style=format!("color: rgba({primary}, 0.60)", primary = primary.clone())>
+                                // Show the device-class glyph inline only when the chip is the
+                                // brand mark (otherwise it would duplicate the chip icon).
+                                {vendor.map(|_| view! {
+                                    <Icon icon=icon width="11px" height="11px" />
+                                })}
                                 {type_label}
                             </span>
                             <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
