@@ -1,5 +1,7 @@
 const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor-app.rb");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
+const JUSTFILE: &str = include_str!("../../../justfile");
+const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 
@@ -75,6 +77,34 @@ fn app_bundle_staging_includes_pawnio_runtime_payloads() {
         assert!(
             STAGE_APP_BUNDLE_SH.contains(module),
             "Bash staging should bundle PawnIO module {module}"
+        );
+    }
+}
+
+#[test]
+fn justfile_exposes_single_windows_installer_target() {
+    assert!(JUSTFILE.contains("windows-installer *args=''"));
+    assert!(JUSTFILE.contains("scripts/build-windows-installer.ps1"));
+}
+
+#[test]
+fn windows_installer_target_builds_all_bundle_inputs() {
+    for required in [
+        "cargo tauri --version",
+        "Build production UI",
+        "Build bundled effects",
+        "hypercolor-daemon",
+        "hypercolor-cli",
+        "hypercolor-windows-pawnio",
+        "hypercolor-smbus-service",
+        "stage-app-bundle-assets.ps1",
+        "\"cargo\"",
+        "\"tauri\", \"build\"",
+        "--bundles",
+    ] {
+        assert!(
+            WINDOWS_INSTALLER_SCRIPT.contains(required),
+            "Windows installer script should include {required}"
         );
     }
 }

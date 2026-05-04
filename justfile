@@ -362,6 +362,11 @@ app-bundle *args='':
 app-bundle *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json {{ args }}"
 
+# Build the full unsigned Windows NSIS installer package
+[windows]
+windows-installer *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-installer.ps1 {{ args }}
+
 # Run the daemon in release mode with the full renderer set enabled
 [unix]
 daemon-release *args='':
