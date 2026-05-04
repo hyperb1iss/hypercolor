@@ -4647,6 +4647,7 @@ dependencies = [
  "hypercolor-daemon",
  "hypercolor-tui",
  "opaline",
+ "open",
  "owo-colors",
  "reqwest 0.12.28",
  "serde",

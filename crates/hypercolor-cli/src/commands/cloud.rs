@@ -1,6 +1,8 @@
 //! `hyper cloud` -- Hypercolor Cloud account and daemon-link controls.
 
-use anyhow::Result;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
 use crate::client::DaemonClient;
@@ -14,16 +16,74 @@ pub struct CloudArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum CloudCommand {
+    /// Log this daemon into Hypercolor Cloud.
+    Login(CloudLoginArgs),
     /// Show daemon cloud feature/configuration status.
     Status,
     /// Create or show this daemon's cloud identity.
     Identity,
 }
 
+#[derive(Debug, Args)]
+pub struct CloudLoginArgs {
+    /// Maximum seconds to wait for browser approval.
+    #[arg(long, default_value_t = 300)]
+    pub timeout_seconds: u64,
+
+    /// Do not open the verification URL in a browser.
+    #[arg(long)]
+    pub no_open: bool,
+}
+
 pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
+        CloudCommand::Login(login_args) => execute_login(login_args, client, ctx).await,
         CloudCommand::Status => execute_status(client, ctx).await,
         CloudCommand::Identity => execute_identity(client, ctx).await,
+    }
+}
+
+async fn execute_login(
+    args: &CloudLoginArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let start = client
+        .post("/cloud/login/start", &serde_json::json!({}))
+        .await?;
+    render_login_start(&start, args, ctx)?;
+
+    let login_id = extract_required_str(&start, "login_id")?;
+    let deadline = Instant::now() + Duration::from_secs(args.timeout_seconds);
+    let mut retry_after = retry_after_duration(&start);
+
+    loop {
+        if Instant::now() + retry_after > deadline {
+            bail!("Timed out waiting for cloud login approval");
+        }
+        tokio::time::sleep(retry_after).await;
+
+        let poll = client
+            .post(
+                &format!("/cloud/login/{login_id}/poll"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        match extract_required_str(&poll, "status")? {
+            "pending" => {
+                retry_after = retry_after_duration(&poll);
+                if matches!(ctx.format, OutputFormat::Table) {
+                    ctx.info("Waiting for approval...");
+                }
+            }
+            "authorized" => {
+                render_login_success(&start, &poll, ctx)?;
+                return Ok(());
+            }
+            "expired" => bail!("Cloud login code expired"),
+            "rejected" => bail!("Cloud login was rejected"),
+            status => bail!("Daemon returned unknown cloud login status: {status}"),
+        }
     }
 }
 
@@ -73,6 +133,100 @@ async fn execute_status(client: &DaemonClient, ctx: &OutputContext) -> Result<()
     }
 
     Ok(())
+}
+
+fn render_login_start(
+    start: &serde_json::Value,
+    args: &CloudLoginArgs,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let verification_uri = start
+        .get("verification_uri_complete")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            start
+                .get("verification_uri")
+                .and_then(serde_json::Value::as_str)
+        })
+        .context("daemon response omitted verification_uri")?;
+
+    if !args.no_open {
+        if let Err(error) = open::that_detached(verification_uri) {
+            ctx.warning(&format!("Could not open browser: {error}"));
+        }
+    }
+
+    match ctx.format {
+        OutputFormat::Json => {}
+        OutputFormat::Plain => {
+            println!("{verification_uri}");
+            println!("{}", extract_str(start, "user_code"));
+        }
+        OutputFormat::Table => {
+            println!();
+            ctx.info("Cloud login started");
+            ctx.info(&format!(
+                "Code        {}",
+                ctx.painter.keyword(&extract_str(start, "user_code"))
+            ));
+            ctx.info(&format!(
+                "Open        {}",
+                ctx.painter.name(verification_uri)
+            ));
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+fn render_login_success(
+    start: &serde_json::Value,
+    poll: &serde_json::Value,
+    ctx: &OutputContext,
+) -> Result<()> {
+    match ctx.format {
+        OutputFormat::Json => {
+            ctx.print_json(&serde_json::json!({
+                "start": start,
+                "result": poll,
+            }))?;
+        }
+        OutputFormat::Plain => {
+            println!("{}", extract_str(poll, "daemon_id"));
+        }
+        OutputFormat::Table => {
+            println!();
+            ctx.success("Cloud login complete");
+            ctx.info(&format!(
+                "Daemon ID   {}",
+                ctx.painter.id(&extract_str(poll, "daemon_id"))
+            ));
+            ctx.info(&format!(
+                "Device      {}",
+                ctx.painter.id(&extract_str(poll, "device_install_id"))
+            ));
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+fn retry_after_duration(value: &serde_json::Value) -> Duration {
+    let millis = value
+        .get("retry_after_ms")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(5_000)
+        .max(100);
+    Duration::from_millis(millis)
+}
+
+fn extract_required_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("daemon response omitted {key}"))
 }
 
 async fn execute_identity(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
