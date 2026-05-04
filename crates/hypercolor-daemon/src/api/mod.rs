@@ -1229,7 +1229,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let api = api
         // ── Cloud ────────────────────────────────────────────────────
         .route("/cloud/status", axum::routing::get(cloud::get_status))
-        .route("/cloud/session", axum::routing::get(cloud::get_session))
+        .route(
+            "/cloud/session",
+            axum::routing::get(cloud::get_session).delete(cloud::logout),
+        )
         .route(
             "/cloud/identity",
             axum::routing::post(cloud::ensure_identity),

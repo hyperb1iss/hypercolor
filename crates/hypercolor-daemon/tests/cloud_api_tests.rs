@@ -10,7 +10,7 @@ use axum::routing::post;
 use http::{Request, StatusCode};
 use hypercolor_cloud_client::{
     CloudClientError, CloudSecretKey, RefreshTokenOwner, SecretStore, api as cloud_api,
-    load_or_create_identity, store_refresh_token,
+    load_or_create_identity, load_refresh_token, store_refresh_token,
 };
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState, cloud};
@@ -175,6 +175,35 @@ fn cloud_session_status_reports_auth_and_identity_without_creating_identity() {
     assert_eq!(
         ready.identity_pubkey,
         Some(identity.keypair().public_key().as_str().to_owned())
+    );
+}
+
+#[test]
+fn cloud_logout_deletes_refresh_token_and_preserves_identity() {
+    let store = MemorySecretStore::default();
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh")
+        .expect("refresh token should store");
+    let identity = load_or_create_identity(&store).expect("identity should create");
+
+    let logout = cloud::logout_from_store(&store, 2).expect("logout should clear local token");
+
+    assert!(!logout.authenticated);
+    assert!(logout.refresh_token_deleted);
+    assert!(logout.identity_preserved);
+    assert_eq!(
+        logout.daemon_id,
+        Some(identity.daemon_id().hyphenated().to_string())
+    );
+    assert_eq!(logout.pending_login_sessions_cleared, 2);
+    assert_eq!(
+        load_refresh_token(&store, RefreshTokenOwner::Daemon).expect("refresh token should read"),
+        None
+    );
+    assert!(
+        store
+            .get_secret(CloudSecretKey::DaemonIdentityKey)
+            .expect("identity key should read")
+            .is_some()
     );
 }
 

@@ -9,8 +9,8 @@ use hypercolor_cloud_client::api as cloud_api;
 use hypercolor_cloud_client::daemon_link::IdentityNonce;
 use hypercolor_cloud_client::{
     CloudClient, CloudClientConfig, DeviceAuthorizationStatus, DeviceRegistrationInput,
-    KeyringSecretStore, RefreshTokenOwner, SecretStore, load_identity, load_or_create_identity,
-    load_refresh_token, persist_device_token, signed_device_registration,
+    KeyringSecretStore, RefreshTokenOwner, SecretStore, delete_refresh_token, load_identity,
+    load_or_create_identity, load_refresh_token, persist_device_token, signed_device_registration,
 };
 use hypercolor_types::config::CloudConfig;
 use serde::Serialize;
@@ -63,6 +63,16 @@ pub struct CloudSessionStatus {
     pub identity_present: bool,
     pub daemon_id: Option<String>,
     pub identity_pubkey: Option<String>,
+    pub credential_storage: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CloudLogoutStatus {
+    pub authenticated: bool,
+    pub refresh_token_deleted: bool,
+    pub identity_preserved: bool,
+    pub daemon_id: Option<String>,
+    pub pending_login_sessions_cleared: usize,
     pub credential_storage: String,
 }
 
@@ -130,6 +140,25 @@ pub async fn get_session() -> Response {
     match KeyringSecretStore::new_native().and_then(|store| session_status_from_store(&store)) {
         Ok(status) => ApiResponse::ok(status),
         Err(error) => ApiError::internal(format!("failed to read cloud session: {error}")),
+    }
+}
+
+pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
+    let store = match KeyringSecretStore::new_native() {
+        Ok(store) => store,
+        Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
+    };
+
+    let cleared_sessions = {
+        let mut sessions = state.cloud_login_sessions.lock().await;
+        let count = sessions.len();
+        sessions.clear();
+        count
+    };
+
+    match logout_from_store(&store, cleared_sessions) {
+        Ok(status) => ApiResponse::ok(status),
+        Err(error) => ApiError::internal(format!("failed to clear cloud session: {error}")),
     }
 }
 
@@ -236,6 +265,27 @@ pub fn session_status_from_store(
         identity_present,
         daemon_id,
         identity_pubkey,
+        credential_storage: "os_keyring".to_owned(),
+    })
+}
+
+pub fn logout_from_store(
+    store: &impl SecretStore,
+    pending_login_sessions_cleared: usize,
+) -> Result<CloudLogoutStatus, hypercolor_cloud_client::CloudClientError> {
+    let refresh_token_deleted = load_refresh_token(store, RefreshTokenOwner::Daemon)?.is_some();
+    delete_refresh_token(store, RefreshTokenOwner::Daemon)?;
+
+    let identity = load_identity(store)?;
+    let identity_preserved = identity.is_some();
+    let daemon_id = identity.map(|identity| identity.daemon_id().hyphenated().to_string());
+
+    Ok(CloudLogoutStatus {
+        authenticated: false,
+        refresh_token_deleted,
+        identity_preserved,
+        daemon_id,
+        pending_login_sessions_cleared,
         credential_storage: "os_keyring".to_owned(),
     })
 }

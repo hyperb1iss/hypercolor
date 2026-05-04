@@ -18,6 +18,8 @@ pub struct CloudArgs {
 pub enum CloudCommand {
     /// Log this daemon into Hypercolor Cloud.
     Login(CloudLoginArgs),
+    /// Log this daemon out of Hypercolor Cloud locally.
+    Logout(CloudLogoutArgs),
     /// Show daemon cloud feature/configuration status.
     Status,
     /// Show local cloud login/session status.
@@ -37,13 +39,66 @@ pub struct CloudLoginArgs {
     pub no_open: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct CloudLogoutArgs {
+    /// Skip confirmation.
+    #[arg(long)]
+    pub yes: bool,
+}
+
 pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
         CloudCommand::Login(login_args) => execute_login(login_args, client, ctx).await,
+        CloudCommand::Logout(logout_args) => execute_logout(logout_args, client, ctx).await,
         CloudCommand::Status => execute_status(client, ctx).await,
         CloudCommand::Session => execute_session(client, ctx).await,
         CloudCommand::Identity => execute_identity(client, ctx).await,
     }
+}
+
+async fn execute_logout(
+    args: &CloudLogoutArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    if !args.yes {
+        ctx.warning("Use --yes to confirm cloud logout");
+        return Ok(());
+    }
+
+    let response = client.delete("/cloud/session").await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            println!("signed-out");
+        }
+        OutputFormat::Table => {
+            println!();
+            ctx.success("Cloud session cleared");
+            ctx.info(&format!(
+                "Token       {}",
+                ctx.painter.yesno(
+                    response
+                        .get("refresh_token_deleted")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )
+            ));
+            ctx.info(&format!(
+                "Identity    {}",
+                ctx.painter.yesno(
+                    response
+                        .get("identity_preserved")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )
+            ));
+            println!();
+        }
+    }
+
+    Ok(())
 }
 
 async fn execute_login(
