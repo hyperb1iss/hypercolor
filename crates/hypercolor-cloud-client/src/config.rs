@@ -8,6 +8,7 @@ pub const DEFAULT_DEVICE_CLIENT_ID: &str = "hypercolor-daemon";
 pub const DEFAULT_DEVICE_SCOPE: &str = "openid profile email";
 pub const DEVICE_CODE_PATH: &str = "/api/auth/device/code";
 pub const DEVICE_TOKEN_PATH: &str = "/api/auth/device/token";
+pub const OAUTH_TOKEN_PATH: &str = "/api/auth/oauth2/token";
 pub const DAEMON_CONNECT_PATH: &str = hypercolor_daemon_link::DAEMON_CONNECT_PATH;
 
 #[derive(Debug, Clone)]

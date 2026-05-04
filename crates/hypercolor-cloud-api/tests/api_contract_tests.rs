@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use hypercolor_cloud_api::{
     DEVICE_CODE_GRANT_TYPE, DeviceCodeRequest, DeviceTokenError, DeviceTokenErrorCode,
-    DeviceTokenRequest, EntitlementClaims, EntitlementTokenResponse, Etag, FeatureKey, RateLimits,
-    ReleaseChannel, SyncEntityKind,
+    DeviceTokenRequest, DeviceTokenResponse, EntitlementClaims, EntitlementTokenResponse, Etag,
+    FeatureKey, REFRESH_TOKEN_GRANT_TYPE, RateLimits, RefreshTokenRequest, ReleaseChannel,
+    SyncEntityKind,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -110,11 +111,39 @@ fn device_code_request_omits_empty_scope() {
 #[test]
 fn device_token_contract_matches_rfc8628_grant() {
     let request = DeviceTokenRequest::new("device-code", "hypercolor-daemon");
-    let value = serde_json::to_value(request).expect("serialize device token request");
+    let value = serde_json::to_value(&request).expect("serialize device token request");
 
     assert_eq!(value["grant_type"], DEVICE_CODE_GRANT_TYPE);
     assert_eq!(value["device_code"], "device-code");
     assert_eq!(value["client_id"], "hypercolor-daemon");
+    assert!(!format!("{request:?}").contains("device-code"));
+}
+
+#[test]
+fn refresh_token_contract_matches_oauth_grant() {
+    let request = RefreshTokenRequest::new("refresh-token", "hypercolor-daemon");
+    let value = serde_json::to_value(&request).expect("serialize refresh token request");
+
+    assert_eq!(value["grant_type"], REFRESH_TOKEN_GRANT_TYPE);
+    assert_eq!(value["refresh_token"], "refresh-token");
+    assert_eq!(value["client_id"], "hypercolor-daemon");
+    assert!(!format!("{request:?}").contains("refresh-token"));
+}
+
+#[test]
+fn token_response_debug_redacts_bearer_material() {
+    let response = DeviceTokenResponse {
+        access_token: "access-secret".to_owned(),
+        token_type: "Bearer".to_owned(),
+        refresh_token: Some("refresh-secret".to_owned()),
+        expires_in: Some(900),
+        scope: Some("openid profile email".to_owned()),
+    };
+    let debug = format!("{response:?}");
+
+    assert!(!debug.contains("access-secret"));
+    assert!(!debug.contains("refresh-secret"));
+    assert!(debug.contains("Bearer"));
 }
 
 #[test]

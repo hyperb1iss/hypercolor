@@ -1,4 +1,6 @@
-use hypercolor_cloud_client::config::{DAEMON_CONNECT_PATH, DEVICE_CODE_PATH, DEVICE_TOKEN_PATH};
+use hypercolor_cloud_client::config::{
+    DAEMON_CONNECT_PATH, DEVICE_CODE_PATH, DEVICE_TOKEN_PATH, OAUTH_TOKEN_PATH,
+};
 use hypercolor_cloud_client::{
     CloudClientConfig, DeviceRegistrationInput, ENTITLEMENTS_PATH, api, signed_device_registration,
 };
@@ -46,6 +48,9 @@ fn cloud_client_config_builds_auth_urls() {
     let token_url = config
         .auth_url(DEVICE_TOKEN_PATH)
         .expect("device token url should build");
+    let oauth_token_url = config
+        .auth_url(OAUTH_TOKEN_PATH)
+        .expect("oauth token url should build");
 
     assert_eq!(
         code_url.as_str(),
@@ -54,6 +59,10 @@ fn cloud_client_config_builds_auth_urls() {
     assert_eq!(
         token_url.as_str(),
         "https://hypercolor.lighting/api/auth/device/token"
+    );
+    assert_eq!(
+        oauth_token_url.as_str(),
+        "https://hypercolor.lighting/api/auth/oauth2/token"
     );
     assert_eq!(config.device_client_id(), "hypercolor-daemon-dev");
     assert_eq!(config.device_scope(), "openid profile email cloud");

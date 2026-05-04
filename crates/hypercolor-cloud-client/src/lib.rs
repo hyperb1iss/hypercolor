@@ -12,7 +12,7 @@ pub use auth::{
     DEFAULT_DEVICE_AUTHORIZATION_POLL_INTERVAL, DeviceAuthorizationSession,
     DeviceAuthorizationStatus, DeviceTokenPoll, SLOW_DOWN_POLL_INTERVAL_STEP, persist_device_token,
 };
-pub use config::{CloudClient, CloudClientConfig, DAEMON_CONNECT_PATH};
+pub use config::{CloudClient, CloudClientConfig, DAEMON_CONNECT_PATH, OAUTH_TOKEN_PATH};
 pub use connect::{DaemonConnectInput, DaemonConnectRequest, connect_authority};
 pub use devices::{DEVICE_REGISTRATION_PATH, DeviceRegistrationInput, signed_device_registration};
 pub use entitlements::ENTITLEMENTS_PATH;

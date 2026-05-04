@@ -1,6 +1,9 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 pub const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+pub const REFRESH_TOKEN_GRANT_TYPE: &str = "refresh_token";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceCodeRequest {
@@ -32,7 +35,7 @@ pub struct DeviceCodeResponse {
     pub interval: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceTokenRequest {
     pub grant_type: String,
     pub device_code: String,
@@ -50,7 +53,45 @@ impl DeviceTokenRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl fmt::Debug for DeviceTokenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceTokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("device_code", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshTokenRequest {
+    pub grant_type: String,
+    pub refresh_token: String,
+    pub client_id: String,
+}
+
+impl RefreshTokenRequest {
+    #[must_use]
+    pub fn new(refresh_token: impl Into<String>, client_id: impl Into<String>) -> Self {
+        Self {
+            grant_type: REFRESH_TOKEN_GRANT_TYPE.to_owned(),
+            refresh_token: refresh_token.into(),
+            client_id: client_id.into(),
+        }
+    }
+}
+
+impl fmt::Debug for RefreshTokenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshTokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("refresh_token", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceTokenResponse {
     pub access_token: String,
     pub token_type: String,
@@ -60,6 +101,21 @@ pub struct DeviceTokenResponse {
     pub expires_in: Option<u64>,
     #[serde(default)]
     pub scope: Option<String>,
+}
+
+impl fmt::Debug for DeviceTokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceTokenResponse")
+            .field("access_token", &"<redacted>")
+            .field("token_type", &self.token_type)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

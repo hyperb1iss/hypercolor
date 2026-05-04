@@ -2,11 +2,14 @@ use std::time::{Duration, Instant};
 
 use hypercolor_cloud_api::{
     DeviceCodeRequest, DeviceCodeResponse, DeviceTokenError, DeviceTokenErrorCode,
-    DeviceTokenRequest, DeviceTokenResponse,
+    DeviceTokenRequest, DeviceTokenResponse, RefreshTokenRequest,
 };
 
-use crate::config::{DEVICE_CODE_PATH, DEVICE_TOKEN_PATH};
-use crate::{CloudClient, CloudClientError, RefreshTokenOwner, SecretStore, store_refresh_token};
+use crate::config::{DEVICE_CODE_PATH, DEVICE_TOKEN_PATH, OAUTH_TOKEN_PATH};
+use crate::{
+    CloudClient, CloudClientError, RefreshTokenOwner, SecretStore, load_refresh_token,
+    store_refresh_token,
+};
 
 pub const DEFAULT_DEVICE_AUTHORIZATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub const SLOW_DOWN_POLL_INTERVAL_STEP: Duration = Duration::from_secs(5);
@@ -237,5 +240,36 @@ impl CloudClient {
 
         let poll = self.poll_device_token(session.device_code()).await?;
         Ok(session.record_poll_result(poll))
+    }
+
+    pub async fn refresh_device_token(
+        &self,
+        refresh_token: impl Into<String>,
+    ) -> Result<DeviceTokenResponse, CloudClientError> {
+        let request = RefreshTokenRequest::new(refresh_token, self.config().device_client_id());
+        let response = self
+            .http_client()
+            .post(self.config().auth_url(OAUTH_TOKEN_PATH)?)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<DeviceTokenResponse>()
+            .await?;
+
+        Ok(response)
+    }
+
+    pub async fn refresh_stored_device_token(
+        &self,
+        store: &impl SecretStore,
+        owner: RefreshTokenOwner,
+    ) -> Result<Option<DeviceTokenResponse>, CloudClientError> {
+        let Some(refresh_token) = load_refresh_token(store, owner)? else {
+            return Ok(None);
+        };
+        let response = self.refresh_device_token(refresh_token).await?;
+        persist_device_token(store, owner, &response)?;
+        Ok(Some(response))
     }
 }

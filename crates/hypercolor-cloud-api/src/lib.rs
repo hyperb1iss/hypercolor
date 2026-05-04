@@ -9,7 +9,8 @@ pub mod updates;
 
 pub use auth::{
     DEVICE_CODE_GRANT_TYPE, DeviceCodeRequest, DeviceCodeResponse, DeviceTokenError,
-    DeviceTokenErrorCode, DeviceTokenRequest, DeviceTokenResponse,
+    DeviceTokenErrorCode, DeviceTokenRequest, DeviceTokenResponse, REFRESH_TOKEN_GRANT_TYPE,
+    RefreshTokenRequest,
 };
 pub use devices::{DeviceInstallation, DeviceRegistrationRequest, DeviceRegistrationResponse};
 pub use entitlements::{EntitlementClaims, EntitlementTokenResponse, FeatureKey, RateLimits};
