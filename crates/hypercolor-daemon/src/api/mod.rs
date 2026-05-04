@@ -6,6 +6,8 @@
 
 pub mod access_log;
 pub mod attachments;
+#[cfg(feature = "cloud")]
+pub mod cloud;
 pub mod config;
 pub mod control_values;
 pub mod controls;
@@ -1214,6 +1216,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
+    #[cfg(feature = "cloud")]
+    let api = api
+        // ── Cloud ────────────────────────────────────────────────────
+        .route("/cloud/status", axum::routing::get(cloud::get_status))
+        .route(
+            "/cloud/identity",
+            axum::routing::post(cloud::ensure_identity),
+        );
     let mut router = Router::new()
         .nest("/api/v1", api)
         .route("/preview", axum::routing::get(preview::preview_page))
