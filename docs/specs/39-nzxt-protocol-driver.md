@@ -1,8 +1,8 @@
 # 39 -- NZXT Protocol Driver
 
-> Native USB HID and USB serial driver for the NZXT ecosystem. The local plugin corpus is the primary clean-room source, OpenRGB fills the legacy gaps, and LCD transport remains a capture-required frontier.
+> Native USB HID and USB serial driver for the NZXT ecosystem. This document is the authoritative packet specification; any gap called out here requires fresh USB capture or a new facts-only spec before implementation.
 
-**Status:** Draft (Rev 1 — plugin-first research)
+**Status:** Draft (Rev 2 -- clean-room closure)
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::nzxt`
 **Author:** Nova
@@ -13,7 +13,7 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
-2. [Source Corpus](#2-source-corpus)
+2. [Implementation Boundary](#2-implementation-boundary)
 3. [Device Registry](#3-device-registry)
 4. [Protocol Families](#4-protocol-families)
 5. [Topology Catalog](#5-topology-catalog)
@@ -35,65 +35,32 @@ Native driver for NZXT hardware via the `hypercolor-hal` abstraction layer. The 
 4. Legacy Kraken X2/M2 AIO HID.
 5. Modern Kraken AIO telemetry and fan-control HID.
 6. NZXT peripheral HID (`0x43` command family) for keyboards and mice.
-7. LCD/screen transport for Kraken screen AIOs, which is not recoverable from the shipped NZXT JavaScript plugins and requires dedicated capture or binary reverse-engineering.
+7. LCD/screen transport for Kraken screen AIOs, which requires dedicated capture before implementation.
 
 The clean-room implementation should therefore be organized around protocol families, not product marketing names.
 
 ### Core conclusions
 
-- The local plugin corpus is the best local source for NZXT support breadth.
-- OpenRGB is still required for legacy Hue Plus, Smart Device V1 initialization, legacy Kraken X2/M2 effect semantics, and Gen2 accessory ID mapping.
+- This spec is sufficient for the protocol families it describes. Unresolved legacy details and LCD transport must be filled by fresh captures or new facts-only research notes.
 - Most NZXT RGB channels use **GRB** byte order.
 - The main Gen2 HID RGB stream is a 64-byte packet family built around `0x22`.
 - Motherboards reuse Gen2 digital RGB packets but add a separate analog 12V RGB path via `0x2A`.
 - Kraken Elite v2 (`0x3012`) is a transport variant: same high-level semantics, but **512-byte reports** and `0x26` lighting commands.
-- LCD support for Kraken Z/Elite families is **not** represented in the local NZXT plugin corpus, even though the companion binary clearly has a shared LCD subsystem.
+- LCD support for Kraken Z/Elite families is **not** specified here. Do not claim screen support until an LCD packet map is captured and added.
 
 ---
 
-## 2. Source Corpus
+## 2. Implementation Boundary
 
-### 2.1 Primary source: local plugin corpus
+This document is the authoritative specification for the NZXT packet formats it describes.
+Implementation work should use this spec, hardware captures, and Hypercolor's own HAL
+patterns. If a field, command, topology ID, timing rule, or LCD transfer path is missing,
+stop at the documented behavior, capture the missing traffic, and extend this spec before
+writing code for that behavior.
 
-Protocol research derived primarily from these local JavaScript plugins under `~/app-2.5.51/Signal-x64/Plugins/Nzxt/`:
-
-- `NZXT_Smart_Device_V1_Controller.js`
-- `NZXT_Smart_Device_V2_Controller.js`
-- `NZXT_Motherboard.js`
-- `Nzxt_Kraken_X2_M2_AIO.js`
-- `Nzxt_Kraken_X3_AIO.js`
-- `Nzxt_Kraken_Z3_AIO.js`
-- `NZXT_Kraken_Elite.js`
-- `NZXT_Kraken_Elite_V2_AIO.js`
-- `Peripheral Protocol/NZXT_Function_Keyboard.js`
-- `Peripheral Protocol/NZXT_Lift_Mouse.js`
-- `Vertagear_RGB_LED_Upgrade_Kits.js`
-
-Topology references derived from `~/app-2.5.51/Signal-x64/Components/NZXT/*.json`.
-
-### 2.2 Secondary source: OpenRGB local fork
-
-Gap-filling and legacy protocol details derived from `~/dev/OpenRGB/Controllers/`:
-
-- `NZXTHuePlusController/`
-- `NZXTHue1Controller/`
-- `NZXTHue2Controller/`
-- `NZXTKrakenController/`
-
-### 2.3 LCD evidence
-
-The local application binary contains a shared LCD implementation with symbols and paths such as:
-
-- `PluginLCDController`
-- `LCDUltralightRenderer`
-- `LCDFaceLibrary`
-- `Signal\\Products\\ThirdParty\\Plugin\\Modules\\LCD\\PluginLCDController.cpp`
-- `Signal\\Lighting\\LCDFaceLibrary.cpp`
-- `/LCDFaces`
-
-However, no NZXT plugin in `Plugins/Nzxt/` imports the suite's LCD helper module or exposes NZXT-specific LCD transfer packets. By contrast, other vendors such as Lian Li do expose LCD transport in plain JavaScript.
-
-**Implication:** NZXT LCD transport is either compiled into the native binaries, abstracted behind an internal device layer not exposed in JS, or unsupported in this build.
+Do not infer support from product marketing names. Only implement a capability when this
+document defines the transport, packet framing, byte layout, update timing, and testable
+expected behavior.
 
 ---
 
@@ -140,7 +107,7 @@ However, no NZXT plugin in `Plugins/Nzxt/` imports the suite's LCD helper module
 
 ### 3.3 Screen and modern AIO family
 
-| PID      | Product                          | Known capabilities from local sources                                       |
+| PID      | Product                          | Capabilities specified here                                                 |
 | -------- | -------------------------------- | --------------------------------------------------------------------------- |
 | `0x3008` | Kraken Z3                        | RGB, pump/fan telemetry, pump/fan control                                   |
 | `0x300C` | Kraken Elite                     | Pump/fan telemetry, pump/fan control; RGB/LCD unresolved                    |
@@ -168,7 +135,7 @@ However, no NZXT plugin in `Plugins/Nzxt/` imports the suite's LCD helper module
 | -------- | ------------------------------ |
 | `0x2004` | Vertagear RGB LED Upgrade Kits |
 
-### 3.6 Gen2 accessory IDs discovered from OpenRGB
+### 3.6 Gen2 accessory IDs
 
 These IDs appear in the Gen2 topology response (`0x21 0x03`) and determine segment names and LED counts.
 
@@ -239,7 +206,7 @@ Observed behavior:
 
 - Direct mode can address up to 40 LEDs.
 - Indexed/effect mode can send up to 8 colors.
-- OpenRGB expands indexed colors across internal 40-entry slots before transmit.
+- Indexed-color modes expand color slots across the controller's internal 40-LED buffer before transmit.
 
 #### Implementation note
 
@@ -258,7 +225,7 @@ This should be implemented as its own `UsbSerialProtocol`, not folded into the H
 
 #### Initialization
 
-OpenRGB performs a real initialization sequence that the local JS plugin omits:
+Initialization sequence:
 
 1. Write `[0x01, 0x5C]`
 2. Write `[0x01, 0x5D]`
@@ -355,7 +322,7 @@ Response:
 11 01 .... fw_major fw_minor fw_patch
 ```
 
-The local plugin corpus logs development against firmware `1.13.0`.
+Known tested firmware: `1.13.0`.
 
 #### Topology query
 
@@ -375,7 +342,7 @@ Observed fields:
 
 - Channel count at byte `14`
 - Per-channel accessory slots begin at byte `0x0F`
-- OpenRGB parses 6 bytes per channel and maps accessory IDs through the table in §3.6
+- Accessory records are 6 bytes per channel and map accessory IDs through the table in §3.6
 
 #### Direct RGB stream
 
@@ -458,7 +425,7 @@ NZXT motherboards reuse the Gen2 digital path for NZXT headers and ARGB headers,
 **Digital headers:** same `0x22` stream/apply packets as §4.3  
 **Analog headers:** `0x2A 0x04 0x08 0x08 ...`
 
-#### Channel model from local plugins
+#### Channel model
 
 | PID      | NZXT headers | ARGB headers | 12V RGB headers |
 | -------- | ------------ | ------------ | --------------- |
@@ -479,7 +446,7 @@ Template:
 2A 04 08 08 00 32 00 RR GG BB ... [56]=01 [57]=00 [58]=01 [59]=03
 ```
 
-The local plugin writes the color into bytes `7`, `8`, and `9`, with a user-selectable RGB order:
+Write the color into bytes `7`, `8`, and `9`, using the configured RGB byte order:
 
 - `RGB`
 - `RBG`
@@ -502,7 +469,7 @@ This family predates Gen2.
 
 #### Status read
 
-OpenRGB reads a 64-byte status packet without an explicit request and parses:
+A 64-byte status packet is available without an explicit request and parses as:
 
 - Liquid temperature = `byte1 + byte2 * 0.1`
 - Fan RPM = bytes `3..4` big-endian
@@ -574,7 +541,7 @@ Pump ring topology:
 - Logo = 1 LED
 - External channel = 40 LEDs max
 
-Logo write observed in the local plugin corpus:
+Logo write packet:
 
 ```text
 2A 04 04 04 00 32 00 G R B
@@ -582,7 +549,7 @@ Logo write observed in the local plugin corpus:
 
 with bytes `56..59 = 01 00 01 03`.
 
-Plugin comments show an older alternative for `0x2007`:
+Older alternative packet for `0x2007`:
 
 ```text
 21 04 04 04 00 32 00 G R B
@@ -596,7 +563,7 @@ Pump set:
 72 01 00 00 [40 duty bytes]
 ```
 
-The plugin enforces a minimum pump duty of `25`.
+Minimum pump duty: `25`.
 
 #### 4.6.2 Kraken Z3 (`0x3008`)
 
@@ -617,7 +584,7 @@ Telemetry offsets:
 
 #### 4.6.3 Kraken / Kraken Elite (`0x300E`, `0x300C`)
 
-The local plugin exposes:
+This spec currently covers:
 
 - Pump/fan telemetry
 - Pump/fan control
@@ -639,7 +606,7 @@ This is enough for thermal control support, not enough for full RGB or LCD suppo
 
 #### 4.6.4 Kraken Elite v2 (`0x3012`)
 
-This is the most important modern NZXT screen AIO variant currently recoverable from local sources.
+This is the most complete modern NZXT screen AIO variant specified here.
 
 **Interface:** `1`  
 **Report size:** `512` bytes  
@@ -722,7 +689,9 @@ Software mode:
 
 #### Old protocol
 
-Four 65-byte packets encode 10 zones using a dense bit-mapped format. The local keyboard plugin is the clean-room reference and should be followed directly if this path is implemented.
+Four 65-byte packets encode 10 zones using a dense bit-mapped format. The exact bit map is
+not specified here. Defer this path until a packet-level facts-only map or USB capture is
+added to this document.
 
 #### New protocol
 
@@ -822,7 +791,7 @@ This suggests a reusable Gen2 core with device-specific apply descriptors.
 
 ### 5.1 Common LED counts
 
-From local component JSONs and OpenRGB accessory discovery:
+Known LED-count catalog:
 
 | Accessory           | LEDs |
 | ------------------- | ---- |
@@ -841,13 +810,13 @@ From local component JSONs and OpenRGB accessory discovery:
 
 ### 5.2 Layout guidance
 
-Use the local NZXT component JSON files as the source for LED geometry:
+Use Hypercolor topology descriptors for LED geometry:
 
 - strips: linear positions
 - Aer fans: simple ring/square layouts
 - F-series fans: circular ring coordinates
 - Duo fans: denser 20-LED ring
-- Kraken Elite v2 ring: explicit 24-point circular path from the plugin itself
+- Kraken Elite v2 ring: 24-point circular path
 
 ### 5.3 Color-order rule
 
@@ -1048,9 +1017,8 @@ Without this, full screen support is not verified.
 
 What we know:
 
-- The companion binary has a native LCD subsystem.
-- NZXT screen AIOs exist in the local product registry.
-- NZXT plugins do not expose screen packets.
+- NZXT screen AIOs exist in the device registry.
+- No LCD packet map is specified here.
 
 What we do not know yet:
 
@@ -1064,7 +1032,7 @@ What we do not know yet:
 
 ### 9.2 Secondary gap: Kraken `0x300C` / `0x300E` lighting
 
-The local plugin only exposes thermal control. Full RGB support for these PIDs remains unresolved from current local sources.
+Thermal control is specified for these PIDs. Full RGB support remains unresolved until a packet map is captured and added here.
 
 ### 9.3 Phase plan
 

@@ -35,8 +35,8 @@ This spec extends Hypercolor's coverage to the rest of the Nollie family: the en
 
 ### Goals
 
-- Full byte-level wire format for every Nollie SKU vendor plugin ships
-- Cross-validated against the community implementation's GPL-2.0 `NollieController` implementation
+- Full byte-level wire format for every supported Nollie SKU covered by official packet definitions
+- Spec-first implementation path from the official source refresh and Hypercolor packet tests
 - Single `Protocol` impl module that handles all Gen-1 and Gen-2 SKUs through a `NollieModel` enum
 - First-class Strimer cable support (mode byte, per-cable packet generation, subdevice topology hints)
 - Tests cover packetization, channel remap, group markers, color encoding, init/shutdown, mode switching
@@ -82,11 +82,13 @@ The "OS2 firmware" alias VID `0x16D5` may also surface for re-flashed Nollie uni
 
 ### 2.2 LED-count Disambiguation (Nollie1) — UNRESOLVED
 
-the community implementation's header defines `NOLLIE_FS_CH_LED_NUM = 525`; the vendor plugin hard-codes `ChannelLedNum = 630`. Both values are present in shipping code, but we have **no evidence** of a firmware-version-keyed split: the vendor plugin doesn't gate on firmware, and the community implementation's `RGBController_Nollie.cpp` uses `630` for the Nollie1 path despite defining `525` as a constant.
+available packet definitions disagree on the Nollie1 LED cap: one path names `525`, while
+the active Nollie1 behavior uses `630`. We have **no evidence** of a firmware-version-keyed
+split.
 
 The driver should:
 
-1. **Default to 630** LEDs per channel for Nollie1 (matches vendor plugin and the community implementation's actual code path).
+1. **Default to 630** LEDs per channel for Nollie1.
 2. Treat `525` as a **compatibility fallback**: if the firmware rejects an `0xFE 0x03` update with 630, retry with 525.
 3. Query firmware version via `0xFC 0x01` at init and surface it in device metadata for diagnostics.
 4. Capture the actual cap discovery in real hardware testing and update this spec with the observed firmware behavior.
@@ -144,7 +146,9 @@ The Nollie family splits cleanly into two protocol generations. They share comma
 
 All Nollie devices, including the Strimer cable subdevices on Nollie32, transmit color data in **GRB byte order** (Green, Red, Blue per LED, three bytes per LED, no padding). Brightness scaling is `1.00` for all Nollie SKUs (no host-side reduction, unlike Prism 8's 0.75).
 
-The Strimer cable code paths in the Nollie32 vendor plugin re-order the color triples manually (`color[1], color[0], color[2]`), which is equivalent to GRB if the input is RGB. This is a quirk of the vendor plugin API: main-channel data is requested as `getColors("Inline", "GRB")` and emerges already-reordered, while subdevice colors are requested as raw RGB and the plugin swaps R/G inline. Hypercolor's encoding path applies a single `to_grb()` helper at the boundary, so the distinction disappears.
+The Nollie32 Strimer cable path re-orders input RGB triples as `G, R, B`. Hypercolor's
+encoding path applies a single `to_grb()` helper at the boundary so main channels and
+subdevices share one color-order rule.
 
 ### 3.3 Common Command Vocabulary
 
@@ -189,15 +193,20 @@ This section covers Nollie1, Nollie 8 v2, and Nollie 28/12. The protocol is iden
 
 ### 4.1 Packet Addressing — Per-Model Multiplier
 
-Spec 20 documents the formula `packet_id = packet_index + (channel × 6)` for Prism 8 / Nollie 8 v2. vendor plugin's Nollie1 plugin uses the same `× 6` literal even though the device has only one channel (local reference trace) — which is harmless because `channel` is always `0` there. Whether the multiplier is **truly fixed at 6 in firmware** or a per-PID parameter is **not yet verified** for Nollie 28/12.
+Spec 20 documents the formula `packet_id = packet_index + (channel × 6)` for Prism 8 /
+Nollie 8 v2. Nollie1 can use the same `× 6` literal harmlessly because `channel` is always
+`0`. Whether the multiplier is **truly fixed at 6 in firmware** or a per-PID parameter is
+**not yet verified** for Nollie 28/12.
 
-the community implementation's `NollieController.cpp` uses **per-PID packet intervals** rather than a fixed `× 6`:
+Known Nollie 28/12 behavior uses **per-PID packet intervals** rather than a fixed `× 6`:
 
 - Nollie 28/12 → interval `2`
 - Nollie 8 → interval `6`
 - Nollie 1 → interval `30`
 
-These intervals match the per-channel packet count for each SKU. So the community implementation's model is `packet_id = packet_index + (channel × packet_interval)` where `packet_interval` is configured per device — packet IDs are dense across all channels.
+These intervals match the per-channel packet count for each SKU. The model is
+`packet_id = packet_index + (channel × packet_interval)` where `packet_interval` is
+configured per device; packet IDs are dense across all channels.
 
 ```
 Nollie1 (1 channel × 30 packets, interval 30):
@@ -209,7 +218,7 @@ Nollie 8 v2 (8 channels × 6 packets, interval 6):
   ...
   Channel 7: packets 42..47
 
-Nollie 28/12 (12 channels × 2 packets, interval 2 — community implementation model):
+Nollie 28/12 (12 channels × 2 packets, interval 2):
   Channel 0: packets 0, 1
   Channel 1: packets 2, 3
   Channel 2: packets 4, 5
@@ -224,9 +233,13 @@ Nollie 28/12 (alternative — fixed × 6 model):
   Channel 11: packets 66, 67
 ```
 
-**Status:** UNVERIFIED for Nollie 28/12. We have no vendor plugin and no captured packet trace. The driver should be implemented with a **`packet_interval` configuration field per model** so we can switch between the community implementation's "interval = packets-per-channel" model and the fixed-`× 6` model based on hardware testing. Default to the community implementation's model (interval `2`) for Nollie 28/12 since community implementation has hardware-validated their value, and provide a fallback config flag.
+**Status:** UNVERIFIED for Nollie 28/12. We have no captured packet trace. The driver
+should be implemented with a **`packet_interval` configuration field per model** so we can
+switch between the dense "interval = packets-per-channel" model and the fixed-`× 6` model
+based on hardware testing. Default to interval `2` for Nollie 28/12 and provide a fallback
+config flag.
 
-For Nollie1, Nollie 8 v2, and Prism 8 (where the plugins are explicit and confirmed), use the existing `× 6` literal. These are not in question.
+For Nollie1, Nollie 8 v2, and Prism 8, use the existing `× 6` literal. These are not in question.
 
 ### 4.2 Init Sequence
 
@@ -248,7 +261,7 @@ For each frame:
    - Take `min(led_count, max_leds[c])` colors from the spatial engine, encode as GRB.
    - Split into 21-LED chunks: `num_packets = ceil(led_count / 21)`.
    - For each chunk `i` in `[0, num_packets)`:
-     - Emit packet `[0x00, i + (c × packet_interval), C0a, C0b, C0c, ..., C20a, C20b, C20c]`, zero-padded to 65 bytes. Nollie1 / Nollie 8 v2 / Prism 8 use GRB; Nollie 28/12 uses RGB based on community implementation and the discontinued vendor plugin.
+     - Emit packet `[0x00, i + (c × packet_interval), C0a, C0b, C0c, ..., C20a, C20b, C20c]`, zero-padded to 65 bytes. Nollie1 / Nollie 8 v2 / Prism 8 use GRB; Nollie 28/12 uses RGB.
      - `packet_interval` is `6` for Nollie 8 v2 / Prism 8, `30` for Nollie1 (single channel — value is moot), and tentatively `2` for Nollie 28/12 (see §4.1 for the open question).
 2. Emit frame commit: `[0x00, 0xFF]`, zero-padded to 65 bytes — **but only for SKUs that ship one**. See §4.3.1.
 
@@ -256,18 +269,18 @@ For each frame:
 
 The frame commit packet `[0x00, 0xFF]` is **not** universal across Gen-1 SKUs:
 
-| SKU          | Frame Commit | Source                                                                                                                                                                                |
-| ------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prism 8      | Yes          | Spec 20 §4.2                                                                                                                                                                          |
-| Nollie 8 v2  | Yes          | [Nollie8 v2.js:141-142](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie8%20v2.js)                                                                                      |
-| **Nollie1**  | **No**       | [Nollie1.js:106-113](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie1.js) — the render function returns immediately after the per-channel sends, with no commit packet |
-| Nollie 28/12 | Unknown      | No reference implementation available                                                                                                                                                 |
+| SKU          | Frame Commit | Behavior                                                  |
+| ------------ | ------------ | --------------------------------------------------------- |
+| Prism 8      | Yes          | Spec 20 §4.2                                              |
+| Nollie 8 v2  | Yes          | Commit packet is part of the normal render sequence       |
+| **Nollie1**  | **No**       | Firmware auto-latches after the per-channel color stream  |
+| Nollie 28/12 | Unknown      | Keep disabled until hardware testing proves it is needed  |
 
 The Nollie1 firmware auto-latches when the channel's color stream completes (or when a packet with fewer than 21 LEDs of data is observed). For the driver:
 
 - **Nollie 8 v2 / Prism 8:** emit frame commit unconditionally, every frame.
 - **Nollie1:** **omit** the frame commit packet during normal rendering. Send it once during shutdown to fully flush the firmware buffer.
-- **Nollie 28/12:** emit no commit in the discontinued vendor plugin path; keep commit disabled until hardware testing proves it is needed.
+- **Nollie 28/12:** keep commit disabled until hardware testing proves it is needed.
 
 This is a per-SKU capability flag the `NollieModel` enum must track.
 
@@ -277,12 +290,12 @@ When firmware version ≥ 2, every 150 frames the driver issues `[0x00, 0xFC, 0x
 
 **Per-SKU support:**
 
-| SKU               | Voltage Polling                                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Nollie 8 v2       | Confirmed — implemented in [Nollie8 v2.js:62-85](file:///home/bliss/app-2.5.51/Signal-x64/Plugins/Nollie/Nollie8%20v2.js) |
-| Nollie1           | Plugin omits voltage polling; rails likely absent (single-channel inline strip)                                           |
-| Nollie 28/12      | **Unknown** — no plugin and no community implementation voltage path; may or may not respond to `0xFC 0x1A`                                |
-| Prism 8 (spec 20) | Confirmed (same code path as Nollie 8 v2)                                                                                 |
+| SKU               | Voltage Polling                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| Nollie 8 v2       | Confirmed                                                                          |
+| Nollie1           | Disabled by default; rails likely absent on the single-channel inline strip        |
+| Nollie 28/12      | **Unknown**; may or may not respond to `0xFC 0x1A`                                 |
+| Prism 8 (spec 20) | Confirmed                                                                          |
 
 The driver should:
 
@@ -313,9 +326,15 @@ Nollie16v3 and Nollie32 use a completely new wire format. The fundamental change
 | Settings save    | 513 bytes  | `0x80` mode + idle color                                                                  |
 | Shutdown latch   | 513 bytes  | `0xFF` shutdown trigger                                                                   |
 
-**On-the-wire size is 1024 / 513 bytes including the report ID at offset 0.** This is the size the vendor plugin passes to `device.write()` (local reference trace, local reference trace) and is what our existing `UsbHidTransport` already supports (see [`crates/hypercolor-hal/src/transport/hid.rs`](../../crates/hypercolor-hal/src/transport/hid.rs) — variable-size writes around lines 418/422).
+**On-the-wire size is 1024 / 513 bytes including the report ID at offset 0.** This is what
+our existing `UsbHidTransport` already supports (see
+[`crates/hypercolor-hal/src/transport/hid.rs`](../../crates/hypercolor-hal/src/transport/hid.rs)
+-- variable-size writes around lines 418/422).
 
-the community implementation's header annotates these as `1025`/`514` because some `hidapi` builds inject an extra prefix byte at the host abstraction layer. We do not use `hidapi`; `nusb` writes the buffer verbatim. **Verified operationally** through the vendor plugin behavior (which targets the same firmware via `hidapi` underneath but with the report ID embedded in the buffer vendor plugin hands it). Hardware testing should confirm.
+Some host libraries annotate these as `1025`/`514` because they inject an extra prefix byte
+at the host abstraction layer. Hypercolor uses `nusb` and writes the report buffer verbatim,
+so the encoded packet includes the report ID and uses `1024` / `513` bytes on the wire.
+Hardware testing should confirm.
 
 ### 5.2 LED Count Config — `0x88`
 
@@ -477,12 +496,14 @@ Step 5: Emit each group as one [0x40] packet:
           marker = 2          (this group is k_FLAG2_last)
 ```
 
-**FLAG1 → FLAG2 inter-packet delay (V1 path only):** the community implementation's `NollieController.cpp` inserts an 8ms sleep between the FLAG1 and FLAG2 region writes (external trace). However, this delay applies to the community implementation's per-channel send model (closer to our **V1** standalone-channel path in §5.8), **not** the vendor plugin V2 grouped path. vendor plugin's Nollie32 plugin V2 codepath (local reference trace) issues group packets back-to-back with no inter-packet delay.
+**FLAG1 → FLAG2 inter-packet delay (V1 path only):** insert an 8ms sleep between the
+FLAG1 and FLAG2 region writes for the **V1** standalone-channel path in §5.8. The V2 grouped
+path issues group packets back-to-back with no inter-packet delay.
 
 The driver should:
 
 - **V2 path:** No inter-group delay. Emit groups back-to-back.
-- **V1 path:** 8ms pause between any FLAG1-region (physical channels `[0..16)`) and FLAG2-region (physical channels `[16..32)`) writes, matching community implementation.
+- **V1 path:** 8ms pause between any FLAG1-region (physical channels `[0..16)`) and FLAG2-region (physical channels `[16..32)`) writes.
 
 Nollie16v3 uses the same algorithm as V2 but only the upper half (Group_B); marker `1` never appears, and `marker = 2` is set on the final packet only.
 
@@ -811,8 +832,8 @@ USB 2.0 High Speed (60 MB/s theoretical, ~25 MB/s practical for HID interrupt) a
 | ---------------------------------- | ---------------- | ---------------------------------------------------- |
 | Gen-2 settings save (`0x80`)       | 50ms             | NVRAM commit window                                  |
 | Gen-2 shutdown latch (`0xFF`)      | 50ms             | Firmware applies saved settings                      |
-| Nollie32 FLAG1 → FLAG2 boundary    | 8ms              | community implementation-observed; mitigates buffer rollover          |
-| Nollie1 inter-packet               | 30ms init only   | community implementation-observed; not enforced at steady-state 60fps |
+| Nollie32 FLAG1 -> FLAG2 boundary    | 8ms              | mitigates buffer rollover                                             |
+| Nollie1 inter-packet               | 30ms init only   | init-time pacing only; not enforced at steady-state 60fps             |
 | Nollie 8 v2 inter-packet           | 6ms init only    | Same                                                 |
 | Nollie 28/12 inter-packet          | 2ms init only    | Same                                                 |
 | Nollie16v3 / Nollie32 inter-packet | 25ms init only   | Same                                                 |

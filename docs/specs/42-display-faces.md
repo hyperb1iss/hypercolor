@@ -50,13 +50,11 @@ itself. HTML/CSS/JS faces provide the rich typography, animation, canvas/SVG
 drawing, gradients, and glow effects that native widgets would have recreated
 poorly.
 
-SignalRGB's LCD face system demonstrates the right model: each face is a
-standalone HTML file that uses the same property/meter API as effects,
-renders with full browser capabilities, and achieves rich, animated display
-content with minimal effort. Their `LCDFaces/` directory contains self-
-contained HTML files like `Clock.html`, `Simple Sensor.html`, and
-`PulsingLogo.html` that use `engine.getSensorValue()` for meter data and
-CSS animations for visual richness.
+The target model is a standalone HTML face that uses the same property and
+meter API as effects, renders with full browser capabilities, and achieves
+rich, animated display content with minimal effort. A face should be a
+self-contained HTML document that can read sensor values, bind controls, and
+use CSS or canvas animation without native widget code.
 
 Hypercolor already has every ingredient except concurrent Servo rendering:
 
@@ -177,9 +175,9 @@ publish metrics when display traffic waits behind LED traffic.
 
 ## 4. Landscape
 
-### 4.1 SignalRGB LCD Faces
+### 4.1 HTML Display Faces
 
-SignalRGB's `LCDFaces/` system demonstrates the target model:
+The display-face model should support:
 
 - Standalone HTML files with `<meta>` property declarations
 - `engine.getSensorValue(sensorName)` returns `{ value, units, name }`
@@ -190,17 +188,16 @@ SignalRGB's `LCDFaces/` system demonstrates the target model:
 
 **Hypercolor already has equivalent infrastructure:**
 
-| SignalRGB                           | Hypercolor                               | Status  |
+| Capability                          | Hypercolor                               | Status  |
 | ----------------------------------- | ---------------------------------------- | ------- |
-| `engine.getSensorValue()`           | `window.engine.getSensorValue()`         | Shipped |
-| `engine.sensors`                    | `window.engine.sensors`                  | Shipped |
-| `<meta property=... type="sensor">` | `<meta property=... type="sensor">`      | Shipped |
-| `<meta property=... type="color">`  | `<meta property=... type="color">`       | Shipped |
-| `on<Prop>Changed()`                 | Control update via LightScript runtime   | Shipped |
+| Sensor reads                        | `window.engine.getSensorValue()`         | Shipped |
+| Sensor list                         | `window.engine.sensors`                  | Shipped |
+| Sensor picker controls              | `<meta property=... type="sensor">`      | Shipped |
+| Color controls                      | `<meta property=... type="color">`       | Shipped |
+| Reactive control updates            | Control update via LightScript runtime   | Shipped |
 | Auto-discovery from directory       | `register_html_effects()` recursive scan | Shipped |
 
-The only gap is concurrent rendering: SignalRGB presumably runs each face
-in its own browser/webview instance. Hypercolor's Servo worker currently
+The only gap is concurrent rendering: Hypercolor's Servo worker currently
 manages one WebView.
 
 ### 4.2 Current Servo Worker Architecture

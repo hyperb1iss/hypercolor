@@ -68,8 +68,8 @@ metadata distinguishes them.
 Every face needs: sensor polling, value formatting, gauge arc math,
 text layout, color interpolation, animation easing, circular display
 masking. Without shared components, each face author reimplements these
-from scratch. SignalRGB's faces show this problem — each is a self-
-contained HTML file with duplicated gauge drawing code.
+from scratch, and standalone HTML faces tend to duplicate gauge drawing,
+sensor formatting, and layout glue.
 
 ### 2.2 No Sensor Control Type
 
