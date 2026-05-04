@@ -10,7 +10,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use hypercolor_ui::control_surface_view::{
-    actionable_control_surfaces, action_is_hidden, control_value_summary,
+    action_is_hidden, actionable_control_surfaces, control_value_summary,
     driver_owned_device_control_surfaces, field_is_hidden,
 };
 
@@ -309,8 +309,8 @@ fn render_field(
         .map(|availability| availability.state)
         .unwrap_or(ControlAvailabilityState::Available);
     let availability_reason = availability.and_then(|availability| availability.reason);
-    let editable =
-        field.access != ControlAccess::ReadOnly && availability_state == ControlAvailabilityState::Available;
+    let editable = field.access != ControlAccess::ReadOnly
+        && availability_state == ControlAvailabilityState::Available;
     let field_label = field.label.clone();
     let description = field.description.clone();
     let value_view = render_field_editor(
@@ -806,7 +806,8 @@ fn value_text(value: Option<&DynamicControlValue>) -> String {
 fn surface_title(surface: &ControlSurfaceDocument) -> String {
     match &surface.scope {
         ControlSurfaceScope::Driver { driver_id }
-        | ControlSurfaceScope::Device { driver_id, .. } => driver_identifier_label(driver_id)
-            .unwrap_or_else(|| driver_id.to_uppercase()),
+        | ControlSurfaceScope::Device { driver_id, .. } => {
+            driver_identifier_label(driver_id).unwrap_or_else(|| driver_id.to_uppercase())
+        }
     }
 }

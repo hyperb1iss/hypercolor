@@ -4,7 +4,8 @@
 //! provides lookup/search/filter operations over the known effect catalog.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use tracing::{debug, info, warn};
@@ -277,6 +278,10 @@ impl EffectRegistry {
     /// If `path` no longer exists, the effect is removed from the registry.
     /// Returns a diff summary.
     pub fn reload_single(&mut self, path: &std::path::Path) -> RescanReport {
+        if !is_html_file(path) {
+            return RescanReport::default();
+        }
+
         // If the file was deleted, prune it.
         if !path.exists() {
             let removed_count = self.remove_by_source_path(path);
@@ -287,47 +292,70 @@ impl EffectRegistry {
             };
         }
 
-        // Re-register just this one file by running the full loader
-        // against a single-file search scope. We construct a temporary
-        // search path containing just the parent directory and filter
-        // to only this file by leveraging register_html_effects' idempotency.
-        let paths = self.search_paths.clone();
-        let had_before = self.has_source_path(path);
-        let _report = super::loader::register_html_effects(self, &paths);
+        let entry = match super::loader::load_html_effect_file(path) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => {
+                let removed_count = self.remove_by_source_path(path);
+                return RescanReport {
+                    added: 0,
+                    removed: removed_count,
+                    updated: 0,
+                };
+            }
+            Err(error) => {
+                warn!(
+                    path = %error.path.display(),
+                    error = %error.message,
+                    "Failed to reload HTML effect"
+                );
+                return RescanReport::default();
+            }
+        };
 
-        if had_before {
+        let stale_count =
+            self.remove_by_source_path_except(&entry.source_path, Some(entry.metadata.id));
+        if self.register(entry).is_some() {
             RescanReport {
                 added: 0,
-                removed: 0,
+                removed: stale_count,
                 updated: 1,
             }
         } else {
             RescanReport {
                 added: 1,
-                removed: 0,
+                removed: stale_count,
                 updated: 0,
             }
         }
     }
 
-    /// Check if any registered effect has the given source path.
-    fn has_source_path(&self, path: &std::path::Path) -> bool {
-        self.effects.values().any(|entry| entry.source_path == path)
-    }
-
     /// Remove all effects whose source path matches the given path.
     /// Returns the count of removed effects.
     fn remove_by_source_path(&mut self, path: &std::path::Path) -> usize {
+        self.remove_by_source_path_except(path, None)
+    }
+
+    /// Remove effects whose source path matches the given path, except one id.
+    /// Returns the count of removed effects.
+    fn remove_by_source_path_except(
+        &mut self,
+        path: &std::path::Path,
+        keep_id: Option<EffectId>,
+    ) -> usize {
+        let normalized_path = normalize_registry_path(path);
         let stale: Vec<EffectId> = self
             .effects
             .iter()
-            .filter(|(_, entry)| entry.source_path == path)
+            .filter(|(id, entry)| {
+                normalize_registry_path(&entry.source_path) == normalized_path
+                    && Some(**id) != keep_id
+            })
             .map(|(id, _)| *id)
             .collect();
 
         let count = stale.len();
         for id in stale {
-            info!(id = %id, path = %path.display(), "Removing deleted effect");
+            info!(id = %id, path = %normalized_path.display(), "Removing deleted effect");
             let _ = self.remove(&id);
         }
         count
@@ -358,6 +386,53 @@ impl EffectRegistry {
     fn bump_generation(&mut self) {
         self.generation = self.generation.saturating_add(1);
     }
+}
+
+fn is_html_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
+}
+
+fn normalize_registry_path(path: &Path) -> PathBuf {
+    normalize_platform_path(
+        fs::canonicalize(path).unwrap_or_else(|_| normalize_path_lexically(path)),
+    )
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[cfg(windows)]
+fn normalize_platform_path(path: PathBuf) -> PathBuf {
+    let normalized = {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            Some(PathBuf::from(format!(r"\\{rest}")))
+        } else {
+            text.strip_prefix(r"\\?\").map(PathBuf::from)
+        }
+    };
+
+    normalized.unwrap_or(path)
+}
+
+#[cfg(not(windows))]
+fn normalize_platform_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 impl Default for EffectRegistry {

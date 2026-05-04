@@ -280,6 +280,97 @@ fn registry_rescan_preserves_builtin_native_effects() {
 }
 
 #[test]
+fn registry_reload_single_does_not_rescan_sibling_effects() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let aurora_path = root.join("aurora.html");
+    let nebula_path = root.join("nebula.html");
+
+    write_html(
+        &aurora_path,
+        r#"
+<head>
+  <title>Aurora</title>
+  <meta description="Northern lights" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+    write_html(
+        &nebula_path,
+        r#"
+<head>
+  <title>Nebula</title>
+  <meta description="Space haze" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let initial_report = register_html_effects(&mut registry, &[root]);
+    assert_eq!(initial_report.loaded_effects, 2);
+
+    write_html(
+        &nebula_path,
+        r#"
+<head>
+  <title>Nebula Reloaded</title>
+  <meta description="Space haze" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+
+    let report = registry.reload_single(&aurora_path);
+
+    assert_eq!(report.added, 0);
+    assert_eq!(report.removed, 0);
+    assert_eq!(report.updated, 1);
+    assert!(
+        registry.search("Nebula Reloaded").is_empty(),
+        "single-file reload should not refresh sibling HTML effects"
+    );
+    assert!(
+        registry
+            .iter()
+            .any(|(_, entry)| entry.metadata.name == "Nebula"),
+        "unchanged sibling registry entry should keep its previous metadata"
+    );
+}
+
+#[test]
+fn registry_reload_single_removes_deleted_effect_from_noncanonical_path() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let aurora_path = root.join("aurora.html");
+
+    write_html(
+        &aurora_path,
+        r#"
+<head>
+  <title>Aurora</title>
+  <meta description="Northern lights" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let initial_report = register_html_effects(&mut registry, &[root.clone()]);
+    assert_eq!(initial_report.loaded_effects, 1);
+    assert_eq!(registry.len(), 1);
+
+    fs::remove_file(&aurora_path).expect("effect file should be deleted");
+
+    let watcher_style_path = root.join("nested").join("..").join("aurora.html");
+    let report = registry.reload_single(&watcher_style_path);
+
+    assert_eq!(report.removed, 1);
+    assert_eq!(registry.len(), 0);
+}
+
+#[test]
 fn parse_html_effect_metadata_prefers_webgl_when_shared_runtime_contains_2d_fallback() {
     let html = r#"
 <head>

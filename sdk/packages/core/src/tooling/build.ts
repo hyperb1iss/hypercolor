@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { HYPERCOLOR_FORMAT_VERSION } from './constants'
@@ -226,9 +226,17 @@ export async function buildArtifacts(options: BuildArtifactsOptions): Promise<Bu
             outDir: options.outDir,
             sdkAliasPath: options.sdkAliasPath,
         })
-        await Bun.write(artifact.outputPath, artifact.html)
+        await writeArtifactIfChanged(artifact.outputPath, artifact.html)
         results.push(artifact)
     }
 
     return results
+}
+
+async function writeArtifactIfChanged(outputPath: string, html: string): Promise<void> {
+    if (existsSync(outputPath) && readFileSync(outputPath, 'utf8') === html) {
+        return
+    }
+
+    await Bun.write(outputPath, html)
 }

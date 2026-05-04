@@ -46,9 +46,9 @@ pub fn driver_owned_device_control_surface(
     });
     surface.actions.retain(|action| {
         matches!(action.owner, ControlOwner::Driver { .. })
-            && !action_availability.get(&action.id).is_some_and(|availability| {
-                availability.state == ControlAvailabilityState::Hidden
-            })
+            && !action_availability
+                .get(&action.id)
+                .is_some_and(|availability| availability.state == ControlAvailabilityState::Hidden)
     });
 
     surface_has_visible_items(&surface).then_some(surface)
@@ -66,9 +66,9 @@ pub fn actionable_control_surfaces(
 pub fn actionable_control_surface(
     mut surface: ControlSurfaceDocument,
 ) -> Option<ControlSurfaceDocument> {
-    surface
-        .fields
-        .retain(|field| field.access != ControlAccess::ReadOnly && field_has_actionable_editor(field));
+    surface.fields.retain(|field| {
+        field.access != ControlAccess::ReadOnly && field_has_actionable_editor(field)
+    });
     surface_has_visible_items(&surface).then_some(surface)
 }
 

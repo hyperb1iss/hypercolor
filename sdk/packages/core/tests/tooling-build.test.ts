@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -11,9 +11,10 @@ const SDK_ALIAS = resolve(SDK_ROOT, 'packages/core/src/index.ts')
 describe('tooling build', () => {
     test('discovers entries under configured roots', () => {
         const entries = discoverWorkspaceEntries(resolve(SDK_ROOT), ['src/effects', 'src/faces'])
+        const normalizedEntries = entries.map((entry) => entry.replaceAll('\\', '/'))
 
-        expect(entries.some((entry) => entry.endsWith('src/effects/borealis/main.ts'))).toBeTrue()
-        expect(entries.some((entry) => entry.endsWith('src/faces/neon-clock/main.ts'))).toBeTrue()
+        expect(normalizedEntries.some((entry) => entry.endsWith('src/effects/borealis/main.ts'))).toBeTrue()
+        expect(normalizedEntries.some((entry) => entry.endsWith('src/faces/neon-clock/main.ts'))).toBeTrue()
     })
 
     test('builds an effect html artifact with version metadata', async () => {
@@ -67,6 +68,32 @@ describe('tooling build', () => {
             const html = readFileSync(result.outputPath, 'utf8')
             expect(html).toContain('id="faceContainer"')
             expect(html).toContain(`<meta name="hypercolor-version" content="${HYPERCOLOR_FORMAT_VERSION}" />`)
+        } finally {
+            rmSync(outDir, { force: true, recursive: true })
+        }
+    })
+
+    test('skips rewriting unchanged html artifacts', async () => {
+        const outDir = mkdtempSync(join(tmpdir(), 'hypercolor-stable-build-'))
+        try {
+            const entryPath = resolve(SDK_ROOT, 'src/effects/borealis/main.ts')
+            const [result] = await buildArtifacts({
+                entryPaths: [entryPath],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            const stableTimestamp = new Date('2024-01-01T00:00:00.000Z')
+            utimesSync(result.outputPath, stableTimestamp, stableTimestamp)
+            const mtimeBefore = statSync(result.outputPath).mtimeMs
+
+            await buildArtifacts({
+                entryPaths: [entryPath],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            expect(statSync(result.outputPath).mtimeMs).toBe(mtimeBefore)
         } finally {
             rmSync(outDir, { force: true, recursive: true })
         }
