@@ -4,13 +4,21 @@ use hypercolor_daemon_link::{
 use reqwest::Url;
 use uuid::Uuid;
 
-use crate::{CloudClient, CloudClientError};
+use crate::{CloudClient, CloudClientError, RefreshTokenOwner, SecretStore, load_identity};
 
 #[derive(Clone)]
 pub struct DaemonConnectInput<'a> {
     pub daemon_id: Uuid,
     pub keypair: &'a IdentityKeypair,
     pub bearer_token: &'a str,
+    pub daemon_version: &'a str,
+    pub timestamp: &'a str,
+    pub nonce: UpgradeNonce,
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredDaemonConnectInput<'a> {
+    pub token_owner: RefreshTokenOwner,
     pub daemon_version: &'a str,
     pub timestamp: &'a str,
     pub nonce: UpgradeNonce,
@@ -33,6 +41,13 @@ impl std::fmt::Debug for DaemonConnectInput<'_> {
 pub struct DaemonConnectRequest {
     pub url: Url,
     pub headers: SignedUpgradeHeaders,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredDaemonConnect {
+    MissingIdentity,
+    MissingRefreshToken,
+    Prepared(DaemonConnectRequest),
 }
 
 impl std::fmt::Debug for DaemonConnectRequest {
@@ -62,6 +77,32 @@ impl CloudClient {
         .signed_headers(input.keypair);
 
         Ok(DaemonConnectRequest { url, headers })
+    }
+
+    pub async fn prepare_stored_daemon_connect(
+        &self,
+        store: &impl SecretStore,
+        input: StoredDaemonConnectInput<'_>,
+    ) -> Result<StoredDaemonConnect, CloudClientError> {
+        let Some(identity) = load_identity(store)? else {
+            return Ok(StoredDaemonConnect::MissingIdentity);
+        };
+        let Some(token) = self
+            .refresh_stored_device_token(store, input.token_owner)
+            .await?
+        else {
+            return Ok(StoredDaemonConnect::MissingRefreshToken);
+        };
+        let request = self.prepare_daemon_connect(DaemonConnectInput {
+            daemon_id: identity.daemon_id(),
+            keypair: identity.keypair(),
+            bearer_token: &token.access_token,
+            daemon_version: input.daemon_version,
+            timestamp: input.timestamp,
+            nonce: input.nonce,
+        })?;
+
+        Ok(StoredDaemonConnect::Prepared(request))
     }
 }
 
