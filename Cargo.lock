@@ -4677,6 +4677,7 @@ dependencies = [
  "dbus-secret-service-keyring-store",
  "hypercolor-cloud-api",
  "hypercolor-daemon-link",
+ "hypercolor-types",
  "keyring-core",
  "reqwest 0.12.28",
  "thiserror 2.0.18",

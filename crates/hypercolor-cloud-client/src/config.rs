@@ -1,6 +1,7 @@
 use reqwest::Url;
 
 use crate::CloudClientError;
+use hypercolor_types::config::CloudConfig;
 
 pub const DEFAULT_AUTH_BASE_URL: &str = "https://hypercolor.lighting";
 pub const DEFAULT_DEVICE_CLIENT_ID: &str = "hypercolor-daemon";
@@ -76,6 +77,17 @@ impl CloudClientConfig {
         self.auth_base_url
             .join(path)
             .map_err(|error| CloudClientError::InvalidBaseUrl(error.to_string()))
+    }
+}
+
+impl TryFrom<&CloudConfig> for CloudClientConfig {
+    type Error = CloudClientError;
+
+    fn try_from(config: &CloudConfig) -> Result<Self, Self::Error> {
+        Ok(
+            Self::with_auth_base_url(&config.base_url, &config.auth_base_url)?
+                .with_device_client(&config.device_client_id, &config.device_scope),
+        )
     }
 }
 

@@ -5,6 +5,7 @@ use hypercolor_cloud_client::{
 use hypercolor_daemon_link::{
     IdentityKeypair, IdentityNonce, registration_proof_message, verify_identity_signature,
 };
+use hypercolor_types::config::CloudConfig;
 use uuid::Uuid;
 
 #[test]
@@ -48,6 +49,33 @@ fn cloud_client_config_builds_auth_urls() {
     );
     assert_eq!(config.device_client_id(), "hypercolor-daemon-dev");
     assert_eq!(config.device_scope(), "openid profile email cloud");
+}
+
+#[test]
+fn cloud_client_config_maps_from_shared_cloud_config() {
+    let config = CloudConfig {
+        enabled: true,
+        base_url: "https://api.staging.hypercolor.lighting".into(),
+        auth_base_url: "https://staging.hypercolor.lighting".into(),
+        app_base_url: "https://app.staging.hypercolor.lighting".into(),
+        device_client_id: "hypercolor-daemon-dev".into(),
+        device_scope: "openid profile email cloud".into(),
+        connect_on_start: false,
+    };
+
+    let client_config =
+        CloudClientConfig::try_from(&config).expect("cloud config should map to client config");
+
+    assert_eq!(
+        client_config.base_url().as_str(),
+        "https://api.staging.hypercolor.lighting/"
+    );
+    assert_eq!(
+        client_config.auth_base_url().as_str(),
+        "https://staging.hypercolor.lighting/"
+    );
+    assert_eq!(client_config.device_client_id(), "hypercolor-daemon-dev");
+    assert_eq!(client_config.device_scope(), "openid profile email cloud");
 }
 
 #[test]
