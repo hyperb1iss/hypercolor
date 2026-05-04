@@ -1238,6 +1238,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(cloud::get_entitlement_cache),
         )
         .route(
+            "/cloud/connection",
+            axum::routing::get(cloud::get_connection),
+        )
+        .route(
             "/cloud/identity",
             axum::routing::post(cloud::ensure_identity),
         )

@@ -20,6 +20,8 @@ pub enum CloudCommand {
     Login(CloudLoginArgs),
     /// Log this daemon out of Hypercolor Cloud locally.
     Logout(CloudLogoutArgs),
+    /// Show daemon cloud socket readiness.
+    Connection,
     /// Show daemon cloud feature/configuration status.
     Status,
     /// Show local cloud login/session status.
@@ -50,10 +52,54 @@ pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContex
     match &args.command {
         CloudCommand::Login(login_args) => execute_login(login_args, client, ctx).await,
         CloudCommand::Logout(logout_args) => execute_logout(logout_args, client, ctx).await,
+        CloudCommand::Connection => execute_connection(client, ctx).await,
         CloudCommand::Status => execute_status(client, ctx).await,
         CloudCommand::Session => execute_session(client, ctx).await,
         CloudCommand::Identity => execute_identity(client, ctx).await,
     }
+}
+
+async fn execute_connection(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client.get("/cloud/connection").await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            println!("{}", extract_str(&response, "state"));
+        }
+        OutputFormat::Table => {
+            let can_connect = response
+                .get("can_connect")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let connected = response
+                .get("connected")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let entitlement_cached = response
+                .get("entitlement_cached")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            println!();
+            ctx.info(&format!(
+                "Connection  {}",
+                ctx.painter.device_state(&extract_str(&response, "state"))
+            ));
+            ctx.info(&format!("Live        {}", ctx.painter.yesno(connected)));
+            ctx.info(&format!("Ready       {}", ctx.painter.yesno(can_connect)));
+            ctx.info(&format!(
+                "Entitlement {}",
+                ctx.painter.yesno(entitlement_cached)
+            ));
+            ctx.info(&format!(
+                "URL         {}",
+                ctx.painter.name(&extract_str(&response, "connect_url"))
+            ));
+            println!();
+        }
+    }
+
+    Ok(())
 }
 
 async fn execute_logout(

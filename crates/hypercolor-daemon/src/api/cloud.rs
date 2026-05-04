@@ -72,6 +72,29 @@ pub struct CloudSessionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CloudConnectionStatus {
+    pub state: CloudConnectionState,
+    pub connected: bool,
+    pub can_connect: bool,
+    pub connect_on_start: bool,
+    pub connect_url: Option<String>,
+    pub authenticated: bool,
+    pub identity_present: bool,
+    pub entitlement_cached: bool,
+    pub entitlement_stale: Option<bool>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudConnectionState {
+    Disabled,
+    SignedOut,
+    MissingIdentity,
+    Ready,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CloudLogoutStatus {
     pub authenticated: bool,
     pub refresh_token_deleted: bool,
@@ -173,6 +196,34 @@ pub async fn get_entitlement_cache() -> Response {
             ApiError::internal(format!("failed to read cloud entitlement cache: {error}"))
         }
     }
+}
+
+pub async fn get_connection(State(state): State<Arc<AppState>>) -> Response {
+    let cloud_config = state
+        .config_manager
+        .as_ref()
+        .map(|manager| manager.get().cloud.clone())
+        .unwrap_or_default();
+    let session = match KeyringSecretStore::new_native()
+        .and_then(|store| session_status_from_store(&store))
+    {
+        Ok(status) => status,
+        Err(error) => {
+            return ApiError::internal(format!("failed to read cloud session: {error}"));
+        }
+    };
+    let entitlement = match load_cached_entitlement(entitlement_cache_path()).await {
+        Ok(entitlement) => entitlement,
+        Err(error) => {
+            return ApiError::internal(format!("failed to read cloud entitlement cache: {error}"));
+        }
+    };
+
+    ApiResponse::ok(connection_status_from_parts(
+        &cloud_config,
+        &session,
+        entitlement.as_ref(),
+    ))
 }
 
 pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
@@ -338,6 +389,44 @@ pub fn logout_from_store(
         pending_login_sessions_cleared,
         credential_storage: "os_keyring".to_owned(),
     })
+}
+
+pub fn connection_status_from_parts(
+    config: &CloudConfig,
+    session: &CloudSessionStatus,
+    entitlement: Option<&CachedCloudEntitlement>,
+) -> CloudConnectionStatus {
+    let (connect_url, last_error) = CloudClientConfig::try_from(config)
+        .and_then(|config| config.daemon_connect_url())
+        .map_or_else(
+            |error| (None, Some(error.to_string())),
+            |url| (Some(url.to_string()), None),
+        );
+    let state = if !config.enabled {
+        CloudConnectionState::Disabled
+    } else if !session.refresh_token_present {
+        CloudConnectionState::SignedOut
+    } else if !session.identity_present {
+        CloudConnectionState::MissingIdentity
+    } else {
+        CloudConnectionState::Ready
+    };
+    let can_connect = matches!(state, CloudConnectionState::Ready);
+
+    CloudConnectionStatus {
+        state,
+        connected: false,
+        can_connect,
+        connect_on_start: config.connect_on_start,
+        connect_url,
+        authenticated: session.authenticated,
+        identity_present: session.identity_present,
+        entitlement_cached: entitlement.is_some(),
+        entitlement_stale: entitlement.map(|entitlement| {
+            entitlement.is_stale_at_unix(crate::cloud_entitlements::unix_now_seconds())
+        }),
+        last_error,
+    }
 }
 
 impl CloudLoginPoll {

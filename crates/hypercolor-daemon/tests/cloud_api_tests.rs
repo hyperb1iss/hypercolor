@@ -293,6 +293,54 @@ fn cloud_logout_deletes_refresh_token_and_preserves_identity() {
     );
 }
 
+#[test]
+fn cloud_connection_status_reports_ready_prerequisites_without_live_socket() {
+    let config = HypercolorConfig::default().cloud;
+    let session = CloudSessionStatusFixture::ready();
+    let entitlement = cloud_entitlements::CachedCloudEntitlement::from_response(
+        &entitlement_token_fixture(),
+        std::time::SystemTime::UNIX_EPOCH,
+    );
+    let mut enabled_config = config.clone();
+    enabled_config.enabled = true;
+
+    let status = cloud::connection_status_from_parts(
+        &enabled_config,
+        &session.into_status(),
+        Some(&entitlement),
+    );
+
+    assert_eq!(
+        serde_json::to_value(status.state).expect("serialize state"),
+        "ready"
+    );
+    assert!(!status.connected);
+    assert!(status.can_connect);
+    assert!(status.authenticated);
+    assert!(status.identity_present);
+    assert!(status.entitlement_cached);
+    assert_eq!(
+        status.connect_url.as_deref(),
+        Some("wss://api.hypercolor.lighting/v1/daemon/connect")
+    );
+}
+
+#[test]
+fn cloud_connection_status_blocks_when_signed_out() {
+    let mut config = HypercolorConfig::default().cloud;
+    config.enabled = true;
+    let session = CloudSessionStatusFixture::signed_out().into_status();
+
+    let status = cloud::connection_status_from_parts(&config, &session, None);
+
+    assert_eq!(
+        serde_json::to_value(status.state).expect("serialize state"),
+        "signed_out"
+    );
+    assert!(!status.can_connect);
+    assert!(!status.entitlement_cached);
+}
+
 fn set_temp_data_dir() -> (TempDir, DataDirOverrideGuard) {
     let tempdir = TempDir::new().expect("temp data dir should be created");
     ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
@@ -304,6 +352,38 @@ struct DataDirOverrideGuard;
 impl Drop for DataDirOverrideGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+    }
+}
+
+struct CloudSessionStatusFixture {
+    refresh_token_present: bool,
+    identity_present: bool,
+}
+
+impl CloudSessionStatusFixture {
+    const fn ready() -> Self {
+        Self {
+            refresh_token_present: true,
+            identity_present: true,
+        }
+    }
+
+    const fn signed_out() -> Self {
+        Self {
+            refresh_token_present: false,
+            identity_present: true,
+        }
+    }
+
+    fn into_status(self) -> cloud::CloudSessionStatus {
+        cloud::CloudSessionStatus {
+            authenticated: self.refresh_token_present && self.identity_present,
+            refresh_token_present: self.refresh_token_present,
+            identity_present: self.identity_present,
+            daemon_id: None,
+            identity_pubkey: None,
+            credential_storage: "memory".into(),
+        }
     }
 }
 
