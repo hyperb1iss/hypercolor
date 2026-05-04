@@ -20,6 +20,8 @@ pub enum CloudCommand {
     Login(CloudLoginArgs),
     /// Show daemon cloud feature/configuration status.
     Status,
+    /// Show local cloud login/session status.
+    Session,
     /// Create or show this daemon's cloud identity.
     Identity,
 }
@@ -39,6 +41,7 @@ pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContex
     match &args.command {
         CloudCommand::Login(login_args) => execute_login(login_args, client, ctx).await,
         CloudCommand::Status => execute_status(client, ctx).await,
+        CloudCommand::Session => execute_session(client, ctx).await,
         CloudCommand::Identity => execute_identity(client, ctx).await,
     }
 }
@@ -127,6 +130,58 @@ async fn execute_status(client: &DaemonClient, ctx: &OutputContext) -> Result<()
             ctx.info(&format!(
                 "Identity    {}",
                 extract_str(&response, "identity_storage")
+            ));
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_session(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response = client.get("/cloud/session").await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            let authenticated = response
+                .get("authenticated")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            println!(
+                "{}",
+                if authenticated {
+                    "authenticated"
+                } else {
+                    "signed-out"
+                }
+            );
+        }
+        OutputFormat::Table => {
+            let authenticated = response
+                .get("authenticated")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let identity_present = response
+                .get("identity_present")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            println!();
+            ctx.info(&format!(
+                "Session     {}",
+                if authenticated {
+                    ctx.painter.success("authenticated")
+                } else {
+                    ctx.painter.muted("signed-out")
+                }
+            ));
+            ctx.info(&format!(
+                "Identity    {}",
+                ctx.painter.yesno(identity_present)
+            ));
+            ctx.info(&format!(
+                "Daemon ID   {}",
+                ctx.painter.id(&extract_str(&response, "daemon_id"))
             ));
             println!();
         }

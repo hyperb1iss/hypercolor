@@ -139,6 +139,57 @@ async fn cloud_login_polls_daemon_until_authorized() -> Result<()> {
 }
 
 #[tokio::test]
+async fn cloud_session_fetches_daemon_session_status() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/cloud/session",
+            get(
+                |State(captured_uri): State<SharedUri>, uri: Uri| async move {
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    Json(serde_json::json!({
+                        "data": {
+                            "authenticated": true,
+                            "refresh_token_present": true,
+                            "identity_present": true,
+                            "daemon_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1",
+                            "identity_pubkey": "pubkey",
+                            "credential_storage": "os_keyring"
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(port, &["cloud", "session"]).await?;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "hyper CLI failed (status={}):\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            stderr
+        );
+    }
+
+    let body: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("stdout should be json")?;
+    assert_eq!(body["authenticated"], true);
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/cloud/session")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn effects_activate_serializes_scalar_params_and_default_cut_transition() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
