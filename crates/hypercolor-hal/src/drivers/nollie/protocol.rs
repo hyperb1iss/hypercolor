@@ -223,19 +223,17 @@ impl NollieProtocol {
         Cow::Owned(normalized)
     }
 
-    pub(super) fn encode_gen2_counts_if_changed(
-        &self,
-        counts: [u16; GEN2_PHYSICAL_CHANNELS],
-        commands: &mut Vec<ProtocolCommand>,
-    ) {
+    pub(super) fn gen2_counts_changed(&self, counts: [u16; GEN2_PHYSICAL_CHANNELS]) -> bool {
         let mut last_counts = self
             .last_gen2_counts
             .lock()
             .expect("gen2 count cache lock should not be poisoned");
         if *last_counts != counts {
-            super::gen2::push_count_config(counts, commands);
             *last_counts = counts;
+            return true;
         }
+
+        false
     }
 
     #[must_use]

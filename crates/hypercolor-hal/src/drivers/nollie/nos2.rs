@@ -6,19 +6,25 @@ use super::gen2::{
     NOLLIE32_ATX_CABLE_REMAP, NOLLIE32_GPU_CABLE_REMAP, NOLLIE32_MAIN_CHANNEL_REMAP,
 };
 use super::protocol::{
-    GEN2_COLOR_REPORT_SIZE, GpuCableType, LEDS_ATX_STRIMER, LEDS_GEN2_CHANNEL, Nollie32Config,
-    NollieModel, NollieProtocol, encode_color,
+    GEN2_COLOR_REPORT_SIZE, GEN2_PHYSICAL_CHANNELS, GpuCableType, LEDS_ATX_STRIMER,
+    LEDS_GEN2_CHANNEL, Nollie32Config, NollieModel, NollieProtocol, encode_color,
 };
 
 const NOLLIE16V3_NOS2_CHANNEL_REMAP: [u8; 16] =
     [3, 2, 1, 0, 8, 9, 10, 11, 4, 5, 6, 7, 15, 14, 13, 12];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct DirectEntry {
     physical: u8,
     led_count: u16,
     color_start: usize,
 }
+
+const EMPTY_DIRECT_ENTRY: DirectEntry = DirectEntry {
+    physical: 0,
+    led_count: 0,
+    color_start: 0,
+};
 
 pub(super) fn encode_frame_into(
     protocol: &NollieProtocol,
@@ -26,12 +32,12 @@ pub(super) fn encode_frame_into(
     commands: &mut Vec<ProtocolCommand>,
 ) {
     let normalized = protocol.normalize_colors(colors);
-    let mut entries = build_entries(protocol.model(), protocol.nollie32_config());
-    entries.sort_by_key(|entry| entry.physical);
-    let (max_low, max_high) = marker_channels(&entries);
+    let (entries, entry_count) = build_entries(protocol.model(), protocol.nollie32_config());
+    let entries = &entries[..entry_count];
+    let (max_low, max_high) = marker_channels(entries);
 
     let mut command_buffer = CommandBuffer::new(commands);
-    for entry in entries {
+    for entry in entries.iter().copied() {
         command_buffer.push_fill(
             false,
             Duration::ZERO,
@@ -48,25 +54,28 @@ pub(super) fn encode_frame_into(
     command_buffer.finish();
 }
 
-fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<DirectEntry> {
-    let mut entries = Vec::new();
+fn build_entries(
+    model: NollieModel,
+    config: Nollie32Config,
+) -> ([DirectEntry; GEN2_PHYSICAL_CHANNELS], usize) {
+    let mut by_physical = [EMPTY_DIRECT_ENTRY; GEN2_PHYSICAL_CHANNELS];
     let mut cursor = 0;
 
     match model {
         NollieModel::Nollie16v3Nos2 => {
             for physical in NOLLIE16V3_NOS2_CHANNEL_REMAP {
-                push_entry(&mut entries, physical, cursor, LEDS_GEN2_CHANNEL);
+                push_entry(&mut by_physical, physical, cursor, LEDS_GEN2_CHANNEL);
                 cursor += LEDS_GEN2_CHANNEL;
             }
         }
         NollieModel::Nollie32Nos2 => {
             for physical in NOLLIE32_MAIN_CHANNEL_REMAP {
-                push_entry(&mut entries, physical, cursor, LEDS_GEN2_CHANNEL);
+                push_entry(&mut by_physical, physical, cursor, LEDS_GEN2_CHANNEL);
                 cursor += LEDS_GEN2_CHANNEL;
             }
             if config.atx_cable_present {
                 for (row, physical) in NOLLIE32_ATX_CABLE_REMAP.iter().copied().enumerate() {
-                    push_entry(&mut entries, physical, cursor + row * 20, 20);
+                    push_entry(&mut by_physical, physical, cursor + row * 20, 20);
                 }
                 cursor += LEDS_ATX_STRIMER;
             }
@@ -77,7 +86,7 @@ fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<DirectEntry>
                     .take(config.gpu_cable_type.rows())
                     .enumerate()
                 {
-                    push_entry(&mut entries, physical, cursor + row * 27, 27);
+                    push_entry(&mut by_physical, physical, cursor + row * 27, 27);
                 }
             }
         }
@@ -107,15 +116,34 @@ fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<DirectEntry>
         | NollieModel::Nollie8Youth => {}
     }
 
-    entries
+    compact_entries(&by_physical)
 }
 
-fn push_entry(entries: &mut Vec<DirectEntry>, physical: u8, color_start: usize, led_count: usize) {
-    entries.push(DirectEntry {
+fn push_entry(
+    entries: &mut [DirectEntry; GEN2_PHYSICAL_CHANNELS],
+    physical: u8,
+    color_start: usize,
+    led_count: usize,
+) {
+    entries[usize::from(physical)] = DirectEntry {
         physical,
         led_count: u16::try_from(led_count).unwrap_or(u16::MAX),
         color_start,
-    });
+    };
+}
+
+fn compact_entries(
+    by_physical: &[DirectEntry; GEN2_PHYSICAL_CHANNELS],
+) -> ([DirectEntry; GEN2_PHYSICAL_CHANNELS], usize) {
+    let mut entries = [EMPTY_DIRECT_ENTRY; GEN2_PHYSICAL_CHANNELS];
+    let mut len = 0;
+    for entry in by_physical.iter().copied() {
+        if entry.led_count != 0 {
+            entries[len] = entry;
+            len += 1;
+        }
+    }
+    (entries, len)
 }
 
 fn marker_channels(entries: &[DirectEntry]) -> (Option<u8>, Option<u8>) {

@@ -4,8 +4,15 @@ use hypercolor_hal::drivers::nollie::{
     CDC_SERIAL_REPORT_SIZE, GpuCableType, Nollie32Config, NollieModel, NollieProtocol,
     ProtocolVersion, build_nollie_8_v2_protocol, build_prism_8_protocol,
 };
-use hypercolor_hal::protocol::Protocol;
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand};
 use hypercolor_types::device::DeviceTopologyHint;
+
+fn command_data_ptrs(commands: &[ProtocolCommand]) -> Vec<*const u8> {
+    commands
+        .iter()
+        .map(|command| command.data.as_ptr())
+        .collect()
+}
 
 #[test]
 fn prism8_init_sequence_queries_firmware_and_channel_counts() {
@@ -197,6 +204,38 @@ fn nollie16v3_v2_emits_count_config_then_upper_half_groups() {
     assert_eq!(commands[1].data[2], 16);
     assert_eq!(commands[1].data[3], 16);
     assert_eq!(commands[16].data[4], 2);
+}
+
+#[test]
+fn nollie16v3_reuses_steady_state_command_buffers() {
+    let protocol = NollieProtocol::new(NollieModel::Nollie16v3);
+    let colors = vec![[1, 2, 3]; 4_096];
+    let mut commands = Vec::new();
+
+    protocol.encode_frame_into(&colors, &mut commands);
+    protocol.encode_frame_into(&colors, &mut commands);
+
+    let data_ptrs = command_data_ptrs(&commands);
+    assert_eq!(commands.len(), 16);
+    assert!(commands.iter().all(|command| command.data[1] == 0x40));
+
+    protocol.encode_frame_into(&colors, &mut commands);
+
+    assert_eq!(command_data_ptrs(&commands), data_ptrs);
+}
+
+#[test]
+fn nollie4_stream65_reuses_command_buffers() {
+    let protocol = NollieProtocol::new(NollieModel::Nollie4);
+    let colors = vec![[1, 2, 3]; 2_544];
+    let mut commands = Vec::new();
+
+    protocol.encode_frame_into(&colors, &mut commands);
+    let data_ptrs = command_data_ptrs(&commands);
+
+    protocol.encode_frame_into(&colors, &mut commands);
+
+    assert_eq!(command_data_ptrs(&commands), data_ptrs);
 }
 
 #[test]

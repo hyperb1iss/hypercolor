@@ -25,7 +25,7 @@ pub const NOLLIE32_MAIN_CHANNEL_REMAP: [u8; 20] = [
 pub const NOLLIE32_ATX_CABLE_REMAP: [u8; 6] = [19, 18, 17, 16, 7, 6];
 pub const NOLLIE32_GPU_CABLE_REMAP: [u8; 6] = [25, 24, 23, 22, 21, 20];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct ChannelEntry {
     physical: u8,
     led_count: u16,
@@ -38,6 +38,18 @@ struct Group {
     end_index: usize,
     marker: u8,
 }
+
+const EMPTY_CHANNEL_ENTRY: ChannelEntry = ChannelEntry {
+    physical: 0,
+    led_count: 0,
+    color_start: 0,
+};
+
+const EMPTY_GROUP: Group = Group {
+    start_index: 0,
+    end_index: 0,
+    marker: 0,
+};
 
 pub(super) fn init_sequence(model: NollieModel, config: Nollie32Config) -> Vec<ProtocolCommand> {
     let counts = default_counts(model, config);
@@ -60,17 +72,25 @@ pub(super) fn encode_frame_into(
     commands: &mut Vec<ProtocolCommand>,
 ) {
     let normalized = protocol.normalize_colors(colors);
-    let entries = build_entries(protocol.model(), protocol.nollie32_config());
-    let counts = counts_for_entries(&entries);
-    commands.clear();
-    protocol.encode_gen2_counts_if_changed(counts, commands);
+    let (entries, entry_count) = build_entries(protocol.model(), protocol.nollie32_config());
+    let entries = &entries[..entry_count];
+    let counts = counts_for_entries(entries);
+    let mut command_buffer = CommandBuffer::new(commands);
+    if protocol.gen2_counts_changed(counts) {
+        push_count_config_into(counts, &mut command_buffer);
+    }
 
     match protocol.model() {
         NollieModel::Nollie32 {
             protocol_version: ProtocolVersion::V1,
-        } => push_v1_entries(&entries, normalized.as_ref(), commands),
+        } => push_v1_entries(entries, normalized.as_ref(), &mut command_buffer),
         NollieModel::Nollie16v3 | NollieModel::Nollie32 { .. } => {
-            push_v2_entries(protocol.model(), &entries, normalized.as_ref(), commands);
+            push_v2_entries(
+                protocol.model(),
+                entries,
+                normalized.as_ref(),
+                &mut command_buffer,
+            );
         }
         NollieModel::Nollie1
         | NollieModel::Nollie8
@@ -97,6 +117,8 @@ pub(super) fn encode_frame_into(
         | NollieModel::Nollie4
         | NollieModel::Nollie8Youth => {}
     }
+
+    command_buffer.finish();
 }
 
 pub(super) fn push_count_config(
@@ -118,26 +140,54 @@ pub(super) fn push_count_config(
     ));
 }
 
-fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<ChannelEntry> {
-    let mut entries = Vec::new();
+fn push_count_config_into(
+    counts: [u16; GEN2_PHYSICAL_CHANNELS],
+    command_buffer: &mut CommandBuffer<'_>,
+) {
+    command_buffer.push_fill(
+        false,
+        Duration::ZERO,
+        Duration::ZERO,
+        TransferType::Primary,
+        |buffer| {
+            buffer.resize(GEN2_COLOR_REPORT_SIZE, 0);
+            fill_count_config_packet(buffer, counts);
+        },
+    );
+}
+
+fn fill_count_config_packet(buffer: &mut [u8], counts: [u16; GEN2_PHYSICAL_CHANNELS]) {
+    buffer[1] = 0x88;
+    for (index, count) in counts.iter().copied().enumerate() {
+        let offset = 2 + index * 2;
+        buffer[offset] = u8::try_from(count >> 8).unwrap_or(u8::MAX);
+        buffer[offset + 1] = u8::try_from(count & 0x00FF).unwrap_or(u8::MAX);
+    }
+}
+
+fn build_entries(
+    model: NollieModel,
+    config: Nollie32Config,
+) -> ([ChannelEntry; GEN2_PHYSICAL_CHANNELS], usize) {
+    let mut by_physical = [EMPTY_CHANNEL_ENTRY; GEN2_PHYSICAL_CHANNELS];
     let mut cursor = 0;
 
     match model {
         NollieModel::Nollie16v3 => {
             for physical in NOLLIE16V3_CHANNEL_REMAP {
-                push_entry(&mut entries, physical, cursor, LEDS_GEN2_CHANNEL);
+                push_entry(&mut by_physical, physical, cursor, LEDS_GEN2_CHANNEL);
                 cursor += LEDS_GEN2_CHANNEL;
             }
         }
         NollieModel::Nollie32 { .. } => {
             for physical in NOLLIE32_MAIN_CHANNEL_REMAP {
-                push_entry(&mut entries, physical, cursor, LEDS_GEN2_CHANNEL);
+                push_entry(&mut by_physical, physical, cursor, LEDS_GEN2_CHANNEL);
                 cursor += LEDS_GEN2_CHANNEL;
             }
             if config.atx_cable_present {
                 for (row, physical) in NOLLIE32_ATX_CABLE_REMAP.iter().copied().enumerate() {
                     let row_start = cursor + row * 20;
-                    push_entry(&mut entries, physical, row_start, 20);
+                    push_entry(&mut by_physical, physical, row_start, 20);
                 }
                 cursor += LEDS_ATX_STRIMER;
             }
@@ -149,7 +199,7 @@ fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<ChannelEntry
                     .enumerate()
                 {
                     let row_start = cursor + row * 27;
-                    push_entry(&mut entries, physical, row_start, 27);
+                    push_entry(&mut by_physical, physical, row_start, 27);
                 }
             }
         }
@@ -179,28 +229,44 @@ fn build_entries(model: NollieModel, config: Nollie32Config) -> Vec<ChannelEntry
         | NollieModel::Nollie8Youth => {}
     }
 
-    entries.sort_by_key(|entry| entry.physical);
-    entries
+    compact_entries(&by_physical)
 }
 
-fn push_entry(entries: &mut Vec<ChannelEntry>, physical: u8, color_start: usize, led_count: usize) {
-    entries.push(ChannelEntry {
+fn push_entry(
+    entries: &mut [ChannelEntry; GEN2_PHYSICAL_CHANNELS],
+    physical: u8,
+    color_start: usize,
+    led_count: usize,
+) {
+    entries[usize::from(physical)] = ChannelEntry {
         physical,
         led_count: u16::try_from(led_count).unwrap_or(u16::MAX),
         color_start,
-    });
+    };
+}
+
+fn compact_entries(
+    by_physical: &[ChannelEntry; GEN2_PHYSICAL_CHANNELS],
+) -> ([ChannelEntry; GEN2_PHYSICAL_CHANNELS], usize) {
+    let mut entries = [EMPTY_CHANNEL_ENTRY; GEN2_PHYSICAL_CHANNELS];
+    let mut len = 0;
+    for entry in by_physical.iter().copied() {
+        if entry.led_count != 0 {
+            entries[len] = entry;
+            len += 1;
+        }
+    }
+    (entries, len)
 }
 
 fn push_v2_entries(
     model: NollieModel,
     entries: &[ChannelEntry],
     colors: &[[u8; 3]],
-    commands: &mut Vec<ProtocolCommand>,
+    command_buffer: &mut CommandBuffer<'_>,
 ) {
-    let groups = groups_for_entries(model, entries);
-    let mut frame_commands = Vec::new();
-    let mut command_buffer = CommandBuffer::new(&mut frame_commands);
-    for group in groups {
+    let (groups, group_count) = groups_for_entries(model, entries);
+    for group in &groups[..group_count] {
         command_buffer.push_fill(
             false,
             Duration::ZERO,
@@ -220,17 +286,13 @@ fn push_v2_entries(
             },
         );
     }
-    command_buffer.finish();
-    commands.extend(frame_commands);
 }
 
 fn push_v1_entries(
     entries: &[ChannelEntry],
     colors: &[[u8; 3]],
-    commands: &mut Vec<ProtocolCommand>,
+    command_buffer: &mut CommandBuffer<'_>,
 ) {
-    let mut frame_commands = Vec::new();
-    let mut command_buffer = CommandBuffer::new(&mut frame_commands);
     for (index, entry) in entries.iter().enumerate() {
         let post_delay = if entry.physical < 16
             && entries
@@ -257,8 +319,6 @@ fn push_v1_entries(
             },
         );
     }
-    command_buffer.finish();
-    commands.extend(frame_commands);
 }
 
 fn encode_entry_colors(
@@ -281,24 +341,29 @@ fn encode_entry_colors(
     cursor
 }
 
-fn groups_for_entries(model: NollieModel, entries: &[ChannelEntry]) -> Vec<Group> {
-    let mut groups = Vec::new();
+fn groups_for_entries(
+    model: NollieModel,
+    entries: &[ChannelEntry],
+) -> ([Group; GEN2_PHYSICAL_CHANNELS], usize) {
+    let mut groups = [EMPTY_GROUP; GEN2_PHYSICAL_CHANNELS];
+    let mut group_count = 0;
     if matches!(model, NollieModel::Nollie32 { .. }) {
-        push_groups_for_range(entries, 0..16, &mut groups);
-        let lower_group_count = groups.len();
-        push_groups_for_range(entries, 16..32, &mut groups);
-        assign_markers(&mut groups, lower_group_count);
+        push_groups_for_range(entries, 0..16, &mut groups, &mut group_count);
+        let lower_group_count = group_count;
+        push_groups_for_range(entries, 16..32, &mut groups, &mut group_count);
+        assign_markers(&mut groups[..group_count], lower_group_count);
     } else {
-        push_groups_for_range(entries, 16..32, &mut groups);
-        assign_markers(&mut groups, 0);
+        push_groups_for_range(entries, 16..32, &mut groups, &mut group_count);
+        assign_markers(&mut groups[..group_count], 0);
     }
-    groups
+    (groups, group_count)
 }
 
 fn push_groups_for_range(
     entries: &[ChannelEntry],
     physical_range: std::ops::Range<u8>,
-    groups: &mut Vec<Group>,
+    groups: &mut [Group; GEN2_PHYSICAL_CHANNELS],
+    group_count: &mut usize,
 ) {
     let mut index = 0;
     while index < entries.len() {
@@ -322,11 +387,12 @@ fn push_groups_for_range(
             index += 1;
         }
 
-        groups.push(Group {
+        groups[*group_count] = Group {
             start_index,
             end_index,
             marker: 0,
-        });
+        };
+        *group_count += 1;
     }
 }
 

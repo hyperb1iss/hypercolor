@@ -18,12 +18,15 @@ pub(super) fn encode_frame_into(
     let counts = [u16::try_from(leds_per_channel).unwrap_or(u16::MAX); CHANNELS_NOLLIE_8];
 
     let mut command_buffer = CommandBuffer::new(commands);
-    command_buffer.push_slice(
-        &count_config_packet(channels, counts),
+    command_buffer.push_fill(
         false,
         Duration::ZERO,
         Duration::from_millis(200),
         TransferType::Primary,
+        |buffer| {
+            buffer.resize(GEN1_HID_REPORT_SIZE, 0);
+            fill_count_config_packet(buffer, channels, counts);
+        },
     );
 
     let mut packet_index = 0_u8;
@@ -31,24 +34,26 @@ pub(super) fn encode_frame_into(
         let start = channel * leds_per_channel;
         let end = start + leds_per_channel;
         for chunk in normalized.as_ref()[start..end].chunks(STREAM65_LEDS_PER_PACKET) {
-            let mut packet = vec![0_u8; GEN1_HID_REPORT_SIZE];
-            packet[1] = packet_index;
+            let packet_id = packet_index;
             packet_index = packet_index.saturating_add(1);
-            for (index, color) in chunk.iter().enumerate() {
-                let encoded = encode_color(
-                    *color,
-                    protocol.model().brightness_scale(),
-                    protocol.model().color_format(),
-                );
-                let offset = 2 + index * 3;
-                packet[offset..offset + 3].copy_from_slice(&encoded);
-            }
-            command_buffer.push_slice(
-                &packet,
+            command_buffer.push_fill(
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
                 TransferType::Primary,
+                |buffer| {
+                    buffer.resize(GEN1_HID_REPORT_SIZE, 0);
+                    buffer[1] = packet_id;
+                    for (index, color) in chunk.iter().enumerate() {
+                        let encoded = encode_color(
+                            *color,
+                            protocol.model().brightness_scale(),
+                            protocol.model().color_format(),
+                        );
+                        let offset = 2 + index * 3;
+                        buffer[offset..offset + 3].copy_from_slice(&encoded);
+                    }
+                },
             );
         }
     }
@@ -56,15 +61,13 @@ pub(super) fn encode_frame_into(
     command_buffer.finish();
 }
 
-fn count_config_packet(channels: usize, counts: [u16; CHANNELS_NOLLIE_8]) -> Vec<u8> {
-    let mut packet = vec![0_u8; GEN1_HID_REPORT_SIZE];
+fn fill_count_config_packet(packet: &mut [u8], channels: usize, counts: [u16; CHANNELS_NOLLIE_8]) {
     packet[1] = 0x86;
     for (index, count) in counts.iter().copied().take(channels).enumerate() {
         let offset = 3 + index * 2;
         packet[offset] = u8::try_from(count >> 8).unwrap_or(u8::MAX);
         packet[offset + 1] = u8::try_from(count & 0x00FF).unwrap_or(u8::MAX);
     }
-    packet
 }
 
 const fn channel_count(model: NollieModel) -> usize {

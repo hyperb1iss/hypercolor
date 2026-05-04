@@ -126,27 +126,29 @@ fn encode_dense_frame_into(
         let start = channel * spec.leds_per_channel;
         let end = start + spec.leds_per_channel;
         for (packet_index, chunk) in colors[start..end].chunks(GEN1_LEDS_PER_PACKET).enumerate() {
-            let mut packet = vec![0_u8; GEN1_HID_REPORT_SIZE];
-            packet[1] =
+            let packet_id =
                 u8::try_from(packet_index + channel * spec.packet_interval).unwrap_or(u8::MAX);
-            copy_encoded_colors(&mut packet[2..], chunk, model);
-            command_buffer.push_slice(
-                &packet,
+            command_buffer.push_fill(
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
                 TransferType::Primary,
+                |buffer| {
+                    buffer.resize(GEN1_HID_REPORT_SIZE, 0);
+                    buffer[1] = packet_id;
+                    copy_encoded_colors(&mut buffer[2..], chunk, model);
+                },
             );
         }
     }
 
     if spec.emits_commit {
-        command_buffer.push_slice(
-            &frame_commit_packet(),
+        command_buffer.push_fill(
             false,
             Duration::ZERO,
             Duration::ZERO,
             TransferType::Primary,
+            fill_frame_commit_packet,
         );
     }
 
@@ -169,18 +171,22 @@ fn encode_header_frame_into(
             .chunks(LEGACY_LEDS_PER_PACKET)
             .enumerate()
         {
-            let mut packet = vec![0_u8; GEN1_HID_REPORT_SIZE];
-            packet[1] = u8::try_from(packet_index + 1).unwrap_or(u8::MAX);
-            packet[2] = spec.channel_count_marker;
-            packet[3] = u8::try_from(num_packets).unwrap_or(u8::MAX);
-            packet[4] = u8::try_from(channel + 1).unwrap_or(u8::MAX);
-            copy_encoded_colors(&mut packet[5..], chunk, model);
-            command_buffer.push_slice(
-                &packet,
+            let packet_id = u8::try_from(packet_index + 1).unwrap_or(u8::MAX);
+            let packet_count = u8::try_from(num_packets).unwrap_or(u8::MAX);
+            let channel_id = u8::try_from(channel + 1).unwrap_or(u8::MAX);
+            command_buffer.push_fill(
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
                 TransferType::Primary,
+                |buffer| {
+                    buffer.resize(GEN1_HID_REPORT_SIZE, 0);
+                    buffer[1] = packet_id;
+                    buffer[2] = spec.channel_count_marker;
+                    buffer[3] = packet_count;
+                    buffer[4] = channel_id;
+                    copy_encoded_colors(&mut buffer[5..], chunk, model);
+                },
             );
         }
     }
@@ -312,6 +318,11 @@ fn frame_commit_packet() -> Vec<u8> {
     let mut packet = vec![0_u8; GEN1_HID_REPORT_SIZE];
     packet[1] = 0xFF;
     packet
+}
+
+fn fill_frame_commit_packet(buffer: &mut Vec<u8>) {
+    buffer.resize(GEN1_HID_REPORT_SIZE, 0);
+    buffer[1] = 0xFF;
 }
 
 fn legacy_shutdown_commit() -> Vec<u8> {

@@ -36,37 +36,39 @@ fn encode_frame_for_model(
         let start = channel * leds_per_channel;
         let end = start + leds_per_channel;
         for (packet_index, chunk) in colors[start..end].chunks(GEN1_LEDS_PER_PACKET).enumerate() {
-            let mut packet = vec![0_u8; CDC_SERIAL_REPORT_SIZE];
-            packet[0] = u8::try_from(packet_index + channel * 6).unwrap_or(u8::MAX);
-            for (index, color) in chunk.iter().enumerate() {
-                let encoded = encode_color(*color, model.brightness_scale(), model.color_format());
-                let offset = 1 + index * 3;
-                packet[offset..offset + 3].copy_from_slice(&encoded);
-            }
-            command_buffer.push_slice(
-                &packet,
+            let packet_id = u8::try_from(packet_index + channel * 6).unwrap_or(u8::MAX);
+            command_buffer.push_fill(
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
                 TransferType::Primary,
+                |buffer| {
+                    buffer.resize(CDC_SERIAL_REPORT_SIZE, 0);
+                    buffer[0] = packet_id;
+                    for (index, color) in chunk.iter().enumerate() {
+                        let encoded =
+                            encode_color(*color, model.brightness_scale(), model.color_format());
+                        let offset = 1 + index * 3;
+                        buffer[offset..offset + 3].copy_from_slice(&encoded);
+                    }
+                },
             );
         }
     }
 
-    command_buffer.push_slice(
-        &show_packet(),
+    command_buffer.push_fill(
         false,
         Duration::ZERO,
         Duration::ZERO,
         TransferType::Primary,
+        fill_show_packet,
     );
     command_buffer.finish();
 }
 
-fn show_packet() -> Vec<u8> {
-    let mut packet = vec![0_u8; CDC_SERIAL_REPORT_SIZE];
-    packet[0] = 0xFF;
-    packet
+fn fill_show_packet(buffer: &mut Vec<u8>) {
+    buffer.resize(CDC_SERIAL_REPORT_SIZE, 0);
+    buffer[0] = 0xFF;
 }
 
 const fn channel_count(model: NollieModel) -> usize {
