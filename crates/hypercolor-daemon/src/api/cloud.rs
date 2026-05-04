@@ -163,6 +163,8 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
 }
 
 pub async fn start_login(State(state): State<Arc<AppState>>) -> Response {
+    prune_expired_login_sessions(&state).await;
+
     let client = match cloud_client(&state) {
         Ok(client) => client,
         Err(error) => return ApiError::internal(format!("invalid cloud configuration: {error}")),
@@ -193,6 +195,13 @@ pub async fn start_login(State(state): State<Arc<AppState>>) -> Response {
         .insert(login_id, session);
 
     ApiResponse::created(response)
+}
+
+pub async fn prune_expired_login_sessions(state: &AppState) -> usize {
+    let mut sessions = state.cloud_login_sessions.lock().await;
+    let before = sessions.len();
+    sessions.retain(|_, session| !session.is_expired());
+    before - sessions.len()
 }
 
 pub async fn poll_login(

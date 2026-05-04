@@ -9,8 +9,8 @@ use axum::http::StatusCode as AxumStatusCode;
 use axum::routing::post;
 use http::{Request, StatusCode};
 use hypercolor_cloud_client::{
-    CloudClientError, CloudSecretKey, RefreshTokenOwner, SecretStore, api as cloud_api,
-    load_or_create_identity, load_refresh_token, store_refresh_token,
+    CloudClientError, CloudSecretKey, DeviceAuthorizationSession, RefreshTokenOwner, SecretStore,
+    api as cloud_api, load_or_create_identity, load_refresh_token, store_refresh_token,
 };
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState, cloud};
@@ -142,6 +142,26 @@ async fn cloud_login_poll_rejects_unknown_session() {
         .expect("request should succeed");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn cloud_login_prunes_expired_pending_sessions() {
+    let state = AppState::new();
+    let expired_id = uuid::Uuid::new_v4();
+    let live_id = uuid::Uuid::new_v4();
+    state.cloud_login_sessions.lock().await.insert(
+        expired_id,
+        DeviceAuthorizationSession::new(device_code_fixture(0)),
+    );
+    state.cloud_login_sessions.lock().await.insert(
+        live_id,
+        DeviceAuthorizationSession::new(device_code_fixture(900)),
+    );
+
+    assert_eq!(cloud::prune_expired_login_sessions(&state).await, 1);
+    let sessions = state.cloud_login_sessions.lock().await;
+    assert!(!sessions.contains_key(&expired_id));
+    assert!(sessions.contains_key(&live_id));
 }
 
 #[test]
@@ -291,14 +311,18 @@ async fn shutdown_auth_server(shutdown_tx: oneshot::Sender<()>, task: tokio::tas
 }
 
 async fn device_code() -> Json<cloud_api::DeviceCodeResponse> {
-    Json(cloud_api::DeviceCodeResponse {
+    Json(device_code_fixture(900))
+}
+
+fn device_code_fixture(expires_in: u64) -> cloud_api::DeviceCodeResponse {
+    cloud_api::DeviceCodeResponse {
         device_code: "device-code-secret".to_owned(),
         user_code: "HC-1234".to_owned(),
         verification_uri: "https://hypercolor.lighting/activate".to_owned(),
         verification_uri_complete: Some("https://hypercolor.lighting/activate?code=HC-1234".into()),
-        expires_in: 900,
+        expires_in,
         interval: Some(1),
-    })
+    }
 }
 
 async fn device_token_pending() -> (AxumStatusCode, Json<cloud_api::DeviceTokenError>) {
