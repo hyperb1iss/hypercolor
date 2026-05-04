@@ -74,6 +74,8 @@ use uuid::Uuid;
 
 use crate::api::envelope::ApiError;
 use crate::attachment_profiles::AttachmentProfileStore;
+#[cfg(feature = "cloud")]
+use crate::cloud_connection::CloudConnectionRuntime;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
@@ -243,6 +245,10 @@ pub struct AppState {
     #[cfg(feature = "cloud")]
     pub cloud_login_sessions:
         Arc<Mutex<HashMap<Uuid, hypercolor_cloud_client::DeviceAuthorizationSession>>>,
+
+    /// Live Hypercolor Cloud daemon-link state.
+    #[cfg(feature = "cloud")]
+    pub cloud_connection: Arc<RwLock<CloudConnectionRuntime>>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -513,6 +519,8 @@ impl AppState {
             security_state: security::SecurityState::from_env(),
             #[cfg(feature = "cloud")]
             cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "cloud")]
+            cloud_connection: Arc::new(RwLock::new(CloudConnectionRuntime::default())),
         }
     }
 
@@ -597,6 +605,8 @@ impl AppState {
             security_state: security::SecurityState::from_env(),
             #[cfg(feature = "cloud")]
             cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "cloud")]
+            cloud_connection: Arc::clone(&daemon.cloud_connection),
         }
     }
 }

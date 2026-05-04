@@ -10,11 +10,13 @@ use axum::routing::post;
 use http::{Request, StatusCode};
 use hypercolor_cloud_client::{
     CloudClientError, CloudSecretKey, DeviceAuthorizationSession, RefreshTokenOwner, SecretStore,
-    api as cloud_api, load_or_create_identity, load_refresh_token, store_refresh_token,
+    api as cloud_api, daemon_link::WelcomeFrame, load_or_create_identity, load_refresh_token,
+    store_refresh_token,
 };
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::{
     api::{self, AppState, cloud},
+    cloud_connection::{CloudConnectionRuntime, CloudConnectionSnapshot},
     cloud_entitlements,
 };
 use hypercolor_types::config::HypercolorConfig;
@@ -308,11 +310,16 @@ fn cloud_connection_status_reports_ready_prerequisites_without_live_socket() {
         &enabled_config,
         &session.into_status(),
         Some(&entitlement),
+        &CloudConnectionSnapshot::default(),
     );
 
     assert_eq!(
         serde_json::to_value(status.state).expect("serialize state"),
         "ready"
+    );
+    assert_eq!(
+        serde_json::to_value(status.runtime_state).expect("serialize runtime state"),
+        "idle"
     );
     assert!(!status.connected);
     assert!(status.can_connect);
@@ -326,12 +333,42 @@ fn cloud_connection_status_reports_ready_prerequisites_without_live_socket() {
 }
 
 #[test]
+fn cloud_connection_status_reports_live_runtime_channels() {
+    let mut config = HypercolorConfig::default().cloud;
+    config.enabled = true;
+    let session = CloudSessionStatusFixture::ready().into_status();
+    let mut runtime = CloudConnectionRuntime::default();
+    runtime.mark_connected(&welcome_fixture());
+
+    let status = cloud::connection_status_from_parts(&config, &session, None, &runtime.snapshot());
+
+    assert_eq!(
+        serde_json::to_value(status.runtime_state).expect("serialize runtime state"),
+        "connected"
+    );
+    assert!(status.connected);
+    assert!(status.session_id.is_some());
+    assert_eq!(status.available_channels, vec!["control"]);
+    assert_eq!(status.denied_channels[0].name, "relay.http");
+    assert_eq!(status.denied_channels[0].reason, "entitlement_missing");
+    assert_eq!(
+        status.denied_channels[0].feature.as_deref(),
+        Some("hc.remote")
+    );
+}
+
+#[test]
 fn cloud_connection_status_blocks_when_signed_out() {
     let mut config = HypercolorConfig::default().cloud;
     config.enabled = true;
     let session = CloudSessionStatusFixture::signed_out().into_status();
 
-    let status = cloud::connection_status_from_parts(&config, &session, None);
+    let status = cloud::connection_status_from_parts(
+        &config,
+        &session,
+        None,
+        &CloudConnectionSnapshot::default(),
+    );
 
     assert_eq!(
         serde_json::to_value(status.state).expect("serialize state"),
@@ -339,6 +376,64 @@ fn cloud_connection_status_blocks_when_signed_out() {
     );
     assert!(!status.can_connect);
     assert!(!status.entitlement_cached);
+}
+
+#[test]
+fn cloud_connection_status_reports_runtime_backoff_error() {
+    let mut config = HypercolorConfig::default().cloud;
+    config.enabled = true;
+    let mut runtime = CloudConnectionRuntime::default();
+    runtime.mark_backoff("websocket refused");
+
+    let status = cloud::connection_status_from_parts(
+        &config,
+        &CloudSessionStatusFixture::ready().into_status(),
+        None,
+        &runtime.snapshot(),
+    );
+
+    assert_eq!(
+        serde_json::to_value(status.runtime_state).expect("serialize runtime state"),
+        "backoff"
+    );
+    assert!(!status.connected);
+    assert!(status.can_connect);
+    assert_eq!(status.last_error.as_deref(), Some("websocket refused"));
+}
+
+#[test]
+fn cloud_connection_status_blocks_when_missing_identity_or_disabled() {
+    let mut enabled = HypercolorConfig::default().cloud;
+    enabled.enabled = true;
+    let missing_identity = CloudSessionStatusFixture {
+        refresh_token_present: true,
+        identity_present: false,
+    }
+    .into_status();
+
+    let missing = cloud::connection_status_from_parts(
+        &enabled,
+        &missing_identity,
+        None,
+        &CloudConnectionSnapshot::default(),
+    );
+    assert_eq!(
+        serde_json::to_value(missing.state).expect("serialize state"),
+        "missing_identity"
+    );
+    assert!(!missing.can_connect);
+
+    let disabled = cloud::connection_status_from_parts(
+        &HypercolorConfig::default().cloud,
+        &CloudSessionStatusFixture::ready().into_status(),
+        None,
+        &CloudConnectionSnapshot::default(),
+    );
+    assert_eq!(
+        serde_json::to_value(disabled.state).expect("serialize state"),
+        "disabled"
+    );
+    assert!(!disabled.can_connect);
 }
 
 fn set_temp_data_dir() -> (TempDir, DataDirOverrideGuard) {
@@ -467,6 +562,27 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
         .await
         .expect("body should read");
     serde_json::from_slice(&body).expect("body should be json")
+}
+
+fn welcome_fixture() -> WelcomeFrame {
+    serde_json::from_value(serde_json::json!({
+        "session_id": "00000000000000000000000000",
+        "available_channels": ["control"],
+        "denied_channels": [
+            {
+                "name": "relay.http",
+                "reason": "entitlement_missing",
+                "feature": "hc.remote"
+            }
+        ],
+        "server_capabilities": {
+            "tunnel_resume": false,
+            "compression": [],
+            "max_frame_bytes": 65536
+        },
+        "heartbeat_interval_s": 25
+    }))
+    .expect("welcome fixture should deserialize")
 }
 
 async fn spawn_auth_server() -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {

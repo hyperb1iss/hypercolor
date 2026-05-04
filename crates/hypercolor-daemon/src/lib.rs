@@ -2,6 +2,8 @@ pub mod api;
 /// Hypercolor daemon — HTTP API, WebSocket server, MCP server, and system orchestration.
 pub mod attachment_profiles;
 #[cfg(feature = "cloud")]
+pub mod cloud_connection;
+#[cfg(feature = "cloud")]
 pub mod cloud_entitlements;
 pub mod daemon;
 pub(crate) mod deadline;

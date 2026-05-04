@@ -38,6 +38,8 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
+#[cfg(feature = "cloud")]
+use crate::cloud_connection::CloudConnectionRuntime;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::effect_layouts;
@@ -101,6 +103,8 @@ impl DaemonState {
 
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
+        #[cfg(feature = "cloud")]
+        let cloud_connection = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
 
         // ── Configuration ───────────────────────────────────────────────
         let config_manager =
@@ -488,6 +492,8 @@ impl DaemonState {
             session_controller: None,
             start_time: Instant::now(),
             server_identity,
+            #[cfg(feature = "cloud")]
+            cloud_connection,
         })
     }
 }

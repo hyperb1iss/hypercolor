@@ -35,6 +35,8 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
+#[cfg(feature = "cloud")]
+use crate::cloud_connection::CloudConnectionRuntime;
 use crate::device_metrics::DeviceMetricsSnapshotStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
@@ -221,6 +223,10 @@ pub struct DaemonState {
 
     /// Stable network identity exposed by discovery and API responses.
     pub server_identity: ServerIdentity,
+
+    /// Live Hypercolor Cloud daemon-link state.
+    #[cfg(feature = "cloud")]
+    pub cloud_connection: Arc<RwLock<CloudConnectionRuntime>>,
 }
 
 impl DaemonState {

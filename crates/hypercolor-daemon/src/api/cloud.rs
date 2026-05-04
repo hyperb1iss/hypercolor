@@ -19,6 +19,9 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::cloud_connection::{
+    CloudConnectionRuntimeState, CloudConnectionSnapshot, CloudDeniedChannelStatus,
+};
 use crate::cloud_entitlements::{
     CachedCloudEntitlement, delete_cached_entitlement, entitlement_cache_path,
     iso8601_from_unix_seconds, load_cached_entitlement, store_entitlement_response,
@@ -74,6 +77,7 @@ pub struct CloudSessionStatus {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CloudConnectionStatus {
     pub state: CloudConnectionState,
+    pub runtime_state: CloudConnectionRuntimeState,
     pub connected: bool,
     pub can_connect: bool,
     pub connect_on_start: bool,
@@ -82,6 +86,9 @@ pub struct CloudConnectionStatus {
     pub identity_present: bool,
     pub entitlement_cached: bool,
     pub entitlement_stale: Option<bool>,
+    pub session_id: Option<String>,
+    pub available_channels: Vec<String>,
+    pub denied_channels: Vec<CloudDeniedChannelStatus>,
     pub last_error: Option<String>,
 }
 
@@ -218,11 +225,13 @@ pub async fn get_connection(State(state): State<Arc<AppState>>) -> Response {
             return ApiError::internal(format!("failed to read cloud entitlement cache: {error}"));
         }
     };
+    let runtime = state.cloud_connection.read().await.snapshot();
 
     ApiResponse::ok(connection_status_from_parts(
         &cloud_config,
         &session,
         entitlement.as_ref(),
+        &runtime,
     ))
 }
 
@@ -395,6 +404,7 @@ pub fn connection_status_from_parts(
     config: &CloudConfig,
     session: &CloudSessionStatus,
     entitlement: Option<&CachedCloudEntitlement>,
+    runtime: &CloudConnectionSnapshot,
 ) -> CloudConnectionStatus {
     let (connect_url, last_error) = CloudClientConfig::try_from(config)
         .and_then(|config| config.daemon_connect_url())
@@ -412,10 +422,13 @@ pub fn connection_status_from_parts(
         CloudConnectionState::Ready
     };
     let can_connect = matches!(state, CloudConnectionState::Ready);
+    let connected = can_connect && runtime.connected;
+    let last_error = last_error.or_else(|| runtime.last_error.clone());
 
     CloudConnectionStatus {
         state,
-        connected: false,
+        runtime_state: runtime.runtime_state,
+        connected,
         can_connect,
         connect_on_start: config.connect_on_start,
         connect_url,
@@ -425,6 +438,9 @@ pub fn connection_status_from_parts(
         entitlement_stale: entitlement.map(|entitlement| {
             entitlement.is_stale_at_unix(crate::cloud_entitlements::unix_now_seconds())
         }),
+        session_id: runtime.session_id.clone(),
+        available_channels: runtime.available_channels.clone(),
+        denied_channels: runtime.denied_channels.clone(),
         last_error,
     }
 }
