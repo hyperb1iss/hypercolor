@@ -17,10 +17,16 @@
 //!   marks remain trademarks of their respective owners and are used here for
 //!   nominative identification of supported hardware.
 //! - **Wikimedia Commons SVGs** — `Logitech, Lian Li, ASRock, EVGA, Gigabyte,
-//!   Thermaltake`. Each file's metadata was individually verified to carry the
-//!   `Public domain` license tag (PD-textlogo: artwork below the originality
-//!   threshold, with the standard `Restrictions: trademarked` caveat). Same
-//!   nominative-use posture as above.
+//!   Thermaltake, Ableton`. Each file's metadata was individually verified to
+//!   carry the `Public domain` license tag (PD-textlogo: artwork below the
+//!   originality threshold, with the standard `Restrictions: trademarked`
+//!   caveat). Same nominative-use posture as above.
+//! - **English Wikipedia uploads** — `Fnatic` (SVG), `Roccat` (PNG),
+//!   `Nanoleaf` (PNG). Trademarks of their respective owners; included here
+//!   solely to identify supported hardware.
+//! - **Vendor CDN** — `Glorious` SVG served from the official Glorious
+//!   storefront CDN. Trademark of Glorious LLC, used for nominative
+//!   identification of supported hardware.
 //! - **Nollie PNG** — Hypercolor's own product, embedded as a Trunk asset.
 //! - **Wordmarks** — for vendors without a verified-permissive logo source we
 //!   render a compact letterform/wordmark in our own font stack and the
@@ -86,7 +92,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "192, 249, 75",
         monogram: "ABL",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_content: Some(include_str!("../assets/vendors/ableton.svg")),
         image_path: None,
         website: "https://ableton.com",
         aliases: &["ableton", "push2"],
@@ -194,7 +200,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 140, 60",
         monogram: "FN",
         mark_font: VendorFont::Display,
-        svg_content: None,
+        svg_content: Some(include_str!("../assets/vendors/fnatic.svg")),
         image_path: None,
         website: "https://fnatic.com",
         aliases: &["fnatic"],
@@ -218,7 +224,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "215, 195, 130",
         monogram: "GLR",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_content: Some(include_str!("../assets/vendors/glorious.svg")),
         image_path: None,
         website: "https://gloriousgaming.com",
         aliases: &["glorious"],
@@ -315,7 +321,7 @@ pub const VENDORS: &[VendorBrand] = &[
         monogram: "NANO",
         mark_font: VendorFont::Sans,
         svg_content: None,
-        image_path: None,
+        image_path: Some("/assets/vendors/nanoleaf.png"),
         website: "https://nanoleaf.me",
         aliases: &["nanoleaf"],
     },
@@ -399,7 +405,7 @@ pub const VENDORS: &[VendorBrand] = &[
         monogram: "ROC",
         mark_font: VendorFont::Display,
         svg_content: None,
-        image_path: None,
+        image_path: Some("/assets/vendors/roccat.png"),
         website: "https://roccat.com",
         aliases: &["roccat"],
     },
