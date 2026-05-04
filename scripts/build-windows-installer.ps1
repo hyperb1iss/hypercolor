@@ -69,15 +69,15 @@ function Invoke-CargoBuild {
 }
 
 function Invoke-StageAssets {
-    $arguments = @("-Profile", $Profile)
+    Write-Step "Stage app bundle assets"
     if ($Target) {
-        $arguments += @("-Target", $Target)
+        & $StageAssets -Profile $Profile -Target $Target -SkipPawnIo:$SkipPawnIo
+    } else {
+        & $StageAssets -Profile $Profile -SkipPawnIo:$SkipPawnIo
     }
-    if ($SkipPawnIo) {
-        $arguments += "-SkipPawnIo"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Stage app bundle assets failed with exit code $LASTEXITCODE"
     }
-
-    Invoke-Checked "Stage app bundle assets" $StageAssets $arguments
 }
 
 function Assert-Prerequisites {
