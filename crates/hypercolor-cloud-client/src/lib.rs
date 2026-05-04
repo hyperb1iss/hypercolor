@@ -6,7 +6,10 @@ pub mod devices;
 pub mod error;
 pub mod secrets;
 
-pub use auth::DeviceTokenPoll;
+pub use auth::{
+    DEFAULT_DEVICE_AUTHORIZATION_POLL_INTERVAL, DeviceAuthorizationSession,
+    DeviceAuthorizationStatus, DeviceTokenPoll, SLOW_DOWN_POLL_INTERVAL_STEP, persist_device_token,
+};
 pub use config::{CloudClient, CloudClientConfig};
 pub use devices::{DEVICE_REGISTRATION_PATH, DeviceRegistrationInput, signed_device_registration};
 pub use error::CloudClientError;
