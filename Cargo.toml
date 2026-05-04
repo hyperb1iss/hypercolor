@@ -77,6 +77,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 base64 = "0.22"
+chrono = { version = "0.4.44", default-features = false, features = ["std", "serde"] }
 
 # Error handling
 thiserror = "2.0"
@@ -95,7 +96,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Data structures
-uuid = { version = "1.11", features = ["v7", "serde"] }
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+ulid = { version = "1.2.1", features = ["serde"] }
+sha2 = "0.10"
 arc-swap = "1.7"
 strum = { version = "0.27", features = ["derive"] }
 
@@ -107,12 +110,17 @@ nvml-wrapper = "0.12.1"
 
 # Crypto / auth
 aes-gcm = "0.10.3"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 rand = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
 webrtc-dtls = "0.12.0"
 webrtc-util = "0.11.0"
 
 # Workspace crates
 hypercolor-types = { path = "crates/hypercolor-types" }
+hypercolor-cloud-api = { path = "crates/hypercolor-cloud-api" }
+hypercolor-daemon-link = { path = "crates/hypercolor-daemon-link" }
+hypercolor-cloud-client = { path = "crates/hypercolor-cloud-client" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }

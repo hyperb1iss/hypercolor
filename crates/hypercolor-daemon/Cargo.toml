@@ -17,13 +17,16 @@ workspace = true
 
 [features]
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
+cloud = ["dep:hypercolor-cloud-client"]
 nvidia = ["hypercolor-core/nvidia"]
+official-cloud = ["cloud"]
 wgpu = ["dep:wgpu", "dep:pollster"]
 default = ["builtin-drivers", "wgpu", "servo"]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]
 hypercolor-types = { workspace = true }
+hypercolor-cloud-client = { workspace = true, optional = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }

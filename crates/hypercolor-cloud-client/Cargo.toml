@@ -1,0 +1,19 @@
+[package]
+name = "hypercolor-cloud-client"
+description = "Daemon-side Hypercolor Cloud client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-cloud-api = { workspace = true }
+hypercolor-daemon-link = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

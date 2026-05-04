@@ -105,6 +105,21 @@ mod defaults {
     pub fn remote_access() -> bool {
         false
     }
+    pub fn cloud_base_url() -> String {
+        "https://api.hypercolor.lighting".into()
+    }
+    pub fn cloud_auth_base_url() -> String {
+        "https://hypercolor.lighting".into()
+    }
+    pub fn cloud_app_base_url() -> String {
+        "https://app.hypercolor.lighting".into()
+    }
+    pub fn cloud_device_client_id() -> String {
+        "hypercolor-daemon".into()
+    }
+    pub fn cloud_device_scope() -> String {
+        "openid profile email".into()
+    }
 
     // D-Bus
     pub fn bus_name() -> String {
@@ -175,6 +190,9 @@ pub struct HypercolorConfig {
     #[serde(default)]
     pub network: NetworkConfig,
 
+    #[serde(default)]
+    pub cloud: CloudConfig,
+
     #[serde(default = "default_driver_configs")]
     pub drivers: DriverConfigs,
 
@@ -207,6 +225,7 @@ impl Default for HypercolorConfig {
             capture: CaptureConfig::default(),
             discovery: DiscoveryConfig::default(),
             network: NetworkConfig::default(),
+            cloud: CloudConfig::default(),
             drivers: default_driver_configs(),
             dbus: DbusConfig::default(),
             tui: TuiConfig::default(),
@@ -614,6 +633,47 @@ impl Default for NetworkConfig {
             mdns_publish: defaults::bool_true(),
             remote_access: defaults::remote_access(),
             instance_name: None,
+        }
+    }
+}
+
+// ─── Cloud ──────────────────────────────────────────────────────────────────
+
+/// Opt-in Hypercolor Cloud service settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "defaults::cloud_base_url")]
+    pub base_url: String,
+
+    #[serde(default = "defaults::cloud_auth_base_url")]
+    pub auth_base_url: String,
+
+    #[serde(default = "defaults::cloud_app_base_url")]
+    pub app_base_url: String,
+
+    #[serde(default = "defaults::cloud_device_client_id")]
+    pub device_client_id: String,
+
+    #[serde(default = "defaults::cloud_device_scope")]
+    pub device_scope: String,
+
+    #[serde(default = "defaults::bool_true")]
+    pub connect_on_start: bool,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: defaults::cloud_base_url(),
+            auth_base_url: defaults::cloud_auth_base_url(),
+            app_base_url: defaults::cloud_app_base_url(),
+            device_client_id: defaults::cloud_device_client_id(),
+            device_scope: defaults::cloud_device_scope(),
+            connect_on_start: defaults::bool_true(),
         }
     }
 }

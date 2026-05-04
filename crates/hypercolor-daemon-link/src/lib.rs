@@ -1,0 +1,23 @@
+#![forbid(unsafe_code)]
+
+pub mod admission;
+pub mod channel;
+pub mod frame;
+pub mod handshake;
+pub mod identity;
+
+pub use admission::{AdmissionError, AdmissionSet};
+pub use channel::{ChannelName, ChannelParseError};
+pub use frame::{
+    DaemonCapabilities, DeniedChannel, Frame, FrameKind, HelloFrame, ServerCapabilities,
+    WelcomeFrame,
+};
+pub use handshake::{CanonicalUpgrade, UpgradeSignatureInput};
+pub use identity::{
+    IdentityEncodingError, IdentityKeypair, IdentityNonce, IdentityPrivateKey, IdentityPublicKey,
+    IdentitySignature, IdentityVerificationError, registration_proof_message,
+    verify_identity_signature,
+};
+
+pub const PROTOCOL_VERSION: u16 = 1;
+pub const WEBSOCKET_PROTOCOL: &str = "hypercolor-daemon.v1";

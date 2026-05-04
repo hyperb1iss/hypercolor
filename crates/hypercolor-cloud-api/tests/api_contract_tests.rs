@@ -1,0 +1,96 @@
+use chrono::{DateTime, Utc};
+use hypercolor_cloud_api::{
+    DEVICE_CODE_GRANT_TYPE, DeviceCodeRequest, DeviceTokenError, DeviceTokenErrorCode,
+    DeviceTokenRequest, EntitlementClaims, Etag, FeatureKey, RateLimits, ReleaseChannel,
+    SyncEntityKind,
+};
+use serde_json::json;
+use uuid::Uuid;
+
+fn fixed_time() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2026-05-15T17:00:00Z")
+        .expect("fixture timestamp should parse")
+        .with_timezone(&Utc)
+}
+
+#[test]
+fn feature_keys_use_canonical_hc_prefix() {
+    let value = serde_json::to_value(FeatureKey::Remote).expect("serialize feature key");
+    assert_eq!(value, json!("hc.remote"));
+    assert_eq!(FeatureKey::SignedBuilds.as_str(), "hc.signed_builds");
+}
+
+#[test]
+fn entitlement_claims_keep_update_channel_scope() {
+    let claims = EntitlementClaims {
+        iss: "https://api.hypercolor.lighting".into(),
+        sub: Uuid::nil().to_string(),
+        aud: vec!["hypercolor-daemon".into(), "hypercolor-updater".into()],
+        iat: 1_714_780_000,
+        exp: 1_714_783_600,
+        jti: "01JTEST".into(),
+        kid: "ent-2026-01".into(),
+        token_version: 1,
+        device_install_id: Uuid::nil(),
+        tier: "free".into(),
+        features: vec![FeatureKey::CloudSync, FeatureKey::SignedBuilds],
+        channels: vec![ReleaseChannel::Stable],
+        rate_limits: RateLimits {
+            remote_bandwidth_gb_month: 10,
+            remote_concurrent_tunnels: 5,
+            studio_sessions_month: 5,
+            studio_max_session_seconds: 30,
+            studio_max_session_tokens: 100_000,
+            studio_default_model: "claude-haiku-4-5".into(),
+        },
+        update_until: 1_746_319_600,
+    };
+
+    assert!(claims.has_feature(FeatureKey::CloudSync));
+    assert!(!claims.has_feature(FeatureKey::Remote));
+    assert!(claims.allows_channel(ReleaseChannel::Stable));
+    assert!(!claims.allows_channel(ReleaseChannel::Nightly));
+}
+
+#[test]
+fn sync_contract_serializes_snake_case_entities() {
+    let payload = serde_json::to_value((SyncEntityKind::InstalledEffect, Etag(42), fixed_time()))
+        .expect("serialize sync payload");
+
+    assert_eq!(payload[0], json!("installed_effect"));
+    assert_eq!(payload[1], json!(42));
+}
+
+#[test]
+fn device_code_request_omits_empty_scope() {
+    let request = DeviceCodeRequest::new("hypercolor-daemon", "");
+    let value = serde_json::to_value(request).expect("serialize device code request");
+
+    assert_eq!(value["client_id"], "hypercolor-daemon");
+    assert!(value.get("scope").is_none());
+}
+
+#[test]
+fn device_token_contract_matches_rfc8628_grant() {
+    let request = DeviceTokenRequest::new("device-code", "hypercolor-daemon");
+    let value = serde_json::to_value(request).expect("serialize device token request");
+
+    assert_eq!(value["grant_type"], DEVICE_CODE_GRANT_TYPE);
+    assert_eq!(value["device_code"], "device-code");
+    assert_eq!(value["client_id"], "hypercolor-daemon");
+}
+
+#[test]
+fn device_token_errors_use_better_auth_codes() {
+    let pending: DeviceTokenError = serde_json::from_str(r#"{"error":"authorization_pending"}"#)
+        .expect("deserialize pending device token error");
+    let slowdown: DeviceTokenError = serde_json::from_str(r#"{"error":"slow_down"}"#)
+        .expect("deserialize slow_down device token error");
+    let unknown: DeviceTokenError = serde_json::from_str(r#"{"error":"new_code"}"#)
+        .expect("deserialize future device token error");
+
+    assert_eq!(pending.error, DeviceTokenErrorCode::AuthorizationPending);
+    assert!(pending.error.is_retryable());
+    assert_eq!(slowdown.error, DeviceTokenErrorCode::SlowDown);
+    assert_eq!(unknown.error, DeviceTokenErrorCode::Unknown);
+}

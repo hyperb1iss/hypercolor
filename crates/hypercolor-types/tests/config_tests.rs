@@ -1,10 +1,10 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig, LogLevel, McpConfig,
-    NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig, WebConfig,
-    default_driver_configs,
+    AudioConfig, CaptureConfig, CloudConfig, DaemonConfig, DbusConfig, DiscoveryConfig,
+    EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
+    LogLevel, McpConfig, NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig,
+    WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -94,6 +94,18 @@ fn network_defaults_match_spec() {
     assert!(n.mdns_publish);
     assert!(!n.remote_access);
     assert_eq!(n.instance_name, None);
+}
+
+#[test]
+fn cloud_defaults_match_spec() {
+    let c = CloudConfig::default();
+    assert!(!c.enabled);
+    assert_eq!(c.base_url, "https://api.hypercolor.lighting");
+    assert_eq!(c.auth_base_url, "https://hypercolor.lighting");
+    assert_eq!(c.app_base_url, "https://app.hypercolor.lighting");
+    assert_eq!(c.device_client_id, "hypercolor-daemon");
+    assert_eq!(c.device_scope, "openid profile email");
+    assert!(c.connect_on_start);
 }
 
 #[test]
@@ -191,6 +203,7 @@ fn full_config_toml_roundtrip() {
         capture: CaptureConfig::default(),
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
+        cloud: CloudConfig::default(),
         drivers: default_driver_configs(),
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
@@ -214,6 +227,8 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
+    assert!(!restored.cloud.enabled);
+    assert_eq!(restored.cloud.base_url, "https://api.hypercolor.lighting");
     assert!(restored.drivers.is_empty());
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
@@ -239,6 +254,9 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
+    assert!(!config.cloud.enabled);
+    assert_eq!(config.cloud.base_url, "https://api.hypercolor.lighting");
+    assert!(config.cloud.connect_on_start);
     assert!(config.drivers.is_empty());
 }
 
@@ -333,6 +351,15 @@ mdns_publish = false
 remote_access = true
 instance_name = "desk-pc"
 
+[cloud]
+enabled = true
+base_url = "https://api.staging.hypercolor.lighting"
+auth_base_url = "https://staging.hypercolor.lighting"
+app_base_url = "https://app.staging.hypercolor.lighting"
+device_client_id = "hypercolor-daemon-dev"
+device_scope = "openid profile email cloud"
+connect_on_start = false
+
 [drivers.fixture-driver]
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
@@ -350,6 +377,22 @@ dedup_threshold = 0
     assert!(!config.network.mdns_publish);
     assert!(config.network.remote_access);
     assert_eq!(config.network.instance_name.as_deref(), Some("desk-pc"));
+    assert!(config.cloud.enabled);
+    assert_eq!(
+        config.cloud.base_url,
+        "https://api.staging.hypercolor.lighting"
+    );
+    assert_eq!(
+        config.cloud.auth_base_url,
+        "https://staging.hypercolor.lighting"
+    );
+    assert_eq!(
+        config.cloud.app_base_url,
+        "https://app.staging.hypercolor.lighting"
+    );
+    assert_eq!(config.cloud.device_client_id, "hypercolor-daemon-dev");
+    assert_eq!(config.cloud.device_scope, "openid profile email cloud");
+    assert!(!config.cloud.connect_on_start);
     // Audio fields not overridden keep defaults
     assert!((config.audio.smoothing - 0.8).abs() < f32::EPSILON);
     assert_eq!(

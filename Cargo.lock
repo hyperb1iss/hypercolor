@@ -2244,6 +2244,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
+ "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -2732,6 +2733,31 @@ dependencies = [
  "rfc6979",
  "signature",
  "spki",
+]
+
+[[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "rand_core 0.6.4",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -4582,6 +4608,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-cloud-api"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "ulid",
+ "uuid",
+]
+
+[[package]]
+name = "hypercolor-cloud-client"
+version = "0.1.0"
+dependencies = [
+ "hypercolor-cloud-api",
+ "hypercolor-daemon-link",
+ "reqwest 0.12.28",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "hypercolor-core"
 version = "0.1.0"
 dependencies = [
@@ -4646,6 +4694,7 @@ dependencies = [
  "fast_image_resize",
  "http 1.4.0",
  "httpdate",
+ "hypercolor-cloud-client",
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
@@ -4678,6 +4727,22 @@ dependencies = [
  "uuid",
  "wgpu",
  "windows-service",
+]
+
+[[package]]
+name = "hypercolor-daemon-link"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hypercolor-cloud-api",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "ulid",
+ "uuid",
 ]
 
 [[package]]
@@ -14181,6 +14246,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.2",
+ "serde",
+ "web-time",
+]
+
+[[package]]
 name = "uluru"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14879,6 +14955,16 @@ name = "web-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "854ba17bb104abfb26ba36da9729addc7ce7f06f5c0f90f3c391f8461cca21f9"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
