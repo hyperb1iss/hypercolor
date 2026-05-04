@@ -238,6 +238,11 @@ pub struct AppState {
 
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: security::SecurityState,
+
+    /// Pending Hypercolor Cloud device authorization sessions.
+    #[cfg(feature = "cloud")]
+    pub cloud_login_sessions:
+        Arc<Mutex<HashMap<Uuid, hypercolor_cloud_client::DeviceAuthorizationSession>>>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -506,6 +511,8 @@ impl AppState {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
             security_state: security::SecurityState::from_env(),
+            #[cfg(feature = "cloud")]
+            cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -588,6 +595,8 @@ impl AppState {
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
             security_state: security::SecurityState::from_env(),
+            #[cfg(feature = "cloud")]
+            cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -1223,6 +1232,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/cloud/identity",
             axum::routing::post(cloud::ensure_identity),
+        )
+        .route(
+            "/cloud/login/start",
+            axum::routing::post(cloud::start_login),
+        )
+        .route(
+            "/cloud/login/{login_id}/poll",
+            axum::routing::post(cloud::poll_login),
         );
     let mut router = Router::new()
         .nest("/api/v1", api)
