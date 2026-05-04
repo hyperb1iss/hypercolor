@@ -27,6 +27,10 @@
 //! - **Vendor CDN** — `Glorious` SVG served from the official Glorious
 //!   storefront CDN. Trademark of Glorious LLC, used for nominative
 //!   identification of supported hardware.
+//! - **WLED PNG** — official brand mark from the WLED web installer
+//!   (`install.wled.me`). The WLED firmware is EUPL-1.2-licensed and the
+//!   Akemi-derived brand mark is used here for nominative identification of
+//!   WLED-compatible hardware.
 //! - **Nollie PNG** — Hypercolor's own product, embedded as a Trunk asset.
 //! - **Wordmarks** — for vendors without a verified-permissive logo source we
 //!   render a compact letterform/wordmark in our own font stack and the
@@ -453,7 +457,7 @@ pub const VENDORS: &[VendorBrand] = &[
         monogram: "WLED",
         mark_font: VendorFont::Mono,
         svg_content: None,
-        image_path: None,
+        image_path: Some("/assets/vendors/wled.png"),
         website: "https://kno.wled.ge",
         aliases: &["wled"],
     },
