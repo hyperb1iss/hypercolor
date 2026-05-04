@@ -224,18 +224,11 @@ pub fn device_class_label(class: &DeviceClass) -> &'static str {
     }
 }
 
-/// Infer connection type from device metadata.
+/// Card-friendly connection label — transport name only, never the full
+/// `connection.label` (which is often a USB device path or hex serial that
+/// wraps badly and adds no value at card scale). The detail view still
+/// surfaces the full label.
 fn connection_type(device: &DeviceSummary) -> String {
-    if let Some(label) = device
-        .connection
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|label| !label.is_empty())
-    {
-        return label.to_owned();
-    }
-
     match device.connection.transport.trim() {
         "network" => "Network".to_owned(),
         "usb" => "USB".to_owned(),
@@ -481,8 +474,8 @@ pub fn DeviceCard(
                         // Driver · type · connection — single meta line
                         <div class="flex items-center gap-1.5 mt-1">
                             {vendor_label_for_chip.map(|label| view! {
-                                <span class="text-[9px] font-mono font-bold tracking-[0.14em]"
-                                      style=format!("color: rgba({primary}, 0.9)", primary = primary.clone())>
+                                <span class="text-[10px] font-semibold uppercase tracking-[0.06em] truncate"
+                                      style=format!("color: rgba({primary}, 0.92)", primary = primary.clone())>
                                     {label}
                                 </span>
                             })}
