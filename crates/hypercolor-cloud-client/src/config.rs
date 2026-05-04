@@ -8,6 +8,7 @@ pub const DEFAULT_DEVICE_CLIENT_ID: &str = "hypercolor-daemon";
 pub const DEFAULT_DEVICE_SCOPE: &str = "openid profile email";
 pub const DEVICE_CODE_PATH: &str = "/api/auth/device/code";
 pub const DEVICE_TOKEN_PATH: &str = "/api/auth/device/token";
+pub const DAEMON_CONNECT_PATH: &str = hypercolor_daemon_link::DAEMON_CONNECT_PATH;
 
 #[derive(Debug, Clone)]
 pub struct CloudClientConfig {
@@ -77,6 +78,23 @@ impl CloudClientConfig {
         self.auth_base_url
             .join(path)
             .map_err(|error| CloudClientError::InvalidBaseUrl(error.to_string()))
+    }
+
+    pub fn daemon_connect_url(&self) -> Result<Url, CloudClientError> {
+        let mut url = self.api_url(DAEMON_CONNECT_PATH)?;
+        let scheme = match url.scheme() {
+            "https" => "wss",
+            "http" => "ws",
+            "wss" | "ws" => return Ok(url),
+            scheme => {
+                return Err(CloudClientError::InvalidBaseUrl(format!(
+                    "unsupported daemon connect url scheme: {scheme}"
+                )));
+            }
+        };
+        url.set_scheme(scheme)
+            .map_err(|()| CloudClientError::InvalidBaseUrl(url.to_string()))?;
+        Ok(url)
     }
 }
 

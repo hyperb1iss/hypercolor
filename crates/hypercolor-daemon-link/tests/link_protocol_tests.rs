@@ -3,9 +3,9 @@ use base64::engine::general_purpose::STANDARD;
 use hypercolor_daemon_link::frame::DenialReason;
 use hypercolor_daemon_link::{
     AdmissionError, AdmissionSet, ChannelName, DeniedChannel, Frame, FrameKind, IdentityKeypair,
-    IdentityNonce, IdentityPrivateKey, IdentityPublicKey, ServerCapabilities,
-    UpgradeSignatureInput, WEBSOCKET_PROTOCOL, WelcomeFrame, registration_proof_message,
-    verify_identity_signature,
+    IdentityNonce, IdentityPrivateKey, IdentityPublicKey, ServerCapabilities, UpgradeHeaderInput,
+    UpgradeNonce, UpgradeSignatureInput, WEBSOCKET_PROTOCOL, WelcomeFrame,
+    registration_proof_message, verify_identity_signature,
 };
 use serde_json::json;
 use ulid::Ulid;
@@ -94,6 +94,97 @@ fn upgrade_canonicalization_binds_jwt_without_exposing_it() {
     assert_ne!(canonical.sha256(), changed.sha256());
     let canonical_text = std::str::from_utf8(canonical.as_bytes()).expect("utf8 canonical bytes");
     assert!(!canonical_text.contains("secret.jwt.value"));
+}
+
+#[test]
+fn signed_upgrade_headers_match_rfc51_handshake() {
+    let daemon_id =
+        Uuid::parse_str("018f4c36-4a44-7cc9-9f57-0d2e9224d2f1").expect("fixture uuid should parse");
+    let keypair = IdentityKeypair::generate();
+    let nonce = UpgradeNonce::from_bytes([3_u8; 16]);
+    let input = UpgradeHeaderInput {
+        host: "api.hypercolor.lighting",
+        daemon_id,
+        daemon_version: "1.4.2",
+        timestamp: "2026-05-15T17:00:00Z",
+        nonce: &nonce,
+        authorization_jwt: "secret.jwt.value",
+    };
+
+    let headers = input.signed_headers(&keypair);
+    let canonical = UpgradeSignatureInput {
+        method: "GET",
+        host: "api.hypercolor.lighting",
+        path: "/v1/daemon/connect",
+        websocket_protocol: WEBSOCKET_PROTOCOL,
+        daemon_id,
+        daemon_version: "1.4.2",
+        timestamp: "2026-05-15T17:00:00Z",
+        nonce: nonce.as_str(),
+        authorization_jwt: "secret.jwt.value",
+    }
+    .canonicalize();
+    let pairs = headers.pairs();
+
+    assert_eq!(headers.authorization, "Bearer secret.jwt.value");
+    assert_eq!(headers.websocket_protocol, WEBSOCKET_PROTOCOL);
+    assert!(
+        pairs
+            .iter()
+            .any(|(name, _)| *name == "X-Hypercolor-Daemon-Sig")
+    );
+    verify_identity_signature(
+        &keypair.public_key(),
+        canonical.as_bytes(),
+        &headers.signature,
+    )
+    .expect("upgrade signature should verify");
+}
+
+#[test]
+fn upgrade_debug_output_redacts_bearer_material() {
+    let daemon_id =
+        Uuid::parse_str("018f4c36-4a44-7cc9-9f57-0d2e9224d2f1").expect("fixture uuid should parse");
+    let keypair = IdentityKeypair::generate();
+    let nonce = UpgradeNonce::from_bytes([3_u8; 16]);
+    let signature_input = UpgradeSignatureInput {
+        method: "GET",
+        host: "api.hypercolor.lighting",
+        path: "/v1/daemon/connect",
+        websocket_protocol: WEBSOCKET_PROTOCOL,
+        daemon_id,
+        daemon_version: "1.4.2",
+        timestamp: "2026-05-15T17:00:00Z",
+        nonce: nonce.as_str(),
+        authorization_jwt: "secret.jwt.value",
+    };
+    let header_input = UpgradeHeaderInput {
+        host: "api.hypercolor.lighting",
+        daemon_id,
+        daemon_version: "1.4.2",
+        timestamp: "2026-05-15T17:00:00Z",
+        nonce: &nonce,
+        authorization_jwt: "secret.jwt.value",
+    };
+    let headers = header_input.signed_headers(&keypair);
+
+    for debug_output in [
+        format!("{signature_input:?}"),
+        format!("{header_input:?}"),
+        format!("{headers:?}"),
+    ] {
+        assert!(!debug_output.contains("secret.jwt.value"));
+        assert!(!debug_output.contains("Bearer"));
+        assert!(debug_output.contains("<redacted>"));
+    }
+}
+
+#[test]
+fn upgrade_nonce_validates_wire_length() {
+    let nonce = UpgradeNonce::generate();
+
+    assert!(UpgradeNonce::new(nonce.as_str()).is_ok());
+    assert!(UpgradeNonce::new(STANDARD.encode([1_u8; 15])).is_err());
 }
 
 #[test]

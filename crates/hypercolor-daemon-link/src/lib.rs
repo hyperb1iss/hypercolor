@@ -12,7 +12,12 @@ pub use frame::{
     DaemonCapabilities, DeniedChannel, Frame, FrameKind, HelloFrame, ServerCapabilities,
     WelcomeFrame,
 };
-pub use handshake::{CanonicalUpgrade, UpgradeSignatureInput};
+pub use handshake::{
+    CanonicalUpgrade, DAEMON_CONNECT_PATH, HEADER_AUTHORIZATION, HEADER_DAEMON_ID,
+    HEADER_DAEMON_NONCE, HEADER_DAEMON_SIG, HEADER_DAEMON_TS, HEADER_DAEMON_VERSION,
+    HEADER_WEBSOCKET_PROTOCOL, SignedUpgradeHeaders, UPGRADE_METHOD, UpgradeHeaderInput,
+    UpgradeNonce, UpgradeNonceError, UpgradeSignatureInput,
+};
 pub use identity::{
     IdentityEncodingError, IdentityKeypair, IdentityNonce, IdentityPrivateKey, IdentityPublicKey,
     IdentitySignature, IdentityVerificationError, registration_proof_message,

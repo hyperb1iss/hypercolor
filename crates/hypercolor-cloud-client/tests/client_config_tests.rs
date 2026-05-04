@@ -1,4 +1,4 @@
-use hypercolor_cloud_client::config::{DEVICE_CODE_PATH, DEVICE_TOKEN_PATH};
+use hypercolor_cloud_client::config::{DAEMON_CONNECT_PATH, DEVICE_CODE_PATH, DEVICE_TOKEN_PATH};
 use hypercolor_cloud_client::{
     CloudClientConfig, DeviceRegistrationInput, ENTITLEMENTS_PATH, api, signed_device_registration,
 };
@@ -28,6 +28,7 @@ fn cloud_client_config_builds_api_urls() {
         entitlements.as_str(),
         "https://api.hypercolor.lighting/v1/me/entitlements"
     );
+    assert_eq!(DAEMON_CONNECT_PATH, "/v1/daemon/connect");
 }
 
 #[test]
@@ -56,6 +57,29 @@ fn cloud_client_config_builds_auth_urls() {
     );
     assert_eq!(config.device_client_id(), "hypercolor-daemon-dev");
     assert_eq!(config.device_scope(), "openid profile email cloud");
+}
+
+#[test]
+fn cloud_client_config_builds_daemon_connect_websocket_url() {
+    let config =
+        CloudClientConfig::new("https://api.hypercolor.lighting/").expect("base url should parse");
+    let local =
+        CloudClientConfig::new("http://127.0.0.1:9421/").expect("local base url should parse");
+
+    assert_eq!(
+        config
+            .daemon_connect_url()
+            .expect("daemon connect url should build")
+            .as_str(),
+        "wss://api.hypercolor.lighting/v1/daemon/connect"
+    );
+    assert_eq!(
+        local
+            .daemon_connect_url()
+            .expect("local daemon connect url should build")
+            .as_str(),
+        "ws://127.0.0.1:9421/v1/daemon/connect"
+    );
 }
 
 #[test]
