@@ -86,10 +86,9 @@ build on, well-understood USB HID protocols, and large user bases.
 
 - **Market position:** Dominant in AIO coolers, popular fan/LED controllers
 - **Key devices:** Kraken Elite/Z/X (LCD + pump RGB), Smart Device V2, Hue 2 controllers
-- **Protocol:** USB HID, well-documented by liquidctl (Python)
-- **RE source:** [liquidctl](https://github.com/liquidctl/liquidctl) — excellent Python
-  reference implementations with protocol documentation
-- **Effort:** Medium — port liquidctl's protocol knowledge to Rust
+- **Protocol:** USB HID and USB serial; implement from Spec 39 packet maps
+- **RE source:** Spec 39 clean-room protocol document, with new captures for any gaps
+- **Effort:** Medium -- implement the documented protocol families in Rust
 - **Impact:** High — fills the biggest AIO gap on Linux
 
 #### Logitech LIGHTSYNC
@@ -99,7 +98,7 @@ build on, well-understood USB HID protocols, and large user bases.
 - **Protocol:** USB HID, but per-device variants (G203, G810, G915 all differ)
 - **RE source:** [g810-led](https://github.com/MatMoul/g810-led),
   [g203-led](https://github.com/smasty/g203-led) — C/Python, covers common models
-- **Effort:** Medium-High — many device-specific protocol quirks
+- **Effort:** Medium-High — write a facts-only spec first; many device-specific protocol quirks
 - **Impact:** High — Logitech users are underserved on Linux
 
 #### SteelSeries
@@ -108,8 +107,8 @@ build on, well-understood USB HID protocols, and large user bases.
 - **Key devices:** Apex Pro TKL Gen 3, Aerox mice, Arctis headsets
 - **Protocol:** USB HID (GameSense-based commands)
 - **RE source:** [steelseriesgg-rs](https://github.com/Ven0m0/steelseriesgg-rs) — **Rust**
-  reference implementation, covers keyboards/mice
-- **Effort:** Medium — Rust reference makes porting straightforward
+  research input, covers keyboards/mice
+- **Effort:** Medium — Rust source should make facts-only packet documentation straightforward
 - **Impact:** Medium-High — fills esports/competitive niche
 
 ### Tier 3: Ecosystem Expansion
@@ -208,7 +207,7 @@ real hardware risk. Approach with extreme caution.
 
 ## Existing RE Resources
 
-Key open-source projects to mine for protocol knowledge:
+Key open-source projects to convert into facts-only protocol specs before implementation:
 
 | Project                                                                         | Language | Covers                     | Quality                              |
 | ------------------------------------------------------------------------------- | -------- | -------------------------- | ------------------------------------ |
@@ -232,9 +231,9 @@ Key open-source projects to mine for protocol knowledge:
 
 ### Next — High-Impact Wave
 
-- **NZXT** driver (port from liquidctl)
-- **SteelSeries** driver (port from steelseriesgg-rs)
-- **Logitech** driver (port from g810-led, start with keyboards)
+- **NZXT** driver (implement from Spec 39)
+- **SteelSeries** driver (write spec from steelseriesgg-rs research first)
+- **Logitech** driver (write spec from g810-led research first, start with keyboards)
 
 ### Later — Ecosystem Expansion
 
