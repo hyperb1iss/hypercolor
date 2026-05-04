@@ -124,6 +124,9 @@ fn windows_installer_target_builds_all_bundle_inputs() {
         "\"cargo\"",
         "\"tauri\", \"build\"",
         "--bundles",
+        "$env:CARGO_TARGET_DIR",
+        "[Environment]::GetFolderPath(\"UserProfile\")",
+        ".cache\\hypercolor\\target\\release\\bundle\\nsis",
     ] {
         assert!(
             WINDOWS_INSTALLER_SCRIPT.contains(required),

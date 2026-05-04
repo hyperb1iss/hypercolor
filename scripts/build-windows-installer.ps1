@@ -99,10 +99,20 @@ function Assert-Prerequisites {
 }
 
 function Show-InstallerArtifacts {
-    $roots = @(
-        Join-Path $RepoRoot "target\release\bundle\nsis",
-        Join-Path $RepoRoot "crates\hypercolor-app\target\release\bundle\nsis"
-    )
+    $roots = @()
+    if ($env:CARGO_TARGET_DIR) {
+        $roots += (Join-Path $env:CARGO_TARGET_DIR "release\bundle\nsis")
+    }
+
+    $userProfile = [Environment]::GetFolderPath("UserProfile")
+    if ($userProfile) {
+        $roots += (Join-Path $userProfile ".cache\hypercolor\target\release\bundle\nsis")
+    }
+
+    $roots += (Join-Path $RepoRoot "target\release\bundle\nsis")
+    $roots += (Join-Path $RepoRoot "crates\hypercolor-app\target\release\bundle\nsis")
+    $roots = $roots | Select-Object -Unique
+
     $artifacts = @()
     foreach ($root in $roots) {
         if (Test-Path -LiteralPath $root) {
