@@ -9,8 +9,8 @@ use hypercolor_cloud_client::api as cloud_api;
 use hypercolor_cloud_client::daemon_link::IdentityNonce;
 use hypercolor_cloud_client::{
     CloudClient, CloudClientConfig, DeviceAuthorizationStatus, DeviceRegistrationInput,
-    KeyringSecretStore, RefreshTokenOwner, load_or_create_identity, persist_device_token,
-    signed_device_registration,
+    KeyringSecretStore, RefreshTokenOwner, SecretStore, load_identity, load_or_create_identity,
+    load_refresh_token, persist_device_token, signed_device_registration,
 };
 use hypercolor_types::config::CloudConfig;
 use serde::Serialize;
@@ -54,6 +54,16 @@ impl CloudStatus {
 pub struct CloudIdentityStatus {
     pub daemon_id: String,
     pub identity_pubkey: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CloudSessionStatus {
+    pub authenticated: bool,
+    pub refresh_token_present: bool,
+    pub identity_present: bool,
+    pub daemon_id: Option<String>,
+    pub identity_pubkey: Option<String>,
+    pub credential_storage: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -113,6 +123,13 @@ pub async fn ensure_identity() -> Response {
             identity_pubkey: identity.keypair().public_key().as_str().to_owned(),
         }),
         Err(error) => ApiError::internal(format!("failed to initialize cloud identity: {error}")),
+    }
+}
+
+pub async fn get_session() -> Response {
+    match KeyringSecretStore::new_native().and_then(|store| session_status_from_store(&store)) {
+        Ok(status) => ApiResponse::ok(status),
+        Err(error) => ApiError::internal(format!("failed to read cloud session: {error}")),
     }
 }
 
@@ -198,6 +215,29 @@ pub async fn poll_login(
             CloudLoginPoll::terminal_error(login_id, CloudLoginState::Rejected, error),
         ),
     }
+}
+
+pub fn session_status_from_store(
+    store: &impl SecretStore,
+) -> Result<CloudSessionStatus, hypercolor_cloud_client::CloudClientError> {
+    let refresh_token_present = load_refresh_token(store, RefreshTokenOwner::Daemon)?.is_some();
+    let identity = load_identity(store)?;
+    let identity_present = identity.is_some();
+    let (daemon_id, identity_pubkey) = identity.map_or((None, None), |identity| {
+        (
+            Some(identity.daemon_id().hyphenated().to_string()),
+            Some(identity.keypair().public_key().as_str().to_owned()),
+        )
+    });
+
+    Ok(CloudSessionStatus {
+        authenticated: refresh_token_present && identity_present,
+        refresh_token_present,
+        identity_present,
+        daemon_id,
+        identity_pubkey,
+        credential_storage: "os_keyring".to_owned(),
+    })
 }
 
 impl CloudLoginPoll {

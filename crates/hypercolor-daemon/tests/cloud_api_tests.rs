@@ -8,9 +8,12 @@ use axum::body::Body;
 use axum::http::StatusCode as AxumStatusCode;
 use axum::routing::post;
 use http::{Request, StatusCode};
-use hypercolor_cloud_client::api as cloud_api;
+use hypercolor_cloud_client::{
+    CloudClientError, CloudSecretKey, RefreshTokenOwner, SecretStore, api as cloud_api,
+    load_or_create_identity, store_refresh_token,
+};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api::{self, AppState, cloud};
 use hypercolor_types::config::HypercolorConfig;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -141,6 +144,40 @@ async fn cloud_login_poll_rejects_unknown_session() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[test]
+fn cloud_session_status_reports_auth_and_identity_without_creating_identity() {
+    let store = MemorySecretStore::default();
+
+    let empty = cloud::session_status_from_store(&store).expect("status should read");
+    assert!(!empty.authenticated);
+    assert!(!empty.refresh_token_present);
+    assert!(!empty.identity_present);
+    assert!(empty.daemon_id.is_none());
+    assert!(
+        store
+            .get_secret(CloudSecretKey::DaemonIdentityKey)
+            .expect("identity key should read")
+            .is_none()
+    );
+
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh")
+        .expect("refresh token should store");
+    let identity = load_or_create_identity(&store).expect("identity should create");
+    let ready = cloud::session_status_from_store(&store).expect("status should read");
+
+    assert!(ready.authenticated);
+    assert!(ready.refresh_token_present);
+    assert!(ready.identity_present);
+    assert_eq!(
+        ready.daemon_id,
+        Some(identity.daemon_id().hyphenated().to_string())
+    );
+    assert_eq!(
+        ready.identity_pubkey,
+        Some(identity.keypair().public_key().as_str().to_owned())
+    );
+}
+
 fn cloud_test_state(auth_base_url: &str) -> Arc<AppState> {
     let tempdir = TempDir::new().expect("temp dir should be created");
     let manager = ConfigManager::new(tempdir.path().join("config.toml"))
@@ -153,6 +190,38 @@ fn cloud_test_state(auth_base_url: &str) -> Arc<AppState> {
     let mut state = AppState::new();
     state.config_manager = Some(Arc::new(manager));
     Arc::new(state)
+}
+
+#[derive(Debug, Default)]
+struct MemorySecretStore {
+    values: std::sync::Mutex<std::collections::HashMap<CloudSecretKey, String>>,
+}
+
+impl SecretStore for MemorySecretStore {
+    fn get_secret(&self, key: CloudSecretKey) -> Result<Option<String>, CloudClientError> {
+        Ok(self
+            .values
+            .lock()
+            .expect("memory secret store lock should not be poisoned")
+            .get(&key)
+            .cloned())
+    }
+
+    fn put_secret(&self, key: CloudSecretKey, value: &str) -> Result<(), CloudClientError> {
+        self.values
+            .lock()
+            .expect("memory secret store lock should not be poisoned")
+            .insert(key, value.to_owned());
+        Ok(())
+    }
+
+    fn delete_secret(&self, key: CloudSecretKey) -> Result<(), CloudClientError> {
+        self.values
+            .lock()
+            .expect("memory secret store lock should not be poisoned")
+            .remove(&key);
+        Ok(())
+    }
 }
 
 async fn response_json(response: axum::response::Response) -> serde_json::Value {
