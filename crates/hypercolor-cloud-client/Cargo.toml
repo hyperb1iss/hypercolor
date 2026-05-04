@@ -14,6 +14,16 @@ workspace = true
 [dependencies]
 hypercolor-cloud-api = { workspace = true }
 hypercolor-daemon-link = { workspace = true }
+keyring-core = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service-keyring-store = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = { workspace = true }

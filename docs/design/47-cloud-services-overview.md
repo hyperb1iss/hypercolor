@@ -47,7 +47,7 @@ This RFC specifies the umbrella shape: the stack we build on, the deployment top
 | JWT crate | `jsonwebtoken` 9.x | EdDSA for entitlements, RS256/ES256 for Better-Auth verify |
 | Billing | `async-stripe` 1.x + `async-stripe-webhook` | Stripe Entitlements API for feature flags |
 | Realtime | `axum::extract::ws::WebSocket` + `tokio::sync::broadcast` | Single multiplexed daemon socket per RFC 51 |
-| Token storage on client | `keyring` 3.x | OS keychain on macOS/Linux/Windows |
+| Token storage on client | `keyring-core` 1.x + native stores | OS keychain on macOS/Linux/Windows |
 | CDN | Cloudflare R2 + Workers | Zero egress, edge-cached `/v1/updates/check` |
 | Marketing site | Next.js 16 on Netlify, same repo | Calls `api.hypercolor.lighting` |
 | Dashboard + account tools | Next.js 16 in `~/dev/hypercolor.lighting` | Better-Auth session cookie, calls Rust API |
@@ -139,9 +139,9 @@ hypercolor.lighting/
 
 **Web (marketing site + dashboard).** HttpOnly + Secure + SameSite=Lax session cookie issued by Better-Auth on `hypercolor.lighting`. SSR fetches via `auth.api.getSession({ headers })`. Marketing pages stay public; `/dashboard/*` is gated.
 
-**Daemon.** OAuth 2.0 Device Authorization Grant (RFC 8628). Daemon hits `https://hypercolor.lighting/api/auth/device/code` and `/api/auth/device/token` directly (Better-Auth's Device Authorization plugin endpoints). First run prints a code, opens a browser, polls every 5s. Once approved, daemon receives a short-lived access JWT and a long-lived refresh token. Refresh stored in OS keyring (`keyring` 3.x), key `hypercolor.refresh_token`. Access JWT held in memory and rotated on 401. Logout = revoke refresh token via Better-Auth + clear keyring entry.
+**Daemon.** OAuth 2.0 Device Authorization Grant (RFC 8628). Daemon hits `https://hypercolor.lighting/api/auth/device/code` and `/api/auth/device/token` directly (Better-Auth's Device Authorization plugin endpoints). First run prints a code, opens a browser, polls every 5s. Once approved, daemon receives a short-lived access JWT and a long-lived refresh token. Refresh stored in the OS keyring via `keyring-core`, service `hypercolor.cloud`, account `daemon.refresh_token`. Access JWT held in memory and rotated on 401. Logout = revoke refresh token via Better-Auth + clear keyring entry.
 
-**CLI / TUI.** Same device code flow, separate keyring entry (`hypercolor.cli.refresh_token`) so revoke can target the CLI without kicking the daemon. `hypercolor login` is the command.
+**CLI / TUI.** Same device code flow, separate keyring entry (`hypercolor.cloud` / `cli.refresh_token`) so revoke can target the CLI without kicking the daemon. `hypercolor login` is the command.
 
 **Rust backend verification.** Fetches Better-Auth's JWKS at `https://hypercolor.lighting/api/auth/jwks` once on startup, caches with `kid`-based lookup, refreshes on `kid` miss with negative-result throttling. Verifies `Authorization: Bearer <jwt>` on every protected request via `jsonwebtoken`. ~50 LOC.
 
@@ -163,8 +163,8 @@ In addition to the user's bearer JWT, every Hypercolor install holds two pieces 
 
 | Item | Generation | Storage |
 |---|---|---|
-| `daemon_id` | UUIDv4 from `getrandom`, 128 bits, cryptographically random | `~/.config/hypercolor/daemon.toml` plus keyring entry `hypercolor.daemon_id` |
-| Daemon Ed25519 identity keypair | `ed25519-dalek::SigningKey::generate(&mut OsRng)` | Private key in keyring `hypercolor.daemon_identity_key`; public key registered with cloud once |
+| `daemon_id` | UUIDv4 from `getrandom`, 128 bits, cryptographically random | `~/.config/hypercolor/daemon.toml` plus keyring entry `hypercolor.cloud` / `daemon.id` |
+| Daemon Ed25519 identity keypair | `ed25519-dalek::SigningKey::generate(&mut OsRng)` | Private key in keyring `hypercolor.cloud` / `daemon.identity_key`; public key registered with cloud once |
 
 `daemon_id` is **not** derived from hardware. Random IDs are stable across restarts, survive VM/container moves, and avoid binding entitlements to physical hardware. Reinstalls produce a new `daemon_id`; explicit identity migration is a v2 feature.
 

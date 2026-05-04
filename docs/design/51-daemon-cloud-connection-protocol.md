@@ -32,8 +32,8 @@ Two pieces of state per daemon, both established at first run.
 
 | Item | Generation | Storage | Rotation |
 |---|---|---|---|
-| `daemon_id` | UUIDv4 from `getrandom`, 128 bits, cryptographically random | `~/.config/hypercolor/daemon.toml`, also keyring entry `hypercolor.daemon_id` | Never. Reinstalls produce a new daemon_id; the user can migrate identity in v2. |
-| Daemon identity keypair | Ed25519 via `ed25519-dalek::SigningKey::generate(&mut OsRng)` at first run | Private key in OS keyring (`hypercolor.daemon_identity_key`); public key registered with the cloud after first login | Rotatable from the dashboard; old key revoked on rotation. |
+| `daemon_id` | UUIDv4 from `getrandom`, 128 bits, cryptographically random | `~/.config/hypercolor/daemon.toml`, also keyring entry `hypercolor.cloud` / `daemon.id` | Never. Reinstalls produce a new daemon_id; the user can migrate identity in v2. |
+| Daemon identity keypair | Ed25519 via `ed25519-dalek::SigningKey::generate(&mut OsRng)` at first run | Private key in OS keyring (`hypercolor.cloud` / `daemon.identity_key`); public key registered with the cloud after first login | Rotatable from the dashboard; old key revoked on rotation. |
 
 `daemon_id` is **not** derived from hardware. No MAC address sniffing, no machine UUID, no CPU serial. Reasoning:
 
@@ -307,7 +307,10 @@ The crate is consumed by `hypercolor-cloud-client` in this repo and by the propr
 | `tokio` | 1.x | Runtime |
 | `ed25519-dalek` | 2.x | Identity sign/verify |
 | `rand_core` / `getrandom` | 0.6 / 0.2 | Ed25519 keygen + registration nonce |
-| `keyring` | 3.x | Identity key storage on daemon |
+| `keyring-core` | 1.x | Identity key storage abstraction on daemon |
+| `apple-native-keyring-store` | 1.x | macOS Keychain backend |
+| `dbus-secret-service-keyring-store` | 1.x | Linux Secret Service backend |
+| `windows-native-keyring-store` | 1.x | Windows Credential Manager backend |
 | `uuid` | 1.x | daemon_id |
 | `ulid` | 1.x | session_id, msg_id |
 | `serde` + `serde_json` | 1.x | Frame encoding |
