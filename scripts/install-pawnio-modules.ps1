@@ -16,10 +16,33 @@ $zip = Join-Path $env:TEMP "hypercolor-pawnio-modules-$Version.zip"
 $url = "https://github.com/namazso/PawnIO.Modules/releases/download/$Version/release_$($Version -replace '\.', '_').zip"
 $extractRoot = Join-Path $env:TEMP "hypercolor-pawnio-modules-$Version"
 
+function Get-Sha256 {
+    param([string]$Path)
+
+    if (Get-Command "Get-FileHash" -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToUpperInvariant()
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    $stream = [System.IO.File]::OpenRead($resolved)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha256.ComputeHash($stream)
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+
+    return -join ($hash | ForEach-Object { $_.ToString("X2") })
+}
+
 Write-Host "Downloading PawnIO modules $Version"
 Invoke-WebRequest $url -OutFile $zip
 
-$actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash
+$actualSha256 = Get-Sha256 $zip
 if ($actualSha256 -ne $ExpectedSha256) {
     throw "SHA256 mismatch for $zip; expected $ExpectedSha256, got $actualSha256"
 }

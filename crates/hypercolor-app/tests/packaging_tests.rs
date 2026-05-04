@@ -2,6 +2,11 @@ const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const JUSTFILE: &str = include_str!("../../../justfile");
 const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
+const FETCH_PAWNIO_ASSETS_PS1: &str = include_str!("../../../scripts/fetch-pawnio-assets.ps1");
+const INSTALL_BUNDLED_PAWNIO_PS1: &str =
+    include_str!("../../../scripts/install-bundled-pawnio.ps1");
+const INSTALL_PAWNIO_MODULES_PS1: &str =
+    include_str!("../../../scripts/install-pawnio-modules.ps1");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 
@@ -79,6 +84,24 @@ fn app_bundle_staging_includes_pawnio_runtime_payloads() {
             "Bash staging should bundle PawnIO module {module}"
         );
     }
+}
+
+#[test]
+fn pawnio_scripts_hash_without_requiring_get_file_hash() {
+    for script in [
+        FETCH_PAWNIO_ASSETS_PS1,
+        INSTALL_BUNDLED_PAWNIO_PS1,
+        INSTALL_PAWNIO_MODULES_PS1,
+    ] {
+        assert!(script.contains("function Get-Sha256"));
+        assert!(script.contains("Get-Command \"Get-FileHash\""));
+        assert!(script.contains("System.Security.Cryptography.SHA256"));
+    }
+
+    assert!(FETCH_PAWNIO_ASSETS_PS1.contains("Get-Sha256 $Path"));
+    assert!(FETCH_PAWNIO_ASSETS_PS1.contains("Get-Sha256 $modulePath"));
+    assert!(INSTALL_BUNDLED_PAWNIO_PS1.contains("Get-Sha256 $Path"));
+    assert!(INSTALL_PAWNIO_MODULES_PS1.contains("Get-Sha256 $zip"));
 }
 
 #[test]

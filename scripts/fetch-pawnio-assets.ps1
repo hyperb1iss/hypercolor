@@ -53,6 +53,29 @@ function Reset-Directory {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
 }
 
+function Get-Sha256 {
+    param([string]$Path)
+
+    if (Get-Command "Get-FileHash" -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToUpperInvariant()
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    $stream = [System.IO.File]::OpenRead($resolved)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha256.ComputeHash($stream)
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+
+    return -join ($hash | ForEach-Object { $_.ToString("X2") })
+}
+
 function Save-VerifiedFile {
     param(
         [string]$Url,
@@ -62,7 +85,7 @@ function Save-VerifiedFile {
 
     $download = $true
     if (Test-Path -LiteralPath $Path) {
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+        $actual = Get-Sha256 $Path
         $download = $actual -ne $ExpectedSha256
     }
 
@@ -70,7 +93,7 @@ function Save-VerifiedFile {
         Invoke-WebRequest -Uri $Url -OutFile $Path
     }
 
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+    $actual = Get-Sha256 $Path
     if ($actual -ne $ExpectedSha256) {
         throw "SHA256 mismatch for $Path; expected $ExpectedSha256, got $actual"
     }
@@ -111,7 +134,7 @@ foreach ($module in $RequiredModules) {
     Copy-Item -LiteralPath $source.FullName -Destination $modulePath -Force
     $stagedModules += [ordered]@{
         name = $module
-        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $modulePath).Hash
+        sha256 = Get-Sha256 $modulePath
     }
 }
 

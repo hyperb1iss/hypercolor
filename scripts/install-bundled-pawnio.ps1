@@ -34,6 +34,29 @@ function Resolve-PawnIoHome {
     return ""
 }
 
+function Get-Sha256 {
+    param([string]$Path)
+
+    if (Get-Command "Get-FileHash" -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToUpperInvariant()
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    $stream = [System.IO.File]::OpenRead($resolved)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha256.ComputeHash($stream)
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+
+    return -join ($hash | ForEach-Object { $_.ToString("X2") })
+}
+
 function Assert-FileHash {
     param(
         [string]$Path,
@@ -44,7 +67,7 @@ function Assert-FileHash {
         throw "Expected bundled PawnIO file was not found: $Path"
     }
 
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+    $actual = Get-Sha256 $Path
     if ($actual -ne $ExpectedSha256) {
         throw "SHA256 mismatch for $Path; expected $ExpectedSha256, got $actual"
     }
