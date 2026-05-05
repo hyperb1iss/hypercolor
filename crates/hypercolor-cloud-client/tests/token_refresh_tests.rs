@@ -7,8 +7,8 @@ use hypercolor_cloud_client::{
     SecretStore, StoredDaemonConnect, StoredDaemonConnectInput, connect_authority,
     daemon_link::{
         HEADER_AUTHORIZATION, HEADER_DAEMON_ID, HEADER_DAEMON_NONCE, HEADER_DAEMON_SIG,
-        HEADER_DAEMON_TS, HEADER_DAEMON_VERSION, HEADER_WEBSOCKET_PROTOCOL, UpgradeNonce,
-        WEBSOCKET_PROTOCOL, verify_identity_signature,
+        HEADER_DAEMON_TS, HEADER_DAEMON_VERSION, HEADER_WEBSOCKET_PROTOCOL, IdentityNonce,
+        UpgradeNonce, WEBSOCKET_PROTOCOL, verify_identity_signature,
     },
     load_identity, load_or_create_identity, load_refresh_token, store_refresh_token,
 };
@@ -141,13 +141,20 @@ async fn prepare_stored_daemon_connect_refreshes_and_signs_upgrade() {
             .local_addr()
             .expect("test server address should resolve")
     );
-    let server = spawn_refresh_server(listener, "access-for-connect", "refresh-next");
+    let store = MemorySecretStore::default();
+    let identity = load_or_create_identity(&store).expect("identity should create");
+    let server = spawn_connect_preparation_server(
+        listener,
+        "access-for-registration",
+        "refresh-next",
+        "daemon-connect-token",
+        identity.daemon_id(),
+        identity.keypair().public_key().as_str().to_owned(),
+    );
     let client = CloudClient::new(
         CloudClientConfig::with_auth_base_url(&base_url, &base_url)
             .expect("base urls should parse"),
     );
-    let store = MemorySecretStore::default();
-    let identity = load_or_create_identity(&store).expect("identity should create");
     store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
         .expect("refresh token should seed");
 
@@ -156,7 +163,11 @@ async fn prepare_stored_daemon_connect_refreshes_and_signs_upgrade() {
             &store,
             StoredDaemonConnectInput {
                 token_owner: RefreshTokenOwner::Daemon,
+                install_name: "desk-mac",
+                os: "macos",
+                arch: "aarch64",
                 daemon_version: "1.4.2",
+                identity_nonce: IdentityNonce::from_bytes([9_u8; 32]),
                 timestamp: "2026-05-15T17:00:00Z",
                 nonce: UpgradeNonce::from_bytes([7_u8; 16]),
             },
@@ -178,7 +189,7 @@ async fn prepare_stored_daemon_connect_refreshes_and_signs_upgrade() {
     );
     assert_eq!(
         header_value(&pairs, HEADER_AUTHORIZATION),
-        "Bearer access-for-connect"
+        "Bearer daemon-connect-token"
     );
     assert_eq!(
         header_value(&pairs, HEADER_WEBSOCKET_PROTOCOL),
@@ -198,7 +209,9 @@ async fn prepare_stored_daemon_connect_refreshes_and_signs_upgrade() {
         load_refresh_token(&store, RefreshTokenOwner::Daemon).expect("refresh token should load"),
         Some("refresh-next".to_owned())
     );
-    assert!(!format!("{request:?}").contains("access-for-connect"));
+    let debug_request = format!("{request:?}");
+    assert!(!debug_request.contains("access-for-registration"));
+    assert!(!debug_request.contains("daemon-connect-token"));
 
     let reloaded_identity = load_identity(&store)
         .expect("identity should load")
@@ -215,7 +228,7 @@ async fn prepare_stored_daemon_connect_refreshes_and_signs_upgrade() {
             daemon_version: "1.4.2",
             timestamp: "2026-05-15T17:00:00Z",
             nonce: header_value(&pairs, HEADER_DAEMON_NONCE),
-            authorization_jwt: "access-for-connect",
+            authorization_jwt: "daemon-connect-token",
         }
         .canonicalize()
         .as_bytes(),
@@ -239,7 +252,11 @@ async fn prepare_stored_daemon_connect_reports_missing_prerequisites() {
             &store,
             StoredDaemonConnectInput {
                 token_owner: RefreshTokenOwner::Daemon,
+                install_name: "desk-mac",
+                os: "macos",
+                arch: "aarch64",
                 daemon_version: "1.4.2",
+                identity_nonce: IdentityNonce::from_bytes([9_u8; 32]),
                 timestamp: "2026-05-15T17:00:00Z",
                 nonce: UpgradeNonce::from_bytes([7_u8; 16]),
             },
@@ -254,7 +271,11 @@ async fn prepare_stored_daemon_connect_reports_missing_prerequisites() {
             &store,
             StoredDaemonConnectInput {
                 token_owner: RefreshTokenOwner::Daemon,
+                install_name: "desk-mac",
+                os: "macos",
+                arch: "aarch64",
                 daemon_version: "1.4.2",
+                identity_nonce: IdentityNonce::from_bytes([10_u8; 32]),
                 timestamp: "2026-05-15T17:00:00Z",
                 nonce: UpgradeNonce::from_bytes([8_u8; 16]),
             },
@@ -264,21 +285,30 @@ async fn prepare_stored_daemon_connect_reports_missing_prerequisites() {
     assert_eq!(missing_refresh, StoredDaemonConnect::MissingRefreshToken);
 }
 
-fn spawn_refresh_server(
+fn spawn_connect_preparation_server(
     listener: tokio::net::TcpListener,
     access_token: &'static str,
     refresh_token: &'static str,
+    registration_token: &'static str,
+    daemon_id: uuid::Uuid,
+    identity_pubkey: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.expect("request should connect");
+        let (mut token_socket, _) = listener
+            .accept()
+            .await
+            .expect("token request should connect");
         let mut buffer = vec![0_u8; 4096];
-        let read = socket.read(&mut buffer).await.expect("request should read");
-        let request = String::from_utf8_lossy(&buffer[..read]);
+        let read = token_socket
+            .read(&mut buffer)
+            .await
+            .expect("token request should read");
+        let token_request = String::from_utf8_lossy(&buffer[..read]);
 
-        assert!(request.starts_with("POST /api/auth/oauth2/token HTTP/1.1"));
-        assert!(request.contains(r#""grant_type":"refresh_token""#));
-        assert!(request.contains(r#""refresh_token":"refresh-old""#));
-        assert!(request.contains(r#""client_id":"hypercolor-daemon""#));
+        assert!(token_request.starts_with("POST /api/auth/oauth2/token HTTP/1.1"));
+        assert!(token_request.contains(r#""grant_type":"refresh_token""#));
+        assert!(token_request.contains(r#""refresh_token":"refresh-old""#));
+        assert!(token_request.contains(r#""client_id":"hypercolor-daemon""#));
 
         let body = serde_json::json!({
             "access_token": access_token,
@@ -287,17 +317,62 @@ fn spawn_refresh_server(
             "expires_in": 900,
             "scope": "openid profile email"
         });
-        let body = serde_json::to_string(&body).expect("response should serialize");
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        socket
-            .write_all(response.as_bytes())
+        write_json_response(&mut token_socket, &body).await;
+        drop(token_socket);
+
+        let (mut registration_socket, _) = listener
+            .accept()
             .await
-            .expect("response should write");
+            .expect("registration request should connect");
+        let mut buffer = vec![0_u8; 8192];
+        let read = registration_socket
+            .read(&mut buffer)
+            .await
+            .expect("registration request should read");
+        let registration_request = String::from_utf8_lossy(&buffer[..read]);
+
+        assert!(registration_request.starts_with("POST /v1/me/devices HTTP/1.1"));
+        assert!(registration_request.contains(&format!("authorization: Bearer {access_token}")));
+        assert!(registration_request.contains(&format!(r#""daemon_id":"{daemon_id}""#)));
+        assert!(registration_request.contains(r#""install_name":"desk-mac""#));
+        assert!(registration_request.contains(r#""os":"macos""#));
+        assert!(registration_request.contains(r#""arch":"aarch64""#));
+        assert!(registration_request.contains(r#""daemon_version":"1.4.2""#));
+        assert!(
+            registration_request.contains(&format!(r#""identity_pubkey":"{identity_pubkey}""#))
+        );
+
+        let body = serde_json::json!({
+            "device": {
+                "id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1",
+                "user_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f2",
+                "daemon_id": daemon_id,
+                "install_name": "desk-mac",
+                "os": "macos",
+                "arch": "aarch64",
+                "daemon_version": "1.4.2",
+                "identity_pubkey": identity_pubkey,
+                "last_seen_at": "2026-05-15T17:00:00Z",
+                "created_at": "2026-05-15T17:00:00Z"
+            },
+            "registration_token": registration_token
+        });
+        write_json_response(&mut registration_socket, &body).await;
+        drop(registration_socket);
     })
+}
+
+async fn write_json_response(socket: &mut tokio::net::TcpStream, body: &serde_json::Value) {
+    let body = serde_json::to_string(body).expect("response should serialize");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .expect("response should write");
 }
 
 fn header_value<'a>(pairs: &'a [(&'static str, String)], name: &str) -> &'a str {
