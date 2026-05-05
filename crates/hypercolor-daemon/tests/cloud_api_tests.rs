@@ -7,11 +7,15 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode as AxumStatusCode;
 use axum::routing::post;
+use futures_util::{SinkExt, StreamExt};
 use http::{Request, StatusCode};
 use hypercolor_cloud_client::{
     CloudClient, CloudClientConfig, CloudClientError, CloudSecretKey, DeviceAuthorizationSession,
     RefreshTokenOwner, SecretStore, api as cloud_api,
-    daemon_link::{HEADER_AUTHORIZATION, IdentityNonce, UpgradeNonce, WelcomeFrame},
+    daemon_link::{
+        HEADER_AUTHORIZATION, HEADER_WEBSOCKET_PROTOCOL, IdentityNonce, UpgradeNonce,
+        WEBSOCKET_PROTOCOL, WelcomeFrame,
+    },
     load_or_create_identity, load_refresh_token, store_refresh_token,
 };
 use hypercolor_core::config::ConfigManager;
@@ -22,11 +26,16 @@ use hypercolor_daemon::{
         CloudConnectionSnapshot,
     },
     cloud_entitlements,
+    cloud_socket::CloudSocketStartError,
 };
 use hypercolor_types::config::HypercolorConfig;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    ErrorResponse as WsErrorResponse, Request as WsRequest, Response as WsResponse,
+};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -356,6 +365,24 @@ async fn cloud_connection_prepare_rejects_disabled_cloud_without_keyring() {
 }
 
 #[tokio::test]
+async fn cloud_connection_connect_rejects_disabled_cloud_without_keyring() {
+    let app = api::build_router(Arc::new(AppState::new()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/cloud/connection/connect")
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn cloud_connection_prepare_stages_signed_request_without_returning_secret() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -488,6 +515,132 @@ async fn cloud_connection_prepare_records_network_failure_as_backoff() {
     let snapshot = state.cloud_connection.read().await.snapshot();
     assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
     assert!(snapshot.last_error.is_some());
+}
+
+#[tokio::test]
+async fn cloud_connection_connect_starts_socket_task_after_prepare() {
+    let (_tempdir, _guard) = set_temp_data_dir();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("test server address should resolve")
+    );
+    let state = cloud_test_state_with_cloud(&base_url, true);
+    let store = MemorySecretStore::default();
+    let identity = load_or_create_identity(&store).expect("identity should create");
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
+        .expect("refresh token should store");
+    let (welcome_tx, welcome_rx) = oneshot::channel();
+    let (close_tx, close_rx) = oneshot::channel();
+    let server = spawn_connect_start_server(
+        listener,
+        "access-for-registration",
+        "refresh-next",
+        "daemon-connect-token",
+        identity.daemon_id(),
+        identity.keypair().public_key().as_str().to_owned(),
+        welcome_tx,
+        close_rx,
+    );
+    let client = CloudClient::new(
+        CloudClientConfig::with_auth_base_url(&base_url, &base_url)
+            .expect("base urls should parse"),
+    );
+
+    let status = cloud::connect_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([7; 32], [11; 16]),
+    )
+    .await
+    .expect("cloud connection should start");
+
+    assert_eq!(
+        status.runtime_state,
+        CloudConnectionRuntimeState::Connecting
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), welcome_rx)
+        .await
+        .expect("welcome should arrive")
+        .expect("welcome signal should send");
+    wait_for_cloud_runtime_state(&state, CloudConnectionRuntimeState::Connected).await;
+    let snapshot = state.cloud_connection.read().await.snapshot();
+    assert_eq!(
+        snapshot.runtime_state,
+        CloudConnectionRuntimeState::Connected
+    );
+    assert!(snapshot.connected);
+    assert_eq!(
+        snapshot.session_id.as_deref(),
+        Some("00000000000000000000000000")
+    );
+
+    let prepare_while_running = cloud::prepare_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([8; 32], [12; 16]),
+    )
+    .await
+    .expect_err("prepare should be rejected while the socket task is running");
+    assert!(matches!(
+        prepare_while_running,
+        cloud::CloudConnectionPrepareError::AlreadyRunning
+    ));
+
+    let second = cloud::connect_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([9; 32], [13; 16]),
+    )
+    .await
+    .expect_err("duplicate connection should be rejected");
+    assert!(matches!(
+        second,
+        cloud::CloudConnectionStartError::Socket(CloudSocketStartError::AlreadyRunning)
+    ));
+
+    let _ = close_tx.send(());
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("test server should finish")
+        .expect("test server should not panic");
+    wait_for_cloud_runtime_state(&state, CloudConnectionRuntimeState::Backoff).await;
+    let snapshot = state.cloud_connection.read().await.snapshot();
+    assert_eq!(
+        snapshot.last_error.as_deref(),
+        Some("cloud websocket closed")
+    );
+    state
+        .cloud_socket
+        .lock()
+        .await
+        .shutdown(&state.cloud_connection)
+        .await;
+    assert_eq!(
+        state.cloud_connection.read().await.snapshot().runtime_state,
+        CloudConnectionRuntimeState::Idle
+    );
+}
+
+async fn wait_for_cloud_runtime_state(state: &AppState, expected: CloudConnectionRuntimeState) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if state.cloud_connection.read().await.snapshot().runtime_state == expected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for cloud runtime state {expected:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 #[test]
@@ -872,6 +1025,114 @@ fn spawn_connect_preparation_server(
     })
 }
 
+fn spawn_connect_start_server(
+    listener: tokio::net::TcpListener,
+    access_token: &'static str,
+    refresh_token: &'static str,
+    registration_token: &'static str,
+    daemon_id: uuid::Uuid,
+    identity_pubkey: String,
+    welcome_tx: oneshot::Sender<()>,
+    close_rx: oneshot::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let (mut token_socket, _) = listener
+            .accept()
+            .await
+            .expect("token request should connect");
+        let mut buffer = vec![0_u8; 4096];
+        let read = token_socket
+            .read(&mut buffer)
+            .await
+            .expect("token request should read");
+        let token_request = String::from_utf8_lossy(&buffer[..read]);
+
+        assert!(token_request.starts_with("POST /api/auth/oauth2/token HTTP/1.1"));
+        assert!(token_request.contains(r#""refresh_token":"refresh-old""#));
+        write_json_response(
+            &mut token_socket,
+            &serde_json::json!({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "refresh_token": refresh_token,
+                "expires_in": 900,
+                "scope": "openid profile email"
+            }),
+        )
+        .await;
+        drop(token_socket);
+
+        let (mut registration_socket, _) = listener
+            .accept()
+            .await
+            .expect("registration request should connect");
+        let mut buffer = vec![0_u8; 8192];
+        let read = registration_socket
+            .read(&mut buffer)
+            .await
+            .expect("registration request should read");
+        let registration_request = String::from_utf8_lossy(&buffer[..read]);
+
+        assert!(registration_request.starts_with("POST /v1/me/devices HTTP/1.1"));
+        assert!(registration_request.contains(&format!("authorization: Bearer {access_token}")));
+        assert!(registration_request.contains(&format!(r#""daemon_id":"{daemon_id}""#)));
+        assert!(
+            registration_request.contains(&format!(r#""identity_pubkey":"{identity_pubkey}""#))
+        );
+        write_json_response(
+            &mut registration_socket,
+            &serde_json::json!({
+                "device": {
+                    "id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1",
+                    "user_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f2",
+                    "daemon_id": daemon_id,
+                    "install_name": "desk-mac",
+                    "os": "macos",
+                    "arch": "aarch64",
+                    "daemon_version": "1.4.2",
+                    "identity_pubkey": identity_pubkey,
+                    "last_seen_at": "2026-05-15T17:00:00Z",
+                    "created_at": "2026-05-15T17:00:00Z"
+                },
+                "registration_token": registration_token
+            }),
+        )
+        .await;
+        drop(registration_socket);
+
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("websocket request should connect");
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, assert_cloud_handshake)
+            .await
+            .expect("websocket should accept");
+        let hello = socket
+            .next()
+            .await
+            .expect("daemon should send hello")
+            .expect("hello should read");
+        let Message::Text(hello) = hello else {
+            panic!("hello should be text");
+        };
+        let hello: hypercolor_cloud_client::daemon_link::HelloFrame =
+            serde_json::from_str(&hello).expect("hello should deserialize");
+        assert!(hello.daemon_capabilities.sync);
+        assert_eq!(hello.entitlement_jwt, None);
+
+        socket
+            .send(Message::Text(welcome_fixture_json().into()))
+            .await
+            .expect("welcome should send");
+        let _ = welcome_tx.send(());
+        let _ = close_rx.await;
+        socket
+            .send(Message::Close(None))
+            .await
+            .expect("close should send");
+    })
+}
+
 async fn write_json_response(socket: &mut tokio::net::TcpStream, body: &serde_json::Value) {
     let body = serde_json::to_string(body).expect("response should serialize");
     let response = format!(
@@ -883,6 +1144,54 @@ async fn write_json_response(socket: &mut tokio::net::TcpStream, body: &serde_js
         .write_all(response.as_bytes())
         .await
         .expect("response should write");
+}
+
+#[expect(
+    clippy::result_large_err,
+    clippy::unnecessary_wraps,
+    reason = "Tungstenite's Callback trait fixes the response error type"
+)]
+fn assert_cloud_handshake(
+    request: &WsRequest,
+    mut response: WsResponse,
+) -> Result<WsResponse, WsErrorResponse> {
+    assert_eq!(
+        request
+            .headers()
+            .get(HEADER_AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer daemon-connect-token")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get(HEADER_WEBSOCKET_PROTOCOL)
+            .and_then(|value| value.to_str().ok()),
+        Some(WEBSOCKET_PROTOCOL)
+    );
+    response.headers_mut().insert(
+        HEADER_WEBSOCKET_PROTOCOL,
+        WEBSOCKET_PROTOCOL
+            .parse()
+            .expect("websocket protocol should parse"),
+    );
+
+    Ok(response)
+}
+
+fn welcome_fixture_json() -> String {
+    serde_json::to_string(&serde_json::json!({
+        "session_id": "00000000000000000000000000",
+        "available_channels": ["control", "sync.notifications"],
+        "denied_channels": [],
+        "server_capabilities": {
+            "tunnel_resume": true,
+            "compression": [],
+            "max_frame_bytes": 1_048_576
+        },
+        "heartbeat_interval_s": 25
+    }))
+    .expect("welcome should serialize")
 }
 
 fn header_value<'a>(pairs: &'a [(&'static str, String)], name: &str) -> &'a str {

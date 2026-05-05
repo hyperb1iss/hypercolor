@@ -28,6 +28,7 @@ use crate::cloud_entitlements::{
     iso8601_from_unix_seconds, load_cached_entitlement, store_entitlement_response,
     unix_now_seconds,
 };
+use crate::cloud_socket::{CloudSocketHelloInput, CloudSocketStartError};
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CloudStatus {
@@ -240,16 +241,71 @@ pub async fn prepare_connection(State(state): State<Arc<AppState>>) -> Response 
 
     match prepare_connection_from_store(&state, &client, &store, input).await {
         Ok(status) => ApiResponse::ok(status),
-        Err(CloudConnectionPrepareError::MissingIdentity) => {
+        Err(error) => prepare_error_response(error),
+    }
+}
+
+pub async fn connect_connection(State(state): State<Arc<AppState>>) -> Response {
+    let cloud_config = cloud_config(&state);
+    if !cloud_config.enabled {
+        return ApiError::conflict("cloud connection is disabled");
+    }
+    let client = match CloudClientConfig::try_from(&cloud_config).map(CloudClient::new) {
+        Ok(client) => client,
+        Err(error) => return ApiError::internal(format!("invalid cloud configuration: {error}")),
+    };
+    let store = match KeyringSecretStore::new_native() {
+        Ok(store) => store,
+        Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
+    };
+    let timestamp = iso8601_system_time(SystemTime::now());
+    let input = CloudConnectionPrepareInput {
+        install_name: &state.server_identity.instance_name,
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        daemon_version: &state.server_identity.version,
+        identity_nonce: IdentityNonce::generate(),
+        timestamp: &timestamp,
+        upgrade_nonce: UpgradeNonce::generate(),
+    };
+
+    match connect_connection_from_store(&state, &client, &store, input).await {
+        Ok(status) => ApiResponse::ok(status),
+        Err(error) => connect_error_response(error),
+    }
+}
+
+fn prepare_error_response(error: CloudConnectionPrepareError) -> Response {
+    match error {
+        CloudConnectionPrepareError::MissingIdentity => {
             ApiError::conflict("missing cloud identity")
         }
-        Err(CloudConnectionPrepareError::MissingRefreshToken) => {
+        CloudConnectionPrepareError::MissingRefreshToken => {
             ApiError::conflict("missing cloud refresh token")
         }
-        Err(CloudConnectionPrepareError::Prepare(error)) => {
+        CloudConnectionPrepareError::AlreadyRunning => {
+            ApiError::conflict("cloud connection is already running")
+        }
+        CloudConnectionPrepareError::Prepare(error) => {
             ApiError::internal(format!("failed to prepare cloud connection: {error}"))
         }
-        Err(CloudConnectionPrepareError::Status(error)) => ApiError::internal(error),
+        CloudConnectionPrepareError::Status(error) => ApiError::internal(error),
+    }
+}
+
+fn connect_error_response(error: CloudConnectionStartError) -> Response {
+    match error {
+        CloudConnectionStartError::Prepare(error) => prepare_error_response(error),
+        CloudConnectionStartError::Entitlement(error) => {
+            ApiError::internal(format!("failed to read cloud entitlement cache: {error}"))
+        }
+        CloudConnectionStartError::Socket(CloudSocketStartError::AlreadyRunning) => {
+            ApiError::conflict("cloud connection is already running")
+        }
+        CloudConnectionStartError::Socket(CloudSocketStartError::Connect(error)) => {
+            ApiError::internal(format!("failed to start cloud connection: {error}"))
+        }
+        CloudConnectionStartError::Status(error) => ApiError::internal(error),
     }
 }
 
@@ -257,8 +313,54 @@ pub async fn prepare_connection(State(state): State<Arc<AppState>>) -> Response 
 pub enum CloudConnectionPrepareError {
     MissingIdentity,
     MissingRefreshToken,
+    AlreadyRunning,
     Prepare(hypercolor_cloud_client::CloudClientError),
     Status(String),
+}
+
+#[derive(Debug)]
+pub enum CloudConnectionStartError {
+    Prepare(CloudConnectionPrepareError),
+    Entitlement(String),
+    Socket(CloudSocketStartError),
+    Status(String),
+}
+
+pub async fn connect_connection_from_store(
+    state: &AppState,
+    client: &CloudClient,
+    store: &impl SecretStore,
+    input: CloudConnectionPrepareInput<'_>,
+) -> Result<CloudConnectionStatus, CloudConnectionStartError> {
+    reject_running_cloud_socket(state).await?;
+    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
+    reject_running_cloud_socket(state).await?;
+
+    prepare_connection_from_store_locked(state, client, store, input)
+        .await
+        .map_err(CloudConnectionStartError::Prepare)?;
+    let entitlement = load_cached_entitlement(entitlement_cache_path())
+        .await
+        .map_err(|error| CloudConnectionStartError::Entitlement(error.to_string()))?;
+    let hello = CloudSocketHelloInput {
+        entitlement_jwt: entitlement.map(|entitlement| entitlement.jwt),
+        tunnel_resume: None,
+        studio_preview: false,
+    };
+    let mut cloud_socket = state.cloud_socket.lock().await;
+    if cloud_socket.is_running() {
+        return Err(CloudConnectionStartError::Socket(
+            CloudSocketStartError::AlreadyRunning,
+        ));
+    }
+    cloud_socket
+        .spawn_prepared_session(Arc::clone(&state.cloud_connection), hello)
+        .await
+        .map_err(CloudConnectionStartError::Socket)?;
+
+    connection_status_from_store(state, store)
+        .await
+        .map_err(CloudConnectionStartError::Status)
 }
 
 pub async fn prepare_connection_from_store(
@@ -267,7 +369,38 @@ pub async fn prepare_connection_from_store(
     store: &impl SecretStore,
     input: CloudConnectionPrepareInput<'_>,
 ) -> Result<CloudConnectionStatus, CloudConnectionPrepareError> {
+    let mut cloud_socket = state.cloud_socket.lock().await;
+    if cloud_socket.is_running() {
+        return Err(CloudConnectionPrepareError::AlreadyRunning);
+    }
+    drop(cloud_socket);
+
     let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
+    let mut cloud_socket = state.cloud_socket.lock().await;
+    if cloud_socket.is_running() {
+        return Err(CloudConnectionPrepareError::AlreadyRunning);
+    }
+    drop(cloud_socket);
+
+    prepare_connection_from_store_locked(state, client, store, input).await
+}
+
+async fn reject_running_cloud_socket(state: &AppState) -> Result<(), CloudConnectionStartError> {
+    let mut cloud_socket = state.cloud_socket.lock().await;
+    if cloud_socket.is_running() {
+        return Err(CloudConnectionStartError::Socket(
+            CloudSocketStartError::AlreadyRunning,
+        ));
+    }
+    Ok(())
+}
+
+async fn prepare_connection_from_store_locked(
+    state: &AppState,
+    client: &CloudClient,
+    store: &impl SecretStore,
+    input: CloudConnectionPrepareInput<'_>,
+) -> Result<CloudConnectionStatus, CloudConnectionPrepareError> {
     let mut inflight =
         CloudConnectionPrepareInflight::mark_connecting(Arc::clone(&state.cloud_connection)).await;
     let result = client

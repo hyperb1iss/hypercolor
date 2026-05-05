@@ -40,6 +40,8 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::AttachmentProfileStore;
 #[cfg(feature = "cloud")]
 use crate::cloud_connection::CloudConnectionRuntime;
+#[cfg(feature = "cloud")]
+use crate::cloud_socket::CloudSocketRuntime;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::effect_layouts;
@@ -107,6 +109,8 @@ impl DaemonState {
         let cloud_connection = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
         #[cfg(feature = "cloud")]
         let cloud_connection_prepare_lock = Arc::new(Mutex::new(()));
+        #[cfg(feature = "cloud")]
+        let cloud_socket = Arc::new(Mutex::new(CloudSocketRuntime::default()));
 
         // ── Configuration ───────────────────────────────────────────────
         let config_manager =
@@ -498,6 +502,8 @@ impl DaemonState {
             cloud_connection,
             #[cfg(feature = "cloud")]
             cloud_connection_prepare_lock,
+            #[cfg(feature = "cloud")]
+            cloud_socket,
         })
     }
 }

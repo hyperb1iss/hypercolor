@@ -11,9 +11,9 @@ use hypercolor_cloud_client::daemon_link::{
 };
 use hypercolor_daemon::cloud_connection::{CloudConnectionRuntime, CloudConnectionRuntimeState};
 use hypercolor_daemon::cloud_socket::{
-    CloudSocketError, CloudSocketHelloInput, connect_prepared_once, hello_frame,
+    CloudSocketError, CloudSocketHelloInput, CloudSocketRuntime, connect_prepared_once, hello_frame,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse as WsErrorResponse, Request as WsRequest, Response as WsResponse,
@@ -84,6 +84,73 @@ async fn cloud_socket_consumes_prepared_request_and_records_welcome() {
         Some("00000000000000000000000000")
     );
     assert!(runtime.write().await.take_prepared_connect().is_none());
+}
+
+#[tokio::test]
+async fn cloud_socket_runtime_shutdown_aborts_live_session_and_marks_idle() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server address should resolve");
+    let (welcome_tx, welcome_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("client should connect to test cloud");
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, assert_handshake)
+            .await
+            .expect("test cloud should accept websocket");
+        let _ = socket
+            .next()
+            .await
+            .expect("daemon should send hello")
+            .expect("hello frame should read");
+
+        socket
+            .send(Message::Text(welcome_fixture().into()))
+            .await
+            .expect("welcome should send");
+        let _ = welcome_tx.send(());
+        let _ = release_rx.await;
+    });
+    let runtime = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
+    runtime.write().await.mark_prepared(connect_request(addr));
+    let mut socket_runtime = CloudSocketRuntime::default();
+
+    socket_runtime
+        .spawn_prepared_session(Arc::clone(&runtime), hello_input())
+        .await
+        .expect("prepared session should spawn");
+    tokio::time::timeout(std::time::Duration::from_secs(2), welcome_rx)
+        .await
+        .expect("welcome should arrive")
+        .expect("welcome signal should send");
+    wait_for_runtime_state(&runtime, CloudConnectionRuntimeState::Connected).await;
+
+    socket_runtime.shutdown(&runtime).await;
+    assert_eq!(
+        runtime.read().await.snapshot().runtime_state,
+        CloudConnectionRuntimeState::Idle
+    );
+    let _ = release_tx.send(());
+    server.await.expect("test cloud task should join");
+}
+
+#[tokio::test]
+async fn cloud_socket_runtime_shutdown_without_task_preserves_state() {
+    let runtime = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
+    runtime.write().await.mark_backoff("previous failure");
+    let mut socket_runtime = CloudSocketRuntime::default();
+
+    socket_runtime.shutdown(&runtime).await;
+
+    let snapshot = runtime.read().await.snapshot();
+    assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
+    assert_eq!(snapshot.last_error.as_deref(), Some("previous failure"));
 }
 
 #[tokio::test]
@@ -210,6 +277,23 @@ fn welcome_fixture() -> String {
         "heartbeat_interval_s": 25
     }))
     .expect("welcome should serialize")
+}
+
+async fn wait_for_runtime_state(
+    runtime: &Arc<RwLock<CloudConnectionRuntime>>,
+    expected: CloudConnectionRuntimeState,
+) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if runtime.read().await.snapshot().runtime_state == expected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for cloud runtime state {expected:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 #[expect(

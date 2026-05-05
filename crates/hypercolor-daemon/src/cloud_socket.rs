@@ -8,6 +8,7 @@ use hypercolor_cloud_client::daemon_link::{
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -36,11 +37,66 @@ pub enum CloudSocketError {
     NonTextWelcome,
 }
 
+#[derive(Debug, Error)]
+pub enum CloudSocketStartError {
+    #[error("cloud socket is already running")]
+    AlreadyRunning,
+    #[error(transparent)]
+    Connect(#[from] CloudSocketError),
+}
+
 #[derive(Debug, Clone)]
 pub struct CloudSocketHelloInput {
     pub entitlement_jwt: Option<String>,
     pub tunnel_resume: Option<TunnelResume>,
     pub studio_preview: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct CloudSocketRuntime {
+    task: Option<JoinHandle<()>>,
+}
+
+impl CloudSocketRuntime {
+    #[must_use]
+    pub fn is_running(&mut self) -> bool {
+        self.prune_finished();
+        self.task.is_some()
+    }
+
+    pub async fn spawn_prepared_session(
+        &mut self,
+        runtime: Arc<RwLock<CloudConnectionRuntime>>,
+        hello: CloudSocketHelloInput,
+    ) -> Result<(), CloudSocketStartError> {
+        self.prune_finished();
+        if self.task.is_some() {
+            return Err(CloudSocketStartError::AlreadyRunning);
+        }
+
+        let request = take_prepared_request(&runtime).await?;
+        self.task = Some(tokio::spawn(async move {
+            match connect_request_once(Arc::clone(&runtime), request, hello).await {
+                Ok(session) => run_session_until_close(session, runtime).await,
+                Err(error) => tracing::warn!(error = %error, "cloud daemon connect failed"),
+            }
+        }));
+        Ok(())
+    }
+
+    pub async fn shutdown(&mut self, runtime: &Arc<RwLock<CloudConnectionRuntime>>) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+            runtime.write().await.mark_idle();
+        }
+    }
+
+    fn prune_finished(&mut self) {
+        if self.task.as_ref().is_some_and(JoinHandle::is_finished) {
+            self.task = None;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -66,6 +122,14 @@ pub async fn connect_prepared_once(
     hello: CloudSocketHelloInput,
 ) -> Result<CloudSocketSession, CloudSocketError> {
     let request = take_prepared_request(runtime).await?;
+    connect_request_once(Arc::clone(runtime), request, hello).await
+}
+
+async fn connect_request_once(
+    runtime: Arc<RwLock<CloudConnectionRuntime>>,
+    request: DaemonConnectRequest,
+    hello: CloudSocketHelloInput,
+) -> Result<CloudSocketSession, CloudSocketError> {
     let result = connect_with_request(request, hello_frame(hello)).await;
 
     match result {
@@ -76,6 +140,39 @@ pub async fn connect_prepared_once(
         Err(error) => {
             runtime.write().await.mark_backoff(error.runtime_message());
             Err(error)
+        }
+    }
+}
+
+async fn run_session_until_close(
+    session: CloudSocketSession,
+    runtime: Arc<RwLock<CloudConnectionRuntime>>,
+) {
+    let mut socket = session.into_socket();
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Close(_))) | None => {
+                runtime.write().await.mark_backoff("cloud websocket closed");
+                break;
+            }
+            Some(Ok(Message::Ping(payload))) => {
+                if socket.send(Message::Pong(payload)).await.is_err() {
+                    runtime
+                        .write()
+                        .await
+                        .mark_backoff("cloud websocket connection failed");
+                    break;
+                }
+            }
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                tracing::warn!(error = %error, "cloud daemon socket failed");
+                runtime
+                    .write()
+                    .await
+                    .mark_backoff("cloud websocket connection failed");
+                break;
+            }
         }
     }
 }

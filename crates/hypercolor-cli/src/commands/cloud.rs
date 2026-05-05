@@ -55,6 +55,9 @@ pub struct CloudConnectionArgs {
     /// Refresh registration and stage a signed daemon connect request.
     #[arg(long)]
     pub prepare: bool,
+    /// Refresh registration, open the cloud socket, and keep it running.
+    #[arg(long)]
+    pub connect: bool,
 }
 
 pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
@@ -115,7 +118,15 @@ async fn execute_connection(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response = if args.prepare {
+    if args.prepare && args.connect {
+        bail!("choose only one cloud connection action: --prepare or --connect");
+    }
+
+    let response = if args.connect {
+        client
+            .post("/cloud/connection/connect", &serde_json::json!({}))
+            .await?
+    } else if args.prepare {
         client
             .post("/cloud/connection/prepare", &serde_json::json!({}))
             .await?
@@ -142,7 +153,17 @@ async fn execute_connection(
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             println!();
-            if args.prepare
+            if args.connect
+                && response
+                    .get("runtime_state")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|state| state == "connecting" || state == "connected")
+                && response
+                    .get("last_error")
+                    .is_none_or(serde_json::Value::is_null)
+            {
+                ctx.success("Cloud connection started");
+            } else if args.prepare
                 && response
                     .get("runtime_state")
                     .and_then(serde_json::Value::as_str)

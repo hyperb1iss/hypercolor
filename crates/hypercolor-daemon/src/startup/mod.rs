@@ -37,6 +37,8 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::attachment_profiles::AttachmentProfileStore;
 #[cfg(feature = "cloud")]
 use crate::cloud_connection::CloudConnectionRuntime;
+#[cfg(feature = "cloud")]
+use crate::cloud_socket::CloudSocketRuntime;
 use crate::device_metrics::DeviceMetricsSnapshotStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
@@ -231,6 +233,10 @@ pub struct DaemonState {
     /// Serializes cloud connection preparation across daemon and API callers.
     #[cfg(feature = "cloud")]
     pub cloud_connection_prepare_lock: Arc<Mutex<()>>,
+
+    /// Active Hypercolor Cloud daemon-link socket task.
+    #[cfg(feature = "cloud")]
+    pub cloud_socket: Arc<Mutex<CloudSocketRuntime>>,
 }
 
 impl DaemonState {
