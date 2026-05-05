@@ -15,7 +15,8 @@ def _get_kwargs(
     offset: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     status: str | Unset = UNSET,
-    backend: str | Unset = UNSET,
+    backend_id: str | Unset = UNSET,
+    driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
 ) -> dict[str, Any]:
 
@@ -27,7 +28,9 @@ def _get_kwargs(
 
     params["status"] = status
 
-    params["backend"] = backend
+    params["backend_id"] = backend_id
+
+    params["driver"] = driver
 
     params["q"] = q
 
@@ -78,7 +81,8 @@ def sync_detailed(
     offset: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     status: str | Unset = UNSET,
-    backend: str | Unset = UNSET,
+    backend_id: str | Unset = UNSET,
+    driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
 ) -> Response[ApiErrorResponse | ApiResponseDeviceListResponse]:
     """`GET /api/v1/devices` — List all tracked devices.
@@ -87,7 +91,8 @@ def sync_detailed(
         offset (int | Unset):
         limit (int | Unset):
         status (str | Unset):
-        backend (str | Unset):
+        backend_id (str | Unset):
+        driver (str | Unset):
         q (str | Unset):
 
     Raises:
@@ -102,7 +107,8 @@ def sync_detailed(
         offset=offset,
         limit=limit,
         status=status,
-        backend=backend,
+        backend_id=backend_id,
+        driver=driver,
         q=q,
     )
 
@@ -119,7 +125,8 @@ def sync(
     offset: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     status: str | Unset = UNSET,
-    backend: str | Unset = UNSET,
+    backend_id: str | Unset = UNSET,
+    driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
 ) -> ApiErrorResponse | ApiResponseDeviceListResponse | None:
     """`GET /api/v1/devices` — List all tracked devices.
@@ -128,7 +135,8 @@ def sync(
         offset (int | Unset):
         limit (int | Unset):
         status (str | Unset):
-        backend (str | Unset):
+        backend_id (str | Unset):
+        driver (str | Unset):
         q (str | Unset):
 
     Raises:
@@ -144,7 +152,8 @@ def sync(
         offset=offset,
         limit=limit,
         status=status,
-        backend=backend,
+        backend_id=backend_id,
+        driver=driver,
         q=q,
     ).parsed
 
@@ -155,7 +164,8 @@ async def asyncio_detailed(
     offset: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     status: str | Unset = UNSET,
-    backend: str | Unset = UNSET,
+    backend_id: str | Unset = UNSET,
+    driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
 ) -> Response[ApiErrorResponse | ApiResponseDeviceListResponse]:
     """`GET /api/v1/devices` — List all tracked devices.
@@ -164,7 +174,8 @@ async def asyncio_detailed(
         offset (int | Unset):
         limit (int | Unset):
         status (str | Unset):
-        backend (str | Unset):
+        backend_id (str | Unset):
+        driver (str | Unset):
         q (str | Unset):
 
     Raises:
@@ -179,7 +190,8 @@ async def asyncio_detailed(
         offset=offset,
         limit=limit,
         status=status,
-        backend=backend,
+        backend_id=backend_id,
+        driver=driver,
         q=q,
     )
 
@@ -194,7 +206,8 @@ async def asyncio(
     offset: int | Unset = UNSET,
     limit: int | Unset = UNSET,
     status: str | Unset = UNSET,
-    backend: str | Unset = UNSET,
+    backend_id: str | Unset = UNSET,
+    driver: str | Unset = UNSET,
     q: str | Unset = UNSET,
 ) -> ApiErrorResponse | ApiResponseDeviceListResponse | None:
     """`GET /api/v1/devices` — List all tracked devices.
@@ -203,7 +216,8 @@ async def asyncio(
         offset (int | Unset):
         limit (int | Unset):
         status (str | Unset):
-        backend (str | Unset):
+        backend_id (str | Unset):
+        driver (str | Unset):
         q (str | Unset):
 
     Raises:
@@ -220,7 +234,8 @@ async def asyncio(
             offset=offset,
             limit=limit,
             status=status,
-            backend=backend,
+            backend_id=backend_id,
+            driver=driver,
             q=q,
         )
     ).parsed

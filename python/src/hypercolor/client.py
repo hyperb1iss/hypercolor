@@ -689,7 +689,11 @@ class HypercolorClient:
         body = _drop_none(
             {
                 "effect_id": effect_id,
-                "controls": dict(controls) if controls is not None else None,
+                "controls": (
+                    {str(key): _display_control_value(value) for key, value in controls.items()}
+                    if controls is not None
+                    else None
+                ),
                 "blend_mode": blend_mode,
                 "opacity": opacity,
             }
@@ -1037,6 +1041,36 @@ def _control_api_value(value: Any) -> dict[str, Any]:
     else:
         result = {"kind": "string", "value": str(value)}
     return result
+
+
+def _display_control_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        if set(value) & {"float", "integer", "boolean", "color", "text", "enum", "rect"}:
+            result = {str(key): item for key, item in value.items()}
+        else:
+            result = {"text": json.dumps({str(key): item for key, item in value.items()})}
+    elif isinstance(value, bool):
+        result = {"boolean": value}
+    elif isinstance(value, int):
+        result = {"integer": value}
+    elif isinstance(value, float):
+        result = {"float": value}
+    elif isinstance(value, str):
+        result = {"color": color} if (color := _hex_color_value(value)) else {"text": value}
+    else:
+        result = {"text": str(value)}
+    return result
+
+
+def _hex_color_value(value: str) -> list[float] | None:
+    color = value.strip().removeprefix("#")
+    if len(color) not in {6, 8} or any(ch not in "0123456789abcdefABCDEF" for ch in color):
+        return None
+    red = int(color[0:2], 16) / 255
+    green = int(color[2:4], 16) / 255
+    blue = int(color[4:6], 16) / 255
+    alpha = int(color[6:8], 16) / 255 if len(color) == 8 else 1.0
+    return [red, green, blue, alpha]
 
 
 def _request_path(path: str) -> str:

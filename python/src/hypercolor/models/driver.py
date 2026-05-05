@@ -67,6 +67,7 @@ class Driver(msgspec.Struct, kw_only=True):
     descriptor: DriverModuleDescriptor
     enabled: bool
     config_key: str
+    presentation: DriverPresentation | None = None
     protocols: list[DriverProtocolDescriptor] = msgspec.field(default_factory=list)
     control_surface_id: str | None = None
     control_surface_path: str | None = None

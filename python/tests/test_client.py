@@ -996,7 +996,7 @@ async def test_scene_profile_display_and_diagnostics_helpers(
     face = await client.set_display_face(
         "streamdeck",
         "clock",
-        controls={"accent": "#80ffea"},
+        controls={"speed": 0.8},
         opacity=0.8,
     )
     diagnostics = await client.run_diagnostics(checks=["daemon"], system=True)
@@ -1017,7 +1017,7 @@ async def test_scene_profile_display_and_diagnostics_helpers(
     assert displays[0].id == "streamdeck"
     assert json.loads(face_route.calls[0].request.content) == {
         "effect_id": "clock",
-        "controls": {"accent": "#80ffea"},
+        "controls": {"speed": {"float": 0.8}},
         "opacity": 0.8,
     }
     assert face.effect["id"] == "clock"
