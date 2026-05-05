@@ -165,6 +165,7 @@ pub fn CanvasPreview(
     #[prop(optional)] consumer_count: Option<WriteSignal<u32>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
+    let mounted_canvas = Rc::new(RefCell::new(None::<web_sys::HtmlCanvasElement>));
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
     let latest_frame_received_at = Rc::new(RefCell::new(None::<f64>));
     let presenter = Rc::new(RefCell::new(PresenterState::default()));
@@ -183,6 +184,7 @@ pub fn CanvasPreview(
         .map(|context| context.set_presenter);
     let smooth_scaling = image_rendering != "pixelated";
     let preview_registered = Arc::new(AtomicBool::new(false));
+    let disposed = Arc::new(AtomicBool::new(false));
     let consumer_count = if register_main_preview_consumer {
         consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers))
     } else {
@@ -190,7 +192,7 @@ pub fn CanvasPreview(
     };
 
     {
-        let schedule_canvas_ref = canvas_ref;
+        let mounted_canvas = Rc::clone(&mounted_canvas);
         let latest_frame = Rc::clone(&latest_frame);
         let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
         let presenter = Rc::clone(&presenter);
@@ -200,11 +202,16 @@ pub fn CanvasPreview(
         let skipped_frames = Rc::clone(&skipped_frames);
         let last_published_telemetry = Rc::clone(&last_published_telemetry);
         let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
+        let scheduler_disposed = Arc::clone(&disposed);
 
         let scheduler = Scheduler::new(move |frame_info| {
+            if scheduler_disposed.load(Ordering::Relaxed) {
+                return;
+            }
+
             let raf_time_ms = frame_info.time_ms;
 
-            let Some(canvas_handle) = schedule_canvas_ref.get_untracked() else {
+            let Some(canvas_handle) = mounted_canvas.borrow().as_ref().cloned() else {
                 return;
             };
 
@@ -333,7 +340,12 @@ pub fn CanvasPreview(
 
         let schedule = Rc::new({
             let scheduler = scheduler.clone();
-            move || scheduler.schedule()
+            let disposed = Arc::clone(&disposed);
+            move || {
+                if !disposed.load(Ordering::Relaxed) {
+                    scheduler.schedule();
+                }
+            }
         });
 
         presenter_scheduler_handle.borrow_mut().replace(scheduler);
@@ -362,11 +374,14 @@ pub fn CanvasPreview(
     Effect::new({
         let latest_frame = Rc::clone(&latest_frame);
         let schedule_present = Rc::clone(&schedule_present);
+        let mounted_canvas = Rc::clone(&mounted_canvas);
 
         move |_| {
-            if canvas_ref.get().is_none() {
+            let Some(canvas_handle) = canvas_ref.get() else {
+                mounted_canvas.borrow_mut().take();
                 return;
-            }
+            };
+            mounted_canvas.borrow_mut().replace(canvas_handle);
 
             if latest_frame.borrow().is_some()
                 && let Some(schedule) = schedule_present.borrow().as_ref()
@@ -391,7 +406,9 @@ pub fn CanvasPreview(
 
     on_cleanup({
         let preview_registered = Arc::clone(&preview_registered);
+        let disposed = Arc::clone(&disposed);
         move || {
+            disposed.store(true, Ordering::Relaxed);
             if let Some(counter) = consumer_count
                 && preview_registered.load(Ordering::Relaxed)
             {
