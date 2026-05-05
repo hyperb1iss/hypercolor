@@ -17,7 +17,7 @@ workspace = true
 
 [features]
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
-cloud = ["dep:hypercolor-cloud-client"]
+cloud = ["dep:futures-util", "dep:hypercolor-cloud-client", "dep:tokio-tungstenite"]
 nvidia = ["hypercolor-core/nvidia"]
 official-cloud = ["cloud"]
 wgpu = ["dep:wgpu", "dep:pollster"]
@@ -36,6 +36,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+futures-util = { workspace = true, optional = true }
 single-instance = "0.3.3"
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -60,6 +61,7 @@ owo-colors = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 httpdate = "1.0"
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"], optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 

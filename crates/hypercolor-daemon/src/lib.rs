@@ -5,6 +5,8 @@ pub mod attachment_profiles;
 pub mod cloud_connection;
 #[cfg(feature = "cloud")]
 pub mod cloud_entitlements;
+#[cfg(feature = "cloud")]
+pub mod cloud_socket;
 pub mod daemon;
 pub(crate) mod deadline;
 pub mod device_metrics;
