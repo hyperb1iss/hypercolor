@@ -158,11 +158,18 @@ async fn cloud_connection_runtime_prepares_registered_daemon_connect() {
         request.url.as_str(),
         format!("{base_url}/v1/daemon/connect").replace("http://", "ws://")
     );
+    assert_eq!(
+        runtime
+            .take_prepared_connect()
+            .expect("runtime should stage prepared connect request"),
+        request
+    );
+    assert!(runtime.take_prepared_connect().is_none());
 
     let snapshot = runtime.snapshot();
     assert_eq!(
         snapshot.runtime_state,
-        CloudConnectionRuntimeState::Connecting
+        CloudConnectionRuntimeState::Prepared
     );
     assert!(!snapshot.connected);
     assert!(snapshot.last_error.is_none());

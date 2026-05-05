@@ -245,6 +245,65 @@ async fn cloud_connection_fetches_daemon_connection_status() -> Result<()> {
 }
 
 #[tokio::test]
+async fn cloud_connection_prepare_posts_daemon_prepare_endpoint() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route(
+            "/api/v1/cloud/connection/prepare",
+            post(
+                |State(captured_uri): State<SharedUri>, uri: Uri| async move {
+                    *captured_uri.lock().await = Some(uri.to_string());
+                    Json(serde_json::json!({
+                        "data": {
+                            "state": "ready",
+                            "runtime_state": "prepared",
+                            "connected": false,
+                            "can_connect": true,
+                            "connect_on_start": true,
+                            "connect_url": "wss://api.hypercolor.lighting/v1/daemon/connect",
+                            "authenticated": true,
+                            "identity_present": true,
+                            "entitlement_cached": true,
+                            "entitlement_stale": false,
+                            "session_id": null,
+                            "available_channels": [],
+                            "denied_channels": [],
+                            "last_error": null
+                        }
+                    }))
+                },
+            ),
+        )
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(port, &["cloud", "connection", "--prepare"]).await?;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "hyper CLI failed (status={}):\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            stderr
+        );
+    }
+
+    let body: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("stdout should be json")?;
+    assert_eq!(body["runtime_state"], "prepared");
+    assert_eq!(
+        captured_uri.lock().await.as_deref(),
+        Some("/api/v1/cloud/connection/prepare")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn cloud_entitlement_fetches_daemon_entitlement_status() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
     let router = Router::new()

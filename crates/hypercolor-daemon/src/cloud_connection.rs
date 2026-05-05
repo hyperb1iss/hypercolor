@@ -14,6 +14,7 @@ pub enum CloudConnectionRuntimeState {
     #[default]
     Idle,
     Connecting,
+    Prepared,
     Connected,
     Backoff,
 }
@@ -39,6 +40,21 @@ pub struct CloudConnectionPrepareInput<'a> {
     pub upgrade_nonce: UpgradeNonce,
 }
 
+impl<'a> CloudConnectionPrepareInput<'a> {
+    pub fn into_stored_daemon_connect_input(self) -> StoredDaemonConnectInput<'a> {
+        StoredDaemonConnectInput {
+            token_owner: RefreshTokenOwner::Daemon,
+            install_name: self.install_name,
+            os: self.os,
+            arch: self.arch,
+            daemon_version: self.daemon_version,
+            identity_nonce: self.identity_nonce,
+            timestamp: self.timestamp,
+            nonce: self.upgrade_nonce,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudConnectionPrepareResult {
     MissingIdentity,
@@ -56,6 +72,7 @@ pub struct CloudDeniedChannelStatus {
 #[derive(Debug, Default)]
 pub struct CloudConnectionRuntime {
     snapshot: CloudConnectionSnapshot,
+    prepared_connect: Option<DaemonConnectRequest>,
 }
 
 impl CloudConnectionRuntime {
@@ -65,6 +82,7 @@ impl CloudConnectionRuntime {
 
     pub fn mark_idle(&mut self) {
         self.snapshot = CloudConnectionSnapshot::default();
+        self.prepared_connect = None;
     }
 
     pub fn mark_connecting(&mut self) {
@@ -74,6 +92,17 @@ impl CloudConnectionRuntime {
         self.snapshot.available_channels.clear();
         self.snapshot.denied_channels.clear();
         self.snapshot.last_error = None;
+        self.prepared_connect = None;
+    }
+
+    pub fn mark_prepared(&mut self, request: DaemonConnectRequest) {
+        self.snapshot.runtime_state = CloudConnectionRuntimeState::Prepared;
+        self.snapshot.connected = false;
+        self.snapshot.session_id = None;
+        self.snapshot.available_channels.clear();
+        self.snapshot.denied_channels.clear();
+        self.snapshot.last_error = None;
+        self.prepared_connect = Some(request);
     }
 
     pub fn mark_connected(&mut self, welcome: &WelcomeFrame) {
@@ -93,6 +122,7 @@ impl CloudConnectionRuntime {
                 .collect(),
             last_error: None,
         };
+        self.prepared_connect = None;
     }
 
     pub fn mark_backoff(&mut self, error: impl Into<String>) {
@@ -102,6 +132,11 @@ impl CloudConnectionRuntime {
         self.snapshot.available_channels.clear();
         self.snapshot.denied_channels.clear();
         self.snapshot.last_error = Some(error.into());
+        self.prepared_connect = None;
+    }
+
+    pub fn take_prepared_connect(&mut self) -> Option<DaemonConnectRequest> {
+        self.prepared_connect.take()
     }
 
     pub async fn prepare_stored_daemon_connect(
@@ -112,21 +147,16 @@ impl CloudConnectionRuntime {
     ) -> Result<CloudConnectionPrepareResult, CloudClientError> {
         self.mark_connecting();
         let result = client
-            .prepare_stored_daemon_connect(
-                store,
-                StoredDaemonConnectInput {
-                    token_owner: RefreshTokenOwner::Daemon,
-                    install_name: input.install_name,
-                    os: input.os,
-                    arch: input.arch,
-                    daemon_version: input.daemon_version,
-                    identity_nonce: input.identity_nonce,
-                    timestamp: input.timestamp,
-                    nonce: input.upgrade_nonce,
-                },
-            )
+            .prepare_stored_daemon_connect(store, input.into_stored_daemon_connect_input())
             .await;
 
+        self.record_prepare_result(result)
+    }
+
+    pub fn record_prepare_result(
+        &mut self,
+        result: Result<StoredDaemonConnect, CloudClientError>,
+    ) -> Result<CloudConnectionPrepareResult, CloudClientError> {
         match result {
             Ok(StoredDaemonConnect::MissingIdentity) => {
                 self.mark_backoff("missing cloud identity");
@@ -137,6 +167,7 @@ impl CloudConnectionRuntime {
                 Ok(CloudConnectionPrepareResult::MissingRefreshToken)
             }
             Ok(StoredDaemonConnect::Prepared(request)) => {
+                self.mark_prepared(request.clone());
                 Ok(CloudConnectionPrepareResult::Prepared(request))
             }
             Err(error) => {

@@ -21,7 +21,7 @@ pub enum CloudCommand {
     /// Log this daemon out of Hypercolor Cloud locally.
     Logout(CloudLogoutArgs),
     /// Show daemon cloud socket readiness.
-    Connection,
+    Connection(CloudConnectionArgs),
     /// Show cached cloud entitlement status.
     Entitlement,
     /// Show daemon cloud feature/configuration status.
@@ -50,11 +50,20 @@ pub struct CloudLogoutArgs {
     pub yes: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct CloudConnectionArgs {
+    /// Refresh registration and stage a signed daemon connect request.
+    #[arg(long)]
+    pub prepare: bool,
+}
+
 pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
         CloudCommand::Login(login_args) => execute_login(login_args, client, ctx).await,
         CloudCommand::Logout(logout_args) => execute_logout(logout_args, client, ctx).await,
-        CloudCommand::Connection => execute_connection(client, ctx).await,
+        CloudCommand::Connection(connection_args) => {
+            execute_connection(connection_args, client, ctx).await
+        }
         CloudCommand::Entitlement => execute_entitlement(client, ctx).await,
         CloudCommand::Status => execute_status(client, ctx).await,
         CloudCommand::Session => execute_session(client, ctx).await,
@@ -101,8 +110,18 @@ async fn execute_entitlement(client: &DaemonClient, ctx: &OutputContext) -> Resu
     Ok(())
 }
 
-async fn execute_connection(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/cloud/connection").await?;
+async fn execute_connection(
+    args: &CloudConnectionArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let response = if args.prepare {
+        client
+            .post("/cloud/connection/prepare", &serde_json::json!({}))
+            .await?
+    } else {
+        client.get("/cloud/connection").await?
+    };
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -123,6 +142,17 @@ async fn execute_connection(client: &DaemonClient, ctx: &OutputContext) -> Resul
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             println!();
+            if args.prepare
+                && response
+                    .get("runtime_state")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("prepared")
+                && response
+                    .get("last_error")
+                    .is_none_or(serde_json::Value::is_null)
+            {
+                ctx.success("Cloud connection prepared");
+            }
             ctx.info(&format!(
                 "Connection  {}",
                 ctx.painter.device_state(&extract_str(&response, "state"))

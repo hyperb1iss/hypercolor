@@ -1,12 +1,12 @@
 //! Hypercolor Cloud endpoints.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use axum::extract::{Path, State};
 use axum::response::Response;
 use hypercolor_cloud_client::api as cloud_api;
-use hypercolor_cloud_client::daemon_link::IdentityNonce;
+use hypercolor_cloud_client::daemon_link::{IdentityNonce, UpgradeNonce};
 use hypercolor_cloud_client::{
     CloudClient, CloudClientConfig, DeviceAuthorizationStatus, DeviceRegistrationInput,
     KeyringSecretStore, RefreshTokenOwner, SecretStore, delete_refresh_token, load_identity,
@@ -18,8 +18,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope::{ApiError, ApiResponse, iso8601_system_time};
 use crate::cloud_connection::{
+    CloudConnectionPrepareInput, CloudConnectionPrepareResult, CloudConnectionRuntime,
     CloudConnectionRuntimeState, CloudConnectionSnapshot, CloudDeniedChannelStatus,
 };
 use crate::cloud_entitlements::{
@@ -169,12 +170,7 @@ pub struct CloudEntitlementStatus {
 }
 
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
-    let cloud_config = state
-        .config_manager
-        .as_ref()
-        .map(|manager| manager.get().cloud.clone())
-        .unwrap_or_default();
-
+    let cloud_config = cloud_config(&state);
     ApiResponse::ok(CloudStatus::from_config(&cloud_config))
 }
 
@@ -206,28 +202,147 @@ pub async fn get_entitlement_cache() -> Response {
 }
 
 pub async fn get_connection(State(state): State<Arc<AppState>>) -> Response {
-    let cloud_config = state
-        .config_manager
-        .as_ref()
-        .map(|manager| manager.get().cloud.clone())
-        .unwrap_or_default();
-    let session = match KeyringSecretStore::new_native()
-        .and_then(|store| session_status_from_store(&store))
-    {
+    let store = match KeyringSecretStore::new_native() {
+        Ok(store) => store,
+        Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
+    };
+
+    match connection_status_from_store(&state, &store).await {
+        Ok(status) => ApiResponse::ok(status),
+        Err(error) => ApiError::internal(error),
+    }
+}
+
+pub async fn prepare_connection(State(state): State<Arc<AppState>>) -> Response {
+    let cloud_config = cloud_config(&state);
+    if !cloud_config.enabled {
+        return ApiError::conflict("cloud connection is disabled");
+    }
+
+    let client = match CloudClientConfig::try_from(&cloud_config).map(CloudClient::new) {
+        Ok(client) => client,
+        Err(error) => return ApiError::internal(format!("invalid cloud configuration: {error}")),
+    };
+    let store = match KeyringSecretStore::new_native() {
+        Ok(store) => store,
+        Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
+    };
+    let timestamp = iso8601_system_time(SystemTime::now());
+    let input = CloudConnectionPrepareInput {
+        install_name: &state.server_identity.instance_name,
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        daemon_version: &state.server_identity.version,
+        identity_nonce: IdentityNonce::generate(),
+        timestamp: &timestamp,
+        upgrade_nonce: UpgradeNonce::generate(),
+    };
+
+    match prepare_connection_from_store(&state, &client, &store, input).await {
+        Ok(status) => ApiResponse::ok(status),
+        Err(CloudConnectionPrepareError::MissingIdentity) => {
+            ApiError::conflict("missing cloud identity")
+        }
+        Err(CloudConnectionPrepareError::MissingRefreshToken) => {
+            ApiError::conflict("missing cloud refresh token")
+        }
+        Err(CloudConnectionPrepareError::Prepare(error)) => {
+            ApiError::internal(format!("failed to prepare cloud connection: {error}"))
+        }
+        Err(CloudConnectionPrepareError::Status(error)) => ApiError::internal(error),
+    }
+}
+
+#[derive(Debug)]
+pub enum CloudConnectionPrepareError {
+    MissingIdentity,
+    MissingRefreshToken,
+    Prepare(hypercolor_cloud_client::CloudClientError),
+    Status(String),
+}
+
+pub async fn prepare_connection_from_store(
+    state: &AppState,
+    client: &CloudClient,
+    store: &impl SecretStore,
+    input: CloudConnectionPrepareInput<'_>,
+) -> Result<CloudConnectionStatus, CloudConnectionPrepareError> {
+    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
+    let mut inflight =
+        CloudConnectionPrepareInflight::mark_connecting(Arc::clone(&state.cloud_connection)).await;
+    let result = client
+        .prepare_stored_daemon_connect(store, input.into_stored_daemon_connect_input())
+        .await;
+    let prepare = state
+        .cloud_connection
+        .write()
+        .await
+        .record_prepare_result(result);
+    inflight.disarm();
+    let prepare = prepare.map_err(CloudConnectionPrepareError::Prepare)?;
+
+    match prepare {
+        CloudConnectionPrepareResult::Prepared(_) => connection_status_from_store(state, store)
+            .await
+            .map_err(CloudConnectionPrepareError::Status),
+        CloudConnectionPrepareResult::MissingIdentity => {
+            Err(CloudConnectionPrepareError::MissingIdentity)
+        }
+        CloudConnectionPrepareResult::MissingRefreshToken => {
+            Err(CloudConnectionPrepareError::MissingRefreshToken)
+        }
+    }
+}
+
+struct CloudConnectionPrepareInflight {
+    runtime: Arc<tokio::sync::RwLock<CloudConnectionRuntime>>,
+    armed: bool,
+}
+
+impl CloudConnectionPrepareInflight {
+    async fn mark_connecting(runtime: Arc<tokio::sync::RwLock<CloudConnectionRuntime>>) -> Self {
+        runtime.write().await.mark_connecting();
+        Self {
+            runtime,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CloudConnectionPrepareInflight {
+    fn drop(&mut self) {
+        if self.armed
+            && let Ok(mut runtime) = self.runtime.try_write()
+        {
+            runtime.mark_backoff("cloud connection prepare cancelled");
+        }
+    }
+}
+
+async fn connection_status_from_store(
+    state: &AppState,
+    store: &impl SecretStore,
+) -> Result<CloudConnectionStatus, String> {
+    let cloud_config = cloud_config(state);
+    let session = match session_status_from_store(store) {
         Ok(status) => status,
         Err(error) => {
-            return ApiError::internal(format!("failed to read cloud session: {error}"));
+            return Err(format!("failed to read cloud session: {error}"));
         }
     };
     let entitlement = match load_cached_entitlement(entitlement_cache_path()).await {
         Ok(entitlement) => entitlement,
         Err(error) => {
-            return ApiError::internal(format!("failed to read cloud entitlement cache: {error}"));
+            return Err(format!("failed to read cloud entitlement cache: {error}"));
         }
     };
     let runtime = state.cloud_connection.read().await.snapshot();
 
-    ApiResponse::ok(connection_status_from_parts(
+    Ok(connection_status_from_parts(
         &cloud_config,
         &session,
         entitlement.as_ref(),
@@ -608,12 +723,15 @@ async fn cache_entitlement_from_access_token(
 fn cloud_client(
     state: &AppState,
 ) -> Result<CloudClient, hypercolor_cloud_client::CloudClientError> {
-    let cloud_config = state
+    CloudClientConfig::try_from(&cloud_config(state)).map(CloudClient::new)
+}
+
+fn cloud_config(state: &AppState) -> CloudConfig {
+    state
         .config_manager
         .as_ref()
         .map(|manager| manager.get().cloud.clone())
-        .unwrap_or_default();
-    CloudClientConfig::try_from(&cloud_config).map(CloudClient::new)
+        .unwrap_or_default()
 }
 
 fn duration_millis(duration: Duration) -> u64 {

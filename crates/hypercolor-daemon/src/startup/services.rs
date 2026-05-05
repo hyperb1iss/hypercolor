@@ -105,6 +105,8 @@ impl DaemonState {
             resolve_server_identity(config).context("failed to resolve server identity")?;
         #[cfg(feature = "cloud")]
         let cloud_connection = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
+        #[cfg(feature = "cloud")]
+        let cloud_connection_prepare_lock = Arc::new(Mutex::new(()));
 
         // ── Configuration ───────────────────────────────────────────────
         let config_manager =
@@ -494,6 +496,8 @@ impl DaemonState {
             server_identity,
             #[cfg(feature = "cloud")]
             cloud_connection,
+            #[cfg(feature = "cloud")]
+            cloud_connection_prepare_lock,
         })
     }
 }

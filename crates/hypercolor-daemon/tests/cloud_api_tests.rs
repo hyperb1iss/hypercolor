@@ -9,18 +9,23 @@ use axum::http::StatusCode as AxumStatusCode;
 use axum::routing::post;
 use http::{Request, StatusCode};
 use hypercolor_cloud_client::{
-    CloudClientError, CloudSecretKey, DeviceAuthorizationSession, RefreshTokenOwner, SecretStore,
-    api as cloud_api, daemon_link::WelcomeFrame, load_or_create_identity, load_refresh_token,
-    store_refresh_token,
+    CloudClient, CloudClientConfig, CloudClientError, CloudSecretKey, DeviceAuthorizationSession,
+    RefreshTokenOwner, SecretStore, api as cloud_api,
+    daemon_link::{HEADER_AUTHORIZATION, IdentityNonce, UpgradeNonce, WelcomeFrame},
+    load_or_create_identity, load_refresh_token, store_refresh_token,
 };
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::{
     api::{self, AppState, cloud},
-    cloud_connection::{CloudConnectionRuntime, CloudConnectionSnapshot},
+    cloud_connection::{
+        CloudConnectionPrepareInput, CloudConnectionRuntime, CloudConnectionRuntimeState,
+        CloudConnectionSnapshot,
+    },
     cloud_entitlements,
 };
 use hypercolor_types::config::HypercolorConfig;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
@@ -332,6 +337,159 @@ fn cloud_connection_status_reports_ready_prerequisites_without_live_socket() {
     );
 }
 
+#[tokio::test]
+async fn cloud_connection_prepare_rejects_disabled_cloud_without_keyring() {
+    let app = api::build_router(Arc::new(AppState::new()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/cloud/connection/prepare")
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn cloud_connection_prepare_stages_signed_request_without_returning_secret() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("test server address should resolve")
+    );
+    let state = cloud_test_state_with_cloud(&base_url, true);
+    let store = MemorySecretStore::default();
+    let identity = load_or_create_identity(&store).expect("identity should create");
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
+        .expect("refresh token should store");
+    let server = spawn_connect_preparation_server(
+        listener,
+        "access-for-registration",
+        "refresh-next",
+        "daemon-connect-token",
+        identity.daemon_id(),
+        identity.keypair().public_key().as_str().to_owned(),
+    );
+    let client = CloudClient::new(
+        CloudClientConfig::with_auth_base_url(&base_url, &base_url)
+            .expect("base urls should parse"),
+    );
+
+    let status = cloud::prepare_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([3_u8; 32], [7_u8; 16]),
+    )
+    .await
+    .expect("connection prepare should succeed");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("test server should finish")
+        .expect("test server should not panic");
+    assert_eq!(
+        serde_json::to_value(status.state).expect("serialize state"),
+        "ready"
+    );
+    assert_eq!(status.runtime_state, CloudConnectionRuntimeState::Prepared);
+    assert!(!status.connected);
+    assert!(status.can_connect);
+    assert!(status.last_error.is_none());
+
+    let request = state
+        .cloud_connection
+        .write()
+        .await
+        .take_prepared_connect()
+        .expect("runtime should stage signed request");
+    assert_eq!(
+        header_value(&request.headers.pairs(), HEADER_AUTHORIZATION),
+        "Bearer daemon-connect-token"
+    );
+}
+
+#[tokio::test]
+async fn cloud_connection_prepare_reports_missing_identity_and_refresh_token() {
+    let state = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
+    let store = MemorySecretStore::default();
+    let client = CloudClient::new(
+        CloudClientConfig::with_auth_base_url("http://127.0.0.1:1", "http://127.0.0.1:1")
+            .expect("base urls should parse"),
+    );
+
+    let missing_identity = cloud::prepare_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([4; 32], [8; 16]),
+    )
+    .await
+    .expect_err("missing identity should fail with a conflict classification");
+    assert!(matches!(
+        missing_identity,
+        cloud::CloudConnectionPrepareError::MissingIdentity
+    ));
+
+    load_or_create_identity(&store).expect("identity should create");
+    let missing_refresh = cloud::prepare_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([5; 32], [9; 16]),
+    )
+    .await
+    .expect_err("missing refresh token should fail with a conflict classification");
+    assert!(matches!(
+        missing_refresh,
+        cloud::CloudConnectionPrepareError::MissingRefreshToken
+    ));
+    let snapshot = state.cloud_connection.read().await.snapshot();
+    assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
+    assert_eq!(
+        snapshot.last_error.as_deref(),
+        Some("missing cloud refresh token")
+    );
+}
+
+#[tokio::test]
+async fn cloud_connection_prepare_records_network_failure_as_backoff() {
+    let state = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
+    let store = MemorySecretStore::default();
+    load_or_create_identity(&store).expect("identity should create");
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
+        .expect("refresh token should store");
+    let client = CloudClient::new(
+        CloudClientConfig::with_auth_base_url("http://127.0.0.1:1", "http://127.0.0.1:1")
+            .expect("base urls should parse"),
+    );
+
+    let error = cloud::prepare_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([6; 32], [10; 16]),
+    )
+    .await
+    .expect_err("network failure should surface as prepare error");
+    assert!(matches!(
+        error,
+        cloud::CloudConnectionPrepareError::Prepare(_)
+    ));
+    let snapshot = state.cloud_connection.read().await.snapshot();
+    assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
+    assert!(snapshot.last_error.is_some());
+}
+
 #[test]
 fn cloud_connection_status_reports_live_runtime_channels() {
     let mut config = HypercolorConfig::default().cloud;
@@ -483,17 +641,37 @@ impl CloudSessionStatusFixture {
 }
 
 fn cloud_test_state(auth_base_url: &str) -> Arc<AppState> {
+    cloud_test_state_with_cloud(auth_base_url, false)
+}
+
+fn cloud_test_state_with_cloud(auth_base_url: &str, enabled: bool) -> Arc<AppState> {
     let tempdir = TempDir::new().expect("temp dir should be created");
     let manager = ConfigManager::new(tempdir.path().join("config.toml"))
         .expect("config manager should initialize");
     let mut config = HypercolorConfig::default();
     auth_base_url.clone_into(&mut config.cloud.base_url);
     auth_base_url.clone_into(&mut config.cloud.auth_base_url);
+    config.cloud.enabled = enabled;
     manager.update(config);
 
     let mut state = AppState::new();
     state.config_manager = Some(Arc::new(manager));
     Arc::new(state)
+}
+
+fn prepare_input(
+    identity_nonce: [u8; 32],
+    upgrade_nonce: [u8; 16],
+) -> CloudConnectionPrepareInput<'static> {
+    CloudConnectionPrepareInput {
+        install_name: "desk-mac",
+        os: "macos",
+        arch: "aarch64",
+        daemon_version: "1.4.2",
+        identity_nonce: IdentityNonce::from_bytes(identity_nonce),
+        timestamp: "2026-05-15T17:00:00Z",
+        upgrade_nonce: UpgradeNonce::from_bytes(upgrade_nonce),
+    }
 }
 
 fn entitlement_token_fixture() -> cloud_api::EntitlementTokenResponse {
@@ -613,6 +791,106 @@ async fn spawn_auth_server() -> (String, oneshot::Sender<()>, tokio::task::JoinH
 async fn shutdown_auth_server(shutdown_tx: oneshot::Sender<()>, task: tokio::task::JoinHandle<()>) {
     let _ = shutdown_tx.send(());
     task.await.expect("auth server task should join");
+}
+
+fn spawn_connect_preparation_server(
+    listener: tokio::net::TcpListener,
+    access_token: &'static str,
+    refresh_token: &'static str,
+    registration_token: &'static str,
+    daemon_id: uuid::Uuid,
+    identity_pubkey: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let (mut token_socket, _) = listener
+            .accept()
+            .await
+            .expect("token request should connect");
+        let mut buffer = vec![0_u8; 4096];
+        let read = token_socket
+            .read(&mut buffer)
+            .await
+            .expect("token request should read");
+        let token_request = String::from_utf8_lossy(&buffer[..read]);
+
+        assert!(token_request.starts_with("POST /api/auth/oauth2/token HTTP/1.1"));
+        assert!(token_request.contains(r#""refresh_token":"refresh-old""#));
+        assert!(token_request.contains(r#""client_id":"hypercolor-daemon""#));
+
+        write_json_response(
+            &mut token_socket,
+            &serde_json::json!({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "refresh_token": refresh_token,
+                "expires_in": 900,
+                "scope": "openid profile email"
+            }),
+        )
+        .await;
+        drop(token_socket);
+
+        let (mut registration_socket, _) = listener
+            .accept()
+            .await
+            .expect("registration request should connect");
+        let mut buffer = vec![0_u8; 8192];
+        let read = registration_socket
+            .read(&mut buffer)
+            .await
+            .expect("registration request should read");
+        let registration_request = String::from_utf8_lossy(&buffer[..read]);
+
+        assert!(registration_request.starts_with("POST /v1/me/devices HTTP/1.1"));
+        assert!(registration_request.contains(&format!("authorization: Bearer {access_token}")));
+        assert!(registration_request.contains(&format!(r#""daemon_id":"{daemon_id}""#)));
+        assert!(registration_request.contains(r#""install_name":"desk-mac""#));
+        assert!(
+            registration_request.contains(&format!(r#""identity_pubkey":"{identity_pubkey}""#))
+        );
+
+        write_json_response(
+            &mut registration_socket,
+            &serde_json::json!({
+                "device": {
+                    "id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1",
+                    "user_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f2",
+                    "daemon_id": daemon_id,
+                    "install_name": "desk-mac",
+                    "os": "macos",
+                    "arch": "aarch64",
+                    "daemon_version": "1.4.2",
+                    "identity_pubkey": identity_pubkey,
+                    "last_seen_at": "2026-05-15T17:00:00Z",
+                    "created_at": "2026-05-15T17:00:00Z"
+                },
+                "registration_token": registration_token
+            }),
+        )
+        .await;
+        drop(registration_socket);
+    })
+}
+
+async fn write_json_response(socket: &mut tokio::net::TcpStream, body: &serde_json::Value) {
+    let body = serde_json::to_string(body).expect("response should serialize");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .expect("response should write");
+}
+
+fn header_value<'a>(pairs: &'a [(&'static str, String)], name: &str) -> &'a str {
+    pairs
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, value)| value.as_str())
+        .expect("header should be present")
 }
 
 async fn device_code() -> Json<cloud_api::DeviceCodeResponse> {

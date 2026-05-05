@@ -227,6 +227,10 @@ pub struct DaemonState {
     /// Live Hypercolor Cloud daemon-link state.
     #[cfg(feature = "cloud")]
     pub cloud_connection: Arc<RwLock<CloudConnectionRuntime>>,
+
+    /// Serializes cloud connection preparation across daemon and API callers.
+    #[cfg(feature = "cloud")]
+    pub cloud_connection_prepare_lock: Arc<Mutex<()>>,
 }
 
 impl DaemonState {

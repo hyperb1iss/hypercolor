@@ -249,6 +249,10 @@ pub struct AppState {
     /// Live Hypercolor Cloud daemon-link state.
     #[cfg(feature = "cloud")]
     pub cloud_connection: Arc<RwLock<CloudConnectionRuntime>>,
+
+    /// Serializes cloud connection preparation across refresh/register cycles.
+    #[cfg(feature = "cloud")]
+    pub cloud_connection_prepare_lock: Arc<Mutex<()>>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -521,6 +525,8 @@ impl AppState {
             cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "cloud")]
             cloud_connection: Arc::new(RwLock::new(CloudConnectionRuntime::default())),
+            #[cfg(feature = "cloud")]
+            cloud_connection_prepare_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -607,6 +613,8 @@ impl AppState {
             cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "cloud")]
             cloud_connection: Arc::clone(&daemon.cloud_connection),
+            #[cfg(feature = "cloud")]
+            cloud_connection_prepare_lock: Arc::clone(&daemon.cloud_connection_prepare_lock),
         }
     }
 }
@@ -1250,6 +1258,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/cloud/connection",
             axum::routing::get(cloud::get_connection),
+        )
+        .route(
+            "/cloud/connection/prepare",
+            axum::routing::post(cloud::prepare_connection),
         )
         .route(
             "/cloud/identity",
