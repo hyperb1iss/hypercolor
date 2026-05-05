@@ -347,6 +347,34 @@ async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_upload_effect_uses_install_endpoint(client: HypercolorClient) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/effects/install").mock(
+        return_value=httpx.Response(
+            201,
+            content=_envelope(
+                {
+                    "id": "user:neon",
+                    "name": "Neon",
+                    "source": "user",
+                    "path": "/effects/neon.html",
+                    "controls": 2,
+                    "presets": 1,
+                }
+            ),
+        )
+    )
+
+    result = await client.upload_effect("neon.html", "<html></html>")
+
+    assert route.called
+    request = route.calls[0].request
+    assert "multipart/form-data" in request.headers["content-type"]
+    assert b'name="file"; filename="neon.html"' in request.content
+    assert result["id"] == "user:neon"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_set_brightness_uses_generated_route_with_body(
     client: HypercolorClient,
 ) -> None:

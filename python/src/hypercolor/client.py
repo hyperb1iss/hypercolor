@@ -333,6 +333,34 @@ class HypercolorClient:
             ApplyEffectResult,
         )
 
+    async def upload_effect(
+        self,
+        file_name: str,
+        content: bytes | str,
+    ) -> dict[str, Any]:
+        """Upload and install an HTML effect."""
+        data = content.encode() if isinstance(content, str) else content
+        files = {"file": (file_name, data, "text/html")}
+        try:
+            response = await self._client.post(
+                self._request_url("/effects/install"),
+                files=files,
+                headers=self._auth_headers(),
+            )
+            response.raise_for_status()
+        except httpx.ConnectError as exc:
+            raise HypercolorConnectionError("Failed to connect to the Hypercolor daemon") from exc
+        except httpx.TimeoutException as exc:
+            raise HypercolorConnectionError("Hypercolor request timed out") from exc
+        except httpx.HTTPStatusError as exc:
+            raise self._map_http_error(exc) from exc
+
+        try:
+            decoded = msgspec.json.decode(response.content)
+        except msgspec.DecodeError:
+            decoded = response.text
+        return self._unwrap_data(decoded)
+
     async def update_controls(self, controls: Mapping[str, Any]) -> ControlUpdateResult:
         """Update controls on the active effect."""
         return await self._generated_model(
