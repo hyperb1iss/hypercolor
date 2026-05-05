@@ -522,35 +522,32 @@ impl Component for DeviceManagerView {
             Action::DeviceControlSurfacesUpdated {
                 device_id,
                 surfaces,
-            } => {
-                if self
-                    .selected_device()
-                    .is_some_and(|device| &device.id == device_id)
-                {
-                    self.loaded_device_id = Some(device_id.clone());
-                    self.loading_device_id = None;
-                    self.error = None;
-                    self.clear_pending_confirmation();
-                    self.surfaces.clone_from(surfaces);
-                    self.selected_control = self
-                        .selected_control
-                        .min(self.interactive_control_targets().len().saturating_sub(1));
-                    self.controls_scroll.set(0);
-                }
+            } if self
+                .selected_device()
+                .is_some_and(|device| &device.id == device_id) =>
+            {
+                self.loaded_device_id = Some(device_id.clone());
+                self.loading_device_id = None;
+                self.error = None;
+                self.clear_pending_confirmation();
+                self.surfaces.clone_from(surfaces);
+                self.selected_control = self
+                    .selected_control
+                    .min(self.interactive_control_targets().len().saturating_sub(1));
+                self.controls_scroll.set(0);
             }
-            Action::DeviceControlSurfacesFailed { device_id, error } => {
+            Action::DeviceControlSurfacesFailed { device_id, error }
                 if self
                     .selected_device()
-                    .is_some_and(|device| &device.id == device_id)
-                {
-                    self.loaded_device_id = Some(device_id.clone());
-                    self.loading_device_id = None;
-                    self.surfaces.clear();
-                    self.selected_control = 0;
-                    self.error = Some(error.clone());
-                    self.clear_pending_confirmation();
-                    self.controls_scroll.set(0);
-                }
+                    .is_some_and(|device| &device.id == device_id) =>
+            {
+                self.loaded_device_id = Some(device_id.clone());
+                self.loading_device_id = None;
+                self.surfaces.clear();
+                self.selected_control = 0;
+                self.error = Some(error.clone());
+                self.clear_pending_confirmation();
+                self.controls_scroll.set(0);
             }
             Action::DeviceControlChangeApplied {
                 device_id,
@@ -575,55 +572,49 @@ impl Component for DeviceManagerView {
             }
             Action::DeviceControlChangeFailed {
                 device_id, error, ..
-            } => {
-                if self
-                    .selected_device()
-                    .is_some_and(|device| &device.id == device_id)
-                {
-                    self.error = Some(error.clone());
-                    self.clear_pending_confirmation();
-                }
+            } if self
+                .selected_device()
+                .is_some_and(|device| &device.id == device_id) =>
+            {
+                self.error = Some(error.clone());
+                self.clear_pending_confirmation();
             }
-            Action::DeviceControlActionInvoked { device_id, .. } => {
+            Action::DeviceControlActionInvoked { device_id, .. }
                 if self
                     .selected_device()
-                    .is_some_and(|device| &device.id == device_id)
-                {
-                    self.error = None;
-                    self.clear_pending_confirmation();
-                }
+                    .is_some_and(|device| &device.id == device_id) =>
+            {
+                self.error = None;
+                self.clear_pending_confirmation();
             }
-            Action::DeviceControlSurfaceRefreshed { device_id, surface } => {
+            Action::DeviceControlSurfaceRefreshed { device_id, surface }
                 if self
                     .selected_device()
-                    .is_some_and(|device| &device.id == device_id)
+                    .is_some_and(|device| &device.id == device_id) =>
+            {
+                if let Some(existing) = self
+                    .surfaces
+                    .iter_mut()
+                    .find(|existing| existing.surface_id == surface.surface_id)
                 {
-                    if let Some(existing) = self
-                        .surfaces
-                        .iter_mut()
-                        .find(|existing| existing.surface_id == surface.surface_id)
-                    {
-                        existing.clone_from(surface.as_ref());
-                    } else {
-                        self.surfaces.push(surface.as_ref().clone());
-                    }
-                    self.error = None;
-                    self.clear_pending_confirmation();
-                    self.selected_control = self
-                        .selected_control
-                        .min(self.interactive_control_targets().len().saturating_sub(1));
+                    existing.clone_from(surface.as_ref());
+                } else {
+                    self.surfaces.push(surface.as_ref().clone());
                 }
+                self.error = None;
+                self.clear_pending_confirmation();
+                self.selected_control = self
+                    .selected_control
+                    .min(self.interactive_control_targets().len().saturating_sub(1));
             }
             Action::DeviceControlActionFailed {
                 device_id, error, ..
-            } => {
-                if self
-                    .selected_device()
-                    .is_some_and(|device| &device.id == device_id)
-                {
-                    self.error = Some(error.clone());
-                    self.clear_pending_confirmation();
-                }
+            } if self
+                .selected_device()
+                .is_some_and(|device| &device.id == device_id) =>
+            {
+                self.error = Some(error.clone());
+                self.clear_pending_confirmation();
             }
             _ => {}
         }

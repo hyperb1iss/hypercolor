@@ -23,7 +23,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout as browser_set_timeout};
+use hypercolor_leptos_ext::prelude::{
+    TimeoutHandle as BrowserTimeoutHandle, set_timeout as browser_set_timeout,
+};
 use hypercolor_leptos_ext::raf::Scheduler;
 use hypercolor_types::effect::ControlValue;
 use leptos::ev;
@@ -118,7 +120,7 @@ pub fn PreviewCabinet(
     let igniting = RwSignal::new(false);
     let prev_effect_id = StoredValue::new(fx.active_effect_id.get_untracked());
     let ignition_scheduler = Rc::new(RefCell::new(None::<Scheduler>));
-    let ignition_timeout = Rc::new(RefCell::new(None::<TimeoutHandle>));
+    let ignition_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
 
     Effect::new({
         let ignition_scheduler = Rc::clone(&ignition_scheduler);

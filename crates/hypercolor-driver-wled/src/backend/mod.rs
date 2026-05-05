@@ -49,7 +49,7 @@ pub use protocol::{
 };
 
 const DEFAULT_DEDUP_THRESHOLD: u8 = 2;
-const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
+const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 // ── WledBackend ─────────────────────────────────────────────────────────
 

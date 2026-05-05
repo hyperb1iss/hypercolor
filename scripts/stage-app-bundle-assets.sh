@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Stage Tauri sidecars and platform-conditional resources for hypercolor-app bundling.
 #
-# Static resources (UI dist, bundled effects, *.ps1 tool scripts) are referenced
-# directly from their workspace locations by tauri.conf.json — no staging needed.
-# This script only handles artifacts that are platform-conditional or need
+# Static web assets are copied into target/bundle-stage so clean checkouts can
+# compile the app without generated UI/effect output in the source tree. This
+# script also handles artifacts that are platform-conditional or need
 # triple-suffixed sidecars: built binaries and the Windows SMBus + PawnIO payloads.
 #
 # All staging output lives under ${target}/bundle-stage/, which is gitignored
@@ -80,6 +80,8 @@ esac
 
 STAGE_DIR="${TARGET_DIR}/bundle-stage"
 STAGE_BIN="${STAGE_DIR}/binaries"
+STAGE_UI="${STAGE_DIR}/ui"
+STAGE_EFFECTS="${STAGE_DIR}/effects"
 STAGE_TOOLS="${STAGE_DIR}/tools"
 
 require_file() {
@@ -230,8 +232,10 @@ if [[ ! -d effects/hypercolor ]] || [[ -z "$(ls -A effects/hypercolor 2>/dev/nul
   exit 1
 fi
 
-rm -rf "${STAGE_BIN}" "${STAGE_TOOLS}"
-mkdir -p "${STAGE_BIN}" "${STAGE_TOOLS}"
+rm -rf "${STAGE_BIN}" "${STAGE_UI}" "${STAGE_EFFECTS}" "${STAGE_TOOLS}"
+mkdir -p "${STAGE_BIN}" "${STAGE_UI}" "${STAGE_EFFECTS}" "${STAGE_TOOLS}"
+cp -R crates/hypercolor-ui/dist/. "${STAGE_UI}/"
+cp -R effects/hypercolor/. "${STAGE_EFFECTS}/"
 
 stage_binary hypercolor-daemon
 stage_binary hypercolor

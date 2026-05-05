@@ -668,6 +668,10 @@ fn configure_platform_command(command: &mut Command) {
 }
 
 #[cfg(unix)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "keeps the platform helper signature aligned with Windows"
+)]
 fn attach_platform_guard(_child: &Child) -> Result<PlatformGuard> {
     Ok(PlatformGuard)
 }

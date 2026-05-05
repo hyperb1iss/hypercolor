@@ -34,7 +34,7 @@ impl Default for ReconnectPolicy {
     fn default() -> Self {
         Self {
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             backoff_factor: 2.0,
             max_attempts: None,
             jitter: 0.1,

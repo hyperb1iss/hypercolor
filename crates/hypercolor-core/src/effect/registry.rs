@@ -4,6 +4,7 @@
 //! provides lookup/search/filter operations over the known effect catalog.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
@@ -395,9 +396,28 @@ fn is_html_file(path: &Path) -> bool {
 }
 
 fn normalize_registry_path(path: &Path) -> PathBuf {
+    let lexical = normalize_path_lexically(path);
     normalize_platform_path(
-        fs::canonicalize(path).unwrap_or_else(|_| normalize_path_lexically(path)),
+        fs::canonicalize(&lexical)
+            .unwrap_or_else(|_| canonicalize_existing_prefix(&lexical).unwrap_or(lexical)),
     )
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
+    let mut current = path;
+    let mut suffix = Vec::<OsString>::new();
+
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(current) {
+            for component in suffix.iter().rev() {
+                canonical.push(component);
+            }
+            return Some(canonical);
+        }
+
+        suffix.push(current.file_name()?.to_os_string());
+        current = current.parent()?;
+    }
 }
 
 fn normalize_path_lexically(path: &Path) -> PathBuf {

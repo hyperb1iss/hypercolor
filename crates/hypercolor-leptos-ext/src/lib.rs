@@ -8,16 +8,16 @@ pub use utils::MaybeSend;
 #[cfg(feature = "ws-core")]
 pub mod ws;
 
-#[cfg(all(feature = "events", target_arch = "wasm32"))]
+#[cfg(feature = "events")]
 pub mod events;
 
-#[cfg(all(feature = "canvas", target_arch = "wasm32"))]
+#[cfg(feature = "canvas")]
 pub mod canvas;
 
-#[cfg(all(feature = "raf", target_arch = "wasm32"))]
+#[cfg(feature = "raf")]
 pub mod raf;
 
-#[cfg(all(feature = "prelude", target_arch = "wasm32"))]
+#[cfg(feature = "prelude")]
 pub mod prelude;
 
 #[cfg(feature = "axum")]

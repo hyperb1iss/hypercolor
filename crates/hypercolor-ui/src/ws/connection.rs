@@ -7,7 +7,8 @@ use hypercolor_leptos_ext::events::{
     EventHandle, document as browser_document, document_event_target, on, window as browser_window,
 };
 use hypercolor_leptos_ext::prelude::{
-    TimeoutHandle, current_page_location, now_ms, random_unit, set_timeout as browser_set_timeout,
+    TimeoutHandle as BrowserTimeoutHandle, current_page_location, now_ms, random_unit,
+    set_timeout as browser_set_timeout,
 };
 use hypercolor_leptos_ext::ws::transport::{
     WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer, send_websocket_json,
@@ -137,7 +138,7 @@ impl WsManager {
             StoredValue::new_local(None);
         let tauri_visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
             StoredValue::new_local(None);
-        let reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage> =
+        let reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
 
         // Reconnection attempt counter for exponential backoff.
@@ -575,7 +576,7 @@ impl WsManager {
 /// Schedule a reconnection attempt with exponential backoff + jitter.
 fn schedule_reconnect(
     reconnect_attempts: StoredValue<u32>,
-    reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage>,
+    reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage>,
     connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
 ) {
     clear_reconnect_timer(reconnect_timeout);
@@ -595,7 +596,9 @@ fn schedule_reconnect(
     reconnect_timeout.set_value(Some(timeout));
 }
 
-fn clear_reconnect_timer(reconnect_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage>) {
+fn clear_reconnect_timer(
+    reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage>,
+) {
     reconnect_timeout.update_value(|timeout| {
         if let Some(mut timeout) = timeout.take() {
             timeout.cancel();

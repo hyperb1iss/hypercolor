@@ -19,8 +19,6 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../../crates/hypercolor-ui/dist/": "ui/",
-      "../../effects/hypercolor/": "effects/bundled/",
       "../../scripts/install-windows-service.ps1": "tools/install-windows-service.ps1",
       "../../scripts/uninstall-windows-service.ps1": "tools/uninstall-windows-service.ps1",
       "../../scripts/diagnose-windows.ps1": "tools/diagnose-windows.ps1",

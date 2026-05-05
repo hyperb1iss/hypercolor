@@ -3,9 +3,9 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 31,
-    "devices": 338,
+    "devices": 350,
     "byStatus": {
-      "supported": 128,
+      "supported": 140,
       "in_progress": 0,
       "planned": 0,
       "researched": 70,
@@ -2360,11 +2360,17 @@
       "name": "Nollie",
       "website": "https://nolliergb.cn",
       "vids": [
+        5841,
         5842,
+        5843,
+        5845,
         12385
       ],
       "vidsHex": [
+        "0x16D1",
         "0x16D2",
+        "0x16D3",
+        "0x16D5",
         "0x3061"
       ],
       "notes": null,
@@ -2378,7 +2384,40 @@
           "driver": "nollie",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x16D2, 1 channel x 630 LEDs, GRB byte order"
+          "notes": "VID 0x16D2 and NOS2 VID 0x16D5, 1 channel x 630 LEDs, GRB byte order"
+        },
+        {
+          "pid": 10753,
+          "pidHex": "0x2A01",
+          "name": "Nollie 1 CDC",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "VID 0x16D5, 115200 8N1 CDC transport"
+        },
+        {
+          "pid": 5651,
+          "pidHex": "0x1613",
+          "name": "Nollie 16 #1 legacy / v1.2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D1 legacy 8x100 and VID 0x16D2 v1.2 channels 01-08"
+        },
+        {
+          "pid": 5653,
+          "pidHex": "0x1615",
+          "name": "Nollie 16 #2 legacy / v1.2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D1 legacy 8x100 and VID 0x16D2 v1.2 channels 09-16"
         },
         {
           "pid": 18198,
@@ -2389,34 +2428,34 @@
           "driver": "nollie",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x3061, 16 channels x 256 LEDs, Gen-2 grouped HID protocol"
+          "notes": "VID 0x3061 grouped Gen-2 HID; VID 0x16D5 NOS2 single-channel 1024-byte HID"
+        },
+        {
+          "pid": 10774,
+          "pidHex": "0x2A16",
+          "name": "Nollie 16 v3 NOS2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D5 alternate PID, NOS2 single-channel 1024-byte HID"
+        },
+        {
+          "pid": 5657,
+          "pidHex": "0x1619",
+          "name": "Nollie 2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D1, 2 channels x 512 LEDs, legacy 20-LED packet header"
         },
         {
           "pid": 5654,
           "pidHex": "0x1616",
-          "name": "Nollie 28/12",
-          "type": "argb_controller",
-          "status": "supported",
-          "driver": "nollie",
-          "transport": "usb_hid",
-          "leds": null,
-          "notes": "VID 0x16D2, 12 channels x 42 LEDs, RGB byte order"
-        },
-        {
-          "pid": 5655,
-          "pidHex": "0x1617",
-          "name": "Nollie 28/12 (rev B)",
-          "type": "argb_controller",
-          "status": "supported",
-          "driver": "nollie",
-          "transport": "usb_hid",
-          "leds": null,
-          "notes": "VID 0x16D2, 12 channels x 42 LEDs, RGB byte order"
-        },
-        {
-          "pid": 5656,
-          "pidHex": "0x1618",
-          "name": "Nollie 28/12 (rev C)",
+          "name": "Nollie 28/12 v1.2",
           "type": "argb_controller",
           "status": "supported",
           "driver": "nollie",
@@ -2433,34 +2472,134 @@
           "driver": "nollie",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x3061, 20 main channels x 256 LEDs plus optional ATX/GPU Strimer cable rows"
+          "notes": "VID 0x3061 grouped Gen-2 HID; VID 0x16D5 NOS2 HID; supports ATX/GPU Strimer rows"
         },
         {
-          "pid": 7937,
-          "pidHex": "0x1F01",
-          "name": "Nollie 8 v2",
+          "pid": 10802,
+          "pidHex": "0x2A32",
+          "name": "Nollie 32 NOS2",
           "type": "argb_controller",
           "status": "supported",
           "driver": "nollie",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x16D2, 8 channels x 126 LEDs, GRB byte order"
+          "notes": "VID 0x16D5 alternate PID, NOS2 single-channel 1024-byte HID"
+        },
+        {
+          "pid": 18193,
+          "pidHex": "0x4711",
+          "name": "Nollie 4",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3061, interface 3, 4 channels x 636 LEDs"
+        },
+        {
+          "pid": 10760,
+          "pidHex": "0x2A08",
+          "name": "Nollie 8 CDC",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "VID 0x16D5, 115200 8N1 CDC transport"
+        },
+        {
+          "pid": 5650,
+          "pidHex": "0x1612",
+          "name": "Nollie 8 legacy / Nollie 8 v1.2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D1 legacy 8x100 and VID 0x16D2 v1.2 8x525 are both supported"
+        },
+        {
+          "pid": 7937,
+          "pidHex": "0x1F01",
+          "name": "Nollie 8 v2 / PrismRGB Prism 8",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D2 as Nollie 8 v2; VID 0x16D5 is also used by PrismRGB Prism 8"
+        },
+        {
+          "pid": 18194,
+          "pidHex": "0x4712",
+          "name": "Nollie 8 Youth",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x3061, interface 3, 8 channels x 300 LEDs"
+        },
+        {
+          "pid": 5655,
+          "pidHex": "0x1617",
+          "name": "Nollie L1 v1.2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D2, 8 channels x 525 LEDs, official source maps this PID to L1"
+        },
+        {
+          "pid": 5656,
+          "pidHex": "0x1618",
+          "name": "Nollie L2 v1.2",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D2, 8 channels x 525 LEDs, official source maps this PID to L2"
+        },
+        {
+          "pid": 1,
+          "pidHex": "0x0001",
+          "name": "Nollie Matrix",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D3, 1 channel x 256 LEDs"
+        },
+        {
+          "pid": 5664,
+          "pidHex": "0x1620",
+          "name": "Nollie TT",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "nollie",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "VID 0x16D1, 2 channels x 512 LEDs, legacy 20-LED packet header"
         }
       ],
       "counts": {
-        "supported": 7,
+        "supported": 19,
         "in_progress": 0,
         "planned": 0,
         "researched": 0,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 7,
+      "totalDevices": 19,
       "drivers": [
         "nollie"
       ],
       "transports": [
-        "usb_hid"
+        "usb_hid",
+        "usb_serial"
       ],
       "deviceTypes": [
         "argb_controller"

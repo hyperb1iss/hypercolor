@@ -357,7 +357,7 @@ fn registry_reload_single_removes_deleted_effect_from_noncanonical_path() {
     );
 
     let mut registry = EffectRegistry::new(vec![root.clone()]);
-    let initial_report = register_html_effects(&mut registry, &[root.clone()]);
+    let initial_report = register_html_effects(&mut registry, std::slice::from_ref(&root));
     assert_eq!(initial_report.loaded_effects, 1);
     assert_eq!(registry.len(), 1);
 

@@ -3,6 +3,10 @@
     "externalBin": [
       "../../target/bundle-stage/binaries/hypercolor-daemon",
       "../../target/bundle-stage/binaries/hypercolor"
-    ]
+    ],
+    "resources": {
+      "../../target/bundle-stage/ui/": "ui/",
+      "../../target/bundle-stage/effects/": "effects/bundled/"
+    }
   }
 }

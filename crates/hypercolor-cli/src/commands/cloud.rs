@@ -348,10 +348,10 @@ fn render_login_start(
         })
         .context("daemon response omitted verification_uri")?;
 
-    if !args.no_open {
-        if let Err(error) = open::that_detached(verification_uri) {
-            ctx.warning(&format!("Could not open browser: {error}"));
-        }
+    if !args.no_open
+        && let Err(error) = open::that_detached(verification_uri)
+    {
+        ctx.warning(&format!("Could not open browser: {error}"));
     }
 
     match ctx.format {

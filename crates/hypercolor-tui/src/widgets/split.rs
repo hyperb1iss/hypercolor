@@ -167,39 +167,23 @@ impl Split {
                 // Don't consume move events — other handlers may need them
                 self.hover != was_hover && self.hover
             }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if self.in_grab_zone(col, row) {
-                    self.dragging = true;
-                    true
-                } else {
-                    false
-                }
+            MouseEventKind::Down(MouseButton::Left) if self.in_grab_zone(col, row) => {
+                self.dragging = true;
+                true
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.dragging {
-                    self.update_ratio(col, row);
-                    true
-                } else {
-                    false
-                }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                self.update_ratio(col, row);
+                true
             }
-            MouseEventKind::Up(MouseButton::Left) => {
-                if self.dragging {
-                    self.dragging = false;
-                    self.hover = self.in_grab_zone(col, row);
-                    true
-                } else {
-                    false
-                }
+            MouseEventKind::Up(MouseButton::Left) if self.dragging => {
+                self.dragging = false;
+                self.hover = self.in_grab_zone(col, row);
+                true
             }
             // Double-click resets to default ratio
-            MouseEventKind::Down(MouseButton::Middle) => {
-                if self.in_grab_zone(col, row) {
-                    self.ratio = self.default_ratio;
-                    true
-                } else {
-                    false
-                }
+            MouseEventKind::Down(MouseButton::Middle) if self.in_grab_zone(col, row) => {
+                self.ratio = self.default_ratio;
+                true
             }
             _ => false,
         }

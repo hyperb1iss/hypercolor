@@ -580,37 +580,13 @@ fn sequence_index(direction: CalibrationDirection, phase: f32) -> usize {
 
 fn corner_marker_intensity(index: usize, nx: f32, ny: f32, extent: f32) -> f32 {
     let arm = (extent * 0.22).max(0.035);
+    let right = 1.0 - nx;
+    let bottom = 1.0 - ny;
     match index {
-        0 => {
-            if (nx <= extent && ny <= arm) || (nx <= arm && ny <= extent) {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        1 => {
-            if ((1.0 - nx) <= extent && ny <= arm) || ((1.0 - nx) <= arm && ny <= extent) {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        2 => {
-            if ((1.0 - nx) <= extent && (1.0 - ny) <= arm)
-                || ((1.0 - nx) <= arm && (1.0 - ny) <= extent)
-            {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        3 => {
-            if (nx <= extent && (1.0 - ny) <= arm) || (nx <= arm && (1.0 - ny) <= extent) {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        0 if (nx <= extent && ny <= arm) || (nx <= arm && ny <= extent) => 1.0,
+        1 if (right <= extent && ny <= arm) || (right <= arm && ny <= extent) => 1.0,
+        2 if (right <= extent && bottom <= arm) || (right <= arm && bottom <= extent) => 1.0,
+        3 if (nx <= extent && bottom <= arm) || (nx <= arm && bottom <= extent) => 1.0,
         _ => 0.0,
     }
 }

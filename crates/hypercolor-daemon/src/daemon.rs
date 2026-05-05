@@ -176,7 +176,7 @@ fn resolve_ui_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
         "auto-discovered"
     };
 
-    if age.is_some_and(|elapsed| elapsed > std::time::Duration::from_secs(7 * 24 * 60 * 60)) {
+    if age.is_some_and(|elapsed| elapsed > std::time::Duration::from_hours(168)) {
         warn!(
             path = %path.display(),
             built = %age_label,

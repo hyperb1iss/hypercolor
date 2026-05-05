@@ -1,21 +1,26 @@
+#[cfg(target_arch = "wasm32")]
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_channel::{mpsc, oneshot};
+#[cfg(target_arch = "wasm32")]
 use futures_util::StreamExt;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+#[cfg(target_arch = "wasm32")]
 use std::task::{Context, Poll};
 use thiserror::Error;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket};
 
+#[cfg(target_arch = "wasm32")]
 use super::CinderTransport;
 
 type ConnectSender = Rc<RefCell<Option<oneshot::Sender<Result<(), WebSocketTransportError>>>>>;
 
 pub struct WebSocketTransport {
     ws: WebSocket,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     recv_rx: mpsc::UnboundedReceiver<Result<Bytes, WebSocketTransportError>>,
     callbacks: WebSocketEventHandlers,
     state: Rc<Cell<WebSocketTransportState>>,
@@ -182,6 +187,7 @@ pub fn message_array_buffer(event: &MessageEvent) -> Option<js_sys::ArrayBuffer>
     event.data().dyn_into().ok()
 }
 
+#[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
 impl CinderTransport for WebSocketTransport {
     type SendError = WebSocketTransportError;

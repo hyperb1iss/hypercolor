@@ -225,7 +225,7 @@ mod tests {
         let policy = SleepPolicy::new(SessionConfig::default());
         assert_eq!(
             policy.sleep_action(&SessionEvent::IdleEntered {
-                idle_duration: Duration::from_secs(120),
+                idle_duration: Duration::from_mins(2),
             }),
             Some(SleepAction::Dim {
                 brightness: 0.3,
@@ -234,7 +234,7 @@ mod tests {
         );
         assert_eq!(
             policy.sleep_action(&SessionEvent::IdleEntered {
-                idle_duration: Duration::from_secs(600),
+                idle_duration: Duration::from_mins(10),
             }),
             Some(SleepAction::Off {
                 fade_ms: 5_000,

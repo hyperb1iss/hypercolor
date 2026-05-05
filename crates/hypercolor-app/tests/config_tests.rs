@@ -231,16 +231,6 @@ fn tauri_config_declares_workspace_resources() {
         .expect("bundle.resources should be a map");
     let root = manifest_dir();
 
-    let ui_target = resources
-        .get("../../crates/hypercolor-ui/dist/")
-        .and_then(serde_json::Value::as_str);
-    assert_eq!(ui_target, Some("ui/"));
-
-    let effects_target = resources
-        .get("../../effects/hypercolor/")
-        .and_then(serde_json::Value::as_str);
-    assert_eq!(effects_target, Some("effects/bundled/"));
-
     for script in [
         "install-windows-service.ps1",
         "uninstall-windows-service.ps1",
@@ -265,6 +255,27 @@ fn tauri_config_declares_workspace_resources() {
 }
 
 #[test]
+fn tauri_bundle_config_declares_staged_web_resources() {
+    let config = tauri_bundle_config();
+    let resources = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("resources"))
+        .and_then(serde_json::Value::as_object)
+        .expect("bundle resources should be a map");
+
+    for (source, target) in [
+        ("../../target/bundle-stage/ui/", "ui/"),
+        ("../../target/bundle-stage/effects/", "effects/bundled/"),
+    ] {
+        assert_eq!(
+            resources.get(source).and_then(serde_json::Value::as_str),
+            Some(target),
+            "bundle resources should map {source} -> {target}"
+        );
+    }
+}
+
+#[test]
 fn tauri_windows_bundle_config_layers_pawnio_resources() {
     let config = config_json("tauri.windows.bundle.conf.json");
     let resources = config
@@ -278,10 +289,7 @@ fn tauri_windows_bundle_config_layers_pawnio_resources() {
             "../../target/bundle-stage/tools/hypercolor-smbus-service.exe",
             "tools/hypercolor-smbus-service.exe",
         ),
-        (
-            "../../target/bundle-stage/tools/pawnio/",
-            "tools/pawnio/",
-        ),
+        ("../../target/bundle-stage/tools/pawnio/", "tools/pawnio/"),
     ] {
         assert_eq!(
             resources.get(source).and_then(serde_json::Value::as_str),

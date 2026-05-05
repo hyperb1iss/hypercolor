@@ -272,7 +272,7 @@ pub(super) fn prepare_runtime_html_source(
 
 fn build_control_preamble_script(controls: &HashMap<String, ControlValue>) -> String {
     let mut sorted_controls: Vec<_> = controls.iter().collect();
-    sorted_controls.sort_by(|(left, _), (right, _)| left.cmp(right));
+    sorted_controls.sort_by_key(|(name, _)| *name);
 
     let mut script = String::from("(function(){\n");
     script.push_str("  window.__hypercolorCaptureMode = true;\n");

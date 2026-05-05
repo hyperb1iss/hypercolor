@@ -2226,7 +2226,7 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(nollie["descriptor"]["module_kind"], "hal");
     assert_eq!(
         nollie["descriptor"]["transports"],
-        serde_json::json!(["usb"])
+        serde_json::json!(["usb", "serial"])
     );
     assert_eq!(
         nollie["descriptor"]["capabilities"]["protocol_catalog"],

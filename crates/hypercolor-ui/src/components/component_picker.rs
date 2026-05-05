@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use hypercolor_leptos_ext::events::{Input, document as browser_document, target_closest};
 use hypercolor_leptos_ext::prelude::{
-    TimeoutHandle, set_timeout as browser_set_timeout, viewport_height as browser_viewport_height,
-    viewport_width as browser_viewport_width,
+    TimeoutHandle as BrowserTimeoutHandle, set_timeout as browser_set_timeout,
+    viewport_height as browser_viewport_height, viewport_width as browser_viewport_width,
 };
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
@@ -197,7 +197,7 @@ pub fn ComponentPicker(
     let search_ref = NodeRef::<leptos::html::Input>::new();
     let list_ref = NodeRef::<leptos::html::Div>::new();
     let components_store = StoredValue::new(components);
-    let focus_timeout: StoredValue<Option<TimeoutHandle>, LocalStorage> =
+    let focus_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
         StoredValue::new_local(None);
 
     let filtered = Memo::new(move |_| {

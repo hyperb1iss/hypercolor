@@ -208,13 +208,30 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
                             "id": "device-1",
                             "layout_device_id": "layout-1",
                             "name": "Desk Strip",
-                            "backend": "wled",
+                            "origin": {
+                                "driver_id": "wled",
+                                "backend_id": "wled",
+                                "transport": "network",
+                                "protocol_id": null
+                            },
+                            "presentation": {
+                                "label": "WLED",
+                                "short_label": "WLED",
+                                "accent_rgb": [255, 106, 193],
+                                "secondary_rgb": [128, 255, 234],
+                                "icon": "lightbulb",
+                                "default_device_class": "controller"
+                            },
                             "status": "connected",
                             "brightness": 100,
                             "firmware_version": null,
-                            "network_ip": null,
-                            "network_hostname": null,
-                            "connection_label": null,
+                            "connection": {
+                                "transport": "network",
+                                "label": null,
+                                "endpoint": null,
+                                "ip": null,
+                                "hostname": null
+                            },
                             "total_leds": 120,
                             "zones": []
                         }],

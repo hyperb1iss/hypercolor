@@ -1521,12 +1521,10 @@ impl Component for EffectBrowserView {
                     }
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if rect_contains(controls_r, col, row) {
-                    // Drag to adjust slider in real-time
-                    if let Some(action) = self.set_slider_by_mouse(col, row) {
-                        return Ok(Some(action));
-                    }
+            MouseEventKind::Drag(MouseButton::Left) if rect_contains(controls_r, col, row) => {
+                // Drag to adjust slider in real-time
+                if let Some(action) = self.set_slider_by_mouse(col, row) {
+                    return Ok(Some(action));
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -1612,11 +1610,11 @@ impl Component for EffectBrowserView {
                 self.simulator_frame = Some(CanvasPreviewState::from(frame.as_ref()));
                 self.simulator_frame_id = Some(simulator_id.clone());
             }
-            Action::SimulatorFrameCleared(simulator_id) => {
-                if self.simulator_frame_id.as_deref() == Some(simulator_id.as_str()) {
-                    self.simulator_frame = None;
-                    self.simulator_frame_id = None;
-                }
+            Action::SimulatorFrameCleared(simulator_id)
+                if self.simulator_frame_id.as_deref() == Some(simulator_id.as_str()) =>
+            {
+                self.simulator_frame = None;
+                self.simulator_frame_id = None;
             }
             Action::DaemonDisconnected(_) => {
                 self.canvas_frame = None;

@@ -685,18 +685,18 @@ impl Component for DashboardView {
                     return Ok(Some(Action::Render));
                 }
             }
-            MouseEventKind::ScrollDown if rect_contains(self.devices_rect.get(), col, row) => {
-                if !self.devices.is_empty() {
-                    self.selected_device =
-                        (self.selected_device + 1).min(self.devices.len().saturating_sub(1));
-                    return Ok(Some(Action::Render));
-                }
+            MouseEventKind::ScrollDown
+                if rect_contains(self.devices_rect.get(), col, row) && !self.devices.is_empty() =>
+            {
+                self.selected_device =
+                    (self.selected_device + 1).min(self.devices.len().saturating_sub(1));
+                return Ok(Some(Action::Render));
             }
-            MouseEventKind::ScrollUp if rect_contains(self.devices_rect.get(), col, row) => {
-                if !self.devices.is_empty() {
-                    self.selected_device = self.selected_device.saturating_sub(1);
-                    return Ok(Some(Action::Render));
-                }
+            MouseEventKind::ScrollUp
+                if rect_contains(self.devices_rect.get(), col, row) && !self.devices.is_empty() =>
+            {
+                self.selected_device = self.selected_device.saturating_sub(1);
+                return Ok(Some(Action::Render));
             }
             _ => {}
         }

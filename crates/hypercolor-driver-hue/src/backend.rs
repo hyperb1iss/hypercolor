@@ -23,7 +23,7 @@ use super::types::{
     choose_entertainment_config,
 };
 
-const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
+const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Philips Hue backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

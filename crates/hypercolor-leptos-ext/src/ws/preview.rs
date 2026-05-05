@@ -162,7 +162,7 @@ impl PreviewFrameHeader {
     }
 }
 
-#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+#[cfg(feature = "ws-client-wasm")]
 #[derive(Debug, Clone)]
 pub struct PreviewFrameView {
     pub channel: PreviewFrameChannel,
@@ -174,7 +174,7 @@ pub struct PreviewFrameView {
     pub payload: js_sys::Uint8Array,
 }
 
-#[cfg(all(feature = "ws-client-wasm", target_arch = "wasm32"))]
+#[cfg(feature = "ws-client-wasm")]
 impl PreviewFrameView {
     pub fn decode_array_buffer(
         buffer: &js_sys::ArrayBuffer,

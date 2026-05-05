@@ -18,7 +18,7 @@ const FAILURE_THRESHOLD: u32 = 3;
 /// Base cooldown applied after the breaker opens.
 const BASE_COOLDOWN: Duration = Duration::from_secs(30);
 /// Maximum cooldown applied after repeated half-open failures.
-const MAX_COOLDOWN: Duration = Duration::from_secs(300);
+const MAX_COOLDOWN: Duration = Duration::from_mins(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CircuitState {

@@ -28,7 +28,6 @@ pub struct DriverSummary {
     pub presentation: DriverPresentation,
     pub enabled: bool,
     pub config_key: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub protocols: Vec<DriverProtocolDescriptor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control_surface_id: Option<String>,

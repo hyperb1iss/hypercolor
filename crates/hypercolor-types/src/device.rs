@@ -449,11 +449,11 @@ pub enum DriverTransportKind {
     /// Host serial transport.
     Serial,
 
-    /// Out-of-process bridge transport.
-    Bridge,
-
     /// In-process or synthetic transport.
     Virtual,
+
+    /// Out-of-process bridge transport.
+    Bridge,
 
     /// Driver-defined transport category.
     Custom(String),

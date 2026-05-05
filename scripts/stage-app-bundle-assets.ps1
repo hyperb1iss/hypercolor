@@ -101,6 +101,8 @@ $Exe = if ($Target -like '*windows*' -or $Target -like '*-pc-windows-*') { '.exe
 
 $StageDir = Join-Path $TargetDir 'bundle-stage'
 $StageBin = Join-Path $StageDir 'binaries'
+$StageUi = Join-Path $StageDir 'ui'
+$StageEffects = Join-Path $StageDir 'effects'
 $StageTools = Join-Path $StageDir 'tools'
 
 $uiDist = Join-Path $RepoRoot 'crates\hypercolor-ui\dist'
@@ -119,7 +121,14 @@ if ($effectsEmpty) {
 }
 
 Reset-Directory $StageBin
+Reset-Directory $StageUi
+Reset-Directory $StageEffects
 Reset-Directory $StageTools
+
+Get-ChildItem -LiteralPath $uiDist -Force |
+    Copy-Item -Destination $StageUi -Recurse -Force
+Get-ChildItem -LiteralPath $effectsDist -Force |
+    Copy-Item -Destination $StageEffects -Recurse -Force
 
 Copy-Sidecar 'hypercolor-daemon'
 Copy-Sidecar 'hypercolor'

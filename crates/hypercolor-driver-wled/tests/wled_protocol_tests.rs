@@ -1389,7 +1389,7 @@ static MDNS_TEST_LOG_MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static MDNS_TEST_LOG_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 const TEST_LOCK_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(90);
 const TEST_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const TEST_LOCK_STALE_AFTER: Duration = Duration::from_secs(300);
+const TEST_LOCK_STALE_AFTER: Duration = Duration::from_mins(5);
 
 struct MdnsTestLogger;
 

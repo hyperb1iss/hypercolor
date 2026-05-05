@@ -23,8 +23,10 @@ use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::collections::HashSet;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::Transport;

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-const ACCOUNT_DAY: Duration = Duration::from_secs(24 * 60 * 60);
-const DEVICE_MINUTE: Duration = Duration::from_secs(60);
+const ACCOUNT_DAY: Duration = Duration::from_hours(24);
+const DEVICE_MINUTE: Duration = Duration::from_mins(1);
 const DEFAULT_ACCOUNT_DAY_LIMIT: u32 = 10_000;
 const DEFAULT_ENDPOINT_MINUTE_LIMIT: u32 = 10;
 

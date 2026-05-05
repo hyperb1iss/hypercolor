@@ -19,7 +19,7 @@ use super::streaming::NanoleafStreamSession;
 use super::types::{NanoleafDiscoveredDevice, build_device_info, panel_ids_from_layout};
 use super::{fetch_device_info, fetch_panel_layout};
 
-const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
+const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Nanoleaf backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
