@@ -252,6 +252,29 @@ async def test_get_active_effect_returns_none_on_404(client: HypercolorClient) -
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_get_active_effect_returns_none_on_idle_payload(
+    client: HypercolorClient,
+) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "id": None,
+                    "name": None,
+                    "state": "idle",
+                    "controls": [],
+                    "control_values": {},
+                }
+            ),
+        )
+    )
+
+    assert await client.get_active_effect() is None
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_get_active_effect_decodes_live_state(client: HypercolorClient) -> None:
     respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
         return_value=httpx.Response(

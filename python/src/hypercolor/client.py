@@ -299,12 +299,12 @@ class HypercolorClient:
     async def get_active_effect(self) -> ActiveEffect | None:
         """Return the currently active effect if one exists."""
         try:
-            return await self._generated_model(
-                generated_get_active_effect._get_kwargs(),
-                ActiveEffect,
-            )
+            payload = await self._generated_payload(generated_get_active_effect._get_kwargs())
         except HypercolorNotFoundError:
             return None
+        if _is_idle_active_effect(payload):
+            return None
+        return self._convert(payload, ActiveEffect)
 
     async def apply_effect(
         self,
@@ -1060,6 +1060,13 @@ def _display_control_value(value: Any) -> dict[str, Any]:
     else:
         result = {"text": str(value)}
     return result
+
+
+def _is_idle_active_effect(payload: Any) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    state = payload.get("state")
+    return state in {"idle", "stopped"} and not payload.get("id") and not payload.get("name")
 
 
 def _hex_color_value(value: str) -> list[float] | None:
