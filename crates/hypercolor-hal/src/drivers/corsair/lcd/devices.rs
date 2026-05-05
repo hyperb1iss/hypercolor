@@ -3,9 +3,12 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::drivers::corsair::CORSAIR_VID;
+#[cfg(windows)]
 use crate::drivers::corsair::framing::LCD_REPORT_SIZE;
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
+#[cfg(windows)]
+use crate::registry::HidRawReportMode;
+use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
 use super::protocol::CorsairLcdProtocol;
 

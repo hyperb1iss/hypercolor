@@ -7,7 +7,9 @@ use crate::protocol::Protocol;
 use crate::registry::HidRawReportMode;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
-use super::protocol::{HID_REPORT_SIZE, PrismRgbModel, PrismRgbProtocol};
+#[cfg(windows)]
+use super::protocol::HID_REPORT_SIZE;
+use super::protocol::{PrismRgbModel, PrismRgbProtocol};
 
 /// Shared vendor ID used by Prism S and Prism Mini.
 pub const PRISM_GCS_VENDOR_ID: u16 = 0x16D0;

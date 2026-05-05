@@ -6,7 +6,9 @@ use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::AuraUsbProtocol;
-use super::types::{ASUS_VID, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN, AuraControllerGen};
+#[cfg(windows)]
+use super::types::AURA_REPORT_PAYLOAD_LEN;
+use super::types::{ASUS_VID, AURA_REPORT_ID, AuraControllerGen};
 
 /// ASUS Aura addressable-only controller, generation 1.
 pub const PID_AURA_ADDRESSABLE_GEN1: u16 = 0x1867;

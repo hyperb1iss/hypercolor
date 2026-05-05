@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 
 use hypercolor_hal::database::ProtocolDatabase;
+#[cfg(windows)]
+use hypercolor_hal::drivers::asus::AURA_REPORT_PAYLOAD_LEN;
 use hypercolor_hal::drivers::asus::{
-    ASUS_VID, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
+    ASUS_VID, AURA_REPORT_ID, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
 };
 use hypercolor_hal::drivers::corsair::framing::{
     LCD_REPORT_SIZE, LINK_WRITE_BUF_SIZE, LN_WRITE_BUF_SIZE,
@@ -80,6 +82,7 @@ fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize
 
     #[cfg(not(windows))]
     {
+        let _ = max_report_len;
         TransportType::UsbHid { interface }
     }
 }
