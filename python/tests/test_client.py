@@ -99,6 +99,66 @@ async def test_get_devices(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_get_devices_accepts_origin_connection_shape(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [
+                        {
+                            "id": "wled-studio",
+                            "layout_device_id": "wled:c8c9a33a9091",
+                            "name": "WLED - Studio",
+                            "origin": {
+                                "driver_id": "wled",
+                                "backend_id": "wled",
+                                "transport": "network",
+                            },
+                            "presentation": {
+                                "label": "WLED",
+                                "short_label": "WLED",
+                                "icon": "lightbulb",
+                            },
+                            "status": "known",
+                            "brightness": 100,
+                            "firmware_version": "0.15.0-b3",
+                            "connection": {
+                                "transport": "network",
+                                "endpoint": "wled-studio.local",
+                                "ip": "10.4.22.169",
+                                "hostname": "wled-studio.local",
+                            },
+                            "total_leds": 275,
+                            "zones": [
+                                {
+                                    "id": "zone_0",
+                                    "name": "Main",
+                                    "led_count": 275,
+                                    "topology": "strip",
+                                    "topology_hint": {"type": "strip"},
+                                }
+                            ],
+                        }
+                    ],
+                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                }
+            ),
+        )
+    )
+
+    devices = await client.get_devices()
+
+    assert route.called
+    assert devices[0].backend == "wled"
+    assert devices[0].network_ip == "10.4.22.169"
+    assert devices[0].connection_label == "wled-studio.local"
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_get_devices_maps_backend_alias_to_backend_id(
     client: HypercolorClient,
 ) -> None:

@@ -39,6 +39,54 @@ def test_device_model_decodes() -> None:
     assert device.enabled is True
 
 
+def test_device_model_decodes_current_daemon_shape() -> None:
+    payload = {
+        "id": "wled-studio",
+        "layout_device_id": "wled:c8c9a33a9091",
+        "name": "WLED - Studio",
+        "origin": {
+            "driver_id": "wled",
+            "backend_id": "wled",
+            "transport": "network",
+        },
+        "presentation": {
+            "label": "WLED",
+            "short_label": "WLED",
+            "icon": "lightbulb",
+        },
+        "status": "known",
+        "brightness": 100,
+        "firmware_version": "0.15.0-b3",
+        "connection": {
+            "transport": "network",
+            "endpoint": "wled-studio.local",
+            "ip": "10.4.22.169",
+            "hostname": "wled-studio.local",
+        },
+        "total_leds": 275,
+        "zones": [
+            {
+                "id": "zone_0",
+                "name": "Main",
+                "led_count": 275,
+                "topology": "strip",
+                "topology_hint": {"type": "strip"},
+            }
+        ],
+    }
+
+    device = msgspec.convert(payload, type=Device)
+
+    assert device.backend == "wled"
+    assert device.driver_id == "wled"
+    assert device.transport == "network"
+    assert device.connection_label == "wled-studio.local"
+    assert device.network_ip == "10.4.22.169"
+    assert device.network_hostname == "wled-studio.local"
+    assert device.presentation is not None
+    assert device.presentation.label == "WLED"
+
+
 def test_effect_model_decodes() -> None:
     payload = {
         "id": "aurora",
