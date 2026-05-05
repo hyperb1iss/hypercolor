@@ -44,31 +44,34 @@ If you'd rather install pieces individually, here's what `just setup` does for y
 **Debian / Ubuntu:**
 
 ```bash
-sudo apt install build-essential pkg-config \
+sudo apt install build-essential pkg-config cmake nasm \
   libudev-dev libusb-1.0-0-dev libhidapi-dev \
-  libasound2-dev clang lld
+  libasound2-dev libpulse-dev libpipewire-0.3-dev \
+  clang lld
 ```
 
 **Fedora:**
 
 ```bash
-sudo dnf install gcc gcc-c++ pkg-config \
+sudo dnf install gcc gcc-c++ pkg-config cmake nasm \
   systemd-devel libusb1-devel hidapi-devel \
-  alsa-lib-devel clang lld
+  alsa-lib-devel pulseaudio-libs-devel pipewire-devel \
+  clang lld
 ```
 
 **Arch Linux:**
 
 ```bash
-sudo pacman -S base-devel pkgconf \
-  libusb hidapi alsa-lib clang lld
+sudo pacman -S base-devel pkgconf cmake nasm \
+  libusb hidapi alsa-lib libpulse pipewire \
+  clang lld
 ```
 
 **macOS:**
 
 ```bash
 xcode-select --install
-brew install hidapi pkg-config
+brew install hidapi pkg-config cmake nasm
 ```
 
 **Windows:** install [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/) with the "Desktop development with C++" workload.

@@ -119,6 +119,15 @@ run_sudo() {
   sudo "$@"
 }
 
+# Prompt for sudo password upfront and cache credentials so the
+# rest of the section runs without surprise prompts.
+sudo_warmup() {
+  if [ "${EUID:-$(id -u)}" -eq 0 ]; then return 0; fi
+  if ! need sudo; then return 1; fi
+  info "authenticating sudo (caches credentials for the rest of setup)..."
+  sudo -v
+}
+
 bin_version() {
   "$1" --version 2>/dev/null | head -1 | awk '{print $2}' || true
 }
@@ -145,13 +154,21 @@ ok "rustup $(bin_version rustup)"
 rustup show >/dev/null
 ok "toolchain $(rustup show active-toolchain 2>/dev/null | awk '{print $1}')"
 
-if rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
-  ok "wasm32-unknown-unknown target installed"
-else
-  info "adding wasm32-unknown-unknown target..."
-  rustup target add wasm32-unknown-unknown
-  ok "wasm32-unknown-unknown target installed"
-fi
+# Add wasm32 to every installed toolchain. Some shells (e.g. proto's activate
+# hook) prepend a toolchain's bin dir to PATH, bypassing the rustup proxy and
+# making non-active toolchains' cargo win — so the project's rust-toolchain.toml
+# override is silently ignored. Installing wasm32 across the board makes trunk
+# build the UI cleanly no matter which cargo runs.
+while IFS= read -r tc; do
+  [ -z "$tc" ] && continue
+  if rustup target list --installed --toolchain "$tc" 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
+    ok "wasm32-unknown-unknown installed for $tc"
+  else
+    info "adding wasm32-unknown-unknown to $tc..."
+    rustup target add wasm32-unknown-unknown --toolchain "$tc"
+    ok "wasm32-unknown-unknown added to $tc"
+  fi
+done < <(rustup toolchain list 2>/dev/null | awk '{print $1}')
 
 if [ "$MINIMAL" -eq 1 ]; then
   printf "\n%s%s✓ minimal setup complete%s — re-run without --minimal for the full toolchain\n\n" \
@@ -170,8 +187,10 @@ else
   section "system packages ($PKG_MGR)"
   case "$PKG_MGR" in
     apt)
-      pkgs=(build-essential pkg-config libudev-dev libusb-1.0-0-dev libhidapi-dev libasound2-dev clang lld)
-      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(cmake gperf libgtk-3-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev)
+      pkgs=(build-essential pkg-config cmake nasm
+            libudev-dev libusb-1.0-0-dev libhidapi-dev
+            libasound2-dev libpulse-dev libpipewire-0.3-dev clang lld)
+      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf libgtk-3-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev)
       missing=()
       for p in "${pkgs[@]}"; do
         if dpkg -s "$p" >/dev/null 2>&1; then ok "$p"; else missing+=("$p"); fi
@@ -179,7 +198,10 @@ else
       if [ "${#missing[@]}" -gt 0 ]; then
         info "installing: ${missing[*]}"
         if confirm "run sudo apt-get install -y for ${#missing[@]} package(s)?"; then
-          run_sudo apt-get update -qq
+          sudo_warmup
+          info "apt-get update (this can take a moment)..."
+          run_sudo apt-get update
+          info "apt-get install ${missing[*]}"
           run_sudo apt-get install -y "${missing[@]}"
           for p in "${missing[@]}"; do ok "$p"; done
         else
@@ -188,8 +210,10 @@ else
       fi
       ;;
     dnf)
-      pkgs=(gcc gcc-c++ pkg-config systemd-devel libusb1-devel hidapi-devel alsa-lib-devel clang lld)
-      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(cmake gperf gtk3-devel libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel)
+      pkgs=(gcc gcc-c++ pkg-config cmake nasm
+            systemd-devel libusb1-devel hidapi-devel
+            alsa-lib-devel pulseaudio-libs-devel pipewire-devel clang lld)
+      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf gtk3-devel libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel)
       missing=()
       for p in "${pkgs[@]}"; do
         if rpm -q "$p" >/dev/null 2>&1; then ok "$p"; else missing+=("$p"); fi
@@ -197,6 +221,8 @@ else
       if [ "${#missing[@]}" -gt 0 ]; then
         info "installing: ${missing[*]}"
         if confirm "run sudo dnf install -y for ${#missing[@]} package(s)?"; then
+          sudo_warmup
+          info "dnf install ${missing[*]}"
           run_sudo dnf install -y "${missing[@]}"
           for p in "${missing[@]}"; do ok "$p"; done
         else
@@ -205,8 +231,8 @@ else
       fi
       ;;
     pacman)
-      pkgs=(base-devel pkgconf libusb hidapi alsa-lib clang lld)
-      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(cmake gperf gtk3 libxcb libxkbcommon libxkbcommon-x11)
+      pkgs=(base-devel pkgconf cmake nasm libusb hidapi alsa-lib libpulse pipewire clang lld)
+      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf gtk3 libxcb libxkbcommon libxkbcommon-x11)
       missing=()
       for p in "${pkgs[@]}"; do
         if pacman -Q "$p" >/dev/null 2>&1; then ok "$p"; else missing+=("$p"); fi
@@ -214,6 +240,8 @@ else
       if [ "${#missing[@]}" -gt 0 ]; then
         info "installing: ${missing[*]}"
         if confirm "run sudo pacman -S --needed for ${#missing[@]} package(s)?"; then
+          sudo_warmup
+          info "pacman -S ${missing[*]}"
           run_sudo pacman -S --needed --noconfirm "${missing[@]}"
           for p in "${missing[@]}"; do ok "$p"; done
         else
@@ -237,8 +265,8 @@ else
         else
           warn "Xcode Command Line Tools missing — run: xcode-select --install"
         fi
-        pkgs=(hidapi pkg-config)
-        [ "$WITH_SERVO" -eq 1 ] && pkgs+=(cmake gperf)
+        pkgs=(hidapi pkg-config cmake nasm)
+        [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf)
         for p in "${pkgs[@]}"; do
           if brew list --formula "$p" >/dev/null 2>&1; then
             ok "$p"
