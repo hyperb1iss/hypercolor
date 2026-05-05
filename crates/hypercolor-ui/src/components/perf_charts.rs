@@ -168,7 +168,7 @@ pub fn RadialGauge(
     });
 
     view! {
-        <div class="flex flex-col items-center gap-1">
+        <div class="flex flex-col items-center gap-1" style="contain: layout paint">
             {(!caption.is_empty()).then(|| view! {
                 <div class="text-[9px] font-mono uppercase tracking-[0.16em] text-fg-tertiary">
                     {caption}
@@ -210,7 +210,6 @@ pub fn RadialGauge(
                         stroke-linecap="round"
                         stroke-dasharray=format!("{circumference:.2}")
                         stroke-dashoffset=move || format!("{:.2}", dash_offset.get())
-                        style="transition: stroke-dashoffset 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
                     />
                     // Active arc
                     <circle
@@ -223,12 +222,12 @@ pub fn RadialGauge(
                         stroke-linecap="round"
                         stroke-dasharray=format!("{circumference:.2}")
                         stroke-dashoffset=move || format!("{:.2}", dash_offset.get())
-                        style="transition: stroke-dashoffset 0.2s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 0 6px currentColor)"
+                        style="filter: drop-shadow(0 0 6px currentColor)"
                     />
                 </svg>
                 <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden px-2">
                     <div
-                        class="text-[22px] font-semibold tabular-nums leading-none"
+                        class="min-w-[4.5ch] text-center text-[22px] font-semibold tabular-nums leading-none"
                         style=format!("color: {color}")
                     >
                         {move || primary.get()}
@@ -281,7 +280,7 @@ pub fn StackedBar(
     });
 
     view! {
-        <div class="space-y-2">
+        <div class="space-y-2" style="contain: layout paint">
             <div
                 class="relative w-full rounded-md overflow-hidden bg-surface-overlay/40 border border-edge-subtle"
                 style=format!("height: {height}px")
@@ -391,7 +390,7 @@ pub fn PhaseWaterfall(
     #[prop(default = 128)] height: u32,
 ) -> impl IntoView {
     view! {
-        <div class="space-y-2">
+        <div class="space-y-2" style="contain: layout paint">
             {move || {
                 let fs = frames.get();
                 let budget = budget_ms.get().max(0.1) as f32;
@@ -585,11 +584,12 @@ pub fn DistributionBar(
                         <div class="relative h-5">
                             <div class="absolute inset-y-[7px] inset-x-0 rounded-full bg-surface-overlay/60 border border-edge-subtle/60" />
                             <div
-                                class="absolute inset-y-[7px] left-0 rounded-full transition-all duration-300"
+                                class="absolute inset-y-[7px] left-0 w-full origin-left rounded-full transition-transform duration-300 will-change-transform"
                                 style=format!(
-                                    "width: {p:.2}%; \
+                                    "transform: scaleX({:.4}); \
                                      background: linear-gradient(90deg, {color}44, {color}ff); \
-                                     box-shadow: 0 0 8px {color}66"
+                                     box-shadow: 0 0 8px {color}66",
+                                    p / 100.0
                                 )
                             />
                             {budget_in_range.then(|| view! {
@@ -699,7 +699,7 @@ pub fn ProgressRing(
                         stroke-linecap="round"
                         stroke-dasharray=format!("{circumference:.2}")
                         stroke-dashoffset=move || format!("{:.2}", dash_offset.get())
-                        style="transition: stroke-dashoffset 0.4s cubic-bezier(0.4, 0, 0.2, 1); filter: drop-shadow(0 0 4px currentColor)"
+                        style="filter: drop-shadow(0 0 4px currentColor)"
                     />
                 </svg>
                 <div class="absolute inset-0 flex items-center justify-center">
@@ -757,12 +757,12 @@ pub fn HitRateBar(
             </div>
             <div class="relative h-1.5 rounded-full bg-surface-overlay/60 border border-edge-subtle/40 overflow-hidden">
                 <div
-                    class="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+                    class="absolute inset-y-0 left-0 w-full origin-left rounded-full transition-transform duration-500 will-change-transform"
                     style=move || format!(
-                        "width: {:.2}%; \
+                        "transform: scaleX({:.4}); \
                          background: linear-gradient(90deg, {color}66, {color}ff); \
                          box-shadow: 0 0 6px {color}77",
-                        pct.get()
+                        pct.get() / 100.0
                     )
                 />
             </div>

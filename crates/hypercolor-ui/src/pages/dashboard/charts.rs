@@ -301,8 +301,7 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
                                -webkit-background-clip: text; \
                                background-clip: text; \
                                -webkit-text-fill-color: transparent; \
-                               color: transparent; \
-                               animation: shimmer 6s linear infinite"
+                               color: transparent"
                     >
                         "Favorites"
                     </h2>

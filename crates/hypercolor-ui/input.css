@@ -516,9 +516,9 @@ input[type="range"].slider-silk::-moz-range-track {
    churn and layer reshuffling on effect swap). Mid-way the curtain tints
    to the new accent for a brief ignition flash. */
 @keyframes canvasIgnite {
-    0%   { opacity: 0.62; background-color: rgba(0, 0, 0, 1); }
-    35%  { opacity: 0.38; background-color: rgba(var(--glow-rgb, 225, 53, 255), 1); }
-    100% { opacity: 0; background-color: rgba(0, 0, 0, 1); }
+    0%   { opacity: 0.62; }
+    35%  { opacity: 0.38; }
+    100% { opacity: 0; }
 }
 
 /* Cabinet ignition — ambient glow bloom layered behind the cabinet
@@ -544,10 +544,8 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 
 @keyframes breathe {
-    0%, 100% { box-shadow: 0 0 20px rgba(var(--glow-rgb, 225, 53, 255), 0.08),
-                           0 0 2px rgba(var(--glow-rgb, 225, 53, 255), 0.12); }
-    50%      { box-shadow: 0 0 32px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
-                           0 0 4px rgba(var(--glow-rgb, 225, 53, 255), 0.25); }
+    0%, 100% { opacity: 0.72; transform: scale(0.985); }
+    50%      { opacity: 1; transform: scale(1.015); }
 }
 
 @keyframes glowPulse {
@@ -614,7 +612,7 @@ input[type="range"].slider-silk::-moz-range-track {
 .animate-picker-in      { animation: pickerIn 0.2s var(--ease-spring) both; }
 .animate-pop-in         { animation: popIn 0.35s var(--ease-spring) both; }
 .animate-slide-down     { animation: slideDown 0.3s var(--ease-silk) both; }
-.animate-breathe        { animation: breathe 3s ease-in-out infinite; }
+.animate-breathe        { animation: breathe 3s ease-in-out infinite; will-change: opacity, transform; }
 .animate-border-glow    { animation: borderGlow 2s ease-in-out infinite; }
 .animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
 .animate-glow-reveal    { animation: glowReveal 0.5s var(--ease-silk) both; }
@@ -629,7 +627,11 @@ input[type="range"].slider-silk::-moz-range-track {
 /* Preview ignition — canvas focus pull and cabinet glow bloom. No
    fill-mode so after the pulse the element reverts to its base styles
    (edge-glow, default filter). */
-.animate-canvas-ignite  { animation: canvasIgnite 0.55s var(--ease-silk); }
+.animate-canvas-ignite {
+    animation: canvasIgnite 0.55s var(--ease-silk);
+    background: rgb(var(--glow-rgb, 225, 53, 255));
+    will-change: opacity;
+}
 .animate-cabinet-ignite { animation: cabinetIgnite 0.7s var(--ease-silk); }
 
 /* Smooth transition for the cabinet's accent-tinted border so the

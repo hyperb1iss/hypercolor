@@ -507,11 +507,16 @@ pub fn DisplaysPage() -> impl IntoView {
                     />
                 </aside>
                 <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-                    <DisplayWorkspace
-                        selected_display=selected_display
-                        display_face=display_face
-                        face_refresh_tick=face_refresh_tick
-                    />
+                    <Show
+                        when=move || selected_display.with(Option::is_some)
+                        fallback=|| view! { <DisplayEmptyWorkspace /> }
+                    >
+                        <DisplayWorkspace
+                            selected_display=selected_display
+                            display_face=display_face
+                            face_refresh_tick=face_refresh_tick
+                        />
+                    </Show>
                 </div>
                 <Show when=move || selected_display.with(Option::is_some) fallback=|| ()>
                     <ResizeHandle
@@ -1265,6 +1270,30 @@ fn EditSimulatorModal(
                 </form>
             </div>
         </DisplaysModalBackdrop>
+    }
+}
+
+#[component]
+fn DisplayEmptyWorkspace() -> impl IntoView {
+    view! {
+        <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-edge-subtle bg-surface-raised/80">
+            <header class="flex items-center gap-2 border-b border-edge-subtle px-4 py-3">
+                <div class="flex h-6 w-6 items-center justify-center rounded-md bg-coral/10 text-coral/80">
+                    <Icon icon=LuMonitor width="13" height="13" />
+                </div>
+                <h2 class="text-[11px] font-semibold uppercase tracking-wide text-fg-secondary">
+                    "Live preview"
+                </h2>
+            </header>
+            <div class="flex min-h-0 flex-1 items-center justify-center p-5">
+                <div class="flex flex-col items-center gap-2 text-center text-fg-tertiary">
+                    <Icon icon=LuMonitor width="32" height="32" />
+                    <p class="text-xs">
+                        "Add a virtual display simulator or connect an LCD device to begin."
+                    </p>
+                </div>
+            </div>
+        </section>
     }
 }
 

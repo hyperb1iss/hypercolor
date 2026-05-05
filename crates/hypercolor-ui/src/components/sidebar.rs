@@ -249,7 +249,7 @@ pub fn Sidebar() -> impl IntoView {
 
                 view! {
                     <div
-                        class="w-full border-b border-edge-subtle transition-all duration-300"
+                        class="w-full border-b border-edge-subtle transition-[height] duration-300"
                         class:h-14=move || collapsed.get()
                         class:h-32=move || !collapsed.get()
                     >
@@ -430,7 +430,7 @@ pub fn Sidebar() -> impl IntoView {
                         >
                             // Active indicator bar
                             <div
-                                class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-accent transition-all duration-200"
+                                class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-accent transition-opacity duration-200"
                                 class:opacity-0=move || !is_active.get()
                                 class:opacity-100=move || is_active.get()
                                 style:box-shadow=move || if is_active.get() { "0 0 8px rgba(225, 53, 255, 0.5)" } else { "none" }
@@ -442,7 +442,7 @@ pub fn Sidebar() -> impl IntoView {
                                 <Icon icon=item.icon width="18px" height="18px" />
                             </span>
                             <span
-                                class="ml-3 text-sm whitespace-nowrap overflow-hidden transition-all duration-200"
+                                class="ml-3 text-sm whitespace-nowrap overflow-hidden transition-[opacity,width] duration-200"
                                 class:opacity-0=move || collapsed.get()
                                 class:opacity-100=move || !collapsed.get()
                                 class:w-0=move || collapsed.get()
@@ -470,7 +470,7 @@ pub fn Sidebar() -> impl IntoView {
                 rel="noopener"
                 class="flex items-center mx-2
                        text-fg-tertiary hover:text-fg-primary
-                       transition-all duration-200"
+                       transition-colors duration-200"
                 class:justify-center=move || collapsed.get()
                 class:gap-2=move || !collapsed.get()
                 class:px-3=move || !collapsed.get()
@@ -743,7 +743,7 @@ fn SidebarAudioToggle() -> impl IntoView {
                 };
                 Some(view! {
                     <button
-                        class="shrink-0 p-1 rounded transition-all duration-75"
+                        class="shrink-0 p-1 rounded"
                         style=format!("color: {color}; filter: drop-shadow({shadow})")
                         title="Disable audio"
                         on:click=toggle_audio

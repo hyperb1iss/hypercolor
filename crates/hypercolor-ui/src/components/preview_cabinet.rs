@@ -21,7 +21,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
+use hypercolor_leptos_ext::prelude::{TimeoutHandle, set_timeout as browser_set_timeout};
 use hypercolor_leptos_ext::raf::Scheduler;
 use hypercolor_types::effect::ControlValue;
 use leptos::ev;
@@ -116,17 +118,30 @@ pub fn PreviewCabinet(
     let igniting = RwSignal::new(false);
     let prev_effect_id = StoredValue::new(fx.active_effect_id.get_untracked());
     let ignition_scheduler = Rc::new(RefCell::new(None::<Scheduler>));
+    let ignition_timeout = Rc::new(RefCell::new(None::<TimeoutHandle>));
 
     Effect::new({
         let ignition_scheduler = Rc::clone(&ignition_scheduler);
+        let ignition_timeout = Rc::clone(&ignition_timeout);
         move |_| {
             let current = fx.active_effect_id.get();
             let previous = prev_effect_id.get_value();
             if previous != current {
                 igniting.set(false);
-                let scheduler = Scheduler::new(move |_| igniting.set(true));
+                ignition_timeout.borrow_mut().take();
+
+                let ignite_on = igniting;
+                let scheduler = Scheduler::new(move |_| ignite_on.set(true));
                 scheduler.schedule();
                 ignition_scheduler.borrow_mut().replace(scheduler);
+
+                let ignite_off = igniting;
+                let reset_timeout = Rc::clone(&ignition_timeout);
+                let timeout = browser_set_timeout(Duration::from_millis(760), move || {
+                    ignite_off.set(false);
+                    reset_timeout.borrow_mut().take();
+                });
+                ignition_timeout.borrow_mut().replace(timeout);
             }
             prev_effect_id.set_value(current);
         }
@@ -185,7 +200,7 @@ pub fn PreviewCabinet(
                                bg-black/45 backdrop-blur-sm border border-edge-subtle/60 \
                                text-fg-secondary hover:text-fg-primary \
                                hover:bg-black/65 hover:border-edge-default \
-                               transition-all"
+                               transition-colors duration-200"
                         title=move || if is_fullscreen.get().unwrap_or(false) {
                             "Exit fullscreen (Esc)"
                         } else {

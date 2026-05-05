@@ -204,10 +204,7 @@ impl WebGlPreviewRuntime {
 
         self.gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
 
-        // Keep fault detection without the old "poll until clear" loop. A
-        // single post-present read still catches driver/context upload faults,
-        // but avoids the repeated synchronous error-drain on every branch.
-        if upload_result.is_err() || self.gl.get_error() != Gl::NO_ERROR {
+        if upload_result.is_err() {
             return PreviewRenderOutcome::Reinitialize;
         }
 

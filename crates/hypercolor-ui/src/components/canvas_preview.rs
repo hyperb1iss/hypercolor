@@ -204,7 +204,7 @@ pub fn CanvasPreview(
         let scheduler = Scheduler::new(move |frame_info| {
             let raf_time_ms = frame_info.time_ms;
 
-            let Some(canvas_handle) = schedule_canvas_ref.get() else {
+            let Some(canvas_handle) = schedule_canvas_ref.get_untracked() else {
                 return;
             };
 
@@ -512,7 +512,7 @@ pub fn CanvasPreview(
             {if show_fps {
                 Some(view! {
                     <div class="absolute top-2 right-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-fg-tertiary
-                                transition-all duration-300 animate-fade-in">
+                                transition-opacity duration-300 animate-fade-in">
                         {move || {
                             let target = fps_target.get();
                             let mode = runtime_mode.get().unwrap_or("pending");

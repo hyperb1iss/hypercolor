@@ -4,6 +4,12 @@ dist = "dist"
 public_url = "/"
 filehash = true
 
+# Pin tool versions so the repo controls them, not whatever's on $PATH.
+# wasm-opt < 119 fails with "invalid code after misc prefix" against the
+# WASM that current rustc + wasm-bindgen emit.
+[tools]
+wasm_opt = "version_129"
+
 [watch]
 watch = ["src", "input.css", "tokens", "index.html"]
 
