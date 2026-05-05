@@ -222,7 +222,8 @@ pub fn build_blade_15_late_2021_advanced_protocol() -> Box<dyn Protocol> {
         .without_device_mode_commands()
         .with_standard_storage(VARSTORE)
         .with_frame_transaction_id(0xFF)
-        .with_write_only_frame_uploads(),
+        .with_write_only_frame_uploads()
+        .with_write_only_custom_effect_activation(Duration::ZERO),
     )
 }
 
@@ -240,6 +241,7 @@ pub fn build_blade_14_2021_protocol() -> Box<dyn Protocol> {
         .with_standard_storage(VARSTORE)
         .with_frame_transaction_id(0xFF)
         .with_write_only_frame_uploads()
+        .with_write_only_custom_effect_activation(Duration::ZERO)
         .with_device_mode_keepalive(Duration::from_millis(2_500)),
     )
 }
@@ -257,7 +259,8 @@ pub fn build_blade_pro_2016_protocol() -> Box<dyn Protocol> {
         .without_device_mode_commands()
         .with_standard_storage(VARSTORE)
         .with_frame_transaction_id(0x80)
-        .with_write_only_frame_uploads(),
+        .with_write_only_frame_uploads()
+        .with_write_only_custom_effect_activation(Duration::ZERO),
     )
 }
 
@@ -274,7 +277,8 @@ pub fn build_blade_15_2022_protocol() -> Box<dyn Protocol> {
         .without_device_mode_commands()
         .with_standard_storage(VARSTORE)
         .with_frame_transaction_id(0xFF)
-        .with_write_only_frame_uploads(),
+        .with_write_only_frame_uploads()
+        .with_write_only_custom_effect_activation(Duration::ZERO),
     )
 }
 
@@ -291,7 +295,8 @@ pub fn build_blade_14_2023_protocol() -> Box<dyn Protocol> {
         .without_device_mode_commands()
         .with_standard_storage(VARSTORE)
         .with_frame_transaction_id(0xFF)
-        .with_write_only_frame_uploads(),
+        .with_write_only_frame_uploads()
+        .with_write_only_custom_effect_activation(Duration::ZERO),
     )
 }
 
@@ -366,7 +371,8 @@ macro_rules! razer_laptop_builder {
             .without_device_mode_commands()
             .with_standard_storage(VARSTORE)
             .with_frame_transaction_id(0xFF)
-            .with_write_only_frame_uploads();
+            .with_write_only_frame_uploads()
+            .with_write_only_custom_effect_activation(Duration::ZERO);
             $(let protocol = protocol.$modifier($($args),*);)*
             Box::new(protocol)
         }

@@ -442,7 +442,7 @@ fn blade_protocol_matches_uchroma_laptop_path() {
             .iter()
             .all(|command| !command.expects_response)
     );
-    assert!(commands[6].expects_response);
+    assert!(!commands[6].expects_response);
     assert!(
         commands
             .iter()
@@ -493,7 +493,7 @@ fn blade_pro_2016_protocol_uses_0x80_frame_uploads() {
             .iter()
             .all(|command| !command.expects_response)
     );
-    assert!(commands[12].expects_response);
+    assert!(!commands[12].expects_response);
 
     let first_chunk = &commands[0].data;
     assert_eq!(first_chunk[1], 0x80);

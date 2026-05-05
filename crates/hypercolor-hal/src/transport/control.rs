@@ -163,7 +163,7 @@ impl UsbControlTransport {
         let length = u16::try_from(self.max_packet_len).map_err(|_| TransportError::IoError {
             detail: "configured packet length exceeds u16".to_owned(),
         })?;
-        debug!(
+        trace!(
             interface_number = self.interface_number,
             report_id = format_args!("0x{:02X}", self.report_id),
             timeout_ms = timeout.as_millis(),
