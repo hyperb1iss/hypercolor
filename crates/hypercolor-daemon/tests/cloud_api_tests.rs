@@ -631,6 +631,95 @@ async fn cloud_connection_connect_starts_socket_task_after_prepare() {
     );
 }
 
+#[tokio::test]
+async fn cloud_connection_disconnect_clears_runtime_snapshot() {
+    let (_tempdir, _guard) = set_temp_data_dir();
+    let state = cloud_test_state_with_cloud("http://127.0.0.1:1", true);
+    let store = MemorySecretStore::default();
+    load_or_create_identity(&store).expect("identity should create");
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
+        .expect("refresh token should store");
+    state
+        .cloud_connection
+        .write()
+        .await
+        .mark_backoff("stale cloud error");
+
+    let status = cloud::disconnect_connection_from_store(&state, &store)
+        .await
+        .expect("disconnect should report status");
+
+    assert_eq!(status.runtime_state, CloudConnectionRuntimeState::Idle);
+    assert!(!status.connected);
+    assert!(status.last_error.is_none());
+    assert_eq!(
+        state.cloud_connection.read().await.snapshot().runtime_state,
+        CloudConnectionRuntimeState::Idle
+    );
+}
+
+#[tokio::test]
+async fn cloud_connection_disconnect_stops_running_socket_task() {
+    let (_tempdir, _guard) = set_temp_data_dir();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let base_url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .expect("test server address should resolve")
+    );
+    let state = cloud_test_state_with_cloud(&base_url, true);
+    let store = MemorySecretStore::default();
+    let identity = load_or_create_identity(&store).expect("identity should create");
+    store_refresh_token(&store, RefreshTokenOwner::Daemon, "refresh-old")
+        .expect("refresh token should store");
+    let (welcome_tx, welcome_rx) = oneshot::channel();
+    let (close_tx, close_rx) = oneshot::channel();
+    let server = spawn_connect_start_server(
+        listener,
+        "access-for-registration",
+        "refresh-next",
+        "daemon-connect-token",
+        identity.daemon_id(),
+        identity.keypair().public_key().as_str().to_owned(),
+        welcome_tx,
+        close_rx,
+    );
+    let client = CloudClient::new(
+        CloudClientConfig::with_auth_base_url(&base_url, &base_url)
+            .expect("base urls should parse"),
+    );
+
+    cloud::connect_connection_from_store(
+        &state,
+        &client,
+        &store,
+        prepare_input([10; 32], [14; 16]),
+    )
+    .await
+    .expect("cloud connection should start");
+    tokio::time::timeout(std::time::Duration::from_secs(2), welcome_rx)
+        .await
+        .expect("welcome should arrive")
+        .expect("welcome signal should send");
+    wait_for_cloud_runtime_state(&state, CloudConnectionRuntimeState::Connected).await;
+
+    let status = cloud::disconnect_connection_from_store(&state, &store)
+        .await
+        .expect("disconnect should report status");
+
+    assert_eq!(status.runtime_state, CloudConnectionRuntimeState::Idle);
+    assert!(!status.connected);
+    assert!(status.last_error.is_none());
+    let _ = close_tx.send(());
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("test server should finish")
+        .expect("test server should not panic");
+}
+
 async fn wait_for_cloud_runtime_state(state: &AppState, expected: CloudConnectionRuntimeState) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
@@ -1128,10 +1217,7 @@ fn spawn_connect_start_server(
             .expect("welcome should send");
         let _ = welcome_tx.send(());
         let _ = close_rx.await;
-        socket
-            .send(Message::Close(None))
-            .await
-            .expect("close should send");
+        let _ = socket.send(Message::Close(None)).await;
     })
 }
 

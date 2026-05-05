@@ -111,6 +111,14 @@ impl CloudSocketRuntime {
         }
     }
 
+    pub async fn disconnect(&mut self, runtime: &Arc<RwLock<CloudConnectionRuntime>>) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        runtime.write().await.mark_idle();
+    }
+
     fn prune_finished(&mut self) {
         if self.task.as_ref().is_some_and(JoinHandle::is_finished) {
             self.task = None;

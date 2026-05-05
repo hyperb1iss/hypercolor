@@ -275,6 +275,18 @@ pub async fn connect_connection(State(state): State<Arc<AppState>>) -> Response 
     }
 }
 
+pub async fn disconnect_connection(State(state): State<Arc<AppState>>) -> Response {
+    let store = match KeyringSecretStore::new_native() {
+        Ok(store) => store,
+        Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
+    };
+
+    match disconnect_connection_from_store(&state, &store).await {
+        Ok(status) => ApiResponse::ok(status),
+        Err(error) => ApiError::internal(error),
+    }
+}
+
 fn prepare_error_response(error: CloudConnectionPrepareError) -> Response {
     match error {
         CloudConnectionPrepareError::MissingIdentity => {
@@ -361,6 +373,20 @@ pub async fn connect_connection_from_store(
     connection_status_from_store(state, store)
         .await
         .map_err(CloudConnectionStartError::Status)
+}
+
+pub async fn disconnect_connection_from_store(
+    state: &AppState,
+    store: &impl SecretStore,
+) -> Result<CloudConnectionStatus, String> {
+    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
+    state
+        .cloud_socket
+        .lock()
+        .await
+        .disconnect(&state.cloud_connection)
+        .await;
+    connection_status_from_store(state, store).await
 }
 
 pub async fn prepare_connection_from_store(
@@ -489,6 +515,13 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
         Err(error) => return ApiError::internal(format!("failed to open cloud keyring: {error}")),
     };
 
+    let _prepare_guard = state.cloud_connection_prepare_lock.lock().await;
+    state
+        .cloud_socket
+        .lock()
+        .await
+        .disconnect(&state.cloud_connection)
+        .await;
     let cleared_sessions = {
         let mut sessions = state.cloud_login_sessions.lock().await;
         let count = sessions.len();
@@ -496,7 +529,8 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
         count
     };
 
-    match logout_from_store(&store, cleared_sessions) {
+    let logout = logout_from_store(&store, cleared_sessions);
+    match logout {
         Ok(mut status) => match delete_cached_entitlement(entitlement_cache_path()).await {
             Ok(deleted) => {
                 status.entitlement_cache_deleted = deleted;

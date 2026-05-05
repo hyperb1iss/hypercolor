@@ -58,6 +58,9 @@ pub struct CloudConnectionArgs {
     /// Refresh registration, open the cloud socket, and keep it running.
     #[arg(long)]
     pub connect: bool,
+    /// Close the cloud socket and clear runtime connection state.
+    #[arg(long)]
+    pub disconnect: bool,
 }
 
 pub async fn execute(args: &CloudArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
@@ -118,13 +121,21 @@ async fn execute_connection(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    if args.prepare && args.connect {
-        bail!("choose only one cloud connection action: --prepare or --connect");
+    let selected_actions = [args.prepare, args.connect, args.disconnect]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
+    if selected_actions > 1 {
+        bail!("choose only one cloud connection action: --prepare, --connect, or --disconnect");
     }
 
     let response = if args.connect {
         client
             .post("/cloud/connection/connect", &serde_json::json!({}))
+            .await?
+    } else if args.disconnect {
+        client
+            .post("/cloud/connection/disconnect", &serde_json::json!({}))
             .await?
     } else if args.prepare {
         client
@@ -163,6 +174,16 @@ async fn execute_connection(
                     .is_none_or(serde_json::Value::is_null)
             {
                 ctx.success("Cloud connection started");
+            } else if args.disconnect
+                && response
+                    .get("runtime_state")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("idle")
+                && response
+                    .get("last_error")
+                    .is_none_or(serde_json::Value::is_null)
+            {
+                ctx.success("Cloud connection stopped");
             } else if args.prepare
                 && response
                     .get("runtime_state")

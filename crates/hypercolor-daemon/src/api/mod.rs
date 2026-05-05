@@ -1278,6 +1278,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(cloud::connect_connection),
         )
         .route(
+            "/cloud/connection/disconnect",
+            axum::routing::post(cloud::disconnect_connection),
+        )
+        .route(
             "/cloud/identity",
             axum::routing::post(cloud::ensure_identity),
         )
