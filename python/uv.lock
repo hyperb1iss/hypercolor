@@ -215,7 +215,7 @@ types = [
 
 [package.metadata]
 requires-dist = [
-    { name = "attrs", specifier = ">=26.1.0" },
+    { name = "attrs", specifier = ">=25.4.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "msgspec", specifier = ">=0.21.1" },
     { name = "websockets", specifier = ">=16.0" },
