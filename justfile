@@ -326,25 +326,31 @@ tray *args='':
 tray *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-tray -- {{ args }}
 
+# Build UI + effects so tauri.conf.json's workspace-relative resource paths exist.
+# Both targets are incremental, so no-op rebuilds are cheap and we never bundle stale artifacts.
+app-assets:
+    just ui-build
+    just effects-build
+
 # Run the unified desktop app
 [unix]
-app *args='':
+app *args='': app-assets
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-app --bin hypercolor-app -- {{ args }}
 
 [windows]
-app *args='':
+app *args='': app-assets
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-app --bin hypercolor-app -- {{ args }}
 
 # Build the unified desktop app
 [unix]
-app-build *args='':
+app-build *args='': app-assets
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
 
 [windows]
-app-build *args='':
+app-build *args='': app-assets
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
 
-# Stage sidecars and resources used by native Tauri bundles
+# Stage triple-suffixed sidecars (and Windows-only PawnIO/SMBus payloads) under target/bundle-stage/
 [unix]
 app-bundle-assets *args='':
     ./scripts/stage-app-bundle-assets.sh {{ args }}
@@ -355,12 +361,12 @@ app-bundle-assets *args='':
 
 # Build native Tauri bundles for the unified desktop app
 [unix]
-app-bundle *args='':
+app-bundle *args='': app-assets
     cd crates/hypercolor-app && cargo tauri build --config tauri.bundle.conf.json {{ args }}
 
 [windows]
-app-bundle *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json {{ args }}"
+app-bundle *args='': app-assets
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
 
 # Build the full unsigned Windows NSIS installer package
 [windows]

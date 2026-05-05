@@ -7,9 +7,6 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$AppRoot = Join-Path $RepoRoot 'crates\hypercolor-app'
-$StageBin = Join-Path $AppRoot 'binaries'
-$StageResources = Join-Path $AppRoot 'resources'
 
 function Get-HypercolorHostTriple {
     $hostTuple = & rustc --print host-tuple 2>$null
@@ -55,19 +52,6 @@ function Reset-Directory {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
 }
 
-function Copy-DirectoryContents {
-    param(
-        [string] $Source,
-        [string] $Destination
-    )
-
-    Reset-Directory $Destination
-    Get-ChildItem -LiteralPath $Source -Force |
-        ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
-        }
-}
-
 function Copy-Sidecar {
     param([string] $Name)
 
@@ -80,17 +64,6 @@ function Copy-Sidecar {
     Copy-Item -LiteralPath $source -Destination $targetPath -Force
 }
 
-function Copy-ToolScript {
-    param([string] $Name)
-
-    $source = Join-Path $RepoRoot "scripts\$Name"
-    if (-not (Test-Path -LiteralPath $source)) {
-        throw "missing tool script: $source"
-    }
-
-    Copy-Item -LiteralPath $source -Destination (Join-Path $StageResources 'tools') -Force
-}
-
 function Copy-WindowsToolBinary {
     param([string] $Name)
 
@@ -99,7 +72,7 @@ function Copy-WindowsToolBinary {
         throw "missing built Windows tool binary: $source; build release binaries before staging app bundle assets"
     }
 
-    Copy-Item -LiteralPath $source -Destination (Join-Path (Join-Path $StageResources 'tools') "$Name$Exe") -Force
+    Copy-Item -LiteralPath $source -Destination (Join-Path $StageTools "$Name$Exe") -Force
 }
 
 function Test-WindowsTarget {
@@ -126,44 +99,38 @@ if ($Target -ne $HostTarget) {
 
 $Exe = if ($Target -like '*windows*' -or $Target -like '*-pc-windows-*') { '.exe' } else { '' }
 
-Reset-Directory $StageBin
-New-Item -ItemType Directory -Force `
-    -Path (Join-Path $StageResources 'ui'), `
-          (Join-Path $StageResources 'effects\bundled'), `
-          (Join-Path $StageResources 'tools') | Out-Null
-
-Copy-Sidecar 'hypercolor-daemon'
-Copy-Sidecar 'hypercolor'
+$StageDir = Join-Path $TargetDir 'bundle-stage'
+$StageBin = Join-Path $StageDir 'binaries'
+$StageTools = Join-Path $StageDir 'tools'
 
 $uiDist = Join-Path $RepoRoot 'crates\hypercolor-ui\dist'
-if (Test-Path -LiteralPath $uiDist) {
-    Copy-DirectoryContents $uiDist (Join-Path $StageResources 'ui')
-} else {
-    Write-Warning 'crates/hypercolor-ui/dist not found; UI resources left as-is'
+$uiIndex = Join-Path $uiDist 'index.html'
+if (-not (Test-Path -LiteralPath $uiIndex)) {
+    Write-Error 'crates/hypercolor-ui/dist is missing or incomplete; run "just ui-build" first'
+    exit 1
 }
 
 $effectsDist = Join-Path $RepoRoot 'effects\hypercolor'
-if (Test-Path -LiteralPath $effectsDist) {
-    Copy-DirectoryContents $effectsDist (Join-Path $StageResources 'effects\bundled')
-} else {
-    Write-Warning 'effects/hypercolor not found; bundled effects left as-is'
+$effectsEmpty = (-not (Test-Path -LiteralPath $effectsDist)) -or `
+    (-not (Get-ChildItem -LiteralPath $effectsDist -Force -ErrorAction SilentlyContinue))
+if ($effectsEmpty) {
+    Write-Error 'effects/hypercolor is missing or empty; run "just effects-build" first'
+    exit 1
 }
 
-Copy-ToolScript 'install-windows-service.ps1'
-Copy-ToolScript 'uninstall-windows-service.ps1'
-Copy-ToolScript 'diagnose-windows.ps1'
-Copy-ToolScript 'install-windows-smbus-service.ps1'
-Copy-ToolScript 'install-pawnio-modules.ps1'
-Copy-ToolScript 'install-bundled-pawnio.ps1'
-Copy-ToolScript 'install-windows-hardware-support.ps1'
+Reset-Directory $StageBin
+Reset-Directory $StageTools
+
+Copy-Sidecar 'hypercolor-daemon'
+Copy-Sidecar 'hypercolor'
 
 if (Test-WindowsTarget) {
     Copy-WindowsToolBinary 'hypercolor-smbus-service'
 
     if (-not $SkipPawnIo) {
         & (Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1') `
-            -Destination (Join-Path (Join-Path $StageResources 'tools') 'pawnio')
+            -Destination (Join-Path $StageTools 'pawnio')
     }
 }
 
-Write-Host "staged hypercolor-app bundle assets for $Target ($Profile)"
+Write-Host "staged hypercolor-app bundle assets for $Target ($Profile) -> $StageDir"

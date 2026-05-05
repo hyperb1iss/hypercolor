@@ -1,8 +1,8 @@
 {
   "bundle": {
     "externalBin": [
-      "binaries/hypercolor-daemon",
-      "binaries/hypercolor"
+      "../../target/bundle-stage/binaries/hypercolor-daemon",
+      "../../target/bundle-stage/binaries/hypercolor"
     ]
   }
 }

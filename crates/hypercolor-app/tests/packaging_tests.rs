@@ -56,14 +56,11 @@ fn ci_publishes_homebrew_formula_and_cask() {
 
 #[test]
 fn app_bundle_staging_includes_windows_support_helpers() {
+    let tauri_config = include_str!("../tauri.conf.json");
     for script in WINDOWS_TOOL_SCRIPTS {
         assert!(
-            STAGE_APP_BUNDLE_PS1.contains(script),
-            "PowerShell staging should bundle {script}"
-        );
-        assert!(
-            STAGE_APP_BUNDLE_SH.contains(script),
-            "Bash staging should bundle {script}"
+            tauri_config.contains(script),
+            "tauri.conf.json should reference workspace tool script {script}"
         );
     }
 

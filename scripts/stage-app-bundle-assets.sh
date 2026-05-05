@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Stage Tauri sidecars and resources for hypercolor-app bundling.
+# Stage Tauri sidecars and platform-conditional resources for hypercolor-app bundling.
+#
+# Static resources (UI dist, bundled effects, *.ps1 tool scripts) are referenced
+# directly from their workspace locations by tauri.conf.json — no staging needed.
+# This script only handles artifacts that are platform-conditional or need
+# triple-suffixed sidecars: built binaries and the Windows SMBus + PawnIO payloads.
+#
+# All staging output lives under ${target}/bundle-stage/, which is gitignored
+# along with the rest of target/. The source tree never receives generated files.
 
 set -euo pipefail
 
@@ -70,8 +78,9 @@ case "${RUST_TARGET}" in
   *) EXE="" ;;
 esac
 
-STAGE_BIN="${ROOT_DIR}/crates/hypercolor-app/binaries"
-STAGE_RES="${ROOT_DIR}/crates/hypercolor-app/resources"
+STAGE_DIR="${TARGET_DIR}/bundle-stage"
+STAGE_BIN="${STAGE_DIR}/binaries"
+STAGE_TOOLS="${STAGE_DIR}/tools"
 
 require_file() {
   local path="$1"
@@ -93,16 +102,9 @@ stage_binary() {
 stage_tool_binary() {
   local name="$1"
   local source="${PROFILE_DIR}/${name}${EXE}"
-  local target="${STAGE_RES}/tools/${name}${EXE}"
+  local target="${STAGE_TOOLS}/${name}${EXE}"
   require_file "${source}"
   install -m755 "${source}" "${target}"
-}
-
-stage_tool_script() {
-  local name="$1"
-  local source="scripts/${name}"
-  require_file "${source}"
-  install -m644 "${source}" "${STAGE_RES}/tools/"
 }
 
 is_windows_target() {
@@ -138,7 +140,7 @@ download_verified() {
 }
 
 stage_pawnio_assets() {
-  local dest="${STAGE_RES}/tools/pawnio"
+  local dest="${STAGE_TOOLS}/pawnio"
   local cache="${ROOT_DIR}/target/pawnio"
   local extract="${cache}/modules-${PAWNIO_MODULES_VERSION}"
   local setup_url="https://github.com/namazso/PawnIO.Setup/releases/download/${PAWNIO_SETUP_VERSION}/PawnIO_setup.exe"
@@ -216,35 +218,23 @@ EOF
   } >"${dest}/manifest.json"
 }
 
-rm -rf "${STAGE_BIN}" "${STAGE_RES}/tools"
-mkdir -p "${STAGE_BIN}" "${STAGE_RES}/ui" "${STAGE_RES}/effects/bundled" "${STAGE_RES}/tools"
+if [[ ! -f crates/hypercolor-ui/dist/index.html ]]; then
+  echo "error: crates/hypercolor-ui/dist is missing or incomplete" >&2
+  echo "build the production UI first: just ui-build" >&2
+  exit 1
+fi
+
+if [[ ! -d effects/hypercolor ]] || [[ -z "$(ls -A effects/hypercolor 2>/dev/null)" ]]; then
+  echo "error: effects/hypercolor is missing or empty" >&2
+  echo "build bundled effects first: just effects-build" >&2
+  exit 1
+fi
+
+rm -rf "${STAGE_BIN}" "${STAGE_TOOLS}"
+mkdir -p "${STAGE_BIN}" "${STAGE_TOOLS}"
 
 stage_binary hypercolor-daemon
 stage_binary hypercolor
-
-if [[ -d crates/hypercolor-ui/dist ]]; then
-  rm -rf "${STAGE_RES}/ui"
-  mkdir -p "${STAGE_RES}/ui"
-  cp -R crates/hypercolor-ui/dist/. "${STAGE_RES}/ui/"
-else
-  echo "warning: crates/hypercolor-ui/dist not found; UI resources left as-is" >&2
-fi
-
-if [[ -d effects/hypercolor ]]; then
-  rm -rf "${STAGE_RES}/effects/bundled"
-  mkdir -p "${STAGE_RES}/effects/bundled"
-  cp -R effects/hypercolor/. "${STAGE_RES}/effects/bundled/"
-else
-  echo "warning: effects/hypercolor not found; bundled effects left as-is" >&2
-fi
-
-stage_tool_script install-windows-service.ps1
-stage_tool_script uninstall-windows-service.ps1
-stage_tool_script diagnose-windows.ps1
-stage_tool_script install-windows-smbus-service.ps1
-stage_tool_script install-pawnio-modules.ps1
-stage_tool_script install-bundled-pawnio.ps1
-stage_tool_script install-windows-hardware-support.ps1
 
 if is_windows_target; then
   stage_tool_binary hypercolor-smbus-service
@@ -254,4 +244,4 @@ if is_windows_target; then
   fi
 fi
 
-echo "staged hypercolor-app bundle assets for ${RUST_TARGET} (${PROFILE})"
+echo "staged hypercolor-app bundle assets for ${RUST_TARGET} (${PROFILE}) -> ${STAGE_DIR}"

@@ -157,7 +157,12 @@ Invoke-StageAssets
 Invoke-Checked `
     "Build unsigned Tauri Windows installer" `
     "cargo" `
-    @("tauri", "build", "--config", "tauri.bundle.conf.json", "--bundles", $Bundles) `
+    @(
+        "tauri", "build",
+        "--config", "tauri.bundle.conf.json",
+        "--config", "tauri.windows.bundle.conf.json",
+        "--bundles", $Bundles
+    ) `
     (Join-Path $RepoRoot "crates\hypercolor-app")
 
 Show-InstallerArtifacts

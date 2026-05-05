@@ -210,7 +210,10 @@ fn tauri_config_declares_sidecar_binaries() {
         .and_then(serde_json::Value::as_array)
         .expect("bundle.externalBin should be an array");
 
-    for expected in ["binaries/hypercolor-daemon", "binaries/hypercolor"] {
+    for expected in [
+        "../../target/bundle-stage/binaries/hypercolor-daemon",
+        "../../target/bundle-stage/binaries/hypercolor",
+    ] {
         assert!(
             external_bins.iter().any(|bin| bin == expected),
             "bundle.externalBin should include {expected}"
@@ -219,7 +222,7 @@ fn tauri_config_declares_sidecar_binaries() {
 }
 
 #[test]
-fn tauri_config_declares_staged_resources() {
+fn tauri_config_declares_workspace_resources() {
     let config = tauri_config();
     let resources = config
         .get("bundle")
@@ -228,18 +231,62 @@ fn tauri_config_declares_staged_resources() {
         .expect("bundle.resources should be a map");
     let root = manifest_dir();
 
+    let ui_target = resources
+        .get("../../crates/hypercolor-ui/dist/")
+        .and_then(serde_json::Value::as_str);
+    assert_eq!(ui_target, Some("ui/"));
+
+    let effects_target = resources
+        .get("../../effects/hypercolor/")
+        .and_then(serde_json::Value::as_str);
+    assert_eq!(effects_target, Some("effects/bundled/"));
+
+    for script in [
+        "install-windows-service.ps1",
+        "uninstall-windows-service.ps1",
+        "diagnose-windows.ps1",
+        "install-windows-smbus-service.ps1",
+        "install-pawnio-modules.ps1",
+        "install-bundled-pawnio.ps1",
+        "install-windows-hardware-support.ps1",
+    ] {
+        let source = format!("../../scripts/{script}");
+        let target = format!("tools/{script}");
+        assert_eq!(
+            resources.get(&source).and_then(serde_json::Value::as_str),
+            Some(target.as_str()),
+            "bundle.resources should map {source} -> {target}"
+        );
+        assert!(
+            root.join(Path::new(&source)).exists(),
+            "tool script should exist on disk: {source}"
+        );
+    }
+}
+
+#[test]
+fn tauri_windows_bundle_config_layers_pawnio_resources() {
+    let config = config_json("tauri.windows.bundle.conf.json");
+    let resources = config
+        .get("bundle")
+        .and_then(|bundle| bundle.get("resources"))
+        .and_then(serde_json::Value::as_object)
+        .expect("windows bundle resources should be a map");
+
     for (source, target) in [
-        ("resources/ui/", "ui/"),
-        ("resources/effects/bundled/", "effects/bundled/"),
-        ("resources/tools/", "tools/"),
+        (
+            "../../target/bundle-stage/tools/hypercolor-smbus-service.exe",
+            "tools/hypercolor-smbus-service.exe",
+        ),
+        (
+            "../../target/bundle-stage/tools/pawnio/",
+            "tools/pawnio/",
+        ),
     ] {
         assert_eq!(
             resources.get(source).and_then(serde_json::Value::as_str),
-            Some(target)
-        );
-        assert!(
-            root.join(Path::new(source)).exists(),
-            "resource source should exist: {source}"
+            Some(target),
+            "windows bundle should map {source} -> {target}"
         );
     }
 }

@@ -209,15 +209,18 @@ pub fn DisplaysPage() -> impl IntoView {
             return;
         };
 
-        if selected_id
-            .get()
+        let current_id = selected_id.get();
+        if current_id
             .as_ref()
             .is_some_and(|id| items.iter().any(|display| display.id == *id))
         {
             return;
         }
 
-        set_selected_id.set(items.first().map(|display| display.id.clone()));
+        let next_id = items.first().map(|display| display.id.clone());
+        if current_id != next_id {
+            set_selected_id.set(next_id);
+        }
     });
 
     let selected_display = Memo::new(move |_| {
