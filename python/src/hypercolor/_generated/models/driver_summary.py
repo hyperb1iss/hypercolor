@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.driver_module_descriptor import DriverModuleDescriptor
+    from ..models.driver_presentation import DriverPresentation
     from ..models.driver_protocol_descriptor import DriverProtocolDescriptor
 
 
@@ -23,17 +24,19 @@ class DriverSummary:
         config_key (str):
         descriptor (DriverModuleDescriptor): Stable module descriptor for native and future Wasm driver registries.
         enabled (bool):
+        presentation (DriverPresentation): API and UI presentation metadata for a driver module.
+        protocols (list[DriverProtocolDescriptor]):
         control_surface_id (None | str | Unset):
         control_surface_path (None | str | Unset):
-        protocols (list[DriverProtocolDescriptor]):
     """
 
     config_key: str
     descriptor: DriverModuleDescriptor
     enabled: bool
+    presentation: DriverPresentation
+    protocols: list[DriverProtocolDescriptor]
     control_surface_id: None | str | Unset = UNSET
     control_surface_path: None | str | Unset = UNSET
-    protocols: list[DriverProtocolDescriptor] = _attrs_field(factory=list)
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +45,8 @@ class DriverSummary:
         descriptor = self.descriptor.to_dict()
 
         enabled = self.enabled
+
+        presentation = self.presentation.to_dict()
 
         protocols = []
         for protocols_item_data in self.protocols:
@@ -67,20 +72,21 @@ class DriverSummary:
                 "config_key": config_key,
                 "descriptor": descriptor,
                 "enabled": enabled,
+                "presentation": presentation,
+                "protocols": protocols,
             }
         )
         if control_surface_id is not UNSET:
             field_dict["control_surface_id"] = control_surface_id
         if control_surface_path is not UNSET:
             field_dict["control_surface_path"] = control_surface_path
-        if protocols:
-            field_dict["protocols"] = protocols
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.driver_module_descriptor import DriverModuleDescriptor
+        from ..models.driver_presentation import DriverPresentation
         from ..models.driver_protocol_descriptor import DriverProtocolDescriptor
 
         d = dict(src_dict)
@@ -89,6 +95,15 @@ class DriverSummary:
         descriptor = DriverModuleDescriptor.from_dict(d.pop("descriptor"))
 
         enabled = d.pop("enabled")
+
+        presentation = DriverPresentation.from_dict(d.pop("presentation"))
+
+        protocols = []
+        _protocols = d.pop("protocols")
+        for protocols_item_data in _protocols:
+            protocols_item = DriverProtocolDescriptor.from_dict(protocols_item_data)
+
+            protocols.append(protocols_item)
 
         def _parse_control_surface_id(data: object) -> None | str | Unset:
             if data is None:
@@ -112,19 +127,14 @@ class DriverSummary:
             d.pop("control_surface_path", UNSET)
         )
 
-        protocols = []
-        _protocols = d.pop("protocols", [])
-        for protocols_item_data in _protocols:
-            protocols_item = DriverProtocolDescriptor.from_dict(protocols_item_data)
-            protocols.append(protocols_item)
-
         driver_summary = cls(
             config_key=config_key,
             descriptor=descriptor,
             enabled=enabled,
+            presentation=presentation,
+            protocols=protocols,
             control_surface_id=control_surface_id,
             control_surface_path=control_surface_path,
-            protocols=protocols,
         )
 
         driver_summary.additional_properties = d

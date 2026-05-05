@@ -95,6 +95,7 @@ def test_driver_model_decodes_protocol_catalog() -> None:
             "config_version": 1,
             "default_enabled": True,
         },
+        "presentation": {"label": "Nollie", "icon": "grid"},
         "enabled": True,
         "config_key": "drivers.nollie",
         "protocols": [
@@ -115,5 +116,7 @@ def test_driver_model_decodes_protocol_catalog() -> None:
     driver = msgspec.convert(payload, type=Driver)
 
     assert driver.descriptor.capabilities.protocol_catalog is True
+    assert driver.presentation is not None
+    assert driver.presentation.label == "Nollie"
     assert driver.protocols[0].protocol_id == "nollie_8"
     assert driver.protocols[0].vendor_id == 0x2E8A

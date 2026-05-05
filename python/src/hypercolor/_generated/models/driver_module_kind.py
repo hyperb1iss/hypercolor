@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class DriverModuleKind(str, Enum):
+    BRIDGE = "bridge"
     HAL = "hal"
     HOST = "host"
     NETWORK = "network"

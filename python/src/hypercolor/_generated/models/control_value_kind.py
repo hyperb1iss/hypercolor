@@ -17,6 +17,7 @@ class ControlValueKind(str, Enum):
     OBJECT = "object"
     SECRET_REF = "secret_ref"
     STRING = "string"
+    UNKNOWN = "unknown"
 
     def __str__(self) -> str:
         return str(self.value)

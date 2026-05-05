@@ -13,11 +13,12 @@ from ..models.driver_transport_kind_type_2 import DriverTransportKindType2
 from ..models.driver_transport_kind_type_3 import DriverTransportKindType3
 from ..models.driver_transport_kind_type_4 import DriverTransportKindType4
 from ..models.driver_transport_kind_type_5 import DriverTransportKindType5
+from ..models.driver_transport_kind_type_6 import DriverTransportKindType6
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.driver_capability_set import DriverCapabilitySet
-    from ..models.driver_transport_kind_type_6 import DriverTransportKindType6
+    from ..models.driver_transport_kind_type_7 import DriverTransportKindType7
 
 
 T = TypeVar("T", bound="DriverModuleDescriptor")
@@ -36,8 +37,8 @@ class DriverModuleDescriptor:
         id (str): Stable driver identifier.
         module_kind (DriverModuleKind): High-level module category used for driver registry introspection.
         transports (list[DriverTransportKindType0 | DriverTransportKindType1 | DriverTransportKindType2 |
-            DriverTransportKindType3 | DriverTransportKindType4 | DriverTransportKindType5 | DriverTransportKindType6]):
-            Transport categories used by this driver.
+            DriverTransportKindType3 | DriverTransportKindType4 | DriverTransportKindType5 | DriverTransportKindType6 |
+            DriverTransportKindType7]): Transport categories used by this driver.
         vendor_name (None | str | Unset): Optional vendor or organization name.
     """
 
@@ -56,6 +57,7 @@ class DriverModuleDescriptor:
         | DriverTransportKindType4
         | DriverTransportKindType5
         | DriverTransportKindType6
+        | DriverTransportKindType7
     ]
     vendor_name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -90,6 +92,8 @@ class DriverModuleDescriptor:
                 transports_item = transports_item_data.value
             elif isinstance(transports_item_data, DriverTransportKindType5):
                 transports_item = transports_item_data.value
+            elif isinstance(transports_item_data, DriverTransportKindType6):
+                transports_item = transports_item_data.value
             else:
                 transports_item = transports_item_data.to_dict()
 
@@ -123,7 +127,7 @@ class DriverModuleDescriptor:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.driver_capability_set import DriverCapabilitySet
-        from ..models.driver_transport_kind_type_6 import DriverTransportKindType6
+        from ..models.driver_transport_kind_type_7 import DriverTransportKindType7
 
         d = dict(src_dict)
         api_schema_version = d.pop("api_schema_version")
@@ -154,6 +158,7 @@ class DriverModuleDescriptor:
                 | DriverTransportKindType4
                 | DriverTransportKindType5
                 | DriverTransportKindType6
+                | DriverTransportKindType7
             ):
                 try:
                     if not isinstance(data, str):
@@ -215,13 +220,23 @@ class DriverModuleDescriptor:
                     return componentsschemas_driver_transport_kind_type_5
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
+                try:
+                    if not isinstance(data, str):
+                        raise TypeError()
+                    componentsschemas_driver_transport_kind_type_6 = (
+                        DriverTransportKindType6(data)
+                    )
+
+                    return componentsschemas_driver_transport_kind_type_6
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_driver_transport_kind_type_6 = (
-                    DriverTransportKindType6.from_dict(data)
+                componentsschemas_driver_transport_kind_type_7 = (
+                    DriverTransportKindType7.from_dict(data)
                 )
 
-                return componentsschemas_driver_transport_kind_type_6
+                return componentsschemas_driver_transport_kind_type_7
 
             transports_item = _parse_transports_item(transports_item_data)
 

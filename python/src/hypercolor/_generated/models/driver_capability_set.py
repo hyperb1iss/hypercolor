@@ -16,10 +16,10 @@ class DriverCapabilitySet:
     """Capability flags exposed by a driver module.
 
     Attributes:
-        output_backend (bool): Builds an output backend.
         config (bool): Exposes driver-scoped configuration.
         credentials (bool): Stores credentials or authorization material.
         discovery (bool): Discovers devices.
+        output_backend (bool): Builds an output backend.
         pairing (bool): Supports pairing or authorization flows.
         presentation (bool): Provides presentation metadata.
         protocol_catalog (bool): Contributes protocols to a shared backend.
@@ -27,10 +27,10 @@ class DriverCapabilitySet:
         controls (bool | Unset): Exposes typed dynamic control surfaces.
     """
 
-    output_backend: bool
     config: bool
     credentials: bool
     discovery: bool
+    output_backend: bool
     pairing: bool
     presentation: bool
     protocol_catalog: bool
@@ -39,13 +39,13 @@ class DriverCapabilitySet:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        output_backend = self.output_backend
-
         config = self.config
 
         credentials = self.credentials
 
         discovery = self.discovery
+
+        output_backend = self.output_backend
 
         pairing = self.pairing
 
@@ -61,10 +61,10 @@ class DriverCapabilitySet:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "output_backend": output_backend,
                 "config": config,
                 "credentials": credentials,
                 "discovery": discovery,
+                "output_backend": output_backend,
                 "pairing": pairing,
                 "presentation": presentation,
                 "protocol_catalog": protocol_catalog,
@@ -79,13 +79,13 @@ class DriverCapabilitySet:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        output_backend = d.pop("output_backend")
-
         config = d.pop("config")
 
         credentials = d.pop("credentials")
 
         discovery = d.pop("discovery")
+
+        output_backend = d.pop("output_backend")
 
         pairing = d.pop("pairing")
 
@@ -98,10 +98,10 @@ class DriverCapabilitySet:
         controls = d.pop("controls", UNSET)
 
         driver_capability_set = cls(
-            output_backend=output_backend,
             config=config,
             credentials=credentials,
             discovery=discovery,
+            output_backend=output_backend,
             pairing=pairing,
             presentation=presentation,
             protocol_catalog=protocol_catalog,

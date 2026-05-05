@@ -15,25 +15,25 @@ T = TypeVar("T", bound="DiscoverRequest")
 class DiscoverRequest:
     """
     Attributes:
-        backends (list[str] | None | Unset):
+        targets (list[str] | None | Unset):
         timeout_ms (int | None | Unset):
         wait (bool | None | Unset):
     """
 
-    backends: list[str] | None | Unset = UNSET
+    targets: list[str] | None | Unset = UNSET
     timeout_ms: int | None | Unset = UNSET
     wait: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        backends: list[str] | None | Unset
-        if isinstance(self.backends, Unset):
-            backends = UNSET
-        elif isinstance(self.backends, list):
-            backends = self.backends
+        targets: list[str] | None | Unset
+        if isinstance(self.targets, Unset):
+            targets = UNSET
+        elif isinstance(self.targets, list):
+            targets = self.targets
 
         else:
-            backends = self.backends
+            targets = self.targets
 
         timeout_ms: int | None | Unset
         if isinstance(self.timeout_ms, Unset):
@@ -50,8 +50,8 @@ class DiscoverRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if backends is not UNSET:
-            field_dict["backends"] = backends
+        if targets is not UNSET:
+            field_dict["targets"] = targets
         if timeout_ms is not UNSET:
             field_dict["timeout_ms"] = timeout_ms
         if wait is not UNSET:
@@ -63,7 +63,7 @@ class DiscoverRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
 
-        def _parse_backends(data: object) -> list[str] | None | Unset:
+        def _parse_targets(data: object) -> list[str] | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -71,14 +71,14 @@ class DiscoverRequest:
             try:
                 if not isinstance(data, list):
                     raise TypeError()
-                backends_type_0 = cast(list[str], data)
+                targets_type_0 = cast(list[str], data)
 
-                return backends_type_0
+                return targets_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(list[str] | None | Unset, data)
 
-        backends = _parse_backends(d.pop("backends", UNSET))
+        targets = _parse_targets(d.pop("targets", UNSET))
 
         def _parse_timeout_ms(data: object) -> int | None | Unset:
             if data is None:
@@ -99,7 +99,7 @@ class DiscoverRequest:
         wait = _parse_wait(d.pop("wait", UNSET))
 
         discover_request = cls(
-            backends=backends,
+            targets=targets,
             timeout_ms=timeout_ms,
             wait=wait,
         )

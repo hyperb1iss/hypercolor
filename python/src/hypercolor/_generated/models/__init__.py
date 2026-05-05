@@ -48,6 +48,10 @@ from .api_response_device_list_response import ApiResponseDeviceListResponse
 from .api_response_device_list_response_data import ApiResponseDeviceListResponseData
 from .api_response_device_summary import ApiResponseDeviceSummary
 from .api_response_device_summary_data import ApiResponseDeviceSummaryData
+from .api_response_driver_config_response import ApiResponseDriverConfigResponse
+from .api_response_driver_config_response_data import (
+    ApiResponseDriverConfigResponseData,
+)
 from .api_response_driver_list_response import ApiResponseDriverListResponse
 from .api_response_driver_list_response_data import ApiResponseDriverListResponseData
 from .api_response_effect_detail_response import ApiResponseEffectDetailResponse
@@ -145,10 +149,14 @@ from .control_visibility import ControlVisibility
 from .device_auth_state import DeviceAuthState
 from .device_auth_summary import DeviceAuthSummary
 from .device_class_hint import DeviceClassHint
+from .device_connection_summary import DeviceConnectionSummary
 from .device_list_response import DeviceListResponse
+from .device_origin import DeviceOrigin
 from .device_summary import DeviceSummary
 from .discover_request import DiscoverRequest
 from .driver_capability_set import DriverCapabilitySet
+from .driver_config_entry import DriverConfigEntry
+from .driver_config_response import DriverConfigResponse
 from .driver_list_response import DriverListResponse
 from .driver_module_descriptor import DriverModuleDescriptor
 from .driver_module_kind import DriverModuleKind
@@ -162,6 +170,7 @@ from .driver_transport_kind_type_3 import DriverTransportKindType3
 from .driver_transport_kind_type_4 import DriverTransportKindType4
 from .driver_transport_kind_type_5 import DriverTransportKindType5
 from .driver_transport_kind_type_6 import DriverTransportKindType6
+from .driver_transport_kind_type_7 import DriverTransportKindType7
 from .effect_detail_response import EffectDetailResponse
 from .effect_detail_response_active_control_values_type_0 import (
     EffectDetailResponseActiveControlValuesType0,
@@ -249,6 +258,8 @@ __all__ = (
     "ApiResponseDeviceListResponseData",
     "ApiResponseDeviceSummary",
     "ApiResponseDeviceSummaryData",
+    "ApiResponseDriverConfigResponse",
+    "ApiResponseDriverConfigResponseData",
     "ApiResponseDriverListResponse",
     "ApiResponseDriverListResponseData",
     "ApiResponseEffectDetailResponse",
@@ -336,10 +347,14 @@ __all__ = (
     "DeviceAuthState",
     "DeviceAuthSummary",
     "DeviceClassHint",
+    "DeviceConnectionSummary",
     "DeviceListResponse",
+    "DeviceOrigin",
     "DeviceSummary",
     "DiscoverRequest",
     "DriverCapabilitySet",
+    "DriverConfigEntry",
+    "DriverConfigResponse",
     "DriverListResponse",
     "DriverModuleDescriptor",
     "DriverModuleKind",
@@ -353,6 +368,7 @@ __all__ = (
     "DriverTransportKindType4",
     "DriverTransportKindType5",
     "DriverTransportKindType6",
+    "DriverTransportKindType7",
     "EffectDetailResponse",
     "EffectDetailResponseActiveControlValuesType0",
     "EffectHealthStatus",
