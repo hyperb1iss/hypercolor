@@ -20,18 +20,23 @@ pub fn Shell(children: Children) -> impl IntoView {
     // Ambient hue extraction — driven by the shared frame-analysis pass in app context.
     let shell_ref = NodeRef::<leptos::html::Div>::new();
     let frame_analysis = use_context::<FrameAnalysisContext>();
+    let last_ambient_hue = StoredValue::new(None::<i16>);
 
     if let Some(frame_analysis) = frame_analysis {
         Effect::new(move |_| {
             let Some(analysis) = frame_analysis.live_canvas.get() else {
                 return;
             };
+            let hue = analysis.dominant_hue.round() as i16;
+            if last_ambient_hue.get_value() == Some(hue) {
+                return;
+            }
 
-            if let Some(el) = shell_ref.get() {
+            if let Some(el) = shell_ref.get_untracked() {
                 let html_el: &web_sys::HtmlElement = &el;
                 let style = html_el.style();
-                let _ =
-                    style.set_property("--ambient-hue", &format!("{:.0}", analysis.dominant_hue));
+                let _ = style.set_property("--ambient-hue", &hue.to_string());
+                last_ambient_hue.set_value(Some(hue));
             }
         });
     }

@@ -644,6 +644,7 @@ input[type="range"].slider-silk::-moz-range-track {
 .animate-eq-bar {
     animation: eqBar 1.1s ease-in-out infinite;
     transform-origin: bottom;
+    will-change: transform;
 }
 
 .animate-shimmer {
@@ -780,7 +781,10 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 
 /* Status dot: alive pulse */
-.dot-alive { animation: dotPulse 2s ease-in-out infinite; }
+.dot-alive {
+    animation: dotPulse 2s ease-in-out infinite;
+    will-change: opacity, transform;
+}
 
 /* Focus glow ring — pulses once then holds steady */
 .glow-ring:focus-visible {
