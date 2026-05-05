@@ -152,15 +152,58 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
 }
 
 fn resolve_ui_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
-    explicit.or_else(|| {
+    let explicit_provided = explicit.is_some();
+    let path = explicit.or_else(|| {
         let candidate = PathBuf::from("crates/hypercolor-ui/dist");
-        if candidate.join("index.html").exists() {
-            info!(path = %candidate.display(), "Auto-discovered web UI");
-            Some(candidate)
-        } else {
-            None
-        }
-    })
+        candidate.join("index.html").exists().then_some(candidate)
+    })?;
+
+    let index = path.join("index.html");
+    let age = index
+        .metadata()
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|modified| modified.elapsed().ok());
+
+    let age_label = match age {
+        Some(elapsed) => format_age(elapsed),
+        None => "unknown age".to_string(),
+    };
+
+    let source = if explicit_provided {
+        "configured"
+    } else {
+        "auto-discovered"
+    };
+
+    if age.is_some_and(|elapsed| elapsed > std::time::Duration::from_secs(7 * 24 * 60 * 60)) {
+        warn!(
+            path = %path.display(),
+            built = %age_label,
+            "Serving stale web UI ({source}); rebuild with `just ui-build`"
+        );
+    } else {
+        info!(
+            path = %path.display(),
+            built = %age_label,
+            "Serving web UI ({source})"
+        );
+    }
+
+    Some(path)
+}
+
+fn format_age(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
 }
 
 #[cfg(target_os = "linux")]

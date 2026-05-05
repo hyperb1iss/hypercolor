@@ -25,6 +25,7 @@ use hypercolor_driver_api::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "builtin-drivers")]
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -35,7 +36,9 @@ use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
-use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
+use hypercolor_daemon::session::{
+    OutputPowerState, current_global_brightness, set_global_brightness,
+};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
@@ -411,6 +414,67 @@ impl DriverControlProvider for RescanTestDriver {
         _input: ControlValueMap,
     ) -> anyhow::Result<ControlActionResult> {
         bail!("unexpected rescan test action: {action_id}")
+    }
+}
+
+static BLOCKING_RECONNECT_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "blocking_reconnect_test",
+    "Blocking Reconnect Test",
+    DriverTransportKind::Network,
+    true,
+    false,
+);
+
+struct BlockingReconnectTestDriver {
+    discoveries: Arc<AtomicUsize>,
+    release: Arc<Semaphore>,
+}
+
+impl BlockingReconnectTestDriver {
+    fn new(discoveries: Arc<AtomicUsize>, release: Arc<Semaphore>) -> Self {
+        Self {
+            discoveries,
+            release,
+        }
+    }
+}
+
+impl DriverModule for BlockingReconnectTestDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &BLOCKING_RECONNECT_TEST_DRIVER
+    }
+
+    fn has_output_backend(&self) -> bool {
+        false
+    }
+
+    fn build_output_backend(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
+        Ok(None)
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoveryCapability for BlockingReconnectTestDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> anyhow::Result<DiscoveryResult> {
+        self.discoveries.fetch_add(1, Ordering::Relaxed);
+        let _permit = Arc::clone(&self.release)
+            .acquire_owned()
+            .await
+            .expect("blocking reconnect semaphore should stay open");
+        Ok(DiscoveryResult::default())
     }
 }
 
@@ -4317,6 +4381,79 @@ async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
     let power_state = *state.power_state.borrow();
     assert!(!power_state.sleeping);
     assert_eq!(power_state.session_brightness, 1.0);
+}
+
+#[tokio::test]
+async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
+    let (mut state, dir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(dir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let release_scan = Arc::new(Semaphore::new(0));
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(BlockingReconnectTestDriver::new(
+            Arc::clone(&discoveries),
+            Arc::clone(&release_scan),
+        ))
+        .expect("blocking reconnect driver should register");
+    let registry = Arc::new(registry);
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_registry = Arc::clone(&registry);
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_config_manager(Some(Arc::clone(&manager)))
+            .with_driver_registry(Arc::clone(&registry)),
+    );
+    let state = Arc::new(state);
+    insert_test_effect(&state, "solid_color").await;
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+        render_loop.pause();
+    }
+    state.power_state.send_replace(OutputPowerState {
+        global_brightness: 1.0,
+        session_brightness: 0.0,
+        sleeping: true,
+        off_output_behavior: OffOutputBehavior::Release,
+        off_output_color: [0, 0, 0],
+    });
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(200),
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        ),
+    )
+    .await
+    .expect("effect apply should not wait for the reconnect scan")
+    .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Running
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(!power_state.sleeping);
+    assert_eq!(power_state.session_brightness, 1.0);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while discoveries.load(Ordering::Relaxed) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("reconnect scan should run in the background");
+    release_scan.add_permits(1);
 }
 
 #[tokio::test]

@@ -244,10 +244,6 @@ pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
         return;
     }
 
-    if current.off_output_behavior == OffOutputBehavior::Release {
-        reconnect_network_outputs(state).await;
-    }
-
     state.power_state.send_replace(OutputPowerState {
         global_brightness: current.global_brightness,
         session_brightness: 1.0,
@@ -256,6 +252,10 @@ pub(crate) async fn wake_output_for_effect_start(state: &AppState) {
         off_output_color: current.off_output_color,
     });
     resume_paused_render_loop(state).await;
+
+    if current.off_output_behavior == OffOutputBehavior::Release {
+        schedule_network_output_reconnect(state);
+    }
 }
 
 pub(crate) async fn stop_active_effect_and_quiesce_output(
@@ -300,7 +300,7 @@ async fn resume_paused_render_loop(state: &AppState) {
     render_loop.resume();
 }
 
-async fn reconnect_network_outputs(state: &AppState) {
+fn schedule_network_output_reconnect(state: &AppState) {
     let Some(config_manager) = state.config_manager.as_ref() else {
         return;
     };
@@ -337,19 +337,32 @@ async fn reconnect_network_outputs(state: &AppState) {
         return;
     }
 
-    if discovery::execute_discovery_scan_if_idle(
-        super::discovery_runtime(state),
-        Arc::clone(&state.driver_registry),
-        Arc::clone(&state.driver_host),
-        config,
-        targets,
-        discovery::default_timeout(),
-    )
-    .await
-    .is_none()
-    {
-        debug!("Skipping network reconnect scan because discovery is already running");
-    }
+    let runtime = super::discovery_runtime(state);
+    let task_spawner = runtime.task_spawner.clone();
+    let driver_registry = Arc::clone(&state.driver_registry);
+    let driver_host = Arc::clone(&state.driver_host);
+    task_spawner.spawn(async move {
+        let Some(result) = discovery::execute_discovery_scan_if_idle(
+            runtime,
+            driver_registry,
+            driver_host,
+            config,
+            targets,
+            discovery::default_timeout(),
+        )
+        .await
+        else {
+            debug!("Skipping network reconnect scan because discovery is already running");
+            return;
+        };
+
+        debug!(
+            found = result.new_devices.len() + result.reappeared_devices.len(),
+            vanished = result.vanished_devices.len(),
+            duration_ms = result.duration_ms,
+            "Network reconnect scan finished"
+        );
+    });
 }
 
 async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
