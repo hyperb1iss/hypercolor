@@ -1,4 +1,10 @@
-use hypercolor_cloud_client::daemon_link::{DeniedChannel, WelcomeFrame, frame::DenialReason};
+use hypercolor_cloud_client::daemon_link::{
+    DeniedChannel, IdentityNonce, UpgradeNonce, WelcomeFrame, frame::DenialReason,
+};
+use hypercolor_cloud_client::{
+    CloudClient, CloudClientError, DaemonConnectRequest, RefreshTokenOwner, SecretStore,
+    StoredDaemonConnect, StoredDaemonConnectInput,
+};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -20,6 +26,24 @@ pub struct CloudConnectionSnapshot {
     pub available_channels: Vec<String>,
     pub denied_channels: Vec<CloudDeniedChannelStatus>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CloudConnectionPrepareInput<'a> {
+    pub install_name: &'a str,
+    pub os: &'a str,
+    pub arch: &'a str,
+    pub daemon_version: &'a str,
+    pub identity_nonce: IdentityNonce,
+    pub timestamp: &'a str,
+    pub upgrade_nonce: UpgradeNonce,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudConnectionPrepareResult {
+    MissingIdentity,
+    MissingRefreshToken,
+    Prepared(DaemonConnectRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
@@ -49,6 +73,7 @@ impl CloudConnectionRuntime {
         self.snapshot.session_id = None;
         self.snapshot.available_channels.clear();
         self.snapshot.denied_channels.clear();
+        self.snapshot.last_error = None;
     }
 
     pub fn mark_connected(&mut self, welcome: &WelcomeFrame) {
@@ -77,6 +102,48 @@ impl CloudConnectionRuntime {
         self.snapshot.available_channels.clear();
         self.snapshot.denied_channels.clear();
         self.snapshot.last_error = Some(error.into());
+    }
+
+    pub async fn prepare_stored_daemon_connect(
+        &mut self,
+        client: &CloudClient,
+        store: &impl SecretStore,
+        input: CloudConnectionPrepareInput<'_>,
+    ) -> Result<CloudConnectionPrepareResult, CloudClientError> {
+        self.mark_connecting();
+        let result = client
+            .prepare_stored_daemon_connect(
+                store,
+                StoredDaemonConnectInput {
+                    token_owner: RefreshTokenOwner::Daemon,
+                    install_name: input.install_name,
+                    os: input.os,
+                    arch: input.arch,
+                    daemon_version: input.daemon_version,
+                    identity_nonce: input.identity_nonce,
+                    timestamp: input.timestamp,
+                    nonce: input.upgrade_nonce,
+                },
+            )
+            .await;
+
+        match result {
+            Ok(StoredDaemonConnect::MissingIdentity) => {
+                self.mark_backoff("missing cloud identity");
+                Ok(CloudConnectionPrepareResult::MissingIdentity)
+            }
+            Ok(StoredDaemonConnect::MissingRefreshToken) => {
+                self.mark_backoff("missing cloud refresh token");
+                Ok(CloudConnectionPrepareResult::MissingRefreshToken)
+            }
+            Ok(StoredDaemonConnect::Prepared(request)) => {
+                Ok(CloudConnectionPrepareResult::Prepared(request))
+            }
+            Err(error) => {
+                self.mark_backoff(error.to_string());
+                Err(error)
+            }
+        }
     }
 }
 
