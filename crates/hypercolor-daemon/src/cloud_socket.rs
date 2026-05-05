@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::http::header::{
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use ulid::Ulid;
 
-use crate::cloud_connection::CloudConnectionRuntime;
+use crate::cloud_connection::{CloudConnectionRuntime, CloudConnectionRuntimeState};
 
 #[derive(Debug, Error)]
 pub enum CloudSocketError {
@@ -94,8 +94,20 @@ impl CloudSocketRuntime {
     pub async fn shutdown(&mut self, runtime: &Arc<RwLock<CloudConnectionRuntime>>) {
         if let Some(task) = self.task.take() {
             task.abort();
-            let _ = task.await;
-            runtime.write().await.mark_idle();
+            if let Err(error) = task.await {
+                if error.is_cancelled() {
+                    let mut runtime = runtime.write().await;
+                    if runtime.snapshot().runtime_state != CloudConnectionRuntimeState::Backoff {
+                        runtime.mark_idle();
+                    }
+                } else {
+                    tracing::warn!(error = %error, "cloud socket task failed");
+                    runtime
+                        .write()
+                        .await
+                        .mark_backoff("cloud socket task failed");
+                }
+            }
         }
     }
 
@@ -170,13 +182,18 @@ async fn run_session_until_close(
                     }
                     Some(Ok(Message::Text(text))) => {
                         match handle_text_frame(&text, &mut heartbeat) {
-                            Ok(Some(reply)) => {
+                            Ok(TextFrameAction::Reply(reply)) => {
                                 if socket.send(Message::Text(reply.into())).await.is_err() {
                                     mark_socket_failed(&runtime).await;
                                     break;
                                 }
                             }
-                            Ok(None) => {}
+                            Ok(TextFrameAction::Disconnect(reason)) => {
+                                let _ = socket.send(Message::Close(None)).await;
+                                runtime.write().await.mark_backoff(reason);
+                                break;
+                            }
+                            Ok(TextFrameAction::Ignore) => {}
                             Err(error) => tracing::warn!(error = %error, "cloud daemon text frame failed"),
                         }
                     }
@@ -229,16 +246,42 @@ async fn mark_socket_failed(runtime: &Arc<RwLock<CloudConnectionRuntime>>) {
 fn handle_text_frame(
     text: &str,
     heartbeat: &mut HeartbeatState,
-) -> Result<Option<String>, serde_json::Error> {
+) -> Result<TextFrameAction, serde_json::Error> {
     let frame: Frame<Value> = serde_json::from_str(text)?;
+    if frame.channel != ChannelName::Control {
+        return Ok(TextFrameAction::Ignore);
+    }
+
     match frame.kind {
         FrameKind::Pong => {
             heartbeat.mark_pong_received();
-            Ok(None)
+            Ok(TextFrameAction::Ignore)
         }
-        FrameKind::Ping => control_frame_text(FrameKind::Pong, Some(frame.msg_id)).map(Some),
-        _ => Ok(None),
+        FrameKind::Ping => {
+            control_frame_text(FrameKind::Pong, Some(frame.msg_id)).map(TextFrameAction::Reply)
+        }
+        FrameKind::Msg => Ok(control_msg_action(&frame.payload)),
+        _ => Ok(TextFrameAction::Ignore),
     }
+}
+
+fn control_msg_action(payload: &Value) -> TextFrameAction {
+    match payload.get("kind").and_then(Value::as_str) {
+        Some("force.disconnect") => {
+            TextFrameAction::Disconnect(control_reason(payload, "cloud requested disconnect"))
+        }
+        Some("force.relogin") => {
+            TextFrameAction::Disconnect(control_reason(payload, "cloud requested relogin"))
+        }
+        _ => TextFrameAction::Ignore,
+    }
+}
+
+fn control_reason(payload: &Value, fallback: &str) -> String {
+    payload.get("reason").and_then(Value::as_str).map_or_else(
+        || fallback.to_owned(),
+        |reason| format!("{fallback}: {reason}"),
+    )
 }
 
 fn control_frame_text(
@@ -253,6 +296,13 @@ fn control_frame_text(
     );
     frame.in_reply_to = in_reply_to;
     serde_json::to_string(&frame)
+}
+
+#[derive(Debug)]
+enum TextFrameAction {
+    Ignore,
+    Reply(String),
+    Disconnect(String),
 }
 
 #[derive(Debug)]

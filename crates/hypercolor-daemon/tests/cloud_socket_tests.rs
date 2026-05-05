@@ -275,6 +275,69 @@ async fn cloud_socket_runtime_marks_backoff_after_missed_heartbeat_pongs() {
 }
 
 #[tokio::test]
+async fn cloud_socket_runtime_honors_force_disconnect_control_frame() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server address should resolve");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("client should connect to test cloud");
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, assert_handshake)
+            .await
+            .expect("test cloud should accept websocket");
+        let _ = socket
+            .next()
+            .await
+            .expect("daemon should send hello")
+            .expect("hello frame should read");
+        socket
+            .send(Message::Text(welcome_fixture().into()))
+            .await
+            .expect("welcome should send");
+        socket
+            .send(Message::Text(
+                control_msg_frame(serde_json::json!({
+                    "kind": "force.disconnect",
+                    "reason": "admin disabled remote"
+                }))
+                .into(),
+            ))
+            .await
+            .expect("force disconnect should send");
+        let close = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await
+            .expect("daemon close should arrive")
+            .expect("socket should stay open for close")
+            .expect("close should read");
+        assert!(matches!(close, Message::Close(_)));
+    });
+    let runtime = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
+    runtime.write().await.mark_prepared(connect_request(addr));
+    let mut socket_runtime = CloudSocketRuntime::default();
+
+    socket_runtime
+        .spawn_prepared_session(Arc::clone(&runtime), hello_input())
+        .await
+        .expect("prepared session should spawn");
+    wait_for_runtime_state(&runtime, CloudConnectionRuntimeState::Backoff).await;
+    server.await.expect("test cloud task should join");
+    assert_eq!(
+        runtime.read().await.snapshot().last_error.as_deref(),
+        Some("cloud requested disconnect: admin disabled remote")
+    );
+    socket_runtime.shutdown(&runtime).await;
+    assert_eq!(
+        runtime.read().await.snapshot().last_error.as_deref(),
+        Some("cloud requested disconnect: admin disabled remote")
+    );
+}
+
+#[tokio::test]
 async fn cloud_socket_runtime_shutdown_without_task_preserves_state() {
     let runtime = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
     runtime.write().await.mark_backoff("previous failure");
@@ -426,6 +489,11 @@ fn control_pong_frame(in_reply_to: Option<Ulid>) -> String {
     );
     frame.in_reply_to = in_reply_to;
     serde_json::to_string(&frame).expect("control pong should serialize")
+}
+
+fn control_msg_frame(payload: serde_json::Value) -> String {
+    let frame = Frame::new(ChannelName::Control, FrameKind::Msg, Ulid::new(), payload);
+    serde_json::to_string(&frame).expect("control msg should serialize")
 }
 
 async fn wait_for_runtime_state(

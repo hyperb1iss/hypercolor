@@ -623,9 +623,11 @@ async fn cloud_connection_connect_starts_socket_task_after_prepare() {
         .await
         .shutdown(&state.cloud_connection)
         .await;
+    let snapshot = state.cloud_connection.read().await.snapshot();
+    assert_eq!(snapshot.runtime_state, CloudConnectionRuntimeState::Backoff);
     assert_eq!(
-        state.cloud_connection.read().await.snapshot().runtime_state,
-        CloudConnectionRuntimeState::Idle
+        snapshot.last_error.as_deref(),
+        Some("cloud websocket closed")
     );
 }
 
