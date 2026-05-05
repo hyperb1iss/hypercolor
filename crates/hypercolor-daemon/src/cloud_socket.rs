@@ -1,14 +1,18 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_cloud_client::DaemonConnectRequest;
 use hypercolor_cloud_client::daemon_link::{
-    DaemonCapabilities, HelloFrame, PROTOCOL_VERSION, WelcomeFrame, frame::TunnelResume,
+    ChannelName, DaemonCapabilities, Frame, FrameKind, HelloFrame, PROTOCOL_VERSION, WelcomeFrame,
+    frame::TunnelResume,
 };
+use serde_json::Value;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use tokio::time::{Instant, MissedTickBehavior};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -16,6 +20,7 @@ use tokio_tungstenite::tungstenite::http::header::{
     HeaderName, InvalidHeaderName, InvalidHeaderValue,
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use ulid::Ulid;
 
 use crate::cloud_connection::CloudConnectionRuntime;
 
@@ -36,6 +41,8 @@ pub enum CloudSocketError {
     #[error("cloud sent non-text welcome frame")]
     NonTextWelcome,
 }
+
+const MISSED_HEARTBEAT_LIMIT: u8 = 3;
 
 #[derive(Debug, Error)]
 pub enum CloudSocketStartError {
@@ -148,32 +155,136 @@ async fn run_session_until_close(
     session: CloudSocketSession,
     runtime: Arc<RwLock<CloudConnectionRuntime>>,
 ) {
+    let mut heartbeat = HeartbeatState::new(session.welcome());
+    let mut heartbeat_tick =
+        tokio::time::interval_at(Instant::now() + heartbeat.interval, heartbeat.interval);
+    heartbeat_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut socket = session.into_socket();
     loop {
-        match socket.next().await {
-            Some(Ok(Message::Close(_))) | None => {
-                runtime.write().await.mark_backoff("cloud websocket closed");
-                break;
-            }
-            Some(Ok(Message::Ping(payload))) => {
-                if socket.send(Message::Pong(payload)).await.is_err() {
-                    runtime
-                        .write()
-                        .await
-                        .mark_backoff("cloud websocket connection failed");
-                    break;
+        tokio::select! {
+            frame = socket.next() => {
+                match frame {
+                    Some(Ok(Message::Close(_))) | None => {
+                        runtime.write().await.mark_backoff("cloud websocket closed");
+                        break;
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        match handle_text_frame(&text, &mut heartbeat) {
+                            Ok(Some(reply)) => {
+                                if socket.send(Message::Text(reply.into())).await.is_err() {
+                                    mark_socket_failed(&runtime).await;
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => tracing::warn!(error = %error, "cloud daemon text frame failed"),
+                        }
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            mark_socket_failed(&runtime).await;
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        tracing::warn!(error = %error, "cloud daemon socket failed");
+                        mark_socket_failed(&runtime).await;
+                        break;
+                    }
                 }
             }
-            Some(Ok(_)) => {}
-            Some(Err(error)) => {
-                tracing::warn!(error = %error, "cloud daemon socket failed");
-                runtime
-                    .write()
-                    .await
-                    .mark_backoff("cloud websocket connection failed");
-                break;
+            _ = heartbeat_tick.tick() => {
+                if heartbeat.record_ping_due() {
+                    let _ = socket.send(Message::Close(None)).await;
+                    runtime.write().await.mark_backoff("cloud heartbeat missed");
+                    break;
+                }
+                match control_frame_text(FrameKind::Ping, None) {
+                    Ok(frame) => {
+                        if socket.send(Message::Text(frame.into())).await.is_err() {
+                            mark_socket_failed(&runtime).await;
+                            break;
+                        }
+                        heartbeat.mark_ping_sent();
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "cloud heartbeat serialization failed");
+                        mark_socket_failed(&runtime).await;
+                        break;
+                    }
+                }
             }
         }
+    }
+}
+
+async fn mark_socket_failed(runtime: &Arc<RwLock<CloudConnectionRuntime>>) {
+    runtime
+        .write()
+        .await
+        .mark_backoff("cloud websocket connection failed");
+}
+
+fn handle_text_frame(
+    text: &str,
+    heartbeat: &mut HeartbeatState,
+) -> Result<Option<String>, serde_json::Error> {
+    let frame: Frame<Value> = serde_json::from_str(text)?;
+    match frame.kind {
+        FrameKind::Pong => {
+            heartbeat.mark_pong_received();
+            Ok(None)
+        }
+        FrameKind::Ping => control_frame_text(FrameKind::Pong, Some(frame.msg_id)).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn control_frame_text(
+    kind: FrameKind,
+    in_reply_to: Option<Ulid>,
+) -> Result<String, serde_json::Error> {
+    let mut frame = Frame::new(
+        ChannelName::Control,
+        kind,
+        Ulid::new(),
+        Value::Object(serde_json::Map::default()),
+    );
+    frame.in_reply_to = in_reply_to;
+    serde_json::to_string(&frame)
+}
+
+#[derive(Debug)]
+struct HeartbeatState {
+    interval: Duration,
+    awaiting_pong: bool,
+    missed_pongs: u8,
+}
+
+impl HeartbeatState {
+    fn new(welcome: &WelcomeFrame) -> Self {
+        Self {
+            interval: Duration::from_secs(welcome.heartbeat_interval_s.max(1)),
+            awaiting_pong: false,
+            missed_pongs: 0,
+        }
+    }
+
+    fn record_ping_due(&mut self) -> bool {
+        if self.awaiting_pong {
+            self.missed_pongs = self.missed_pongs.saturating_add(1);
+        }
+        self.missed_pongs >= MISSED_HEARTBEAT_LIMIT
+    }
+
+    const fn mark_ping_sent(&mut self) {
+        self.awaiting_pong = true;
+    }
+
+    const fn mark_pong_received(&mut self) {
+        self.awaiting_pong = false;
+        self.missed_pongs = 0;
     }
 }
 

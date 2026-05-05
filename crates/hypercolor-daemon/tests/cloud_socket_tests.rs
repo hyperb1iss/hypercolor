@@ -5,9 +5,10 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_cloud_client::DaemonConnectRequest;
 use hypercolor_cloud_client::daemon_link::{
-    HEADER_AUTHORIZATION, HEADER_DAEMON_ID, HEADER_DAEMON_NONCE, HEADER_DAEMON_SIG,
-    HEADER_DAEMON_TS, HEADER_DAEMON_VERSION, HEADER_WEBSOCKET_PROTOCOL, IdentityKeypair,
-    PROTOCOL_VERSION, UpgradeHeaderInput, UpgradeNonce, WEBSOCKET_PROTOCOL, frame::TunnelResume,
+    ChannelName, Frame, FrameKind, HEADER_AUTHORIZATION, HEADER_DAEMON_ID, HEADER_DAEMON_NONCE,
+    HEADER_DAEMON_SIG, HEADER_DAEMON_TS, HEADER_DAEMON_VERSION, HEADER_WEBSOCKET_PROTOCOL,
+    IdentityKeypair, PROTOCOL_VERSION, UpgradeHeaderInput, UpgradeNonce, WEBSOCKET_PROTOCOL,
+    frame::TunnelResume,
 };
 use hypercolor_daemon::cloud_connection::{CloudConnectionRuntime, CloudConnectionRuntimeState};
 use hypercolor_daemon::cloud_socket::{
@@ -18,6 +19,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse as WsErrorResponse, Request as WsRequest, Response as WsResponse,
 };
+use ulid::Ulid;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -138,6 +140,138 @@ async fn cloud_socket_runtime_shutdown_aborts_live_session_and_marks_idle() {
     );
     let _ = release_tx.send(());
     server.await.expect("test cloud task should join");
+}
+
+#[tokio::test]
+async fn cloud_socket_runtime_sends_control_heartbeat_ping_and_accepts_pong() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server address should resolve");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("client should connect to test cloud");
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, assert_handshake)
+            .await
+            .expect("test cloud should accept websocket");
+        let _ = socket
+            .next()
+            .await
+            .expect("daemon should send hello")
+            .expect("hello frame should read");
+        socket
+            .send(Message::Text(welcome_fixture_with_heartbeat(1).into()))
+            .await
+            .expect("welcome should send");
+
+        let ping = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
+            .await
+            .expect("heartbeat ping should arrive")
+            .expect("heartbeat stream should stay open")
+            .expect("heartbeat ping should read");
+        let Message::Text(ping) = ping else {
+            panic!("heartbeat ping should be text");
+        };
+        let ping: Frame<serde_json::Value> =
+            serde_json::from_str(&ping).expect("heartbeat ping should deserialize");
+        assert_eq!(ping.channel, ChannelName::Control);
+        assert_eq!(ping.kind, FrameKind::Ping);
+
+        socket
+            .send(Message::Text(control_pong_frame(Some(ping.msg_id)).into()))
+            .await
+            .expect("heartbeat pong should send");
+        socket
+            .send(Message::Close(None))
+            .await
+            .expect("close should send");
+    });
+    let runtime = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
+    runtime.write().await.mark_prepared(connect_request(addr));
+    let mut socket_runtime = CloudSocketRuntime::default();
+
+    socket_runtime
+        .spawn_prepared_session(Arc::clone(&runtime), hello_input())
+        .await
+        .expect("prepared session should spawn");
+    server.await.expect("test cloud task should join");
+    wait_for_runtime_state(&runtime, CloudConnectionRuntimeState::Backoff).await;
+    assert_eq!(
+        runtime.read().await.snapshot().last_error.as_deref(),
+        Some("cloud websocket closed")
+    );
+}
+
+#[tokio::test]
+async fn cloud_socket_runtime_marks_backoff_after_missed_heartbeat_pongs() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server address should resolve");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("client should connect to test cloud");
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, assert_handshake)
+            .await
+            .expect("test cloud should accept websocket");
+        let _ = socket
+            .next()
+            .await
+            .expect("daemon should send hello")
+            .expect("hello frame should read");
+        socket
+            .send(Message::Text(welcome_fixture_with_heartbeat(1).into()))
+            .await
+            .expect("welcome should send");
+
+        let mut ping_count = 0_u8;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(6), socket.next())
+                .await
+                .expect("heartbeat frames should arrive")
+                .expect("heartbeat stream should stay open")
+                .expect("heartbeat frame should read");
+            match frame {
+                Message::Text(text) => {
+                    let frame: Frame<serde_json::Value> =
+                        serde_json::from_str(&text).expect("heartbeat ping should deserialize");
+                    assert_eq!(frame.channel, ChannelName::Control);
+                    assert_eq!(frame.kind, FrameKind::Ping);
+                    ping_count = ping_count.saturating_add(1);
+                }
+                Message::Close(_) => break,
+                other => panic!("unexpected heartbeat frame: {other:?}"),
+            }
+        }
+        assert_eq!(ping_count, 3);
+    });
+    let runtime = Arc::new(RwLock::new(CloudConnectionRuntime::default()));
+    runtime.write().await.mark_prepared(connect_request(addr));
+    let mut socket_runtime = CloudSocketRuntime::default();
+
+    socket_runtime
+        .spawn_prepared_session(Arc::clone(&runtime), hello_input())
+        .await
+        .expect("prepared session should spawn");
+    wait_for_runtime_state_for(
+        &runtime,
+        CloudConnectionRuntimeState::Backoff,
+        std::time::Duration::from_secs(6),
+    )
+    .await;
+    server.await.expect("test cloud task should join");
+    assert_eq!(
+        runtime.read().await.snapshot().last_error.as_deref(),
+        Some("cloud heartbeat missed")
+    );
 }
 
 #[tokio::test]
@@ -265,6 +399,10 @@ fn hello_input() -> CloudSocketHelloInput {
 }
 
 fn welcome_fixture() -> String {
+    welcome_fixture_with_heartbeat(25)
+}
+
+fn welcome_fixture_with_heartbeat(heartbeat_interval_s: u64) -> String {
     serde_json::to_string(&serde_json::json!({
         "session_id": "00000000000000000000000000",
         "available_channels": ["control", "sync.notifications"],
@@ -274,16 +412,35 @@ fn welcome_fixture() -> String {
             "compression": [],
             "max_frame_bytes": 1_048_576
         },
-        "heartbeat_interval_s": 25
+        "heartbeat_interval_s": heartbeat_interval_s
     }))
     .expect("welcome should serialize")
+}
+
+fn control_pong_frame(in_reply_to: Option<Ulid>) -> String {
+    let mut frame = Frame::new(
+        ChannelName::Control,
+        FrameKind::Pong,
+        Ulid::new(),
+        serde_json::json!({}),
+    );
+    frame.in_reply_to = in_reply_to;
+    serde_json::to_string(&frame).expect("control pong should serialize")
 }
 
 async fn wait_for_runtime_state(
     runtime: &Arc<RwLock<CloudConnectionRuntime>>,
     expected: CloudConnectionRuntimeState,
 ) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    wait_for_runtime_state_for(runtime, expected, std::time::Duration::from_secs(2)).await;
+}
+
+async fn wait_for_runtime_state_for(
+    runtime: &Arc<RwLock<CloudConnectionRuntime>>,
+    expected: CloudConnectionRuntimeState,
+    timeout: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if runtime.read().await.snapshot().runtime_state == expected {
             return;
