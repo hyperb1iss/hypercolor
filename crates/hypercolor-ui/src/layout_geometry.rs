@@ -353,10 +353,8 @@ pub(crate) fn seeded_attachment_layout(
         let placements = attachment_slot_placements(&slot_zones, cell_center, max_size);
         let slot_display_order_start =
             display_order_start + i32::try_from(zones.len()).unwrap_or(i32::MAX);
-        for (slot_offset, (suggested, (position, size))) in slot_zones
-            .into_iter()
-            .zip(placements.into_iter())
-            .enumerate()
+        for (slot_offset, (suggested, (position, size))) in
+            slot_zones.into_iter().zip(placements).enumerate()
         {
             let shape = attachment_zone_shape(&suggested.category);
             zones.push(DeviceZone {

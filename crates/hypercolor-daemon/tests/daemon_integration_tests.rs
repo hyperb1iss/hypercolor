@@ -334,7 +334,7 @@ async fn config_loading_all_sub_configs_have_defaults() {
 
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
-        RenderAccelerationMode::Cpu
+        RenderAccelerationMode::Auto
     );
 
     // TUI config defaults
@@ -483,7 +483,7 @@ async fn api_state_config_snapshot_matches_init_config() {
     assert_eq!(snapshot.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(
         snapshot.effect_engine.compositor_acceleration_mode,
-        RenderAccelerationMode::Cpu
+        RenderAccelerationMode::Auto
     );
 }
 

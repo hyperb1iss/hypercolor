@@ -93,7 +93,8 @@ pub fn SilkSelect(
                 class=("rounded-lg", move || !open.get())
                 class=("border-accent-muted", move || open.get())
                 class=("cursor-pointer", move || !disabled.get().unwrap_or(false))
-                class=("cursor-not-allowed opacity-60", move || disabled.get().unwrap_or(false))
+                class=("cursor-not-allowed", move || disabled.get().unwrap_or(false))
+                class=("opacity-60", move || disabled.get().unwrap_or(false))
                 disabled=move || disabled.get().unwrap_or(false)
                 on:click=move |_| {
                     if disabled.get().unwrap_or(false) {
@@ -154,8 +155,10 @@ pub fn SilkSelect(
                                 let on_pick = val.clone();
                                 let v_a = val.clone();
                                 let v_b = val.clone();
-                                let v_c = val.clone();
-                                let v_d = val.clone();
+                                let v_c_scale = val.clone();
+                                let v_c_opacity = val.clone();
+                                let v_d_scale = val.clone();
+                                let v_d_opacity = val.clone();
                                 view! {
                                     <button
                                         type="button"
@@ -170,8 +173,10 @@ pub fn SilkSelect(
                                     >
                                         <span
                                             class="w-1 h-1 rounded-full shrink-0 transition-all duration-200 bg-accent-muted"
-                                            class=("scale-100 opacity-100", move || value.get() == v_c)
-                                            class=("scale-0 opacity-0", move || value.get() != v_d)
+                                            class=("scale-100", move || value.get() == v_c_scale)
+                                            class=("opacity-100", move || value.get() == v_c_opacity)
+                                            class=("scale-0", move || value.get() != v_d_scale)
+                                            class=("opacity-0", move || value.get() != v_d_opacity)
                                         />
                                         <span class="truncate">{label}</span>
                                     </button>

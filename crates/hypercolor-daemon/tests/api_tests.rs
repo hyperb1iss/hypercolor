@@ -1108,7 +1108,7 @@ async fn config_set_legacy_render_acceleration_key_updates_compositor_accelerati
                 .uri("/api/v1/config/set")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"key":"effect_engine.render_acceleration_mode","value":"\"auto\""}"#,
+                    r#"{"key":"effect_engine.render_acceleration_mode","value":"\"cpu\""}"#,
                 ))
                 .expect("failed to build request"),
         )
@@ -1122,14 +1122,14 @@ async fn config_set_legacy_render_acceleration_key_updates_compositor_accelerati
         json["data"]["key"],
         "effect_engine.compositor_acceleration_mode"
     );
-    assert_eq!(json["data"]["value"], "auto");
+    assert_eq!(json["data"]["value"], "cpu");
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
     let config: HypercolorConfig =
         toml::from_str(&config_raw).expect("saved config should deserialize");
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
-        RenderAccelerationMode::Auto
+        RenderAccelerationMode::Cpu
     );
 }
 

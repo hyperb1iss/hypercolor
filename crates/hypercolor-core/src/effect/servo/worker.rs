@@ -692,13 +692,6 @@ fn trimmed_servo_preferences() -> Preferences {
         dom_webxr_hands_enabled: false,
         dom_webxr_openxr_enabled: false,
         dom_worklet_enabled: false,
-        // JIT buys little for short-lived effect scripts and spins up extra
-        // SpiderMonkey helper capacity.
-        js_disable_jit: true,
-        js_baseline_jit_enabled: false,
-        js_ion_enabled: false,
-        js_offthread_compilation_enabled: false,
-        js_ion_unsafe_eager_compilation_enabled: false,
         media_glvideo_enabled: false,
         shell_background_color_rgba: [0.0, 0.0, 0.0, 0.0],
         ..Preferences::default()
@@ -2285,6 +2278,15 @@ mod tests {
             trimmed_servo_preferences().shell_background_color_rgba,
             [0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn trimmed_servo_preferences_leave_jit_enabled() {
+        let preferences = trimmed_servo_preferences();
+        assert!(!preferences.js_disable_jit);
+        assert!(preferences.js_baseline_jit_enabled);
+        assert!(preferences.js_ion_enabled);
+        assert!(preferences.js_offthread_compilation_enabled);
     }
 
     #[test]

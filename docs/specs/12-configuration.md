@@ -307,8 +307,8 @@ auth_enabled = false                 # HTTP basic auth for remote access
 [effect_engine]
 preferred_renderer = "auto"          # "auto" | "wgpu" | "servo"
 servo_enabled = true                 # Enable Servo path for HTML/Canvas effects
-wgpu_backend = "auto"               # "auto" | "vulkan" | "opengl"
-compositor_acceleration_mode = "cpu" # "cpu" | "auto" | "gpu"; scene composition only
+wgpu_backend = "auto"                # "auto" | "vulkan" | "opengl"
+compositor_acceleration_mode = "auto" # "cpu" | "auto" | "gpu"; scene composition only
 extra_effect_dirs = []               # Additional directories to scan for effects
 watch_effects = true                 # Hot-reload effects on file change
 watch_config = true                  # Hot-reload config on file change
@@ -2190,7 +2190,7 @@ Every field has a compile-time default. A fresh install with zero config files s
 | **effect_engine** | `preferred_renderer`           | `"auto"`                        |                                                                             |
 |                   | `servo_enabled`                | `true`                          |                                                                             |
 |                   | `wgpu_backend`                 | `"auto"`                        |                                                                             |
-|                   | `compositor_acceleration_mode` | `"cpu"`                         | Scene compositor only; legacy `render_acceleration_mode` still deserializes |
+|                   | `compositor_acceleration_mode` | `"auto"`                        | Scene compositor only; legacy `render_acceleration_mode` still deserializes |
 |                   | `extra_effect_dirs`            | `[]`                            |                                                                             |
 |                   | `watch_effects`                | `true`                          |                                                                             |
 |                   | `watch_config`                 | `true`                          |                                                                             |

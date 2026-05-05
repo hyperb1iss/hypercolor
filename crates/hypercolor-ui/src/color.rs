@@ -250,7 +250,7 @@ where
         return None;
     }
 
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
 
     let avg = |idx: usize| -> (f64, f64, f64) {
         let sector = &sectors[idx];

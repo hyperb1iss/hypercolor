@@ -155,7 +155,7 @@ try {
 }
 
 if ([string]::IsNullOrWhiteSpace($env:HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE)) {
-    $compositorAccelerationMode = 'cpu'
+    $compositorAccelerationMode = 'auto'
 } else {
     $compositorAccelerationMode = $env:HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE
 }

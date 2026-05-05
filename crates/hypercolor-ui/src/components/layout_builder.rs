@@ -507,23 +507,17 @@ pub fn LayoutBuilder() -> impl IntoView {
                 return;
             }
             match ev.key().as_str() {
-                "z" | "Z" if ev.shift_key() => {
-                    if can_redo.get_untracked() {
-                        ev.prevent_default();
-                        set_layout.redo();
-                    }
+                "z" | "Z" if ev.shift_key() && can_redo.get_untracked() => {
+                    ev.prevent_default();
+                    set_layout.redo();
                 }
-                "z" | "Z" => {
-                    if can_undo.get_untracked() {
-                        ev.prevent_default();
-                        set_layout.undo();
-                    }
+                "z" | "Z" if can_undo.get_untracked() => {
+                    ev.prevent_default();
+                    set_layout.undo();
                 }
-                "y" | "Y" => {
-                    if can_redo.get_untracked() {
-                        ev.prevent_default();
-                        set_layout.redo();
-                    }
+                "y" | "Y" if can_redo.get_untracked() => {
+                    ev.prevent_default();
+                    set_layout.redo();
                 }
                 _ => {}
             }

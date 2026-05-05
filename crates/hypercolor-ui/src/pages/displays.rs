@@ -1849,8 +1849,11 @@ fn FaceBlendModeSelect(
                                         >
                                             <span
                                                 class="w-1 h-1 rounded-full shrink-0 transition-all duration-200"
-                                                class=("bg-accent-muted scale-100 opacity-100", move || local_blend_mode.get() == mode)
-                                                class=("scale-0 opacity-0", move || local_blend_mode.get() != mode)
+                                                class=("bg-accent-muted", move || local_blend_mode.get() == mode)
+                                                class=("scale-100", move || local_blend_mode.get() == mode)
+                                                class=("opacity-100", move || local_blend_mode.get() == mode)
+                                                class=("scale-0", move || local_blend_mode.get() != mode)
+                                                class=("opacity-0", move || local_blend_mode.get() != mode)
                                             />
                                             <span class="truncate">{option.label}</span>
                                         </button>

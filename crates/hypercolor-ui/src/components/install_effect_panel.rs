@@ -189,9 +189,13 @@ pub fn InstallEffectPanel() -> impl IntoView {
                                                 <div class="mt-1 truncate text-[11px] text-fg-tertiary">{preview_for_title.file_name}</div>
                                             </div>
                                             <div
-                                                class="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium"
-                                                class=("bg-error-red/12 text-error-red border border-error-red/25", has_errors)
-                                                class=("bg-success-green/12 text-success-green border border-success-green/25", !has_errors)
+                                                class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium"
+                                                class=("bg-error-red/12", has_errors)
+                                                class=("text-error-red", has_errors)
+                                                class=("border-error-red/25", has_errors)
+                                                class=("bg-success-green/12", !has_errors)
+                                                class=("text-success-green", !has_errors)
+                                                class=("border-success-green/25", !has_errors)
                                             >
                                                 <Icon icon=if has_errors { LuTriangleAlert } else { LuCircleCheck } width="12px" height="12px" />
                                                 {if has_errors { "Needs fixes" } else { "Ready" }}
@@ -267,8 +271,12 @@ pub fn InstallEffectPanel() -> impl IntoView {
                         <button
                             type="button"
                             class="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all duration-200"
-                            class=("bg-electric-purple/85 text-white hover:bg-electric-purple", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
-                            class=("cursor-not-allowed bg-surface-sunken text-fg-tertiary", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())
+                            class=("bg-electric-purple/85", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
+                            class=("text-white", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
+                            class=("hover:bg-electric-purple", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
+                            class=("cursor-not-allowed", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())
+                            class=("bg-surface-sunken", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())
+                            class=("text-fg-tertiary", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())
                             disabled=move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get()
                             on:click=move |_| install_effect.run(())
                         >

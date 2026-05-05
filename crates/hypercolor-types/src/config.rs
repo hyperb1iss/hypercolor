@@ -142,7 +142,7 @@ mod defaults {
         "auto".into()
     }
     pub fn compositor_acceleration_mode() -> RenderAccelerationMode {
-        RenderAccelerationMode::Cpu
+        RenderAccelerationMode::Auto
     }
 
     // Shared

@@ -112,10 +112,13 @@ pub(super) fn render_dropdown(
                                     labels.iter().map(|label| {
                                         let label_val = label.clone();
                                         let display = label.clone();
-                                        let m1 = label.clone();
-                                        let m2 = label.clone();
-                                        let m3 = label.clone();
-                                        let m4 = label.clone();
+                                            let m1 = label.clone();
+                                            let m2 = label.clone();
+                                            let m3_bg = label.clone();
+                                            let m3_scale = label.clone();
+                                            let m3_opacity = label.clone();
+                                            let m4_scale = label.clone();
+                                            let m4_opacity = label.clone();
                                         let control_name = dropdown_control_name.get_value();
                                         view! {
                                             <button
@@ -132,8 +135,11 @@ pub(super) fn render_dropdown(
                                             >
                                                 <span
                                                     class="w-1 h-1 rounded-full shrink-0 transition-all duration-200"
-                                                    class=("bg-accent-muted scale-100 opacity-100", move || selected.get() == m3)
-                                                    class=("scale-0 opacity-0", move || selected.get() != m4)
+                                                    class=("bg-accent-muted", move || selected.get() == m3_bg)
+                                                    class=("scale-100", move || selected.get() == m3_scale)
+                                                    class=("opacity-100", move || selected.get() == m3_opacity)
+                                                    class=("scale-0", move || selected.get() != m4_scale)
+                                                    class=("opacity-0", move || selected.get() != m4_opacity)
                                                 />
                                                 <span class="truncate">{display}</span>
                                             </button>

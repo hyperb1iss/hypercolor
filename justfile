@@ -531,14 +531,16 @@ tui-dev *args='':
 prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
-# Run Servo GPU daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
+# Run Servo daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
 [unix]
 dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'kill 0' EXIT
     just prepare-dev-assets
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }} &
+    compositor_mode="${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-auto}"
+    echo "[dev] compositor acceleration mode: ${compositor_mode}"
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode "${compositor_mode}" --bind 127.0.0.1:9420 {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait

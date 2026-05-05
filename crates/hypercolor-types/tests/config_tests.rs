@@ -53,7 +53,7 @@ fn effect_engine_defaults_match_spec() {
     assert_eq!(e.preferred_renderer, "auto");
     assert!(e.servo_enabled);
     assert_eq!(e.wgpu_backend, "auto");
-    assert_eq!(e.compositor_acceleration_mode, RenderAccelerationMode::Cpu);
+    assert_eq!(e.compositor_acceleration_mode, RenderAccelerationMode::Auto);
     assert_eq!(e.effect_error_fallback, EffectErrorFallbackPolicy::None);
     assert!(e.extra_effect_dirs.is_empty());
     assert!(e.watch_effects);
@@ -222,7 +222,7 @@ fn full_config_toml_roundtrip() {
     assert!(!restored.capture.enabled);
     assert_eq!(
         restored.effect_engine.compositor_acceleration_mode,
-        RenderAccelerationMode::Cpu
+        RenderAccelerationMode::Auto
     );
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
@@ -249,7 +249,7 @@ fn minimal_toml_fills_defaults() {
     assert!(!config.capture.enabled);
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
-        RenderAccelerationMode::Cpu
+        RenderAccelerationMode::Auto
     );
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
