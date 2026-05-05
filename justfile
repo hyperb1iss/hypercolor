@@ -641,25 +641,18 @@ site-check:
 
 # ─── Setup ───────────────────────────────────────────────
 
-# Install all project dependencies (Rust targets, UI deps, SDK deps)
-setup:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo '→ Checking rustup targets...'
+# Bootstrap the dev environment (system pkgs, Rust toolchain, cargo tools, bun, frontend deps)
+[unix]
+setup *args='':
+    ./scripts/setup.sh {{ args }}
+
+[windows]
+setup *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1 {{ args }}
+
+# Quickly add the wasm target only (faster than full setup)
+setup-wasm:
     rustup target add wasm32-unknown-unknown
-    if ! command -v bun &>/dev/null; then
-        echo '→ Installing bun...'
-        if [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
-            brew install oven-sh/bun/bun
-        else
-            curl -fsSL https://bun.sh/install | bash
-        fi
-    fi
-    echo '→ Installing UI dependencies...'
-    cd "{{justfile_directory()}}/crates/hypercolor-ui" && npm install
-    echo '→ Installing SDK dependencies...'
-    cd "{{justfile_directory()}}/sdk" && bun install
-    echo '✅ All dependencies installed'
 
 # Build the ready-to-ship distribution bundle and tarball
 dist *args='':
