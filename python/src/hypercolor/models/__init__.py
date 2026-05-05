@@ -25,6 +25,7 @@ from .common import (
 )
 from .control import ControlActionResult, ControlApplyResult, ControlSurface
 from .device import Device, DeviceUpdate, Zone
+from .display import DisplayFaceAssignment, DisplaySummary
 from .driver import (
     Driver,
     DriverCapabilitySet,
@@ -42,7 +43,7 @@ from .effect import (
     EffectSummary,
 )
 from .layout import Layout, LayoutSummary, LayoutZone, Point, Size
-from .library import Playlist, Preset
+from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
 from .profile import ApplyProfileResult, Profile, ProfileSummary
 from .scene import ActivateSceneResult, Scene
 from .system import HealthStatus, RenderLoopStatus, ServerIdentity, SystemState
@@ -68,6 +69,8 @@ __all__ = [
     "Device",
     "DeviceUpdate",
     "DiscoverResult",
+    "DisplayFaceAssignment",
+    "DisplaySummary",
     "Driver",
     "DriverCapabilitySet",
     "DriverModuleDescriptor",
@@ -75,6 +78,7 @@ __all__ = [
     "DriverProtocolDescriptor",
     "Effect",
     "EffectSummary",
+    "Favorite",
     "FrequencyRange",
     "HealthStatus",
     "IdentifyResult",
@@ -88,8 +92,10 @@ __all__ = [
     "NamedRef",
     "Pagination",
     "Playlist",
+    "PlaylistItem",
     "Point",
     "Preset",
+    "PresetApplyResult",
     "Profile",
     "ProfileSummary",
     "RenderLoopStatus",

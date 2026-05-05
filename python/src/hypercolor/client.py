@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any, Self, TypeVar
+from urllib.parse import quote
 
 import httpx
 import msgspec
@@ -89,6 +90,7 @@ from .models.common import (
 )
 from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
 from .models.device import Device
+from .models.display import DisplayFaceAssignment, DisplaySummary
 from .models.driver import Driver
 from .models.effect import (
     ActiveEffect,
@@ -98,13 +100,19 @@ from .models.effect import (
     EffectSummary,
 )
 from .models.layout import Layout, LayoutSummary
+from .models.library import (
+    Favorite,
+    Playlist,
+    Preset,
+    PresetApplyResult,
+)
 from .models.profile import ApplyProfileResult, Profile, ProfileSummary
 from .models.scene import ActivateSceneResult, Scene
 from .models.system import HealthStatus, SystemState
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
-_DEVICE_FILTERS = {"offset", "limit", "status", "backend", "q"}
+_DEVICE_FILTERS = {"offset", "limit", "status", "backend", "backend_id", "driver", "q"}
 _SCENE_FILTERS: set[str] = set()
 
 
@@ -119,7 +127,11 @@ class HypercolorClient:
         timeout: float = DEFAULT_TIMEOUT,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
+        httpx_client: httpx.AsyncClient | None = None,
     ) -> None:
+        if transport is not None and httpx_client is not None:
+            message = "transport and httpx_client are mutually exclusive"
+            raise ValueError(message)
         self.host = host
         self.port = port
         self.api_key = api_key
@@ -127,12 +139,8 @@ class HypercolorClient:
         self.root_url = f"http://{host}:{port}"
         self.base_url = f"http://{host}:{port}{API_PREFIX}"
         self.ws_url = f"ws://{host}:{port}{WS_PATH}"
-        self._client = httpx.AsyncClient(
-            base_url=self.root_url,
-            timeout=timeout,
-            headers=self._auth_headers(),
-            transport=transport,
-        )
+        self._client = httpx_client or httpx.AsyncClient(timeout=timeout, transport=transport)
+        self._owns_client = httpx_client is None
 
     async def __aenter__(self) -> Self:
         """Return self for async context-manager usage."""
@@ -144,7 +152,8 @@ class HypercolorClient:
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client."""
-        await self._client.aclose()
+        if self._owns_client:
+            await self._client.aclose()
 
     def events(self) -> HypercolorEventStream:
         """Create a WebSocket event stream bound to this client."""
@@ -195,12 +204,14 @@ class HypercolorClient:
         """List devices."""
         if any(key not in _DEVICE_FILTERS for key in filters):
             return await self._request_items("GET", "/devices", Device, params=filters)
+        backend_id = filters.get("backend_id", filters.get("backend"))
         return await self._generated_items(
             generated_list_devices._get_kwargs(
                 offset=_generated_param(filters.get("offset")),
                 limit=_generated_param(filters.get("limit")),
                 status=_generated_param(filters.get("status")),
-                backend=_generated_param(filters.get("backend")),
+                backend_id=_generated_param(backend_id),
+                driver=_generated_param(filters.get("driver")),
                 q=_generated_param(filters.get("q")),
             ),
             Device,
@@ -482,6 +493,25 @@ class HypercolorClient:
             ApplyProfileResult,
         )
 
+    async def save_profile(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        brightness: int | None = None,
+        force: bool = False,
+    ) -> Profile:
+        """Save a profile from the current runtime state."""
+        body = _drop_none(
+            {
+                "name": name,
+                "description": description,
+                "brightness": brightness,
+                "force": force,
+            }
+        )
+        return await self._request_model("POST", "/profiles", Profile, body=body)
+
     async def get_scenes(self, **filters: Any) -> list[Scene]:
         """List available scenes."""
         if any(key not in _SCENE_FILTERS for key in filters):
@@ -491,12 +521,167 @@ class HypercolorClient:
             Scene,
         )
 
+    async def get_scene(self, scene_id: str) -> Scene:
+        """Fetch a single scene."""
+        return await self._request_model("GET", f"/scenes/{_quote_path(scene_id)}", Scene)
+
+    async def get_active_scene(self) -> Scene | None:
+        """Return the active scene if one exists."""
+        try:
+            return await self._request_model("GET", "/scenes/active", Scene)
+        except HypercolorNotFoundError:
+            return None
+
+    async def create_scene(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        enabled: bool | None = None,
+        mutation_mode: str | None = None,
+    ) -> Scene:
+        """Create a scene."""
+        body = _drop_none(
+            {
+                "name": name,
+                "description": description,
+                "enabled": enabled,
+                "mutation_mode": mutation_mode,
+            }
+        )
+        return await self._request_model("POST", "/scenes", Scene, body=body)
+
     async def activate_scene(self, scene_id: str) -> ActivateSceneResult:
         """Trigger a scene manually."""
         return await self._generated_model(
             generated_activate_scene._get_kwargs(scene_id),
             ActivateSceneResult,
         )
+
+    async def get_favorites(self) -> list[Favorite]:
+        """List favorite effects."""
+        return await self._request_items("GET", "/library/favorites", Favorite)
+
+    async def add_favorite(self, effect_id: str) -> dict[str, Any]:
+        """Add or update a favorite effect."""
+        return await self._request_payload(
+            "POST",
+            "/library/favorites",
+            body={"effect": effect_id},
+        )
+
+    async def remove_favorite(self, effect_id: str) -> dict[str, Any]:
+        """Remove a favorite effect."""
+        return await self._request_payload(
+            "DELETE",
+            f"/library/favorites/{_quote_path(effect_id)}",
+        )
+
+    async def get_presets(self) -> list[Preset]:
+        """List saved presets."""
+        return await self._request_items("GET", "/library/presets", Preset)
+
+    async def get_preset(self, preset_id: str) -> Preset:
+        """Fetch a saved preset."""
+        return await self._request_model(
+            "GET",
+            f"/library/presets/{_quote_path(preset_id)}",
+            Preset,
+        )
+
+    async def save_preset(
+        self,
+        name: str,
+        effect_id: str,
+        *,
+        description: str | None = None,
+        controls: Mapping[str, Any] | None = None,
+        tags: list[str] | None = None,
+    ) -> Preset:
+        """Save an effect preset."""
+        body = _drop_none(
+            {
+                "name": name,
+                "description": description,
+                "effect": effect_id,
+                "controls": dict(controls) if controls is not None else None,
+                "tags": tags,
+            }
+        )
+        return await self._request_model("POST", "/library/presets", Preset, body=body)
+
+    async def apply_preset(self, preset_id: str) -> PresetApplyResult:
+        """Apply a saved preset."""
+        return await self._request_model(
+            "POST",
+            f"/library/presets/{_quote_path(preset_id)}/apply",
+            PresetApplyResult,
+        )
+
+    async def delete_preset(self, preset_id: str) -> dict[str, Any]:
+        """Delete a saved preset."""
+        return await self._request_payload(
+            "DELETE",
+            f"/library/presets/{_quote_path(preset_id)}",
+        )
+
+    async def get_playlists(self) -> list[Playlist]:
+        """List saved playlists."""
+        return await self._request_items("GET", "/library/playlists", Playlist)
+
+    async def get_playlist(self, playlist_id: str) -> Playlist:
+        """Fetch a saved playlist."""
+        return await self._request_model(
+            "GET",
+            f"/library/playlists/{_quote_path(playlist_id)}",
+            Playlist,
+        )
+
+    async def activate_playlist(self, playlist_id: str) -> dict[str, Any]:
+        """Start playlist playback."""
+        return await self._request_payload(
+            "POST",
+            f"/library/playlists/{_quote_path(playlist_id)}/activate",
+        )
+
+    async def list_displays(self) -> list[DisplaySummary]:
+        """List devices that expose display faces."""
+        return await self._request_list("GET", "/displays", DisplaySummary)
+
+    async def set_display_face(
+        self,
+        display_id: str,
+        effect_id: str,
+        *,
+        controls: Mapping[str, Any] | None = None,
+        blend_mode: str | None = None,
+        opacity: float | None = None,
+    ) -> DisplayFaceAssignment:
+        """Assign an effect to a display face."""
+        body = _drop_none(
+            {
+                "effect_id": effect_id,
+                "controls": dict(controls) if controls is not None else None,
+                "blend_mode": blend_mode,
+                "opacity": opacity,
+            }
+        )
+        return await self._request_model(
+            "PUT",
+            f"/displays/{_quote_path(display_id)}/face",
+            DisplayFaceAssignment,
+            body=body,
+        )
+
+    async def run_diagnostics(
+        self,
+        *,
+        checks: list[str] | None = None,
+        system: bool | None = None,
+    ) -> dict[str, Any]:
+        """Run daemon diagnostics."""
+        body = _drop_none({"checks": checks, "system": system})
+        return await self._request_payload("POST", "/diagnose", body=body)
 
     async def get_audio_spectrum(self) -> SpectrumSnapshot:
         """Return the current audio spectrum snapshot."""
@@ -545,7 +730,15 @@ class HypercolorClient:
 
     async def _generated_request(self, kwargs: Mapping[str, Any]) -> Any:
         try:
-            response = await self._client.request(**_drop_unset_json_body(kwargs))
+            request_kwargs = _drop_unset_json_body(kwargs)
+            request_kwargs["url"] = self._absolute_url(str(request_kwargs["url"]))
+            headers = {
+                **dict(request_kwargs.get("headers") or {}),
+                **self._auth_headers(),
+            }
+            if headers:
+                request_kwargs["headers"] = headers
+            response = await self._client.request(**request_kwargs)
             response.raise_for_status()
         except httpx.ConnectError as exc:
             raise HypercolorConnectionError("Failed to connect to the Hypercolor daemon") from exc
@@ -592,6 +785,45 @@ class HypercolorClient:
         items = data["items"] if isinstance(data, dict) else []
         return [self._convert(item, item_type) for item in items]
 
+    async def _request_list(
+        self,
+        method: str,
+        path: str,
+        item_type: type[ModelT],
+        *,
+        body: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> list[ModelT]:
+        response = await self._raw_request(method, path, body=body, params=params)
+        data = self._unwrap_data(response)
+        if not isinstance(data, list):
+            message = "Unexpected Hypercolor list response"
+            raise HypercolorApiError(message)
+        return [self._convert(item, item_type) for item in data]
+
+    async def _request_model(
+        self,
+        method: str,
+        path: str,
+        model_type: type[ModelT],
+        *,
+        body: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> ModelT:
+        payload = await self._request_payload(method, path, body=body, params=params)
+        return self._convert(payload, model_type)
+
+    async def _request_payload(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> Any:
+        response = await self._raw_request(method, path, body=body, params=params)
+        return self._unwrap_data(response)
+
     async def _raw_request(
         self,
         method: str,
@@ -604,9 +836,10 @@ class HypercolorClient:
             request_path = _request_path(path)
             response = await self._client.request(
                 method,
-                request_path,
+                self._request_url(request_path),
                 json=body,
                 params=_drop_none(params or {}),
+                headers=self._auth_headers(),
             )
             response.raise_for_status()
         except httpx.ConnectError as exc:
@@ -625,6 +858,16 @@ class HypercolorClient:
         if self.api_key is None:
             return {}
         return {"Authorization": f"Bearer {self.api_key}"}
+
+    def _request_url(self, path: str) -> str:
+        request_path = _request_path(path)
+        return self._absolute_url(request_path)
+
+    def _absolute_url(self, path: str) -> str:
+        if path.startswith(("http://", "https://")):
+            return path
+        request_path = path if path.startswith("/") else f"/{path}"
+        return f"{self.root_url}{request_path}"
 
     @staticmethod
     def _unwrap_data(response: Any) -> Any:
@@ -772,6 +1015,10 @@ def _request_path(path: str) -> str:
     if path.startswith(("http://", "https://")) or path.startswith(API_PREFIX):
         return path
     return f"{API_PREFIX}{path}"
+
+
+def _quote_path(value: str) -> str:
+    return quote(str(value), safe="")
 
 
 def _normalize_payload(value: Any) -> Any:

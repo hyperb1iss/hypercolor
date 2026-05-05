@@ -99,6 +99,33 @@ async def test_get_devices(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_get_devices_maps_backend_alias_to_backend_id(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [],
+                    "pagination": {"offset": 0, "limit": 50, "total": 0, "has_more": False},
+                }
+            ),
+        )
+    )
+
+    devices = await client.get_devices(backend="hid", driver="razer")
+
+    assert route.called
+    params = route.calls[0].request.url.params
+    assert params["backend_id"] == "hid"
+    assert params["driver"] == "razer"
+    assert "backend" not in params
+    assert devices == []
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_get_device_quotes_generated_path_parameters(client: HypercolorClient) -> None:
     route = respx.get("http://hyperia.test:9420/api/v1/devices/keyboard%2Fmain").mock(
         return_value=httpx.Response(
@@ -166,6 +193,7 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
                                 "config_version": 1,
                                 "default_enabled": True,
                             },
+                            "presentation": {"label": "Nollie", "icon": "grid"},
                             "enabled": True,
                             "config_key": "drivers.nollie",
                             "protocols": [
@@ -191,6 +219,8 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
 
     assert route.called
     assert isinstance(drivers[0], Driver)
+    assert drivers[0].presentation is not None
+    assert drivers[0].presentation.label == "Nollie"
     assert drivers[0].protocols[0].protocol_id == "nollie_8"
 
 
@@ -712,6 +742,262 @@ async def test_connect_error_is_wrapped() -> None:
     async with HypercolorClient(host="hyperia.test", port=9420, transport=transport) as client:
         with pytest.raises(HypercolorConnectionError):
             await client.get_status()
+
+
+@pytest.mark.asyncio
+async def test_injected_httpx_client_uses_absolute_url_and_request_auth() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [
+                        {
+                            "id": "aurora",
+                            "name": "Aurora",
+                            "description": "Northern lights",
+                            "author": "Hypercolor",
+                            "category": "ambient",
+                            "source": "native",
+                            "runnable": True,
+                            "version": "1.0.0",
+                        }
+                    ],
+                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                }
+            ),
+        )
+
+    shared_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = HypercolorClient(
+        host="hyperia.test",
+        port=9420,
+        api_key="secret",
+        httpx_client=shared_client,
+    )
+
+    effects = await client.get_effects()
+    await client.aclose()
+
+    assert effects[0].id == "aurora"
+    assert str(requests[0].url) == "http://hyperia.test:9420/api/v1/effects"
+    assert requests[0].headers["authorization"] == "Bearer secret"
+    assert shared_client.is_closed is False
+
+    await shared_client.aclose()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_library_helpers(client: HypercolorClient) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/library/presets").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [
+                        {
+                            "id": "preset-a",
+                            "name": "Aurora Soft",
+                            "description": None,
+                            "effect_id": "aurora",
+                            "controls": {"speed": 32},
+                            "tags": ["soft"],
+                            "created_at_ms": 1,
+                            "updated_at_ms": 2,
+                        }
+                    ],
+                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                }
+            ),
+        )
+    )
+    create_route = respx.post("http://hyperia.test:9420/api/v1/library/presets").mock(
+        return_value=httpx.Response(
+            201,
+            content=_envelope(
+                {
+                    "id": "preset-b",
+                    "name": "Aurora Bright",
+                    "description": "glow",
+                    "effect_id": "aurora",
+                    "controls": {"speed": 64},
+                    "tags": ["bright"],
+                    "created_at_ms": 3,
+                    "updated_at_ms": 3,
+                }
+            ),
+        )
+    )
+    respx.post("http://hyperia.test:9420/api/v1/library/presets/preset-b/apply").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "preset": {"id": "preset-b", "name": "Aurora Bright"},
+                    "effect": {"id": "aurora", "name": "Aurora"},
+                    "applied_controls": {"speed": 64},
+                    "rejected_controls": [],
+                    "warnings": [],
+                }
+            ),
+        )
+    )
+    respx.delete("http://hyperia.test:9420/api/v1/library/presets/preset-b").mock(
+        return_value=httpx.Response(200, content=_envelope({"id": "preset-b", "deleted": True}))
+    )
+
+    presets = await client.get_presets()
+    created = await client.save_preset(
+        "Aurora Bright",
+        "aurora",
+        description="glow",
+        controls={"speed": 64},
+        tags=["bright"],
+    )
+    applied = await client.apply_preset("preset-b")
+    deleted = await client.delete_preset("preset-b")
+
+    assert presets[0].name == "Aurora Soft"
+    assert json.loads(create_route.calls[0].request.content) == {
+        "name": "Aurora Bright",
+        "description": "glow",
+        "effect": "aurora",
+        "controls": {"speed": 64},
+        "tags": ["bright"],
+    }
+    assert created.id == "preset-b"
+    assert applied.effect.id == "aurora"
+    assert deleted == {"id": "preset-b", "deleted": True}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_scene_profile_display_and_diagnostics_helpers(
+    client: HypercolorClient,
+) -> None:
+    scene_route = respx.post("http://hyperia.test:9420/api/v1/scenes").mock(
+        return_value=httpx.Response(
+            201,
+            content=_envelope(
+                {
+                    "id": "scene-a",
+                    "name": "Desk Glow",
+                    "description": None,
+                    "enabled": True,
+                    "priority": 10,
+                    "mutation_mode": "live",
+                }
+            ),
+        )
+    )
+    profile_route = respx.post("http://hyperia.test:9420/api/v1/profiles").mock(
+        return_value=httpx.Response(
+            201,
+            content=_envelope(
+                {
+                    "id": "profile-a",
+                    "name": "Evening",
+                    "description": "soft",
+                    "brightness": 64,
+                }
+            ),
+        )
+    )
+    respx.get("http://hyperia.test:9420/api/v1/displays").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                [
+                    {
+                        "id": "streamdeck",
+                        "name": "Stream Deck",
+                        "vendor": "elgato",
+                        "family": "stream_deck",
+                        "width": 72,
+                        "height": 72,
+                        "circular": False,
+                    }
+                ]
+            ),
+        )
+    )
+    face_route = respx.put("http://hyperia.test:9420/api/v1/displays/streamdeck/face").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "device_id": "streamdeck",
+                    "scene_id": "scene-a",
+                    "effect": {"id": "clock", "name": "Clock"},
+                    "group": {"id": "group-a"},
+                }
+            ),
+        )
+    )
+    diagnostics_route = respx.post("http://hyperia.test:9420/api/v1/diagnose").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "checks": [
+                        {
+                            "category": "system",
+                            "name": "daemon_running",
+                            "status": "pass",
+                            "detail": "0.1.0",
+                        }
+                    ],
+                    "summary": {"passed": 1, "warnings": 0, "failed": 0},
+                }
+            ),
+        )
+    )
+
+    scene = await client.create_scene("Desk Glow", enabled=True, mutation_mode="live")
+    profile = await client.save_profile(
+        "Evening",
+        description="soft",
+        brightness=64,
+        force=True,
+    )
+    displays = await client.list_displays()
+    face = await client.set_display_face(
+        "streamdeck",
+        "clock",
+        controls={"accent": "#80ffea"},
+        opacity=0.8,
+    )
+    diagnostics = await client.run_diagnostics(checks=["daemon"], system=True)
+
+    assert scene.id == "scene-a"
+    assert json.loads(scene_route.calls[0].request.content) == {
+        "name": "Desk Glow",
+        "enabled": True,
+        "mutation_mode": "live",
+    }
+    assert profile.name == "Evening"
+    assert json.loads(profile_route.calls[0].request.content) == {
+        "name": "Evening",
+        "description": "soft",
+        "brightness": 64,
+        "force": True,
+    }
+    assert displays[0].id == "streamdeck"
+    assert json.loads(face_route.calls[0].request.content) == {
+        "effect_id": "clock",
+        "controls": {"accent": "#80ffea"},
+        "opacity": 0.8,
+    }
+    assert face.effect["id"] == "clock"
+    assert json.loads(diagnostics_route.calls[0].request.content) == {
+        "checks": ["daemon"],
+        "system": True,
+    }
+    assert diagnostics["summary"]["passed"] == 1
 
 
 @respx.mock
