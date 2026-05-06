@@ -7,6 +7,7 @@ pub mod devices;
 pub mod entitlements;
 pub mod error;
 pub mod secrets;
+pub mod sync;
 
 pub use auth::{
     DEFAULT_DEVICE_AUTHORIZATION_POLL_INTERVAL, DeviceAuthorizationSession,
@@ -20,11 +21,16 @@ pub use connect::{
 pub use devices::{DEVICE_REGISTRATION_PATH, DeviceRegistrationInput, signed_device_registration};
 pub use entitlements::ENTITLEMENTS_PATH;
 pub use error::CloudClientError;
+pub use hypercolor_cloud_api::{
+    ChangesResponse, Etag, SyncChange, SyncConflictResponse, SyncEntity, SyncEntityKind, SyncOp,
+    SyncPutRequest,
+};
 pub use secrets::{
     CloudIdentity, CloudSecretKey, KEYRING_SERVICE, KeyringSecretStore, RefreshTokenOwner,
     SecretStore, delete_daemon_identity, delete_refresh_token, load_identity,
     load_or_create_identity, load_refresh_token, persist_identity, store_refresh_token,
 };
+pub use sync::SYNC_PATH;
 
 pub use hypercolor_cloud_api as api;
 pub use hypercolor_daemon_link as daemon_link;

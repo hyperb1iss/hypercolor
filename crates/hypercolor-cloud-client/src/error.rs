@@ -1,3 +1,5 @@
+use hypercolor_cloud_api::{Etag, SyncEntity};
+
 #[derive(Debug, thiserror::Error)]
 pub enum CloudClientError {
     #[error("invalid cloud base url: {0}")]
@@ -17,4 +19,10 @@ pub enum CloudClientError {
 
     #[error("persisted daemon cloud identity is incomplete")]
     IncompleteIdentity,
+
+    #[error("sync write conflict: current etag {current_etag}")]
+    SyncConflict {
+        current_etag: Etag,
+        current: Option<Box<SyncEntity>>,
+    },
 }

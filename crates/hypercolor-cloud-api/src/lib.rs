@@ -15,7 +15,10 @@ pub use auth::{
 pub use devices::{DeviceInstallation, DeviceRegistrationRequest, DeviceRegistrationResponse};
 pub use entitlements::{EntitlementClaims, EntitlementTokenResponse, FeatureKey, RateLimits};
 pub use envelope::{ApiEnvelope, ApiMeta, ProblemDetails};
-pub use sync::{Etag, SyncChange, SyncEntity, SyncEntityKind, SyncOp};
+pub use sync::{
+    ChangesResponse, Etag, SyncChange, SyncConflictResponse, SyncEntity, SyncEntityKind, SyncOp,
+    SyncPutRequest,
+};
 pub use updates::{
     ArtifactKind, PlatformArtifact, ReleaseChannel, ReleaseInfo, RollbackTarget, UpdateManifest,
 };

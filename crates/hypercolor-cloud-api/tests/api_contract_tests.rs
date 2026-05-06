@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use hypercolor_cloud_api::{
-    DEVICE_CODE_GRANT_TYPE, DeviceCodeRequest, DeviceTokenError, DeviceTokenErrorCode,
-    DeviceTokenRequest, DeviceTokenResponse, EntitlementClaims, EntitlementTokenResponse, Etag,
-    FeatureKey, REFRESH_TOKEN_GRANT_TYPE, RateLimits, RefreshTokenRequest, ReleaseChannel,
-    SyncEntityKind,
+    ChangesResponse, DEVICE_CODE_GRANT_TYPE, DeviceCodeRequest, DeviceTokenError,
+    DeviceTokenErrorCode, DeviceTokenRequest, DeviceTokenResponse, EntitlementClaims,
+    EntitlementTokenResponse, Etag, FeatureKey, REFRESH_TOKEN_GRANT_TYPE, RateLimits,
+    RefreshTokenRequest, ReleaseChannel, SyncChange, SyncEntityKind, SyncOp,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -97,6 +97,26 @@ fn sync_contract_serializes_snake_case_entities() {
 
     assert_eq!(payload[0], json!("installed_effect"));
     assert_eq!(payload[1], json!(42));
+}
+
+#[test]
+fn sync_changes_response_serializes_data_key() {
+    let response = ChangesResponse {
+        changes: vec![SyncChange {
+            seq: 42,
+            op: SyncOp::Delete,
+            entity_kind: SyncEntityKind::Favorite,
+            entity_id: "effect-xyz".into(),
+            entity: None,
+        }],
+        next_seq: 42,
+        has_more: false,
+    };
+    let payload = serde_json::to_value(response).expect("serialize changes response");
+
+    assert!(payload.get("changes").is_none());
+    assert_eq!(payload["data"][0]["entity_kind"], json!("favorite"));
+    assert_eq!(payload["next_seq"], json!(42));
 }
 
 #[test]
