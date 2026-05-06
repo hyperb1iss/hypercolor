@@ -15,13 +15,18 @@ const MAX_LAST_ERROR_LEN: usize = 240;
 
 pub type DeviceMetricsSnapshotStore = Arc<ArcSwap<DeviceMetricsSnapshot>>;
 
+const DEVICE_FPS_EWMA_ALPHA: f32 = 0.35;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeviceMetrics {
     pub id: DeviceId,
+    pub fps_sent: f32,
+    pub fps_queued: f32,
     pub fps_actual: f32,
     pub fps_target: u32,
     pub payload_bps_estimate: u64,
     pub avg_latency_ms: u32,
+    pub frames_received: u64,
     pub frames_sent: u64,
     pub frames_dropped: u64,
     pub errors_total: u64,
@@ -39,6 +44,13 @@ pub struct DeviceMetricsSnapshot {
 struct CollectorBaseline {
     sampled_at: Instant,
     stats_by_device: HashMap<DeviceId, DeviceOutputStatistics>,
+    smoothed_rates_by_device: HashMap<DeviceId, SmoothedDeviceRates>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SmoothedDeviceRates {
+    fps_sent: f32,
+    fps_queued: f32,
 }
 
 #[derive(Debug)]
@@ -84,12 +96,27 @@ impl DeviceMetricsCollector {
             .previous
             .as_ref()
             .map(|previous| &previous.stats_by_device);
+        let previous_rates = self
+            .previous
+            .as_ref()
+            .map(|previous| &previous.smoothed_rates_by_device);
         let mut stats_by_device = HashMap::with_capacity(statistics.len());
+        let mut smoothed_rates_by_device = HashMap::with_capacity(statistics.len());
         let mut items = Vec::with_capacity(statistics.len());
 
         for stats in statistics {
             let previous = previous_stats.and_then(|entries| entries.get(&stats.device_id));
-            items.push(build_device_metrics(&stats, previous, elapsed_secs));
+            let previous_rate =
+                previous_rates.and_then(|entries| entries.get(&stats.device_id).copied());
+            let metrics = build_device_metrics(&stats, previous, previous_rate, elapsed_secs);
+            smoothed_rates_by_device.insert(
+                stats.device_id,
+                SmoothedDeviceRates {
+                    fps_sent: metrics.fps_sent,
+                    fps_queued: metrics.fps_queued,
+                },
+            );
+            items.push(metrics);
             stats_by_device.insert(stats.device_id, stats);
         }
 
@@ -100,6 +127,7 @@ impl DeviceMetricsCollector {
         self.previous = Some(CollectorBaseline {
             sampled_at,
             stats_by_device,
+            smoothed_rates_by_device,
         });
 
         snapshot
@@ -127,26 +155,61 @@ pub fn spawn_device_metrics_collector(
 fn build_device_metrics(
     stats: &DeviceOutputStatistics,
     previous: Option<&DeviceOutputStatistics>,
+    previous_rate: Option<SmoothedDeviceRates>,
     elapsed_secs: f64,
 ) -> DeviceMetrics {
+    let delta_frames_received = previous.map_or(0, |baseline| {
+        stats
+            .frames_received
+            .saturating_sub(baseline.frames_received)
+    });
     let delta_frames_sent = previous.map_or(0, |baseline| {
         stats.frames_sent.saturating_sub(baseline.frames_sent)
     });
     let delta_bytes_sent = previous.map_or(0, |baseline| {
         stats.bytes_sent.saturating_sub(baseline.bytes_sent)
     });
+    let has_rate_baseline = previous.is_some() && elapsed_secs > f64::EPSILON;
+    let fps_sent = smooth_rate(
+        previous_rate.map(|rate| rate.fps_sent),
+        rate_as_f32(delta_frames_sent, elapsed_secs),
+        has_rate_baseline,
+    );
+    let fps_queued = smooth_rate(
+        previous_rate.map(|rate| rate.fps_queued),
+        rate_as_f32(delta_frames_received, elapsed_secs),
+        has_rate_baseline,
+    );
 
     DeviceMetrics {
         id: stats.device_id,
-        fps_actual: rate_as_f32(delta_frames_sent, elapsed_secs),
+        fps_sent,
+        fps_queued,
+        fps_actual: fps_sent,
         fps_target: stats.target_fps,
         payload_bps_estimate: rate_as_u64(delta_bytes_sent, elapsed_secs),
         avg_latency_ms: u32::try_from(stats.avg_latency_ms).unwrap_or(u32::MAX),
+        frames_received: stats.frames_received,
         frames_sent: stats.frames_sent,
         frames_dropped: stats.frames_dropped,
         errors_total: stats.errors_total,
         last_error: sanitize_last_error(stats.last_error.as_deref()),
         last_sent_ago_ms: stats.last_sent_ago_ms,
+    }
+}
+
+fn smooth_rate(previous_rate: Option<f32>, instant_rate: f32, has_rate_baseline: bool) -> f32 {
+    if !has_rate_baseline {
+        return previous_rate.unwrap_or(0.0).max(0.0);
+    }
+
+    let instant_rate = instant_rate.max(0.0);
+    match previous_rate {
+        Some(previous) if previous > 0.0 => previous.mul_add(
+            1.0 - DEVICE_FPS_EWMA_ALPHA,
+            instant_rate * DEVICE_FPS_EWMA_ALPHA,
+        ),
+        _ => instant_rate,
     }
 }
 

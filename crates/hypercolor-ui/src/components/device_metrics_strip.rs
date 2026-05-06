@@ -1,6 +1,6 @@
 //! Compact per-device metrics strip rendered on connected device cards.
 //!
-//! Shows live FPS (actual/target), payload bandwidth estimate, error count,
+//! Shows live output rate (sent/queued), payload bandwidth estimate, error count,
 //! and a rolling FPS sparkline. All data comes from `DeviceMetricsStore`,
 //! which is fed by the `device_metrics` WebSocket topic.
 
@@ -33,24 +33,20 @@ pub fn DeviceMetricsStrip(
     // separate memos lets Leptos skip work when only one field changed.
     let fps_line = Memo::new(move |_| {
         let state = entry.get()?;
-        Some(format!(
-            "{:.0}/{} fps",
-            state.current.fps_actual.max(0.0),
-            state.current.fps_target
-        ))
+        let sent = state.current.sent_fps().max(0.0);
+        let queued = state.current.queued_fps().max(sent);
+        Some(format!("{sent:.0}/{queued:.0} fps"))
     });
 
     let fps_color = Memo::new(move |_| {
         let Some(state) = entry.get() else {
             return "var(--color-fg-tertiary)";
         };
-        let target = f32::from(
-            u16::try_from(state.current.fps_target.min(u32::from(u16::MAX))).unwrap_or(0),
-        );
-        if target <= 0.0 {
+        let queued = state.current.queued_fps().max(0.0);
+        if queued <= 0.0 {
             return "var(--color-fg-tertiary)";
         }
-        let ratio = state.current.fps_actual / target;
+        let ratio = state.current.sent_fps().max(0.0) / queued;
         if ratio >= 0.9 {
             "var(--color-success-green)"
         } else if ratio >= 0.7 {
@@ -99,7 +95,17 @@ pub fn DeviceMetricsStrip(
             <span
                 class="text-[10px] font-mono tabular-nums leading-none whitespace-nowrap"
                 style=move || format!("color: {}", fps_color.get())
-                title="Actual / target frames per second"
+                title=move || {
+                    entry
+                        .get()
+                        .map(|state| {
+                            format!(
+                                "Sent / queued output frames per second. Queue cap: {} fps",
+                                state.current.fps_target
+                            )
+                        })
+                        .unwrap_or_else(|| "Sent / queued output frames per second".to_owned())
+                }
             >
                 {move || fps_line.get().unwrap_or_else(|| "-- fps".to_owned())}
             </span>

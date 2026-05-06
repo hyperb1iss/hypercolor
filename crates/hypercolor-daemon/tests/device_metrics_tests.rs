@@ -14,12 +14,30 @@ fn sample_stats(
     errors_total: u64,
     last_error: Option<&str>,
 ) -> DeviceOutputStatistics {
+    sample_stats_with_received(
+        device_id,
+        frames_sent,
+        frames_sent,
+        bytes_sent,
+        errors_total,
+        last_error,
+    )
+}
+
+fn sample_stats_with_received(
+    device_id: DeviceId,
+    frames_received: u64,
+    frames_sent: u64,
+    bytes_sent: u64,
+    errors_total: u64,
+    last_error: Option<&str>,
+) -> DeviceOutputStatistics {
     DeviceOutputStatistics {
         backend_id: "wled".to_owned(),
         device_id,
         mapped_layout_ids: vec!["device:test".to_owned()],
         target_fps: 60,
-        frames_received: frames_sent,
+        frames_received,
         frames_sent,
         bytes_sent,
         frames_dropped: 2,
@@ -50,6 +68,8 @@ fn collector_reports_zero_rates_without_a_baseline() {
     assert_eq!(collected.taken_at_ms, 1_000);
     assert_eq!(collected.items.len(), 1);
     assert_eq!(collected.items[0].id, device_id);
+    assert_eq!(collected.items[0].fps_sent, 0.0);
+    assert_eq!(collected.items[0].fps_queued, 0.0);
     assert_eq!(collected.items[0].fps_actual, 0.0);
     assert_eq!(collected.items[0].payload_bps_estimate, 0);
 }
@@ -80,13 +100,94 @@ fn collector_derives_rates_from_counter_deltas_and_sanitizes_errors() {
 
     assert_eq!(collected.items.len(), 1);
     assert_eq!(collected.items[0].fps_target, 60);
+    assert!((collected.items[0].fps_sent - 60.0).abs() < f32::EPSILON);
+    assert!((collected.items[0].fps_queued - 60.0).abs() < f32::EPSILON);
     assert!((collected.items[0].fps_actual - 60.0).abs() < f32::EPSILON);
+    assert_eq!(collected.items[0].frames_received, 40);
     assert_eq!(collected.items[0].payload_bps_estimate, 600);
     assert_eq!(collected.items[0].errors_total, 2);
     assert_eq!(
         collected.items[0].last_error.as_deref(),
         Some("socket timeout 192.168.1.20")
     );
+}
+
+#[test]
+fn collector_reports_queued_and_sent_rates_separately() {
+    let device_id = DeviceId::new();
+    let snapshot = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
+    let mut collector = DeviceMetricsCollector::new(snapshot);
+    let started_at = Instant::now();
+
+    let _ = collector.update_from_statistics_at(
+        vec![sample_stats_with_received(device_id, 10, 10, 120, 0, None)],
+        started_at,
+        1_000,
+    );
+    let collected = collector.update_from_statistics_at(
+        vec![sample_stats_with_received(device_id, 40, 25, 270, 0, None)],
+        started_at + Duration::from_millis(500),
+        1_500,
+    );
+
+    let item = &collected.items[0];
+    assert!((item.fps_queued - 60.0).abs() < f32::EPSILON);
+    assert!((item.fps_sent - 30.0).abs() < f32::EPSILON);
+    assert!((item.fps_actual - item.fps_sent).abs() < f32::EPSILON);
+}
+
+#[test]
+fn collector_smooths_fps_after_initial_rate_sample() {
+    let device_id = DeviceId::new();
+    let snapshot = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
+    let mut collector = DeviceMetricsCollector::new(snapshot);
+    let started_at = Instant::now();
+
+    let _ = collector.update_from_statistics_at(
+        vec![sample_stats(device_id, 10, 120, 0, None)],
+        started_at,
+        1_000,
+    );
+    let _ = collector.update_from_statistics_at(
+        vec![sample_stats(device_id, 40, 420, 0, None)],
+        started_at + Duration::from_millis(500),
+        1_500,
+    );
+    let collected = collector.update_from_statistics_at(
+        vec![sample_stats(device_id, 40, 420, 0, None)],
+        started_at + Duration::from_millis(1_000),
+        2_000,
+    );
+
+    let fps = collected.items[0].fps_sent;
+    assert!(fps > 0.0, "smoothed fps should decay instead of snapping");
+    assert!(fps < 60.0, "smoothed fps should still reflect the slowdown");
+}
+
+#[test]
+fn collector_holds_smoothed_fps_when_elapsed_time_is_zero() {
+    let device_id = DeviceId::new();
+    let snapshot = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
+    let mut collector = DeviceMetricsCollector::new(snapshot);
+    let started_at = Instant::now();
+
+    let _ = collector.update_from_statistics_at(
+        vec![sample_stats(device_id, 10, 120, 0, None)],
+        started_at,
+        1_000,
+    );
+    let _ = collector.update_from_statistics_at(
+        vec![sample_stats(device_id, 40, 420, 0, None)],
+        started_at + Duration::from_millis(500),
+        1_500,
+    );
+    let collected = collector.update_from_statistics_at(
+        vec![sample_stats(device_id, 70, 720, 0, None)],
+        started_at + Duration::from_millis(500),
+        1_500,
+    );
+
+    assert!((collected.items[0].fps_sent - 60.0).abs() < f32::EPSILON);
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 //! Per-device metrics store — wraps the raw WS snapshot with a ring buffer
-//! of FPS samples so device cards can render sparklines without re-deriving
+//! of output-rate samples so device cards can render sparklines without re-deriving
 //! history on every tick.
 //!
 //! Only the devices page (or any other consumer) pays the WebSocket
@@ -14,7 +14,7 @@ use leptos::prelude::*;
 use crate::api::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::app::WsContext;
 
-/// Maximum number of FPS samples retained per device for sparklines.
+/// Maximum number of output-rate samples retained per device for sparklines.
 /// At 2 Hz that's ~30 seconds of history — tight enough to feel live but
 /// long enough to show regressions from a missed device write.
 pub const FPS_HISTORY_LEN: usize = 60;
@@ -23,7 +23,7 @@ pub const FPS_HISTORY_LEN: usize = 60;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeviceMetricsState {
     pub current: DeviceMetrics,
-    /// Oldest-first ring of `fps_actual` samples, capped at `FPS_HISTORY_LEN`.
+    /// Oldest-first ring of sent FPS samples, capped at `FPS_HISTORY_LEN`.
     pub fps_samples: VecDeque<f32>,
     /// Unix millis of the snapshot the current values came from. Exposed so
     /// consumers can flag stale data when the WS drops.
@@ -87,7 +87,7 @@ fn fold_snapshot_into(
         let state = map.entry(item.id.clone()).or_default();
         state.current = item.clone();
         state.taken_at_ms = snapshot.taken_at_ms;
-        state.fps_samples.push_back(item.fps_actual.max(0.0));
+        state.fps_samples.push_back(item.sent_fps().max(0.0));
         while state.fps_samples.len() > FPS_HISTORY_LEN {
             state.fps_samples.pop_front();
         }
@@ -101,10 +101,13 @@ mod tests {
     fn metrics(id: &str, fps: f32) -> DeviceMetrics {
         DeviceMetrics {
             id: id.to_owned(),
+            fps_sent: fps,
+            fps_queued: fps,
             fps_actual: fps,
             fps_target: 60,
             payload_bps_estimate: 0,
             avg_latency_ms: 0,
+            frames_received: 0,
             frames_sent: 0,
             frames_dropped: 0,
             errors_total: 0,

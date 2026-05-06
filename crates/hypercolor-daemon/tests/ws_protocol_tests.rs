@@ -353,10 +353,13 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         taken_at_ms: 5_678,
         items: vec![DeviceMetrics {
             id: device_id,
+            fps_sent: 60.0,
+            fps_queued: 60.0,
             fps_actual: 60.0,
             fps_target: 60,
             payload_bps_estimate: 2_048,
             avg_latency_ms: 9,
+            frames_received: 64,
             frames_sent: 64,
             frames_dropped: 1,
             errors_total: 0,
