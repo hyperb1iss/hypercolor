@@ -166,17 +166,12 @@ impl ServoRenderer {
 
     fn enqueue_bootstrap_scripts(&mut self) {
         self.pending_scripts.push(self.runtime.bootstrap_script());
-        self.pending_scripts
-            .push(animation_fps_cap_script(DEFAULT_EFFECT_FPS_CAP));
         self.last_animation_fps_cap = Some(DEFAULT_EFFECT_FPS_CAP);
     }
 
     fn enqueue_frame_scripts(&mut self, input: &FrameInput) {
         let fps_cap = self.animation_cadence.fps_cap(input.delta_secs);
-        if self.last_animation_fps_cap != Some(fps_cap) {
-            self.pending_scripts.push(animation_fps_cap_script(fps_cap));
-            self.last_animation_fps_cap = Some(fps_cap);
-        }
+        self.last_animation_fps_cap = Some(fps_cap);
         if let Some(script) = self
             .runtime
             .resize_script(input.canvas_width, input.canvas_height)
@@ -839,10 +834,6 @@ fn animation_fps_cap(delta_secs: f32) -> u32 {
     FpsTier::from_fps((fps as u32).clamp(1, MAX_EFFECT_FPS_CAP)).fps()
 }
 
-fn animation_fps_cap_script(fps_cap: u32) -> String {
-    format!("window.__hypercolorFpsCap = {fps_cap};")
-}
-
 fn animation_cadence(metadata: &EffectMetadata) -> AnimationCadence {
     if metadata.category == EffectCategory::Display {
         return AnimationCadence::Fixed(DEFAULT_DISPLAY_FPS_CAP);
@@ -1045,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_scripts_seed_default_animation_cap() {
+    fn bootstrap_scripts_track_default_animation_cap_without_js_throttle() {
         let mut renderer = ServoRenderer::new();
 
         renderer.enqueue_bootstrap_scripts();
@@ -1058,7 +1049,7 @@ mod tests {
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script == "window.__hypercolorFpsCap = 30;")
+                .all(|script| !script.contains("__hypercolorFpsCap"))
         );
     }
 
@@ -1289,12 +1280,13 @@ mod tests {
     }
 
     #[test]
-    fn frame_scripts_update_animation_cap_only_when_target_changes() {
+    fn frame_scripts_track_animation_cap_without_js_throttle() {
         let mut renderer = ServoRenderer::new();
         renderer.enqueue_bootstrap_scripts();
         renderer.pending_scripts.clear();
 
         renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
+        assert_eq!(renderer.last_animation_fps_cap, Some(30));
         assert!(
             renderer
                 .pending_scripts
@@ -1309,7 +1301,7 @@ mod tests {
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script == "window.__hypercolorFpsCap = 20;")
+                .all(|script| !script.contains("__hypercolorFpsCap"))
         );
     }
 
@@ -1486,11 +1478,12 @@ mod tests {
         renderer.pending_scripts.clear();
 
         renderer.enqueue_frame_scripts(&frame_input(1.0 / 60.0));
+        assert_eq!(renderer.last_animation_fps_cap, Some(60));
         assert!(
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script == "window.__hypercolorFpsCap = 60;")
+                .all(|script| !script.contains("__hypercolorFpsCap"))
         );
 
         renderer.pending_scripts.clear();
@@ -1652,7 +1645,7 @@ mod tests {
             second_render
                 .scripts
                 .iter()
-                .any(|script| script == "window.__hypercolorFpsCap = 20;")
+                .all(|script| !script.contains("__hypercolorFpsCap"))
         );
         assert!(
             second_render
