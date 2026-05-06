@@ -4675,15 +4675,19 @@ name = "hypercolor-cloud-client"
 version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
+ "chrono",
  "dbus-secret-service-keyring-store",
  "hypercolor-cloud-api",
  "hypercolor-daemon-link",
  "hypercolor-types",
  "keyring-core",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.2",
  "uuid",
  "windows-native-keyring-store",
 ]

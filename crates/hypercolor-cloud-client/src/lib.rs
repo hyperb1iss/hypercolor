@@ -8,6 +8,7 @@ pub mod entitlements;
 pub mod error;
 pub mod secrets;
 pub mod sync;
+pub mod sync_cursor;
 
 pub use auth::{
     DEFAULT_DEVICE_AUTHORIZATION_POLL_INTERVAL, DeviceAuthorizationSession,
@@ -31,6 +32,7 @@ pub use secrets::{
     load_or_create_identity, load_refresh_token, persist_identity, store_refresh_token,
 };
 pub use sync::SYNC_PATH;
+pub use sync_cursor::{SyncCursor, SyncCursorError};
 
 pub use hypercolor_cloud_api as api;
 pub use hypercolor_daemon_link as daemon_link;
