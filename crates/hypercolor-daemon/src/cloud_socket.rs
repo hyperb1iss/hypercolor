@@ -44,6 +44,100 @@ pub enum CloudSocketError {
 
 const MISSED_HEARTBEAT_LIMIT: u8 = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloudReconnectPolicy {
+    pub initial_delay: Duration,
+    pub max_delay: Duration,
+    pub backoff_factor: f64,
+    pub jitter: f64,
+}
+
+impl Default for CloudReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            backoff_factor: 2.0,
+            jitter: 0.25,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloudReconnectDelay {
+    pub attempt_index: u32,
+    pub base_delay: Duration,
+    pub retry_delay: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloudReconnectState {
+    attempt: u32,
+    policy: CloudReconnectPolicy,
+}
+
+impl Default for CloudReconnectState {
+    fn default() -> Self {
+        Self::new(CloudReconnectPolicy::default())
+    }
+}
+
+impl CloudReconnectState {
+    #[must_use]
+    pub const fn new(policy: CloudReconnectPolicy) -> Self {
+        Self { attempt: 0, policy }
+    }
+
+    #[must_use]
+    pub const fn next_attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    pub const fn reset(&mut self) {
+        self.attempt = 0;
+    }
+
+    #[must_use]
+    pub fn next_delay(&mut self) -> CloudReconnectDelay {
+        self.next_delay_with_jitter_sample(rand::random_range(-1.0..=1.0))
+    }
+
+    #[must_use]
+    pub fn next_delay_with_jitter_sample(&mut self, jitter_sample: f64) -> CloudReconnectDelay {
+        let attempt_index = self.attempt;
+        let base_delay = self.base_delay();
+        let retry_delay = self.jittered_delay(base_delay, jitter_sample);
+        self.attempt = self.attempt.saturating_add(1);
+
+        CloudReconnectDelay {
+            attempt_index,
+            base_delay,
+            retry_delay,
+        }
+    }
+
+    fn base_delay(&self) -> Duration {
+        let factor = self
+            .policy
+            .backoff_factor
+            .powf(f64::from(self.attempt))
+            .max(1.0);
+        let base_secs = (self.policy.initial_delay.as_secs_f64() * factor)
+            .min(self.policy.max_delay.as_secs_f64());
+
+        Duration::from_secs_f64(base_secs)
+    }
+
+    fn jittered_delay(&self, base_delay: Duration, jitter_sample: f64) -> Duration {
+        let jitter = jitter_sample.clamp(-1.0, 1.0) * self.policy.jitter.clamp(0.0, 1.0);
+        let retry_secs = (base_delay.as_secs_f64() * (1.0 + jitter))
+            .max(0.1)
+            .min(self.policy.max_delay.as_secs_f64());
+
+        Duration::from_secs_f64(retry_secs)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum CloudSocketStartError {
     #[error("cloud socket is already running")]

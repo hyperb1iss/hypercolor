@@ -12,7 +12,8 @@ use hypercolor_cloud_client::daemon_link::{
 };
 use hypercolor_daemon::cloud_connection::{CloudConnectionRuntime, CloudConnectionRuntimeState};
 use hypercolor_daemon::cloud_socket::{
-    CloudSocketError, CloudSocketHelloInput, CloudSocketRuntime, connect_prepared_once, hello_frame,
+    CloudReconnectState, CloudSocketError, CloudSocketHelloInput, CloudSocketRuntime,
+    connect_prepared_once, hello_frame,
 };
 use tokio::sync::{RwLock, oneshot};
 use tokio_tungstenite::tungstenite::Message;
@@ -429,6 +430,46 @@ fn cloud_socket_hello_frame_carries_resume_and_capabilities() {
         Some("fresh.entitlement.jwt")
     );
     assert_eq!(hello.tunnel_resume, Some(resume));
+}
+
+#[test]
+fn cloud_reconnect_state_uses_exponential_backoff_with_clamped_jitter() {
+    let mut state = CloudReconnectState::default();
+
+    let jitter_samples = [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0];
+    let delays = jitter_samples
+        .map(|sample| state.next_delay_with_jitter_sample(sample))
+        .to_vec();
+
+    assert_eq!(delays[0].attempt_index, 0);
+    assert_eq!(delays[0].base_delay, std::time::Duration::from_secs(1));
+    assert_eq!(delays[0].retry_delay, std::time::Duration::from_millis(750));
+    assert_eq!(delays[1].base_delay, std::time::Duration::from_secs(2));
+    assert_eq!(
+        delays[1].retry_delay,
+        std::time::Duration::from_millis(2500)
+    );
+    assert_eq!(delays[5].base_delay, std::time::Duration::from_secs(32));
+    assert_eq!(delays[5].retry_delay, std::time::Duration::from_secs(40));
+    assert_eq!(delays[6].base_delay, std::time::Duration::from_secs(60));
+    assert_eq!(delays[6].retry_delay, std::time::Duration::from_secs(45));
+    assert_eq!(delays[7].base_delay, std::time::Duration::from_secs(60));
+    assert_eq!(delays[7].retry_delay, std::time::Duration::from_secs(60));
+    assert_eq!(state.next_attempt(), 8);
+}
+
+#[test]
+fn cloud_reconnect_state_reset_restarts_backoff() {
+    let mut state = CloudReconnectState::default();
+    let _ = state.next_delay();
+    let _ = state.next_delay();
+
+    state.reset();
+    let delay = state.next_delay_with_jitter_sample(-1.0);
+
+    assert_eq!(delay.attempt_index, 0);
+    assert_eq!(delay.base_delay, std::time::Duration::from_secs(1));
+    assert_eq!(delay.retry_delay, std::time::Duration::from_millis(750));
 }
 
 fn connect_request(addr: std::net::SocketAddr) -> DaemonConnectRequest {
