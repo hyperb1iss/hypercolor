@@ -29,9 +29,9 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 use super::{
-    PawnIoError, PawnIoResult, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
-    WindowsSmBusBusInfo, direct_enumerate_smbus_buses, direct_open_smbus_bus,
-    module_name_from_wire,
+    PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
+    SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, direct_enumerate_smbus_buses,
+    direct_open_smbus_bus, module_name_from_wire,
 };
 
 const SERVICE_NAME: &str = "HypercolorSmBus";
@@ -99,6 +99,56 @@ pub(super) fn smbus_xfer(
     };
 
     *transaction = returned.try_into()?;
+    Ok(())
+}
+
+pub(super) fn smbus_xfer_batch(
+    path: &str,
+    address: u8,
+    operations: &mut [SmBusBatchOperation],
+) -> PawnIoResult<()> {
+    let broker_operations = operations
+        .iter()
+        .map(BrokerSmBusBatchOperation::from)
+        .collect::<Vec<_>>();
+    let response = send_request(
+        BrokerRequest::SmBusXferBatch {
+            path: path.to_owned(),
+            address,
+            operations: broker_operations,
+        },
+        "smbus_xfer_batch",
+    )?;
+    let BrokerResponse::Batch {
+        operations: returned,
+    } = response
+    else {
+        return Err(unexpected_response("smbus_xfer_batch"));
+    };
+    if returned.len() != operations.len() {
+        return Err(PawnIoError::BrokerCall {
+            operation: "smbus_xfer_batch",
+            detail: format!(
+                "broker returned {} batch operations for {} requests",
+                returned.len(),
+                operations.len()
+            ),
+        });
+    }
+
+    for (target, returned) in operations.iter_mut().zip(returned) {
+        if let (
+            SmBusBatchOperation::Transfer { transaction, .. },
+            BrokerSmBusBatchOperation::Transfer {
+                transaction: returned,
+                ..
+            },
+        ) = (target, returned)
+        {
+            *transaction = returned.try_into()?;
+        }
+    }
+
     Ok(())
 }
 
@@ -442,6 +492,14 @@ impl BrokerState {
                     transaction: BrokerSmBusTransaction::from(&transaction),
                 })
             }
+            BrokerRequest::SmBusXferBatch {
+                path,
+                address,
+                mut operations,
+            } => {
+                self.smbus_xfer_batch(&path, address, &mut operations)?;
+                Ok(BrokerResponse::Batch { operations })
+            }
         }
     }
 
@@ -483,6 +541,48 @@ impl BrokerState {
 
         bus.smbus_xfer(address, direction, command, transaction)
     }
+
+    fn smbus_xfer_batch(
+        &self,
+        path: &str,
+        address: u8,
+        operations: &mut [BrokerSmBusBatchOperation],
+    ) -> PawnIoResult<()> {
+        let mut buses = self.buses.lock().map_err(|_| lock_poisoned())?;
+        if !buses.contains_key(path) {
+            buses.insert(path.to_owned(), direct_open_smbus_bus(path)?);
+        }
+        let bus = buses.get(path).ok_or_else(|| PawnIoError::InvalidInput {
+            detail: format!("SMBus broker bus '{path}' was not cached after open"),
+        })?;
+
+        for operation in operations {
+            match operation {
+                BrokerSmBusBatchOperation::Transfer {
+                    direction,
+                    command,
+                    transaction,
+                } => {
+                    let mut transaction_value = SmBusTransaction::try_from(std::mem::replace(
+                        transaction,
+                        BrokerSmBusTransaction::Quick,
+                    ))?;
+                    bus.smbus_xfer(
+                        address,
+                        (*direction).into(),
+                        *command,
+                        &mut transaction_value,
+                    )?;
+                    *transaction = BrokerSmBusTransaction::from(&transaction_value);
+                }
+                BrokerSmBusBatchOperation::Delay { duration_ms } => {
+                    thread::sleep(Duration::from_millis(u64::from(*duration_ms)));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn lock_poisoned() -> PawnIoError {
@@ -505,14 +605,28 @@ enum BrokerRequest {
         command: u8,
         transaction: BrokerSmBusTransaction,
     },
+    SmBusXferBatch {
+        path: String,
+        address: u8,
+        operations: Vec<BrokerSmBusBatchOperation>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BrokerResponse {
-    Buses { buses: Vec<BrokerBusInfo> },
-    Bus { bus: BrokerBusInfo },
-    Transaction { transaction: BrokerSmBusTransaction },
+    Buses {
+        buses: Vec<BrokerBusInfo>,
+    },
+    Bus {
+        bus: BrokerBusInfo,
+    },
+    Transaction {
+        transaction: BrokerSmBusTransaction,
+    },
+    Batch {
+        operations: Vec<BrokerSmBusBatchOperation>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -633,6 +747,38 @@ impl From<BrokerSmBusDirection> for SmBusDirection {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+enum BrokerSmBusBatchOperation {
+    Transfer {
+        direction: BrokerSmBusDirection,
+        command: u8,
+        transaction: BrokerSmBusTransaction,
+    },
+    Delay {
+        duration_ms: u64,
+    },
+}
+
+impl From<&SmBusBatchOperation> for BrokerSmBusBatchOperation {
+    fn from(operation: &SmBusBatchOperation) -> Self {
+        match operation {
+            SmBusBatchOperation::Transfer {
+                direction,
+                command,
+                transaction,
+            } => Self::Transfer {
+                direction: (*direction).into(),
+                command: *command,
+                transaction: BrokerSmBusTransaction::from(transaction),
+            },
+            SmBusBatchOperation::Delay { duration } => Self::Delay {
+                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 enum BrokerSmBusTransaction {
     Quick,
     Byte { value: u8 },
@@ -738,10 +884,11 @@ fn wide_null(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use super::{
-        BrokerBusInfo, BrokerSmBusDirection, BrokerSmBusTransaction, SmBusBlockData,
-        SmBusDirection, SmBusTransaction, WindowsSmBusBusInfo,
+        BrokerBusInfo, BrokerSmBusBatchOperation, BrokerSmBusDirection, BrokerSmBusTransaction,
+        SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBusInfo,
     };
 
     #[test]
@@ -760,6 +907,36 @@ mod tests {
     fn direction_dto_round_trips() {
         let dto = BrokerSmBusDirection::from(SmBusDirection::Read);
         assert!(matches!(SmBusDirection::from(dto), SmBusDirection::Read));
+    }
+
+    #[test]
+    fn batch_operation_dto_preserves_transfers_and_delays() {
+        let transfer = SmBusBatchOperation::Transfer {
+            direction: SmBusDirection::Write,
+            command: 0x03,
+            transaction: SmBusTransaction::BlockData {
+                data: SmBusBlockData::new(&[1, 2, 3]).expect("valid block data"),
+            },
+        };
+        let delay = SmBusBatchOperation::Delay {
+            duration: Duration::from_millis(7),
+        };
+
+        let transfer_dto = BrokerSmBusBatchOperation::from(&transfer);
+        let delay_dto = BrokerSmBusBatchOperation::from(&delay);
+
+        assert!(matches!(
+            transfer_dto,
+            BrokerSmBusBatchOperation::Transfer {
+                direction: BrokerSmBusDirection::Write,
+                command: 0x03,
+                transaction: BrokerSmBusTransaction::BlockData { .. }
+            }
+        ));
+        assert!(matches!(
+            delay_dto,
+            BrokerSmBusBatchOperation::Delay { duration_ms: 7 }
+        ));
     }
 
     #[test]

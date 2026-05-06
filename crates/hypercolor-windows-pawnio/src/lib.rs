@@ -5,13 +5,15 @@ mod windows;
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    PawnIoError, PawnIoResult, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
-    WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus, run_smbus_service,
+    PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
+    SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
+    run_smbus_service,
 };
 
 #[cfg(not(target_os = "windows"))]
 mod stubs {
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use thiserror::Error;
 
@@ -73,6 +75,25 @@ mod stubs {
         BlockData { data: SmBusBlockData },
     }
 
+    /// One batchable SMBus bus action.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum SmBusBatchOperation {
+        /// Execute a single SMBus transaction.
+        Transfer {
+            /// SMBus transfer direction.
+            direction: SmBusDirection,
+            /// SMBus command/register byte.
+            command: u8,
+            /// Transaction payload. Read transactions are updated in place.
+            transaction: SmBusTransaction,
+        },
+        /// Sleep between bus operations.
+        Delay {
+            /// Delay duration.
+            duration: Duration,
+        },
+    }
+
     /// Discovered PawnIO SMBus bus metadata.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct WindowsSmBusBusInfo {
@@ -121,6 +142,19 @@ mod stubs {
             Err(PawnIoError::UnsupportedPlatform)
         }
 
+        /// Execute a batch of SMBus operations against one address.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`PawnIoError`] on unsupported platforms.
+        pub fn smbus_xfer_batch(
+            &self,
+            _address: u8,
+            _operations: &mut [SmBusBatchOperation],
+        ) -> PawnIoResult<()> {
+            Err(PawnIoError::UnsupportedPlatform)
+        }
+
         /// Probe address with SMBus quick write.
         ///
         /// # Errors
@@ -161,6 +195,6 @@ mod stubs {
 
 #[cfg(not(target_os = "windows"))]
 pub use stubs::{
-    PawnIoError, PawnIoResult, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
-    WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
+    PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
+    SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
 };

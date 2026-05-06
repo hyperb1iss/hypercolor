@@ -3,6 +3,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use libloading::{Library, Symbol};
 use thiserror::Error;
@@ -245,6 +246,25 @@ impl SmBusTransaction {
     }
 }
 
+/// One batchable SMBus bus action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SmBusBatchOperation {
+    /// Execute a single SMBus transaction.
+    Transfer {
+        /// SMBus transfer direction.
+        direction: SmBusDirection,
+        /// SMBus command/register byte.
+        command: u8,
+        /// Transaction payload. Read transactions are updated in place.
+        transaction: SmBusTransaction,
+    },
+    /// Sleep between bus operations.
+    Delay {
+        /// Delay duration.
+        duration: Duration,
+    },
+}
+
 /// Discovered PawnIO SMBus bus metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsSmBusBusInfo {
@@ -325,6 +345,36 @@ impl WindowsSmBusBus {
             }
             WindowsSmBusBusInner::Brokered(bus) => {
                 broker::smbus_xfer(&bus.info.path, address, direction, command, transaction)
+            }
+        }
+    }
+
+    /// Execute a batch of SMBus operations against one address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PawnIoError`] when PawnIO rejects any transaction.
+    pub fn smbus_xfer_batch(
+        &self,
+        address: u8,
+        operations: &mut [SmBusBatchOperation],
+    ) -> PawnIoResult<()> {
+        match &self.inner {
+            WindowsSmBusBusInner::Direct(bus) => {
+                for operation in operations {
+                    match operation {
+                        SmBusBatchOperation::Transfer {
+                            direction,
+                            command,
+                            transaction,
+                        } => bus.smbus_xfer(address, *direction, *command, transaction)?,
+                        SmBusBatchOperation::Delay { duration } => std::thread::sleep(*duration),
+                    }
+                }
+                Ok(())
+            }
+            WindowsSmBusBusInner::Brokered(bus) => {
+                broker::smbus_xfer_batch(&bus.info.path, address, operations)
             }
         }
     }
