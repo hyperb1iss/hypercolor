@@ -43,6 +43,7 @@ class EffectSummary(msgspec.Struct, kw_only=True):
     version: str
     audio_reactive: bool = False
     tags: list[str] = msgspec.field(default_factory=list)
+    cover_image_url: str | None = None
 
 
 class Effect(EffectSummary):
@@ -62,6 +63,15 @@ class ActiveEffect(msgspec.Struct, kw_only=True):
     controls: list[ControlDefinition] = msgspec.field(default_factory=list)
     control_values: dict[str, Any] = msgspec.field(default_factory=dict)
     active_preset_id: str | None = None
+    cover_image_url: str | None = None
+
+
+class EffectCoverImage(msgspec.Struct, kw_only=True):
+    """Binary cover image payload for an effect."""
+
+    data: bytes
+    content_type: str
+    url: str
 
 
 class ApplyEffectResult(msgspec.Struct, kw_only=True):

@@ -26,6 +26,7 @@ from .models.effect import (
     ApplyEffectResult,
     ControlUpdateResult,
     Effect,
+    EffectCoverImage,
     EffectSummary,
 )
 from .models.layout import Layout, LayoutSummary
@@ -129,6 +130,18 @@ class SyncHypercolorClient:
 
     def get_active_effect(self) -> ActiveEffect | None:
         return self._run(self._client.get_active_effect())
+
+    def effect_cover_image_url(self, effect_id: str) -> str:
+        return self._client.effect_cover_image_url(effect_id)
+
+    def active_effect_cover_image_url(self) -> str:
+        return self._client.active_effect_cover_image_url()
+
+    def get_effect_cover_image(self, effect_id: str) -> EffectCoverImage:
+        return self._run(self._client.get_effect_cover_image(effect_id))
+
+    def get_active_effect_cover_image(self) -> EffectCoverImage | None:
+        return self._run(self._client.get_active_effect_cover_image())
 
     def apply_effect(
         self,

@@ -47,6 +47,8 @@ use crate::session::OutputPowerState;
 // ── Request / Response Types ─────────────────────────────────────────────
 
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
+const EFFECT_COVER_FILE_NAME: &str = "default.webp";
+const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
 pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
     let mut scene_manager = state.scene_manager.write().await;
@@ -98,6 +100,8 @@ pub struct EffectSummary {
     pub tags: Vec<String>,
     pub version: String,
     pub audio_reactive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_image_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -116,6 +120,8 @@ pub struct ActiveEffectResponse {
     /// omit it (there's nothing to version).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub controls_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_image_url: Option<String>,
 }
 
 impl ActiveEffectResponse {
@@ -129,6 +135,7 @@ impl ActiveEffectResponse {
             active_preset_id: None,
             render_group_id: None,
             controls_version: None,
+            cover_image_url: None,
         }
     }
 }
@@ -160,6 +167,8 @@ pub struct EffectDetailResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub presets: Vec<PresetTemplate>,
     pub active_control_values: Option<HashMap<String, ControlValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_image_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -477,6 +486,7 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
                 tags: meta.tags.clone(),
                 version: meta.version.clone(),
                 audio_reactive: meta.audio_reactive,
+                cover_image_url: effect_cover_image_url(meta),
             }
         })
         .collect();
@@ -540,6 +550,8 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         (meta.controls.clone(), None)
     };
 
+    let cover_image_url = effect_cover_image_url(&meta);
+
     ApiResponse::ok(EffectDetailResponse {
         id: meta.id.to_string(),
         name: meta.name,
@@ -554,6 +566,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         controls,
         presets: meta.presets,
         active_control_values,
+        cover_image_url,
     })
 }
 
@@ -881,9 +894,35 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         active_preset_id: group.preset_id.map(|preset| preset.to_string()),
         render_group_id: Some(group.id.to_string()),
         controls_version: Some(controls_version),
+        cover_image_url: effect_cover_image_url(&meta),
     };
     let response = ApiResponse::ok(response).into_response();
     attach_controls_version_headers(response, controls_version)
+}
+
+/// `GET /api/v1/effects/active/cover` — Get the active effect cover image.
+pub async fn get_active_effect_cover(State(state): State<Arc<AppState>>) -> Response {
+    let Some((_, meta)) = active_primary_effect(state.as_ref()).await else {
+        return ApiError::not_found("No effect is currently active");
+    };
+
+    effect_cover_image_response(&meta, EffectCoverCache::Active).await
+}
+
+/// `GET /api/v1/effects/:id/cover` — Get an effect cover image.
+pub async fn get_effect_cover(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+            return ApiError::not_found(format!("Effect not found: {id}"));
+        };
+        meta
+    };
+
+    effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
 }
 
 /// `POST /api/v1/effects/stop` — Stop the currently active effect.
@@ -1723,6 +1762,105 @@ pub(crate) fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
         name: metadata.name.clone(),
         engine: "servo".to_owned(),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EffectCoverCache {
+    Active,
+    Catalog,
+}
+
+async fn effect_cover_image_response(
+    metadata: &EffectMetadata,
+    cache: EffectCoverCache,
+) -> Response {
+    let Some(path) = effect_cover_image_path(metadata) else {
+        return ApiError::not_found(format!(
+            "Cover image not found for effect: {}",
+            metadata.name
+        ));
+    };
+
+    let bytes = match fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return ApiError::not_found(format!(
+                    "Cover image not found for effect: {}",
+                    metadata.name
+                ));
+            }
+            warn!(
+                path = %path.display(),
+                error = %error,
+                "Failed to read effect cover image"
+            );
+            return ApiError::internal("Failed to read effect cover image");
+        }
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(EFFECT_COVER_CONTENT_TYPE),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        match cache {
+            EffectCoverCache::Active => HeaderValue::from_static("no-store"),
+            EffectCoverCache::Catalog => HeaderValue::from_static("public, max-age=86400"),
+        },
+    );
+    (headers, bytes).into_response()
+}
+
+fn effect_cover_image_url(metadata: &EffectMetadata) -> Option<String> {
+    effect_cover_image_path(metadata)?;
+    Some(format!("/api/v1/effects/{}/cover", metadata.id))
+}
+
+fn effect_cover_image_path(metadata: &EffectMetadata) -> Option<PathBuf> {
+    let root = hypercolor_core::effect::bundled_screenshots_root();
+    effect_cover_slugs(metadata)
+        .into_iter()
+        .map(|slug| root.join(slug).join(EFFECT_COVER_FILE_NAME))
+        .find(|path| path.is_file())
+}
+
+fn effect_cover_slugs(metadata: &EffectMetadata) -> Vec<String> {
+    let mut slugs = Vec::new();
+    if let Some(stem) = metadata.source.source_stem() {
+        push_cover_slug(&mut slugs, stem);
+    }
+    push_cover_slug(&mut slugs, &metadata.name);
+    slugs
+}
+
+fn push_cover_slug(slugs: &mut Vec<String>, value: &str) {
+    let slug = cover_slug(value);
+    if !slug.is_empty() && !slugs.iter().any(|existing| existing == &slug) {
+        slugs.push(slug);
+    }
+}
+
+fn cover_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !slug.is_empty() && !last_was_separator {
+            slug.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    if last_was_separator {
+        let _ = slug.pop();
+    }
+    slug
 }
 
 fn source_kind(source: &EffectSource) -> &'static str {

@@ -572,6 +572,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "effects",
         "Get active effect",
     ),
+    RouteSpec::get(
+        "/api/v1/effects/active/cover",
+        "get_active_effect_cover",
+        "effects",
+        "Get active effect cover image",
+    ),
     RouteSpec::patch(
         "/api/v1/effects/current/controls",
         "update_current_controls",
@@ -614,6 +620,12 @@ pub const ROUTES: &[RouteSpec] = &[
         "get_effect",
         "effects",
         "Get effect",
+    ),
+    RouteSpec::get(
+        "/api/v1/effects/{id}/cover",
+        "get_effect_cover",
+        "effects",
+        "Get effect cover image",
     ),
     RouteSpec::get(
         "/api/v1/effects/{id}/layout",

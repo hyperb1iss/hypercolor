@@ -4242,6 +4242,150 @@ async fn get_active_effect_returns_primary_group_info() {
 }
 
 #[tokio::test]
+async fn get_active_effect_includes_cover_image_url_when_available() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/rainbow/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let cover_url = json["data"]["cover_image_url"]
+        .as_str()
+        .expect("active effect should include a cover image URL");
+    assert!(cover_url.starts_with("/api/v1/effects/"));
+    assert!(cover_url.ends_with("/cover"));
+}
+
+#[tokio::test]
+async fn get_effect_cover_returns_webp_image() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/rainbow/cover")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let cache_control = response
+        .headers()
+        .get(http::header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+
+    assert_eq!(content_type, "image/webp");
+    assert_eq!(cache_control, "public, max-age=86400");
+    assert!(bytes.starts_with(b"RIFF"));
+}
+
+#[tokio::test]
+async fn get_active_effect_cover_returns_current_webp_image() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/rainbow/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active/cover")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let cache_control = response
+        .headers()
+        .get(http::header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+
+    assert_eq!(content_type, "image/webp");
+    assert_eq!(cache_control, "no-store");
+    assert!(bytes.starts_with(b"RIFF"));
+}
+
+#[tokio::test]
+async fn get_active_effect_cover_returns_not_found_when_idle() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active/cover")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn stop_effect_returns_not_found_when_none() {
     let app = test_app();
 

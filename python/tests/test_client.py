@@ -33,6 +33,19 @@ def _envelope(data: object) -> bytes:
     )
 
 
+def _error(message: str, code: str = "not_found") -> bytes:
+    return msgspec.json.encode(
+        {
+            "error": {"code": code, "message": message, "details": {}},
+            "meta": {
+                "api_version": "1.0",
+                "request_id": "req_error",
+                "timestamp": "2026-03-08T00:00:00Z",
+            },
+        }
+    )
+
+
 def _control_surface(
     surface_id: str, values: dict[str, object] | None = None
 ) -> dict[str, object]:
@@ -357,6 +370,7 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
                     ],
                     "control_values": {"speed": {"integer": 72}},
                     "active_preset_id": None,
+                    "cover_image_url": "/api/v1/effects/aurora/cover",
                 }
             ),
         )
@@ -370,6 +384,54 @@ async def test_get_active_effect_decodes_live_state(client: HypercolorClient) ->
     assert effect.controls[0].label == "Speed"
     assert effect.controls[0].type == "number"
     assert effect.controls[0].default == 40
+    assert effect.cover_image_url == "/api/v1/effects/aurora/cover"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_active_effect_cover_image_url_is_absolute(client: HypercolorClient) -> None:
+    assert (
+        client.active_effect_cover_image_url()
+        == "http://hyperia.test:9420/api/v1/effects/active/cover"
+    )
+    assert (
+        client.effect_cover_image_url("aurora/main")
+        == "http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/cover"
+    )
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_active_effect_cover_image_returns_binary_payload(
+    client: HypercolorClient,
+) -> None:
+    image = b"RIFFhypercolor-webp"
+    respx.get("http://hyperia.test:9420/api/v1/effects/active/cover").mock(
+        return_value=httpx.Response(
+            200,
+            content=image,
+            headers={"content-type": "image/webp"},
+        )
+    )
+
+    cover = await client.get_active_effect_cover_image()
+
+    assert cover is not None
+    assert cover.data == image
+    assert cover.content_type == "image/webp"
+    assert cover.url == "http://hyperia.test:9420/api/v1/effects/active/cover"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_active_effect_cover_image_returns_none_on_404(
+    client: HypercolorClient,
+) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/effects/active/cover").mock(
+        return_value=httpx.Response(404, content=_error("No effect is active")),
+    )
+
+    assert await client.get_active_effect_cover_image() is None
 
 
 @respx.mock

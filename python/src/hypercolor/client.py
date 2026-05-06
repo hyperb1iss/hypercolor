@@ -97,6 +97,7 @@ from .models.effect import (
     ApplyEffectResult,
     ControlUpdateResult,
     Effect,
+    EffectCoverImage,
     EffectSummary,
 )
 from .models.layout import Layout, LayoutSummary
@@ -305,6 +306,30 @@ class HypercolorClient:
         if _is_idle_active_effect(payload):
             return None
         return self._convert(payload, ActiveEffect)
+
+    def effect_cover_image_url(self, effect_id: str) -> str:
+        """Return the absolute cover image URL for an effect."""
+        return self._request_url(f"/effects/{_quote_path(effect_id)}/cover")
+
+    def active_effect_cover_image_url(self) -> str:
+        """Return the absolute cover image URL for the active effect."""
+        return self._request_url("/effects/active/cover")
+
+    async def get_effect_cover_image(self, effect_id: str) -> EffectCoverImage:
+        """Fetch an effect cover image."""
+        response = await self._response_request(
+            "GET",
+            f"/effects/{_quote_path(effect_id)}/cover",
+        )
+        return _cover_image(response, self.effect_cover_image_url(effect_id))
+
+    async def get_active_effect_cover_image(self) -> EffectCoverImage | None:
+        """Fetch the active effect cover image, if an effect is running."""
+        try:
+            response = await self._response_request("GET", "/effects/active/cover")
+        except HypercolorNotFoundError:
+            return None
+        return _cover_image(response, self.active_effect_cover_image_url())
 
     async def apply_effect(
         self,
@@ -864,6 +889,21 @@ class HypercolorClient:
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> Any:
+        response = await self._response_request(method, path, body=body, params=params)
+
+        try:
+            return msgspec.json.decode(response.content)
+        except msgspec.DecodeError:
+            return response.text
+
+    async def _response_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> httpx.Response:
         try:
             request_path = _request_path(path)
             response = await self._client.request(
@@ -881,10 +921,7 @@ class HypercolorClient:
         except httpx.HTTPStatusError as exc:
             raise self._map_http_error(exc) from exc
 
-        try:
-            return msgspec.json.decode(response.content)
-        except msgspec.DecodeError:
-            return response.text
+        return response
 
     def _auth_headers(self) -> dict[str, str]:
         if self.api_key is None:
@@ -972,6 +1009,12 @@ def _decode_error_details(content: bytes) -> ApiErrorDetails | None:
     if details is not None and not isinstance(details, dict):
         details = None
     return ApiErrorDetails(code=code, message=message, details=details)
+
+
+def _cover_image(response: httpx.Response, url: str) -> EffectCoverImage:
+    content_type = response.headers.get("content-type", "application/octet-stream")
+    content_type = content_type.split(";", maxsplit=1)[0].strip() or "application/octet-stream"
+    return EffectCoverImage(data=response.content, content_type=content_type, url=url)
 
 
 def _drop_none(data: Mapping[str, Any]) -> dict[str, Any]:

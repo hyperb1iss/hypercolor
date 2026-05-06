@@ -1069,6 +1069,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(effects::get_active_effect),
         )
         .route(
+            "/effects/active/cover",
+            axum::routing::get(effects::get_active_effect_cover),
+        )
+        .route(
             "/effects/current/controls",
             axum::routing::patch(effects::update_current_controls),
         )
@@ -1092,6 +1096,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .nest_service(
             "/effects/screenshots",
             ServeDir::new(hypercolor_core::effect::bundled_screenshots_root()),
+        )
+        .route(
+            "/effects/{id}/cover",
+            axum::routing::get(effects::get_effect_cover),
         )
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
         .route(

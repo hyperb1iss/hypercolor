@@ -40,6 +40,7 @@ from .effect import (
     ControlDefinition,
     ControlUpdateResult,
     Effect,
+    EffectCoverImage,
     EffectSummary,
 )
 from .layout import Layout, LayoutSummary, LayoutZone, Point, Size
@@ -77,6 +78,7 @@ __all__ = [
     "DriverPresentation",
     "DriverProtocolDescriptor",
     "Effect",
+    "EffectCoverImage",
     "EffectSummary",
     "Favorite",
     "FrequencyRange",
