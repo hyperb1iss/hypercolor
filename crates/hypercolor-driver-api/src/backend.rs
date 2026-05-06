@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::discovery::DiscoveredDevice;
 use anyhow::{Result, bail};
 use hypercolor_types::device::{
     DeviceId, DeviceInfo, DisplayFrameFormat, OwnedDisplayFramePayload,
@@ -43,6 +44,14 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// Returns an error if the transport is unavailable or the scan fails.
     async fn discover(&mut self) -> Result<Vec<DeviceInfo>>;
+
+    /// Prime any backend-local discovery cache from a scanner result.
+    ///
+    /// Host transport backends can use this to carry scanner metadata into
+    /// `connect()` without running a second hardware discovery pass.
+    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+        let _ = discovered;
+    }
 
     /// Return refreshed metadata for a connected device, if available.
     ///

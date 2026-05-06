@@ -321,8 +321,11 @@ impl ComposeContext<'_> {
                 }
             }
             Err(error) => {
-                self.publish_effect_error(&error);
-                warn!(%error, "failed to render active scene groups; publishing black frame");
+                if self.publish_effect_error(&error)
+                    || error.downcast_ref::<RenderGroupEffectError>().is_none()
+                {
+                    warn!(%error, "failed to render active scene groups; publishing black frame");
+                }
                 let source_frame =
                     ProducerFrame::Surface(self.compose.output_artifacts.static_surface(
                         self.state.canvas_dims.width(),
@@ -437,16 +440,16 @@ impl ComposeContext<'_> {
         )
     }
 
-    fn publish_effect_error(&mut self, error: &anyhow::Error) {
+    fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {
         let Some(effect_error) = error.downcast_ref::<RenderGroupEffectError>() else {
-            return;
+            return false;
         };
         let Some(effect_error) = self
             .compose
             .render_group_runtime
             .note_effect_error(effect_error)
         else {
-            return;
+            return false;
         };
 
         self.state.event_bus.publish(HypercolorEvent::EffectError {
@@ -455,6 +458,7 @@ impl ComposeContext<'_> {
             fallback: None,
         });
         self.publish_effect_degraded(&effect_error, EffectDegradationState::Failed, Some(error));
+        true
     }
 
     fn publish_effect_recovered(&mut self) {

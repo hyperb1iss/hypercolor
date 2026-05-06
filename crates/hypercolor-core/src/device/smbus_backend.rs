@@ -118,6 +118,12 @@ impl DeviceBackend for SmBusBackend {
         Ok(info)
     }
 
+    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+        if let Some(pending) = pending_from_discovered(discovered) {
+            self.pending.insert(discovered.info.id, pending);
+        }
+    }
+
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
         let pending = self.pending.get(id).cloned().with_context(|| {
             format!(

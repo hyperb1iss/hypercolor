@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, SegmentRange};
+use hypercolor_core::device::{
+    BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink, SegmentRange,
+};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -206,6 +208,96 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
 
         self.writes.lock().await.push(colors);
         Ok(())
+    }
+}
+
+struct FastFrameSink {
+    writes: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for FastFrameSink {
+    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct FastFrameSinkBackend {
+    expected_device_id: DeviceId,
+    writes: Arc<AtomicUsize>,
+    target_fps: u32,
+}
+
+impl FastFrameSinkBackend {
+    fn new(expected_device_id: DeviceId, writes: Arc<AtomicUsize>, target_fps: u32) -> Self {
+        Self {
+            expected_device_id,
+            writes,
+            target_fps,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for FastFrameSinkBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "fast_sink".to_owned(),
+            name: "Fast Frame Sink Backend".to_owned(),
+            description: "Exposes a zero-latency frame sink for queue pacing tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Fast Sink Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::named("Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "fast_sink", ConnectionType::Usb),
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        bail!("backend-wide write path should not be used when a frame sink is available")
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        (*id == self.expected_device_id).then(|| {
+            Arc::new(FastFrameSink {
+                writes: Arc::clone(&self.writes),
+            }) as Arc<dyn DeviceFrameSink>
+        })
+    }
+
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        (*id == self.expected_device_id).then_some(self.target_fps)
     }
 }
 
@@ -632,6 +724,13 @@ struct CleanupRetryBackend {
     target_fps: u32,
 }
 
+struct TimeoutConnectBackend {
+    expected_device_id: DeviceId,
+    connect_attempts: Arc<AtomicUsize>,
+    disconnect_attempts: Arc<AtomicUsize>,
+    discover_attempts: Arc<AtomicUsize>,
+}
+
 impl CleanupRetryBackend {
     fn new(
         expected_device_id: DeviceId,
@@ -729,6 +828,66 @@ impl DeviceBackend for CleanupRetryBackend {
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
         (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for TimeoutConnectBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "timeout_connect".to_owned(),
+            name: "Timeout Connect Backend".to_owned(),
+            description: "Sleeps during connect to test timeout recovery".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Timeout Connect Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::named("Test"),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.disconnect_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(())
     }
 }
 
@@ -1405,6 +1564,88 @@ async fn backend_io_connect_with_refresh_cleans_up_stale_session_before_retry() 
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 2);
     assert_eq!(disconnect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(discover_attempts.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(100),
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    let io = manager
+        .backend_io("slow")
+        .expect("backend io handle should exist");
+    io.connect_with_refresh(device_id)
+        .await
+        .expect("initial connect should succeed");
+
+    let write_task = {
+        let io = io.clone();
+        tokio::spawn(async move {
+            let colors = vec![[1, 2, 3]; 4];
+            io.write_colors(device_id, &colors)
+                .await
+                .expect("slow write should succeed");
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let target_fps = io
+        .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
+        .await
+        .expect("timeout should start after the backend lock is acquired");
+
+    write_task.await.expect("write task should not panic");
+    assert_eq!(target_fps, 60);
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn backend_io_connect_timeout_skips_discovery_refresh_retry() {
+    let device_id = DeviceId::new();
+    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let disconnect_attempts = Arc::new(AtomicUsize::new(0));
+    let discover_attempts = Arc::new(AtomicUsize::new(0));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(TimeoutConnectBackend {
+        expected_device_id: device_id,
+        connect_attempts: Arc::clone(&connect_attempts),
+        disconnect_attempts: Arc::clone(&disconnect_attempts),
+        discover_attempts: Arc::clone(&discover_attempts),
+    }));
+    let io = manager
+        .backend_io("timeout_connect")
+        .expect("backend io handle should exist");
+
+    let error = io
+        .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
+        .await
+        .expect_err("connect should time out");
+
+    assert!(
+        error.to_string().contains("device connect timed out"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        disconnect_attempts.load(Ordering::Relaxed),
+        0,
+        "timeout cleanup must not drop backend discovery state"
+    );
+    assert_eq!(
+        discover_attempts.load(Ordering::Relaxed),
+        0,
+        "timeout retry must not run a fresh discovery scan"
+    );
 }
 
 #[tokio::test]
@@ -3477,7 +3718,7 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
         Arc::clone(&writes),
         Arc::clone(&write_count),
     )
-    .with_target_fps(10);
+    .with_target_fps(5);
 
     let mut manager = BackendManager::new();
     manager.register_backend(Box::new(backend));
@@ -3513,7 +3754,7 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
     tokio::time::sleep(Duration::from_millis(80)).await;
     manager.write_frame(&blue, &layout).await;
 
-    tokio::time::sleep(Duration::from_millis(160)).await;
+    tokio::time::sleep(Duration::from_millis(260)).await;
 
     let writes = writes.lock().await.clone();
     assert!(
@@ -3529,5 +3770,109 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
     assert!(
         !writes[1..].iter().any(|frame| frame[0] == [0, 255, 0]),
         "older pending payloads should be superseded before the paced write fires"
+    );
+}
+
+#[tokio::test]
+async fn paced_output_queue_sends_fast_frame_sink_while_updates_keep_arriving() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(AtomicUsize::new(0));
+
+    let backend = FastFrameSinkBackend::new(device_id, Arc::clone(&writes), 20);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("fast_sink", device_id, "fast_sink:strip")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "fast_sink:strip", 4)]);
+    let started = Instant::now();
+    let mut step = 1_u8;
+    while started.elapsed() < Duration::from_millis(220) {
+        let frame = vec![ZoneColors {
+            zone_id: "zone_0".into(),
+            colors: vec![[step, 0, 255_u8.saturating_sub(step)]; 4],
+        }];
+        manager.write_frame(&frame, &layout).await;
+        step = step.wrapping_add(1).max(1);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let sent = writes.load(Ordering::Relaxed);
+    assert!(
+        sent >= 4,
+        "fast frame sinks should keep sending at the paced deadline while updates arrive, sent={sent}"
+    );
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.target_fps, 20);
+    assert_eq!(
+        usize::try_from(queue.frames_sent).expect("frames_sent should fit usize"),
+        sent
+    );
+    assert!(
+        queue.frames_received > queue.frames_sent,
+        "continuous updates should refresh pending frames between paced writes"
+    );
+}
+
+#[tokio::test]
+async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
+    let device_id = DeviceId::new();
+    let backend_writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let backend_write_count = Arc::new(AtomicUsize::new(0));
+    let sink_writes = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&backend_writes),
+        Arc::clone(&backend_write_count),
+    )
+    .with_target_fps(30);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.set_cached_target_fps("slow", device_id, 30);
+    manager.map_device("slow:strip", "slow", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
+    let first = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 4],
+    }];
+    manager.write_frame(&first, &layout).await;
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        backend_write_count.load(Ordering::Relaxed) > 0,
+        "initial queue should use the backend path before a direct sink is known"
+    );
+
+    manager.set_device_frame_sink(
+        "slow",
+        device_id,
+        Some(Arc::new(FastFrameSink {
+            writes: Arc::clone(&sink_writes),
+        })),
+    );
+
+    let second = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 255, 0]; 4],
+    }];
+    manager.write_frame(&second, &layout).await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    assert!(
+        sink_writes.load(Ordering::Relaxed) > 0,
+        "queue should be recreated to use the direct frame sink once it is registered"
     );
 }

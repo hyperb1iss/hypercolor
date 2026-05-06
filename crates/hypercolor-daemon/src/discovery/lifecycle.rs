@@ -4,18 +4,23 @@ use std::time::Duration;
 use hypercolor_core::device::{
     AsyncWriteFailure, DeviceLifecycleManager, DiscoveryConnectBehavior, LifecycleAction,
 };
-use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceState};
+use hypercolor_types::device::{ConnectionType, DeviceError, DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
 use super::DiscoveryRuntime;
 use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
-    active_layout_targets_enabled_device, connect_backend_device, desired_connect_behavior,
-    device_log_label, disconnect_backend_device, ensure_default_logical_for_device,
-    format_error_chain, publish_device_connected, refresh_connected_device_info,
-    sync_logical_mappings_for_device, sync_registry_state,
+    active_layout_targets_enabled_device,
+    connect_backend_device_with_timeout as connect_backend_device_with_backend_timeout,
+    desired_connect_behavior, device_log_label, disconnect_backend_device,
+    ensure_default_logical_for_device, format_error_chain, publish_device_connected,
+    refresh_connected_device_info, sync_logical_mappings_for_device, sync_registry_state,
 };
+
+const DEVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const PUSH2_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const PUSH2_PROTOCOL_ID: &str = "push2/push-2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserEnabledStateResult {
@@ -142,7 +147,7 @@ pub async fn activate_pairable_device(
         return Ok(false);
     }
 
-    connect_backend_device(runtime, backend_id, device_id, &layout_device_id).await?;
+    connect_backend_device_with_timeout(runtime, backend_id, device_id, &layout_device_id).await?;
 
     if let Err(error) = refresh_connected_device_info(runtime, backend_id, device_id).await {
         let device_label = device_log_label(runtime, device_id).await;
@@ -358,9 +363,13 @@ pub(crate) async fn execute_lifecycle_actions(
                 backend_id,
                 layout_device_id,
             } => {
-                let result =
-                    connect_backend_device(&runtime, &backend_id, device_id, &layout_device_id)
-                        .await;
+                let result = connect_backend_device_with_timeout(
+                    &runtime,
+                    &backend_id,
+                    device_id,
+                    &layout_device_id,
+                )
+                .await;
 
                 let (follow_up, connected) = match result {
                     Ok(()) => {
@@ -571,10 +580,13 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
             "starting reconnect attempt"
         );
 
-        let connect_result = {
-            connect_backend_device(&runtime_for_task, &backend_id, device_id, &layout_device_id)
-                .await
-        };
+        let connect_result = connect_backend_device_with_timeout(
+            &runtime_for_task,
+            &backend_id,
+            device_id,
+            &layout_device_id,
+        )
+        .await;
         let reconnected = connect_result.is_ok();
 
         let follow_up = if let Err(error) = connect_result {
@@ -635,6 +647,43 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
     if let Some(existing) = tasks.insert(device_id, task) {
         existing.abort();
     }
+}
+
+async fn connect_backend_device_with_timeout(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+    layout_device_id: &str,
+) -> anyhow::Result<()> {
+    let timeout = device_connect_timeout(runtime, device_id).await;
+    connect_backend_device_with_backend_timeout(
+        runtime,
+        backend_id,
+        device_id,
+        layout_device_id,
+        timeout,
+    )
+    .await
+}
+
+async fn device_connect_timeout(runtime: &DiscoveryRuntime, device_id: DeviceId) -> Duration {
+    let info = runtime
+        .device_registry
+        .get(&device_id)
+        .await
+        .map(|tracked| tracked.info);
+    connect_timeout_for_device_info(info.as_ref())
+}
+
+fn connect_timeout_for_device_info(info: Option<&DeviceInfo>) -> Duration {
+    if info
+        .and_then(|info| info.origin.protocol_id.as_deref())
+        .is_some_and(|protocol_id| protocol_id == PUSH2_PROTOCOL_ID)
+    {
+        return PUSH2_CONNECT_TIMEOUT;
+    }
+
+    DEVICE_CONNECT_TIMEOUT
 }
 
 fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {

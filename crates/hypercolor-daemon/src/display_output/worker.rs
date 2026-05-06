@@ -322,7 +322,7 @@ async fn run_display_worker(
     let mut last_delivered_payload = None::<Arc<OwnedDisplayFramePayload>>;
     let mut last_delivered_preview_jpeg = None::<Arc<Vec<u8>>>;
 
-    loop {
+    'worker: loop {
         if pending.is_none() {
             if let Some(wake_deadline) = next_hold_refresh_at {
                 tokio::select! {
@@ -384,16 +384,22 @@ async fn run_display_worker(
         }
 
         if send_interval.is_some() {
-            tokio::select! {
-                changed = rx.changed() => {
-                    if changed.is_err() {
+            while Instant::now() < next_send_at {
+                tokio::select! {
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            break 'worker;
+                        }
+                        pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                        retry_after = None;
+                        if pending.is_none() {
+                            continue 'worker;
+                        }
+                    }
+                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {
                         break;
                     }
-                    pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
-                    retry_after = None;
-                    continue;
                 }
-                () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
             }
         }
 

@@ -54,6 +54,13 @@ struct Push2PortMatch<P> {
     usb_path: Option<String>,
 }
 
+struct Push2MidiConnections {
+    input_name: String,
+    output_name: String,
+    midi_out: MidiOutputConnection,
+    midi_in: MidiInputConnection<()>,
+}
+
 /// Composite transport that routes `Primary` traffic over MIDI and `Bulk`
 /// traffic over a claimed USB bulk endpoint.
 pub struct Push2Transport {
@@ -62,7 +69,7 @@ pub struct Push2Transport {
     bulk_endpoint_address: u8,
     bulk_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
     bulk_buffer: Arc<Mutex<Option<Buffer>>>,
-    midi_out: AsyncMutex<MidiOutputConnection>,
+    midi_out: Arc<Mutex<MidiOutputConnection>>,
     _midi_in: Mutex<Option<MidiInputConnection<()>>>,
     sysex_rx: AsyncMutex<mpsc::Receiver<Vec<u8>>>,
     closed: AtomicBool,
@@ -100,49 +107,19 @@ impl Push2Transport {
         };
 
         let (tx, rx) = mpsc::channel(SYSEX_QUEUE_DEPTH);
-        let mut midi_in = MidiInput::new("hypercolor-push2-input").map_err(map_midi_init_error)?;
-        midi_in.ignore(Ignore::None);
-        let midi_out = MidiOutput::new("hypercolor-push2-output").map_err(map_midi_init_error)?;
-
-        let input_port = find_push2_port(
-            &midi_in,
-            expected_role,
-            "input",
-            vendor_id,
-            product_id,
-            serial,
-            usb_path,
-        )?;
-        let output_port = find_push2_port(
-            &midi_out,
-            expected_role,
-            "output",
-            vendor_id,
-            product_id,
-            serial,
-            usb_path,
-        )?;
-        let input_name = midi_in
-            .port_name(&input_port)
-            .unwrap_or_else(|_| "<unknown>".to_owned());
-        let output_name = midi_out
-            .port_name(&output_port)
-            .unwrap_or_else(|_| "<unknown>".to_owned());
-        let midi_in_connection = midi_in
-            .connect(
-                &input_port,
-                "hypercolor-push2-sysex",
-                move |_timestamp, message, _state| {
-                    if message.first() == Some(&0xF0) {
-                        let _ = tx.blocking_send(message.to_vec());
-                    }
-                },
-                (),
+        let serial_for_midi = serial.map(ToOwned::to_owned);
+        let usb_path_for_midi = usb_path.map(ToOwned::to_owned);
+        let midi_connections = spawn_blocking_transport_io("push2 midi open", move || {
+            open_push2_midi_connections(
+                expected_role,
+                tx,
+                vendor_id,
+                product_id,
+                serial_for_midi.as_deref(),
+                usb_path_for_midi.as_deref(),
             )
-            .map_err(|error| map_midi_connect_error(&error, "input"))?;
-        let midi_out_connection = midi_out
-            .connect(&output_port, "hypercolor-push2-output")
-            .map_err(|error| map_midi_connect_error(&error, "output"))?;
+        })
+        .await?;
 
         #[cfg(target_os = "linux")]
         let display_interface_handle = device
@@ -187,8 +164,8 @@ impl Push2Transport {
             serial = serial.unwrap_or("<none>"),
             usb_path = usb_path.unwrap_or("<unknown>"),
             midi_role = ?expected_role,
-            midi_input = input_name,
-            midi_output = output_name,
+            midi_input = midi_connections.input_name,
+            midi_output = midi_connections.output_name,
             display_interface,
             display_endpoint = format_args!("0x{display_endpoint:02X}"),
             out_max_packet_size,
@@ -201,8 +178,8 @@ impl Push2Transport {
             bulk_endpoint_address: display_endpoint,
             bulk_endpoint: Arc::new(Mutex::new(bulk_endpoint)),
             bulk_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
-            midi_out: AsyncMutex::new(midi_out_connection),
-            _midi_in: Mutex::new(Some(midi_in_connection)),
+            midi_out: Arc::new(Mutex::new(midi_connections.midi_out)),
+            _midi_in: Mutex::new(Some(midi_connections.midi_in)),
             sysex_rx: AsyncMutex::new(rx),
             closed: AtomicBool::new(false),
         })
@@ -223,11 +200,14 @@ impl Push2Transport {
             "push2 midi send"
         );
 
-        self.midi_out
-            .lock()
-            .await
-            .send(data)
-            .map_err(map_midi_send_error)
+        let midi_out = Arc::clone(&self.midi_out);
+        let packet = data.to_vec();
+        spawn_blocking_transport_io("push2 midi send", move || {
+            lock_mutex(midi_out.as_ref(), "MIDI output")?
+                .send(packet.as_slice())
+                .map_err(map_midi_send_error)
+        })
+        .await
     }
 
     async fn receive_sysex(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
@@ -372,6 +352,66 @@ fn send_bulk_locked(
     completion
         .status
         .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+}
+
+fn open_push2_midi_connections(
+    expected_role: Push2MidiPortRole,
+    tx: mpsc::Sender<Vec<u8>>,
+    vendor_id: u16,
+    product_id: u16,
+    serial: Option<&str>,
+    usb_path: Option<&str>,
+) -> Result<Push2MidiConnections, TransportError> {
+    let mut midi_in = MidiInput::new("hypercolor-push2-input").map_err(map_midi_init_error)?;
+    midi_in.ignore(Ignore::None);
+    let midi_out = MidiOutput::new("hypercolor-push2-output").map_err(map_midi_init_error)?;
+
+    let input_port = find_push2_port(
+        &midi_in,
+        expected_role,
+        "input",
+        vendor_id,
+        product_id,
+        serial,
+        usb_path,
+    )?;
+    let output_port = find_push2_port(
+        &midi_out,
+        expected_role,
+        "output",
+        vendor_id,
+        product_id,
+        serial,
+        usb_path,
+    )?;
+    let input_name = midi_in
+        .port_name(&input_port)
+        .unwrap_or_else(|_| "<unknown>".to_owned());
+    let output_name = midi_out
+        .port_name(&output_port)
+        .unwrap_or_else(|_| "<unknown>".to_owned());
+    let midi_in = midi_in
+        .connect(
+            &input_port,
+            "hypercolor-push2-sysex",
+            move |_timestamp, message, _state| {
+                if message.first() == Some(&0xF0) {
+                    let _ = tx.blocking_send(message.to_vec());
+                }
+            },
+            (),
+        )
+        .map_err(|error| map_midi_connect_error(&error, "input"))?;
+    let midi_out = midi_out
+        .connect(&output_port, "hypercolor-push2-output")
+        .map_err(|error| map_midi_connect_error(&error, "output"))?;
+
+    Ok(Push2MidiConnections {
+        input_name,
+        output_name,
+        midi_out,
+        midi_in,
+    })
 }
 
 fn find_push2_port<T: MidiIO>(

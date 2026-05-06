@@ -1321,6 +1321,12 @@ impl DeviceBackend for UsbBackend {
         Ok(info)
     }
 
+    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+        if let Some(pending) = pending_from_discovered(discovered) {
+            self.pending.insert(discovered.info.id, pending);
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "USB connect owns discovery handoff, init, diagnostics, and actor startup"

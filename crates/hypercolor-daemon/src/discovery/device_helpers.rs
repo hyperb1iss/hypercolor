@@ -1,10 +1,14 @@
 use anyhow::Context;
-use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager, SegmentRange};
+use hypercolor_core::device::{
+    BackendIo, BackendManager, DeviceLifecycleManager, DiscoveredDevice, SegmentRange,
+};
 use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
 use tracing::info;
+
+use std::time::Duration;
 
 use super::DiscoveryRuntime;
 use crate::device_settings::StoredDeviceSettings;
@@ -112,15 +116,37 @@ pub(super) async fn sync_host_attachment_profile_config(
     }
 }
 
-pub(super) async fn connect_backend_device(
+pub(super) async fn connect_backend_device_with_timeout(
     runtime: &DiscoveryRuntime,
     backend_id: &str,
     device_id: DeviceId,
     layout_device_id: &str,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    connect_backend_device_inner(
+        runtime,
+        backend_id,
+        device_id,
+        layout_device_id,
+        Some(timeout),
+    )
+    .await
+}
+
+async fn connect_backend_device_inner(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+    layout_device_id: &str,
+    timeout: Option<Duration>,
 ) -> anyhow::Result<()> {
     let io = backend_io(runtime, backend_id).await?;
+    remember_discovered_device(runtime, device_id, &io).await;
     sync_host_attachment_profile_config(runtime, device_id, &io).await;
-    let target_fps = io.connect_with_refresh(device_id).await?;
+    let target_fps = match timeout {
+        Some(timeout) => io.connect_with_refresh_timeout(device_id, timeout).await?,
+        None => io.connect_with_refresh(device_id).await?,
+    };
     let frame_sink = io.frame_sink(device_id).await;
 
     let mut manager = runtime.backend_manager.lock().await;
@@ -132,6 +158,33 @@ pub(super) async fn connect_backend_device(
         device_id,
     );
     Ok(())
+}
+
+async fn remember_discovered_device(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    backend: &BackendIo,
+) {
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return;
+    };
+    let Some(fingerprint) = runtime.device_registry.fingerprint_for_id(&device_id).await else {
+        return;
+    };
+    let metadata = runtime
+        .device_registry
+        .metadata_for_id(&device_id)
+        .await
+        .unwrap_or_default();
+
+    backend
+        .remember_discovered_device(&DiscoveredDevice {
+            fingerprint,
+            connect_behavior: tracked.connect_behavior,
+            info: tracked.info,
+            metadata,
+        })
+        .await;
 }
 
 pub(super) async fn disconnect_backend_device(

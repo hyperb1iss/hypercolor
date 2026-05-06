@@ -246,8 +246,7 @@ fn fallback_effect_name(file: &Path) -> String {
         .map_or_else(|| "unnamed-effect".to_owned(), ToOwned::to_owned)
 }
 
-fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
-    let key = format!("hypercolor:html:{}", source_path.display());
+fn deterministic_html_effect_id_from_key(key: &str) -> EffectId {
     let mut hash: u128 = 0x6c62_69f0_7bb0_14d9_8d4f_1283_7ec6_3b8b;
 
     for byte in key.bytes() {
@@ -262,6 +261,16 @@ fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
     EffectId::new(Uuid::from_bytes(bytes))
 }
 
+fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
+    deterministic_html_effect_id_from_key(&format!("hypercolor:html:{}", source_path.display()))
+}
+
+fn stable_bundled_html_effect_id(source_path: &Path) -> Option<EffectId> {
+    bundled_effect_slug(source_path).map(|slug| {
+        deterministic_html_effect_id_from_key(&format!("hypercolor:html-bundled:{slug}"))
+    })
+}
+
 #[cfg(feature = "servo")]
 fn html_effect_id(
     source_path: &Path,
@@ -271,6 +280,7 @@ fn html_effect_id(
         .builtin_id
         .as_deref()
         .map(builtin_effect_stable_id)
+        .or_else(|| stable_bundled_html_effect_id(source_path))
         .unwrap_or_else(|| deterministic_html_effect_id(source_path))
 }
 
@@ -279,7 +289,126 @@ fn html_effect_id(
     source_path: &Path,
     _parsed: &super::meta_parser::ParsedHtmlEffectMetadata,
 ) -> EffectId {
-    deterministic_html_effect_id(source_path)
+    stable_bundled_html_effect_id(source_path)
+        .unwrap_or_else(|| deterministic_html_effect_id(source_path))
+}
+
+pub(super) fn html_effect_aliases(entry: &EffectEntry) -> Vec<EffectId> {
+    if !matches!(&entry.metadata.source, EffectSource::Html { .. }) {
+        return Vec::new();
+    }
+
+    let canonical = entry.metadata.id;
+    let mut aliases = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_alias = |alias: EffectId| {
+        if alias != canonical && seen.insert(alias) {
+            aliases.push(alias);
+        }
+    };
+
+    push_alias(deterministic_html_effect_id(&entry.source_path));
+
+    if bundled_effect_slug(&entry.source_path).is_some() {
+        for path in related_bundled_effect_paths(&entry.source_path) {
+            push_alias(deterministic_html_effect_id(&path));
+        }
+    }
+
+    aliases
+}
+
+/// Return the legacy path-derived HTML effect id for compatibility tests.
+#[doc(hidden)]
+#[must_use]
+pub fn html_path_effect_id_for_testing(path: &Path) -> EffectId {
+    deterministic_html_effect_id(&normalize_path(path))
+}
+
+fn bundled_effect_slug(source_path: &Path) -> Option<String> {
+    if !has_bundled_effect_root_marker(source_path) {
+        return None;
+    }
+
+    let file_stem = source_path.file_stem().and_then(OsStr::to_str)?.trim();
+    (!file_stem.is_empty()).then(|| file_stem.to_ascii_lowercase())
+}
+
+fn has_bundled_effect_root_marker(source_path: &Path) -> bool {
+    effect_bucket(source_path).is_some()
+}
+
+fn effect_bucket(source_path: &Path) -> Option<String> {
+    let mut previous_was_effects = false;
+
+    for component in source_path.components() {
+        let Some(text) = component.as_os_str().to_str() else {
+            previous_was_effects = false;
+            continue;
+        };
+        let lower = text.to_ascii_lowercase();
+
+        if previous_was_effects && matches!(lower.as_str(), "bundled" | "hypercolor") {
+            return Some(lower);
+        }
+
+        previous_was_effects = lower == "effects";
+    }
+
+    None
+}
+
+fn related_bundled_effect_paths(source_path: &Path) -> Vec<PathBuf> {
+    let Some(file_name) = source_path.file_name() else {
+        return Vec::new();
+    };
+
+    let mut related = Vec::new();
+    if let Some(bucket) = effect_bucket(source_path) {
+        let sibling_bucket = match bucket.as_str() {
+            "bundled" => Some("hypercolor"),
+            "hypercolor" => Some("bundled"),
+            _ => None,
+        };
+        if let Some(sibling_bucket) = sibling_bucket
+            && let Some(sibling_path) = replace_effect_bucket(source_path, sibling_bucket)
+        {
+            related.push(sibling_path);
+        }
+    }
+
+    related.push(normalize_path(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("effects")
+            .join("hypercolor")
+            .join(file_name),
+    ));
+
+    related
+}
+
+fn replace_effect_bucket(source_path: &Path, replacement: &str) -> Option<PathBuf> {
+    let file_name = source_path.file_name()?;
+    let bucket_dir = source_path.parent()?;
+    let bucket = bucket_dir.file_name().and_then(OsStr::to_str)?;
+    if !matches!(
+        bucket.to_ascii_lowercase().as_str(),
+        "bundled" | "hypercolor"
+    ) {
+        return None;
+    }
+
+    let effects_dir = bucket_dir.parent()?;
+    let effects_dir_name = effects_dir.file_name().and_then(OsStr::to_str)?;
+    if !effects_dir_name.eq_ignore_ascii_case("effects") {
+        return None;
+    }
+
+    Some(normalize_path(
+        &effects_dir.join(replacement).join(file_name),
+    ))
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

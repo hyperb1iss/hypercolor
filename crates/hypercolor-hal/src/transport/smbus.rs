@@ -205,8 +205,8 @@ use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 
 #[cfg(target_os = "windows")]
 use hypercolor_windows_pawnio::{
-    PawnIoError, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
-    WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
+    PawnIoError, SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction,
+    WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses, open_smbus_bus,
 };
 
 /// Linux `SMBus` transport backed by `/dev/i2c-*`.
@@ -464,34 +464,54 @@ impl SmBusTransport {
         })?;
         let mut reads = Vec::new();
 
-        for operation in operations {
-            match operation {
+        let mut batch = operations
+            .iter()
+            .map(|operation| match operation {
                 SmBusOperation::WriteWordData { register, value } => {
-                    let mut transaction = SmBusTransaction::WordData { value: *value };
-                    bus.smbus_xfer(address, SmBusDirection::Write, *register, &mut transaction)
-                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                    Ok(SmBusBatchOperation::Transfer {
+                        direction: SmBusDirection::Write,
+                        command: *register,
+                        transaction: SmBusTransaction::WordData { value: *value },
+                    })
                 }
                 SmBusOperation::WriteByteData { register, value } => {
-                    let mut transaction = SmBusTransaction::ByteData { value: *value };
-                    bus.smbus_xfer(address, SmBusDirection::Write, *register, &mut transaction)
-                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                    Ok(SmBusBatchOperation::Transfer {
+                        direction: SmBusDirection::Write,
+                        command: *register,
+                        transaction: SmBusTransaction::ByteData { value: *value },
+                    })
                 }
-                SmBusOperation::ReadByteData { register } => {
-                    let mut transaction = SmBusTransaction::ByteData { value: 0 };
-                    bus.smbus_xfer(address, SmBusDirection::Read, *register, &mut transaction)
-                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
-                    if let SmBusTransaction::ByteData { value } = transaction {
-                        reads.push(value);
-                    }
-                }
+                SmBusOperation::ReadByteData { register } => Ok(SmBusBatchOperation::Transfer {
+                    direction: SmBusDirection::Read,
+                    command: *register,
+                    transaction: SmBusTransaction::ByteData { value: 0 },
+                }),
                 SmBusOperation::WriteBlockData { register, data } => {
-                    let mut transaction = SmBusTransaction::BlockData {
-                        data: SmBusBlockData::new(data).map_err(map_windows_pawnio_error)?,
-                    };
-                    bus.smbus_xfer(address, SmBusDirection::Write, *register, &mut transaction)
-                        .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+                    Ok(SmBusBatchOperation::Transfer {
+                        direction: SmBusDirection::Write,
+                        command: *register,
+                        transaction: SmBusTransaction::BlockData {
+                            data: SmBusBlockData::new(data).map_err(map_windows_pawnio_error)?,
+                        },
+                    })
                 }
-                SmBusOperation::Delay { duration } => std::thread::sleep(*duration),
+                SmBusOperation::Delay { duration } => Ok(SmBusBatchOperation::Delay {
+                    duration: *duration,
+                }),
+            })
+            .collect::<Result<Vec<_>, TransportError>>()?;
+
+        bus.smbus_xfer_batch(address, &mut batch)
+            .map_err(|error| map_windows_smbus_io_error(path, address, error))?;
+
+        for operation in batch {
+            if let SmBusBatchOperation::Transfer {
+                direction: SmBusDirection::Read,
+                transaction: SmBusTransaction::ByteData { value },
+                ..
+            } = operation
+            {
+                reads.push(value);
             }
         }
 

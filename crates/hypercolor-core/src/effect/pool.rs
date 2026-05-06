@@ -46,11 +46,12 @@ impl EffectPool {
             };
 
             let entry = lookup_effect_entry(registry, effect_id)?;
+            let resolved_effect_id = registry.resolve_id(&effect_id).unwrap_or(effect_id);
 
             let needs_rebuild = self
                 .slots
                 .get(&group.id)
-                .is_none_or(|slot| slot.needs_rebuild(effect_id, entry));
+                .is_none_or(|slot| slot.needs_rebuild(resolved_effect_id, entry));
             if needs_rebuild {
                 let slot = EffectSlot::build(entry, group)?;
                 self.slots.insert(group.id, slot);

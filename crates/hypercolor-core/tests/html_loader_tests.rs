@@ -7,7 +7,8 @@ use tempfile::TempDir;
 
 use hypercolor_core::effect::{
     EffectRegistry, builtin::register_builtin_effects, bundled_effects_root,
-    default_effect_search_paths, parse_html_effect_metadata, register_html_effects,
+    default_effect_search_paths, html_path_effect_id_for_testing, load_html_effect_file,
+    parse_html_effect_metadata, register_html_effects,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -153,6 +154,65 @@ fn default_effect_search_paths_deduplicates_extra_roots() {
     let matches = paths.iter().filter(|path| *path == &extra_root).count();
     assert_eq!(matches, 1);
     assert!(!paths.is_empty());
+}
+
+#[test]
+fn bundled_html_effect_ids_are_stable_across_build_roots() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let html = r#"
+<head>
+  <title>Poisonous</title>
+  <meta description="Stable generated effect identity" />
+  <meta publisher="Hypercolor" />
+</head>
+"#;
+    let source_path = root.join("hypercolor/poisonous.html");
+    let installed_path = root.join("bundled/poisonous.html");
+    write_html(&source_path, html);
+    write_html(&installed_path, html);
+
+    let source_entry = load_html_effect_file(&source_path)
+        .expect("source effect should load")
+        .expect("source effect should register");
+    let installed_entry = load_html_effect_file(&installed_path)
+        .expect("installed effect should load")
+        .expect("installed effect should register");
+
+    assert_eq!(source_entry.metadata.id, installed_entry.metadata.id);
+}
+
+#[test]
+fn registry_resolves_legacy_bundled_html_path_aliases() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let html = r#"
+<head>
+  <title>Poisonous</title>
+  <meta description="Stable generated effect identity" />
+  <meta publisher="Hypercolor" />
+</head>
+"#;
+    let source_path = root.join("hypercolor/poisonous.html");
+    let installed_path = root.join("bundled/poisonous.html");
+    write_html(&source_path, html);
+    write_html(&installed_path, html);
+
+    let installed_entry = load_html_effect_file(&installed_path)
+        .expect("installed effect should load")
+        .expect("installed effect should register");
+    let canonical_id = installed_entry.metadata.id;
+    let legacy_id = html_path_effect_id_for_testing(&source_path);
+    assert_ne!(legacy_id, canonical_id);
+
+    let mut registry = EffectRegistry::new(vec![root]);
+    registry.register(installed_entry);
+
+    assert_eq!(registry.resolve_id(&legacy_id), Some(canonical_id));
+    let effect = registry
+        .get(&legacy_id)
+        .expect("legacy path id should resolve to the installed effect");
+    assert_eq!(effect.metadata.name, "Poisonous");
 }
 
 #[test]
@@ -460,13 +520,20 @@ fn register_html_effects_skips_builtin_html_ports_without_servo() {
 
 #[test]
 fn generated_audio_effects_keep_audio_reactive_metadata() {
-    for relative in [
-        "hypercolor/audio-pulse.html",
-        "hypercolor/frequency-cascade.html",
-        "hypercolor/iris.html",
-        "hypercolor/shockwave.html",
+    let root = bundled_effects_root();
+    for file_name in [
+        "audio-pulse.html",
+        "frequency-cascade.html",
+        "iris.html",
+        "shockwave.html",
     ] {
-        let path = bundled_effects_root().join(relative);
+        let path = [
+            root.join(file_name),
+            root.join("hypercolor").join(file_name),
+        ]
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| root.join(file_name));
         assert!(
             path.exists(),
             "expected generated HTML effect at {}; run `just effects-build` first",
@@ -480,7 +547,7 @@ fn generated_audio_effects_keep_audio_reactive_metadata() {
         assert!(
             parsed.audio_reactive,
             "expected {} to remain audio-reactive in generated metadata",
-            relative
+            file_name
         );
         assert!(
             parsed
@@ -488,7 +555,7 @@ fn generated_audio_effects_keep_audio_reactive_metadata() {
                 .iter()
                 .any(|tag| tag.eq_ignore_ascii_case("audio-reactive")),
             "expected {} to retain the audio-reactive tag",
-            relative
+            file_name
         );
     }
 }

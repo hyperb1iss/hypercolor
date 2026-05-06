@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use hypercolor_core::device::{
-    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, TransportScanner,
+    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction, TransportScanner,
 };
 use hypercolor_driver_api::{
     DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, DriverModule,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -560,8 +560,17 @@ async fn process_discovered_device(
         }
     }
     let had_actions = !actions.is_empty();
-    execute_lifecycle_actions(runtime.clone(), actions).await;
-    sync_registry_state(runtime, device_id).await;
+    if should_run_lifecycle_actions_in_background(&tracked_before.info, &actions) {
+        debug!(
+            device = %tracked_before.info.name,
+            device_id = %device_id,
+            "running discovery connect actions in background"
+        );
+        spawn_lifecycle_actions_in_background(runtime, device_id, actions);
+    } else {
+        execute_lifecycle_actions(runtime.clone(), actions).await;
+        sync_registry_state(runtime, device_id).await;
+    }
 
     let tracked_after = runtime.device_registry.get(&device_id).await?;
     let device_ref = device_ref_for_tracked(&tracked_after.info);
@@ -600,6 +609,31 @@ async fn process_discovered_device(
         device_ref,
         matches!(kind, DiscoverySeenKind::Reappeared) && should_publish_reappeared,
     ))
+}
+
+fn should_run_lifecycle_actions_in_background(
+    device_info: &DeviceInfo,
+    actions: &[LifecycleAction],
+) -> bool {
+    actions.iter().any(|action| {
+        matches!(
+            action,
+            LifecycleAction::Connect { backend_id, .. }
+                if backend_id == "smbus" || device_info.driver_id() == "push2"
+        )
+    })
+}
+
+fn spawn_lifecycle_actions_in_background(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    actions: Vec<LifecycleAction>,
+) {
+    let runtime_for_task = runtime.clone();
+    std::mem::drop(runtime.task_spawner.spawn(async move {
+        execute_lifecycle_actions(runtime_for_task.clone(), actions).await;
+        sync_registry_state(&runtime_for_task, device_id).await;
+    }));
 }
 
 fn map_scanner_reports(reports: &[ScannerScanReport]) -> Vec<DiscoveryScannerResult> {

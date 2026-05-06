@@ -8,6 +8,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,6 +16,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use hypercolor_driver_api::DiscoveredDevice;
 use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -57,11 +59,52 @@ impl BackendIo {
     /// Returns an error if the backend connect call fails both before and
     /// after discovery refresh.
     pub async fn connect_with_refresh(&self, device_id: DeviceId) -> Result<u32> {
+        self.connect_with_refresh_inner(device_id, None).await
+    }
+
+    /// Connect a device, applying timeout only to backend operations after
+    /// this handle acquires the backend lock.
+    ///
+    /// Returns the backend's preferred output FPS for the connected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend connect call fails or times out.
+    pub async fn connect_with_refresh_timeout(
+        &self,
+        device_id: DeviceId,
+        timeout: Duration,
+    ) -> Result<u32> {
+        self.connect_with_refresh_inner(device_id, Some(timeout))
+            .await
+    }
+
+    async fn connect_with_refresh_inner(
+        &self,
+        device_id: DeviceId,
+        timeout: Option<Duration>,
+    ) -> Result<u32> {
         let mut backend = self.backend.lock().await;
 
-        if let Err(initial_error) = backend.connect(&device_id).await {
+        if let Err(initial_error) = run_backend_operation(
+            timeout,
+            &self.backend_id,
+            device_id,
+            "connect",
+            backend.connect(&device_id),
+        )
+        .await
+        {
             let initial_message = initial_error.to_string();
-            if is_missing_discovery_descriptor(&initial_message) {
+            if is_backend_operation_timeout(&initial_message) {
+                debug!(
+                    backend_id = %self.backend_id,
+                    %device_id,
+                    error = %initial_message,
+                    "backend connect timed out; preserving discovery state for reconnect"
+                );
+                return Err(initial_error);
+            } else if is_missing_discovery_descriptor(&initial_message) {
                 debug!(
                     backend_id = %self.backend_id,
                     %device_id,
@@ -76,7 +119,15 @@ impl BackendIo {
                     "initial connect failed; refreshing backend discovery state and retrying"
                 );
 
-                match backend.disconnect(&device_id).await {
+                match run_backend_operation(
+                    timeout,
+                    &self.backend_id,
+                    device_id,
+                    "disconnect cleanup",
+                    backend.disconnect(&device_id),
+                )
+                .await
+                {
                     Ok(()) => debug!(
                         backend_id = %self.backend_id,
                         %device_id,
@@ -91,14 +142,30 @@ impl BackendIo {
                 }
             }
 
-            backend.discover().await.with_context(|| {
+            run_backend_operation(
+                timeout,
+                &self.backend_id,
+                device_id,
+                "discovery refresh",
+                backend.discover(),
+            )
+            .await
+            .with_context(|| {
                 format!(
                     "backend '{}' discovery refresh failed after initial connect failure for device {device_id}: {initial_message}",
                     self.backend_id
                 )
             })?;
 
-            if let Err(retry_error) = backend.connect(&device_id).await {
+            if let Err(retry_error) = run_backend_operation(
+                timeout,
+                &self.backend_id,
+                device_id,
+                "connect retry",
+                backend.connect(&device_id),
+            )
+            .await
+            {
                 let retry_message = retry_error.to_string();
                 debug!(
                     backend_id = %self.backend_id,
@@ -122,6 +189,12 @@ impl BackendIo {
         }
 
         Ok(backend.target_fps(&device_id).unwrap_or(60))
+    }
+
+    /// Prime the backend's discovery cache from a scanner result.
+    pub async fn remember_discovered_device(&self, discovered: &DiscoveredDevice) {
+        let mut backend = self.backend.lock().await;
+        backend.remember_discovered_device(discovered);
     }
 
     /// Fetch refreshed metadata for a connected device.
@@ -263,6 +336,34 @@ impl BackendIo {
 
 fn is_missing_discovery_descriptor(message: &str) -> bool {
     message.contains(" has no pending ") && message.contains(" descriptor; run discover()")
+}
+
+fn is_backend_operation_timeout(message: &str) -> bool {
+    message.contains(" timed out after ") && message.contains(" using backend ")
+}
+
+async fn run_backend_operation<T, F>(
+    timeout: Option<Duration>,
+    backend_id: &str,
+    device_id: DeviceId,
+    operation: &'static str,
+    future: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let Some(timeout) = timeout else {
+        return future.await;
+    };
+
+    let Ok(result) = tokio::time::timeout(timeout, future).await else {
+        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        bail!(
+            "device {operation} timed out after {timeout_ms}ms using backend '{backend_id}' for device {device_id}"
+        );
+    };
+
+    result
 }
 
 /// Contiguous LED range on a physical device.
@@ -719,8 +820,9 @@ impl DeviceStagingBuffer {
 /// atomically and the sender never blocks the render loop.
 struct OutputQueue {
     tx: watch::Sender<Option<Arc<FramePayload>>>,
-    _io_task: JoinHandle<()>,
+    io_task: JoinHandle<()>,
     target_fps: u32,
+    uses_frame_sink: bool,
     metrics: Arc<OutputQueueMetrics>,
     next_sequence: u64,
 }
@@ -737,6 +839,7 @@ impl OutputQueue {
         let (tx, mut rx) = watch::channel(None::<Arc<FramePayload>>);
         let metrics = Arc::new(OutputQueueMetrics::new(Instant::now()));
         let metrics_for_task = Arc::clone(&metrics);
+        let uses_frame_sink = frame_sink.is_some();
 
         let io_task = tokio::spawn(async move {
             let send_interval = target_interval_for_fps(target_fps);
@@ -746,7 +849,7 @@ impl OutputQueue {
             let mut last_logged_write_error = None::<String>;
             let mut repeated_write_failures_since_log = 0_u64;
 
-            loop {
+            'worker: loop {
                 if pending.is_none() {
                     // Sender dropped => manager shutdown or queue removed.
                     if rx.changed().await.is_err() {
@@ -757,15 +860,21 @@ impl OutputQueue {
                 }
 
                 if send_interval.is_some() {
-                    tokio::select! {
-                        changed = rx.changed() => {
-                            if changed.is_err() {
+                    while Instant::now() < next_send_at {
+                        tokio::select! {
+                            changed = rx.changed() => {
+                                if changed.is_err() {
+                                    break 'worker;
+                                }
+                                pending.clone_from(&rx.borrow_and_update());
+                                if pending.is_none() {
+                                    continue 'worker;
+                                }
+                            }
+                            () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {
                                 break;
                             }
-                            pending.clone_from(&rx.borrow_and_update());
-                            continue;
                         }
-                        () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
                     }
                 }
 
@@ -793,7 +902,15 @@ impl OutputQueue {
                         .write_colors_shared(Arc::clone(&frame.colors))
                         .await
                 } else {
-                    let mut backend = backend.lock().await;
+                    let Ok(mut backend) = backend.try_lock() else {
+                        pending = Some(frame);
+                        if let Some(interval) = send_interval {
+                            next_send_at = advance_deadline(next_send_at, interval, Instant::now());
+                        }
+                        tokio::task::yield_now().await;
+                        continue;
+                    };
+
                     backend
                         .write_colors_shared(&device_id, Arc::clone(&frame.colors))
                         .await
@@ -865,11 +982,16 @@ impl OutputQueue {
 
         Self {
             tx,
-            _io_task: io_task,
+            io_task,
             target_fps,
+            uses_frame_sink,
             metrics,
             next_sequence: 0,
         }
+    }
+
+    fn uses_frame_sink(&self) -> bool {
+        self.uses_frame_sink
     }
 
     /// Push the latest payload for this device.
@@ -978,6 +1100,12 @@ impl OutputQueue {
     ) -> DeviceOutputStatistics {
         self.metrics
             .snapshot(backend_id, device_id, mapped_layout_ids, self.target_fps)
+    }
+}
+
+impl Drop for OutputQueue {
+    fn drop(&mut self) {
+        self.io_task.abort();
     }
 }
 
@@ -2108,9 +2236,18 @@ impl BackendManager {
     }
 
     fn ensure_output_queue_for_key(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
+        let frame_sink = self.device_frame_sinks.get(key).cloned();
+        let should_replace_queue = self
+            .output_queues
+            .get(key)
+            .is_some_and(|queue| queue.uses_frame_sink() != frame_sink.is_some());
+
+        if should_replace_queue {
+            self.output_queues.remove(key);
+        }
+
         if !self.output_queues.contains_key(key) {
             let backend = self.backends.get(key.0.as_str())?.clone();
-            let frame_sink = self.device_frame_sinks.get(key).cloned();
             let target_fps = self.device_fps_cache.get(key).copied().unwrap_or(60);
             let queue = OutputQueue::spawn(key.0.clone(), key.1, backend, frame_sink, target_fps);
             self.output_queues.insert(key.clone(), queue);

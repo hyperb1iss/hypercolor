@@ -11,7 +11,7 @@ use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
-    UsbProtocolConfigStore,
+    DiscoveredDevice, UsbProtocolConfigStore,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -59,6 +59,15 @@ struct CountingBackend {
     disconnect_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+struct CachePrimingBackend {
+    expected_device_id: DeviceId,
+    expected_fingerprint: DeviceFingerprint,
+    cached: bool,
+    remember_count: Arc<std::sync::atomic::AtomicUsize>,
+    discover_count: Arc<std::sync::atomic::AtomicUsize>,
+    connect_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for CountingBackend {
     fn info(&self) -> BackendInfo {
@@ -88,6 +97,58 @@ impl DeviceBackend for CountingBackend {
         }
         self.disconnect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let _ = (id, colors);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for CachePrimingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".to_owned(),
+            name: "Cache Priming Backend".to_owned(),
+            description: "Requires scanner metadata before connect".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        self.discover_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Vec::new())
+    }
+
+    fn remember_discovered_device(&mut self, discovered: &DiscoveredDevice) {
+        self.remember_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.cached = discovered.info.id == self.expected_device_id
+            && discovered.fingerprint == self.expected_fingerprint
+            && discovered
+                .metadata
+                .get("descriptor")
+                .is_some_and(|value| value == "cached");
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.cached {
+            bail!("backend descriptor cache was not primed before connect");
+        }
+        self.connect_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
         Ok(())
     }
 
@@ -709,6 +770,71 @@ async fn sync_active_layout_connectivity_keeps_layout_inactive_devices_disconnec
     assert_eq!(
         lifecycle_manager.lock().await.state(device_id),
         Some(DeviceState::Known)
+    );
+}
+
+#[tokio::test]
+async fn sync_active_layout_connectivity_primes_backend_from_registry_metadata() {
+    let device_registry = DeviceRegistry::new();
+    let info = mock_device_info();
+    let fingerprint = DeviceFingerprint("mock:cache-primed-device".to_owned());
+    let metadata = HashMap::from([("descriptor".to_owned(), "cached".to_owned())]);
+    let device_id = device_registry
+        .add_with_fingerprint_and_metadata(info.clone(), fingerprint.clone(), metadata)
+        .await;
+    assert_eq!(device_id, info.id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    let remember_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let discover_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.register_backend(Box::new(CachePrimingBackend {
+            expected_device_id: device_id,
+            expected_fingerprint: fingerprint.clone(),
+            cached: false,
+            remember_count: Arc::clone(&remember_count),
+            discover_count: Arc::clone(&discover_count),
+            connect_count: Arc::clone(&connect_count),
+        }));
+    }
+
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(layout_with_device(&layout_device_id));
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+
+    assert_eq!(
+        remember_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "backend should receive scanner metadata before connect"
+    );
+    assert_eq!(
+        discover_count.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "connect should not need a second backend discovery pass"
+    );
+    assert_eq!(
+        connect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "primed backend should connect once"
+    );
+    assert_eq!(
+        lifecycle_manager.lock().await.state(device_id),
+        Some(DeviceState::Connected)
     );
 }
 

@@ -2545,6 +2545,90 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
 }
 
 #[tokio::test]
+async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_changing() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info_with_max_fps(
+            device_id, true, 64, 64, false, 15,
+        ))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+
+    let started = Instant::now();
+    let mut frame_number = 1_u32;
+    let mut channel = 1_u8;
+    while started.elapsed() < Duration::from_millis(360) {
+        let canvas = solid_canvas(Rgba::new(channel, 0, 255_u8.saturating_sub(channel), 255));
+        event_bus
+            .scene_canvas_sender()
+            .send_replace(CanvasFrame::from_canvas(
+                &canvas,
+                frame_number,
+                frame_number.saturating_mul(16),
+            ));
+        frame_number = frame_number.saturating_add(1);
+        channel = channel.wrapping_add(7).max(1);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let write_count = display_writes.lock().await.len();
+    assert!(
+        write_count >= 4,
+        "display output should keep writing at paced deadlines while scene frames arrive, writes={write_count}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
