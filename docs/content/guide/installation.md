@@ -47,6 +47,8 @@ If you'd rather install pieces individually, here's what `just setup` does for y
 sudo apt install build-essential pkg-config cmake nasm \
   libudev-dev libusb-1.0-0-dev libhidapi-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev \
+  libxdo-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev librsvg2-dev libssl-dev \
   clang lld
 ```
 
@@ -56,6 +58,8 @@ sudo apt install build-essential pkg-config cmake nasm \
 sudo dnf install gcc gcc-c++ pkg-config cmake nasm \
   systemd-devel libusb1-devel hidapi-devel \
   alsa-lib-devel pulseaudio-libs-devel pipewire-devel \
+  libxdo-devel gtk3-devel webkit2gtk4.1-devel \
+  libappindicator-gtk3-devel librsvg2-devel openssl-devel \
   clang lld
 ```
 
@@ -64,6 +68,8 @@ sudo dnf install gcc gcc-c++ pkg-config cmake nasm \
 ```bash
 sudo pacman -S base-devel pkgconf cmake nasm \
   libusb hidapi alsa-lib libpulse pipewire \
+  xdotool gtk3 webkit2gtk-4.1 appmenu-gtk-module \
+  libappindicator-gtk3 librsvg openssl \
   clang lld
 ```
 

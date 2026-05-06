@@ -189,7 +189,10 @@ else
     apt)
       pkgs=(build-essential pkg-config cmake nasm
             libudev-dev libusb-1.0-0-dev libhidapi-dev
-            libasound2-dev libpulse-dev libpipewire-0.3-dev clang lld)
+            libasound2-dev libpulse-dev libpipewire-0.3-dev
+            libxdo-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev
+            clang lld)
       [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf libgtk-3-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev)
       missing=()
       for p in "${pkgs[@]}"; do
@@ -212,7 +215,10 @@ else
     dnf)
       pkgs=(gcc gcc-c++ pkg-config cmake nasm
             systemd-devel libusb1-devel hidapi-devel
-            alsa-lib-devel pulseaudio-libs-devel pipewire-devel clang lld)
+            alsa-lib-devel pulseaudio-libs-devel pipewire-devel
+            libxdo-devel gtk3-devel webkit2gtk4.1-devel
+            libappindicator-gtk3-devel librsvg2-devel openssl-devel
+            clang lld)
       [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf gtk3-devel libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel)
       missing=()
       for p in "${pkgs[@]}"; do
@@ -231,7 +237,9 @@ else
       fi
       ;;
     pacman)
-      pkgs=(base-devel pkgconf cmake nasm libusb hidapi alsa-lib libpulse pipewire clang lld)
+      pkgs=(base-devel pkgconf cmake nasm libusb hidapi alsa-lib libpulse pipewire
+            xdotool gtk3 webkit2gtk-4.1 appmenu-gtk-module libappindicator-gtk3
+            librsvg openssl clang lld)
       [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf gtk3 libxcb libxkbcommon libxkbcommon-x11)
       missing=()
       for p in "${pkgs[@]}"; do

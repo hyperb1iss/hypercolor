@@ -335,7 +335,8 @@ app-assets:
 # Run the unified desktop app
 [unix]
 app *args='': app-assets
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-app --bin hypercolor-app -- {{ args }}
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-app --bin hypercolor-app --profile preview
+    "${CARGO_TARGET_DIR:-${HOME}/.cache/hypercolor/target}/preview/hypercolor-app" {{ args }}
 
 [windows]
 app *args='': app-assets
@@ -344,7 +345,7 @@ app *args='': app-assets
 # Build the unified desktop app
 [unix]
 app-build *args='': app-assets
-    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-app --bin hypercolor-app --profile preview {{ args }}
 
 [windows]
 app-build *args='': app-assets

@@ -245,6 +245,9 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   keep their `DeviceId` even if transport details (IP, USB path) change.
 - **FPS adaptation.** The render loop auto-shifts between 5 tiers. Downshift is aggressive
   (2 consecutive budget misses), upshift is conservative (sustained headroom).
+- **Performance ceilings are product behavior.** Never intentionally reduce preview/runtime
+  performance caps to hide Linux Tauri/WebKitGTK issues. Preserve the intended ceiling and fix
+  root causes with profiling, rendering changes, build/profile choices, or explicit user controls.
 
 ## Agent Coordination
 
