@@ -6,7 +6,18 @@
 
 use tauri::{Manager, WebviewUrl, webview::WebviewWindowBuilder};
 
+fn maybe_open_devtools<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    #[cfg(debug_assertions)]
+    window.open_devtools();
+
+    #[cfg(not(debug_assertions))]
+    let _ = window;
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    hypercolor_app::linux_webkit::reexec_with_webkit_env_if_needed()?;
+
     let _log_guard = hypercolor_app::logging::init()?;
 
     let cli = hypercolor_app::cli::AppArgs::parse_env();
@@ -60,8 +71,7 @@ fn main() -> anyhow::Result<()> {
                 .visible(!cli.start_minimized)
                 .build()?;
 
-            #[cfg(debug_assertions)]
-            window.open_devtools();
+            maybe_open_devtools(&window);
 
             tracing::info!("window created");
 
