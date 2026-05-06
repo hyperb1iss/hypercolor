@@ -376,12 +376,14 @@ pub(crate) fn resolve_led_sampling(
                 layout.as_ref(),
                 sampling.deferred_sampling.scratch(),
             );
+        let mut should_queue_followup_sampling = false;
         if completed_sampling_matches_current {
             sampling
                 .deferred_sampling
                 .clone_scratch_into(sampling.output_artifacts.zones_mut());
             gpu_zone_sampling = true;
             gpu_sample_retry_hit = true;
+            should_queue_followup_sampling = true;
         }
         let mut stale_sampling_matches_current = false;
         if !gpu_zone_sampling && let Some(mut pending) = stale_deferred_sampling.take() {
@@ -398,6 +400,7 @@ pub(crate) fn resolve_led_sampling(
                     Ok(true) => {
                         gpu_zone_sampling = true;
                         gpu_sample_retry_hit = true;
+                        should_queue_followup_sampling = true;
                         gpu_sample_wait_blocked = sampling
                             .sparkleflinger
                             .take_last_sample_readback_wait_blocked();
@@ -502,6 +505,39 @@ pub(crate) fn resolve_led_sampling(
             } else {
                 false
             };
+        }
+        if should_queue_followup_sampling
+            && matches!(
+                render_stage.composed_frame.backend,
+                crate::performance::CompositorBackendKind::Gpu
+            )
+        {
+            let gpu_sample_start = Instant::now();
+            match sampling.sparkleflinger.begin_sample_zone_plan_into(
+                prepared_zones.as_ref(),
+                sampling.deferred_sampling.scratch_mut(),
+            ) {
+                Ok(ZoneSamplingDispatch::Ready) => {
+                    sampling
+                        .deferred_sampling
+                        .clone_scratch_into(sampling.output_artifacts.zones_mut());
+                    gpu_sample_retry_hit = false;
+                }
+                Ok(ZoneSamplingDispatch::Pending(pending)) => {
+                    sampling.deferred_sampling.store_pending(pending);
+                    gpu_sample_deferred = true;
+                }
+                Ok(ZoneSamplingDispatch::Saturated) => {
+                    gpu_sample_queue_saturated = true;
+                }
+                Ok(ZoneSamplingDispatch::Unsupported) => {}
+                Err(error) => {
+                    warn!(%error, "Follow-up GPU spatial sampling dispatch failed");
+                }
+            }
+            render_stage.sampled_us = render_stage
+                .sampled_us
+                .saturating_add(micros_between(gpu_sample_start, Instant::now()));
         }
         layout
     };

@@ -134,6 +134,7 @@ pub struct ServoRenderer {
     include_screen_updates: bool,
     last_animation_fps_cap: Option<u32>,
     animation_cadence: AnimationCadence,
+    host_driven_animation: bool,
     last_submit_time_secs: Option<f32>,
 }
 
@@ -160,6 +161,7 @@ impl ServoRenderer {
             include_screen_updates: false,
             last_animation_fps_cap: None,
             animation_cadence: AnimationCadence::MatchRenderLoop,
+            host_driven_animation: true,
             last_submit_time_secs: None,
         }
     }
@@ -192,6 +194,10 @@ impl ServoRenderer {
             .input_update_script_if_changed(&input.interaction)
         {
             self.pending_scripts.push(script);
+        }
+        if self.host_driven_animation {
+            self.pending_scripts
+                .push(LightscriptRuntime::host_frame_script(input.time_secs));
         }
     }
 
@@ -250,6 +256,7 @@ impl ServoRenderer {
         self.include_screen_updates = metadata.screen_reactive;
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
+        self.host_driven_animation = host_driven_animation(metadata);
         self.last_submit_time_secs = None;
         self.queued_frame = None;
         self.last_canvas = None;
@@ -842,6 +849,10 @@ fn animation_cadence(metadata: &EffectMetadata) -> AnimationCadence {
     AnimationCadence::MatchRenderLoop
 }
 
+fn host_driven_animation(metadata: &EffectMetadata) -> bool {
+    metadata.category != EffectCategory::Display
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1306,9 +1317,32 @@ mod tests {
     }
 
     #[test]
+    fn frame_scripts_drive_sdk_render_from_daemon_time() {
+        let mut renderer = ServoRenderer::new();
+        let mut input = frame_input(1.0 / 30.0);
+        input.time_secs = 2.5;
+
+        renderer.enqueue_frame_scripts(&input);
+
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script.contains("instance.render(2.5)"))
+        );
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script.contains("window.cancelAnimationFrame"))
+        );
+    }
+
+    #[test]
     fn display_frame_scripts_keep_fixed_animation_cap() {
         let mut renderer = ServoRenderer::new();
         renderer.animation_cadence = AnimationCadence::Fixed(30);
+        renderer.host_driven_animation = false;
         renderer.enqueue_bootstrap_scripts();
         renderer.pending_scripts.clear();
 
@@ -1320,6 +1354,12 @@ mod tests {
                 .pending_scripts
                 .iter()
                 .all(|script| !script.contains("__hypercolorFpsCap"))
+        );
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .all(|script| !script.contains("instance.render"))
         );
     }
 

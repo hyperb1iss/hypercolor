@@ -436,6 +436,36 @@ impl LightscriptRuntime {
         self.push_control_update_scripts(scripts, controls);
     }
 
+    /// Build JavaScript that renders SDK canvas effects from the daemon's
+    /// frame clock instead of waiting for browser-scheduled RAF callbacks.
+    #[must_use]
+    pub fn host_frame_script(time_secs: f32) -> String {
+        let mut script = String::with_capacity(720);
+        script.push_str("(function(){\n");
+        script.push_str(
+            "  if (!window.__hypercolorCaptureMode || typeof window !== 'object') return;\n",
+        );
+        script.push_str("  const instance = window.effectInstance;\n");
+        script.push_str("  if (!instance || typeof instance.render !== 'function') return;\n");
+        script.push_str(
+            "  if (typeof window.currentAnimationFrame === 'number' && typeof window.cancelAnimationFrame === 'function') {\n",
+        );
+        script.push_str("    try { window.cancelAnimationFrame(window.currentAnimationFrame); } catch (_err) {}\n");
+        script.push_str("    window.currentAnimationFrame = undefined;\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof instance.syncCanvasSizeFromEngine === 'function') {\n");
+        script.push_str("    try { instance.syncCanvasSizeFromEngine(); } catch (_err) {}\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.update === 'function') {\n");
+        script.push_str("    try { window.update(false); } catch (_err) {}\n");
+        script.push_str("  }\n");
+        script.push_str("  instance.render(");
+        push_js_number_literal(&mut script, time_secs);
+        script.push_str(");\n");
+        script.push_str("})();");
+        script
+    }
+
     fn should_emit_audio_update(&mut self, audio: &AudioData) -> bool {
         let audio_is_quiet = audio_is_quiet(audio);
         let should_emit = !audio_is_quiet || !self.audio_was_quiet;
@@ -1489,6 +1519,17 @@ mod tests {
         let script = control_update_script("my-control", &ControlValue::Float(1.0));
         assert!(script.contains("window[\"my-control\"] = 1"));
         assert!(script.contains("const callback = \"onmy-controlChanged\""));
+    }
+
+    #[test]
+    fn host_frame_script_drives_sdk_render_from_daemon_time() {
+        let script = LightscriptRuntime::host_frame_script(2.5);
+
+        assert!(script.contains("window.__hypercolorCaptureMode"));
+        assert!(script.contains("window.cancelAnimationFrame"));
+        assert!(script.contains("instance.syncCanvasSizeFromEngine"));
+        assert!(script.contains("window.update(false)"));
+        assert!(script.contains("instance.render(2.5)"));
     }
 
     #[test]

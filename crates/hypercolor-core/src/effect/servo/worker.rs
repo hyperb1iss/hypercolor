@@ -51,6 +51,7 @@ const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 const MAX_GL_ERROR_BATCH: usize = 8;
 const MAX_SERVO_READBACK_RETIREES: usize = 8;
+const STATIC_CANVAS_REUSE_NO_READY_FRAMES: u32 = 2;
 
 /// Per-frame Servo render timings, split by stage. All durations in
 /// microseconds; the shared `_us` suffix is deliberate.
@@ -720,12 +721,14 @@ fn batched_script_preview(scripts: &[String]) -> String {
 fn can_reuse_cached_canvas(
     frame_ready: bool,
     script_count: usize,
+    consecutive_no_ready_frames: u32,
     cached: Option<&Canvas>,
     width: u32,
     height: u32,
 ) -> bool {
     !frame_ready
         && script_count == 0
+        && consecutive_no_ready_frames >= STATIC_CANVAS_REUSE_NO_READY_FRAMES
         && cached.is_some_and(|cached| cached.width() == width && cached.height() == height)
 }
 
@@ -898,6 +901,7 @@ struct ServoSession {
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
     /// nothing beyond the flag check.
     last_canvas: Option<Canvas>,
+    consecutive_no_ready_frames: u32,
 }
 
 #[derive(Default)]
@@ -1182,6 +1186,7 @@ impl ServoWorkerRuntime {
                 script_buffer: String::new(),
                 readback_buffers: ServoReadbackBuffers::default(),
                 last_canvas: None,
+                consecutive_no_ready_frames: 0,
             },
         );
 
@@ -1242,6 +1247,7 @@ impl ServoWorkerRuntime {
             session.script_buffer.clear();
             session.readback_buffers = ServoReadbackBuffers::default();
             session.last_canvas = None;
+            session.consecutive_no_ready_frames = 0;
         }
         self.active_webview(session_id)?.load(url.clone());
         self.wait_for_load_completion(session_id, timeout, Some(url.as_str()))
@@ -1372,18 +1378,25 @@ impl ServoWorkerRuntime {
             if frame_ready {
                 trace!("Servo delegate signaled new frame");
             }
+            let consecutive_no_ready_frames = {
+                let session = self.session_mut(session_id)?;
+                if frame_ready {
+                    session.consecutive_no_ready_frames = 0;
+                } else {
+                    session.consecutive_no_ready_frames =
+                        session.consecutive_no_ready_frames.saturating_add(1);
+                }
+                session.consecutive_no_ready_frames
+            };
 
-            // Fast path: the delegate didn't observe a fresh composition this
-            // tick, so `paint()` + `read_to_image()` would just re-deliver
-            // bytes we already have. `read_framebuffer_to_image` in
-            // servo-paint-api does a `glReadPixels` + full `Vec::clone` + a
-            // per-row flip — three passes over a 640×480×4 (≈1.2 MB) buffer
-            // on the Servo worker thread. Skipping that when nothing changed
-            // was the single biggest memmove win in the profile, and
-            // `Canvas::clone` is an Arc bump so reuse is effectively free.
+            // Fast path for settled static pages. One missed delegate signal
+            // is not enough: Servo can repaint changed content without first
+            // calling `notify_new_frame_ready`, and RAF-driven effects can
+            // otherwise look like every other frame is duplicated.
             if can_reuse_cached_canvas(
                 frame_ready,
                 script_count,
+                consecutive_no_ready_frames,
                 self.session(session_id)?.last_canvas.as_ref(),
                 width,
                 height,
@@ -2230,20 +2243,63 @@ mod tests {
     }
 
     #[test]
-    fn cached_canvas_reuse_requires_empty_script_batch() {
+    fn cached_canvas_reuse_waits_for_settled_no_ready_frames() {
         let cached = Canvas::new(320, 200);
 
-        assert!(can_reuse_cached_canvas(false, 0, Some(&cached), 320, 200));
-        assert!(!can_reuse_cached_canvas(false, 1, Some(&cached), 320, 200));
-        assert!(!can_reuse_cached_canvas(true, 0, Some(&cached), 320, 200));
+        assert!(!can_reuse_cached_canvas(
+            false,
+            0,
+            1,
+            Some(&cached),
+            320,
+            200
+        ));
+        assert!(can_reuse_cached_canvas(
+            false,
+            0,
+            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+            Some(&cached),
+            320,
+            200
+        ));
+        assert!(!can_reuse_cached_canvas(
+            false,
+            1,
+            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+            Some(&cached),
+            320,
+            200
+        ));
+        assert!(!can_reuse_cached_canvas(
+            true,
+            0,
+            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+            Some(&cached),
+            320,
+            200
+        ));
     }
 
     #[test]
     fn cached_canvas_reuse_requires_matching_dimensions() {
         let cached = Canvas::new(320, 200);
 
-        assert!(!can_reuse_cached_canvas(false, 0, Some(&cached), 640, 360));
-        assert!(!can_reuse_cached_canvas(false, 0, None, 320, 200));
+        assert!(!can_reuse_cached_canvas(
+            false,
+            0,
+            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+            Some(&cached),
+            640,
+            360
+        ));
+        assert!(!can_reuse_cached_canvas(
+            false,
+            0,
+            STATIC_CANVAS_REUSE_NO_READY_FRAMES,
+            None,
+            320,
+            200
+        ));
     }
 
     #[test]
