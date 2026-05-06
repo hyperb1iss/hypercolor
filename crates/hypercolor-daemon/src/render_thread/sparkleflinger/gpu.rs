@@ -16,7 +16,8 @@ use super::{
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler, PendingGpuSampleReadback,
+    GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
+    PendingGpuSampleReadback,
 };
 
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -611,21 +612,26 @@ impl GpuSparkleFlinger {
         let Some(output) = self.current_output else {
             return Ok(GpuZoneSamplingDispatch::Unsupported);
         };
-        let (source_view, output_width, output_height) = {
+        let (source, source_view, output_width, output_height) = {
             let Some(surfaces) = self.surfaces.as_ref() else {
                 return Ok(GpuZoneSamplingDispatch::Unsupported);
             };
-            let source_view = match output {
-                GpuCompositorOutputSurface::Front => surfaces.front.view.clone(),
-                GpuCompositorOutputSurface::Back => surfaces.back.view.clone(),
+            let (source, source_view) = match output {
+                GpuCompositorOutputSurface::Front => {
+                    (GpuSampleSource::Front, surfaces.front.view.clone())
+                }
+                GpuCompositorOutputSurface::Back => {
+                    (GpuSampleSource::Back, surfaces.back.view.clone())
+                }
             };
-            (source_view, surfaces.width, surfaces.height)
+            (source, source_view, surfaces.width, surfaces.height)
         };
         let pending_output_submission = self.pending_output_submission.take();
         let pending_preview_readback = self.pending_preview_readback.take();
         let sampling_dispatch = self.spatial_sampler.sample_texture_into(
             &self.device,
             &self.queue,
+            source,
             &source_view,
             output_width,
             output_height,
@@ -4138,6 +4144,62 @@ mod tests {
         let preview_surface = resolve_preview_surface_blocking(&mut compositor);
         assert_eq!(preview_surface.width(), 4);
         assert_eq!(preview_surface.height(), 4);
+    }
+
+    #[test]
+    fn gpu_sampler_caches_bind_groups_by_output_surface() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let back_output_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(7))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(41)), 0.35),
+            ],
+        );
+        let front_output_plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(11))),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(53)), 0.35),
+                CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(97)), 0.2),
+            ],
+        );
+
+        compositor
+            .compose(&back_output_plan, false, None)
+            .expect("back-output GPU composition should succeed");
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+                .expect("back-output GPU sample should succeed")
+        );
+        assert_eq!(compositor.spatial_sampler.cached_bind_group_count(), 1);
+
+        compositor
+            .compose(&front_output_plan, false, None)
+            .expect("front-output GPU composition should succeed");
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+                .expect("front-output GPU sample should succeed")
+        );
+        assert_eq!(compositor.spatial_sampler.cached_bind_group_count(), 2);
+
+        compositor
+            .compose(&back_output_plan, false, None)
+            .expect("second back-output GPU composition should succeed");
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+                .expect("second back-output GPU sample should succeed")
+        );
+        assert_eq!(compositor.spatial_sampler.cached_bind_group_count(), 2);
     }
 
     #[test]

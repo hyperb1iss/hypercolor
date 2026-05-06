@@ -1,6 +1,10 @@
 //! Main window lifecycle helpers.
 
-use tauri::{AppHandle, Manager, Runtime, WebviewWindow, Window};
+use tauri::{
+    AppHandle, Manager, Runtime, WebviewWindow, Window,
+    webview::{NewWindowFeatures, NewWindowResponse},
+};
+use url::Url;
 
 /// Stable label for the app's main window.
 pub const MAIN_WINDOW_LABEL: &str = "main";
@@ -13,6 +17,54 @@ pub const WINDOW_VISIBILITY_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
 
 /// Web UI route for the settings page.
 pub const SETTINGS_ROUTE: &str = "/settings";
+
+/// Return true when a webview new-window request should open in the system browser.
+#[must_use]
+pub fn should_open_in_system_browser(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+}
+
+/// Parse and validate a URL that may be opened outside the native shell.
+///
+/// # Errors
+///
+/// Returns an error for malformed URLs or unsupported schemes.
+pub fn system_browser_url(raw: &str) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|error| format!("invalid URL: {error}"))?;
+    if should_open_in_system_browser(&url) {
+        Ok(url)
+    } else {
+        Err(format!("unsupported URL scheme: {}", url.scheme()))
+    }
+}
+
+/// Open a URL in the system browser for the embedded web UI.
+///
+/// # Errors
+///
+/// Returns an error when the URL is invalid, uses an unsupported scheme, or
+/// cannot be handed off to the operating system.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let url = system_browser_url(&url)?;
+    open::that_detached(url.as_str()).map_err(|error| format!("failed to open URL: {error}"))
+}
+
+/// Open a new-window request in the system browser instead of spawning a Tauri webview.
+#[must_use]
+pub fn open_new_window_in_system_browser<R: Runtime>(
+    url: Url,
+    _features: NewWindowFeatures,
+) -> NewWindowResponse<R> {
+    match open_external_url(url.to_string()) {
+        Ok(()) => {}
+        Err(error) => {
+            tracing::warn!(%error, %url, "failed to handle external URL request");
+        }
+    }
+
+    NewWindowResponse::Deny
+}
 
 /// Build the JavaScript that mirrors native window visibility into the web UI.
 #[must_use]

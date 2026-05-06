@@ -4,6 +4,7 @@
   "identifier": "tech.hyperbliss.hypercolor",
   "app": {
     "windows": [],
+    "withGlobalTauri": true,
     "security": {}
   },
   "bundle": {

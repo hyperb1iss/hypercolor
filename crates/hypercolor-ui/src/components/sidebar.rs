@@ -3,6 +3,7 @@
 //! and extracts a color palette for ambient glow styling.
 
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
@@ -18,8 +19,11 @@ use crate::icons::*;
 use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
 use crate::storage;
 use crate::style_utils::category_accent_rgb;
+use crate::tauri_bridge;
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::random_unit;
+
+const SPONSOR_URL: &str = "https://github.com/sponsors/hyperb1iss";
 
 // ── Sidebar Component ──────────────────────────────────────────────────────
 
@@ -218,6 +222,18 @@ pub fn Sidebar() -> impl IntoView {
             )
         }
     });
+    let open_sponsor = move |ev: leptos::ev::MouseEvent| {
+        if !tauri_bridge::is_tauri_available() {
+            return;
+        }
+
+        ev.prevent_default();
+        spawn_local(async move {
+            if let Err(error) = tauri_bridge::open_external_url(SPONSOR_URL).await {
+                log::warn!("Sponsor link native open failed: {error}");
+            }
+        });
+    };
 
     view! {
         <nav
@@ -465,9 +481,10 @@ pub fn Sidebar() -> impl IntoView {
 
             // Sponsor link — above Now Playing, accent-styled
             <a
-                href="https://github.com/sponsors/hyperb1iss"
+                href=SPONSOR_URL
                 target="_blank"
                 rel="noopener"
+                on:click=open_sponsor
                 class="flex items-center mx-2
                        text-fg-tertiary hover:text-fg-primary
                        transition-colors duration-200"

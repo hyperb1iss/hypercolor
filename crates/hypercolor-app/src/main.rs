@@ -26,7 +26,8 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_windows_daemon_service,
-            hypercolor_app::support::launch_pawnio_helper
+            hypercolor_app::support::launch_pawnio_helper,
+            hypercolor_app::window::open_external_url
         ])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let forwarded = hypercolor_app::cli::AppArgs::parse(args);
@@ -55,6 +56,7 @@ fn main() -> anyhow::Result<()> {
                 .initialization_script(hypercolor_app::window::visibility_state_script(
                     !cli.start_minimized,
                 ))
+                .on_new_window(hypercolor_app::window::open_new_window_in_system_browser)
                 .visible(!cli.start_minimized)
                 .build()?;
 

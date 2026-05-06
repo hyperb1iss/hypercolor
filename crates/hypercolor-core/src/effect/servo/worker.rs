@@ -276,10 +276,10 @@ fn build_control_preamble_script(controls: &HashMap<String, ControlValue>) -> St
 
     let mut script = String::from("(function(){\n");
     script.push_str("  window.__hypercolorCaptureMode = true;\n");
-    script.push_str("  window.__hypercolorPreserveDrawingBuffer = true;\n");
+    script.push_str("  window.__hypercolorPreserveDrawingBuffer = false;\n");
     script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) {\n");
     script.push_str("    globalThis.__hypercolorCaptureMode = true;\n");
-    script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = true;\n");
+    script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = false;\n");
     script.push_str("  }\n");
     for (name, value) in sorted_controls {
         let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
@@ -1354,7 +1354,7 @@ impl ServoWorkerRuntime {
     ) -> Result<Canvas> {
         let script_count = scripts.len();
         let script_bytes = scripts.iter().map(String::len).sum::<usize>();
-        (|| {
+        {
             let frame_start = Instant::now();
             let mut timings = ServoRenderStageTimings::default();
             self.resize_if_needed(session_id, width, height)?;
@@ -1407,22 +1407,7 @@ impl ServoWorkerRuntime {
                 return Ok(cached.clone());
             }
 
-            let paint_start = Instant::now();
-            self.active_webview(session_id)?.paint();
-            timings.paint_us = elapsed_micros(paint_start);
-
-            let size = self.session(session_id)?.rendering_context.size();
-            let width_i32 =
-                i32::try_from(size.width).context("canvas width overflow for Servo readback")?;
-            let height_i32 =
-                i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
-
-            let readback_start = Instant::now();
-            let canvas = {
-                let session = self.session_mut(session_id)?;
-                read_framebuffer_into_canvas(session, width_i32, height_i32)?
-            };
-            timings.readback_us = elapsed_micros(readback_start);
+            let canvas = render_servo_framebuffer_into_canvas(self, session_id, &mut timings)?;
             {
                 let session = self.session_mut(session_id)?;
                 if let Some(previous) = session.last_canvas.replace(canvas.clone()) {
@@ -1441,7 +1426,7 @@ impl ServoWorkerRuntime {
                 timings,
             );
             Ok(canvas)
-        })()
+        }
     }
 
     fn evaluate_scripts(&mut self, session_id: ServoSessionId, scripts: &[String]) -> Result<()> {
@@ -1557,6 +1542,32 @@ impl ServoWorkerRuntime {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+fn render_servo_framebuffer_into_canvas(
+    runtime: &mut ServoWorkerRuntime,
+    session_id: ServoSessionId,
+    timings: &mut ServoRenderStageTimings,
+) -> Result<Canvas> {
+    let paint_start = Instant::now();
+    runtime.active_webview(session_id)?.paint();
+    timings.paint_us = elapsed_micros(paint_start);
+
+    let size = runtime.session(session_id)?.rendering_context.size();
+    let width_i32 =
+        i32::try_from(size.width).context("canvas width overflow for Servo readback")?;
+    let height_i32 =
+        i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
+
+    let readback_start = Instant::now();
+    let canvas = {
+        let session = runtime.session_mut(session_id)?;
+        let canvas = read_framebuffer_into_canvas(session, width_i32, height_i32)?;
+        session.rendering_context.present();
+        canvas
+    };
+    timings.readback_us = elapsed_micros(readback_start);
+    Ok(canvas)
 }
 
 fn load_completion_url_matches(expected_url: Option<&str>, current_url: Option<&str>) -> bool {
@@ -2096,9 +2107,9 @@ mod tests {
         assert!(script.contains("globalThis[\"enabled\"] = true"));
         assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
         assert!(script.contains("window.__hypercolorCaptureMode = true"));
-        assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = true"));
+        assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
         assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
-        assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = true"));
+        assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = false"));
     }
 
     #[test]
@@ -2140,7 +2151,7 @@ mod tests {
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(runtime_html.contains("window.__hypercolorCaptureMode = true"));
-        assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = true"));
+        assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = false"));
     }
 
     #[test]

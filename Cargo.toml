@@ -5,6 +5,7 @@ resolver = "3"
 
 [patch.crates-io]
 midir = { path = "vendor/midir" }
+surfman = { git = "https://github.com/hyperb1iss/surfman", rev = "e75590fdadcb5a0867aa2fabef13b9778745125b" }
 
 [workspace.package]
 version = "0.1.0"

@@ -81,9 +81,15 @@ struct UploadedGpuSamplingPlan {
 }
 
 struct CachedGpuSamplingBindGroup {
-    source_view_ptr: usize,
+    source: GpuSampleSource,
     buffer_generation: u64,
     bind_group: wgpu::BindGroup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GpuSampleSource {
+    Front,
+    Back,
 }
 
 pub(super) struct GpuSamplingDispatch {
@@ -327,6 +333,7 @@ impl GpuSpatialSampler {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        source: GpuSampleSource,
         source_view: &wgpu::TextureView,
         width: u32,
         height: u32,
@@ -377,7 +384,8 @@ impl GpuSpatialSampler {
             }
         }
 
-        let bind_group = self.bind_group_for(device, source_view, &points_buffer, &output_buffer);
+        let bind_group =
+            self.bind_group_for(device, source, source_view, &points_buffer, &output_buffer);
 
         let mut encoder = encoder.unwrap_or_else(|| {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -604,14 +612,13 @@ impl GpuSpatialSampler {
     fn bind_group_for(
         &mut self,
         device: &wgpu::Device,
+        source: GpuSampleSource,
         source_view: &wgpu::TextureView,
         points_buffer: &wgpu::Buffer,
         output_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        let source_view_ptr = std::ptr::from_ref::<wgpu::TextureView>(source_view) as usize;
         if let Some(cached) = self.cached_bind_groups.iter().find(|cached| {
-            cached.source_view_ptr == source_view_ptr
-                && cached.buffer_generation == self.buffer_generation
+            cached.source == source && cached.buffer_generation == self.buffer_generation
         }) {
             return cached.bind_group.clone();
         }
@@ -639,11 +646,16 @@ impl GpuSpatialSampler {
             ],
         });
         self.cached_bind_groups.push(CachedGpuSamplingBindGroup {
-            source_view_ptr,
+            source,
             buffer_generation: self.buffer_generation,
             bind_group: bind_group.clone(),
         });
         bind_group
+    }
+
+    #[cfg(test)]
+    pub(super) fn cached_bind_group_count(&self) -> usize {
+        self.cached_bind_groups.len()
     }
 
     #[cfg(test)]

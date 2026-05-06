@@ -216,6 +216,28 @@ pub async fn set_autostart_enabled(_enabled: bool) -> Result<(), String> {
     Err("native app bridge is unavailable".to_owned())
 }
 
+/// Open an external URL through the native shell when available.
+///
+/// # Errors
+///
+/// Returns an error when the native command rejects the URL or cannot hand it
+/// off to the operating system.
+#[cfg(target_arch = "wasm32")]
+pub async fn open_external_url(url: &str) -> Result<bool, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(false);
+    };
+
+    let args = string_arg_to_js("url", url)?;
+    let _ = invoke_command(&invoke, "open_external_url", Some(args)).await?;
+    Ok(true)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn open_external_url(_url: &str) -> Result<bool, String> {
+    Ok(false)
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn invoke_command(
     invoke: &js_sys::Function,
@@ -235,6 +257,14 @@ async fn invoke_command(
 
     let promise = js_sys::Promise::from(value);
     JsFuture::from(promise).await.map_err(js_error_string)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn string_arg_to_js(key: &str, value: &str) -> Result<JsValue, String> {
+    let root = js_sys::Object::new();
+    js_sys::Reflect::set(&root, &JsValue::from_str(key), &JsValue::from_str(value))
+        .map_err(js_error_string)?;
+    Ok(root.into())
 }
 
 #[cfg(target_arch = "wasm32")]

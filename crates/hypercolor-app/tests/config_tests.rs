@@ -339,3 +339,14 @@ fn tauri_config_has_app_section() {
         "app section must be set for window/security configuration"
     );
 }
+
+#[test]
+fn tauri_config_exposes_global_tauri_api_for_local_remote_ui() {
+    let config = tauri_config();
+    let with_global_tauri = config
+        .get("app")
+        .and_then(|app| app.get("withGlobalTauri"))
+        .and_then(serde_json::Value::as_bool);
+
+    assert_eq!(with_global_tauri, Some(true));
+}
