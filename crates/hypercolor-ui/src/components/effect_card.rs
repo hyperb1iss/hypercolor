@@ -139,7 +139,7 @@ pub fn EffectCard(
                 let base = "relative rounded-xl border text-left w-full group overflow-hidden \
                             card-hover animate-fade-in-up aspect-[4/3] effect-card content-auto-card";
                 let state = if is_active.get() {
-                    "border-electric-purple/50 animate-breathe"
+                    "border-electric-purple/50"
                 } else if !runnable {
                     "border-edge-subtle opacity-30 cursor-not-allowed"
                 } else {
