@@ -69,13 +69,45 @@ def parse_args() -> argparse.Namespace:
 
 def export_openapi(temp_dir: Path) -> Path:
     spec_path = temp_dir / "openapi.json"
-    with spec_path.open("w", encoding="utf-8") as spec_file:
-        run(
-            ["cargo", "run", "-p", "hypercolor-daemon", "--bin", "hypercolor-openapi", "--quiet"],
-            cwd=REPO_ROOT,
-            stdout=spec_file,
-        )
+    completed = run(
+        [
+            *cargo_cache_command(),
+            "cargo",
+            "run",
+            "-p",
+            "hypercolor-daemon",
+            "--bin",
+            "hypercolor-openapi",
+            "--quiet",
+        ],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+    )
+    spec_path.write_text(openapi_json_from_stdout(completed.stdout), encoding="utf-8")
     return spec_path
+
+
+def cargo_cache_command() -> list[str]:
+    if sys.platform == "win32":
+        return [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "cargo-cache-build.ps1"),
+        ]
+    return [str(REPO_ROOT / "scripts" / "cargo-cache-build.sh")]
+
+
+def openapi_json_from_stdout(stdout: str | None) -> str:
+    if stdout is None:
+        raise RuntimeError("OpenAPI export produced no stdout")
+    start = stdout.find("{")
+    if start == -1:
+        raise RuntimeError("OpenAPI export stdout did not contain JSON")
+    return stdout[start:]
 
 
 def validate_json(path: Path) -> None:
