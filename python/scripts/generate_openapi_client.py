@@ -194,7 +194,7 @@ def run(
     command: list[str],
     *,
     cwd: Path,
-    stdout: IO[str] | None = None,
+    stdout: int | IO[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.setdefault("CARGO_TARGET_DIR", str(Path.home() / ".cache" / "hypercolor" / "target"))
