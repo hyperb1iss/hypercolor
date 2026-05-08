@@ -4722,6 +4722,7 @@ dependencies = [
  "nusb",
  "nvml-wrapper",
  "pipewire",
+ "pollster",
  "raw-window-handle",
  "realfft",
  "reqwest 0.12.28",

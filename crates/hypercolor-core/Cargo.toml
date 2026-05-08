@@ -85,6 +85,7 @@ tracing-subscriber = { workspace = true }
 log = "0.4"
 criterion = { workspace = true }
 gif = { workspace = true }
+pollster = { workspace = true }
 
 [[bench]]
 name = "core_pipeline"
