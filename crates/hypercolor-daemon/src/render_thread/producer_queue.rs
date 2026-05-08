@@ -95,7 +95,7 @@ pub(crate) fn producer_frame_counts() -> ProducerFrameCounts {
     }
 }
 
-fn record_producer_frame(frame: &ProducerFrame) {
+pub(crate) fn record_producer_frame(frame: &ProducerFrame) {
     match frame {
         ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => {
             let _ = PRODUCER_CPU_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);

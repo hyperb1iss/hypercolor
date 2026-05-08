@@ -20,7 +20,7 @@ use hypercolor_types::spatial::{
 
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::micros_u32;
-use super::producer_queue::ProducerFrame;
+use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
@@ -613,6 +613,7 @@ impl RenderGroupRuntime {
             }
             ProducerFrame::Surface(lease.submit(0, 0))
         };
+        record_producer_frame(&scene_frame);
         let mut render_us = micros_u32(render_start.elapsed());
 
         let sample_us = 0_u32;
@@ -789,7 +790,9 @@ impl RenderGroupRuntime {
                 self.scene_height,
                 &self.scene_projection_cache,
             );
-            return ProducerFrame::Canvas(scene_canvas);
+            let frame = ProducerFrame::Canvas(scene_canvas);
+            record_producer_frame(&frame);
+            return frame;
         };
 
         compose_authoritative_scene_canvas(
@@ -801,7 +804,9 @@ impl RenderGroupRuntime {
             &self.scene_projection_cache,
         );
 
-        ProducerFrame::Surface(lease.submit(0, 0))
+        let frame = ProducerFrame::Surface(lease.submit(0, 0));
+        record_producer_frame(&frame);
+        frame
     }
 
     #[cfg(test)]
@@ -1816,6 +1821,7 @@ mod tests {
         let mut runtime = RenderGroupRuntime::new(4, 4);
         let registry = builtin_registry();
         let solid_id = builtin_effect_id(&registry, "solid_color");
+        let producer_counts_before = crate::render_thread::producer_frame_counts();
         let group = RenderGroup {
             id: RenderGroupId::new(),
             name: "Direct".into(),
@@ -1876,6 +1882,10 @@ mod tests {
         assert!(zones.is_empty());
         assert_eq!(sampled.len(), 1);
         assert_eq!(sampled[0].colors.first().copied(), Some([255, 0, 0]));
+        assert!(
+            crate::render_thread::producer_frame_counts().cpu_frames_total
+                > producer_counts_before.cpu_frames_total
+        );
         assert_eq!(
             runtime
                 .target_canvases
