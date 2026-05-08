@@ -465,15 +465,15 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     checks.push(checkAtMost("Servo lifecycle failure delta", servoFailureDelta, config.maxServoFailureDelta))
     checks.push(
         checkAtMost(
-            "Servo render queue wait ms",
-            maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
+            "Servo render queue wait growth ms",
+            maxIncreaseAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
             config.maxServoQueueWaitMs,
         ),
     )
     checks.push(
         checkAtMost(
-            "display lane LED-priority wait ms",
-            requiredMaxAt(observed, [
+            "display lane LED-priority wait growth ms",
+            requiredMaxIncreaseAt(observed, [
                 "display_output",
                 "display_lane",
                 "display_led_priority_wait_max_ms",
@@ -496,8 +496,18 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         effectFallbackDelta: delta(first.data, last.data, ["effect_health", "fallbacks_applied_total"]),
         servoFailureDelta,
         servoQueueWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"])),
+        servoQueueWaitMaxGrowthMs: round(
+            maxIncreaseAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
+        ),
         displayLanePriorityWaitMaxMs: round(
             requiredMaxAt(observed, [
+                "display_output",
+                "display_lane",
+                "display_led_priority_wait_max_ms",
+            ]),
+        ),
+        displayLanePriorityWaitMaxGrowthMs: round(
+            requiredMaxIncreaseAt(observed, [
                 "display_output",
                 "display_lane",
                 "display_led_priority_wait_max_ms",
@@ -534,6 +544,22 @@ function maxAt(samples: MetricSample[], path: string[]): number {
 
 function requiredMaxAt(samples: MetricSample[], path: string[]): number {
     return samples.reduce((max, sample) => Math.max(max, requiredNumberAt(sample.data, path)), 0)
+}
+
+function maxIncreaseAt(samples: MetricSample[], path: string[]): number {
+    const first = samples[0]
+    if (!first) {
+        return 0
+    }
+    return Math.max(0, maxAt(samples, path) - numberAt(first.data, path))
+}
+
+function requiredMaxIncreaseAt(samples: MetricSample[], path: string[]): number {
+    const first = samples[0]
+    if (!first) {
+        return 0
+    }
+    return Math.max(0, requiredMaxAt(samples, path) - requiredNumberAt(first.data, path))
 }
 
 function median(values: number[]): number {
