@@ -2,7 +2,9 @@ use std::error::Error;
 use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::drivers::razer::{RAZER_REPORT_LEN, RAZER_VENDOR_ID, RazerReport, razer_crc};
+#[cfg(not(target_os = "linux"))]
+use hypercolor_hal::drivers::razer::RAZER_REPORT_LEN;
+use hypercolor_hal::drivers::razer::{RAZER_VENDOR_ID, RazerReport, razer_crc};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_hal::transport::Transport;

@@ -87,10 +87,6 @@ impl Push2Transport {
         clippy::too_many_arguments,
         reason = "transport open needs both USB and MIDI identity plus endpoint metadata"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "setup requires sequential USB + MIDI negotiation"
-    )]
     pub async fn new(
         device: nusb::Device,
         vendor_id: u16,
