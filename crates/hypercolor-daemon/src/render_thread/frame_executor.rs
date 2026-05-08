@@ -6,7 +6,7 @@ use tracing::info;
 
 use hypercolor_core::types::event::FrameTiming;
 
-use super::frame_composer::{ComposeRequest, compose_frame};
+use super::frame_composer::{ComposeRequest, RenderStageStats, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
 use super::frame_policy::{FrameExecution, SkipDecision};
@@ -211,9 +211,9 @@ pub(crate) async fn execute_frame(
         )
     };
 
-    let sample_us = render_stage.sampled_us;
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
+    let sample_us = measured_sampling_us(&render_stage, input_done_us, sample_done_us);
     let push_start = Instant::now();
     let global_brightness = output_power.effective_brightness();
     let global_brightness_bits = global_brightness.to_bits();
@@ -434,6 +434,16 @@ fn should_record_idle_black_frame(
     !effect_running && !screen_capture_active && !reuses_published_frame
 }
 
+fn measured_sampling_us(
+    render_stage: &RenderStageStats,
+    input_done_us: u32,
+    sample_done_us: u32,
+) -> u32 {
+    let sampling_phase_start_us = input_done_us.saturating_add(render_stage.composition_done_us);
+    let measured_us = sample_done_us.saturating_sub(sampling_phase_start_us);
+    measured_us.max(render_stage.sampled_us)
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_core::spatial::SpatialEngine;
@@ -523,6 +533,24 @@ mod tests {
         assert!(!super::should_record_idle_black_frame(false, false, true));
         assert!(!super::should_record_idle_black_frame(false, true, false));
         assert!(!super::should_record_idle_black_frame(true, false, false));
+    }
+
+    #[test]
+    fn measured_sampling_uses_timeline_phase_when_gpu_dispatch_is_deferred() {
+        let mut render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
+        render_stage.composition_done_us = 90;
+        render_stage.sampled_us = 20;
+
+        assert_eq!(super::measured_sampling_us(&render_stage, 10, 320), 220);
+    }
+
+    #[test]
+    fn measured_sampling_preserves_explicit_sample_time_when_timeline_is_clamped() {
+        let mut render_stage = render_stage(CompositorBackendKind::Gpu, false, false);
+        render_stage.composition_done_us = 120;
+        render_stage.sampled_us = 30;
+
+        assert_eq!(super::measured_sampling_us(&render_stage, 10, 100), 30);
     }
 
     fn sample_layout(zone_ids: &[&str]) -> SpatialLayout {
