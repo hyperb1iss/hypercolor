@@ -140,6 +140,29 @@ pub(super) fn record_servo_cpu_render_frame(
     if reused_cached_canvas {
         let _ = SERVO_RENDER_CACHED_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
+    record_servo_render_stage_durations(evaluate_scripts_us, event_loop_us, paint_us, total_us);
+    record_duration_us(
+        readback_us,
+        &SERVO_RENDER_READBACK_TOTAL_US,
+        &SERVO_RENDER_READBACK_MAX_US,
+    );
+}
+
+pub(super) fn record_servo_gpu_render_frame(
+    evaluate_scripts_us: u64,
+    event_loop_us: u64,
+    paint_us: u64,
+    total_us: u64,
+) {
+    record_servo_render_stage_durations(evaluate_scripts_us, event_loop_us, paint_us, total_us);
+}
+
+fn record_servo_render_stage_durations(
+    evaluate_scripts_us: u64,
+    event_loop_us: u64,
+    paint_us: u64,
+    total_us: u64,
+) {
     record_duration_us(
         evaluate_scripts_us,
         &SERVO_RENDER_EVALUATE_SCRIPTS_TOTAL_US,
@@ -154,11 +177,6 @@ pub(super) fn record_servo_cpu_render_frame(
         paint_us,
         &SERVO_RENDER_PAINT_TOTAL_US,
         &SERVO_RENDER_PAINT_MAX_US,
-    );
-    record_duration_us(
-        readback_us,
-        &SERVO_RENDER_READBACK_TOTAL_US,
-        &SERVO_RENDER_READBACK_MAX_US,
     );
     record_duration_us(
         total_us,
@@ -337,10 +355,17 @@ fn record_duration_us(value_us: u64, total_us: &AtomicU64, max_us: &AtomicU64) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static TELEMETRY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn cpu_render_frame_metrics_accumulate_stage_timings() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .expect("telemetry tests should not poison lock");
         let before = servo_telemetry_snapshot();
 
         record_servo_cpu_render_frame(11, 22, 33, 44, 110, true);
@@ -362,9 +387,42 @@ mod tests {
         assert!(after.render_frame_max_us >= 110);
     }
 
+    #[test]
+    fn gpu_render_frame_metrics_do_not_count_cpu_readback() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .expect("telemetry tests should not poison lock");
+        let before = servo_telemetry_snapshot();
+
+        record_servo_gpu_render_frame(11, 22, 33, 110);
+
+        let after = servo_telemetry_snapshot();
+        assert_eq!(
+            after.render_cpu_frames_total,
+            before.render_cpu_frames_total
+        );
+        assert_eq!(
+            after.render_cached_frames_total,
+            before.render_cached_frames_total
+        );
+        assert_eq!(
+            after.render_readback_total_us,
+            before.render_readback_total_us
+        );
+        assert!(
+            after.render_evaluate_scripts_total_us >= before.render_evaluate_scripts_total_us + 11
+        );
+        assert!(after.render_event_loop_total_us >= before.render_event_loop_total_us + 22);
+        assert!(after.render_paint_total_us >= before.render_paint_total_us + 33);
+        assert!(after.render_frame_total_us >= before.render_frame_total_us + 110);
+    }
+
     #[cfg(feature = "servo-gpu-import")]
     #[test]
     fn gpu_import_metrics_accumulate_timings_and_fallback_reason() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .expect("telemetry tests should not poison lock");
         let before = servo_telemetry_snapshot();
 
         record_servo_gpu_import_frame(10, 20, 40);

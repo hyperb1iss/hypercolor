@@ -37,7 +37,9 @@ use super::delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 use super::telemetry::{
     ServoGpuImportFallbackReason, record_servo_gpu_import_failure, record_servo_gpu_import_frame,
 };
-use super::telemetry::{record_servo_cpu_render_frame, record_servo_render_queue_wait};
+use super::telemetry::{
+    record_servo_cpu_render_frame, record_servo_gpu_render_frame, record_servo_render_queue_wait,
+};
 use super::worker_client::{
     ServoRenderMode, ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState,
     UNLOAD_TIMEOUT, WORKER_READY_TIMEOUT, WorkerCommand,
@@ -760,17 +762,27 @@ fn log_servo_render_stage_timings(
     script_count: usize,
     script_bytes: usize,
     frame_ready: bool,
+    emitted_cpu_frame: bool,
     reused_cached_canvas: bool,
     timings: ServoRenderStageTimings,
 ) {
-    record_servo_cpu_render_frame(
-        timings.evaluate_scripts_us,
-        timings.event_loop_us,
-        timings.paint_us,
-        timings.readback_us,
-        timings.total_us,
-        reused_cached_canvas,
-    );
+    if emitted_cpu_frame {
+        record_servo_cpu_render_frame(
+            timings.evaluate_scripts_us,
+            timings.event_loop_us,
+            timings.paint_us,
+            timings.readback_us,
+            timings.total_us,
+            reused_cached_canvas,
+        );
+    } else {
+        record_servo_gpu_render_frame(
+            timings.evaluate_scripts_us,
+            timings.event_loop_us,
+            timings.paint_us,
+            timings.total_us,
+        );
+    }
     trace!(
         ?session_id,
         width,
@@ -778,6 +790,7 @@ fn log_servo_render_stage_timings(
         script_count,
         script_bytes,
         frame_ready,
+        emitted_cpu_frame,
         reused_cached_canvas,
         evaluate_scripts_us = timings.evaluate_scripts_us,
         event_loop_us = timings.event_loop_us,
@@ -1433,12 +1446,14 @@ impl ServoWorkerRuntime {
                     script_bytes,
                     frame_ready,
                     true,
+                    true,
                     timings,
                 );
                 return Ok(EffectRenderOutput::Cpu(cached.clone()));
             }
 
             let output = render_servo_framebuffer(self, session_id, mode, &mut timings)?;
+            let emitted_cpu_frame = output.as_cpu_canvas().is_some();
             if let Some(canvas) = output.as_cpu_canvas() {
                 let canvas = canvas.clone();
                 let session = self.session_mut(session_id)?;
@@ -1454,6 +1469,7 @@ impl ServoWorkerRuntime {
                 script_count,
                 script_bytes,
                 frame_ready,
+                emitted_cpu_frame,
                 false,
                 timings,
             );
