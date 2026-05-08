@@ -768,8 +768,6 @@ impl GpuSparkleFlinger {
 
         if self.pending_preview_map.is_some() {
             if let Some(surface) = self.try_finish_pending_preview_map()? {
-                self.pending_preview_submission = None;
-                self.pending_preview_readback = None;
                 return Ok(Some(surface));
             }
             if let Some(submission_index) = self.pending_preview_submission.clone()
@@ -811,16 +809,17 @@ impl GpuSparkleFlinger {
         let Some(encoder) = self.pending_output_submission.take() else {
             return Ok(());
         };
-        if self.pending_preview_map.is_some() {
-            self.discard_pending_preview_map();
-        }
         let submission_index = self.queue.submit(Some(encoder.finish()));
+        if self.pending_preview_map.is_some() {
+            self.pending_preview_submission = Some(submission_index);
+            return Ok(());
+        }
         let pending_preview_readback = self
             .pending_preview_readback
             .take()
             .expect("pending preview readback should exist before GPU preview submit");
         self.begin_pending_preview_map(pending_preview_readback)?;
-        self.pending_preview_submission = Some(submission_index);
+        self.pending_preview_submission = None;
         Ok(())
     }
 
@@ -3291,7 +3290,7 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("GPU preview submit should succeed");
-        assert!(compositor.pending_preview_submission.is_some());
+        assert!(compositor.pending_preview_submission.is_none());
         assert!(compositor.pending_preview_readback.is_none());
         assert!(compositor.pending_preview_map.is_some());
         assert!(compositor.pending_output_submission.is_none());
@@ -3303,7 +3302,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_matching_pending_preview_submission_is_reused_on_identical_compose() {
+    fn gpu_active_preview_map_is_reused_on_identical_compose() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
@@ -3334,7 +3333,7 @@ mod tests {
             .compose(&plan, false, Some(request))
             .expect("identical compose should reuse the pending preview map");
         assert!(composed.preview_surface.is_none());
-        assert!(compositor.pending_preview_submission.is_some());
+        assert!(compositor.pending_preview_submission.is_none());
         assert!(compositor.pending_preview_readback.is_none());
         assert!(compositor.pending_preview_map.is_some());
         assert!(compositor.pending_output_submission.is_none());
@@ -3426,7 +3425,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_deferred_preview_is_superseded_by_next_compose() {
+    fn gpu_deferred_preview_queues_next_compose_after_pending_map() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
@@ -3460,16 +3459,19 @@ mod tests {
 
         compositor
             .compose(&second_plan, false, Some(request))
-            .expect("second compose should supersede the first deferred preview");
+            .expect("second compose should queue behind the first deferred preview");
         assert!(compositor.ready_preview_surface.is_none());
         assert!(compositor.pending_preview_readback.is_some());
 
-        let preview = resolve_preview_surface_blocking(&mut compositor);
-        assert_eq!(&preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+        let first_preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(&first_preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
+
+        let second_preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(&second_preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
         assert!(
             compositor
                 .resolve_preview_surface()
-                .expect("superseded preview resolve should not fail")
+                .expect("queued preview resolve should not fail")
                 .is_none()
         );
     }
@@ -3527,19 +3529,26 @@ mod tests {
         compositor
             .submit_pending_preview_work()
             .expect("second preview submit should succeed");
-        defer_pending_preview_map(&mut compositor);
+        assert!(compositor.pending_preview_submission.is_some());
+        assert!(compositor.pending_preview_readback.is_some());
 
-        let replaced_slot = match compositor.pending_preview_map.as_ref() {
+        let mapped_slot = match compositor.pending_preview_map.as_ref() {
             Some(PendingPreviewMap {
                 readback: PendingPreviewReadback::PreviewBuffer { slot, .. },
                 ..
             }) => *slot,
-            _ => panic!("second preview should replace the stale mapped preview"),
+            _ => panic!("first preview should remain mapped while the newer preview is queued"),
         };
-        assert_eq!(replaced_slot, second_slot);
+        assert_eq!(mapped_slot, first_slot);
 
-        let preview = resolve_preview_surface_blocking(&mut compositor);
-        assert_eq!(&preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+        let first_preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(&first_preview.rgba_bytes()[0..4], &[255, 32, 0, 255]);
+
+        let second_preview = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(&second_preview.rgba_bytes()[0..4], &[32, 64, 255, 255]);
+        assert!(compositor.pending_preview_map.is_none());
+        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.pending_preview_submission.is_none());
     }
 
     #[test]
