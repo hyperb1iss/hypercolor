@@ -1,0 +1,57 @@
+name: Rust build cache
+description: Configure Hypercolor's Cargo, Servo, and compiler caches.
+
+inputs:
+  key:
+    description: Additional cache key segment for this build shape.
+    required: true
+  workspaces:
+    description: Swatinem/rust-cache workspace mapping.
+    required: false
+    default: ". -> .cache/hypercolor/target"
+  save-if:
+    description: Whether to save cache entries after the job.
+    required: false
+    default: "true"
+  cache-all-crates:
+    description: Cache all crates, including CI tooling crates.
+    required: false
+    default: "true"
+  cache-workspace-crates:
+    description: Cache workspace crate artifacts as well as dependencies.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+
+    - name: Enable compiler cache
+      shell: bash
+      run: |
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "RUSTC_WRAPPER=sccache"
+          echo "HYPERCOLOR_FORCE_SCCACHE=1"
+          echo "CARGO_INCREMENTAL=0"
+          echo "CCACHE_COMPRESS=true"
+          echo "CCACHE_MAXSIZE=2G"
+          echo "SCCACHE_CACHE_SIZE=8G"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore Rust and Servo caches
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: hypercolor-rust
+        key: ${{ inputs.key }}
+        workspaces: ${{ inputs.workspaces }}
+        cache-directories: |
+          .cache/hypercolor/mozbuild
+          .cache/hypercolor/toolchain
+          .cache/hypercolor/ccache
+        cache-all-crates: ${{ inputs.cache-all-crates }}
+        cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
+        cache-on-failure: true
+        save-if: ${{ inputs.save-if }}

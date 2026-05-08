@@ -21,7 +21,7 @@ env:
   LINUX_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
-    cmake nasm pkg-config lld
+    ccache cmake nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev
     libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
@@ -29,6 +29,10 @@ env:
   # Legacy Tauri desktop shell is excluded; the unified hypercolor-app stays in CI.
   RUST_WORKSPACE_ARGS: >-
     --workspace --exclude hypercolor-desktop
+  HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
+  CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target
+  MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
+  CARGO_INCREMENTAL: "0"
 
 permissions:
   contents: read
@@ -80,8 +84,9 @@ jobs:
         with:
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
+          key: rust-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
@@ -89,6 +94,7 @@ jobs:
 
       - name: Clippy
         run: >-
+          ./scripts/cargo-cache-build.sh
           cargo clippy --locked ${{ env.RUST_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
@@ -108,9 +114,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
-          save-if: false
+          key: rust-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
@@ -118,10 +125,14 @@ jobs:
           tool: cargo-nextest
 
       - name: Run tests
-        run: cargo nextest run --locked ${{ env.RUST_WORKSPACE_ARGS }}
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked ${{ env.RUST_WORKSPACE_ARGS }}
 
       - name: Run doc tests
-        run: cargo test --doc --locked ${{ env.RUST_WORKSPACE_ARGS }}
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --doc --locked ${{ env.RUST_WORKSPACE_ARGS }}
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
@@ -222,8 +233,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
+          key: python-generated
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
@@ -299,7 +311,9 @@ jobs:
         working-directory: sdk
     steps:
       - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/bun-cache
+        with:
+          key: sdk-${{ hashFiles('sdk/bun.lock') }}
       - run: bun install
       - run: bun run check
       - run: bun run typecheck
@@ -315,13 +329,15 @@ jobs:
         working-directory: crates/hypercolor-ui
     steps:
       - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/bun-cache
+        with:
+          key: ui-${{ hashFiles('crates/hypercolor-ui/package-lock.json') }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
-          workspaces: crates/hypercolor-ui -> target
+          key: ui
       - run: bun install
       - run: cargo test
       - name: Install Trunk
@@ -334,7 +350,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CARGO_TARGET_DIR: target
       HYPERCOLOR_E2E_KEEP_RUN_DIR: "1"
     steps:
       - uses: actions/checkout@v6
@@ -350,14 +365,17 @@ jobs:
           cache: npm
           cache-dependency-path: e2e/package-lock.json
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/bun-cache
+        with:
+          key: e2e-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/package-lock.json') }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
+          key: e2e
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install just
@@ -441,13 +459,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/bun-cache
+        with:
+          key: web-assets-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/package-lock.json') }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
-          workspaces: crates/hypercolor-ui -> target
+          key: web-assets
 
       - name: Install Trunk
         run: cargo install trunk --locked
@@ -520,6 +540,8 @@ jobs:
               crates/hypercolor-app/target/release/bundle/dmg/*.dmg
               crates/hypercolor-app/target/release/bundle/macos/*.app
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: target
     steps:
       - uses: actions/checkout@v6
 
@@ -527,9 +549,10 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
           key: native-app-${{ matrix.target }}
+          workspaces: . -> target
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2.0.0" --locked
@@ -558,10 +581,15 @@ jobs:
       - name: Build native sidecar binaries
         shell: pwsh
         run: |
-          cargo build --release --locked -p hypercolor-daemon --features servo
-          cargo build --release --locked -p hypercolor-cli
           if ($env:RUNNER_OS -eq "Windows") {
-            cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
+            ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-daemon --features servo
+            ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-cli
+          } else {
+            bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-daemon --features servo
+            bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-cli
+          }
+          if ($env:RUNNER_OS -eq "Windows") {
+            ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
           }
 
       - name: Stage downloaded web assets
@@ -666,19 +694,19 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-build-cache
         with:
           key: release-${{ matrix.target }}
 
       - name: Build daemon (with Servo)
         run: >-
-          cargo build --release --locked
+          ./scripts/cargo-cache-build.sh cargo build --release --locked
           -p hypercolor-daemon --features servo
           --target ${{ matrix.rust-target }}
 
       - name: Build CLI, tray, and app
         run: >-
-          cargo build --release --locked
+          ./scripts/cargo-cache-build.sh cargo build --release --locked
           -p hypercolor-cli
           -p hypercolor-tray
           -p hypercolor-app
@@ -700,7 +728,7 @@ jobs:
       - name: Assemble distribution
         env:
           DIST: dist/${{ steps.version.outputs.dist_name }}
-          REL: target/${{ matrix.rust-target }}/release
+          REL: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust-target }}/release
         run: |
           mkdir -p "${DIST}"/{bin,share/hypercolor/{ui,effects/bundled}}
           mkdir -p "${DIST}"/share/{applications,bash-completion/completions,zsh/site-functions}

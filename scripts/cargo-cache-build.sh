@@ -50,33 +50,36 @@ fi
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
 ENABLE_RUST_SCCACHE=1
+FORCE_RUST_SCCACHE="${HYPERCOLOR_FORCE_SCCACHE:-0}"
 
-for ((i = 1; i <= $#; i++)); do
-  arg="${!i}"
-  case "$arg" in
-    --release)
-      ENABLE_RUST_SCCACHE=1
-      ;;
-    --profile)
-      next_index=$((i + 1))
-      if [ "$next_index" -le "$#" ]; then
-        next_arg="${!next_index}"
-        if [ "$next_arg" != "release" ] && [ "$next_arg" != "bench" ]; then
+if [ "$FORCE_RUST_SCCACHE" != "1" ] && [ "$FORCE_RUST_SCCACHE" != "true" ]; then
+  for ((i = 1; i <= $#; i++)); do
+    arg="${!i}"
+    case "$arg" in
+      --release)
+        ENABLE_RUST_SCCACHE=1
+        ;;
+      --profile)
+        next_index=$((i + 1))
+        if [ "$next_index" -le "$#" ]; then
+          next_arg="${!next_index}"
+          if [ "$next_arg" != "release" ] && [ "$next_arg" != "bench" ]; then
+            ENABLE_RUST_SCCACHE=0
+          fi
+        fi
+        ;;
+      --profile=*)
+        profile_name="${arg#--profile=}"
+        if [ "$profile_name" != "release" ] && [ "$profile_name" != "bench" ]; then
           ENABLE_RUST_SCCACHE=0
         fi
-      fi
-      ;;
-    --profile=*)
-      profile_name="${arg#--profile=}"
-      if [ "$profile_name" != "release" ] && [ "$profile_name" != "bench" ]; then
-        ENABLE_RUST_SCCACHE=0
-      fi
-      ;;
-  esac
-done
+        ;;
+    esac
+  done
 
-if [ "$#" -gt 0 ] && ! printf '%s\n' "$*" | grep -Eq -- '(^| )--release($| )|(^| )--profile(=| )(release|bench)($| )'; then
-  ENABLE_RUST_SCCACHE=0
+  if [ "$#" -gt 0 ] && ! printf '%s\n' "$*" | grep -Eq -- '(^| )--release($| )|(^| )--profile(=| )(release|bench)($| )'; then
+    ENABLE_RUST_SCCACHE=0
+  fi
 fi
 
 if [ -n "$SCCACHE_BIN" ] && [ "$ENABLE_RUST_SCCACHE" -eq 1 ]; then

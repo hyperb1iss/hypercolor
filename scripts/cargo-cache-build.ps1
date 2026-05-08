@@ -67,7 +67,8 @@ function Initialize-HypercolorCargoCache {
     }
 
     $sccache = Get-Command sccache.exe -ErrorAction SilentlyContinue
-    if ($null -ne $sccache -and $usesReleaseLikeProfile) {
+    $forceSccache = $env:HYPERCOLOR_FORCE_SCCACHE -in @('1', 'true', 'TRUE')
+    if ($null -ne $sccache -and ($usesReleaseLikeProfile -or $forceSccache)) {
         if (-not $env:SCCACHE_DIR) {
             $env:SCCACHE_DIR = Join-Path $cacheRoot 'sccache'
         }
