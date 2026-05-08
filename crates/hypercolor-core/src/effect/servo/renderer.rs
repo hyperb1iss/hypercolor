@@ -41,7 +41,7 @@ use crate::engine::FpsTier;
 const DEFAULT_EFFECT_FPS_CAP: u32 = 30;
 const DEFAULT_DISPLAY_FPS_CAP: u32 = 30;
 const MAX_EFFECT_FPS_CAP: u32 = 60;
-const SOFT_STALL_FRAME_INTERVALS: u32 = 3;
+const SOFT_STALL_FRAME_INTERVALS: u32 = 5;
 
 #[cfg(not(test))]
 static REUSABLE_SERVO_SESSION: OnceLock<Mutex<Option<ServoSessionHandle>>> = OnceLock::new();
