@@ -1,6 +1,6 @@
 # 56 - Linux Servo GPU Surface Interop
 
-**Status:** Planned
+**Status:** Implemented, live soak pending before default-on
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`
@@ -512,6 +512,41 @@ The feature is ready to enable by default on Linux when:
 6. Metrics prove the active path and the fallback reason.
 7. Linux soak shows no GPU memory leak.
 8. `just verify` passes.
+
+## 11.1 Implementation Notes
+
+The Linux opt-in vertical slice is implemented on 2026-05-08. The core path is:
+
+- `hypercolor-linux-gpu-interop` owns the audited unsafe GL/Vulkan boundary.
+- `GpuRenderDevice` provides the shared Vulkan-backed `wgpu` device.
+- Servo emits `EffectRenderOutput::Gpu(ImportedEffectFrame)` when GPU import
+  succeeds and falls back to CPU `Canvas` output otherwise.
+- Daemon-local `ProducerFrame::Gpu` flows imported textures into
+  SparkleFlinger without `queue.write_texture()` source upload.
+- Metrics expose Servo GPU import timings, fallback reason, producer CPU/GPU
+  frame counts, and skipped SparkleFlinger source uploads.
+
+Verification receipts from the implementation pass:
+
+- `cargo check --locked -p hypercolor-core --features servo` passed.
+- `cargo check --locked -p hypercolor-daemon --features servo,wgpu` passed.
+- `cargo test --locked -p hypercolor-core --features servo-gpu-import
+  servo_gpu_import` passed.
+- `cargo test --locked -p hypercolor-daemon --features servo-gpu-import gpu`
+  passed with 72 daemon library GPU tests plus focused binary/integration
+  tests.
+- `cargo test --locked -p hypercolor-linux-gpu-interop` passed.
+- `HYPERCOLOR_RUN_GPU_INTEROP_FIXTURE=1 cargo test --locked -p
+  hypercolor-linux-gpu-interop --features raw-gl-fixture
+  raw_gl_solid_color_import_matches_wgpu_readback -- --nocapture` passed.
+- `scripts/servo-gpu-import-proof.sh` passed and printed
+  `servo_readback_us_delta=0` on the successful GPU import path.
+- `just verify` passed.
+- `just ui-test` passed.
+
+The path remains opt-in/default-off until a live mixed-scene soak confirms no
+texture, Vulkan memory, GL memory object, or Servo-session leak under real
+preview, display, and GPU spatial sampling load.
 
 ## 12. Recommendation
 
