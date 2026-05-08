@@ -21,6 +21,14 @@ struct DaemonArgs {
     #[arg(long)]
     bind: Option<String>,
 
+    /// Host/interface to bind using the configured daemon port.
+    #[arg(long, alias = "listen-host", alias = "host", conflicts_with = "bind")]
+    listen: Option<String>,
+
+    /// Listen on every IPv4 network interface.
+    #[arg(long, alias = "lan", alias = "all-interfaces", conflicts_with_all = ["bind", "listen"])]
+    listen_all: bool,
+
     /// Log level (trace, debug, info, warn, error).
     #[arg(long)]
     log_level: Option<String>,
@@ -48,6 +56,8 @@ impl DaemonArgs {
         DaemonRunOptions {
             config: self.config,
             bind: self.bind,
+            listen_address: self.listen,
+            listen_all: self.listen_all,
             log_level: self.log_level,
             compositor_acceleration_mode: self.compositor_acceleration_mode.map(Into::into),
             servo_gpu_import_mode: self.servo_gpu_import_mode.map(Into::into),

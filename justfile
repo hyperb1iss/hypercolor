@@ -5,6 +5,7 @@ set dotenv-load := false
 set positional-arguments := true
 
 workspace_args := "--workspace --exclude hypercolor-desktop"
+daemon_bind := env_var_or_default("HYPERCOLOR_DAEMON_BIND", "127.0.0.1:9420")
 
 # Show available recipes (default when running `just` with no arguments)
 [private]
@@ -425,29 +426,29 @@ simulator-smoke *args='':
 # Run Servo daemon (dev profile) with cache wrapper
 [unix]
 daemon-servo *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind '{{ daemon_bind }}' {{ args }}
 
 [windows]
 daemon-servo *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind '{{ daemon_bind }}' {{ args }}
 
 # Run Servo daemon with the GPU compositor enabled
 [unix]
 daemon-servo-wgpu *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind '{{ daemon_bind }}' {{ args }}
 
 [windows]
 daemon-servo-wgpu *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind 127.0.0.1:9420 {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode gpu --bind '{{ daemon_bind }}' {{ args }}
 
 # Run Servo daemon in release mode with cache wrapper
 [unix]
 daemon-servo-release *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind '{{ daemon_bind }}' {{ args }}
 
 [windows]
 daemon-servo-release *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-daemon --bin hypercolor-daemon --release --features servo -- --bind '{{ daemon_bind }}' {{ args }}
 
 # Build Servo daemon release artifacts once (faster repeat launches)
 [unix]
@@ -460,7 +461,7 @@ build-servo-release:
 
 # Run prebuilt Servo daemon release binary from cache target dir
 run-servo-release-bin *args='':
-    ~/.cache/hypercolor/target/release/hypercolor-daemon --bind 127.0.0.1:9420 {{ args }}
+    ~/.cache/hypercolor/target/release/hypercolor-daemon --bind '{{ daemon_bind }}' {{ args }}
 
 # ─── TUI ─────────────────────────────────────────────────
 
@@ -521,7 +522,7 @@ tui-dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'kill 0' EXIT
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 &
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind '{{ daemon_bind }}' &
     sleep 2
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- tui {{ args }} &
     wait
@@ -543,7 +544,7 @@ dev *args='':
     servo_gpu_import_mode="${HYPERCOLOR_SERVO_GPU_IMPORT_MODE:-auto}"
     echo "[dev] compositor acceleration mode: ${compositor_mode}"
     echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode}"
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- --log-level debug --compositor-acceleration-mode "${compositor_mode}" --servo-gpu-import-mode "${servo_gpu_import_mode}" --bind 127.0.0.1:9420 {{ args }} &
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- --log-level debug --compositor-acceleration-mode "${compositor_mode}" --servo-gpu-import-mode "${servo_gpu_import_mode}" --bind '{{ daemon_bind }}' {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait

@@ -1,5 +1,7 @@
 //! Settings section components — one per config domain.
 
+use std::net::IpAddr;
+
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -36,6 +38,38 @@ fn driver_enabled(config: &HypercolorConfig, driver_id: &str) -> bool {
         .get(driver_id)
         .map(|driver| driver.enabled)
         .unwrap_or(true)
+}
+
+fn listen_scope_value(address: &str, remote_access: bool) -> String {
+    if remote_access && is_loopback_listen_address(address) {
+        return "all".to_owned();
+    }
+
+    if is_all_interfaces_listen_address(address) {
+        "all".to_owned()
+    } else if is_loopback_listen_address(address) {
+        "local".to_owned()
+    } else {
+        "custom".to_owned()
+    }
+}
+
+fn is_loopback_listen_address(address: &str) -> bool {
+    let trimmed = address.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    matches!(lower.as_str(), "localhost" | "local" | "loopback")
+        || trimmed
+            .parse::<IpAddr>()
+            .is_ok_and(|addr| addr.is_loopback())
+}
+
+fn is_all_interfaces_listen_address(address: &str) -> bool {
+    let trimmed = address.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    matches!(lower.as_str(), "all" | "any" | "*")
+        || trimmed
+            .parse::<IpAddr>()
+            .is_ok_and(|addr| addr.is_unspecified())
 }
 
 fn sleep_behavior_value(behavior: SleepBehavior) -> String {
@@ -360,21 +394,84 @@ pub fn NetworkSection(
     let listen_addr =
         Signal::derive(move || read_config(config, |cfg| cfg.daemon.listen_address.clone()));
     let port = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.port)));
+    let remote_access =
+        Signal::derive(move || read_config(config, |cfg| cfg.network.remote_access));
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
     let mcp_enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
+    let scope_options = vec![
+        ("local".to_string(), "Local".to_string()),
+        ("all".to_string(), "All".to_string()),
+        ("custom".to_string(), "Custom".to_string()),
+    ];
+    let (custom_scope_open, set_custom_scope_open) = signal(false);
+    let listen_scope = Signal::derive(move || {
+        if custom_scope_open.get() {
+            "custom".to_owned()
+        } else {
+            listen_scope_value(&listen_addr.get(), remote_access.get())
+        }
+    });
+    let scope_change = on_change;
+    let apply_listen_scope = Callback::new(move |(_, value): (String, serde_json::Value)| {
+        let Some(scope) = value.as_str() else {
+            return;
+        };
+
+        match scope {
+            "local" => {
+                set_custom_scope_open.set(false);
+                scope_change.run((
+                    "network.remote_access".to_string(),
+                    serde_json::json!(false),
+                ));
+                scope_change.run((
+                    "daemon.listen_address".to_string(),
+                    serde_json::json!("127.0.0.1"),
+                ));
+            }
+            "all" => {
+                set_custom_scope_open.set(false);
+                scope_change.run((
+                    "daemon.listen_address".to_string(),
+                    serde_json::json!("127.0.0.1"),
+                ));
+                scope_change.run(("network.remote_access".to_string(), serde_json::json!(true)));
+            }
+            "custom" => set_custom_scope_open.set(true),
+            _ => {}
+        }
+    });
+    let custom_address_change = Callback::new(move |(key, value)| {
+        on_change.run((
+            "network.remote_access".to_string(),
+            serde_json::json!(false),
+        ));
+        on_change.run((key, value));
+    });
 
     view! {
         <section id="section-network" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Network" icon=LuGlobe />
-            <SettingTextInput
-                label="Listen Address"
-                description="IP address the daemon binds to"
-                key="daemon.listen_address"
-                value=listen_addr
-                on_change=on_change
+            <SettingSegmented
+                label="Listen Scope"
+                description="Who can reach the daemon API"
+                key="daemon.listen_scope"
+                value=listen_scope
+                options=Signal::stored(scope_options)
+                on_change=apply_listen_scope
                 restart_required=true
-                placeholder="127.0.0.1"
             />
+            <Show when=move || listen_scope.get() == "custom">
+                <SettingTextInput
+                    label="Interface Address"
+                    description="Specific host or IP to bind"
+                    key="daemon.listen_address"
+                    value=listen_addr
+                    on_change=custom_address_change
+                    restart_required=true
+                    placeholder="192.168.1.42"
+                />
+            </Show>
             <SettingNumberInput
                 label="Port"
                 description="HTTP/WebSocket port"
@@ -401,7 +498,7 @@ pub fn NetworkSection(
             />
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
                 for key in &[
-                    "daemon.listen_address", "daemon.port",
+                    "daemon.listen_address", "daemon.port", "network.remote_access",
                     "web.open_browser", "mcp.enabled",
                 ] {
                     on_reset.run(key.to_string());

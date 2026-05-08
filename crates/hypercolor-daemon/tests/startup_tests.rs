@@ -15,6 +15,7 @@ use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
 use hypercolor_daemon::api::{AppState, system::get_status};
+use hypercolor_daemon::daemon::{DaemonRunOptions, effective_bind_target};
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
@@ -397,6 +398,53 @@ fn default_config_has_sane_values() {
     assert!(config.drivers["asus"].enabled);
     assert!(config.drivers["nollie"].enabled);
     assert!(config.include.is_empty());
+}
+
+#[test]
+fn effective_bind_target_keeps_localhost_default() {
+    let config = default_config();
+    let options = DaemonRunOptions::default();
+
+    assert_eq!(effective_bind_target(&options, &config), "127.0.0.1:9420");
+}
+
+#[test]
+fn effective_bind_target_accepts_all_interface_aliases() {
+    let mut config = default_config();
+    config.daemon.listen_address = "all".to_owned();
+    config.daemon.port = 9431;
+    let options = DaemonRunOptions::default();
+
+    assert_eq!(effective_bind_target(&options, &config), "0.0.0.0:9431");
+}
+
+#[test]
+fn effective_bind_target_supports_cli_listen_shortcuts() {
+    let mut config = default_config();
+    config.daemon.port = 9432;
+
+    let all = DaemonRunOptions {
+        listen_all: true,
+        ..DaemonRunOptions::default()
+    };
+    assert_eq!(effective_bind_target(&all, &config), "0.0.0.0:9432");
+
+    let custom = DaemonRunOptions {
+        listen_address: Some("192.168.1.42".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+    assert_eq!(effective_bind_target(&custom, &config), "192.168.1.42:9432");
+}
+
+#[test]
+fn effective_bind_target_normalizes_bind_alias_with_port() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        bind: Some("all:9444".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+
+    assert_eq!(effective_bind_target(&options, &config), "0.0.0.0:9444");
 }
 
 // ── DaemonState Initialization ──────────────────────────────────────────────

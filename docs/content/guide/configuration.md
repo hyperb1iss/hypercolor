@@ -25,13 +25,20 @@ curl http://localhost:9420/api/v1/config | jq
 
 ```toml
 [daemon]
-bind = "127.0.0.1:9420"    # Listen address and port
+listen_address = "127.0.0.1" # local only; use "all" for every interface
+port = 9420
 log_level = "info"          # trace, debug, info, warn, error
+
+[network]
+remote_access = false       # true also opens the default bind to the LAN
 
 [mcp]
 enabled = true              # Enable MCP server for AI integration
 base_path = "/mcp"          # MCP endpoint path
 ```
+
+For one-off daemon runs, use `hypercolor-daemon --listen-all` or
+`hypercolor-daemon --listen 192.168.1.42`.
 
 ### Audio Input
 

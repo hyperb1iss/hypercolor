@@ -27,6 +27,10 @@ pub struct DaemonRunOptions {
     pub config: Option<PathBuf>,
     /// Address and port to bind the API server to.
     pub bind: Option<String>,
+    /// Host/interface to bind using the configured daemon port.
+    pub listen_address: Option<String>,
+    /// Bind the API server to every IPv4 interface.
+    pub listen_all: bool,
     /// Log level override.
     pub log_level: Option<String>,
     /// Compositor acceleration override.
@@ -77,10 +81,7 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
 
     crate::startup::logging::install(env_filter);
 
-    let listen_addr = options.bind.as_deref().map_or_else(
-        || format!("{}:{}", config.daemon.listen_address, config.daemon.port),
-        String::from,
-    );
+    let listen_addr = effective_bind_target(&options, &config);
     crate::startup::banner::print(
         env!("CARGO_PKG_VERSION"),
         (config.daemon.canvas_width, config.daemon.canvas_height),
@@ -100,7 +101,7 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
         "Configuration ready"
     );
 
-    let bind = resolve_bind_address(options.bind.as_deref(), &config).await?;
+    let bind = resolve_bind_address(&options, &config).await?;
 
     if !bind.ip().is_loopback() && !api::security::control_api_key_configured_from_env() {
         warn!(
@@ -275,20 +276,29 @@ const fn config_log_level_name(level: &LogLevel) -> &'static str {
 }
 
 async fn resolve_bind_address(
-    cli_bind: Option<&str>,
+    options: &DaemonRunOptions,
     config: &HypercolorConfig,
 ) -> Result<SocketAddr> {
-    if let Some(bind) = cli_bind {
-        return resolve_socket_addr(bind).await;
+    resolve_socket_addr(&effective_bind_target(options, config)).await
+}
+
+#[must_use]
+pub fn effective_bind_target(options: &DaemonRunOptions, config: &HypercolorConfig) -> String {
+    if let Some(bind) = options.bind.as_deref() {
+        return normalize_bind_target(bind);
     }
 
-    let host = if config.network.remote_access && is_loopback_host(&config.daemon.listen_address) {
-        IpAddr::from([0, 0, 0, 0]).to_string()
+    let host = if options.listen_all {
+        all_interfaces_host().to_owned()
+    } else if let Some(host) = options.listen_address.as_deref() {
+        normalize_listen_host(host)
+    } else if config.network.remote_access && is_loopback_host(&config.daemon.listen_address) {
+        all_interfaces_host().to_owned()
     } else {
-        config.daemon.listen_address.clone()
+        normalize_listen_host(&config.daemon.listen_address)
     };
 
-    resolve_socket_addr(&format!("{host}:{}", config.daemon.port)).await
+    format!("{host}:{}", config.daemon.port)
 }
 
 async fn resolve_socket_addr(bind: &str) -> Result<SocketAddr> {
@@ -301,7 +311,7 @@ async fn resolve_socket_addr(bind: &str) -> Result<SocketAddr> {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    let trimmed = host.trim();
+    let trimmed = normalize_listen_host(host);
     if trimmed.eq_ignore_ascii_case("localhost") {
         return true;
     }
@@ -309,6 +319,38 @@ fn is_loopback_host(host: &str) -> bool {
     trimmed
         .parse::<IpAddr>()
         .is_ok_and(|address| address.is_loopback())
+}
+
+fn normalize_bind_target(bind: &str) -> String {
+    let trimmed = bind.trim();
+    if let Some(rest) = trimmed.strip_prefix('[')
+        && let Some((host, suffix)) = rest.split_once(']')
+    {
+        return format!("[{}]{suffix}", normalize_listen_host(host));
+    }
+
+    if let Some((host, port)) = trimmed.rsplit_once(':')
+        && !host.contains(':')
+    {
+        return format!("{}:{port}", normalize_listen_host(host));
+    }
+
+    normalize_listen_host(trimmed)
+}
+
+fn normalize_listen_host(host: &str) -> String {
+    let trimmed = host.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    match lower.as_str() {
+        "all" | "any" | "*" => all_interfaces_host().to_owned(),
+        "local" | "loopback" => "127.0.0.1".to_owned(),
+        _ => trimmed.to_owned(),
+    }
+}
+
+const fn all_interfaces_host() -> &'static str {
+    "0.0.0.0"
 }
 
 #[cfg(test)]
