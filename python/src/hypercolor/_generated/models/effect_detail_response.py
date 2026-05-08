@@ -35,6 +35,7 @@ class EffectDetailResponse:
         tags (list[str]):
         version (str):
         active_control_values (EffectDetailResponseActiveControlValuesType0 | None | Unset):
+        cover_image_url (None | str | Unset):
         presets (list[PresetTemplate] | Unset):
     """
 
@@ -52,6 +53,7 @@ class EffectDetailResponse:
     active_control_values: (
         EffectDetailResponseActiveControlValuesType0 | None | Unset
     ) = UNSET
+    cover_image_url: None | str | Unset = UNSET
     presets: list[PresetTemplate] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -95,6 +97,12 @@ class EffectDetailResponse:
         else:
             active_control_values = self.active_control_values
 
+        cover_image_url: None | str | Unset
+        if isinstance(self.cover_image_url, Unset):
+            cover_image_url = UNSET
+        else:
+            cover_image_url = self.cover_image_url
+
         presets: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.presets, Unset):
             presets = []
@@ -121,6 +129,8 @@ class EffectDetailResponse:
         )
         if active_control_values is not UNSET:
             field_dict["active_control_values"] = active_control_values
+        if cover_image_url is not UNSET:
+            field_dict["cover_image_url"] = cover_image_url
         if presets is not UNSET:
             field_dict["presets"] = presets
 
@@ -187,6 +197,15 @@ class EffectDetailResponse:
             d.pop("active_control_values", UNSET)
         )
 
+        def _parse_cover_image_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        cover_image_url = _parse_cover_image_url(d.pop("cover_image_url", UNSET))
+
         _presets = d.pop("presets", UNSET)
         presets: list[PresetTemplate] | Unset = UNSET
         if _presets is not UNSET:
@@ -209,6 +228,7 @@ class EffectDetailResponse:
             tags=tags,
             version=version,
             active_control_values=active_control_values,
+            cover_image_url=cover_image_url,
             presets=presets,
         )
 

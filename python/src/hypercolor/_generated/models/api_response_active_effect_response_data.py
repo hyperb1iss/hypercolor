@@ -30,6 +30,7 @@ class ApiResponseActiveEffectResponseData:
             that want to use optimistic concurrency on the effect-id PATCH
             endpoint echo this value back via `If-Match`. Idle responses
             omit it (there's nothing to version).
+        cover_image_url (None | str | Unset):
         id (None | str | Unset):
         name (None | str | Unset):
         render_group_id (None | str | Unset):
@@ -40,6 +41,7 @@ class ApiResponseActiveEffectResponseData:
     state: str
     active_preset_id: None | str | Unset = UNSET
     controls_version: int | None | Unset = UNSET
+    cover_image_url: None | str | Unset = UNSET
     id: None | str | Unset = UNSET
     name: None | str | Unset = UNSET
     render_group_id: None | str | Unset = UNSET
@@ -66,6 +68,12 @@ class ApiResponseActiveEffectResponseData:
             controls_version = UNSET
         else:
             controls_version = self.controls_version
+
+        cover_image_url: None | str | Unset
+        if isinstance(self.cover_image_url, Unset):
+            cover_image_url = UNSET
+        else:
+            cover_image_url = self.cover_image_url
 
         id: None | str | Unset
         if isinstance(self.id, Unset):
@@ -98,6 +106,8 @@ class ApiResponseActiveEffectResponseData:
             field_dict["active_preset_id"] = active_preset_id
         if controls_version is not UNSET:
             field_dict["controls_version"] = controls_version
+        if cover_image_url is not UNSET:
+            field_dict["cover_image_url"] = cover_image_url
         if id is not UNSET:
             field_dict["id"] = id
         if name is not UNSET:
@@ -146,6 +156,15 @@ class ApiResponseActiveEffectResponseData:
 
         controls_version = _parse_controls_version(d.pop("controls_version", UNSET))
 
+        def _parse_cover_image_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        cover_image_url = _parse_cover_image_url(d.pop("cover_image_url", UNSET))
+
         def _parse_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -179,6 +198,7 @@ class ApiResponseActiveEffectResponseData:
             state=state,
             active_preset_id=active_preset_id,
             controls_version=controls_version,
+            cover_image_url=cover_image_url,
             id=id,
             name=name,
             render_group_id=render_group_id,

@@ -6,6 +6,8 @@ from typing import Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="EffectSummary")
 
 
@@ -23,6 +25,7 @@ class EffectSummary:
         source (str):
         tags (list[str]):
         version (str):
+        cover_image_url (None | str | Unset):
     """
 
     audio_reactive: bool
@@ -35,6 +38,7 @@ class EffectSummary:
     source: str
     tags: list[str]
     version: str
+    cover_image_url: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +62,12 @@ class EffectSummary:
 
         version = self.version
 
+        cover_image_url: None | str | Unset
+        if isinstance(self.cover_image_url, Unset):
+            cover_image_url = UNSET
+        else:
+            cover_image_url = self.cover_image_url
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -74,6 +84,8 @@ class EffectSummary:
                 "version": version,
             }
         )
+        if cover_image_url is not UNSET:
+            field_dict["cover_image_url"] = cover_image_url
 
         return field_dict
 
@@ -100,6 +112,15 @@ class EffectSummary:
 
         version = d.pop("version")
 
+        def _parse_cover_image_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        cover_image_url = _parse_cover_image_url(d.pop("cover_image_url", UNSET))
+
         effect_summary = cls(
             audio_reactive=audio_reactive,
             author=author,
@@ -111,6 +132,7 @@ class EffectSummary:
             source=source,
             tags=tags,
             version=version,
+            cover_image_url=cover_image_url,
         )
 
         effect_summary.additional_properties = d
