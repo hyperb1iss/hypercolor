@@ -36,7 +36,8 @@ Use `just bench-gate --strict` when a branch should fail on over-budget samples.
 - `alpha_two_layer_compose_640x480` measures preview-resolution CPU composition.
 - `alpha_two_layer_compose_640x480_fresh` defeats CPU replay caching.
 - `multi_blend_alpha_add_screen_640x480` measures representative face composition with alpha, additive glow, and screen overlay layers.
-- `cpu_zone_sample_640x480` and `gpu_zone_sample_640x480` isolate LED sampling.
+- `cpu_zone_sample_640x480` measures CPU LED sampling against a retained canvas.
+- `gpu_zone_sample_640x480` samples fresh GPU outputs so cached zone results do not hide dispatch and readback cost.
 - `cpu_compose_and_zone_sample_640x480` and `gpu_compose_and_zone_sample_640x480` measure end-to-end preview composition plus LED sampling.
 - `gpu_*_no_readback` separates GPU composition dispatch cost from readback cost.
 - `gpu_alpha_two_layer_compose_640x480_scaled_preview_320x240` measures GPU preview scaling plus preview readback.

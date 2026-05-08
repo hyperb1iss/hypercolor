@@ -2495,9 +2495,13 @@ mod tests {
     }
 
     fn patterned_canvas(seed: u8) -> Canvas {
-        let mut canvas = Canvas::new(4, 4);
-        for y in 0..4 {
-            for x in 0..4 {
+        patterned_canvas_with_size(4, 4, seed)
+    }
+
+    fn patterned_canvas_with_size(width: u32, height: u32, seed: u8) -> Canvas {
+        let mut canvas = Canvas::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
                 let base = seed.wrapping_add(u8::try_from(x * 31 + y * 17).unwrap_or_default());
                 canvas.set_pixel(
                     x,
@@ -4134,6 +4138,69 @@ mod tests {
     }
 
     #[test]
+    fn gpu_sampling_matches_cpu_after_canvas_resize() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
+        let plan = CompositionPlan::single(
+            8,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas_with_size(8, 4, 21))),
+        );
+        let expected =
+            CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+        let expected_zones = engine.sample(
+            expected
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU compose should materialize resized canvas"),
+        );
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before resized sampling");
+        let mut sampled = Vec::new();
+        assert!(
+            compositor
+                .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+                .expect("GPU sampling should succeed for resized canvas")
+        );
+
+        assert_zone_colors_within(&sampled, &expected_zones, 1);
+    }
+
+    #[test]
+    fn gpu_sampler_rejects_gaussian_plans_without_dispatch() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let engine = SpatialEngine::new(sampling_layout(SamplingMode::GaussianArea {
+            sigma: 1.0,
+            radius: 2,
+        }));
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(21))),
+        );
+
+        assert!(!compositor.can_sample_zone_plan(engine.sampling_plan().as_ref()));
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should still succeed before Gaussian fallback");
+        assert!(matches!(
+            compositor
+                .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+                .expect("unsupported GPU sampling mode should be non-fatal"),
+            GpuZoneSamplingDispatch::Unsupported
+        ));
+        assert_eq!(compositor.spatial_sampler.sample_dispatch_count(), 0);
+    }
+
+    #[test]
     fn gpu_sampler_reuses_zone_output_storage() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
@@ -4885,6 +4952,41 @@ mod tests {
             compositor.spatial_sampler.sample_dispatch_count(),
             dispatch_count_before.saturating_add(1)
         );
+    }
+
+    #[test]
+    fn gpu_pending_sample_stops_matching_after_layout_generation_changes() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let mut engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
+        let plan = CompositionPlan::single(
+            4,
+            4,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+        );
+
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed before pending sample dispatch");
+        let pending = match compositor
+            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+            .expect("GPU sample dispatch should succeed")
+        {
+            GpuZoneSamplingDispatch::Pending(pending) => pending,
+            _ => panic!("GPU sample dispatch should defer readback completion"),
+        };
+
+        engine.update_layout(sampling_layout(SamplingMode::Nearest));
+
+        assert!(
+            !compositor.pending_zone_sampling_matches_current_work(
+                &pending,
+                engine.sampling_plan().as_ref()
+            )
+        );
+        compositor.discard_pending_zone_sampling(pending);
     }
 
     #[test]

@@ -755,9 +755,20 @@ fn bench_sparkleflinger(c: &mut Criterion) {
                 });
             },
         );
-        preview_sparkleflinger.compose(preview_plan.clone());
+        let mut gpu_sample_plan_index = 0_usize;
         group.bench_function("gpu_zone_sample_640x480", |b| {
             b.iter(|| {
+                let composed = preview_sparkleflinger.compose_for_outputs(
+                    black_box(
+                        preview_fresh_plans[gpu_sample_plan_index]
+                            .clone()
+                            .with_cpu_replay_cacheable(false),
+                    ),
+                    false,
+                    None,
+                );
+                gpu_sample_plan_index = (gpu_sample_plan_index + 1) % preview_fresh_plans.len();
+                black_box(composed.bypassed);
                 let sampled = preview_sparkleflinger
                     .sample_zone_plan(sampling_plan.as_ref())
                     .expect("GPU zone sampling should not fail")
@@ -849,10 +860,20 @@ fn bench_sparkleflinger(c: &mut Criterion) {
         let mut gpu_end_to_end = SparkleFlinger::new(RenderAccelerationMode::Gpu)
             .expect("GPU SparkleFlinger should initialize for end-to-end sampling");
         let mut gpu_end_to_end_sampled = Vec::new();
+        let mut gpu_end_to_end_plan_index = 0_usize;
         group.bench_function("gpu_compose_and_zone_sample_640x480", |b| {
             b.iter(|| {
-                let composed =
-                    gpu_end_to_end.compose_for_outputs(preview_plan.clone(), false, None);
+                let composed = gpu_end_to_end.compose_for_outputs(
+                    black_box(
+                        preview_fresh_plans[gpu_end_to_end_plan_index]
+                            .clone()
+                            .with_cpu_replay_cacheable(false),
+                    ),
+                    false,
+                    None,
+                );
+                gpu_end_to_end_plan_index =
+                    (gpu_end_to_end_plan_index + 1) % preview_fresh_plans.len();
                 black_box(composed.bypassed);
                 assert!(
                     gpu_end_to_end

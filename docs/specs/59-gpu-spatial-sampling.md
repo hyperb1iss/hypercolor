@@ -1,12 +1,19 @@
 # 59 - GPU Spatial Sampling
 
-**Status:** Planned
+**Status:** Implemented, live Servo hardware gate pending
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`
 **Related:** Specs 48, 56; `docs/design/45-graphics-pipeline-unification-plan.md`
 
 ---
+
+**Implementation status:** The core/daemon milestone is implemented: prepared
+plans carry a durable generation, GPU sampling caches and deferred readbacks
+key on that identity, unsupported Gaussian plans fall back instead of aliasing
+to a weaker mode, and CPU/GPU parity plus resize/fallback/readback behavior are
+covered by tests. The remaining exit gate is the live Servo GPU-imported
+effect-to-hardware check.
 
 ## 1. Goal
 

@@ -778,6 +778,26 @@ fn spatial_engine_exposes_prepared_sampling_plan() {
 }
 
 #[test]
+fn spatial_engine_advances_plan_generation_after_layout_update() {
+    let zone = full_canvas_zone(
+        "strip",
+        LedTopology::Strip {
+            count: 4,
+            direction: StripDirection::LeftToRight,
+        },
+    );
+    let mut engine = SpatialEngine::new(test_layout(vec![zone.clone()], 100, 20));
+    let first_generation = engine.plan_generation();
+    let first_plan = engine.sampling_plan();
+
+    engine.update_layout(test_layout(vec![zone], 100, 20));
+    let second_plan = engine.sampling_plan();
+
+    assert!(engine.plan_generation() > first_generation);
+    assert!(second_plan[0].plan_generation > first_plan[0].plan_generation);
+}
+
+#[test]
 fn spatial_engine_prepares_gaussian_sampling_plan() {
     let zone = custom_zone(
         "bulb",

@@ -722,3 +722,90 @@ pub(crate) fn resolve_led_sampling(
         reuses_published_frame,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::event::ZoneColors;
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
+
+    use super::can_hold_zone_colors_for_deferred_sampling;
+
+    fn test_zone(id: &str) -> DeviceZone {
+        DeviceZone {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            device_id: format!("device:{id}"),
+            zone_name: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 2,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: None,
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+            brightness: None,
+        }
+    }
+
+    fn test_layout(mut zones: Vec<DeviceZone>) -> SpatialLayout {
+        if let Some(display) = zones.iter_mut().find(|zone| zone.id == "display") {
+            display.zone_name = Some("Display".to_owned());
+        }
+        SpatialLayout {
+            id: "layout".to_owned(),
+            name: "Layout".to_owned(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones,
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn zone_colors(id: &str) -> ZoneColors {
+        ZoneColors {
+            zone_id: id.to_owned(),
+            colors: vec![[1, 2, 3], [4, 5, 6]],
+        }
+    }
+
+    #[test]
+    fn frame_sampling_accepts_matching_deferred_zone_colors() {
+        let layout = test_layout(vec![test_zone("left"), test_zone("right")]);
+        let zones = vec![zone_colors("left"), zone_colors("right")];
+
+        assert!(can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+
+    #[test]
+    fn frame_sampling_rejects_stale_deferred_zone_colors() {
+        let layout = test_layout(vec![test_zone("left"), test_zone("right")]);
+        let zones = vec![zone_colors("right"), zone_colors("left")];
+
+        assert!(!can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+
+    #[test]
+    fn frame_sampling_ignores_display_zones_for_deferred_match() {
+        let layout = test_layout(vec![test_zone("left"), test_zone("display")]);
+        let zones = vec![zone_colors("left")];
+
+        assert!(can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+}

@@ -2,7 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CRITERION_DIR="${CRITERION_DIR:-$ROOT_DIR/target/criterion}"
+CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
+if [[ -n "${CRITERION_DIR:-}" ]]; then
+  CRITERION_DIR="$CRITERION_DIR"
+elif [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  CRITERION_DIR="$CARGO_TARGET_DIR/criterion"
+elif [[ -d "$CACHE_ROOT/target/criterion" ]]; then
+  CRITERION_DIR="$CACHE_ROOT/target/criterion"
+else
+  CRITERION_DIR="$ROOT_DIR/target/criterion"
+fi
 STRICT=0
 
 if [[ "${1:-}" == "--strict" ]]; then
@@ -75,6 +84,7 @@ percentiles_for_sample() {
 if [[ ! -d "$CRITERION_DIR" ]]; then
   printf '%sNo Criterion output found at %s%s\n' "$RED" "$CRITERION_DIR" "$RESET" >&2
   printf 'Run %sjust bench-daemon%s or %sjust bench%s first.\n' "$CYAN" "$RESET" "$CYAN" "$RESET" >&2
+  printf 'Set %sCRITERION_DIR%s when using a non-default target location.\n' "$CYAN" "$RESET" >&2
   exit 2
 fi
 

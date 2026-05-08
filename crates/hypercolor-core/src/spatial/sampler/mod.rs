@@ -112,7 +112,11 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
 
 /// Build the immutable sampling plan for a zone.
 #[must_use]
-pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> PreparedZonePlan {
+pub(crate) fn prepare_zone(
+    zone: &DeviceZone,
+    layout: &SpatialLayout,
+    plan_generation: u64,
+) -> PreparedZonePlan {
     let mode = resolve_sampling_mode(zone, layout);
     let edge = resolve_edge_behavior(zone, layout);
     let sample_positions = zone
@@ -207,6 +211,7 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
     };
 
     PreparedZonePlan {
+        plan_generation,
         zone_id: zone.id.clone(),
         sampling_mode: mode,
         edge_behavior: edge,
@@ -310,6 +315,6 @@ pub fn sample_led(
 /// through the zone's affine placement and sampled from the canvas.
 #[must_use]
 pub fn sample_zone(canvas: &Canvas, zone: &DeviceZone, layout: &SpatialLayout) -> Vec<[u8; 3]> {
-    let prepared = prepare_zone(zone, layout);
+    let prepared = prepare_zone(zone, layout, 0);
     sample_prepared_zone(canvas, &prepared)
 }

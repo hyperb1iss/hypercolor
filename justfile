@@ -175,7 +175,7 @@ bench-smoke:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-hal --bench protocol_encoding
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-daemon --bench render_pipeline
 
-# Run the core benchmark suite (Criterion HTML reports land in target/criterion/)
+# Run the core benchmark suite (Criterion HTML reports land in the cached Cargo target)
 bench-core *args='':
     ./scripts/cargo-cache-build.sh cargo bench -p hypercolor-core --bench core_pipeline -- {{ args }}
 

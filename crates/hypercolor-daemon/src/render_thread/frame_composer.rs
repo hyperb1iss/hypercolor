@@ -599,10 +599,15 @@ mod tests {
     use std::sync::Arc;
 
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection,
+    };
 
     use crate::preview_runtime::PreviewDemandSummary;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
+    use crate::render_thread::sparkleflinger::SparkleFlinger;
+    use hypercolor_types::config::RenderAccelerationMode;
 
     #[test]
     fn render_group_layer_count_adds_transition_base_once() {
@@ -614,6 +619,55 @@ mod tests {
     fn cpu_sampling_canvas_only_depends_on_preview_receivers_and_gpu_sampling() {
         assert!(!requires_cpu_sampling_canvas(true));
         assert!(requires_cpu_sampling_canvas(false));
+    }
+
+    #[test]
+    fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
+        let Ok(sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+            return;
+        };
+        let spatial_engine = SpatialEngine::new(SpatialLayout {
+            id: "layout".into(),
+            name: "Layout".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: vec![DeviceZone {
+                id: "strip".into(),
+                name: "Strip".into(),
+                device_id: "device".into(),
+                zone_name: None,
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 4,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: Some(SamplingMode::GaussianArea {
+                    sigma: 1.0,
+                    radius: 2,
+                }),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: None,
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+                brightness: None,
+            }],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        });
+
+        assert!(requires_cpu_sampling_canvas(
+            sparkleflinger.can_sample_zone_plan(spatial_engine.sampling_plan().as_ref())
+        ));
     }
 
     #[test]

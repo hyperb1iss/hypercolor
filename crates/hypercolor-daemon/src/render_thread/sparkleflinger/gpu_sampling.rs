@@ -65,6 +65,7 @@ pub(super) struct GpuSamplingPlan {
 pub(super) struct GpuSamplingPlanKey {
     ptr: usize,
     len: usize,
+    generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +127,7 @@ impl GpuSamplingPlan {
         Self::supports_prepared_zones(prepared_zones).then_some(GpuSamplingPlanKey {
             ptr: prepared_zones.as_ptr() as usize,
             len: prepared_zones.len(),
+            generation: plan_generation(prepared_zones),
         })
     }
 
@@ -567,9 +569,9 @@ impl GpuSpatialSampler {
     }
 
     fn ensure_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
-        let key = GpuSamplingPlanKey {
-            ptr: prepared_zones.as_ptr() as usize,
-            len: prepared_zones.len(),
+        let Some(key) = GpuSamplingPlan::key(prepared_zones) else {
+            self.cached_plan = None;
+            return false;
         };
         if self
             .cached_plan
@@ -715,6 +717,12 @@ fn sample_output_bytes(sample_count: usize) -> u64 {
     u64::try_from(sample_count)
         .unwrap_or(u64::MAX)
         .saturating_mul(4)
+}
+
+fn plan_generation(prepared_zones: &[PreparedZonePlan]) -> u64 {
+    prepared_zones
+        .first()
+        .map_or(0, |zone| zone.plan_generation)
 }
 
 fn begin_zone_color_readback(
@@ -949,5 +957,21 @@ mod tests {
         assert!(!GpuSamplingPlan::supports_prepared_zones(prepared_zones));
         assert!(GpuSamplingPlan::key(prepared_zones).is_none());
         assert!(GpuSamplingPlan::from_prepared_zones(prepared_zones).is_none());
+    }
+
+    #[test]
+    fn gpu_sampling_plan_key_changes_when_generation_advances() {
+        let mut engine = SpatialEngine::new(test_layout(SamplingMode::Bilinear));
+        let first_plan = engine.sampling_plan();
+        let first_key =
+            GpuSamplingPlan::key(first_plan.as_ref()).expect("bilinear plan should be supported");
+
+        engine.update_layout(test_layout(SamplingMode::Bilinear));
+        let second_plan = engine.sampling_plan();
+        let second_key =
+            GpuSamplingPlan::key(second_plan.as_ref()).expect("bilinear plan should be supported");
+
+        assert_ne!(first_key, second_key);
+        assert_ne!(first_key.generation, second_key.generation);
     }
 }

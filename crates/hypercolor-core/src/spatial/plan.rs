@@ -2,6 +2,7 @@ use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SamplingMode};
 
 #[derive(Debug, Clone)]
 pub struct PreparedZonePlan {
+    pub plan_generation: u64,
     pub zone_id: String,
     pub sampling_mode: SamplingMode,
     pub edge_behavior: EdgeBehavior,

@@ -55,6 +55,7 @@ pub struct SpatialEngine {
     layout: Arc<SpatialLayout>,
     /// Immutable per-zone sampling plans cached from the layout.
     prepared_zones: Arc<[PreparedZonePlan]>,
+    plan_generation: u64,
 }
 
 impl SpatialEngine {
@@ -66,6 +67,7 @@ impl SpatialEngine {
         let mut engine = Self {
             layout: Arc::new(layout),
             prepared_zones: Arc::default(),
+            plan_generation: 0,
         };
         engine.rebuild_positions();
         engine
@@ -156,6 +158,11 @@ impl SpatialEngine {
         Arc::clone(&self.prepared_zones)
     }
 
+    #[must_use]
+    pub const fn plan_generation(&self) -> u64 {
+        self.plan_generation
+    }
+
     /// Recompute `led_positions` for every zone from its topology.
     fn rebuild_positions(&mut self) {
         let layout = Arc::make_mut(&mut self.layout);
@@ -163,11 +170,12 @@ impl SpatialEngine {
         for zone in &mut layout.zones {
             zone.led_positions = topology::generate_positions(&zone.topology);
         }
+        self.plan_generation = self.plan_generation.saturating_add(1);
         self.prepared_zones = layout
             .zones
             .iter()
             .filter(|zone| should_sample_zone(zone))
-            .map(|zone| sampler::prepare_zone(zone, layout))
+            .map(|zone| sampler::prepare_zone(zone, layout, self.plan_generation))
             .collect::<Vec<_>>()
             .into();
     }
