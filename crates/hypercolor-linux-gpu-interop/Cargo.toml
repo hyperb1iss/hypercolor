@@ -8,6 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Linux GL/Vulkan texture import boundary for Hypercolor"
 
+[features]
+default = []
+raw-gl-fixture = []
+
 [dependencies]
 ash = { workspace = true }
 glow = { workspace = true }
@@ -15,6 +19,11 @@ libc = { workspace = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
 wgpu-hal = { workspace = true }
+
+[dev-dependencies]
+euclid = "0.22"
+pollster = { workspace = true }
+surfman = { version = "0.11", features = ["sm-x11"] }
 
 [lints.rust]
 unsafe_code = "allow"

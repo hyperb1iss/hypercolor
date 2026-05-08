@@ -5005,8 +5005,11 @@ name = "hypercolor-linux-gpu-interop"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "euclid",
  "glow 0.16.0",
  "libc",
+ "pollster",
+ "surfman",
  "thiserror 2.0.18",
  "wgpu",
  "wgpu-hal 29.0.1",
