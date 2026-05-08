@@ -96,7 +96,7 @@ impl BackendIo {
         .await
         {
             let initial_message = initial_error.to_string();
-            if is_backend_operation_timeout(&initial_message) {
+            if is_backend_operation_timeout(&initial_error) {
                 debug!(
                     backend_id = %self.backend_id,
                     %device_id,
@@ -338,8 +338,12 @@ fn is_missing_discovery_descriptor(message: &str) -> bool {
     message.contains(" has no pending ") && message.contains(" descriptor; run discover()")
 }
 
-fn is_backend_operation_timeout(message: &str) -> bool {
-    message.contains(" timed out after ") && message.contains(" using backend ")
+fn is_backend_operation_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("transport timeout after")
+            || message.contains(" timed out after ") && message.contains(" using backend ")
+    })
 }
 
 async fn run_backend_operation<T, F>(

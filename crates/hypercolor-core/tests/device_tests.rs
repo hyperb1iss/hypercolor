@@ -941,6 +941,25 @@ fn state_machine_connect_failure_enters_reconnecting() {
 }
 
 #[test]
+fn state_machine_connect_abandoned_returns_to_known() {
+    let policy = ReconnectPolicy {
+        initial_delay: Duration::from_millis(25),
+        max_delay: Duration::from_secs(2),
+        backoff_factor: 2.0,
+        max_attempts: Some(4),
+        jitter: 0.0,
+    };
+    let mut sm = DeviceStateMachine::with_policy(sample_identifier(), policy);
+
+    sm.on_connect_failed()
+        .expect("failed connect should transition to reconnecting");
+    sm.on_connect_abandoned();
+
+    assert_eq!(*sm.state(), DeviceState::Known);
+    assert!(sm.reconnect_status().is_none());
+}
+
+#[test]
 fn state_machine_reconnect_exhaustion_returns_known() {
     let identifier = sample_identifier();
     let policy = ReconnectPolicy {

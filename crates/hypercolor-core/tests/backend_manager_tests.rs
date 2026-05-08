@@ -6,7 +6,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink, SegmentRange,
@@ -23,6 +23,14 @@ use hypercolor_types::spatial::{
 };
 use tokio::sync::Mutex;
 use tracing_subscriber::fmt::writer::MakeWriter;
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
 
 // ── Slow Test Backend ────────────────────────────────────────────────────────
 
@@ -731,6 +739,13 @@ struct TimeoutConnectBackend {
     discover_attempts: Arc<AtomicUsize>,
 }
 
+struct TransportTimeoutConnectBackend {
+    expected_device_id: DeviceId,
+    connect_attempts: Arc<AtomicUsize>,
+    disconnect_attempts: Arc<AtomicUsize>,
+    discover_attempts: Arc<AtomicUsize>,
+}
+
 impl CleanupRetryBackend {
     fn new(
         expected_device_id: DeviceId,
@@ -871,6 +886,66 @@ impl DeviceBackend for TimeoutConnectBackend {
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.disconnect_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for TransportTimeoutConnectBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "transport_timeout_connect".to_owned(),
+            name: "Transport Timeout Connect Backend".to_owned(),
+            description: "Returns a nested transport timeout during connect".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Transport Timeout Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::named("Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Usb),
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        Err(anyhow::anyhow!("transport timeout after 1000ms"))
+            .context("failed to run init sequence for Ableton Push 2")
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
@@ -1645,6 +1720,47 @@ async fn backend_io_connect_timeout_skips_discovery_refresh_retry() {
         discover_attempts.load(Ordering::Relaxed),
         0,
         "timeout retry must not run a fresh discovery scan"
+    );
+}
+
+#[tokio::test]
+async fn backend_io_transport_timeout_skips_discovery_refresh_retry() {
+    let device_id = DeviceId::new();
+    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let disconnect_attempts = Arc::new(AtomicUsize::new(0));
+    let discover_attempts = Arc::new(AtomicUsize::new(0));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(TransportTimeoutConnectBackend {
+        expected_device_id: device_id,
+        connect_attempts: Arc::clone(&connect_attempts),
+        disconnect_attempts: Arc::clone(&disconnect_attempts),
+        discover_attempts: Arc::clone(&discover_attempts),
+    }));
+    let io = manager
+        .backend_io("transport_timeout_connect")
+        .expect("backend io handle should exist");
+
+    let error = io
+        .connect_with_refresh(device_id)
+        .await
+        .expect_err("connect should surface transport timeout");
+    let error_chain = format_error_chain(&error);
+
+    assert!(
+        error_chain.contains("transport timeout after 1000ms"),
+        "unexpected error chain: {error_chain}"
+    );
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        disconnect_attempts.load(Ordering::Relaxed),
+        0,
+        "transport timeout cleanup must not drop backend discovery state"
+    );
+    assert_eq!(
+        discover_attempts.load(Ordering::Relaxed),
+        0,
+        "transport timeout retry must not run a fresh discovery scan"
     );
 }
 

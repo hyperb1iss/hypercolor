@@ -390,6 +390,8 @@ pub(crate) async fn execute_lifecycle_actions(
                         (lifecycle.on_connected(device_id), true)
                     }
                     Err(error) => {
+                        let will_retry =
+                            should_retry_connect_failure(&runtime, device_id, &error).await;
                         let device_label = device_log_label(&runtime, device_id).await;
                         warn!(
                             device = %device_label,
@@ -398,10 +400,16 @@ pub(crate) async fn execute_lifecycle_actions(
                             layout_device_id = %layout_device_id,
                             error = %error,
                             error_chain = %format_error_chain(&error),
+                            will_retry,
                             "lifecycle connect action failed"
                         );
                         let mut lifecycle = runtime.lifecycle_manager.lock().await;
-                        (lifecycle.on_connect_failed(device_id), false)
+                        let follow_up = if will_retry {
+                            lifecycle.on_connect_failed(device_id)
+                        } else {
+                            lifecycle.on_connect_abandoned(device_id)
+                        };
+                        (follow_up, false)
                     }
                 };
 
@@ -590,6 +598,8 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
         let reconnected = connect_result.is_ok();
 
         let follow_up = if let Err(error) = connect_result {
+            let will_retry =
+                should_retry_connect_failure(&runtime_for_task, device_id, &error).await;
             let device_label = device_log_label(&runtime_for_task, device_id).await;
             warn!(
                 device = %device_label,
@@ -598,10 +608,15 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                 layout_device_id = %layout_device_id,
                 error = %error,
                 error_chain = %format_error_chain(&error),
+                will_retry,
                 "reconnect attempt failed"
             );
             let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
-            lifecycle.on_reconnect_failed(device_id)
+            if will_retry {
+                lifecycle.on_reconnect_failed(device_id)
+            } else {
+                lifecycle.on_connect_abandoned(device_id)
+            }
         } else {
             sync_logical_mappings_for_device(
                 &runtime_for_task,
@@ -676,14 +691,41 @@ async fn device_connect_timeout(runtime: &DiscoveryRuntime, device_id: DeviceId)
 }
 
 fn connect_timeout_for_device_info(info: Option<&DeviceInfo>) -> Duration {
-    if info
-        .and_then(|info| info.origin.protocol_id.as_deref())
-        .is_some_and(|protocol_id| protocol_id == PUSH2_PROTOCOL_ID)
-    {
+    if info.is_some_and(is_push2_device) {
         return PUSH2_CONNECT_TIMEOUT;
     }
 
     DEVICE_CONNECT_TIMEOUT
+}
+
+async fn should_retry_connect_failure(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    error: &anyhow::Error,
+) -> bool {
+    let is_push2 = runtime
+        .device_registry
+        .get(&device_id)
+        .await
+        .is_some_and(|tracked| is_push2_device(&tracked.info));
+
+    !(is_push2 && error_chain_contains_timeout(error))
+}
+
+fn is_push2_device(info: &DeviceInfo) -> bool {
+    info.origin
+        .protocol_id
+        .as_deref()
+        .is_some_and(|protocol_id| protocol_id == PUSH2_PROTOCOL_ID)
+        || info.driver_id() == "push2"
+}
+
+fn error_chain_contains_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("transport timeout after")
+            || message.contains("device connect timed out after")
+    })
 }
 
 fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {

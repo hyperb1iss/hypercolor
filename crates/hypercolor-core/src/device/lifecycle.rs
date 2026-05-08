@@ -237,6 +237,22 @@ impl DeviceLifecycleManager {
         Ok(vec![LifecycleAction::SpawnReconnect { device_id, delay }])
     }
 
+    /// Handle a backend connect failure that should not be retried automatically.
+    pub fn on_connect_abandoned(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
+        let managed = self.managed_mut(device_id)?;
+        managed.state_machine.on_connect_abandoned();
+
+        let mut actions = Vec::new();
+        if reconnect_canceled {
+            actions.push(LifecycleAction::CancelReconnect { device_id });
+        }
+        Ok(actions)
+    }
+
     /// Mark that at least one frame was successfully written.
     pub fn on_frame_success(&mut self, device_id: DeviceId) -> Result<(), DeviceError> {
         let managed = self.managed_mut(device_id)?;

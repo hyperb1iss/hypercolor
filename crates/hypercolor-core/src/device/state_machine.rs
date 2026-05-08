@@ -202,6 +202,17 @@ impl DeviceStateMachine {
         }
     }
 
+    /// Clear reconnect state when a failed connect should not be retried.
+    ///
+    /// This transitions `Reconnecting -> Known`; `Known` remains a no-op.
+    pub fn on_connect_abandoned(&mut self) {
+        self.handle = None;
+        self.reconnect = None;
+        if self.state == DeviceState::Reconnecting {
+            self.set_state(DeviceState::Known, "connect_abandoned");
+        }
+    }
+
     /// Transition: `Connected -> Active`. Repeated calls in `Active` are no-op.
     pub fn on_frame_success(&mut self) -> Result<(), DeviceError> {
         match self.state {

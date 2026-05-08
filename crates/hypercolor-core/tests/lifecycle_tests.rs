@@ -407,6 +407,42 @@ fn deferred_discovery_disconnects_connected_device() {
 }
 
 #[test]
+fn connect_abandoned_cancels_scheduled_reconnect() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Push 2");
+
+    let actions = lifecycle.on_discovered(device_id, &info, None);
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "initial discovery should request a connect"
+    );
+
+    let retry_actions = lifecycle
+        .on_connect_failed(device_id)
+        .expect("connect failure should schedule reconnect");
+    assert!(
+        retry_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. })),
+        "connect failure should schedule reconnect"
+    );
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+
+    let abandon_actions = lifecycle
+        .on_connect_abandoned(device_id)
+        .expect("abandoning connect should be valid");
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Known));
+    assert_eq!(
+        abandon_actions,
+        vec![LifecycleAction::CancelReconnect { device_id }]
+    );
+    assert!(lifecycle.on_reconnect_attempt(device_id).is_none());
+}
+
+#[test]
 fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let first_id = DeviceId::new();
