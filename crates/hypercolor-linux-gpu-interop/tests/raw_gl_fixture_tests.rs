@@ -17,6 +17,7 @@ use surfman::{
 const WIDTH: u32 = 4;
 const HEIGHT: u32 = 4;
 const EXPECTED_PIXEL: [u8; 4] = [0, 255, 255, 255];
+const IMPORT_ITERATIONS: usize = 8;
 const RUN_FIXTURE_ENV: &str = "HYPERCOLOR_RUN_GPU_INTEROP_FIXTURE";
 
 #[test]
@@ -33,23 +34,29 @@ fn raw_gl_solid_color_import_matches_wgpu_readback() {
         .load_external_memory_functions()
         .expect("raw GL import fixture should load GL external memory functions");
 
-    raw_gl.clear(EXPECTED_PIXEL);
-
     let descriptor =
         LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
             .expect("fixture dimensions should be valid");
-    let frame = import_gl_framebuffer_to_wgpu(
-        &wgpu.device,
-        &raw_gl.gl,
-        gl_external_memory,
-        GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
-        descriptor,
-    )
-    .expect("raw GL fixture should import into wgpu");
 
-    let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
-    for pixel in pixels.chunks_exact(4) {
-        assert_eq!(pixel, EXPECTED_PIXEL);
+    for _ in 0..IMPORT_ITERATIONS {
+        raw_gl.clear(EXPECTED_PIXEL);
+        {
+            let frame = import_gl_framebuffer_to_wgpu(
+                &wgpu.device,
+                &raw_gl.gl,
+                gl_external_memory,
+                GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+                descriptor,
+            )
+            .expect("raw GL fixture should import into wgpu");
+
+            let pixels =
+                read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
+            for pixel in pixels.chunks_exact(4) {
+                assert_eq!(pixel, EXPECTED_PIXEL);
+            }
+        }
+        let _ = wgpu.device.poll(wgpu::PollType::Poll);
     }
 }
 
