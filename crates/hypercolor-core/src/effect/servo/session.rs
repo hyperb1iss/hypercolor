@@ -5,7 +5,11 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use hypercolor_types::canvas::Canvas;
 
+use crate::effect::traits::EffectRenderOutput;
+
 use super::worker::{acquire_servo_worker, poison_shared_servo_worker_if_fatal};
+#[cfg(feature = "servo-gpu-import")]
+use super::worker_client::ServoRenderMode;
 use super::worker_client::{PendingServoFrame, ServoWorkerClient};
 
 #[derive(Debug, Clone, Copy)]
@@ -70,7 +74,44 @@ impl ServoSessionHandle {
         Ok(())
     }
 
+    #[cfg(feature = "servo-gpu-import")]
+    pub fn request_render_gpu(&mut self, scripts: Vec<String>) -> Result<()> {
+        self.request_render_with_mode(scripts, ServoRenderMode::GpuPreferred)
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn request_render_with_mode(
+        &mut self,
+        scripts: Vec<String>,
+        mode: ServoRenderMode,
+    ) -> Result<()> {
+        if self.pending_render.is_some() {
+            return Ok(());
+        }
+        self.pending_render = Some(self.worker.submit_render_with_mode(
+            self.session_id,
+            scripts,
+            self.render_width,
+            self.render_height,
+            mode,
+        )?);
+        Ok(())
+    }
+
     pub fn poll_frame(&mut self) -> Result<Option<Canvas>> {
+        let Some(output) = self.poll_output()? else {
+            return Ok(None);
+        };
+        match output {
+            EffectRenderOutput::Cpu(canvas) => Ok(Some(canvas)),
+            #[cfg(feature = "servo-gpu-import")]
+            EffectRenderOutput::Gpu(_) => Err(anyhow!(
+                "Servo worker returned a GPU frame to a CPU-only poller"
+            )),
+        }
+    }
+
+    pub fn poll_output(&mut self) -> Result<Option<EffectRenderOutput>> {
         let Some(render) = self.pending_render.as_mut() else {
             return Ok(None);
         };
@@ -78,9 +119,11 @@ impl ServoSessionHandle {
         match render.response_rx.try_recv() {
             Ok(result) => {
                 self.pending_render = None;
-                let canvas = result?;
-                self.last_canvas = Some(canvas.clone());
-                Ok(Some(canvas))
+                let output = result?;
+                if let Some(canvas) = output.as_cpu_canvas() {
+                    self.last_canvas = Some(canvas.clone());
+                }
+                Ok(Some(output))
             }
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => {

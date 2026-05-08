@@ -99,7 +99,19 @@ impl DaemonState {
                 texture_format = probe.texture_format,
                 max_texture_dimension_2d = probe.max_texture_dimension_2d,
                 max_storage_textures_per_shader_stage = probe.max_storage_textures_per_shader_stage,
+                linux_servo_gpu_import_backend_compatible = probe.linux_servo_gpu_import_backend_compatible,
+                linux_servo_gpu_import_backend_reason = probe.linux_servo_gpu_import_backend_reason,
                 "SparkleFlinger GPU probe succeeded"
+            );
+        }
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            hypercolor_core::effect::set_servo_gpu_import_mode(
+                config.rendering.servo_gpu_import.mode,
+            );
+            info!(
+                mode = ?hypercolor_core::effect::servo_gpu_import_mode(),
+                "Servo GPU import mode configured"
             );
         }
 

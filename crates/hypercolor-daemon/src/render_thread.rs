@@ -26,6 +26,8 @@ mod frame_policy;
 mod frame_reporting;
 mod frame_sampling;
 mod frame_throttle;
+#[cfg(feature = "wgpu")]
+pub(crate) mod gpu_device;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
@@ -66,6 +68,10 @@ use hypercolor_types::config::RenderAccelerationMode;
 const RENDER_RUNTIME_WORKERS: usize = 2;
 const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
 const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
+
+pub(crate) fn producer_frame_counts() -> producer_queue::ProducerFrameCounts {
+    producer_queue::producer_frame_counts()
+}
 const DEFAULT_RENDER_SURFACE_SLOTS: usize = 8;
 const MAX_RENDER_SURFACE_SLOTS: usize = 12;
 

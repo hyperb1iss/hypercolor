@@ -3,8 +3,9 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, CloudConfig, DaemonConfig, DbusConfig, DiscoveryConfig,
     EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    LogLevel, McpConfig, NetworkConfig, RenderAccelerationMode, ShutdownBehavior, TuiConfig,
-    WebConfig, default_driver_configs,
+    LogLevel, McpConfig, NetworkConfig, RenderAccelerationMode, RenderingConfig,
+    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
+    default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -58,6 +59,12 @@ fn effect_engine_defaults_match_spec() {
     assert!(e.extra_effect_dirs.is_empty());
     assert!(e.watch_effects);
     assert!(e.watch_config);
+}
+
+#[test]
+fn rendering_defaults_match_spec() {
+    let rendering = RenderingConfig::default();
+    assert_eq!(rendering.servo_gpu_import.mode, ServoGpuImportMode::Off);
 }
 
 #[test]
@@ -199,6 +206,7 @@ fn full_config_toml_roundtrip() {
         web: WebConfig::default(),
         mcp: McpConfig::default(),
         effect_engine: EffectEngineConfig::default(),
+        rendering: RenderingConfig::default(),
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
         discovery: DiscoveryConfig::default(),
@@ -223,6 +231,10 @@ fn full_config_toml_roundtrip() {
     assert_eq!(
         restored.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Auto
+    );
+    assert_eq!(
+        restored.rendering.servo_gpu_import.mode,
+        ServoGpuImportMode::Off
     );
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
@@ -251,6 +263,10 @@ fn minimal_toml_fills_defaults() {
         config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Auto
     );
+    assert_eq!(
+        config.rendering.servo_gpu_import.mode,
+        ServoGpuImportMode::Off
+    );
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
@@ -258,6 +274,36 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.cloud.base_url, "https://api.hypercolor.lighting");
     assert!(config.cloud.connect_on_start);
     assert!(config.drivers.is_empty());
+}
+
+#[test]
+fn servo_gpu_import_mode_toml_roundtrip() {
+    let original = RenderingConfig {
+        servo_gpu_import: ServoGpuImportConfig {
+            mode: ServoGpuImportMode::Auto,
+        },
+    };
+    let toml_str = toml::to_string(&original).expect("serialize RenderingConfig");
+    let restored: RenderingConfig = toml::from_str(&toml_str).expect("deserialize RenderingConfig");
+    assert_eq!(restored.servo_gpu_import.mode, ServoGpuImportMode::Auto);
+}
+
+#[test]
+fn nested_servo_gpu_import_mode_deserializes() {
+    let config: HypercolorConfig = toml::from_str(
+        r#"
+schema_version = 4
+
+[rendering.servo_gpu_import]
+mode = "on"
+"#,
+    )
+    .expect("deserialize Servo GPU import mode");
+
+    assert_eq!(
+        config.rendering.servo_gpu_import.mode,
+        ServoGpuImportMode::On
+    );
 }
 
 #[test]

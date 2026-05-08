@@ -21,11 +21,17 @@ servo = [
     "dep:raw-window-handle",
     "dep:tao",
 ]
+servo-gpu-import = [
+    "servo",
+    "dep:hypercolor-linux-gpu-interop",
+    "dep:wgpu",
+]
 
 [dependencies]
 hypercolor-types = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
+hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -51,6 +57,7 @@ device_query = { workspace = true }
 tokio-util = { workspace = true }
 zerocopy = { workspace = true }
 fast_image_resize = { workspace = true }
+wgpu = { workspace = true, optional = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true, optional = true }
 servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit"], optional = true }

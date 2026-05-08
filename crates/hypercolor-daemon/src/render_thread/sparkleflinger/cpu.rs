@@ -204,6 +204,8 @@ fn cached_layer_storage(frame: &ProducerFrame) -> Option<PublishedSurfaceStorage
         ProducerFrame::Surface(surface) => Some(surface.storage_identity()),
         ProducerFrame::Canvas(canvas) if canvas.is_shared() => Some(canvas.storage_identity()),
         ProducerFrame::Canvas(_) => None,
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => None,
     }
 }
 

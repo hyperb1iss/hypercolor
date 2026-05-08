@@ -84,6 +84,28 @@ const fn current_servo_effect_health() -> ServoEffectHealthForTests {
         render_requests_total: 0,
         render_queue_wait_total_us: 0,
         render_queue_wait_max_us: 0,
+        render_cpu_frames_total: 0,
+        render_cached_frames_total: 0,
+        render_gpu_frames_total: 0,
+        render_gpu_import_failures_total: 0,
+        render_gpu_import_fallbacks_total: 0,
+        render_gpu_import_fallback_reason: None,
+        render_gpu_import_blit_total_us: 0,
+        render_gpu_import_blit_max_us: 0,
+        render_gpu_import_sync_total_us: 0,
+        render_gpu_import_sync_max_us: 0,
+        render_gpu_import_total_us: 0,
+        render_gpu_import_max_us: 0,
+        render_evaluate_scripts_total_us: 0,
+        render_evaluate_scripts_max_us: 0,
+        render_event_loop_total_us: 0,
+        render_event_loop_max_us: 0,
+        render_paint_total_us: 0,
+        render_paint_max_us: 0,
+        render_readback_total_us: 0,
+        render_readback_max_us: 0,
+        render_frame_total_us: 0,
+        render_frame_max_us: 0,
     }
 }
 
@@ -105,6 +127,28 @@ struct ServoEffectHealthForTests {
     render_requests_total: u64,
     render_queue_wait_total_us: u64,
     render_queue_wait_max_us: u64,
+    render_cpu_frames_total: u64,
+    render_cached_frames_total: u64,
+    render_gpu_frames_total: u64,
+    render_gpu_import_failures_total: u64,
+    render_gpu_import_fallbacks_total: u64,
+    render_gpu_import_fallback_reason: Option<&'static str>,
+    render_gpu_import_blit_total_us: u64,
+    render_gpu_import_blit_max_us: u64,
+    render_gpu_import_sync_total_us: u64,
+    render_gpu_import_sync_max_us: u64,
+    render_gpu_import_total_us: u64,
+    render_gpu_import_max_us: u64,
+    render_evaluate_scripts_total_us: u64,
+    render_evaluate_scripts_max_us: u64,
+    render_event_loop_total_us: u64,
+    render_event_loop_max_us: u64,
+    render_paint_total_us: u64,
+    render_paint_max_us: u64,
+    render_readback_total_us: u64,
+    render_readback_max_us: u64,
+    render_frame_total_us: u64,
+    render_frame_max_us: u64,
 }
 
 fn secured_state() -> Arc<AppState> {
@@ -404,6 +448,61 @@ async fn metrics_message_includes_latest_frame_timeline() {
         json["effect_health"]["servo_render_queue_wait_max_ms"],
         std::time::Duration::from_micros(servo_health.render_queue_wait_max_us).as_secs_f64()
             * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_cpu_frames_total"],
+        servo_health.render_cpu_frames_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_cached_frames_total"],
+        servo_health.render_cached_frames_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_evaluate_scripts_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_evaluate_scripts_total_us)
+            .as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_evaluate_scripts_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_evaluate_scripts_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_event_loop_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_event_loop_total_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_event_loop_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_event_loop_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_paint_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_paint_total_us).as_secs_f64() * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_paint_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_paint_max_us).as_secs_f64() * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_readback_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_readback_total_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_readback_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_readback_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_frame_total_ms"],
+        std::time::Duration::from_micros(servo_health.render_frame_total_us).as_secs_f64() * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_frame_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_frame_max_us).as_secs_f64() * 1000.0
     );
     assert_eq!(json["display_output"]["write_attempts_total"], 2);
     assert_eq!(json["display_output"]["write_successes_total"], 1);

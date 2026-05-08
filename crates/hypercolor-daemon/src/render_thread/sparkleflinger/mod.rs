@@ -118,6 +118,11 @@ impl CompositionLayer {
     }
 
     fn is_bypass_candidate(&self) -> bool {
+        #[cfg(feature = "servo-gpu-import")]
+        if matches!(self.frame, ProducerFrame::Gpu(_)) {
+            return false;
+        }
+
         self.mode == CompositionMode::Replace && self.opacity >= 1.0
     }
 }
@@ -604,6 +609,8 @@ fn preview_surface_for_frame(
                 preview_surface_pool,
             )
         }
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => None,
     }
 }
 

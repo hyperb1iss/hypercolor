@@ -41,7 +41,14 @@ pub use servo::{
     ConsoleMessage, HypercolorWebViewDelegate, ServoRenderer, ServoTelemetrySnapshot,
     servo_telemetry_snapshot,
 };
+#[cfg(feature = "servo-gpu-import")]
+pub use servo::{
+    install_servo_gpu_import_device, servo_gpu_import_device, servo_gpu_import_mode,
+    servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
+};
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;
-pub use traits::{EffectRenderer, FrameInput};
+#[cfg(feature = "servo-gpu-import")]
+pub use traits::ImportedEffectFrame;
+pub use traits::{EffectRenderOutput, EffectRenderer, FrameInput};
 pub use watcher::{EffectWatchEvent, EffectWatcher};

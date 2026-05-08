@@ -33,6 +33,8 @@ use super::worker::{
 use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
+#[cfg(feature = "servo-gpu-import")]
+use crate::effect::traits::EffectRenderOutput;
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::engine::FpsTier;
 
@@ -128,6 +130,8 @@ pub struct ServoRenderer {
     load_failed: Option<String>,
     queued_frame: Option<QueuedFrameInput>,
     last_canvas: Option<Canvas>,
+    #[cfg(feature = "servo-gpu-import")]
+    last_gpu_frame: Option<hypercolor_linux_gpu_interop::ImportedEffectFrame>,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
     include_audio_updates: bool,
@@ -155,6 +159,8 @@ impl ServoRenderer {
             load_failed: None,
             queued_frame: None,
             last_canvas: None,
+            #[cfg(feature = "servo-gpu-import")]
+            last_gpu_frame: None,
             warned_fallback_frame: false,
             warned_stalled_frame: false,
             include_audio_updates: true,
@@ -410,7 +416,62 @@ impl ServoRenderer {
         }
     }
 
+    #[cfg(feature = "servo-gpu-import")]
+    fn poll_in_flight_render_output(&mut self) {
+        let pending_age = self
+            .session
+            .as_ref()
+            .and_then(ServoSessionHandle::pending_render_age);
+        let soft_stall_timeout = self.soft_stall_timeout();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+
+        match session.poll_output() {
+            Ok(Some(EffectRenderOutput::Cpu(canvas))) => {
+                self.warned_stalled_frame = false;
+                self.last_canvas = Some(canvas);
+                self.last_gpu_frame = None;
+                self.warned_fallback_frame = false;
+            }
+            Ok(Some(EffectRenderOutput::Gpu(frame))) => {
+                self.warned_stalled_frame = false;
+                self.last_gpu_frame = Some(frame);
+                self.warned_fallback_frame = false;
+            }
+            Ok(None) => {
+                if !self.warned_stalled_frame
+                    && pending_age.is_some_and(|age| age >= soft_stall_timeout)
+                {
+                    record_servo_soft_stall();
+                    warn!(
+                        fps_cap = self.active_fps_cap(),
+                        pending_age_ms = pending_age.map_or(0, |age| age.as_millis()),
+                        soft_timeout_ms = soft_stall_timeout.as_millis(),
+                        "Servo frame render is late; reusing previous frame"
+                    );
+                    self.warned_stalled_frame = true;
+                }
+            }
+            Err(error) => {
+                note_servo_session_error("Servo frame render failed", &error);
+                if servo_worker_is_fatal_error(&error) {
+                    self.session = None;
+                }
+                warn!(%error, "Servo frame render failed");
+                if !self.warned_fallback_frame {
+                    warn!("Falling back to the previous completed frame for this effect");
+                    self.warned_fallback_frame = true;
+                }
+            }
+        }
+    }
+
     fn try_submit_queued_frame(&mut self) {
+        self.try_submit_queued_frame_with_gpu_preference(false);
+    }
+
+    fn try_submit_queued_frame_with_gpu_preference(&mut self, prefer_gpu: bool) {
         let Some(session) = self.session.as_ref() else {
             return;
         };
@@ -434,12 +495,26 @@ impl ServoRenderer {
             session.resize(frame.canvas_width, frame.canvas_height);
         }
         let scripts = self.take_pending_scripts();
-        match self
-            .session
-            .as_mut()
-            .expect("session presence should be stable while queuing one render")
-            .request_render(scripts)
-        {
+        let request_result = {
+            let session = self
+                .session
+                .as_mut()
+                .expect("session presence should be stable while queuing one render");
+            if prefer_gpu {
+                #[cfg(feature = "servo-gpu-import")]
+                {
+                    session.request_render_gpu(scripts)
+                }
+                #[cfg(not(feature = "servo-gpu-import"))]
+                {
+                    session.request_render(scripts)
+                }
+            } else {
+                session.request_render(scripts)
+            }
+        };
+
+        match request_result {
             Ok(()) => {
                 self.warned_stalled_frame = false;
                 self.last_submit_time_secs = Some(frame.time_secs);
@@ -720,6 +795,36 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
+    #[cfg(feature = "servo-gpu-import")]
+    fn render_output(&mut self, input: &FrameInput<'_>) -> Result<EffectRenderOutput> {
+        if !self.initialized {
+            bail!("ServoRenderer tick called before init");
+        }
+
+        self.poll_load_task();
+        self.queue_frame(input);
+        self.poll_in_flight_render_output();
+        self.try_submit_queued_frame_with_gpu_preference(super::servo_gpu_import_should_attempt());
+
+        if let Some(frame) = self.last_gpu_frame.as_ref()
+            && frame.width == input.canvas_width
+            && frame.height == input.canvas_height
+        {
+            return Ok(EffectRenderOutput::Gpu(frame.clone()));
+        }
+
+        if let Some(canvas) = self.last_canvas.as_ref()
+            && canvas.width() == input.canvas_width
+            && canvas.height() == input.canvas_height
+        {
+            return Ok(EffectRenderOutput::Cpu(canvas.clone()));
+        }
+
+        let mut placeholder = Canvas::new(input.canvas_width, input.canvas_height);
+        Self::render_placeholder_into(&mut placeholder, input);
+        Ok(EffectRenderOutput::Cpu(placeholder))
+    }
+
     fn set_control(&mut self, name: &str, value: &ControlValue) {
         self.controls.insert(name.to_owned(), value.clone());
     }
@@ -732,6 +837,10 @@ impl EffectRenderer for ServoRenderer {
         self.pending_scripts.clear();
         self.queued_frame = None;
         self.last_canvas = None;
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            self.last_gpu_frame = None;
+        }
         self.controls.clear();
         self.html_source = None;
         self.html_resolved_path = None;

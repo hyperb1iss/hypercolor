@@ -21,6 +21,7 @@ cloud = ["dep:futures-util", "dep:hypercolor-cloud-client", "dep:rand", "dep:tok
 nvidia = ["hypercolor-core/nvidia"]
 official-cloud = ["cloud"]
 wgpu = ["dep:wgpu", "dep:pollster"]
+servo-gpu-import = ["servo", "wgpu", "hypercolor-core/servo-gpu-import"]
 default = ["builtin-drivers", "wgpu", "servo"]
 servo = ["hypercolor-core/servo"]
 

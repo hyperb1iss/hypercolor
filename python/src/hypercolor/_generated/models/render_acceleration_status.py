@@ -21,12 +21,16 @@ class RenderAccelerationStatus:
     Attributes:
         effective_mode (str):
         requested_mode (str):
+        servo_gpu_import_attempting (bool):
+        servo_gpu_import_mode (str):
         fallback_reason (None | str | Unset):
         gpu_probe (GpuCompositorProbeStatus | None | Unset):
     """
 
     effective_mode: str
     requested_mode: str
+    servo_gpu_import_attempting: bool
+    servo_gpu_import_mode: str
     fallback_reason: None | str | Unset = UNSET
     gpu_probe: GpuCompositorProbeStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -37,6 +41,10 @@ class RenderAccelerationStatus:
         effective_mode = self.effective_mode
 
         requested_mode = self.requested_mode
+
+        servo_gpu_import_attempting = self.servo_gpu_import_attempting
+
+        servo_gpu_import_mode = self.servo_gpu_import_mode
 
         fallback_reason: None | str | Unset
         if isinstance(self.fallback_reason, Unset):
@@ -58,6 +66,8 @@ class RenderAccelerationStatus:
             {
                 "effective_mode": effective_mode,
                 "requested_mode": requested_mode,
+                "servo_gpu_import_attempting": servo_gpu_import_attempting,
+                "servo_gpu_import_mode": servo_gpu_import_mode,
             }
         )
         if fallback_reason is not UNSET:
@@ -75,6 +85,10 @@ class RenderAccelerationStatus:
         effective_mode = d.pop("effective_mode")
 
         requested_mode = d.pop("requested_mode")
+
+        servo_gpu_import_attempting = d.pop("servo_gpu_import_attempting")
+
+        servo_gpu_import_mode = d.pop("servo_gpu_import_mode")
 
         def _parse_fallback_reason(data: object) -> None | str | Unset:
             if data is None:
@@ -105,6 +119,8 @@ class RenderAccelerationStatus:
         render_acceleration_status = cls(
             effective_mode=effective_mode,
             requested_mode=requested_mode,
+            servo_gpu_import_attempting=servo_gpu_import_attempting,
+            servo_gpu_import_mode=servo_gpu_import_mode,
             fallback_reason=fallback_reason,
             gpu_probe=gpu_probe,
         )

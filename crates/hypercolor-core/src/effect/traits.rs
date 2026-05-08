@@ -11,6 +11,9 @@ use hypercolor_types::sensor::SystemSnapshot;
 
 use crate::input::{InteractionData, ScreenData};
 
+#[cfg(feature = "servo-gpu-import")]
+pub use hypercolor_linux_gpu_interop::ImportedEffectFrame;
+
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
 /// Per-frame input data passed to the active renderer on every tick.
@@ -53,6 +56,38 @@ pub struct FrameInput<'a> {
 pub fn prepare_target_canvas(target: &mut Canvas, width: u32, height: u32) {
     if target.width() != width || target.height() != height {
         *target = Canvas::new(width, height);
+    }
+}
+
+/// Frame output produced by an effect renderer.
+#[derive(Debug, Clone)]
+pub enum EffectRenderOutput {
+    /// CPU-backed canvas pixels.
+    Cpu(Canvas),
+    /// GPU-resident imported texture.
+    #[cfg(feature = "servo-gpu-import")]
+    Gpu(ImportedEffectFrame),
+}
+
+impl EffectRenderOutput {
+    /// Borrows the CPU canvas when this output is CPU-backed.
+    #[must_use]
+    pub fn as_cpu_canvas(&self) -> Option<&Canvas> {
+        match self {
+            Self::Cpu(canvas) => Some(canvas),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(_) => None,
+        }
+    }
+
+    /// Returns the CPU canvas when this output is CPU-backed.
+    #[must_use]
+    pub fn into_cpu_canvas(self) -> Option<Canvas> {
+        match self {
+            Self::Cpu(canvas) => Some(canvas),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(_) => None,
+        }
     }
 }
 
@@ -112,6 +147,15 @@ pub trait EffectRenderer: Send {
     /// Returns an error if the frame cannot be produced (GPU fault, render
     /// timeout, etc.). The engine may retry or transition to an error state.
     fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> anyhow::Result<()>;
+
+    /// Produce a frame that may stay GPU-resident when the renderer supports it.
+    ///
+    /// The default keeps existing renderers on the CPU canvas contract.
+    fn render_output(&mut self, input: &FrameInput<'_>) -> anyhow::Result<EffectRenderOutput> {
+        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        self.render_into(input, &mut canvas)?;
+        Ok(EffectRenderOutput::Cpu(canvas))
+    }
 
     /// Produce a single frame.
     ///

@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
+use hypercolor_types::config::{
+    HypercolorConfig, LogLevel, RenderAccelerationMode, ServoGpuImportMode,
+};
 use tokio::sync::watch;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -29,6 +31,8 @@ pub struct DaemonRunOptions {
     pub log_level: Option<String>,
     /// Compositor acceleration override.
     pub compositor_acceleration_mode: Option<RenderAccelerationMode>,
+    /// Servo Linux GPU import override.
+    pub servo_gpu_import_mode: Option<ServoGpuImportMode>,
     /// Static web UI directory.
     pub ui_dir: Option<PathBuf>,
 }
@@ -60,6 +64,9 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
     let (mut config, config_path) = load_config(options.config.as_deref()).await?;
     if let Some(mode) = options.compositor_acceleration_mode {
         config.effect_engine.compositor_acceleration_mode = mode;
+    }
+    if let Some(mode) = options.servo_gpu_import_mode {
+        config.rendering.servo_gpu_import.mode = mode;
     }
     let log_level = resolve_log_level(options.log_level.as_deref(), &config);
 

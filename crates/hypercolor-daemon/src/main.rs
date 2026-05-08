@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use hypercolor_daemon::daemon::{self, DaemonRunOptions};
 use hypercolor_daemon::startup::install_signal_handlers;
-use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use single_instance::SingleInstance;
 use std::path::PathBuf;
 
@@ -29,6 +29,10 @@ struct DaemonArgs {
     #[arg(long, alias = "render-acceleration-mode", value_enum)]
     compositor_acceleration_mode: Option<RenderAccelerationModeArg>,
 
+    /// Override the configured Servo Linux GPU import mode.
+    #[arg(long, value_enum)]
+    servo_gpu_import_mode: Option<ServoGpuImportModeArg>,
+
     /// Serve the web UI from this directory (static files with SPA fallback).
     #[arg(long)]
     ui_dir: Option<PathBuf>,
@@ -46,6 +50,7 @@ impl DaemonArgs {
             bind: self.bind,
             log_level: self.log_level,
             compositor_acceleration_mode: self.compositor_acceleration_mode.map(Into::into),
+            servo_gpu_import_mode: self.servo_gpu_import_mode.map(Into::into),
             ui_dir: self.ui_dir,
         }
     }
@@ -64,6 +69,23 @@ impl From<RenderAccelerationModeArg> for RenderAccelerationMode {
             RenderAccelerationModeArg::Cpu => Self::Cpu,
             RenderAccelerationModeArg::Auto => Self::Auto,
             RenderAccelerationModeArg::Gpu => Self::Gpu,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ServoGpuImportModeArg {
+    Off,
+    Auto,
+    On,
+}
+
+impl From<ServoGpuImportModeArg> for ServoGpuImportMode {
+    fn from(value: ServoGpuImportModeArg) -> Self {
+        match value {
+            ServoGpuImportModeArg::Off => Self::Off,
+            ServoGpuImportModeArg::Auto => Self::Auto,
+            ServoGpuImportModeArg::On => Self::On,
         }
     }
 }
@@ -108,8 +130,10 @@ fn daemon_instance_name() -> String {
 mod tests {
     use clap::Parser;
 
-    use super::{DaemonArgs, RenderAccelerationModeArg, daemon_instance_name};
-    use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
+    use super::{
+        DaemonArgs, RenderAccelerationModeArg, ServoGpuImportModeArg, daemon_instance_name,
+    };
+    use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode};
 
     #[test]
     fn compositor_acceleration_mode_cli_override_updates_config() {
@@ -149,6 +173,23 @@ mod tests {
     }
 
     #[test]
+    fn servo_gpu_import_mode_cli_override_updates_config() {
+        let args =
+            DaemonArgs::try_parse_from(["hypercolor-daemon", "--servo-gpu-import-mode", "auto"])
+                .expect("Servo GPU import CLI override should parse");
+        let mut config = HypercolorConfig::default();
+
+        if let Some(mode) = args.servo_gpu_import_mode {
+            config.rendering.servo_gpu_import.mode = mode.into();
+        }
+
+        assert_eq!(
+            config.rendering.servo_gpu_import.mode,
+            ServoGpuImportMode::Auto
+        );
+    }
+
+    #[test]
     fn render_acceleration_arg_maps_all_modes() {
         assert_eq!(
             RenderAccelerationMode::from(RenderAccelerationModeArg::Cpu),
@@ -161,6 +202,22 @@ mod tests {
         assert_eq!(
             RenderAccelerationMode::from(RenderAccelerationModeArg::Gpu),
             RenderAccelerationMode::Gpu
+        );
+    }
+
+    #[test]
+    fn servo_gpu_import_arg_maps_all_modes() {
+        assert_eq!(
+            ServoGpuImportMode::from(ServoGpuImportModeArg::Off),
+            ServoGpuImportMode::Off
+        );
+        assert_eq!(
+            ServoGpuImportMode::from(ServoGpuImportModeArg::Auto),
+            ServoGpuImportMode::Auto
+        );
+        assert_eq!(
+            ServoGpuImportMode::from(ServoGpuImportModeArg::On),
+            ServoGpuImportMode::On
         );
     }
 

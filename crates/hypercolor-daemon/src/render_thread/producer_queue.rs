@@ -1,9 +1,23 @@
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_core::effect::ImportedEffectFrame;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static PRODUCER_CPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static PRODUCER_GPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ProducerFrameCounts {
+    pub(crate) cpu_frames_total: u64,
+    pub(crate) gpu_frames_total: u64,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum ProducerFrame {
     Canvas(Canvas),
     Surface(PublishedSurface),
+    #[cfg(feature = "servo-gpu-import")]
+    Gpu(ImportedEffectFrame),
 }
 
 impl ProducerFrame {
@@ -12,6 +26,10 @@ impl ProducerFrame {
         match self {
             Self::Canvas(canvas) => canvas.as_rgba_bytes(),
             Self::Surface(surface) => surface.rgba_bytes(),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(_) => {
+                panic!("GPU producer frames do not expose CPU RGBA bytes")
+            }
         }
     }
 
@@ -20,6 +38,8 @@ impl ProducerFrame {
         match self {
             Self::Canvas(canvas) => canvas.width(),
             Self::Surface(surface) => surface.width(),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(frame) => frame.width,
         }
     }
 
@@ -28,6 +48,8 @@ impl ProducerFrame {
         match self {
             Self::Canvas(canvas) => canvas.height(),
             Self::Surface(surface) => surface.height(),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(frame) => frame.height,
         }
     }
 
@@ -35,6 +57,10 @@ impl ProducerFrame {
         match self {
             Self::Canvas(canvas) => (canvas, None),
             Self::Surface(surface) => (Canvas::from_published_surface(&surface), Some(surface)),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(_) => {
+                panic!("GPU producer frames must be handled before CPU materialization")
+            }
         }
     }
 
@@ -51,7 +77,32 @@ impl ProducerFrame {
                     && left.generation() == right.generation()
                     && left.storage_identity() == right.storage_identity()
             }
+            #[cfg(feature = "servo-gpu-import")]
+            (Self::Gpu(left), Self::Gpu(right)) => {
+                left.width == right.width
+                    && left.height == right.height
+                    && left.storage_id == right.storage_id
+            }
             _ => false,
+        }
+    }
+}
+
+pub(crate) fn producer_frame_counts() -> ProducerFrameCounts {
+    ProducerFrameCounts {
+        cpu_frames_total: PRODUCER_CPU_FRAMES_TOTAL.load(Ordering::Relaxed),
+        gpu_frames_total: PRODUCER_GPU_FRAMES_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
+fn record_producer_frame(frame: &ProducerFrame) {
+    match frame {
+        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => {
+            let _ = PRODUCER_CPU_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
+        }
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => {
+            let _ = PRODUCER_GPU_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -85,6 +136,7 @@ impl ProducerQueue {
     }
 
     pub(crate) fn submit_latest(&mut self, frame: ProducerFrame) -> Option<ProducerFrame> {
+        record_producer_frame(&frame);
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 

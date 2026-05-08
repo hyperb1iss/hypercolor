@@ -540,8 +540,10 @@ dev *args='':
     trap 'kill 0' EXIT
     just prepare-dev-assets
     compositor_mode="${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-auto}"
+    servo_gpu_import_mode="${HYPERCOLOR_SERVO_GPU_IMPORT_MODE:-auto}"
     echo "[dev] compositor acceleration mode: ${compositor_mode}"
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu" -- --log-level debug --compositor-acceleration-mode "${compositor_mode}" --bind 127.0.0.1:9420 {{ args }} &
+    echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode}"
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- --log-level debug --compositor-acceleration-mode "${compositor_mode}" --servo-gpu-import-mode "${servo_gpu_import_mode}" --bind 127.0.0.1:9420 {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait

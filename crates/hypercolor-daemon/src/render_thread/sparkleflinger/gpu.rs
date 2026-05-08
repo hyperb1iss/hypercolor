@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
 };
 use crate::performance::CompositorBackendKind;
+use crate::render_thread::gpu_device::{GpuRenderDevice, backend_name, texture_format_name};
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
@@ -28,6 +30,16 @@ const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
 const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
+static GPU_SOURCE_UPLOAD_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn gpu_source_upload_skipped_total() -> u64 {
+    GPU_SOURCE_UPLOAD_SKIPPED_TOTAL.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn record_gpu_source_upload_skipped() {
+    let _ = GPU_SOURCE_UPLOAD_SKIPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuCompositorProbe {
@@ -36,11 +48,12 @@ pub(crate) struct GpuCompositorProbe {
     pub(crate) texture_format: &'static str,
     pub(crate) max_texture_dimension_2d: u32,
     pub(crate) max_storage_textures_per_shader_stage: u32,
+    pub(crate) linux_servo_gpu_import_backend_compatible: bool,
+    pub(crate) linux_servo_gpu_import_backend_reason: Option<&'static str>,
 }
 
 pub(crate) struct GpuSparkleFlinger {
-    _instance: wgpu::Instance,
-    _adapter: wgpu::Adapter,
+    _render_device: GpuRenderDevice,
     device: wgpu::Device,
     queue: wgpu::Queue,
     probe: GpuCompositorProbe,
@@ -253,51 +266,30 @@ enum GpuCompositorOutputSurface {
 
 impl GpuSparkleFlinger {
     pub(crate) fn new() -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }))
-        .context("no compatible wgpu adapter was available for SparkleFlinger")?;
+        Self::with_render_device(GpuRenderDevice::new("SparkleFlinger GPU compositor")?)
+    }
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("SparkleFlinger GPU compositor"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        }))
-        .context("failed to create a SparkleFlinger wgpu device")?;
-
-        let format_features = adapter.get_texture_format_features(COMPOSITOR_TEXTURE_FORMAT);
-        if !format_features
-            .allowed_usages
-            .contains(wgpu::TextureUsages::STORAGE_BINDING)
+    pub(crate) fn with_render_device(render_device: GpuRenderDevice) -> Result<Self> {
+        let probe = probe_render_device(&render_device)?;
+        #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+        if probe.linux_servo_gpu_import_backend_compatible
+            && let Err(error) = hypercolor_core::effect::install_servo_gpu_import_device(
+                render_device.device_handle(),
+            )
         {
-            anyhow::bail!(
-                "adapter does not support storage textures for {}",
-                texture_format_name(COMPOSITOR_TEXTURE_FORMAT)
+            tracing::debug!(
+                %error,
+                "Servo GPU import device was already installed or unavailable"
             );
         }
-
-        let info = adapter.get_info();
-        let limits = device.limits();
-        let probe = GpuCompositorProbe {
-            adapter_name: info.name,
-            backend: backend_name(info.backend),
-            texture_format: texture_format_name(COMPOSITOR_TEXTURE_FORMAT),
-            max_texture_dimension_2d: limits.max_texture_dimension_2d,
-            max_storage_textures_per_shader_stage: limits.max_storage_textures_per_shader_stage,
-        };
+        let device = render_device.device().clone();
+        let queue = render_device.queue().clone();
 
         let pipeline = GpuCompositorPipeline::new(&device);
         let spatial_sampler = GpuSpatialSampler::new(&device);
 
         Ok(Self {
-            _instance: instance,
-            _adapter: adapter,
+            _render_device: render_device,
             device,
             queue,
             probe,
@@ -323,10 +315,6 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             defer_preview_map_resolve_once: false,
         })
-    }
-
-    pub(crate) fn describe(&self) -> GpuCompositorProbe {
-        self.probe.clone()
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {
@@ -505,10 +493,11 @@ impl GpuSparkleFlinger {
             .context("GPU composition requires at least one layer")?;
 
         if first_layer.mode == CompositionMode::Replace && first_layer.opacity >= 1.0 {
-            upload_frame_into_cached_texture(
+            copy_frame_into_output_texture(
                 &self.queue,
                 &surfaces.front.texture,
                 &mut surfaces.front_contents,
+                &mut encoder,
                 &first_layer.frame,
                 #[cfg(test)]
                 &mut surfaces.front_upload_count,
@@ -518,6 +507,7 @@ impl GpuSparkleFlinger {
             encoder.clear_texture(&surfaces.front.texture, &full_range);
             surfaces.front_contents = None;
             compose_layer_into_gpu(
+                &self.device,
                 &self.queue,
                 &self.pipeline,
                 surfaces,
@@ -530,6 +520,7 @@ impl GpuSparkleFlinger {
 
         for layer in layers {
             compose_layer_into_gpu(
+                &self.device,
                 &self.queue,
                 &self.pipeline,
                 surfaces,
@@ -1027,6 +1018,8 @@ impl GpuSparkleFlinger {
                     })
             }
             ProducerFrame::Surface(_) => false,
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(_) => false,
         };
         let same_output = readback_key.as_ref().is_some_and(|key| {
             self.current_output == Some(GpuCompositorOutputSurface::Front)
@@ -1096,6 +1089,10 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 requires_preview_surface,
             ),
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(_) => {
+                unreachable!("GPU producer frames are composed instead of bypassed")
+            }
         };
         let cached_surface = composed
             .preview_surface
@@ -1368,6 +1365,27 @@ impl GpuSparkleFlinger {
         }
         Ok(preview_surface)
     }
+}
+
+pub(crate) fn probe_render_device(render_device: &GpuRenderDevice) -> Result<GpuCompositorProbe> {
+    render_device.require_texture_usage(
+        COMPOSITOR_TEXTURE_FORMAT,
+        wgpu::TextureUsages::STORAGE_BINDING,
+    )?;
+
+    let info = render_device.info();
+    let linux_servo_gpu_import_backend_compatible =
+        info.linux_servo_gpu_import_backend_compatible();
+    let linux_servo_gpu_import_backend_reason = info.linux_servo_gpu_import_backend_reason();
+    Ok(GpuCompositorProbe {
+        adapter_name: info.adapter_name,
+        backend: backend_name(info.backend),
+        texture_format: texture_format_name(COMPOSITOR_TEXTURE_FORMAT),
+        max_texture_dimension_2d: info.max_texture_dimension_2d,
+        max_storage_textures_per_shader_stage: info.max_storage_textures_per_shader_stage,
+        linux_servo_gpu_import_backend_compatible,
+        linux_servo_gpu_import_backend_reason,
+    })
 }
 
 #[allow(
@@ -1806,6 +1824,7 @@ impl GpuPreviewScaleBindGroups {
 }
 
 fn compose_layer_into_gpu(
+    device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &GpuCompositorPipeline,
     surfaces: &mut GpuCompositorSurfaceSet,
@@ -1813,6 +1832,9 @@ fn compose_layer_into_gpu(
     layer: &CompositionLayer,
     use_front_as_current: bool,
 ) {
+    #[cfg(not(feature = "servo-gpu-import"))]
+    let _ = device;
+
     let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
         ComposeShaderMode::Replace
     } else {
@@ -1822,40 +1844,61 @@ fn compose_layer_into_gpu(
             CompositionMode::Screen => ComposeShaderMode::Screen,
         }
     };
-    upload_frame_into_source_texture(queue, surfaces, &layer.frame);
     let output_surface = if use_front_as_current {
         GpuCompositorOutputSurface::Back
     } else {
         GpuCompositorOutputSurface::Front
     };
-    let output = if use_front_as_current {
-        &surfaces.back
-    } else {
-        &surfaces.front
-    };
-    let bind_group = if use_front_as_current {
-        &surfaces.bind_groups.front_to_back
-    } else {
-        &surfaces.bind_groups.back_to_front
-    };
-    if shader_mode == ComposeShaderMode::Replace {
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &surfaces.source.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &output.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            texture_extent(surfaces.width, surfaces.height),
-        );
-        set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
+
+    #[cfg(feature = "servo-gpu-import")]
+    if let ProducerFrame::Gpu(frame) = &layer.frame
+        && shader_mode == ComposeShaderMode::Replace
+    {
+        record_gpu_source_upload_skipped();
+        let output_texture = if use_front_as_current {
+            &surfaces.back.texture
+        } else {
+            &surfaces.front.texture
+        };
+        copy_imported_frame_into_texture(encoder, frame, output_texture);
+        set_texture_contents(surfaces, output_surface, None);
         return;
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    let gpu_frame = match &layer.frame {
+        ProducerFrame::Gpu(frame) => Some(frame),
+        _ => None,
+    };
+    #[cfg(not(feature = "servo-gpu-import"))]
+    let gpu_frame: Option<()> = None;
+
+    if gpu_frame.is_none() {
+        upload_frame_into_source_texture(queue, surfaces, &layer.frame);
+        if shader_mode == ComposeShaderMode::Replace {
+            let output_texture = if use_front_as_current {
+                &surfaces.back.texture
+            } else {
+                &surfaces.front.texture
+            };
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &surfaces.source.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: output_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                texture_extent(surfaces.width, surfaces.height),
+            );
+            set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
+            return;
+        }
     }
 
     let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer.opacity);
@@ -1872,6 +1915,57 @@ fn compose_layer_into_gpu(
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
     }
+    #[cfg(feature = "servo-gpu-import")]
+    if let Some(frame) = gpu_frame {
+        record_gpu_source_upload_skipped();
+        let bind_group = {
+            let (current_view, output_view) = if use_front_as_current {
+                (&surfaces.front.view, &surfaces.back.view)
+            } else {
+                (&surfaces.back.view, &surfaces.front.view)
+            };
+            create_compose_bind_group(
+                device,
+                pipeline,
+                current_view,
+                frame.view.as_ref(),
+                output_view,
+                "SparkleFlinger GPU imported producer bind group",
+            )
+        };
+        dispatch_compose_pass(
+            encoder,
+            pipeline,
+            &bind_group,
+            surfaces.width,
+            surfaces.height,
+        );
+        set_texture_contents(surfaces, output_surface, None);
+        return;
+    }
+
+    let bind_group = if use_front_as_current {
+        &surfaces.bind_groups.front_to_back
+    } else {
+        &surfaces.bind_groups.back_to_front
+    };
+    dispatch_compose_pass(
+        encoder,
+        pipeline,
+        bind_group,
+        surfaces.width,
+        surfaces.height,
+    );
+    set_texture_contents(surfaces, output_surface, None);
+}
+
+fn dispatch_compose_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &GpuCompositorPipeline,
+    bind_group: &wgpu::BindGroup,
+    width: u32,
+    height: u32,
+) {
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("SparkleFlinger GPU compose pass"),
         timestamp_writes: None,
@@ -1879,12 +1973,10 @@ fn compose_layer_into_gpu(
     pass.set_pipeline(&pipeline.compose_pipeline);
     pass.set_bind_group(0, bind_group, &[]);
     pass.dispatch_workgroups(
-        surfaces.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-        surfaces.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+        width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+        height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
         1,
     );
-    drop(pass);
-    set_texture_contents(surfaces, output_surface, None);
 }
 
 fn upload_frame_into_source_texture(
@@ -1899,6 +1991,58 @@ fn upload_frame_into_source_texture(
         frame,
         #[cfg(test)]
         &mut surfaces.source_upload_count,
+    );
+}
+
+fn copy_frame_into_output_texture(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    cached_upload: &mut Option<CachedSourceUpload>,
+    encoder: &mut wgpu::CommandEncoder,
+    frame: &ProducerFrame,
+    #[cfg(test)] upload_count: &mut usize,
+) {
+    #[cfg(not(feature = "servo-gpu-import"))]
+    let _ = encoder;
+
+    #[cfg(feature = "servo-gpu-import")]
+    if let ProducerFrame::Gpu(frame) = frame {
+        record_gpu_source_upload_skipped();
+        copy_imported_frame_into_texture(encoder, frame, texture);
+        *cached_upload = None;
+        return;
+    }
+
+    upload_frame_into_cached_texture(
+        queue,
+        texture,
+        cached_upload,
+        frame,
+        #[cfg(test)]
+        upload_count,
+    );
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn copy_imported_frame_into_texture(
+    encoder: &mut wgpu::CommandEncoder,
+    frame: &hypercolor_core::effect::ImportedEffectFrame,
+    output: &wgpu::Texture,
+) {
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: frame.texture.as_ref(),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: output,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        texture_extent(frame.width, frame.height),
     );
 }
 
@@ -1956,6 +2100,8 @@ fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
             height: canvas.height(),
         }),
         ProducerFrame::Canvas(_) => None,
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => None,
     }
 }
 
@@ -2089,6 +2235,8 @@ fn bypass_preview_surface(frame: &ProducerFrame) -> Option<PublishedSurface> {
     match frame {
         ProducerFrame::Surface(surface) => Some(surface.clone()),
         ProducerFrame::Canvas(_) => None,
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => None,
     }
 }
 
@@ -2300,25 +2448,6 @@ fn encode_preview_scale_params(
     bytes[8..12].copy_from_slice(&preview_width.to_le_bytes());
     bytes[12..16].copy_from_slice(&preview_height.to_le_bytes());
     bytes
-}
-
-fn backend_name(backend: wgpu::Backend) -> &'static str {
-    match backend {
-        wgpu::Backend::Noop => "noop",
-        wgpu::Backend::Vulkan => "vulkan",
-        wgpu::Backend::Metal => "metal",
-        wgpu::Backend::Dx12 => "dx12",
-        wgpu::Backend::Gl => "gl",
-        wgpu::Backend::BrowserWebGpu => "browser_webgpu",
-    }
-}
-
-fn texture_format_name(format: wgpu::TextureFormat) -> &'static str {
-    match format {
-        wgpu::TextureFormat::Rgba8Unorm => "rgba8_unorm",
-        wgpu::TextureFormat::Rgba8UnormSrgb => "rgba8_unorm_srgb",
-        _ => "other",
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2570,7 +2699,7 @@ mod tests {
     #[test]
     fn gpu_compositor_probe_reports_a_texture_format() {
         let probe = match GpuSparkleFlinger::new() {
-            Ok(compositor) => compositor.describe(),
+            Ok(compositor) => compositor.probe.clone(),
             Err(_) => return,
         };
 

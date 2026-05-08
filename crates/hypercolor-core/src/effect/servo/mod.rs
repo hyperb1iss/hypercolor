@@ -21,6 +21,8 @@
 
 mod circuit_breaker;
 mod delegate;
+#[cfg(feature = "servo-gpu-import")]
+mod gpu_import;
 mod renderer;
 mod session;
 mod telemetry;
@@ -28,6 +30,11 @@ mod worker;
 mod worker_client;
 
 pub use delegate::{ConsoleMessage, HypercolorWebViewDelegate};
+#[cfg(feature = "servo-gpu-import")]
+pub use gpu_import::{
+    install_servo_gpu_import_device, servo_gpu_import_device, servo_gpu_import_mode,
+    servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
+};
 pub use renderer::ServoRenderer;
 pub use session::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 pub use telemetry::{ServoTelemetrySnapshot, servo_telemetry_snapshot};

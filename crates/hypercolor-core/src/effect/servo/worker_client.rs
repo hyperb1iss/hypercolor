@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::time::{Duration, Instant};
 
+use crate::effect::traits::EffectRenderOutput;
 use anyhow::{Context, Result, bail};
-use hypercolor_types::canvas::Canvas;
 
 /// Maximum time a `load` call waits for the worker to finish loading the page.
 pub(super) const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -111,8 +111,9 @@ pub(super) enum WorkerCommand {
         scripts: Vec<String>,
         width: u32,
         height: u32,
+        mode: ServoRenderMode,
         submitted_at: Instant,
-        response_tx: SyncSender<Result<Canvas>>,
+        response_tx: SyncSender<Result<EffectRenderOutput>>,
     },
     DestroySession {
         session_id: ServoSessionId,
@@ -123,9 +124,16 @@ pub(super) enum WorkerCommand {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ServoRenderMode {
+    Cpu,
+    #[cfg(feature = "servo-gpu-import")]
+    GpuPreferred,
+}
+
 /// Receipt for an in-flight render request.
 pub(super) struct PendingServoFrame {
-    pub(super) response_rx: Receiver<Result<Canvas>>,
+    pub(super) response_rx: Receiver<Result<EffectRenderOutput>>,
     pub(super) submitted_at: Instant,
 }
 
@@ -335,6 +343,17 @@ impl ServoWorkerClient {
         width: u32,
         height: u32,
     ) -> Result<PendingServoFrame> {
+        self.submit_render_with_mode(session_id, scripts, width, height, ServoRenderMode::Cpu)
+    }
+
+    pub(super) fn submit_render_with_mode(
+        &self,
+        session_id: ServoSessionId,
+        scripts: Vec<String>,
+        width: u32,
+        height: u32,
+        mode: ServoRenderMode,
+    ) -> Result<PendingServoFrame> {
         let state = self.with_session_slot(session_id, ClientStateSlot::load)?;
         if state != WorkerClientState::Running {
             bail!("Servo session {session_id:?} is not ready to render (state: {state:?})");
@@ -347,6 +366,7 @@ impl ServoWorkerClient {
                 scripts,
                 width,
                 height,
+                mode,
                 submitted_at: Instant::now(),
                 response_tx,
             })

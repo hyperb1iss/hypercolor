@@ -14,7 +14,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 
 use super::factory::create_renderer_for_metadata;
 use super::registry::{EffectEntry, EffectRegistry};
-use super::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use super::traits::{EffectRenderOutput, EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::input::{InteractionData, ScreenData};
 
 pub struct EffectPool {
@@ -106,6 +106,39 @@ impl EffectPool {
             group.layout.canvas_width,
             group.layout.canvas_height,
             target,
+        )
+    }
+
+    pub fn render_group_output(
+        &mut self,
+        group: &RenderGroup,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<EffectRenderOutput> {
+        if !group.enabled || group.effect_id.is_none() {
+            return Ok(EffectRenderOutput::Cpu(Canvas::new(
+                group.layout.canvas_width,
+                group.layout.canvas_height,
+            )));
+        }
+
+        let slot = self.slots.get_mut(&group.id).ok_or_else(|| {
+            anyhow!(
+                "render group '{}' is not reconciled before rendering",
+                group.name
+            )
+        })?;
+        slot.render_output(
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            group.layout.canvas_width,
+            group.layout.canvas_height,
         )
     }
 }
@@ -228,6 +261,44 @@ impl EffectSlot {
         self.renderer.render_into(&input, target)?;
         self.frame_number = self.frame_number.wrapping_add(1);
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs the full frame input for output-capable renderers"
+    )]
+    fn render_output(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> Result<EffectRenderOutput> {
+        self.elapsed_secs += delta_secs;
+        apply_sensor_bindings(
+            self.renderer.as_mut(),
+            &self.metadata,
+            &self.controls,
+            &mut self.binding_state,
+            sensors,
+        );
+        let input = FrameInput {
+            time_secs: self.elapsed_secs,
+            delta_secs,
+            frame_number: self.frame_number,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            canvas_width,
+            canvas_height,
+        };
+        let output = self.renderer.render_output(&input)?;
+        self.frame_number = self.frame_number.wrapping_add(1);
+        Ok(output)
     }
 }
 

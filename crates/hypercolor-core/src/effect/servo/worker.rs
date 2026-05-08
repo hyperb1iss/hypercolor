@@ -33,12 +33,17 @@ use tracing::{debug, trace, warn};
 
 use super::circuit_breaker::ServoCircuitBreaker;
 use super::delegate::{ConsoleMessage, HypercolorWebViewDelegate};
-use super::telemetry::record_servo_render_queue_wait;
+#[cfg(feature = "servo-gpu-import")]
+use super::telemetry::{
+    ServoGpuImportFallbackReason, record_servo_gpu_import_failure, record_servo_gpu_import_frame,
+};
+use super::telemetry::{record_servo_cpu_render_frame, record_servo_render_queue_wait};
 use super::worker_client::{
-    ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState, UNLOAD_TIMEOUT,
-    WORKER_READY_TIMEOUT, WorkerCommand,
+    ServoRenderMode, ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState,
+    UNLOAD_TIMEOUT, WORKER_READY_TIMEOUT, WorkerCommand,
 };
 use crate::effect::servo_bootstrap::bootstrap_rendering_context;
+use crate::effect::traits::EffectRenderOutput;
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
@@ -758,6 +763,14 @@ fn log_servo_render_stage_timings(
     reused_cached_canvas: bool,
     timings: ServoRenderStageTimings,
 ) {
+    record_servo_cpu_render_frame(
+        timings.evaluate_scripts_us,
+        timings.event_loop_us,
+        timings.paint_us,
+        timings.readback_us,
+        timings.total_us,
+        reused_cached_canvas,
+    );
     trace!(
         ?session_id,
         width,
@@ -948,8 +961,9 @@ struct PendingRenderCommand {
     scripts: Vec<String>,
     width: u32,
     height: u32,
+    mode: ServoRenderMode,
     submitted_at: Instant,
-    response_tx: mpsc::SyncSender<Result<Canvas>>,
+    response_tx: mpsc::SyncSender<Result<EffectRenderOutput>>,
 }
 
 enum ScheduledServoWork {
@@ -985,6 +999,7 @@ impl ServoWorkerScheduler {
                 scripts,
                 width,
                 height,
+                mode,
                 submitted_at,
                 response_tx,
             } => {
@@ -993,6 +1008,7 @@ impl ServoWorkerScheduler {
                     scripts,
                     width,
                     height,
+                    mode,
                     submitted_at,
                     response_tx,
                 };
@@ -1124,11 +1140,12 @@ impl ServoWorkerRuntime {
                     scripts,
                     width,
                     height,
+                    mode,
                     submitted_at,
                     response_tx,
                 }) => {
                     record_servo_render_queue_wait(submitted_at.elapsed());
-                    let result = self.render_frame(session_id, &scripts, width, height);
+                    let result = self.render_frame(session_id, &scripts, width, height, mode);
                     let _ = response_tx.send(result);
                 }
                 ScheduledServoWork::Command(WorkerCommand::DestroySession {
@@ -1357,7 +1374,8 @@ impl ServoWorkerRuntime {
         scripts: &[String],
         width: u32,
         height: u32,
-    ) -> Result<Canvas> {
+        mode: ServoRenderMode,
+    ) -> Result<EffectRenderOutput> {
         let script_count = scripts.len();
         let script_bytes = scripts.iter().map(String::len).sum::<usize>();
         {
@@ -1417,13 +1435,14 @@ impl ServoWorkerRuntime {
                     true,
                     timings,
                 );
-                return Ok(cached.clone());
+                return Ok(EffectRenderOutput::Cpu(cached.clone()));
             }
 
-            let canvas = render_servo_framebuffer_into_canvas(self, session_id, &mut timings)?;
-            {
+            let output = render_servo_framebuffer(self, session_id, mode, &mut timings)?;
+            if let Some(canvas) = output.as_cpu_canvas() {
+                let canvas = canvas.clone();
                 let session = self.session_mut(session_id)?;
-                if let Some(previous) = session.last_canvas.replace(canvas.clone()) {
+                if let Some(previous) = session.last_canvas.replace(canvas) {
                     session.readback_buffers.retire_canvas(previous);
                 }
             }
@@ -1438,7 +1457,7 @@ impl ServoWorkerRuntime {
                 false,
                 timings,
             );
-            Ok(canvas)
+            Ok(output)
         }
     }
 
@@ -1557,11 +1576,15 @@ impl ServoWorkerRuntime {
     }
 }
 
-fn render_servo_framebuffer_into_canvas(
+fn render_servo_framebuffer(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
+    mode: ServoRenderMode,
     timings: &mut ServoRenderStageTimings,
-) -> Result<Canvas> {
+) -> Result<EffectRenderOutput> {
+    #[cfg(not(feature = "servo-gpu-import"))]
+    let _ = mode;
+
     let paint_start = Instant::now();
     runtime.active_webview(session_id)?.paint();
     timings.paint_us = elapsed_micros(paint_start);
@@ -1572,6 +1595,39 @@ fn render_servo_framebuffer_into_canvas(
     let height_i32 =
         i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
 
+    #[cfg(feature = "servo-gpu-import")]
+    if matches!(mode, ServoRenderMode::GpuPreferred) {
+        match import_servo_framebuffer_into_wgpu(runtime, session_id, size.width, size.height) {
+            Ok(frame) => {
+                record_servo_gpu_import_frame(
+                    frame.timings.blit_us,
+                    frame.timings.sync_us,
+                    frame.timings.total_us,
+                );
+                runtime.session(session_id)?.rendering_context.present();
+                return Ok(EffectRenderOutput::Gpu(frame));
+            }
+            Err(error) => {
+                let fallback = !matches!(
+                    super::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::On
+                );
+                record_servo_gpu_import_failure(classify_servo_gpu_import_error(&error), fallback);
+                if matches!(
+                    super::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::On
+                ) {
+                    return Err(error)
+                        .context("Servo GPU framebuffer import is required but unavailable");
+                }
+                warn!(
+                    %error,
+                    "Servo GPU framebuffer import failed; falling back to CPU readback"
+                );
+            }
+        }
+    }
+
     let readback_start = Instant::now();
     let canvas = {
         let session = runtime.session_mut(session_id)?;
@@ -1580,7 +1636,98 @@ fn render_servo_framebuffer_into_canvas(
         canvas
     };
     timings.readback_us = elapsed_micros(readback_start);
-    Ok(canvas)
+    Ok(EffectRenderOutput::Cpu(canvas))
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn import_servo_framebuffer_into_wgpu(
+    runtime: &mut ServoWorkerRuntime,
+    session_id: ServoSessionId,
+    width: u32,
+    height: u32,
+) -> Result<hypercolor_linux_gpu_interop::ImportedEffectFrame> {
+    use hypercolor_linux_gpu_interop::{
+        GlFramebufferSource, ImportedFrameFormat, LinuxGlFramebufferImportDescriptor,
+        import_gl_framebuffer_to_wgpu_from_process,
+    };
+
+    let device = super::gpu_import::servo_gpu_import_device()?;
+    let session = runtime.session(session_id)?;
+    session
+        .rendering_context
+        .make_current()
+        .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
+    session.rendering_context.prepare_for_rendering();
+    let gl = session.rendering_context.glow_gl_api();
+    let descriptor =
+        LinuxGlFramebufferImportDescriptor::new(width, height, ImportedFrameFormat::Rgba8Unorm)?;
+
+    import_gl_framebuffer_to_wgpu_from_process(
+        device,
+        gl.as_ref(),
+        GlFramebufferSource::CurrentRead,
+        descriptor,
+    )
+    .context("failed to import Servo GL framebuffer into wgpu")
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallbackReason {
+    for cause in error.chain() {
+        if let Some(error) =
+            cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
+        {
+            #[cfg(target_os = "linux")]
+            return match error {
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingWgpuVulkanDevice => {
+                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+                }
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingVulkanDeviceExtension(
+                    _,
+                ) => ServoGpuImportFallbackReason::MissingVulkanExternalMemoryFd,
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingGlFunction(_) => {
+                    ServoGpuImportFallbackReason::MissingGlFunction
+                }
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlProcLoaderUnavailable => {
+                    ServoGpuImportFallbackReason::GlProcLoaderUnavailable
+                }
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions { .. } => {
+                    ServoGpuImportFallbackReason::InvalidDimensions
+                }
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::Vulkan { .. }
+                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::MemoryTypeUnavailable
+                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::DuplicateFdFailed {
+                    ..
+                } => ServoGpuImportFallbackReason::Vulkan,
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlCreateResource {
+                    ..
+                } => ServoGpuImportFallbackReason::GlResource,
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation { .. } => {
+                    ServoGpuImportFallbackReason::GlOperation
+                }
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
+                    ..
+                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
+                _ => ServoGpuImportFallbackReason::Other,
+            };
+            #[cfg(not(target_os = "linux"))]
+            return match error {
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::UnsupportedPlatform => {
+                    ServoGpuImportFallbackReason::UnsupportedPlatform
+                }
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions {
+                    ..
+                } => ServoGpuImportFallbackReason::InvalidDimensions,
+            };
+        }
+    }
+
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("not installed") || message.contains("device is not installed") {
+        ServoGpuImportFallbackReason::DeviceUnavailable
+    } else {
+        ServoGpuImportFallbackReason::Other
+    }
 }
 
 fn load_completion_url_matches(expected_url: Option<&str>, current_url: Option<&str>) -> bool {
@@ -1654,6 +1801,8 @@ pub(super) mod test_support {
 
     use hypercolor_types::canvas::Canvas;
 
+    use crate::effect::traits::EffectRenderOutput;
+
     use super::super::worker_client::{
         ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
     };
@@ -1701,7 +1850,8 @@ pub(super) mod test_support {
                         break;
                     }
                     WorkerCommand::Render { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
+                        let _ =
+                            response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
                     }
                 }
             }
@@ -1758,7 +1908,7 @@ pub(super) mod test_support {
                         let result = result_rx
                             .recv()
                             .unwrap_or_else(|_| Ok(solid_canvas(12, 34, 56)));
-                        let _ = response_tx.send(result);
+                        let _ = response_tx.send(result.map(EffectRenderOutput::Cpu));
                         let _ = delivered_tx.send(());
                     }
                     WorkerCommand::Unload { response_tx, .. } => {
@@ -1834,7 +1984,8 @@ pub(super) mod test_support {
                         let _ = response_tx.send(Ok(()));
                     }
                     WorkerCommand::Render { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
+                        let _ =
+                            response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
                     }
                     WorkerCommand::Shutdown { response_tx } => {
                         stopped_clone.store(true, Ordering::SeqCst);
@@ -1894,7 +2045,8 @@ pub(super) mod test_support {
                         let _ = response_tx.send(Ok(()));
                     }
                     WorkerCommand::Render { response_tx, .. } => {
-                        let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
+                        let _ =
+                            response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
                     }
                     WorkerCommand::Shutdown { response_tx } => {
                         stopped_clone.store(true, Ordering::SeqCst);
@@ -1933,7 +2085,7 @@ mod tests {
     fn queued_render_command(
         session_id: ServoSessionId,
         script: &str,
-    ) -> (WorkerCommand, mpsc::Receiver<Result<Canvas>>) {
+    ) -> (WorkerCommand, mpsc::Receiver<Result<EffectRenderOutput>>) {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         (
             WorkerCommand::Render {
@@ -1941,6 +2093,7 @@ mod tests {
                 scripts: vec![script.to_owned()],
                 width: 320,
                 height: 200,
+                mode: ServoRenderMode::Cpu,
                 submitted_at: Instant::now(),
                 response_tx,
             },

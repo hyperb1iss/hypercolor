@@ -19,6 +19,7 @@ use crate::session::SessionConfig;
 mod defaults {
     use super::LogLevel;
     use super::RenderAccelerationMode;
+    use super::ServoGpuImportMode;
     use super::ShutdownBehavior;
 
     // Daemon
@@ -144,6 +145,9 @@ mod defaults {
     pub fn compositor_acceleration_mode() -> RenderAccelerationMode {
         RenderAccelerationMode::Auto
     }
+    pub const fn servo_gpu_import_mode() -> ServoGpuImportMode {
+        ServoGpuImportMode::Off
+    }
 
     // Shared
     pub fn bool_true() -> bool {
@@ -177,6 +181,9 @@ pub struct HypercolorConfig {
 
     #[serde(default)]
     pub effect_engine: EffectEngineConfig,
+
+    #[serde(default)]
+    pub rendering: RenderingConfig,
 
     #[serde(default)]
     pub audio: AudioConfig,
@@ -221,6 +228,7 @@ impl Default for HypercolorConfig {
             web: WebConfig::default(),
             mcp: McpConfig::default(),
             effect_engine: EffectEngineConfig::default(),
+            rendering: RenderingConfig::default(),
             audio: AudioConfig::default(),
             capture: CaptureConfig::default(),
             discovery: DiscoveryConfig::default(),
@@ -432,6 +440,23 @@ impl Default for McpConfig {
     }
 }
 
+// ─── Rendering ───────────────────────────────────────────────────────────────
+
+/// Rendering-path feature switches and import policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RenderingConfig {
+    pub servo_gpu_import: ServoGpuImportConfig,
+}
+
+/// Linux Servo GPU import policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServoGpuImportConfig {
+    #[serde(default = "defaults::servo_gpu_import_mode")]
+    pub mode: ServoGpuImportMode,
+}
+
 // ─── Effect Engine ───────────────────────────────────────────────────────────
 
 /// Renderer selection, hot-reload, and effect directory config.
@@ -490,6 +515,19 @@ pub enum RenderAccelerationMode {
     Auto,
     /// Require the GPU acceleration lane.
     Gpu,
+}
+
+/// Servo framebuffer import policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServoGpuImportMode {
+    /// Never attempt Servo GPU framebuffer import.
+    #[default]
+    Off,
+    /// Attempt import when startup capabilities indicate it can work.
+    Auto,
+    /// Require import and report frame errors instead of silent CPU fallback.
+    On,
 }
 
 /// Daemon response when a live effect emits an

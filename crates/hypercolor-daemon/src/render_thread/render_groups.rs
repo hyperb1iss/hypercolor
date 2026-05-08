@@ -4,6 +4,8 @@ use std::time::Instant;
 
 use anyhow::Result;
 
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::spatial::{SpatialEngine, sample_led};
@@ -570,35 +572,53 @@ impl RenderGroupRuntime {
         let Some(spatial_engine) = self.spatial_engines.get(&scene_group.id).cloned() else {
             return Ok(None);
         };
-        let Some(mut lease) = self.scene_surface_pool.dequeue() else {
-            return Ok(None);
-        };
 
         let render_start = Instant::now();
-        if let Err(error) = self.effect_pool.render_group_into(
-            scene_group,
-            delta_secs,
-            audio,
-            interaction,
-            screen,
-            sensors,
-            lease.canvas_mut(),
-        ) {
-            lease.release();
-            return Err(anyhow::Error::new(render_group_effect_error(
+        #[cfg(feature = "servo-gpu-import")]
+        let scene_frame = match self
+            .effect_pool
+            .render_group_output(scene_group, delta_secs, audio, interaction, screen, sensors)
+            .map_err(|error| {
+                anyhow::Error::new(render_group_effect_error(scene_group, registry, error))
+            })? {
+            EffectRenderOutput::Cpu(canvas) => {
+                let Some(mut lease) = self.scene_surface_pool.dequeue() else {
+                    return Ok(None);
+                };
+                *lease.canvas_mut() = canvas;
+                ProducerFrame::Surface(lease.submit(0, 0))
+            }
+            EffectRenderOutput::Gpu(frame) => ProducerFrame::Gpu(frame),
+        };
+        #[cfg(not(feature = "servo-gpu-import"))]
+        let scene_frame = {
+            let Some(mut lease) = self.scene_surface_pool.dequeue() else {
+                return Ok(None);
+            };
+            if let Err(error) = self.effect_pool.render_group_into(
                 scene_group,
-                registry,
-                error,
-            )));
-        }
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+                lease.canvas_mut(),
+            ) {
+                lease.release();
+                return Err(anyhow::Error::new(render_group_effect_error(
+                    scene_group,
+                    registry,
+                    error,
+                )));
+            }
+            ProducerFrame::Surface(lease.submit(0, 0))
+        };
         let mut render_us = micros_u32(render_start.elapsed());
 
         let sample_us = 0_u32;
         if !scene_group.layout.zones.is_empty() {
             zones.clear();
         }
-        let scene_surface = lease.submit(0, 0);
-
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         for group in groups {
@@ -655,7 +675,7 @@ impl RenderGroupRuntime {
         zones.clear();
 
         Ok(Some(RenderGroupResult {
-            scene_frame: ProducerFrame::Surface(scene_surface),
+            scene_frame,
             group_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
@@ -1388,6 +1408,10 @@ mod tests {
             ProducerFrame::Canvas(canvas) => canvas.clone(),
             ProducerFrame::Surface(surface) => {
                 Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height())
+            }
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(_) => {
+                panic!("GPU scene frames are sampled by SparkleFlinger before CPU materialization")
             }
         }
     }

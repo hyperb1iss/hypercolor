@@ -19,6 +19,8 @@ pub(crate) struct GpuCompositorProbeInfo {
     pub(crate) texture_format: &'static str,
     pub(crate) max_texture_dimension_2d: u32,
     pub(crate) max_storage_textures_per_shader_stage: u32,
+    pub(crate) linux_servo_gpu_import_backend_compatible: bool,
+    pub(crate) linux_servo_gpu_import_backend_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,8 +115,11 @@ fn resolve_explicit_gpu_mode(
 
 #[cfg(feature = "wgpu")]
 fn probe_gpu_compositor() -> Result<GpuCompositorProbeInfo> {
-    crate::render_thread::sparkleflinger::gpu::GpuSparkleFlinger::new()
-        .map(|compositor| GpuCompositorProbeInfo::from(compositor.describe()))
+    let render_device = crate::render_thread::gpu_device::GpuRenderDevice::new(
+        "SparkleFlinger GPU compositor probe",
+    )?;
+    crate::render_thread::sparkleflinger::gpu::probe_render_device(&render_device)
+        .map(GpuCompositorProbeInfo::from)
 }
 
 #[cfg(feature = "wgpu")]
@@ -150,6 +155,9 @@ impl From<crate::render_thread::sparkleflinger::gpu::GpuCompositorProbe>
             texture_format: probe.texture_format,
             max_texture_dimension_2d: probe.max_texture_dimension_2d,
             max_storage_textures_per_shader_stage: probe.max_storage_textures_per_shader_stage,
+            linux_servo_gpu_import_backend_compatible: probe
+                .linux_servo_gpu_import_backend_compatible,
+            linux_servo_gpu_import_backend_reason: probe.linux_servo_gpu_import_backend_reason,
         }
     }
 }
@@ -174,6 +182,8 @@ mod tests {
             texture_format: "rgba8unorm",
             max_texture_dimension_2d: 16_384,
             max_storage_textures_per_shader_stage: 8,
+            linux_servo_gpu_import_backend_compatible: cfg!(target_os = "linux"),
+            linux_servo_gpu_import_backend_reason: None,
         }
     }
 

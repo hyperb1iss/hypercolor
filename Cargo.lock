@@ -4713,6 +4713,7 @@ dependencies = [
  "gleam",
  "hypercolor-driver-api",
  "hypercolor-hal",
+ "hypercolor-linux-gpu-interop",
  "hypercolor-types",
  "libpulse-binding",
  "log",
@@ -4739,6 +4740,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wgpu",
  "zbus",
  "zerocopy",
 ]
@@ -4996,6 +4998,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "hypercolor-linux-gpu-interop"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "glow 0.16.0",
+ "libc",
+ "thiserror 2.0.18",
+ "wgpu",
+ "wgpu-hal 29.0.1",
 ]
 
 [[package]]

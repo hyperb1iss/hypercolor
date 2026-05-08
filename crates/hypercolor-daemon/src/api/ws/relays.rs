@@ -1152,6 +1152,7 @@ pub(super) async fn build_metrics_message(
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
     let display_output = state.display_frames.read().await.metrics_snapshot();
     let servo_health = servo_effect_health_counts();
+    let pipeline_health = render_pipeline_health_counts();
     let usb_actor_metrics = usb_actor_metrics_snapshot();
 
     ServerMessage::Metrics {
@@ -1242,6 +1243,46 @@ pub(super) async fn build_metrics_message(
                     servo_health.render_queue_wait_total_us,
                 ),
                 servo_render_queue_wait_max_ms: us_to_ms_f64(servo_health.render_queue_wait_max_us),
+                servo_render_cpu_frames_total: servo_health.render_cpu_frames_total,
+                servo_render_cached_frames_total: servo_health.render_cached_frames_total,
+                servo_render_gpu_frames_total: servo_health.render_gpu_frames_total,
+                servo_gpu_import_failures_total: servo_health.render_gpu_import_failures_total,
+                servo_gpu_import_fallbacks_total: servo_health.render_gpu_import_fallbacks_total,
+                servo_gpu_import_fallback_reason: servo_health.render_gpu_import_fallback_reason,
+                servo_gpu_import_blit_total_ms: us_to_ms_f64(
+                    servo_health.render_gpu_import_blit_total_us,
+                ),
+                servo_gpu_import_blit_max_ms: us_to_ms_f64(
+                    servo_health.render_gpu_import_blit_max_us,
+                ),
+                servo_gpu_import_sync_total_ms: us_to_ms_f64(
+                    servo_health.render_gpu_import_sync_total_us,
+                ),
+                servo_gpu_import_sync_max_ms: us_to_ms_f64(
+                    servo_health.render_gpu_import_sync_max_us,
+                ),
+                servo_gpu_import_total_ms: us_to_ms_f64(servo_health.render_gpu_import_total_us),
+                servo_gpu_import_max_ms: us_to_ms_f64(servo_health.render_gpu_import_max_us),
+                producer_cpu_frames_total: pipeline_health.cpu_producer_frames,
+                producer_gpu_frames_total: pipeline_health.gpu_producer_frames,
+                sparkleflinger_gpu_source_upload_skipped_total: pipeline_health
+                    .skipped_gpu_source_uploads,
+                servo_render_evaluate_scripts_total_ms: us_to_ms_f64(
+                    servo_health.render_evaluate_scripts_total_us,
+                ),
+                servo_render_evaluate_scripts_max_ms: us_to_ms_f64(
+                    servo_health.render_evaluate_scripts_max_us,
+                ),
+                servo_render_event_loop_total_ms: us_to_ms_f64(
+                    servo_health.render_event_loop_total_us,
+                ),
+                servo_render_event_loop_max_ms: us_to_ms_f64(servo_health.render_event_loop_max_us),
+                servo_render_paint_total_ms: us_to_ms_f64(servo_health.render_paint_total_us),
+                servo_render_paint_max_ms: us_to_ms_f64(servo_health.render_paint_max_us),
+                servo_render_readback_total_ms: us_to_ms_f64(servo_health.render_readback_total_us),
+                servo_render_readback_max_ms: us_to_ms_f64(servo_health.render_readback_max_us),
+                servo_render_frame_total_ms: us_to_ms_f64(servo_health.render_frame_total_us),
+                servo_render_frame_max_ms: us_to_ms_f64(servo_health.render_frame_max_us),
             },
             timeline: MetricsTimeline {
                 frame_token: latest_frame.timeline.frame_token,
@@ -1380,6 +1421,28 @@ struct ServoEffectHealthCounts {
     render_requests_total: u64,
     render_queue_wait_total_us: u64,
     render_queue_wait_max_us: u64,
+    render_cpu_frames_total: u64,
+    render_cached_frames_total: u64,
+    render_gpu_frames_total: u64,
+    render_gpu_import_failures_total: u64,
+    render_gpu_import_fallbacks_total: u64,
+    render_gpu_import_fallback_reason: Option<&'static str>,
+    render_gpu_import_blit_total_us: u64,
+    render_gpu_import_blit_max_us: u64,
+    render_gpu_import_sync_total_us: u64,
+    render_gpu_import_sync_max_us: u64,
+    render_gpu_import_total_us: u64,
+    render_gpu_import_max_us: u64,
+    render_evaluate_scripts_total_us: u64,
+    render_evaluate_scripts_max_us: u64,
+    render_event_loop_total_us: u64,
+    render_event_loop_max_us: u64,
+    render_paint_total_us: u64,
+    render_paint_max_us: u64,
+    render_readback_total_us: u64,
+    render_readback_max_us: u64,
+    render_frame_total_us: u64,
+    render_frame_max_us: u64,
 }
 
 #[cfg(feature = "servo")]
@@ -1401,6 +1464,28 @@ fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_requests_total: snapshot.render_requests_total,
         render_queue_wait_total_us: snapshot.render_queue_wait_total_us,
         render_queue_wait_max_us: snapshot.render_queue_wait_max_us,
+        render_cpu_frames_total: snapshot.render_cpu_frames_total,
+        render_cached_frames_total: snapshot.render_cached_frames_total,
+        render_gpu_frames_total: snapshot.render_gpu_frames_total,
+        render_gpu_import_failures_total: snapshot.render_gpu_import_failures_total,
+        render_gpu_import_fallbacks_total: snapshot.render_gpu_import_fallbacks_total,
+        render_gpu_import_fallback_reason: snapshot.render_gpu_import_fallback_reason,
+        render_gpu_import_blit_total_us: snapshot.render_gpu_import_blit_total_us,
+        render_gpu_import_blit_max_us: snapshot.render_gpu_import_blit_max_us,
+        render_gpu_import_sync_total_us: snapshot.render_gpu_import_sync_total_us,
+        render_gpu_import_sync_max_us: snapshot.render_gpu_import_sync_max_us,
+        render_gpu_import_total_us: snapshot.render_gpu_import_total_us,
+        render_gpu_import_max_us: snapshot.render_gpu_import_max_us,
+        render_evaluate_scripts_total_us: snapshot.render_evaluate_scripts_total_us,
+        render_evaluate_scripts_max_us: snapshot.render_evaluate_scripts_max_us,
+        render_event_loop_total_us: snapshot.render_event_loop_total_us,
+        render_event_loop_max_us: snapshot.render_event_loop_max_us,
+        render_paint_total_us: snapshot.render_paint_total_us,
+        render_paint_max_us: snapshot.render_paint_max_us,
+        render_readback_total_us: snapshot.render_readback_total_us,
+        render_readback_max_us: snapshot.render_readback_max_us,
+        render_frame_total_us: snapshot.render_frame_total_us,
+        render_frame_max_us: snapshot.render_frame_max_us,
     }
 }
 
@@ -1422,7 +1507,55 @@ const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
         render_requests_total: 0,
         render_queue_wait_total_us: 0,
         render_queue_wait_max_us: 0,
+        render_cpu_frames_total: 0,
+        render_cached_frames_total: 0,
+        render_gpu_frames_total: 0,
+        render_gpu_import_failures_total: 0,
+        render_gpu_import_fallbacks_total: 0,
+        render_gpu_import_fallback_reason: None,
+        render_gpu_import_blit_total_us: 0,
+        render_gpu_import_blit_max_us: 0,
+        render_gpu_import_sync_total_us: 0,
+        render_gpu_import_sync_max_us: 0,
+        render_gpu_import_total_us: 0,
+        render_gpu_import_max_us: 0,
+        render_evaluate_scripts_total_us: 0,
+        render_evaluate_scripts_max_us: 0,
+        render_event_loop_total_us: 0,
+        render_event_loop_max_us: 0,
+        render_paint_total_us: 0,
+        render_paint_max_us: 0,
+        render_readback_total_us: 0,
+        render_readback_max_us: 0,
+        render_frame_total_us: 0,
+        render_frame_max_us: 0,
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RenderPipelineHealthCounts {
+    cpu_producer_frames: u64,
+    gpu_producer_frames: u64,
+    skipped_gpu_source_uploads: u64,
+}
+
+fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
+    let producer = crate::render_thread::producer_frame_counts();
+    RenderPipelineHealthCounts {
+        cpu_producer_frames: producer.cpu_frames_total,
+        gpu_producer_frames: producer.gpu_frames_total,
+        skipped_gpu_source_uploads: gpu_source_upload_skipped_total(),
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn gpu_source_upload_skipped_total() -> u64 {
+    crate::render_thread::sparkleflinger::gpu::gpu_source_upload_skipped_total()
+}
+
+#[cfg(not(feature = "wgpu"))]
+const fn gpu_source_upload_skipped_total() -> u64 {
+    0
 }
 
 fn round_1(value: f64) -> f64 {
