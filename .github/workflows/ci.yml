@@ -26,9 +26,13 @@ env:
     libxdo-dev
     libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
     librsvg2-dev libssl-dev
-  # Legacy Tauri desktop shell is excluded; the unified hypercolor-app stays in CI.
-  RUST_WORKSPACE_ARGS: >-
-    --workspace --exclude hypercolor-desktop
+  # Core and daemon run separately with Servo so their feature union does not
+  # force unrelated crates, especially hypercolor-app, to link Servo too.
+  RUST_SHARED_WORKSPACE_ARGS: >-
+    --workspace
+    --exclude hypercolor-core
+    --exclude hypercolor-daemon
+    --exclude hypercolor-desktop
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
@@ -85,23 +89,32 @@ jobs:
           components: clippy
 
       - uses: ./.github/actions/rust-build-cache
-        with:
-          key: rust-check
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Clippy
+      - name: Clippy shared crates
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo clippy --locked ${{ env.RUST_WORKSPACE_ARGS }} --all-targets
+          cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
+          -- -D warnings
+
+      - name: Clippy core with Servo
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-core --features servo --all-targets
+          -- -D warnings
+
+      - name: Clippy daemon with Servo
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-daemon --all-targets
           -- -D warnings
 
   # ── Rust Test ──────────────────────────────────────────────────
   rust-test:
     name: Rust Test
-    needs: changes
+    needs: [changes, rust-check]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -115,24 +128,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: ./.github/actions/rust-build-cache
-        with:
-          key: rust-test
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
-      - name: Run tests
+      - name: Run shared crate tests
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo nextest run --locked ${{ env.RUST_WORKSPACE_ARGS }}
+          cargo nextest run --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
 
-      - name: Run doc tests
+      - name: Run core Servo tests
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo test --doc --locked ${{ env.RUST_WORKSPACE_ARGS }}
+          cargo nextest run --locked -p hypercolor-core --features servo
+
+      - name: Run daemon Servo tests
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-daemon
+
+      - name: Run shared crate doc tests
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --doc --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
+
+      - name: Run core Servo doc tests
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --doc --locked -p hypercolor-core --features servo
+
+      - name: Run daemon Servo doc tests
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --doc --locked -p hypercolor-daemon
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
@@ -204,11 +234,14 @@ jobs:
   # ── Python Generated Client Drift ──────────────────────────────
   python-generated:
     name: Python Generated Client
-    needs: changes
+    needs: [changes, rust-check]
     if: >-
-      startsWith(github.ref, 'refs/tags/') ||
+      always() &&
+      (startsWith(github.ref, 'refs/tags/') ||
       needs.changes.outputs.python == 'true' ||
-      needs.changes.outputs.rust == 'true'
+      needs.changes.outputs.rust == 'true') &&
+      (needs.rust-check.result == 'success' ||
+      needs.rust-check.result == 'skipped')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -234,9 +267,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: ./.github/actions/rust-build-cache
-        with:
-          key: python-generated
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -347,6 +377,11 @@ jobs:
   # ── End-to-End (Playwright) ──────────────────────────────────
   e2e:
     name: E2E
+    needs: rust-check
+    if: >-
+      always() &&
+      (needs.rust-check.result == 'success' ||
+      needs.rust-check.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -374,9 +409,6 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-build-cache
-        with:
-          key: e2e
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install just
         uses: taiki-e/install-action@v2

@@ -4,7 +4,12 @@ description: Configure Hypercolor's Cargo, Servo, and compiler caches.
 inputs:
   key:
     description: Additional cache key segment for this build shape.
-    required: true
+    required: false
+    default: ""
+  shared-key:
+    description: Stable cache key segment shared by compatible Rust jobs.
+    required: false
+    default: "workspace"
   workspaces:
     description: Swatinem/rust-cache workspace mapping.
     required: false
@@ -39,12 +44,17 @@ runs:
           echo "CCACHE_COMPRESS=true"
           echo "CCACHE_MAXSIZE=2G"
           echo "SCCACHE_CACHE_SIZE=8G"
+          echo "CARGO_PROFILE_DEV_DEBUG=0"
+          echo "CARGO_PROFILE_TEST_DEBUG=0"
+          echo "CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG=0"
+          echo "CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG=0"
         } >> "$GITHUB_ENV"
 
     - name: Restore Rust and Servo caches
       uses: Swatinem/rust-cache@v2
       with:
         prefix-key: hypercolor-rust
+        shared-key: ${{ inputs.shared-key }}
         key: ${{ inputs.key }}
         workspaces: ${{ inputs.workspaces }}
         cache-directories: |
