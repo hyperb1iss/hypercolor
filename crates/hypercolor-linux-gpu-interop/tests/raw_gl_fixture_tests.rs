@@ -6,8 +6,8 @@ use euclid::default::Size2D;
 use glow::HasContext;
 use hypercolor_linux_gpu_interop::{
     GlExternalMemoryFunctions, GlFramebufferSource, ImportedFrameFormat,
-    LinuxGlFramebufferImportDescriptor, check_wgpu_vulkan_external_memory_fd,
-    import_gl_framebuffer_to_wgpu,
+    LinuxGlFramebufferImportDescriptor, LinuxGlFramebufferImporter,
+    check_wgpu_vulkan_external_memory_fd, import_gl_framebuffer_to_wgpu,
 };
 use surfman::{
     Connection, Context, ContextAttributeFlags, ContextAttributes, Device, Error, GLVersion,
@@ -18,6 +18,7 @@ const WIDTH: u32 = 4;
 const HEIGHT: u32 = 4;
 const EXPECTED_PIXEL: [u8; 4] = [0, 255, 255, 255];
 const IMPORT_ITERATIONS: usize = 8;
+const POOLED_IMPORT_SLOTS: usize = 2;
 const RUN_FIXTURE_ENV: &str = "HYPERCOLOR_RUN_GPU_INTEROP_FIXTURE";
 
 #[test]
@@ -58,6 +59,51 @@ fn raw_gl_solid_color_import_matches_wgpu_readback() {
         }
         let _ = wgpu.device.poll(wgpu::PollType::Poll);
     }
+}
+
+#[test]
+fn raw_gl_pooled_importer_reuses_slots_and_matches_wgpu_readback() {
+    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+        return;
+    }
+
+    let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
+    let raw_gl =
+        RawGlFixture::new(WIDTH, HEIGHT).expect("raw GL import fixture should create GL surface");
+    let gl_external_memory = raw_gl
+        .load_external_memory_functions()
+        .expect("raw GL import fixture should load GL external memory functions");
+    let descriptor =
+        LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
+            .expect("fixture dimensions should be valid");
+    let mut importer = LinuxGlFramebufferImporter::new(
+        &wgpu.device,
+        &raw_gl.gl,
+        gl_external_memory,
+        descriptor,
+        POOLED_IMPORT_SLOTS,
+    )
+    .expect("raw GL fixture should create pooled importer");
+
+    assert_eq!(importer.descriptor(), descriptor);
+    assert_eq!(importer.slot_count(), POOLED_IMPORT_SLOTS);
+
+    for expected in [[255, 0, 128, 255], [0, 255, 255, 255], [32, 64, 255, 255]] {
+        raw_gl.clear(expected);
+        let frame = importer
+            .import_framebuffer(
+                &raw_gl.gl,
+                GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+            )
+            .expect("pooled raw GL fixture should import into wgpu");
+        let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
+        for pixel in pixels.chunks_exact(4) {
+            assert_eq!(pixel, expected);
+        }
+    }
+
+    importer.destroy_gl_resources(&raw_gl.gl);
 }
 
 struct WgpuFixture {

@@ -106,6 +106,67 @@ pub struct ImportedFrameTimings {
     pub total_us: u64,
 }
 
+/// Reusable importer for repeatedly copying one GL framebuffer into wgpu.
+pub struct LinuxGlFramebufferImporter {
+    descriptor: LinuxGlFramebufferImportDescriptor,
+}
+
+impl LinuxGlFramebufferImporter {
+    /// Creates a pooled importer using GL entry points loaded from the process.
+    pub fn new_from_process(
+        _device: &wgpu::Device,
+        _gl: &glow::Context,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<Self> {
+        let _descriptor = LinuxGlFramebufferImportDescriptor::new(
+            descriptor.width,
+            descriptor.height,
+            descriptor.format,
+        )?;
+        Err(LinuxGpuInteropError::UnsupportedPlatform)
+    }
+
+    /// Creates a pooled importer using the supplied GL external-memory entry points.
+    pub fn new(
+        _device: &wgpu::Device,
+        _gl: &glow::Context,
+        _gl_external_memory: GlExternalMemoryFunctions,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+        _slot_count: usize,
+    ) -> Result<Self> {
+        let _descriptor = LinuxGlFramebufferImportDescriptor::new(
+            descriptor.width,
+            descriptor.height,
+            descriptor.format,
+        )?;
+        Err(LinuxGpuInteropError::UnsupportedPlatform)
+    }
+
+    /// Returns the descriptor this importer was built for.
+    #[must_use]
+    pub const fn descriptor(&self) -> LinuxGlFramebufferImportDescriptor {
+        self.descriptor
+    }
+
+    /// Returns the number of reusable import slots.
+    #[must_use]
+    pub const fn slot_count(&self) -> usize {
+        0
+    }
+
+    /// Imports the current GL framebuffer contents into a pooled wgpu texture.
+    pub fn import_framebuffer(
+        &mut self,
+        _gl: &glow::Context,
+        _source_framebuffer: GlFramebufferSource,
+    ) -> Result<ImportedEffectFrame> {
+        Err(LinuxGpuInteropError::UnsupportedPlatform)
+    }
+
+    /// Deletes pooled GL objects while their context is current.
+    pub fn destroy_gl_resources(&mut self, _gl: &glow::Context) {}
+}
+
 /// Capability report for the Linux zero-copy import path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxGpuImportCapabilities {

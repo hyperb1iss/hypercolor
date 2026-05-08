@@ -11,6 +11,7 @@ use glow::HasContext;
 use thiserror::Error;
 
 const GL_HANDLE_TYPE_OPAQUE_FD_EXT: u32 = 0x9586;
+const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static PROCESS_GL_LOADER: OnceLock<Option<ProcessGlLoader>> = OnceLock::new();
 
@@ -188,6 +189,120 @@ pub struct ImportedFrameTimings {
     pub sync_us: u64,
     /// Total import time, including Vulkan allocation and wgpu wrapping.
     pub total_us: u64,
+}
+
+/// Reusable importer for repeatedly copying one GL framebuffer into wgpu.
+///
+/// Creating exportable Vulkan images and importing their memory into GL is
+/// expensive enough to cause visible stalls when done every frame. This pool
+/// performs that setup once per size and then only issues the GL blit/sync on
+/// the hot path.
+pub struct LinuxGlFramebufferImporter {
+    gl_external_memory: GlExternalMemoryFunctions,
+    descriptor: LinuxGlFramebufferImportDescriptor,
+    slots: Vec<ImportedFrameSlot>,
+    next_slot: usize,
+}
+
+impl LinuxGlFramebufferImporter {
+    /// Creates a pooled importer using GL entry points loaded from the process.
+    pub fn new_from_process(
+        device: &wgpu::Device,
+        gl: &glow::Context,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<Self> {
+        Self::new(
+            device,
+            gl,
+            GlExternalMemoryFunctions::load_from_process()?,
+            descriptor,
+            DEFAULT_IMPORT_SLOT_COUNT,
+        )
+    }
+
+    /// Creates a pooled importer using the supplied GL external-memory entry points.
+    pub fn new(
+        device: &wgpu::Device,
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+        slot_count: usize,
+    ) -> Result<Self> {
+        let descriptor = LinuxGlFramebufferImportDescriptor::new(
+            descriptor.width,
+            descriptor.height,
+            descriptor.format,
+        )?;
+        let slot_count = slot_count.max(1);
+
+        // SAFETY: the guard is held while raw Vulkan images are created and
+        // wrapped; raw handles only escape inside wgpu's drop callbacks.
+        let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Vulkan>() }
+            .ok_or(LinuxGpuInteropError::MissingWgpuVulkanDevice)?;
+        let mut slots = Vec::with_capacity(slot_count);
+        for _ in 0..slot_count {
+            slots.push(ImportedFrameSlot::create(
+                device,
+                &hal_device,
+                gl,
+                gl_external_memory,
+                descriptor,
+            )?);
+        }
+
+        Ok(Self {
+            gl_external_memory,
+            descriptor,
+            slots,
+            next_slot: 0,
+        })
+    }
+
+    /// Returns the descriptor this importer was built for.
+    #[must_use]
+    pub const fn descriptor(&self) -> LinuxGlFramebufferImportDescriptor {
+        self.descriptor
+    }
+
+    /// Returns the number of reusable import slots.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Imports the current GL framebuffer contents into a pooled wgpu texture.
+    pub fn import_framebuffer(
+        &mut self,
+        gl: &glow::Context,
+        source_framebuffer: GlFramebufferSource,
+    ) -> Result<ImportedEffectFrame> {
+        let total_start = Instant::now();
+        let gl_external_memory = self.gl_external_memory;
+        let descriptor = self.descriptor;
+        let slot = self.next_slot();
+        let mut timings =
+            slot.blit_from_framebuffer(gl, gl_external_memory, source_framebuffer, descriptor)?;
+        timings.total_us = elapsed_micros(total_start);
+        Ok(slot.frame(descriptor, timings))
+    }
+
+    /// Deletes pooled GL objects while their context is current.
+    pub fn destroy_gl_resources(&mut self, gl: &glow::Context) {
+        for slot in &mut self.slots {
+            slot.destroy_gl_resources(gl, self.gl_external_memory);
+        }
+    }
+
+    fn next_slot(&mut self) -> &mut ImportedFrameSlot {
+        let slot_count = self.slots.len();
+        let preferred = self.next_slot;
+        let selected = (0..slot_count)
+            .map(|offset| (preferred + offset) % slot_count)
+            .find(|&index| self.slots[index].is_available())
+            .unwrap_or(preferred);
+        self.next_slot = (selected + 1) % slot_count;
+        &mut self.slots[selected]
+    }
 }
 
 /// Capability report for the Linux zero-copy import path.
@@ -394,15 +509,19 @@ pub fn import_gl_framebuffer_to_wgpu(
         .ok_or(LinuxGpuInteropError::MissingWgpuVulkanDevice)?;
 
     let mut image = ExportableVulkanImage::create(&hal_device, descriptor)?;
-    let timings = blit_gl_framebuffer_into_external_image(
+    let mut slot = ImportedFrameSlot::create_from_image(
+        device,
+        &hal_device,
         gl,
         gl_external_memory,
-        source_framebuffer,
         descriptor,
-        &image,
+        &mut image,
     )?;
-    let mut frame = image.wrap_as_wgpu_texture(device, &hal_device, descriptor, timings)?;
-    frame.timings.total_us = elapsed_micros(total_start);
+    let mut timings =
+        slot.blit_from_framebuffer(gl, gl_external_memory, source_framebuffer, descriptor)?;
+    timings.total_us = elapsed_micros(total_start);
+    let frame = slot.frame(descriptor, timings);
+    slot.destroy_gl_resources(gl, gl_external_memory);
     Ok(frame)
 }
 
@@ -450,6 +569,103 @@ struct ExportableVulkanImage {
     memory: Option<vk::DeviceMemory>,
     memory_fd: OwnedFd,
     allocation_size: u64,
+}
+
+struct ImportedFrameSlot {
+    gl_binding: GlImportedImageBinding,
+    texture: Arc<wgpu::Texture>,
+    view: Arc<wgpu::TextureView>,
+}
+
+impl ImportedFrameSlot {
+    fn create(
+        device: &wgpu::Device,
+        hal_device: &wgpu_hal::vulkan::Device,
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<Self> {
+        let mut image = ExportableVulkanImage::create(hal_device, descriptor)?;
+        Self::create_from_image(
+            device,
+            hal_device,
+            gl,
+            gl_external_memory,
+            descriptor,
+            &mut image,
+        )
+    }
+
+    fn create_from_image(
+        device: &wgpu::Device,
+        hal_device: &wgpu_hal::vulkan::Device,
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+        image: &mut ExportableVulkanImage,
+    ) -> Result<Self> {
+        let gl_binding = GlImportedImageBinding::create(
+            gl,
+            gl_external_memory,
+            descriptor,
+            image.memory_fd.as_raw_fd(),
+            image.allocation_size,
+        )?;
+        let texture = image.wrap_as_wgpu_texture(device, hal_device, descriptor)?;
+        Ok(Self {
+            gl_binding,
+            texture: texture.texture,
+            view: texture.view,
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        Arc::strong_count(&self.texture) == 1 && Arc::strong_count(&self.view) == 1
+    }
+
+    fn blit_from_framebuffer(
+        &self,
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+        source_framebuffer: GlFramebufferSource,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<ImportedFrameTimings> {
+        self.gl_binding.blit_from_framebuffer(
+            gl,
+            gl_external_memory,
+            source_framebuffer,
+            descriptor,
+        )
+    }
+
+    fn frame(
+        &self,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+        timings: ImportedFrameTimings,
+    ) -> ImportedEffectFrame {
+        ImportedEffectFrame {
+            width: descriptor.width,
+            height: descriptor.height,
+            format: descriptor.format,
+            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            texture: Arc::clone(&self.texture),
+            view: Arc::clone(&self.view),
+            timings,
+        }
+    }
+
+    fn destroy_gl_resources(
+        &mut self,
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+    ) {
+        self.gl_binding.destroy(gl, gl_external_memory);
+    }
+}
+
+struct ImportedWgpuTexture {
+    texture: Arc<wgpu::Texture>,
+    view: Arc<wgpu::TextureView>,
 }
 
 impl ExportableVulkanImage {
@@ -584,8 +800,7 @@ impl ExportableVulkanImage {
         device: &wgpu::Device,
         hal_device: &wgpu_hal::vulkan::Device,
         descriptor: LinuxGlFramebufferImportDescriptor,
-        timings: ImportedFrameTimings,
-    ) -> Result<ImportedEffectFrame> {
+    ) -> Result<ImportedWgpuTexture> {
         let image = self.image.take().ok_or(LinuxGpuInteropError::Vulkan {
             operation: "wrap_image",
             result: vk::Result::ERROR_UNKNOWN,
@@ -624,14 +839,9 @@ impl ExportableVulkanImage {
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Ok(ImportedEffectFrame {
-            width: descriptor.width,
-            height: descriptor.height,
-            format: descriptor.format,
-            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+        Ok(ImportedWgpuTexture {
             texture: Arc::new(texture),
             view: Arc::new(view),
-            timings,
         })
     }
 }
@@ -676,137 +886,187 @@ fn find_memory_type_index(
         .ok_or(LinuxGpuInteropError::MemoryTypeUnavailable)
 }
 
-fn blit_gl_framebuffer_into_external_image(
-    gl: &glow::Context,
-    gl_external_memory: GlExternalMemoryFunctions,
-    source_framebuffer: GlFramebufferSource,
-    descriptor: LinuxGlFramebufferImportDescriptor,
-    image: &ExportableVulkanImage,
-) -> Result<ImportedFrameTimings> {
-    let bindings = capture_gl_bindings(gl);
-    clear_gl_errors(gl);
+struct GlImportedImageBinding {
+    memory_object: u32,
+    texture: Option<glow::NativeTexture>,
+    framebuffer: Option<glow::NativeFramebuffer>,
+}
 
-    let mut memory_object = 0;
-    let mut texture = None;
-    let mut framebuffer = None;
+impl GlImportedImageBinding {
+    fn create(
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+        memory_fd: i32,
+        allocation_size: u64,
+    ) -> Result<Self> {
+        let bindings = capture_gl_bindings(gl);
+        clear_gl_errors(gl);
+        let mut memory_object = 0;
+        let mut texture = None;
+        let mut framebuffer = None;
+        let result = (|| {
+            // SAFETY: the function pointer was loaded from the current GL context,
+            // and memory_object points to valid writable storage for one object.
+            unsafe { (gl_external_memory.create_memory_objects_ext)(1, &mut memory_object) };
+            check_gl_error(gl, "glCreateMemoryObjectsEXT")?;
 
-    let result = (|| {
-        // SAFETY: the function pointer was loaded from the current GL context,
-        // and memory_object points to valid writable storage for one object.
-        unsafe { (gl_external_memory.create_memory_objects_ext)(1, &mut memory_object) };
-        check_gl_error(gl, "glCreateMemoryObjectsEXT")?;
-
-        let gl_fd = duplicate_fd(image.memory_fd.as_raw_fd())?;
-        // SAFETY: gl_fd is a duplicate of the Vulkan memory FD; GL consumes
-        // the duplicate while Rust keeps ownership of the original FD.
-        unsafe {
-            (gl_external_memory.import_memory_fd_ext)(
-                memory_object,
-                image.allocation_size,
-                GL_HANDLE_TYPE_OPAQUE_FD_EXT,
-                gl_fd,
-            );
-        }
-        check_gl_error(gl, "glImportMemoryFdEXT")?;
-
-        // SAFETY: a current GL context is required by the public import API.
-        let imported_texture = unsafe { gl.create_texture() }.map_err(|message| {
-            LinuxGpuInteropError::GlCreateResource {
-                resource: "texture",
-                message,
+            let gl_fd = duplicate_fd(memory_fd)?;
+            // SAFETY: gl_fd is a duplicate of the Vulkan memory FD; GL consumes
+            // the duplicate while Rust keeps ownership of the original FD.
+            unsafe {
+                (gl_external_memory.import_memory_fd_ext)(
+                    memory_object,
+                    allocation_size,
+                    GL_HANDLE_TYPE_OPAQUE_FD_EXT,
+                    gl_fd,
+                );
             }
-        })?;
-        texture = Some(imported_texture);
+            check_gl_error(gl, "glImportMemoryFdEXT")?;
 
-        // SAFETY: imported_texture belongs to this context and is valid until
-        // cleanup at the end of this function.
-        unsafe { gl.bind_texture(glow::TEXTURE_2D, texture) };
-        // SAFETY: memory_object names external memory imported above, and the
-        // texture bound to TEXTURE_2D receives storage from that memory.
-        unsafe {
-            (gl_external_memory.tex_storage_mem_2d_ext)(
-                glow::TEXTURE_2D,
-                1,
-                descriptor.format.gl_internal_format(),
-                descriptor.width_i32(),
-                descriptor.height_i32(),
-                memory_object,
-                0,
-            );
-        }
-        check_gl_error(gl, "glTexStorageMem2DEXT")?;
+            // SAFETY: a current GL context is required by the public import API.
+            let imported_texture = unsafe { gl.create_texture() }.map_err(|message| {
+                LinuxGpuInteropError::GlCreateResource {
+                    resource: "texture",
+                    message,
+                }
+            })?;
+            texture = Some(imported_texture);
 
-        // SAFETY: a current GL context is required by the public import API.
-        let draw_framebuffer = unsafe { gl.create_framebuffer() }.map_err(|message| {
-            LinuxGpuInteropError::GlCreateResource {
-                resource: "framebuffer",
-                message,
+            // SAFETY: imported_texture belongs to this context and is valid until
+            // cleanup at the end of this function.
+            unsafe { gl.bind_texture(glow::TEXTURE_2D, texture) };
+            // SAFETY: memory_object names external memory imported above, and the
+            // texture bound to TEXTURE_2D receives storage from that memory.
+            unsafe {
+                (gl_external_memory.tex_storage_mem_2d_ext)(
+                    glow::TEXTURE_2D,
+                    1,
+                    descriptor.format.gl_internal_format(),
+                    descriptor.width_i32(),
+                    descriptor.height_i32(),
+                    memory_object,
+                    0,
+                );
             }
-        })?;
-        framebuffer = Some(draw_framebuffer);
+            check_gl_error(gl, "glTexStorageMem2DEXT")?;
 
-        // SAFETY: framebuffer and texture are valid GL objects owned by this
-        // context for the duration of the blit.
-        unsafe {
-            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, framebuffer);
-            gl.framebuffer_texture_2d(
-                glow::DRAW_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
+            // SAFETY: a current GL context is required by the public import API.
+            let draw_framebuffer = unsafe { gl.create_framebuffer() }.map_err(|message| {
+                LinuxGpuInteropError::GlCreateResource {
+                    resource: "framebuffer",
+                    message,
+                }
+            })?;
+            framebuffer = Some(draw_framebuffer);
+
+            // SAFETY: framebuffer and texture are valid GL objects owned by this
+            // context for the duration of the blit.
+            unsafe {
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, framebuffer);
+                gl.framebuffer_texture_2d(
+                    glow::DRAW_FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    texture,
+                    0,
+                );
+            }
+            // SAFETY: DRAW_FRAMEBUFFER is bound above.
+            let framebuffer_status = unsafe { gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) };
+            if framebuffer_status != glow::FRAMEBUFFER_COMPLETE {
+                return Err(LinuxGpuInteropError::GlFramebufferIncomplete {
+                    status: framebuffer_status,
+                });
+            }
+
+            Ok(Self {
+                memory_object,
                 texture,
-                0,
-            );
-        }
-        // SAFETY: DRAW_FRAMEBUFFER is bound above.
-        let framebuffer_status = unsafe { gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) };
-        if framebuffer_status != glow::FRAMEBUFFER_COMPLETE {
-            return Err(LinuxGpuInteropError::GlFramebufferIncomplete {
-                status: framebuffer_status,
-            });
-        }
+                framebuffer,
+            })
+        })();
 
-        let blit_start = Instant::now();
-        // SAFETY: source_framebuffer is supplied by the current GL context;
-        // the destination framebuffer is complete and backed by external memory.
-        unsafe {
-            if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
-                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
+        let result = match result {
+            Ok(binding) => Ok(binding),
+            Err(error) => {
+                cleanup_gl_import_resources(
+                    gl,
+                    gl_external_memory,
+                    framebuffer,
+                    texture,
+                    memory_object,
+                );
+                Err(error)
             }
-            gl.blit_framebuffer(
-                0,
-                0,
-                descriptor.width_i32(),
-                descriptor.height_i32(),
-                0,
-                descriptor.height_i32(),
-                descriptor.width_i32(),
-                0,
-                glow::COLOR_BUFFER_BIT,
-                glow::NEAREST,
-            );
-            gl.flush();
-        }
-        let blit_us = elapsed_micros(blit_start);
+        };
+        restore_gl_bindings(gl, bindings);
+        result
+    }
 
-        let sync_start = Instant::now();
-        // SAFETY: the current GL context owns the queued blit and `finish`
-        // only blocks until that context has completed prior commands.
-        unsafe {
-            gl.finish();
-        }
-        let sync_us = elapsed_micros(sync_start);
-        check_gl_error(gl, "glBlitFramebuffer")?;
+    fn blit_from_framebuffer(
+        &self,
+        gl: &glow::Context,
+        _gl_external_memory: GlExternalMemoryFunctions,
+        source_framebuffer: GlFramebufferSource,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<ImportedFrameTimings> {
+        let bindings = capture_gl_bindings(gl);
+        clear_gl_errors(gl);
+        let result = (|| {
+            let blit_start = Instant::now();
+            // SAFETY: source_framebuffer is supplied by the current GL context;
+            // the destination framebuffer is complete and backed by external memory.
+            unsafe {
+                if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
+                    gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
+                }
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
+                gl.blit_framebuffer(
+                    0,
+                    0,
+                    descriptor.width_i32(),
+                    descriptor.height_i32(),
+                    0,
+                    descriptor.height_i32(),
+                    descriptor.width_i32(),
+                    0,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+                gl.flush();
+            }
+            let blit_us = elapsed_micros(blit_start);
 
-        Ok(ImportedFrameTimings {
-            blit_us,
-            sync_us,
-            total_us: 0,
-        })
-    })();
+            let sync_start = Instant::now();
+            // SAFETY: the current GL context owns the queued blit and `finish`
+            // only blocks until that context has completed prior commands.
+            unsafe {
+                gl.finish();
+            }
+            let sync_us = elapsed_micros(sync_start);
+            check_gl_error(gl, "glBlitFramebuffer")?;
 
-    cleanup_gl_import_resources(gl, gl_external_memory, framebuffer, texture, memory_object);
-    restore_gl_bindings(gl, bindings);
-    result
+            Ok(ImportedFrameTimings {
+                blit_us,
+                sync_us,
+                total_us: 0,
+            })
+        })();
+
+        restore_gl_bindings(gl, bindings);
+        result
+    }
+
+    fn destroy(&mut self, gl: &glow::Context, gl_external_memory: GlExternalMemoryFunctions) {
+        cleanup_gl_import_resources(
+            gl,
+            gl_external_memory,
+            self.framebuffer.take(),
+            self.texture.take(),
+            std::mem::take(&mut self.memory_object),
+        );
+    }
 }
 
 fn duplicate_fd(fd: i32) -> Result<i32> {

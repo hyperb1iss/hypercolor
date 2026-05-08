@@ -922,6 +922,8 @@ struct ServoSession {
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
     readback_buffers: ServoReadbackBuffers,
+    #[cfg(feature = "servo-gpu-import")]
+    gpu_importer: Option<hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter>,
     /// Most recent successful readback, retained so ticks where Servo has
     /// nothing new to composite can skip `read_to_image` entirely. Cloning a
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
@@ -1215,6 +1217,8 @@ impl ServoWorkerRuntime {
                 loaded_html_path: None,
                 script_buffer: String::new(),
                 readback_buffers: ServoReadbackBuffers::default(),
+                #[cfg(feature = "servo-gpu-import")]
+                gpu_importer: None,
                 last_canvas: None,
                 consecutive_no_ready_frames: 0,
             },
@@ -1272,6 +1276,8 @@ impl ServoWorkerRuntime {
         timeout: Duration,
     ) -> Result<()> {
         {
+            #[cfg(feature = "servo-gpu-import")]
+            self.clear_gpu_importer(session_id);
             let session = self.session_mut(session_id)?;
             session.delegate.reset_navigation_state();
             session.script_buffer.clear();
@@ -1318,6 +1324,8 @@ impl ServoWorkerRuntime {
                 format_console_message(message, loaded_html_path.as_deref())
             );
         }
+        #[cfg(feature = "servo-gpu-import")]
+        self.warm_gpu_importer_if_available(session_id, width, height);
         Ok(())
     }
 
@@ -1372,6 +1380,8 @@ impl ServoWorkerRuntime {
             return Ok(());
         };
 
+        #[cfg(feature = "servo-gpu-import")]
+        Self::destroy_gpu_importer_for_session(&mut session);
         if let Some(webview) = session.webview.take() {
             drop(webview);
             self.servo.spin_event_loop();
@@ -1592,6 +1602,127 @@ impl ServoWorkerRuntime {
     }
 }
 
+#[cfg(feature = "servo-gpu-import")]
+impl ServoWorkerRuntime {
+    fn warm_gpu_importer_if_available(
+        &mut self,
+        session_id: ServoSessionId,
+        width: u32,
+        height: u32,
+    ) {
+        if !super::servo_gpu_import_should_attempt() {
+            return;
+        }
+        let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
+            return;
+        };
+        let Ok(descriptor) = hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor::new(
+            width,
+            height,
+            hypercolor_linux_gpu_interop::ImportedFrameFormat::Rgba8Unorm,
+        ) else {
+            return;
+        };
+        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
+            debug!(%error, "Servo GPU import pool warmup skipped");
+        }
+    }
+
+    fn ensure_gpu_importer(
+        &mut self,
+        session_id: ServoSessionId,
+        device: &wgpu::Device,
+        descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
+    ) -> Result<()> {
+        let gl = {
+            let session = self.session(session_id)?;
+            session
+                .rendering_context
+                .make_current()
+                .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
+            session.rendering_context.prepare_for_rendering();
+            session.rendering_context.glow_gl_api()
+        };
+
+        let should_recreate = self
+            .session(session_id)?
+            .gpu_importer
+            .as_ref()
+            .is_none_or(|importer| importer.descriptor() != descriptor);
+        if should_recreate {
+            self.clear_gpu_importer(session_id);
+            let importer =
+                hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter::new_from_process(
+                    device,
+                    gl.as_ref(),
+                    descriptor,
+                )?;
+            self.session_mut(session_id)?.gpu_importer = Some(importer);
+        }
+
+        Ok(())
+    }
+
+    fn import_gpu_frame(
+        &mut self,
+        session_id: ServoSessionId,
+        device: &wgpu::Device,
+        descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
+        source_framebuffer: hypercolor_linux_gpu_interop::GlFramebufferSource,
+    ) -> Result<hypercolor_linux_gpu_interop::ImportedEffectFrame> {
+        let gl = {
+            let session = self.session(session_id)?;
+            session
+                .rendering_context
+                .make_current()
+                .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
+            session.rendering_context.prepare_for_rendering();
+            session.rendering_context.glow_gl_api()
+        };
+        self.ensure_gpu_importer(session_id, device, descriptor)?;
+        let importer = self
+            .session_mut(session_id)?
+            .gpu_importer
+            .as_mut()
+            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
+        Ok(importer.import_framebuffer(gl.as_ref(), source_framebuffer)?)
+    }
+
+    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
+        let Ok(session) = self.session(session_id) else {
+            return;
+        };
+        if let Err(error) = session.rendering_context.make_current() {
+            debug!(?error, "Servo GPU import pool cleanup skipped");
+            return;
+        }
+        let gl = session.rendering_context.glow_gl_api();
+        let Ok(session) = self
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| anyhow!("Servo session {session_id:?} is not initialized"))
+        else {
+            return;
+        };
+        if let Some(importer) = session.gpu_importer.as_mut() {
+            importer.destroy_gl_resources(gl.as_ref());
+        }
+        session.gpu_importer = None;
+    }
+
+    fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
+        if let Some(importer) = session.gpu_importer.as_mut() {
+            if let Err(error) = session.rendering_context.make_current() {
+                debug!(?error, "Servo GPU import pool cleanup skipped");
+                return;
+            }
+            let gl = session.rendering_context.glow_gl_api();
+            importer.destroy_gl_resources(gl.as_ref());
+        }
+        session.gpu_importer = None;
+    }
+}
+
 fn render_servo_framebuffer(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
@@ -1664,27 +1795,19 @@ fn import_servo_framebuffer_into_wgpu(
 ) -> Result<hypercolor_linux_gpu_interop::ImportedEffectFrame> {
     use hypercolor_linux_gpu_interop::{
         GlFramebufferSource, ImportedFrameFormat, LinuxGlFramebufferImportDescriptor,
-        import_gl_framebuffer_to_wgpu_from_process,
     };
 
     let device = super::gpu_import::servo_gpu_import_device()?;
-    let session = runtime.session(session_id)?;
-    session
-        .rendering_context
-        .make_current()
-        .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
-    session.rendering_context.prepare_for_rendering();
-    let gl = session.rendering_context.glow_gl_api();
     let descriptor =
         LinuxGlFramebufferImportDescriptor::new(width, height, ImportedFrameFormat::Rgba8Unorm)?;
-
-    import_gl_framebuffer_to_wgpu_from_process(
-        device,
-        gl.as_ref(),
-        GlFramebufferSource::CurrentRead,
-        descriptor,
-    )
-    .context("failed to import Servo GL framebuffer into wgpu")
+    runtime
+        .import_gpu_frame(
+            session_id,
+            device,
+            descriptor,
+            GlFramebufferSource::CurrentRead,
+        )
+        .context("failed to import Servo GL framebuffer into wgpu")
 }
 
 #[cfg(feature = "servo-gpu-import")]
