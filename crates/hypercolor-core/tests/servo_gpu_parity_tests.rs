@@ -48,6 +48,10 @@ fn deterministic_servo_gpu_import_matches_cpu_readback() {
             .output()
             .expect("Servo GPU parity child process should run");
         let marker_ok = fs::read_to_string(&marker_path).is_ok_and(|value| value == "ok");
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        if !output.status.success() && !marker_ok {
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
         assert!(
             output.status.success() || marker_ok,
             "Servo GPU parity child failed before proof: status={}; stdout={}; stderr={}",
@@ -91,9 +95,16 @@ fn run_deterministic_servo_gpu_import_parity() {
         after_gpu.render_gpu_import_total_us > before_gpu.render_gpu_import_total_us,
         "Servo GPU import timing should advance"
     );
+    let readback_delta = after_gpu
+        .render_readback_total_us
+        .saturating_sub(before_gpu.render_readback_total_us);
     assert_eq!(
-        after_gpu.render_readback_total_us, before_gpu.render_readback_total_us,
+        readback_delta, 0,
         "Servo GPU import path should not add CPU readback time"
+    );
+    println!(
+        "servo_gpu_import_total_us_delta={} servo_readback_us_delta={readback_delta}",
+        after_gpu.render_gpu_import_total_us - before_gpu.render_gpu_import_total_us,
     );
     let marker_path =
         std::env::var_os(PARITY_MARKER_ENV).expect("parity child should receive marker path");
