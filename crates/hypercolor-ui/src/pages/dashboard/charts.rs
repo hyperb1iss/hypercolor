@@ -24,46 +24,49 @@ pub(super) fn PipelinePanel(
         let Some(m) = metrics.get() else {
             return Vec::<StackSegment>::new();
         };
-        let s = &m.stages;
+        let t = &m.timeline;
+        let diff = |later: f64, earlier: f64| (later - earlier).max(0.0);
+        let postprocess = m.stages.preview_postprocess_ms;
+        let publish_phase = diff(t.publish_done_ms, t.output_done_ms);
         vec![
             StackSegment {
                 label: "Input",
-                value: s.input_sampling_ms,
+                value: diff(t.input_done_ms, t.scene_snapshot_done_ms),
                 color: "#80ffea",
             },
             StackSegment {
                 label: "Producer",
-                value: s.producer_rendering_ms,
+                value: diff(t.producer_done_ms, t.input_done_ms),
                 color: "#e135ff",
             },
             StackSegment {
                 label: "Compose",
-                value: s.composition_ms,
+                value: diff(t.composition_done_ms, t.producer_done_ms),
                 color: "#ff6ac1",
             },
             StackSegment {
                 label: "Sample",
-                value: s.spatial_sampling_ms,
+                value: diff(t.sampling_done_ms, t.composition_done_ms),
                 color: "#ff99ff",
             },
             StackSegment {
                 label: "Output",
-                value: s.device_output_ms,
+                value: diff(t.output_done_ms, t.sampling_done_ms),
                 color: "#f1fa8c",
             },
             StackSegment {
                 label: "Post",
-                value: s.preview_postprocess_ms,
+                value: postprocess,
                 color: "#82aaff",
             },
             StackSegment {
                 label: "Publish",
-                value: s.event_bus_ms,
+                value: (publish_phase - postprocess).max(0.0),
                 color: "#50fa7b",
             },
             StackSegment {
                 label: "Overhead",
-                value: s.coordination_overhead_ms,
+                value: diff(t.frame_done_ms, t.publish_done_ms),
                 color: "#808090",
             },
         ]
@@ -72,15 +75,8 @@ pub(super) fn PipelinePanel(
         metrics
             .get()
             .map(|m| {
-                let s = &m.stages;
-                let total = s.input_sampling_ms
-                    + s.producer_rendering_ms
-                    + s.composition_ms
-                    + s.spatial_sampling_ms
-                    + s.device_output_ms
-                    + s.preview_postprocess_ms
-                    + s.event_bus_ms
-                    + s.coordination_overhead_ms;
+                let t = &m.timeline;
+                let total = (t.frame_done_ms - t.scene_snapshot_done_ms).max(0.0);
                 format!(
                     "Σ {total:.2} ms · budget {:.1} ms",
                     if m.fps.target > 0 {
