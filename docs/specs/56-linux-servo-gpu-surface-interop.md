@@ -1,6 +1,6 @@
 # 56 - Linux Servo GPU Surface Interop
 
-**Status:** Implemented, live soak pending before default-on
+**Status:** Implemented; Linux opt-in soak passed, default-on deferred
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`
@@ -544,9 +544,31 @@ Verification receipts from the implementation pass:
 - `just verify` passed.
 - `just ui-test` passed.
 
-The path remains opt-in/default-off until a live mixed-scene soak confirms no
-texture, Vulkan memory, GL memory object, or Servo-session leak under real
-preview, display, and GPU spatial sampling load.
+Follow-up verification receipts after import target pooling and live mixed-scene
+profiling:
+
+- `just graphics-soak-30 --out
+  target/graphics-soak/spec56-linux-servo-gpu-interop-pooled.json` passed for
+  1,798 samples over 30 minutes: median FPS 60, frame p95 0.71 ms, zero
+  backpressure, zero display write/retry deltas, zero output errors, zero
+  full-frame copies, zero surface-pool saturation reallocs, zero effect
+  fallbacks, zero Servo soft-stall growth, and zero display-priority wait
+  growth.
+- Live status after the passing soak showed 111,474 Servo GPU frames,
+  111,510 producer GPU frames, 111,510 skipped SparkleFlinger source uploads,
+  zero GPU import failures, zero GPU import fallbacks, and zero frame-copy
+  count.
+- `nvidia-smi` showed Hypercolor GPU memory stable at 337 MB before and after
+  the soak. CPU RSS settled around 1.2 GB with the mixed display scene; that is
+  tracked as display/Servo CPU-path behavior rather than a GL/Vulkan import
+  object leak.
+- `perf stat -p <daemon-pid> -d -- sleep 30` showed roughly 0.6 CPUs utilized.
+  Symbol sampling put hot CPU time in Vello/Canvas raster work, display
+  blend/encode, Servo/NVIDIA EGL calls, and preview RGB copy; no per-frame
+  external-memory allocation hotspot reappeared after pooling.
+
+The path remains opt-in/default-off until we intentionally flip the default
+after more hardware coverage.
 
 ## 12. Recommendation
 
