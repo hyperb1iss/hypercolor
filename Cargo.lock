@@ -4731,6 +4731,8 @@ dependencies = [
  "serde",
  "serde_json",
  "servo",
+ "servo-base",
+ "servo-profile-traits",
  "sysinfo",
  "tao",
  "tempfile",

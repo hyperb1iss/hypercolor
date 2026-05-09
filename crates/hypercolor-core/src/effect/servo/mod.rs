@@ -23,6 +23,7 @@ mod circuit_breaker;
 mod delegate;
 #[cfg(feature = "servo-gpu-import")]
 mod gpu_import;
+mod memory;
 mod renderer;
 mod session;
 mod telemetry;
@@ -35,6 +36,11 @@ pub use gpu_import::{
     install_servo_gpu_import_device, servo_gpu_import_device, servo_gpu_import_mode,
     servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
 };
+pub use memory::{
+    ServoMemoryReport, ServoMemoryReportKind, ServoMemoryReportSnapshot, ServoMemoryReportTotals,
+    ServoProcessMemoryReport,
+};
 pub use renderer::ServoRenderer;
 pub use session::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 pub use telemetry::{ServoTelemetrySnapshot, servo_telemetry_snapshot};
+pub use worker::servo_memory_report_snapshot;

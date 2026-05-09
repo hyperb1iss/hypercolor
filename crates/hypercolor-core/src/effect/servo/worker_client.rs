@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::time::{Duration, Instant};
 
+use super::memory::ServoMemoryReportSnapshot;
 use crate::effect::traits::EffectRenderOutput;
 use anyhow::{Context, Result, bail};
 
@@ -118,6 +119,9 @@ pub(super) enum WorkerCommand {
     DestroySession {
         session_id: ServoSessionId,
         response_tx: SyncSender<Result<()>>,
+    },
+    MemoryReport {
+        response_tx: SyncSender<Result<ServoMemoryReportSnapshot>>,
     },
     Shutdown {
         response_tx: SyncSender<()>,
@@ -423,6 +427,24 @@ impl ServoWorkerClient {
 
         self.remove_session(session_id);
         Ok(())
+    }
+
+    pub(super) fn memory_report(&self) -> Result<ServoMemoryReportSnapshot> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WorkerCommand::MemoryReport { response_tx })
+            .context("failed to send memory-report command to Servo worker")?;
+
+        match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for Servo memory report after {}ms",
+                WORKER_READY_TIMEOUT.as_millis()
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker disconnected before returning memory report")
+            }
+        }
     }
 
     fn transition_to(&self, session_id: ServoSessionId, next: WorkerClientState) -> Result<()> {

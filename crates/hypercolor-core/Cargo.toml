@@ -15,7 +15,9 @@ workspace = true
 nvidia = ["dep:nvml-wrapper"]
 default = []
 servo = [
+    "dep:base",
     "dep:servo",
+    "dep:profile_traits",
     "dep:dpi",
     "dep:gleam",
     "dep:raw-window-handle",
@@ -57,6 +59,8 @@ device_query = { workspace = true }
 tokio-util = { workspace = true }
 zerocopy = { workspace = true }
 fast_image_resize = { workspace = true }
+base = { package = "servo-base", version = "0.1.0", optional = true }
+profile_traits = { package = "servo-profile-traits", version = "0.1.0", optional = true }
 wgpu = { workspace = true, optional = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true, optional = true }

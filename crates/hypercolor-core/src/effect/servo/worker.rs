@@ -21,9 +21,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use base::generic_channel::GenericCallback;
 use dpi::PhysicalSize;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use profile_traits::mem::MemoryReportResult;
 use reqwest::Url;
 use servo::{
     JSValue, JavaScriptEvaluationError, Preferences, RenderingContext, Servo, ServoBuilder,
@@ -33,6 +35,7 @@ use tracing::{debug, trace, warn};
 
 use super::circuit_breaker::ServoCircuitBreaker;
 use super::delegate::{ConsoleMessage, HypercolorWebViewDelegate};
+use super::memory::ServoMemoryReportSnapshot;
 #[cfg(feature = "servo-gpu-import")]
 use super::telemetry::{
     ServoGpuImportFallbackReason, record_servo_gpu_import_failure, record_servo_gpu_import_frame,
@@ -133,6 +136,28 @@ pub(super) fn acquire_servo_worker() -> Result<ServoWorkerClient> {
             Err(error)
         }
     }
+}
+
+pub fn servo_memory_report_snapshot() -> Result<ServoMemoryReportSnapshot> {
+    let client = {
+        let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
+        let mut guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        match &mut *guard {
+            SharedServoWorkerState::Running(worker) => worker.client(),
+            SharedServoWorkerState::Poisoned { reason } => {
+                bail!("Servo runtime is unrecoverable until the daemon restarts: {reason}");
+            }
+            SharedServoWorkerState::Vacant => {
+                bail!("Servo worker is not running");
+            }
+        }?
+    };
+
+    client.memory_report()
 }
 
 /// Returns true if an error is fatal enough to retire the shared worker.
@@ -1170,6 +1195,10 @@ impl ServoWorkerRuntime {
                     let result = self.destroy_session(session_id);
                     let _ = response_tx.send(result);
                 }
+                ScheduledServoWork::Command(WorkerCommand::MemoryReport { response_tx }) => {
+                    let result = self.memory_report();
+                    let _ = response_tx.send(result);
+                }
                 ScheduledServoWork::Command(WorkerCommand::Shutdown { response_tx }) => {
                     let _ = response_tx.send(());
                     break;
@@ -1484,6 +1513,39 @@ impl ServoWorkerRuntime {
                 timings,
             );
             Ok(output)
+        }
+    }
+
+    fn memory_report(&mut self) -> Result<ServoMemoryReportSnapshot> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        let callback = GenericCallback::new(move |result: Result<MemoryReportResult, _>| {
+            let result = result
+                .map(ServoMemoryReportSnapshot::from_servo_result)
+                .map_err(|error| anyhow!("Servo memory report callback failed: {error:?}"));
+            let _ = response_tx.send(result);
+        })
+        .context("failed to create Servo memory report callback")?;
+
+        self.servo.create_memory_report(callback);
+
+        let deadline = Instant::now() + WORKER_READY_TIMEOUT;
+        loop {
+            match response_rx.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    bail!("Servo memory report callback disconnected");
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+
+            self.servo.spin_event_loop();
+            if Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for Servo memory report callback after {}ms",
+                    WORKER_READY_TIMEOUT.as_millis()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -1942,6 +2004,7 @@ pub(super) mod test_support {
 
     use crate::effect::traits::EffectRenderOutput;
 
+    use super::super::memory::ServoMemoryReportSnapshot;
     use super::super::worker_client::{
         ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
     };
@@ -1968,6 +2031,13 @@ pub(super) mod test_support {
         canvas
     }
 
+    fn empty_memory_report() -> ServoMemoryReportSnapshot {
+        ServoMemoryReportSnapshot {
+            processes: Vec::new(),
+            totals: Default::default(),
+        }
+    }
+
     pub fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
         let (command_tx, command_rx) = mpsc::channel();
         let client_state = Arc::new(ServoWorkerClientSharedState::new());
@@ -1987,6 +2057,9 @@ pub(super) mod test_support {
                         stopped_clone.store(true, Ordering::SeqCst);
                         let _ = response_tx.send(());
                         break;
+                    }
+                    WorkerCommand::MemoryReport { response_tx } => {
+                        let _ = response_tx.send(Ok(empty_memory_report()));
                     }
                     WorkerCommand::Render { response_tx, .. } => {
                         let _ =
@@ -2069,6 +2142,9 @@ pub(super) mod test_support {
                     WorkerCommand::LoadUrl { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
+                    WorkerCommand::MemoryReport { response_tx } => {
+                        let _ = response_tx.send(Ok(empty_memory_report()));
+                    }
                 }
             }
         });
@@ -2131,6 +2207,9 @@ pub(super) mod test_support {
                         let _ = response_tx.send(());
                         break;
                     }
+                    WorkerCommand::MemoryReport { response_tx } => {
+                        let _ = response_tx.send(Ok(empty_memory_report()));
+                    }
                 }
             }
         });
@@ -2191,6 +2270,9 @@ pub(super) mod test_support {
                         stopped_clone.store(true, Ordering::SeqCst);
                         let _ = response_tx.send(());
                         break;
+                    }
+                    WorkerCommand::MemoryReport { response_tx } => {
+                        let _ = response_tx.send(Ok(empty_memory_report()));
                     }
                 }
             }

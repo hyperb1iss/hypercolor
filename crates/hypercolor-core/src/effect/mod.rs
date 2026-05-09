@@ -38,8 +38,9 @@ pub use pool::EffectPool;
 pub use registry::{EffectEntry, EffectRegistry, RescanReport};
 #[cfg(feature = "servo")]
 pub use servo::{
-    ConsoleMessage, HypercolorWebViewDelegate, ServoRenderer, ServoTelemetrySnapshot,
-    servo_telemetry_snapshot,
+    ConsoleMessage, HypercolorWebViewDelegate, ServoMemoryReport, ServoMemoryReportKind,
+    ServoMemoryReportSnapshot, ServoMemoryReportTotals, ServoProcessMemoryReport, ServoRenderer,
+    ServoTelemetrySnapshot, servo_memory_report_snapshot, servo_telemetry_snapshot,
 };
 #[cfg(feature = "servo-gpu-import")]
 pub use servo::{

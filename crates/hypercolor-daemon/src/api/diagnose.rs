@@ -8,7 +8,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope::{ApiError, ApiResponse};
 
 #[derive(Debug, Deserialize)]
 pub struct DiagnoseRequest {
@@ -145,4 +145,22 @@ pub async fn run_diagnostics(
             failed,
         },
     })
+}
+
+/// `GET /api/v1/diagnose/memory` — Capture Servo memory profiler output.
+pub async fn memory_diagnostics() -> Response {
+    #[cfg(feature = "servo")]
+    {
+        match hypercolor_core::effect::servo_memory_report_snapshot() {
+            Ok(snapshot) => ApiResponse::ok(snapshot),
+            Err(error) => {
+                ApiError::internal(format!("Failed to collect Servo memory report: {error}"))
+            }
+        }
+    }
+
+    #[cfg(not(feature = "servo"))]
+    {
+        ApiError::not_found("Servo memory diagnostics are not available in this build")
+    }
 }
