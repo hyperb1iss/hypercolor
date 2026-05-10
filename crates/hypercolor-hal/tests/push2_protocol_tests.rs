@@ -30,7 +30,7 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
     let protocol = build_push2_protocol();
     let commands = protocol.init_sequence();
 
-    assert_eq!(commands.len(), 261);
+    assert_eq!(commands.len(), 389);
     assert!(commands[0].expects_response);
     assert_eq!(commands[0].data, vec![0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7]);
     assert_eq!(commands[1].transfer_type, TransferType::Primary);
@@ -52,14 +52,24 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
         commands[130].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x7F, 0xF7]
     );
-    assert_eq!(commands[131].data, vec![0x90, 36, 0x00]);
-    assert_eq!(commands[194].data, vec![0x90, 99, 0x00]);
-    assert_eq!(commands[195].data, vec![0xB0, 102, 0x00]);
-    assert_eq!(commands[222].data, vec![0xB0, 9, 0x00]);
-    assert_eq!(commands[223].data, vec![0xB0, 28, 0x00]);
-    assert_eq!(commands[259].data, vec![0xB0, 60, 0x00]);
+    assert_eq!(commands[131].data.first(), Some(&0xF0));
+    assert_eq!(commands[131].data.get(6), Some(&0x03));
+    assert_eq!(commands[131].data.get(7), Some(&0x01));
+    assert_eq!(commands[226].data.get(7), Some(&0x60));
+    assert_eq!(commands[227].data.get(7), Some(&0x61));
+    assert_eq!(commands[257].data.get(7), Some(&0x7F));
     assert_eq!(
-        commands[260].data,
+        commands[258].data,
+        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
+    );
+    assert_eq!(commands[259].data, vec![0x90, 36, 0x00]);
+    assert_eq!(commands[322].data, vec![0x90, 99, 0x00]);
+    assert_eq!(commands[323].data, vec![0xB0, 102, 0x00]);
+    assert_eq!(commands[350].data, vec![0xB0, 9, 0x00]);
+    assert_eq!(commands[351].data, vec![0xB0, 28, 0x00]);
+    assert_eq!(commands[387].data, vec![0xB0, 60, 0x00]);
+    assert_eq!(
+        commands[388].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7
@@ -78,38 +88,19 @@ fn push2_frame_encoding_deduplicates_palette_and_tracks_diff() {
     colors[129] = [255, 255, 255];
 
     let commands = protocol.encode_frame(&colors);
-    assert_eq!(commands.len(), 9);
-    assert_eq!(
-        commands[0].data,
-        vec![
-            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x01, 0x7F, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x36, 0x00, 0xF7
-        ]
+    assert_eq!(commands.len(), 5);
+    assert!(
+        commands.iter().all(|command| {
+            command.data.first() != Some(&0xF0) || command.data.get(6) == Some(&0x19)
+        }),
+        "runtime frames should not reprogram palette entries"
     );
+    assert_eq!(commands[0].data, vec![0x90, 36, 0x49]);
+    assert_eq!(commands[1].data, vec![0x90, 37, 0x49]);
+    assert_eq!(commands[2].data, vec![0xB0, 102, 0x15]);
+    assert_eq!(commands[3].data, vec![0xB0, 28, 0x7F]);
     assert_eq!(
-        commands[1].data,
-        vec![
-            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x02, 0x00, 0x00, 0x7F, 0x01, 0x00, 0x00,
-            0x36, 0x01, 0xF7
-        ]
-    );
-    assert_eq!(
-        commands[2].data,
-        vec![
-            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x7F, 0x01, 0xF7
-        ]
-    );
-    assert_eq!(
-        commands[3].data,
-        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
-    );
-    assert_eq!(commands[4].data, vec![0x90, 36, 0x01]);
-    assert_eq!(commands[5].data, vec![0x90, 37, 0x01]);
-    assert_eq!(commands[6].data, vec![0xB0, 102, 0x02]);
-    assert_eq!(commands[7].data, vec![0xB0, 28, 0x7F]);
-    assert_eq!(
-        commands[8].data,
+        commands[4].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x19, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7
@@ -133,23 +124,12 @@ fn push2_frame_encoding_uses_spare_slot_when_splitting_a_shared_color() {
     second_frame[1] = [255, 0, 0];
 
     let commands = protocol.encode_frame(&second_frame);
-    assert_eq!(commands.len(), 3);
-    assert_eq!(
-        commands[0].data,
-        vec![
-            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x02, 0x00, 0x00, 0x7F, 0x01, 0x00, 0x00,
-            0x36, 0x01, 0xF7
-        ]
-    );
-    assert_eq!(
-        commands[1].data,
-        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
-    );
-    assert_eq!(commands[2].data, vec![0x90, 36, 0x02]);
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].data, vec![0x90, 36, 0x15]);
 }
 
 #[test]
-fn push2_frame_encoding_keeps_unique_leds_on_their_existing_slots() {
+fn push2_frame_encoding_reuses_static_palette_without_palette_writes() {
     let protocol = Push2Protocol::new();
     let mut first_frame = vec![[0_u8, 0_u8, 0_u8]; 160];
     first_frame[0] = [255, 0, 0];
@@ -161,31 +141,33 @@ fn push2_frame_encoding_keeps_unique_leds_on_their_existing_slots() {
     second_frame[1] = [0, 0, 255];
 
     let commands = protocol.encode_frame(&second_frame);
-    assert_eq!(commands.len(), 3);
-    assert_eq!(
-        commands[0].data,
-        vec![
-            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x01, 0x00, 0x00, 0x7F, 0x01, 0x00, 0x00,
-            0x36, 0x01, 0xF7
-        ]
-    );
-    assert_eq!(
-        commands[1].data,
-        vec![
-            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x02, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x01,
-            0x12, 0x00, 0xF7
-        ]
-    );
-    assert_eq!(
-        commands[2].data,
-        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
-    );
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].data, vec![0x90, 36, 0x15]);
+    assert_eq!(commands[1].data, vec![0x90, 37, 0x04]);
     assert!(
         commands
             .iter()
-            .all(|command| command.data.first() == Some(&0xF0)),
-        "slot-stable color changes should not require per-key remap messages"
+            .all(|command| command.data.first() != Some(&0xF0)),
+        "runtime color changes should use static palette slot remaps only"
     );
+}
+
+#[test]
+fn push2_frame_encoding_limits_runtime_midi_bursts() {
+    let protocol = Push2Protocol::new();
+    let colors = vec![[255_u8, 255_u8, 255_u8]; 160];
+
+    let first_frame = protocol.encode_frame(&colors);
+    assert_eq!(first_frame.len(), 8);
+    assert!(
+        first_frame
+            .iter()
+            .all(|command| command.data.first() != Some(&0xF0)),
+        "command budget should favor short LED updates over SysEx bursts"
+    );
+
+    let second_frame = protocol.encode_frame(&colors);
+    assert_eq!(second_frame.len(), 8);
 }
 
 #[test]
@@ -280,8 +262,8 @@ fn push2_keepalive_reasserts_user_mode_without_forced_led_resync() {
     assert!(
         first_frame
             .iter()
-            .any(|command| command.data == vec![0x90, 36, 0x01]),
-        "first frame should light pad 0 from palette slot 1"
+            .any(|command| command.data == vec![0x90, 36, 0x49]),
+        "first frame should light pad 0 from the static red palette slot"
     );
 
     assert!(

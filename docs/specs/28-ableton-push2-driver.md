@@ -269,23 +269,25 @@ Each palette entry has four channels:
 - **R, G, B** — used by RGB LEDs (pads, colored buttons)
 - **W** — used by white-only LEDs
 
-### 4.2 Palette Reprogramming Strategy
+### 4.2 Static Palette Strategy
 
-To display arbitrary Hypercolor RGB colors on Push 2, the driver must **reprogram palette entries every frame**:
+To avoid ALSA sequencer overruns, runtime frames must not reprogram palette entries.
+The driver installs a static palette during init, then maps each requested RGB value
+to the nearest palette slot during frame encoding:
 
 1. Receive `colors: &[[u8; 3]]` from the engine (up to 90 RGB values for pads + buttons)
-2. Deduplicate colors — the 90 LEDs likely use fewer than 128 unique colors
-3. Write each unique color as a palette entry via SysEx command `0x03`
-4. Send Note On / CC messages with the corresponding palette index as velocity
-5. Send SysEx `0x05` (Reapply Color Palette) to flush changes
+2. Quantize RGB LEDs into a 96-slot static color cube
+3. Quantize white-only buttons into 31 static brightness slots
+4. Send Note On / CC messages with the corresponding palette index as velocity/value
+5. Cap runtime LED updates to a small command budget so display bulk frames are not blocked
 
 **Palette slot allocation:**
 
-| Slots  | Purpose                                                |
-| ------ | ------------------------------------------------------ |
-| 0      | Reserved: OFF (black)                                  |
-| 1–90   | Dynamic: mapped per-frame to current Hypercolor colors |
-| 91–127 | Available for animation endpoints or future use        |
+| Slots  | Purpose                                      |
+| ------ | -------------------------------------------- |
+| 0      | Reserved: OFF (black)                        |
+| 1–96   | Static RGB color cube for pads/RGB buttons   |
+| 97–127 | Static white-button brightness ramp          |
 
 ### 4.3 Set LED Color Palette Entry (SysEx 0x03)
 
@@ -328,14 +330,15 @@ fn set_palette_entry(index: u8, r: u8, g: u8, b: u8) -> [u8; 17] {
 }
 ```
 
-### 4.4 Color Deduplication
+### 4.4 Runtime MIDI Budget
 
-At LED frame rates, sending 90 SysEx palette updates per frame is expensive. Optimize with:
+At LED frame rates, even short MIDI messages can contend with display output if
+the actor spends too long draining a lighting frame. Optimize with:
 
-1. **Frame-level dedup** — hash current colors, only reprogram entries that changed from previous frame
-2. **Color quantization** — if >127 unique colors needed (unlikely for 90 LEDs), quantize to nearest
-3. **Batch palette writes** — group SysEx messages, minimize per-message overhead
-4. **Dirty tracking** — maintain a `[Option<[u8; 3]>; 128]` mirror of the device palette, only send diffs
+1. **Static palette** — no `0x03`/`0x05` palette traffic in normal frames
+2. **Diff tracking** — only emit Note On / CC messages for LEDs whose slot changed
+3. **Command budget** — defer excess LED updates to later frames instead of blocking display
+4. **Transport pacing** — space MIDI sends before they enter ALSA's sequencer queue
 
 ### 4.5 Reapply Color Palette (SysEx 0x05)
 
@@ -343,7 +346,8 @@ At LED frame rates, sending 90 SysEx palette updates per frame is expensive. Opt
 F0 00 21 1D 01 01 05 F7
 ```
 
-Forces all LEDs to refresh from current palette. Send after updating palette entries to ensure visual consistency (avoids partial updates where some LEDs show old colors).
+Forces all LEDs to refresh from current palette. Send after init-time static palette setup
+and shutdown-time factory palette restoration, not during normal animation frames.
 
 ---
 
@@ -731,9 +735,9 @@ F0 00 21 1D 01 01 <CMD> [ARGS...] F7
 
 | ID     | Command                     | Has Reply        | Used By Driver            |
 | ------ | --------------------------- | ---------------- | ------------------------- |
-| `0x03` | Set LED Color Palette Entry | No               | ✓ Hot path                |
+| `0x03` | Set LED Color Palette Entry | No               | Init/shutdown only        |
 | `0x04` | Get LED Color Palette Entry | Yes              | Init (read defaults)      |
-| `0x05` | Reapply Color Palette       | No               | ✓ Hot path                |
+| `0x05` | Reapply Color Palette       | No               | Init/shutdown only        |
 | `0x06` | Set LED Brightness          | No               | ✓ Brightness control      |
 | `0x07` | Get LED Brightness          | Yes              | Init                      |
 | `0x08` | Set Display Brightness      | No               | ✓ Brightness control      |
@@ -814,14 +818,12 @@ use std::sync::RwLock;
 /// Wrapped in RwLock because Protocol trait methods take &self.
 /// Pattern matches existing drivers (Corsair Link, ASUS Aura).
 struct Push2State {
-    /// Mirror of the device's current palette (for dirty tracking).
+    /// Mirror of palette entries for factory restore.
     palette: [[u8; 4]; 128],       // [R, G, B, W] per slot
     /// Previous frame's LED→palette index mapping.
     prev_led_indices: Vec<u8>,
     /// Touch strip state mirror.
     prev_touch_strip: [u8; 31],
-    /// Whether any palette entry was modified this frame.
-    palette_dirty: bool,
 }
 
 pub struct Push2Protocol {
@@ -1005,13 +1007,13 @@ impl Protocol for Push2Protocol {
 ```mermaid
 graph TD
     Input["Engine colors (&[[u8; 3]])"]
-    Dedup["Color Dedup (hash + cache)<br/>Unique colors to palette slots<br/>Typically 10-40 unique per frame"]
-    Diff["Palette Diff (dirty tracking)<br/>Compare against prev frame palette<br/>Only emit SysEx for changed entries"]
-    SysEx["SysEx Palette Cmds (per changed slot)<br/>Set LED Color Palette Entry (0x03)<br/>+ Reapply Palette (0x05)"]
-    MIDI["MIDI LED Cmds (per changed LED)<br/>Note On (pads) + CC (buttons)<br/>Only LEDs whose palette index changed"]
-    Strip["Touch Strip Cmd (single message)<br/>SysEx 0x19 (if strip colors changed)"]
+    Quantize["Static palette quantization<br/>RGB cube + white brightness ramp"]
+    Diff["Slot Diff<br/>Only LEDs whose palette index changed"]
+    Budget["Runtime MIDI command budget<br/>Defer excess updates to later frames"]
+    MIDI["MIDI LED Cmds<br/>Note On (pads) + CC (buttons)"]
+    Strip["Touch Strip Cmd<br/>SysEx 0x19 when budget allows"]
 
-    Input --> Dedup --> Diff --> SysEx --> MIDI --> Strip
+    Input --> Quantize --> Diff --> Budget --> MIDI --> Strip
 ```
 
 ````
@@ -1025,77 +1027,43 @@ fn encode_frame_into(
     let mut encoder = CommandBuffer::new(commands);
     let colors = self.normalize_colors(colors); // Cow borrow or pad/truncate
 
-    // Phase 1: Build color→palette_index map, emit palette SysEx for changes
-    let mut color_map: HashMap<[u8; 3], u8> = HashMap::new();
-    let mut next_slot: u8 = 1; // slot 0 = OFF
+    let mut remaining_commands = PUSH2_FRAME_MIDI_COMMAND_BUDGET;
 
-    // Insert black as slot 0
-    color_map.insert([0, 0, 0], 0);
-
-    for color in colors.iter() {
-        if !color_map.contains_key(color) {
-            let slot = next_slot;
-            next_slot += 1;
-
-            // Only emit SysEx if this slot's color changed from prev frame
-            if self.palette[slot as usize] != *color {
-                let sysex = set_palette_entry(slot, color[0], color[1], color[2]);
-                encoder.push_slice(
-                    &sysex,
-                    false,              // no response expected
-                    Duration::ZERO,
-                    Duration::ZERO,
-                    TransferType::Primary,
-                );
-            }
-
-            color_map.insert(*color, slot);
-        }
-    }
-
-    // Phase 2: Reapply palette if any entries changed
-    if self.palette_dirty() {
-        encoder.push_slice(
-            &REAPPLY_PALETTE_SYSEX,
-            false, Duration::ZERO, Duration::ZERO,
-            TransferType::Primary,
-        );
-    }
-
-    // Phase 3: Emit Note On for pads (zone 0, indices 0–63)
+    // Phase 1: Emit Note On for pads (zone 0, indices 0–63)
     for (i, color) in colors[..64].iter().enumerate() {
         let note = PAD_NOTE_MAP[i];
-        let index = color_map[color];
-        // Only send if palette index changed for this LED
-        if self.prev_note_index(note) != index {
+        let index = static_rgb_palette_slot(*color);
+        if remaining_commands > 0 && self.prev_note_index(note) != index {
             let msg = [0x90, note, index]; // Note On, ch 0
             encoder.push_slice(
                 &msg,
                 false, Duration::ZERO, Duration::ZERO,
                 TransferType::Primary,
             );
+            remaining_commands -= 1;
         }
     }
 
-    // Phase 4: Emit CC for buttons (zones 1–4)
+    // Phase 2: Emit CC for RGB and white buttons.
     let button_colors = &colors[64..92];
     for (i, color) in button_colors.iter().enumerate() {
         let cc = BUTTON_CC_MAP[i];
-        let index = color_map[color];
-        if self.prev_cc_index(cc) != index {
+        let index = static_rgb_palette_slot(*color);
+        if remaining_commands > 0 && self.prev_cc_index(cc) != index {
             let msg = [0xB0, cc, index]; // CC, ch 0
             encoder.push_slice(
                 &msg,
                 false, Duration::ZERO, Duration::ZERO,
                 TransferType::Primary,
             );
+            remaining_commands -= 1;
         }
     }
 
-    // Phase 5: Touch strip (zone 5, indices 92–122)
+    // Phase 3: Touch strip, deferred if the LED command budget is exhausted.
     let strip_colors = &colors[92..123];
     let strip_levels = quantize_touch_strip(strip_colors);
-    if strip_levels != self.prev_touch_strip {
+    if remaining_commands > 0 && strip_levels != self.prev_touch_strip {
         let packed = encode_touch_strip(&strip_levels);
         let mut sysex = Vec::with_capacity(24);
         sysex.extend_from_slice(&TOUCH_STRIP_HEADER);
