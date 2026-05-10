@@ -22,14 +22,12 @@ pub(crate) enum ProducerFrame {
 
 impl ProducerFrame {
     #[cfg(feature = "wgpu")]
-    pub(crate) fn rgba_bytes(&self) -> &[u8] {
+    pub(crate) fn cpu_rgba_bytes(&self) -> Option<&[u8]> {
         match self {
-            Self::Canvas(canvas) => canvas.as_rgba_bytes(),
-            Self::Surface(surface) => surface.rgba_bytes(),
+            Self::Canvas(canvas) => Some(canvas.as_rgba_bytes()),
+            Self::Surface(surface) => Some(surface.rgba_bytes()),
             #[cfg(feature = "servo-gpu-import")]
-            Self::Gpu(_) => {
-                panic!("GPU producer frames do not expose CPU RGBA bytes")
-            }
+            Self::Gpu(_) => None,
         }
     }
 
@@ -53,14 +51,14 @@ impl ProducerFrame {
         }
     }
 
-    pub(crate) fn into_render_frame(self) -> (Canvas, Option<PublishedSurface>) {
+    pub(crate) fn into_cpu_render_frame(self) -> Option<(Canvas, Option<PublishedSurface>)> {
         match self {
-            Self::Canvas(canvas) => (canvas, None),
-            Self::Surface(surface) => (Canvas::from_published_surface(&surface), Some(surface)),
-            #[cfg(feature = "servo-gpu-import")]
-            Self::Gpu(_) => {
-                panic!("GPU producer frames must be handled before CPU materialization")
+            Self::Canvas(canvas) => Some((canvas, None)),
+            Self::Surface(surface) => {
+                Some((Canvas::from_published_surface(&surface), Some(surface)))
             }
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(_) => None,
         }
     }
 

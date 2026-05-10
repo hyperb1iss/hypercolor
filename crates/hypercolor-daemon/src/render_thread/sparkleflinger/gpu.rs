@@ -2046,6 +2046,9 @@ fn copy_imported_frame_into_texture(
 }
 
 fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame: &ProducerFrame) {
+    let Some(rgba_bytes) = frame.cpu_rgba_bytes() else {
+        return;
+    };
     let bytes_per_row = frame.width() * BYTES_PER_PIXEL as u32;
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -2054,7 +2057,7 @@ fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        frame.rgba_bytes(),
+        rgba_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(bytes_per_row),

@@ -10,6 +10,7 @@ use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
     publish_composed_frame, scaled_preview_surface_from_rgba,
 };
+use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::ProducerFrame;
 
 #[derive(Debug, Default)]
@@ -93,7 +94,9 @@ impl CpuSparkleFlinger {
             && let Some(layer) = layers.pop()
             && layer.is_bypass_candidate()
         {
-            let (canvas, surface) = layer.frame.into_render_frame();
+            let Some((canvas, surface)) = layer.frame.into_cpu_render_frame() else {
+                return cpu_frame_without_surfaces();
+            };
             let preview_surface = preview_surface_request.and_then(|request| {
                 scaled_preview_surface_from_rgba(
                     canvas.as_rgba_bytes(),
@@ -272,9 +275,21 @@ fn compose_layers_into_owned_canvas(
     canvas
 }
 
+fn cpu_frame_without_surfaces() -> ComposedFrameSet {
+    ComposedFrameSet {
+        sampling_canvas: None,
+        sampling_surface: None,
+        preview_surface: None,
+        bypassed: false,
+        backend: CompositorBackendKind::Cpu,
+    }
+}
+
 fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas, bool) {
     if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
-        let (canvas, _) = layer.frame.into_render_frame();
+        let Some((canvas, _)) = layer.frame.into_cpu_render_frame() else {
+            return (Canvas::new(width, height), true);
+        };
         return (canvas, layer.opaque_hint);
     }
 
@@ -313,7 +328,9 @@ fn compose_layers_into_canvas(target: &mut Canvas, layers: Vec<CompositionLayer>
 }
 
 fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLayer) -> bool {
-    let (source_canvas, _) = layer.frame.into_render_frame();
+    let Some((source_canvas, _)) = layer.frame.into_cpu_render_frame() else {
+        return target_opaque;
+    };
     if target.width() != source_canvas.width() || target.height() != source_canvas.height() {
         *target = Canvas::new(source_canvas.width(), source_canvas.height());
     }

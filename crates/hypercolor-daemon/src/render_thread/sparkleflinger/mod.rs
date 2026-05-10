@@ -159,6 +159,18 @@ impl CompositionPlan {
         self.cpu_replay_cacheable = cacheable;
         self
     }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn contains_gpu_frames(&self) -> bool {
+        self.layers
+            .iter()
+            .any(|layer| matches!(layer.frame, ProducerFrame::Gpu(_)))
+    }
+
+    #[cfg(not(feature = "servo-gpu-import"))]
+    const fn contains_gpu_frames(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -258,11 +270,27 @@ impl SparkleFlinger {
             ),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
-                if gpu.supports_plan(&plan)
-                    && let Ok(composed) =
-                        gpu.compose(&plan, requires_cpu_sampling_canvas, preview_surface_request)
-                {
-                    return composed;
+                let gpu_compose_result = if gpu.supports_plan(&plan) {
+                    Some(gpu.compose(&plan, requires_cpu_sampling_canvas, preview_surface_request))
+                } else {
+                    None
+                };
+                match gpu_compose_result {
+                    Some(Ok(composed)) => return composed,
+                    Some(Err(error)) if plan.contains_gpu_frames() => {
+                        tracing::debug!(
+                            %error,
+                            "Skipping CPU compositor fallback for GPU producer frame"
+                        );
+                        return gpu_frame_without_cpu_fallback();
+                    }
+                    None if plan.contains_gpu_frames() => {
+                        tracing::debug!(
+                            "Skipping CPU compositor fallback for unsupported GPU producer plan"
+                        );
+                        return gpu_frame_without_cpu_fallback();
+                    }
+                    Some(Err(_)) | None => {}
                 }
                 let mut composed = cpu_fallback.compose_with_surface_pools(
                     plan,
@@ -518,6 +546,17 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { .. } => CompositorBackendKind::Gpu,
         }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn gpu_frame_without_cpu_fallback() -> ComposedFrameSet {
+    ComposedFrameSet {
+        sampling_canvas: None,
+        sampling_surface: None,
+        preview_surface: None,
+        bypassed: false,
+        backend: CompositorBackendKind::GpuFallback,
     }
 }
 
