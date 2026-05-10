@@ -376,6 +376,29 @@ impl LightscriptRuntime {
         script.push_str("  if (typeof window.showNotification !== 'function') {\n");
         script.push_str("    window.showNotification = function(_message, _isError) {};\n");
         script.push_str("  }\n");
+        script.push_str("  window.__hypercolorRenderHostFrame = function() {\n");
+        script.push_str(
+            "    if (!window.__hypercolorCaptureMode || typeof window !== 'object') return;\n",
+        );
+        script.push_str("    const instance = window.effectInstance;\n");
+        script.push_str("    if (!instance || typeof instance.render !== 'function') return;\n");
+        script.push_str(
+            "    if (typeof window.currentAnimationFrame === 'number' && typeof window.cancelAnimationFrame === 'function') {\n",
+        );
+        script.push_str("      try { window.cancelAnimationFrame(window.currentAnimationFrame); } catch (_err) {}\n");
+        script.push_str("      window.currentAnimationFrame = undefined;\n");
+        script.push_str("    }\n");
+        script.push_str("    if (typeof instance.syncCanvasSizeFromEngine === 'function') {\n");
+        script.push_str("      try { instance.syncCanvasSizeFromEngine(); } catch (_err) {}\n");
+        script.push_str("    }\n");
+        script.push_str("    if (typeof window.update === 'function') {\n");
+        script.push_str("      try { window.update(false); } catch (_err) {}\n");
+        script.push_str("    }\n");
+        script.push_str(
+            "    const time = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() * 0.001 : Date.now() * 0.001;\n",
+        );
+        script.push_str("    instance.render(time);\n");
+        script.push_str("  };\n");
         script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
         script.push_str("})();");
         script
@@ -416,6 +439,7 @@ impl LightscriptRuntime {
         controls: &HashMap<String, ControlValue>,
         include_audio: bool,
         include_screen: bool,
+        include_sensors: bool,
     ) {
         if include_audio && self.should_emit_audio_update(audio) {
             scripts.push(self.audio_update_script(audio));
@@ -424,44 +448,29 @@ impl LightscriptRuntime {
         if include_screen {
             scripts.push(Self::screen_update_script(screen));
         }
-        let sensor_readings = sensors.readings();
-        if self
-            .last_sensor_readings
-            .as_ref()
-            .is_none_or(|previous| previous != &sensor_readings)
-        {
-            scripts.push(Self::sensor_update_script_from_readings(&sensor_readings));
-            self.last_sensor_readings = Some(sensor_readings);
+        if include_sensors {
+            let sensor_readings = sensors.readings();
+            if self
+                .last_sensor_readings
+                .as_ref()
+                .is_none_or(|previous| previous != &sensor_readings)
+            {
+                scripts.push(Self::sensor_update_script_from_readings(&sensor_readings));
+                self.last_sensor_readings = Some(sensor_readings);
+            }
         }
         self.push_control_update_scripts(scripts, controls);
     }
 
-    /// Build JavaScript that renders SDK canvas effects from the daemon's
-    /// frame clock instead of waiting for browser-scheduled RAF callbacks.
+    /// Build JavaScript that renders SDK canvas effects from Servo's page clock
+    /// instead of injecting a fresh timestamp script every frame.
     #[must_use]
-    pub fn host_frame_script(time_secs: f32) -> String {
-        let mut script = String::with_capacity(720);
+    pub fn host_frame_script() -> String {
+        let mut script = String::with_capacity(128);
         script.push_str("(function(){\n");
         script.push_str(
-            "  if (!window.__hypercolorCaptureMode || typeof window !== 'object') return;\n",
+            "  if (typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }\n",
         );
-        script.push_str("  const instance = window.effectInstance;\n");
-        script.push_str("  if (!instance || typeof instance.render !== 'function') return;\n");
-        script.push_str(
-            "  if (typeof window.currentAnimationFrame === 'number' && typeof window.cancelAnimationFrame === 'function') {\n",
-        );
-        script.push_str("    try { window.cancelAnimationFrame(window.currentAnimationFrame); } catch (_err) {}\n");
-        script.push_str("    window.currentAnimationFrame = undefined;\n");
-        script.push_str("  }\n");
-        script.push_str("  if (typeof instance.syncCanvasSizeFromEngine === 'function') {\n");
-        script.push_str("    try { instance.syncCanvasSizeFromEngine(); } catch (_err) {}\n");
-        script.push_str("  }\n");
-        script.push_str("  if (typeof window.update === 'function') {\n");
-        script.push_str("    try { window.update(false); } catch (_err) {}\n");
-        script.push_str("  }\n");
-        script.push_str("  instance.render(");
-        push_js_number_literal(&mut script, time_secs);
-        script.push_str(");\n");
         script.push_str("})();");
         script
     }
@@ -1522,14 +1531,25 @@ mod tests {
     }
 
     #[test]
-    fn host_frame_script_drives_sdk_render_from_daemon_time() {
-        let script = LightscriptRuntime::host_frame_script(2.5);
+    fn bootstrap_script_defines_host_frame_renderer() {
+        let runtime = LightscriptRuntime::new(320, 200);
+        let script = runtime.bootstrap_script();
 
+        assert!(script.contains("window.__hypercolorRenderHostFrame = function()"));
         assert!(script.contains("window.__hypercolorCaptureMode"));
         assert!(script.contains("window.cancelAnimationFrame"));
         assert!(script.contains("instance.syncCanvasSizeFromEngine"));
         assert!(script.contains("window.update(false)"));
-        assert!(script.contains("instance.render(2.5)"));
+        assert!(script.contains("window.performance.now() * 0.001"));
+        assert!(script.contains("instance.render(time)"));
+    }
+
+    #[test]
+    fn host_frame_script_calls_static_renderer() {
+        let script = LightscriptRuntime::host_frame_script();
+
+        assert!(script.contains("window.__hypercolorRenderHostFrame"));
+        assert!(!script.contains("instance.render("));
     }
 
     #[test]
@@ -1542,7 +1562,16 @@ mod tests {
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
 
-        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &controls, true, false);
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &controls,
+            true,
+            false,
+            false,
+        );
         assert_eq!(
             scripts
                 .iter()
@@ -1557,7 +1586,16 @@ mod tests {
         );
 
         scripts.clear();
-        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &controls, true, false);
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &controls,
+            true,
+            false,
+            false,
+        );
         assert!(
             scripts
                 .iter()
@@ -1566,7 +1604,16 @@ mod tests {
 
         controls.insert("speed".to_owned(), ControlValue::Float(0.8));
         scripts.clear();
-        runtime.push_frame_scripts(&mut scripts, &audio, None, &sensors, &controls, true, false);
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &controls,
+            true,
+            false,
+            false,
+        );
         assert_eq!(
             scripts
                 .iter()
@@ -1589,6 +1636,7 @@ mod tests {
             None,
             &sensors,
             &HashMap::new(),
+            false,
             false,
             false,
         );
@@ -1614,6 +1662,7 @@ mod tests {
             &HashMap::new(),
             true,
             false,
+            false,
         );
         assert!(
             scripts
@@ -1629,6 +1678,7 @@ mod tests {
             &sensors,
             &HashMap::new(),
             true,
+            false,
             false,
         );
         assert!(
@@ -1655,6 +1705,7 @@ mod tests {
             &HashMap::new(),
             true,
             false,
+            false,
         );
         scripts.clear();
 
@@ -1665,6 +1716,7 @@ mod tests {
             &sensors,
             &HashMap::new(),
             true,
+            false,
             false,
         );
         assert!(
@@ -1689,6 +1741,7 @@ mod tests {
             &HashMap::new(),
             false,
             false,
+            true,
         );
         assert!(
             scripts
@@ -1705,7 +1758,33 @@ mod tests {
             &HashMap::new(),
             false,
             false,
+            true,
         );
+        assert!(
+            scripts
+                .iter()
+                .all(|script| !script.contains("window.engine.sensors ="))
+        );
+    }
+
+    #[test]
+    fn push_frame_scripts_can_skip_sensor_updates() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+        let sensors = SystemSnapshot::empty();
+        let mut scripts = Vec::new();
+
+        runtime.push_frame_scripts(
+            &mut scripts,
+            &audio,
+            None,
+            &sensors,
+            &HashMap::new(),
+            false,
+            false,
+            false,
+        );
+
         assert!(
             scripts
                 .iter()

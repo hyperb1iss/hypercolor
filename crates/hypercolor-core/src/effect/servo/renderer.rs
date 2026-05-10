@@ -10,7 +10,9 @@
 
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{
+    ControlKind, ControlValue, EffectCategory, EffectMetadata, EffectSource,
+};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -136,6 +138,7 @@ pub struct ServoRenderer {
     warned_stalled_frame: bool,
     include_audio_updates: bool,
     include_screen_updates: bool,
+    include_sensor_updates: bool,
     last_animation_fps_cap: Option<u32>,
     animation_cadence: AnimationCadence,
     host_driven_animation: bool,
@@ -165,6 +168,7 @@ impl ServoRenderer {
             warned_stalled_frame: false,
             include_audio_updates: true,
             include_screen_updates: false,
+            include_sensor_updates: false,
             last_animation_fps_cap: None,
             animation_cadence: AnimationCadence::MatchRenderLoop,
             host_driven_animation: true,
@@ -194,6 +198,7 @@ impl ServoRenderer {
             &self.controls,
             self.include_audio_updates,
             self.include_screen_updates,
+            self.include_sensor_updates,
         );
         if let Some(script) = self
             .runtime
@@ -203,7 +208,7 @@ impl ServoRenderer {
         }
         if self.host_driven_animation {
             self.pending_scripts
-                .push(LightscriptRuntime::host_frame_script(input.time_secs));
+                .push(LightscriptRuntime::host_frame_script());
         }
     }
 
@@ -260,6 +265,7 @@ impl ServoRenderer {
         self.warned_stalled_frame = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.include_screen_updates = metadata.screen_reactive;
+        self.include_sensor_updates = effect_uses_sensor_data(metadata);
         self.last_animation_fps_cap = None;
         self.animation_cadence = animation_cadence(metadata);
         self.host_driven_animation = host_driven_animation(metadata);
@@ -851,6 +857,7 @@ impl EffectRenderer for ServoRenderer {
         self.warned_stalled_frame = false;
         self.include_audio_updates = true;
         self.include_screen_updates = false;
+        self.include_sensor_updates = false;
         self.last_animation_fps_cap = None;
         self.animation_cadence = AnimationCadence::MatchRenderLoop;
         self.last_submit_time_secs = None;
@@ -958,6 +965,18 @@ fn animation_cadence(metadata: &EffectMetadata) -> AnimationCadence {
     AnimationCadence::MatchRenderLoop
 }
 
+fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
+    metadata.category == EffectCategory::Display
+        || metadata
+            .tags
+            .iter()
+            .any(|tag| tag == "sensor" || tag == "sensors" || tag == "system-monitor")
+        || metadata
+            .controls
+            .iter()
+            .any(|control| matches!(control.kind, ControlKind::Sensor))
+}
+
 fn host_driven_animation(metadata: &EffectMetadata) -> bool {
     metadata.category != EffectCategory::Display
 }
@@ -974,7 +993,9 @@ mod tests {
         },
     };
     use hypercolor_types::audio::AudioData;
-    use hypercolor_types::effect::{EffectCategory, EffectId, EffectSource};
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlType, EffectCategory, EffectId, EffectSource,
+    };
     use hypercolor_types::sensor::SystemSnapshot;
     use std::sync::LazyLock;
     use std::sync::atomic::Ordering;
@@ -1150,6 +1171,7 @@ mod tests {
         assert!(!renderer.warned_fallback_frame);
         assert!(!renderer.warned_stalled_frame);
         assert!(renderer.include_audio_updates);
+        assert!(!renderer.include_sensor_updates);
 
         drop(worker);
         assert!(stopped.load(Ordering::SeqCst));
@@ -1180,6 +1202,34 @@ mod tests {
         assert_eq!(animation_cadence(&metadata), AnimationCadence::Fixed(30));
         assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 60.0), 30);
         assert_eq!(animation_cadence(&metadata).fps_cap(1.0 / 20.0), 30);
+    }
+
+    #[test]
+    fn sensor_updates_are_limited_to_sensor_aware_metadata() {
+        let plain = html_metadata(PathBuf::from("bubble.html"));
+        assert!(!effect_uses_sensor_data(&plain));
+
+        let display = display_html_metadata(PathBuf::from("face.html"));
+        assert!(effect_uses_sensor_data(&display));
+
+        let mut sensor_control = html_metadata(PathBuf::from("sensor.html"));
+        sensor_control.controls.push(ControlDefinition {
+            id: "targetSensor".to_owned(),
+            name: "Sensor".to_owned(),
+            kind: ControlKind::Sensor,
+            control_type: ControlType::Dropdown,
+            default_value: ControlValue::Enum("cpu_temp".to_owned()),
+            min: None,
+            max: None,
+            step: None,
+            labels: vec!["cpu_temp".to_owned()],
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        });
+        assert!(effect_uses_sensor_data(&sensor_control));
     }
 
     #[test]
@@ -1426,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_scripts_drive_sdk_render_from_daemon_time() {
+    fn frame_scripts_drive_sdk_render_with_static_host_script() {
         let mut renderer = ServoRenderer::new();
         let mut input = frame_input(1.0 / 30.0);
         input.time_secs = 2.5;
@@ -1437,13 +1487,13 @@ mod tests {
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script.contains("instance.render(2.5)"))
+                .any(|script| script.contains("window.__hypercolorRenderHostFrame"))
         );
         assert!(
             renderer
                 .pending_scripts
                 .iter()
-                .any(|script| script.contains("window.cancelAnimationFrame"))
+                .all(|script| !script.contains("instance.render(2.5)"))
         );
     }
 
