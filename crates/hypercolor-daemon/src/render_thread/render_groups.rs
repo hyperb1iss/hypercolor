@@ -11,6 +11,10 @@ use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::spatial::{SpatialEngine, sample_led};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_types::config::RenderAccelerationMode;
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -19,9 +23,15 @@ use hypercolor_types::spatial::{
 };
 
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
+#[cfg(feature = "servo-gpu-import")]
+use super::gpu_device::GpuRenderDevice;
 use super::micros_u32;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
+#[cfg(feature = "servo-gpu-import")]
+use super::sparkleflinger::{
+    CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger,
+};
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -109,6 +119,10 @@ pub(crate) struct RenderGroupRuntime {
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
     direct_surface_pools: HashMap<RenderGroupId, RenderSurfacePool>,
     retained_direct_group_frames: HashMap<RenderGroupId, RetainedDirectGroupFrame>,
+    #[cfg(feature = "servo-gpu-import")]
+    direct_gpu_materializers: HashMap<RenderGroupId, SparkleFlinger>,
+    #[cfg(feature = "servo-gpu-import")]
+    render_gpu_device: Option<GpuRenderDevice>,
     scene_surface_pool: RenderSurfacePool,
     reconciled_dependency_key: Option<SceneDependencyKey>,
     retained_frame: Option<RetainedRenderGroupFrame>,
@@ -121,7 +135,21 @@ pub(crate) struct RenderGroupRuntime {
 }
 
 impl RenderGroupRuntime {
+    #[cfg(test)]
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
+        Self::new_with_gpu_device(
+            scene_width,
+            scene_height,
+            #[cfg(feature = "servo-gpu-import")]
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_gpu_device(
+        scene_width: u32,
+        scene_height: u32,
+        #[cfg(feature = "servo-gpu-import")] render_gpu_device: Option<GpuRenderDevice>,
+    ) -> Self {
         Self {
             effect_pool: EffectPool::new(),
             target_canvases: HashMap::new(),
@@ -129,6 +157,10 @@ impl RenderGroupRuntime {
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
             retained_direct_group_frames: HashMap::new(),
+            #[cfg(feature = "servo-gpu-import")]
+            direct_gpu_materializers: HashMap::new(),
+            #[cfg(feature = "servo-gpu-import")]
+            render_gpu_device,
             // 8 slots absorbs typical downstream fan-out (watch channel +
             // display-output dispatch + one pin per display worker mid-
             // encode). The higher cap lets preview/display bursts settle
@@ -250,6 +282,8 @@ impl RenderGroupRuntime {
         self.spatial_engines.clear();
         self.direct_surface_pools.clear();
         self.retained_direct_group_frames.clear();
+        #[cfg(feature = "servo-gpu-import")]
+        self.direct_gpu_materializers.clear();
         self.reconciled_dependency_key = None;
         self.retained_frame = None;
         self.last_effect_error = None;
@@ -290,6 +324,16 @@ impl RenderGroupRuntime {
             || !self.spatial_engines.is_empty()
             || !self.direct_surface_pools.is_empty()
             || !self.retained_direct_group_frames.is_empty()
+            || {
+                #[cfg(feature = "servo-gpu-import")]
+                {
+                    !self.direct_gpu_materializers.is_empty()
+                }
+                #[cfg(not(feature = "servo-gpu-import"))]
+                {
+                    false
+                }
+            }
             || self.retained_frame.is_some()
             || self.reconciled_dependency_key.is_some()
     }
@@ -341,47 +385,22 @@ impl RenderGroupRuntime {
             }
 
             if group_publishes_direct_canvas(group) {
-                if let Some(retained) = self.reuse_retained_direct_group_frame(
+                if let Some((frame, frame_render_us)) = self.render_direct_group_frame(
                     group,
                     elapsed_ms,
                     display_group_target_fps,
                     dependency_key,
-                ) {
+                    registry,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                )? {
+                    render_us = render_us.saturating_add(frame_render_us);
                     active_group_canvas_ids.push(group.id);
-                    group_canvases.push((group.id, retained));
-                    continue;
+                    group_canvases.push((group.id, frame));
                 }
-                let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
-                    continue;
-                };
-                let Some(mut lease) = surface_pool.dequeue() else {
-                    continue;
-                };
-                let render_start = Instant::now();
-                self.effect_pool
-                    .render_group_into(
-                        group,
-                        delta_secs,
-                        audio,
-                        interaction,
-                        screen,
-                        sensors,
-                        lease.canvas_mut(),
-                    )
-                    .map_err(|error| {
-                        anyhow::Error::new(render_group_effect_error(group, registry, error))
-                    })?;
-                render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-                active_group_canvas_ids.push(group.id);
-                let frame = GroupCanvasFrame {
-                    surface: lease.submit(0, 0),
-                    display_target: group
-                        .display_target
-                        .clone()
-                        .expect("direct display group should carry a display target"),
-                };
-                self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
-                group_canvases.push((group.id, frame));
                 continue;
             }
 
@@ -468,6 +487,9 @@ impl RenderGroupRuntime {
             .retain(|group_id, _| direct_group_ids.contains(group_id));
         self.retained_direct_group_frames
             .retain(|group_id, _| direct_group_ids.contains(group_id));
+        #[cfg(feature = "servo-gpu-import")]
+        self.direct_gpu_materializers
+            .retain(|group_id, _| direct_group_ids.contains(group_id));
 
         for group in groups {
             if group_contributes_to_scene_canvas(group) {
@@ -552,6 +574,261 @@ impl RenderGroupRuntime {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "direct display rendering needs the full frame context plus cadence inputs"
+    )]
+    fn render_direct_group_frame(
+        &mut self,
+        group: &RenderGroup,
+        elapsed_ms: u32,
+        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        dependency_key: SceneDependencyKey,
+        registry: &EffectRegistry,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<Option<(GroupCanvasFrame, u32)>> {
+        #[cfg(feature = "servo-gpu-import")]
+        if let Some(frame) =
+            self.resolve_direct_gpu_group_frame(group, elapsed_ms, dependency_key)?
+        {
+            return Ok(Some((frame, 0)));
+        }
+
+        #[cfg(feature = "servo-gpu-import")]
+        if self.direct_gpu_materialization_pending(group.id) {
+            return Ok(self
+                .retained_direct_group_frame(group.id, dependency_key)
+                .map(|frame| (frame, 0)));
+        }
+
+        if let Some(retained) = self.reuse_retained_direct_group_frame(
+            group,
+            elapsed_ms,
+            display_group_target_fps,
+            dependency_key,
+        ) {
+            return Ok(Some((retained, 0)));
+        }
+
+        let render_start = Instant::now();
+
+        #[cfg(feature = "servo-gpu-import")]
+        if self.direct_gpu_materialization_enabled() && group_effect_uses_servo(group, registry) {
+            let output = self
+                .effect_pool
+                .render_group_output(group, delta_secs, audio, interaction, screen, sensors)
+                .map_err(|error| {
+                    anyhow::Error::new(render_group_effect_error(group, registry, error))
+                })?;
+            let render_us = micros_u32(render_start.elapsed());
+            let frame =
+                self.direct_group_frame_from_output(group, output, elapsed_ms, dependency_key)?;
+            return Ok(frame.map(|frame| (frame, render_us)));
+        }
+
+        let frame = self.render_direct_group_into_surface(
+            group,
+            registry,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+        )?;
+        if let Some(frame) = frame.as_ref() {
+            self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, frame);
+        }
+        Ok(frame.map(|frame| (frame, micros_u32(render_start.elapsed()))))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "CPU direct rendering forwards the same frame context into the effect pool"
+    )]
+    fn render_direct_group_into_surface(
+        &mut self,
+        group: &RenderGroup,
+        registry: &EffectRegistry,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<Option<GroupCanvasFrame>> {
+        let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
+            return Ok(None);
+        };
+        let Some(mut lease) = surface_pool.dequeue() else {
+            return Ok(None);
+        };
+        self.effect_pool
+            .render_group_into(
+                group,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+                lease.canvas_mut(),
+            )
+            .map_err(|error| {
+                anyhow::Error::new(render_group_effect_error(group, registry, error))
+            })?;
+        let frame = Self::group_canvas_frame_from_surface(group, lease.submit(0, 0));
+        Ok(Some(frame))
+    }
+
+    fn group_canvas_frame_from_surface(
+        group: &RenderGroup,
+        surface: PublishedSurface,
+    ) -> GroupCanvasFrame {
+        GroupCanvasFrame {
+            surface,
+            display_target: group
+                .display_target
+                .clone()
+                .expect("direct display group should carry a display target"),
+        }
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn direct_gpu_materialization_enabled(&self) -> bool {
+        self.render_gpu_device.is_some()
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn direct_gpu_materialization_pending(&self, group_id: RenderGroupId) -> bool {
+        self.direct_gpu_materializers
+            .get(&group_id)
+            .is_some_and(SparkleFlinger::has_pending_preview_work)
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn retained_direct_group_frame(
+        &self,
+        group_id: RenderGroupId,
+        dependency_key: SceneDependencyKey,
+    ) -> Option<GroupCanvasFrame> {
+        let retained = self.retained_direct_group_frames.get(&group_id)?;
+        (retained.dependency_key == dependency_key).then(|| retained.frame.clone())
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn resolve_direct_gpu_group_frame(
+        &mut self,
+        group: &RenderGroup,
+        elapsed_ms: u32,
+        dependency_key: SceneDependencyKey,
+    ) -> Result<Option<GroupCanvasFrame>> {
+        let surface = {
+            let Some(materializer) = self.direct_gpu_materializers.get_mut(&group.id) else {
+                return Ok(None);
+            };
+            materializer.resolve_preview_surface()?
+        };
+        let Some(surface) = surface else {
+            return Ok(None);
+        };
+        let frame = Self::group_canvas_frame_from_surface(group, surface);
+        self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+        Ok(Some(frame))
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn direct_group_frame_from_output(
+        &mut self,
+        group: &RenderGroup,
+        output: EffectRenderOutput,
+        elapsed_ms: u32,
+        dependency_key: SceneDependencyKey,
+    ) -> Result<Option<GroupCanvasFrame>> {
+        match output {
+            EffectRenderOutput::Cpu(canvas) => {
+                self.direct_group_frame_from_canvas(group, canvas, elapsed_ms, dependency_key)
+            }
+            EffectRenderOutput::Gpu(frame) => {
+                self.materialize_direct_gpu_group_frame(group, frame, elapsed_ms, dependency_key)
+            }
+        }
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn direct_group_frame_from_canvas(
+        &mut self,
+        group: &RenderGroup,
+        canvas: Canvas,
+        elapsed_ms: u32,
+        dependency_key: SceneDependencyKey,
+    ) -> Result<Option<GroupCanvasFrame>> {
+        let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
+            return Ok(None);
+        };
+        let Some(mut lease) = surface_pool.dequeue() else {
+            return Ok(None);
+        };
+        *lease.canvas_mut() = canvas;
+        let frame = Self::group_canvas_frame_from_surface(group, lease.submit(0, 0));
+        self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+        Ok(Some(frame))
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn materialize_direct_gpu_group_frame(
+        &mut self,
+        group: &RenderGroup,
+        frame: hypercolor_core::effect::ImportedEffectFrame,
+        elapsed_ms: u32,
+        dependency_key: SceneDependencyKey,
+    ) -> Result<Option<GroupCanvasFrame>> {
+        let width = group.layout.canvas_width;
+        let height = group.layout.canvas_height;
+        let surface = {
+            let Some(materializer) = self.direct_gpu_materializer_mut(group.id)? else {
+                return Ok(self.retained_direct_group_frame(group.id, dependency_key));
+            };
+            let plan = CompositionPlan::single(
+                width,
+                height,
+                CompositionLayer::replace_opaque(ProducerFrame::Gpu(frame)),
+            );
+            let request = Some(PreviewSurfaceRequest { width, height });
+            let composed = materializer.compose_for_outputs(plan, false, request);
+            match composed.preview_surface {
+                Some(surface) => Some(surface),
+                None => materializer.resolve_preview_surface()?,
+            }
+        };
+        let Some(surface) = surface else {
+            return Ok(self.retained_direct_group_frame(group.id, dependency_key));
+        };
+        let frame = Self::group_canvas_frame_from_surface(group, surface);
+        self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+        Ok(Some(frame))
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    fn direct_gpu_materializer_mut(
+        &mut self,
+        group_id: RenderGroupId,
+    ) -> Result<Option<&mut SparkleFlinger>> {
+        let Some(render_gpu_device) = self.render_gpu_device.clone() else {
+            return Ok(None);
+        };
+        Ok(Some(match self.direct_gpu_materializers.entry(group_id) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(SparkleFlinger::new_with_gpu_device(
+                    RenderAccelerationMode::Gpu,
+                    Some(render_gpu_device),
+                )?)
+            }
+        }))
+    }
+
     fn render_single_full_scene_group(
         &mut self,
         groups: &[RenderGroup],
@@ -630,48 +907,22 @@ impl RenderGroupRuntime {
                 continue;
             }
 
-            if let Some(retained) = self.reuse_retained_direct_group_frame(
+            if let Some((frame, frame_render_us)) = self.render_direct_group_frame(
                 group,
                 elapsed_ms,
                 display_group_target_fps,
                 dependency_key,
-            ) {
+                registry,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+            )? {
+                render_us = render_us.saturating_add(frame_render_us);
                 active_group_canvas_ids.push(group.id);
-                group_canvases.push((group.id, retained));
-                continue;
+                group_canvases.push((group.id, frame));
             }
-
-            let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
-                continue;
-            };
-            let Some(mut group_lease) = surface_pool.dequeue() else {
-                continue;
-            };
-            let render_start = Instant::now();
-            self.effect_pool
-                .render_group_into(
-                    group,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                    group_lease.canvas_mut(),
-                )
-                .map_err(|error| {
-                    anyhow::Error::new(render_group_effect_error(group, registry, error))
-                })?;
-            render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
-            active_group_canvas_ids.push(group.id);
-            let frame = GroupCanvasFrame {
-                surface: group_lease.submit(0, 0),
-                display_target: group
-                    .display_target
-                    .clone()
-                    .expect("direct display group should carry a display target"),
-            };
-            self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
-            group_canvases.push((group.id, frame));
         }
         zones.clear();
 
@@ -1136,6 +1387,16 @@ fn group_contributes_to_scene_canvas(group: &RenderGroup) -> bool {
 
 fn group_publishes_direct_canvas(group: &RenderGroup) -> bool {
     group_is_active(group) && group.display_target.is_some()
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn group_effect_uses_servo(group: &RenderGroup, registry: &EffectRegistry) -> bool {
+    let Some(effect_id) = group.effect_id else {
+        return false;
+    };
+    registry
+        .get(&effect_id)
+        .is_some_and(|entry| matches!(entry.metadata.source, EffectSource::Html { .. }))
 }
 
 fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
