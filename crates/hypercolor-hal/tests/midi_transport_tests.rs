@@ -1,6 +1,7 @@
 use hypercolor_hal::transport::midi::{
-    classify_push2_port_for_testing, midi_packet_spacing_for_testing,
-    midi_usb_paths_match_for_testing, select_push2_port_identity_for_testing,
+    classify_push2_port_for_testing, midi_output_path_requires_pacing_for_testing,
+    midi_packet_spacing_for_testing, midi_usb_paths_match_for_testing,
+    select_push2_port_identity_for_testing,
 };
 
 use std::time::Duration;
@@ -79,6 +80,19 @@ fn midi_packet_spacing_paces_sysex_more_than_short_led_updates() {
     assert_eq!(
         midi_packet_spacing_for_testing(17),
         Duration::from_millis(1)
+    );
+}
+
+#[test]
+fn push2_midi_pacing_only_applies_to_sequencer_output() {
+    assert_eq!(
+        midi_output_path_requires_pacing_for_testing("sequencer"),
+        Some(true)
+    );
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        midi_output_path_requires_pacing_for_testing("rawmidi"),
+        Some(false)
     );
 }
 

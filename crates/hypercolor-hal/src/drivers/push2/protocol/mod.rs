@@ -36,7 +36,7 @@ const PUSH2_DISPLAY_TRANSFER_CHUNK: usize = 16 * 1024;
 const PUSH2_DISPLAY_LINE_PIXELS: usize = PUSH2_DISPLAY_WIDTH * 2;
 const PUSH2_DISPLAY_LINE_PADDING: usize = 128;
 const PUSH2_DISPLAY_LINE_SIZE: usize = PUSH2_DISPLAY_LINE_PIXELS + PUSH2_DISPLAY_LINE_PADDING;
-const PUSH2_DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const PUSH2_DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const PUSH2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const PUSH2_IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7];
 const PUSH2_MANUFACTURER_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
@@ -439,7 +439,7 @@ impl Protocol for Push2Protocol {
             supports_brightness: true,
             has_display: true,
             display_resolution: Some((960, 160)),
-            max_fps: 30,
+            max_fps: 60,
             color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }

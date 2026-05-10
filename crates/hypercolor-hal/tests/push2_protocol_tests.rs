@@ -373,9 +373,9 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
     assert!(capabilities.supports_brightness);
     assert!(capabilities.has_display);
     assert_eq!(capabilities.display_resolution, Some((960, 160)));
-    assert_eq!(capabilities.max_fps, 30);
+    assert_eq!(capabilities.max_fps, 60);
     assert_eq!(protocol.total_leds(), 160);
-    assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
+    assert_eq!(protocol.frame_interval(), Duration::from_millis(16));
 }
 
 #[test]

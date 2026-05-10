@@ -981,12 +981,12 @@ impl Protocol for Push2Protocol {
             supports_brightness: true,
             has_display: true,
             display_resolution: Some((960, 160)),
-            max_fps: 30,
+            max_fps: 60,
         }
     }
 
     fn total_leds(&self) -> u32 { 160 }
-    fn frame_interval(&self) -> Duration { Duration::from_millis(33) } // 30 FPS
+    fn frame_interval(&self) -> Duration { Duration::from_millis(16) } // ~60 FPS
 }
 ```
 

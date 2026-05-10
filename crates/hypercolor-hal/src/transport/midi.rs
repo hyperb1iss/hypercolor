@@ -69,7 +69,22 @@ enum Push2MidiOutput {
     Raw(Rawmidi),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Push2MidiOutputPath {
+    Sequencer,
+    #[cfg(target_os = "linux")]
+    RawMidi,
+}
+
 impl Push2MidiOutput {
+    fn output_path(&self) -> Push2MidiOutputPath {
+        match self {
+            Self::Midir(_) => Push2MidiOutputPath::Sequencer,
+            #[cfg(target_os = "linux")]
+            Self::Raw(_) => Push2MidiOutputPath::RawMidi,
+        }
+    }
+
     fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
         match self {
             Self::Midir(midi_out) => midi_out.send(data).map_err(map_midi_send_error),
@@ -219,7 +234,9 @@ impl Push2Transport {
             "push2 midi send"
         );
 
-        self.pace_midi_send(data.len()).await;
+        if self.midi_output_requires_pacing()? {
+            self.pace_midi_send(data.len()).await;
+        }
 
         let midi_out = Arc::clone(&self.midi_out);
         let packet = data.to_vec();
@@ -227,6 +244,11 @@ impl Push2Transport {
             lock_mutex(midi_out.as_ref(), "MIDI output")?.send(packet.as_slice())
         })
         .await
+    }
+
+    fn midi_output_requires_pacing(&self) -> Result<bool, TransportError> {
+        let midi_out = lock_mutex(self.midi_out.as_ref(), "MIDI output")?;
+        Ok(midi_output_path_requires_pacing(midi_out.output_path()))
     }
 
     async fn pace_midi_send(&self, packet_len: usize) {
@@ -701,6 +723,14 @@ fn midi_packet_spacing(packet_len: usize) -> Duration {
     }
 }
 
+fn midi_output_path_requires_pacing(path: Push2MidiOutputPath) -> bool {
+    match path {
+        Push2MidiOutputPath::Sequencer => true,
+        #[cfg(target_os = "linux")]
+        Push2MidiOutputPath::RawMidi => false,
+    }
+}
+
 #[doc(hidden)]
 #[must_use]
 pub fn classify_push2_port_for_testing(name: &str) -> Option<&'static str> {
@@ -737,6 +767,21 @@ pub fn midi_usb_paths_match_for_testing(candidate: &str, requested: &str) -> boo
 #[must_use]
 pub fn midi_packet_spacing_for_testing(packet_len: usize) -> Duration {
     midi_packet_spacing(packet_len)
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn midi_output_path_requires_pacing_for_testing(path: &str) -> Option<bool> {
+    match path {
+        "sequencer" => Some(midi_output_path_requires_pacing(
+            Push2MidiOutputPath::Sequencer,
+        )),
+        #[cfg(target_os = "linux")]
+        "rawmidi" => Some(midi_output_path_requires_pacing(
+            Push2MidiOutputPath::RawMidi,
+        )),
+        _ => None,
+    }
 }
 
 #[doc(hidden)]
