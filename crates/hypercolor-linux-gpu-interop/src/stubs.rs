@@ -22,6 +22,13 @@ pub enum LinuxGpuInteropError {
         /// Requested frame height.
         height: u32,
     },
+
+    /// Every pooled import slot is still referenced by downstream GPU work.
+    #[error("all {slot_count} GPU import slots are still in use")]
+    ImportSlotsExhausted {
+        /// Number of slots in the import pool.
+        slot_count: usize,
+    },
 }
 
 /// Pixel format shared by the GL source and imported wgpu texture.
@@ -211,6 +218,7 @@ pub fn missing_gl_external_memory_functions(
 ) -> Vec<&'static str> {
     vec![
         "glCreateMemoryObjectsEXT",
+        "glMemoryObjectParameterivEXT",
         "glImportMemoryFdEXT",
         "glTexStorageMem2DEXT",
         "glDeleteMemoryObjectsEXT",

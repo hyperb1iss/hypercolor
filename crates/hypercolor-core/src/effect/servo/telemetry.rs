@@ -230,6 +230,7 @@ pub(super) enum ServoGpuImportFallbackReason {
     GlOperation,
     GlFramebufferIncomplete,
     UnsupportedPlatform,
+    ImportSlotsExhausted,
     Other,
 }
 
@@ -248,7 +249,8 @@ impl ServoGpuImportFallbackReason {
             Self::GlOperation => 9,
             Self::GlFramebufferIncomplete => 10,
             Self::UnsupportedPlatform => 11,
-            Self::Other => 12,
+            Self::ImportSlotsExhausted => 12,
+            Self::Other => 13,
         }
     }
 
@@ -265,7 +267,8 @@ impl ServoGpuImportFallbackReason {
             9 => Some(Self::GlOperation),
             10 => Some(Self::GlFramebufferIncomplete),
             11 => Some(Self::UnsupportedPlatform),
-            12 => Some(Self::Other),
+            12 => Some(Self::ImportSlotsExhausted),
+            13 => Some(Self::Other),
             _ => None,
         }
     }
@@ -283,6 +286,7 @@ impl ServoGpuImportFallbackReason {
             Self::GlOperation => "gl_operation_error",
             Self::GlFramebufferIncomplete => "gl_framebuffer_incomplete",
             Self::UnsupportedPlatform => "unsupported_platform",
+            Self::ImportSlotsExhausted => "import_slots_exhausted",
             Self::Other => "other",
         }
     }
@@ -446,5 +450,18 @@ mod tests {
         assert!(after.render_gpu_import_blit_max_us >= 10);
         assert!(after.render_gpu_import_sync_max_us >= 20);
         assert!(after.render_gpu_import_max_us >= 40);
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
+    fn gpu_import_slot_exhaustion_reason_roundtrips() {
+        assert_eq!(
+            ServoGpuImportFallbackReason::from_u64(12),
+            Some(ServoGpuImportFallbackReason::ImportSlotsExhausted)
+        );
+        assert_eq!(
+            ServoGpuImportFallbackReason::ImportSlotsExhausted.as_str(),
+            "import_slots_exhausted"
+        );
     }
 }

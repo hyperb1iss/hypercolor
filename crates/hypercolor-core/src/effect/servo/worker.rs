@@ -1890,6 +1890,9 @@ fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallb
                 hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
                     ..
                 } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
+                    ..
+                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
                 _ => ServoGpuImportFallbackReason::Other,
             };
             #[cfg(not(target_os = "linux"))]
@@ -2389,6 +2392,21 @@ mod tests {
             Some(ScheduledServoWork::Command(WorkerCommand::Shutdown { .. }))
         ));
         assert!(scheduler.next().is_none());
+    }
+
+    #[cfg(feature = "servo-gpu-import")]
+    #[test]
+    fn classify_gpu_import_slot_exhaustion() {
+        let error = anyhow::anyhow!(
+            hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
+                slot_count: 8
+            }
+        );
+
+        assert_eq!(
+            classify_servo_gpu_import_error(&error),
+            ServoGpuImportFallbackReason::ImportSlotsExhausted
+        );
     }
 
     #[test]

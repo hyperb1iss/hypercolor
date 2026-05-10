@@ -10,6 +10,7 @@ use ash::{khr, vk};
 use glow::HasContext;
 use thiserror::Error;
 
+const GL_DEDICATED_MEMORY_OBJECT_EXT: u32 = 0x9581;
 const GL_HANDLE_TYPE_OPAQUE_FD_EXT: u32 = 0x9586;
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
@@ -90,6 +91,13 @@ pub enum LinuxGpuInteropError {
     GlFramebufferIncomplete {
         /// GL framebuffer status.
         status: u32,
+    },
+
+    /// Every pooled import slot is still referenced by downstream GPU work.
+    #[error("all {slot_count} GPU import slots are still in use")]
+    ImportSlotsExhausted {
+        /// Number of slots in the import pool.
+        slot_count: usize,
     },
 }
 
@@ -279,7 +287,7 @@ impl LinuxGlFramebufferImporter {
         let total_start = Instant::now();
         let gl_external_memory = self.gl_external_memory;
         let descriptor = self.descriptor;
-        let slot = self.next_slot();
+        let slot = self.next_slot()?;
         let mut timings =
             slot.blit_from_framebuffer(gl, gl_external_memory, source_framebuffer, descriptor)?;
         timings.total_us = elapsed_micros(total_start);
@@ -293,15 +301,15 @@ impl LinuxGlFramebufferImporter {
         }
     }
 
-    fn next_slot(&mut self) -> &mut ImportedFrameSlot {
+    fn next_slot(&mut self) -> Result<&mut ImportedFrameSlot> {
         let slot_count = self.slots.len();
         let preferred = self.next_slot;
         let selected = (0..slot_count)
             .map(|offset| (preferred + offset) % slot_count)
             .find(|&index| self.slots[index].is_available())
-            .unwrap_or(preferred);
+            .ok_or(LinuxGpuInteropError::ImportSlotsExhausted { slot_count })?;
         self.next_slot = (selected + 1) % slot_count;
-        &mut self.slots[selected]
+        Ok(&mut self.slots[selected])
     }
 }
 
@@ -327,6 +335,7 @@ impl LinuxGpuImportCapabilities {
 }
 
 type GlCreateMemoryObjectsExt = unsafe extern "system" fn(i32, *mut u32);
+type GlMemoryObjectParameterivExt = unsafe extern "system" fn(u32, u32, *const i32);
 type GlImportMemoryFdExt = unsafe extern "system" fn(u32, u64, u32, i32);
 type GlTexStorageMem2DExt = unsafe extern "system" fn(u32, i32, u32, i32, i32, u32, u64);
 type GlDeleteMemoryObjectsExt = unsafe extern "system" fn(i32, *const u32);
@@ -336,6 +345,8 @@ type GlDeleteMemoryObjectsExt = unsafe extern "system" fn(i32, *const u32);
 pub struct GlExternalMemoryFunctions {
     /// `glCreateMemoryObjectsEXT`
     pub create_memory_objects_ext: GlCreateMemoryObjectsExt,
+    /// `glMemoryObjectParameterivEXT`
+    pub memory_object_parameteriv_ext: GlMemoryObjectParameterivExt,
     /// `glImportMemoryFdEXT`
     pub import_memory_fd_ext: GlImportMemoryFdExt,
     /// `glTexStorageMem2DEXT`
@@ -353,6 +364,11 @@ impl GlExternalMemoryFunctions {
         let create_memory_objects_ext = get_required_proc_address(
             c"glCreateMemoryObjectsEXT",
             "glCreateMemoryObjectsEXT",
+            &mut get_proc_address,
+        )?;
+        let memory_object_parameteriv_ext = get_required_proc_address(
+            c"glMemoryObjectParameterivEXT",
+            "glMemoryObjectParameterivEXT",
             &mut get_proc_address,
         )?;
         let import_memory_fd_ext = get_required_proc_address(
@@ -377,6 +393,13 @@ impl GlExternalMemoryFunctions {
             create_memory_objects_ext: unsafe {
                 std::mem::transmute::<*const c_void, GlCreateMemoryObjectsExt>(
                     create_memory_objects_ext,
+                )
+            },
+            // SAFETY: the symbol is loaded from the current GL context using
+            // the exact ABI and signature specified by GL_EXT_memory_object.
+            memory_object_parameteriv_ext: unsafe {
+                std::mem::transmute::<*const c_void, GlMemoryObjectParameterivExt>(
+                    memory_object_parameteriv_ext,
                 )
             },
             // SAFETY: the symbol is loaded from the current GL context using
@@ -415,6 +438,10 @@ pub fn missing_gl_external_memory_functions(
 ) -> Vec<&'static str> {
     [
         (c"glCreateMemoryObjectsEXT", "glCreateMemoryObjectsEXT"),
+        (
+            c"glMemoryObjectParameterivEXT",
+            "glMemoryObjectParameterivEXT",
+        ),
         (c"glImportMemoryFdEXT", "glImportMemoryFdEXT"),
         (c"glTexStorageMem2DEXT", "glTexStorageMem2DEXT"),
         (c"glDeleteMemoryObjectsEXT", "glDeleteMemoryObjectsEXT"),
@@ -910,6 +937,16 @@ impl GlImportedImageBinding {
             // and memory_object points to valid writable storage for one object.
             unsafe { (gl_external_memory.create_memory_objects_ext)(1, &mut memory_object) };
             check_gl_error(gl, "glCreateMemoryObjectsEXT")?;
+
+            let dedicated = i32::from(glow::TRUE);
+            unsafe {
+                (gl_external_memory.memory_object_parameteriv_ext)(
+                    memory_object,
+                    GL_DEDICATED_MEMORY_OBJECT_EXT,
+                    &dedicated,
+                );
+            }
+            check_gl_error(gl, "glMemoryObjectParameterivEXT")?;
 
             let gl_fd = duplicate_fd(memory_fd)?;
             // SAFETY: gl_fd is a duplicate of the Vulkan memory FD; GL consumes

@@ -6,7 +6,7 @@ use euclid::default::Size2D;
 use glow::HasContext;
 use hypercolor_linux_gpu_interop::{
     GlExternalMemoryFunctions, GlFramebufferSource, ImportedFrameFormat,
-    LinuxGlFramebufferImportDescriptor, LinuxGlFramebufferImporter,
+    LinuxGlFramebufferImportDescriptor, LinuxGlFramebufferImporter, LinuxGpuInteropError,
     check_wgpu_vulkan_external_memory_fd, import_gl_framebuffer_to_wgpu,
 };
 use surfman::{
@@ -103,6 +103,61 @@ fn raw_gl_pooled_importer_reuses_slots_and_matches_wgpu_readback() {
         }
     }
 
+    importer.destroy_gl_resources(&raw_gl.gl);
+}
+
+#[test]
+fn raw_gl_pooled_importer_reports_exhaustion_when_slots_are_held() {
+    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+        return;
+    }
+
+    let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
+    let raw_gl =
+        RawGlFixture::new(WIDTH, HEIGHT).expect("raw GL import fixture should create GL surface");
+    let gl_external_memory = raw_gl
+        .load_external_memory_functions()
+        .expect("raw GL import fixture should load GL external memory functions");
+    let descriptor =
+        LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
+            .expect("fixture dimensions should be valid");
+    let mut importer = LinuxGlFramebufferImporter::new(
+        &wgpu.device,
+        &raw_gl.gl,
+        gl_external_memory,
+        descriptor,
+        POOLED_IMPORT_SLOTS,
+    )
+    .expect("raw GL fixture should create pooled importer");
+
+    let mut held_frames = Vec::new();
+    for expected in [[255, 0, 0, 255], [0, 255, 0, 255]] {
+        raw_gl.clear(expected);
+        held_frames.push(
+            importer
+                .import_framebuffer(
+                    &raw_gl.gl,
+                    GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+                )
+                .expect("pooled raw GL fixture should fill an available slot"),
+        );
+    }
+
+    raw_gl.clear([0, 0, 255, 255]);
+    let result = importer.import_framebuffer(
+        &raw_gl.gl,
+        GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+    );
+    assert!(matches!(
+        result,
+        Err(LinuxGpuInteropError::ImportSlotsExhausted {
+            slot_count: POOLED_IMPORT_SLOTS
+        })
+    ));
+
+    drop(held_frames);
+    let _ = wgpu.device.poll(wgpu::PollType::Poll);
     importer.destroy_gl_resources(&raw_gl.gl);
 }
 

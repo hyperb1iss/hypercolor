@@ -16,7 +16,7 @@ use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::scene_transactions::{SceneTransaction, apply_layout_update};
+use crate::scene_transactions::apply_layout_update;
 
 #[derive(Debug, Deserialize)]
 pub struct GetConfigQuery {
@@ -485,25 +485,17 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
     }
 
     if key.is_none_or(|k| k == "daemon.canvas_width" || k == "daemon.canvas_height") {
-        let layout_synced = sync_active_layout_canvas_size(
+        let resize_queued = sync_active_layout_canvas_size(
             state,
             config.daemon.canvas_width,
             config.daemon.canvas_height,
         )
         .await;
-        if !layout_synced {
-            state
-                .scene_transactions
-                .push(SceneTransaction::ResizeCanvas {
-                    width: config.daemon.canvas_width,
-                    height: config.daemon.canvas_height,
-                });
-        }
         info!(
             canvas_width = config.daemon.canvas_width,
             canvas_height = config.daemon.canvas_height,
-            layout_synced,
-            "Queued live canvas resize (takes effect next frame)"
+            resize_queued,
+            "Applied live canvas dimension config"
         );
         applied = true;
     }
@@ -511,11 +503,20 @@ async fn maybe_apply_render_config_change(state: &Arc<AppState>, key: Option<&st
     applied
 }
 
+const fn canvas_dimensions_differ(
+    current_width: u32,
+    current_height: u32,
+    next_width: u32,
+    next_height: u32,
+) -> bool {
+    current_width != next_width || current_height != next_height
+}
+
 async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, height: u32) -> bool {
     let updated_layout = {
         let spatial = state.spatial_engine.read().await;
         let current = spatial.layout().as_ref().clone();
-        if current.canvas_width == width && current.canvas_height == height {
+        if !canvas_dimensions_differ(current.canvas_width, current.canvas_height, width, height) {
             None
         } else {
             let mut updated = current;
@@ -553,4 +554,16 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canvas_dimensions_differ;
+
+    #[test]
+    fn canvas_dimensions_differ_only_when_size_changes() {
+        assert!(!canvas_dimensions_differ(800, 600, 800, 600));
+        assert!(canvas_dimensions_differ(800, 600, 801, 600));
+        assert!(canvas_dimensions_differ(800, 600, 800, 601));
+    }
 }
