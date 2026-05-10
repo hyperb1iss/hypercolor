@@ -22,6 +22,8 @@ use crate::protocol::TransferType;
 use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
+const PUSH2_MIDI_SHORT_PACKET_SPACING: Duration = Duration::from_micros(500);
+const PUSH2_MIDI_SYSEX_PACKET_SPACING: Duration = Duration::from_millis(1);
 const SYSEX_QUEUE_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +72,7 @@ pub struct Push2Transport {
     bulk_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
     bulk_buffer: Arc<Mutex<Option<Buffer>>>,
     midi_out: Arc<Mutex<MidiOutputConnection>>,
+    midi_next_send_at: AsyncMutex<Option<tokio::time::Instant>>,
     _midi_in: Mutex<Option<MidiInputConnection<()>>>,
     sysex_rx: AsyncMutex<mpsc::Receiver<Vec<u8>>>,
     closed: AtomicBool,
@@ -175,6 +178,7 @@ impl Push2Transport {
             bulk_endpoint: Arc::new(Mutex::new(bulk_endpoint)),
             bulk_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
             midi_out: Arc::new(Mutex::new(midi_connections.midi_out)),
+            midi_next_send_at: AsyncMutex::new(None),
             _midi_in: Mutex::new(Some(midi_connections.midi_in)),
             sysex_rx: AsyncMutex::new(rx),
             closed: AtomicBool::new(false),
@@ -196,6 +200,8 @@ impl Push2Transport {
             "push2 midi send"
         );
 
+        self.pace_midi_send(data.len()).await;
+
         let midi_out = Arc::clone(&self.midi_out);
         let packet = data.to_vec();
         spawn_blocking_transport_io("push2 midi send", move || {
@@ -204,6 +210,20 @@ impl Push2Transport {
                 .map_err(map_midi_send_error)
         })
         .await
+    }
+
+    async fn pace_midi_send(&self, packet_len: usize) {
+        let spacing = midi_packet_spacing(packet_len);
+        let mut next_send_at = self.midi_next_send_at.lock().await;
+        let now = tokio::time::Instant::now();
+
+        if let Some(deadline) = *next_send_at
+            && deadline > now
+        {
+            tokio::time::sleep_until(deadline).await;
+        }
+
+        *next_send_at = Some(tokio::time::Instant::now() + spacing);
     }
 
     async fn receive_sysex(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
@@ -587,6 +607,14 @@ fn normalize_usb_path(path: &str) -> Option<String> {
     Some(format!("{bus}-{ports}"))
 }
 
+fn midi_packet_spacing(packet_len: usize) -> Duration {
+    if packet_len <= 3 {
+        PUSH2_MIDI_SHORT_PACKET_SPACING
+    } else {
+        PUSH2_MIDI_SYSEX_PACKET_SPACING
+    }
+}
+
 #[doc(hidden)]
 #[must_use]
 pub fn classify_push2_port_for_testing(name: &str) -> Option<&'static str> {
@@ -607,6 +635,12 @@ pub fn midi_usb_path_from_sound_card_sysfs_for_testing(path: &str) -> Option<Str
 #[must_use]
 pub fn midi_usb_paths_match_for_testing(candidate: &str, requested: &str) -> bool {
     usb_paths_match(candidate, requested)
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn midi_packet_spacing_for_testing(packet_len: usize) -> Duration {
+    midi_packet_spacing(packet_len)
 }
 
 #[doc(hidden)]

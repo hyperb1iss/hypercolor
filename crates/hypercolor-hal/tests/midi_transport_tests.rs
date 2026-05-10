@@ -1,7 +1,9 @@
 use hypercolor_hal::transport::midi::{
-    classify_push2_port_for_testing, midi_usb_paths_match_for_testing,
-    select_push2_port_identity_for_testing,
+    classify_push2_port_for_testing, midi_packet_spacing_for_testing,
+    midi_usb_paths_match_for_testing, select_push2_port_identity_for_testing,
 };
+
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::midi::midi_usb_path_from_sound_card_sysfs_for_testing;
@@ -62,6 +64,19 @@ fn usb_path_matching_normalizes_bus_numbers() {
     assert!(midi_usb_paths_match_for_testing("01-6.3", "1-6.3"));
     assert!(midi_usb_paths_match_for_testing("1-6.3", "01-6.3"));
     assert!(!midi_usb_paths_match_for_testing("1-6.3", "1-6.4"));
+}
+
+#[test]
+fn midi_packet_spacing_paces_sysex_more_than_short_led_updates() {
+    assert_eq!(
+        midi_packet_spacing_for_testing(3),
+        Duration::from_micros(500)
+    );
+    assert_eq!(midi_packet_spacing_for_testing(9), Duration::from_millis(1));
+    assert_eq!(
+        midi_packet_spacing_for_testing(17),
+        Duration::from_millis(1)
+    );
 }
 
 #[cfg(target_os = "linux")]

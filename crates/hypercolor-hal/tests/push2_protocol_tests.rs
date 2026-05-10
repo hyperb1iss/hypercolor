@@ -271,7 +271,7 @@ fn push2_brightness_and_diagnostics_use_primary_sysex() {
 }
 
 #[test]
-fn push2_keepalive_reasserts_user_mode_and_resends_last_led_frame() {
+fn push2_keepalive_reasserts_user_mode_without_forced_led_resync() {
     let protocol = Push2Protocol::new();
     let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
     colors[0] = [255, 0, 0];
@@ -291,10 +291,11 @@ fn push2_keepalive_reasserts_user_mode_and_resends_last_led_frame() {
 
     let keepalive = protocol
         .keepalive()
-        .expect("Push 2 should run a MIDI resync keepalive");
+        .expect("Push 2 should run a MIDI mode keepalive");
     assert_eq!(keepalive.interval, Duration::from_secs(5));
 
     let resync = protocol.keepalive_commands();
+    assert_eq!(resync.len(), 2);
     assert_eq!(
         resync[0].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0x01, 0xF7]
@@ -304,16 +305,13 @@ fn push2_keepalive_reasserts_user_mode_and_resends_last_led_frame() {
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x17, 0x6B, 0xF7]
     );
     assert!(
-        resync.iter().any(
-            |command| command.data.first() == Some(&0xF0) && command.data.get(6) == Some(&0x03)
-        ),
-        "resync should force palette writes even when the software cache is already warm"
-    );
-    assert!(
         resync
             .iter()
-            .any(|command| command.data == vec![0x90, 36, 0x01]),
-        "resync should resend key mappings from the last frame"
+            .all(|command| command.transfer_type == TransferType::Primary)
+    );
+    assert!(
+        resync.iter().all(|command| command.data.len() <= 9),
+        "keepalive should stay lightweight enough to avoid ALSA MIDI bursts"
     );
 }
 
@@ -375,8 +373,9 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
     assert!(capabilities.supports_brightness);
     assert!(capabilities.has_display);
     assert_eq!(capabilities.display_resolution, Some((960, 160)));
+    assert_eq!(capabilities.max_fps, 30);
     assert_eq!(protocol.total_leds(), 160);
-    assert_eq!(protocol.frame_interval(), Duration::from_millis(16));
+    assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
 }
 
 #[test]

@@ -330,7 +330,7 @@ fn set_palette_entry(index: u8, r: u8, g: u8, b: u8) -> [u8; 17] {
 
 ### 4.4 Color Deduplication
 
-At 30–60 FPS, sending 90 SysEx palette updates per frame is expensive. Optimize with:
+At LED frame rates, sending 90 SysEx palette updates per frame is expensive. Optimize with:
 
 1. **Frame-level dedup** — hash current colors, only reprogram entries that changed from previous frame
 2. **Color quantization** — if >127 unique colors needed (unlikely for 90 LEDs), quantize to nearest
@@ -799,6 +799,7 @@ Step  Command                               Purpose
 - **User mode** (`0x01`) is required for external LED control. In Live mode, Ableton Live owns the LEDs.
 - **Dual mode** (`0x02`) allows both Live and the driver to send — risk of visual conflicts. Avoid unless explicitly requested.
 - The mode switch reply is echoed to **both** MIDI ports. The driver should expect and discard the echo on the Live port.
+- Runtime keepalive should stay lightweight: reassert User mode and touch-strip host control, but do not force a full palette/key resync. Large periodic MIDI bursts can overrun ALSA's `seq_midi` output buffer while the display bulk path remains healthy.
 
 ---
 
@@ -969,17 +970,17 @@ impl Protocol for Push2Protocol {
 
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
-            led_count: 123,
+            led_count: 160,
             supports_direct: true,
             supports_brightness: true,
             has_display: true,
             display_resolution: Some((960, 160)),
-            max_fps: 60,
+            max_fps: 30,
         }
     }
 
-    fn total_leds(&self) -> u32 { 123 }
-    fn frame_interval(&self) -> Duration { Duration::from_millis(16) } // 60 FPS
+    fn total_leds(&self) -> u32 { 160 }
+    fn frame_interval(&self) -> Duration { Duration::from_millis(33) } // 30 FPS
 }
 ```
 
@@ -993,7 +994,7 @@ impl Protocol for Push2Protocol {
 | Display brightness | ✓ (0–255)                       |
 | Animations         | Future (requires MIDI clock)    |
 | Input events       | Future (pad pressure, encoders) |
-| Keepalive          | Not needed (no timeout)         |
+| Keepalive          | ✓ (mode/touch-strip reassert)   |
 
 ---
 
