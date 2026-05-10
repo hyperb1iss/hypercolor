@@ -4,6 +4,8 @@ use anyhow::Result;
 #[cfg(not(feature = "wgpu"))]
 use anyhow::bail;
 
+#[cfg(feature = "wgpu")]
+use crate::render_thread::gpu_device::GpuRenderDevice;
 use hypercolor_types::config::RenderAccelerationMode;
 
 const GPU_COMPOSITOR_UNAVAILABLE_REASON: &str = "gpu compositor acceleration is unavailable";
@@ -23,12 +25,31 @@ pub(crate) struct GpuCompositorProbeInfo {
     pub(crate) linux_servo_gpu_import_backend_reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct CompositorAccelerationResolution {
     pub(crate) requested_mode: RenderAccelerationMode,
     pub(crate) effective_mode: RenderAccelerationMode,
     pub(crate) fallback_reason: Option<&'static str>,
     pub(crate) gpu_probe: Option<GpuCompositorProbeInfo>,
+    #[cfg(feature = "wgpu")]
+    pub(crate) gpu_render_device: Option<GpuRenderDevice>,
+}
+
+#[cfg(feature = "wgpu")]
+struct GpuCompositorProbeResult {
+    info: GpuCompositorProbeInfo,
+    render_device: Option<GpuRenderDevice>,
+}
+
+#[cfg(feature = "wgpu")]
+impl GpuCompositorProbeResult {
+    #[cfg(test)]
+    const fn from_info(info: GpuCompositorProbeInfo) -> Self {
+        Self {
+            info,
+            render_device: None,
+        }
+    }
 }
 
 pub(crate) const fn cpu_compositor_acceleration_resolution() -> CompositorAccelerationResolution {
@@ -37,6 +58,8 @@ pub(crate) const fn cpu_compositor_acceleration_resolution() -> CompositorAccele
         effective_mode: RenderAccelerationMode::Cpu,
         fallback_reason: None,
         gpu_probe: None,
+        #[cfg(feature = "wgpu")]
+        gpu_render_device: None,
     }
 }
 
@@ -49,6 +72,8 @@ pub(crate) fn resolve_compositor_acceleration_mode(
             effective_mode: RenderAccelerationMode::Cpu,
             fallback_reason: None,
             gpu_probe: None,
+            #[cfg(feature = "wgpu")]
+            gpu_render_device: None,
         }),
         RenderAccelerationMode::Auto => resolve_auto_mode(requested_mode),
         RenderAccelerationMode::Gpu => resolve_explicit_gpu_mode(requested_mode),
@@ -95,7 +120,8 @@ fn resolve_explicit_gpu_mode(
             requested_mode,
             effective_mode: RenderAccelerationMode::Gpu,
             fallback_reason: None,
-            gpu_probe: Some(probe),
+            gpu_probe: Some(probe.info),
+            gpu_render_device: probe.render_device,
         })
         .with_context(|| {
             format!(
@@ -114,18 +140,20 @@ fn resolve_explicit_gpu_mode(
 }
 
 #[cfg(feature = "wgpu")]
-fn probe_gpu_compositor() -> Result<GpuCompositorProbeInfo> {
-    let render_device = crate::render_thread::gpu_device::GpuRenderDevice::new(
-        "SparkleFlinger GPU compositor probe",
-    )?;
-    crate::render_thread::sparkleflinger::gpu::probe_render_device(&render_device)
-        .map(GpuCompositorProbeInfo::from)
+fn probe_gpu_compositor() -> Result<GpuCompositorProbeResult> {
+    let render_device = GpuRenderDevice::new("SparkleFlinger GPU compositor")?;
+    let info = crate::render_thread::sparkleflinger::gpu::probe_render_device(&render_device)
+        .map(GpuCompositorProbeInfo::from)?;
+    Ok(GpuCompositorProbeResult {
+        info,
+        render_device: Some(render_device),
+    })
 }
 
 #[cfg(feature = "wgpu")]
 fn resolve_auto_mode_from_probe(
     requested_mode: RenderAccelerationMode,
-    probe: Result<GpuCompositorProbeInfo>,
+    probe: Result<GpuCompositorProbeResult>,
     fallback_reason: &'static str,
 ) -> CompositorAccelerationResolution {
     match probe {
@@ -133,13 +161,15 @@ fn resolve_auto_mode_from_probe(
             requested_mode,
             effective_mode: RenderAccelerationMode::Gpu,
             fallback_reason: None,
-            gpu_probe: Some(probe),
+            gpu_probe: Some(probe.info),
+            gpu_render_device: probe.render_device,
         },
         Err(_) => CompositorAccelerationResolution {
             requested_mode,
             effective_mode: RenderAccelerationMode::Cpu,
             fallback_reason: Some(fallback_reason),
             gpu_probe: None,
+            gpu_render_device: None,
         },
     }
 }
@@ -171,7 +201,8 @@ mod tests {
     use super::resolve_compositor_acceleration_mode;
     #[cfg(feature = "wgpu")]
     use super::{
-        AUTO_GPU_PROBE_FAILED_REASON, GpuCompositorProbeInfo, resolve_auto_mode_from_probe,
+        AUTO_GPU_PROBE_FAILED_REASON, GpuCompositorProbeInfo, GpuCompositorProbeResult,
+        resolve_auto_mode_from_probe,
     };
 
     #[cfg(feature = "wgpu")]
@@ -216,7 +247,7 @@ mod tests {
     fn auto_mode_selects_gpu_when_probe_succeeds() {
         let resolution = resolve_auto_mode_from_probe(
             RenderAccelerationMode::Auto,
-            Ok(test_gpu_probe()),
+            Ok(GpuCompositorProbeResult::from_info(test_gpu_probe())),
             AUTO_GPU_PROBE_FAILED_REASON,
         );
         assert_eq!(resolution.effective_mode, RenderAccelerationMode::Gpu);

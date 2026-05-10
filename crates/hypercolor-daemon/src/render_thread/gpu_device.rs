@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
-pub(crate) struct GpuRenderDevice {
+pub struct GpuRenderDevice {
     inner: Arc<GpuRenderDeviceInner>,
 }
 

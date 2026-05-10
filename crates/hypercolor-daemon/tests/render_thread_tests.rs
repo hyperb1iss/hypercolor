@@ -881,6 +881,8 @@ fn make_render_state(
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        #[cfg(feature = "wgpu")]
+        render_gpu_device: None,
         configured_max_fps_tier: FpsTier::Full.into(),
     }
 }
@@ -2435,6 +2437,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        #[cfg(feature = "wgpu")]
+        render_gpu_device: None,
         configured_max_fps_tier: FpsTier::Full.into(),
     };
 
@@ -3831,6 +3835,8 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
         render_acceleration_mode: RenderAccelerationMode::Cpu,
+        #[cfg(feature = "wgpu")]
+        render_gpu_device: None,
         configured_max_fps_tier: FpsTier::Full.into(),
     };
 

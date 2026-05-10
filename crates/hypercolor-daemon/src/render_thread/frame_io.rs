@@ -617,6 +617,8 @@ mod tests {
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(4, 4),
             render_acceleration_mode: RenderAccelerationMode::Cpu,
+            #[cfg(feature = "wgpu")]
+            render_gpu_device: None,
             configured_max_fps_tier: FpsTier::Full.into(),
         }
     }

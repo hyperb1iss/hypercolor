@@ -27,7 +27,8 @@ mod frame_reporting;
 mod frame_sampling;
 mod frame_throttle;
 #[cfg(feature = "wgpu")]
-pub(crate) mod gpu_device;
+#[doc(hidden)]
+pub mod gpu_device;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
@@ -224,6 +225,10 @@ pub struct RenderThreadState {
 
     /// Resolved render acceleration mode for the pipeline.
     pub render_acceleration_mode: RenderAccelerationMode,
+
+    /// Resolved GPU render device from startup probing.
+    #[cfg(feature = "wgpu")]
+    pub render_gpu_device: Option<gpu_device::GpuRenderDevice>,
 
     /// Ceiling derived from user configuration before runtime admission.
     pub configured_max_fps_tier: ConfiguredFpsTier,

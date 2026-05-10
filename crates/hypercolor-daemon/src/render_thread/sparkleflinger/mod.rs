@@ -14,6 +14,8 @@ use hypercolor_types::event::ZoneColors;
 
 use crate::performance::CompositorBackendKind;
 #[cfg(feature = "wgpu")]
+use crate::render_thread::gpu_device::GpuRenderDevice;
+#[cfg(feature = "wgpu")]
 use crate::render_thread::sparkleflinger::gpu::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
 
 use super::producer_queue::ProducerFrame;
@@ -230,6 +232,17 @@ impl SparkleFlinger {
     }
 
     pub fn new(mode: RenderAccelerationMode) -> Result<Self> {
+        Self::new_with_gpu_device(
+            mode,
+            #[cfg(feature = "wgpu")]
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_gpu_device(
+        mode: RenderAccelerationMode,
+        #[cfg(feature = "wgpu")] render_device: Option<GpuRenderDevice>,
+    ) -> Result<Self> {
         let backend = match mode {
             RenderAccelerationMode::Cpu => {
                 SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
@@ -237,7 +250,10 @@ impl SparkleFlinger {
             RenderAccelerationMode::Auto => bail!(
                 "auto compositor acceleration must be resolved before constructing SparkleFlinger"
             ),
-            RenderAccelerationMode::Gpu => new_gpu_backend()?,
+            RenderAccelerationMode::Gpu => new_gpu_backend(
+                #[cfg(feature = "wgpu")]
+                render_device,
+            )?,
         };
         Ok(Self {
             backend,
@@ -561,8 +577,12 @@ fn gpu_frame_without_cpu_fallback() -> ComposedFrameSet {
 }
 
 #[cfg(feature = "wgpu")]
-fn new_gpu_backend() -> Result<SparkleFlingerBackend> {
-    let gpu = gpu::GpuSparkleFlinger::new()?;
+fn new_gpu_backend(render_device: Option<GpuRenderDevice>) -> Result<SparkleFlingerBackend> {
+    let gpu = if let Some(render_device) = render_device {
+        gpu::GpuSparkleFlinger::with_render_device(render_device)?
+    } else {
+        gpu::GpuSparkleFlinger::new()?
+    };
     Ok(SparkleFlingerBackend::Gpu {
         gpu,
         cpu_fallback: cpu::CpuSparkleFlinger::new(),

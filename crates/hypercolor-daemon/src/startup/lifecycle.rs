@@ -92,6 +92,8 @@ impl DaemonState {
             screen_capture_configured: config.capture.enabled,
             canvas_dims: CanvasDims::new(config.daemon.canvas_width, config.daemon.canvas_height),
             render_acceleration_mode: self.render_acceleration.effective_mode,
+            #[cfg(feature = "wgpu")]
+            render_gpu_device: self.render_acceleration.gpu_render_device.clone(),
             configured_max_fps_tier: self.configured_max_fps_tier.clone(),
         };
         self.render_thread = Some(

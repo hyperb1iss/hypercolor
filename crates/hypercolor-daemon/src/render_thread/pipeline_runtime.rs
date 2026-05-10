@@ -25,6 +25,8 @@ use super::desired_render_surface_slots;
 use super::frame_composer::RenderStageStats;
 use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
+#[cfg(feature = "wgpu")]
+use super::gpu_device::GpuRenderDevice;
 use super::producer_queue::ProducerQueue;
 use super::render_groups::{RenderGroupResult, RenderGroupRuntime};
 use super::scene_dependency::SceneDependencyKey;
@@ -1000,22 +1002,46 @@ pub(crate) struct PipelineRuntime {
 impl PipelineRuntime {
     pub(crate) async fn from_state(state: &RenderThreadState) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.read().await.clone();
-        Self::new(
+        Self::new_with_gpu_device(
             state.canvas_dims.width(),
             state.canvas_dims.height(),
             initial_spatial_engine,
             state.screen_capture_configured,
             state.render_acceleration_mode,
+            #[cfg(feature = "wgpu")]
+            state.render_gpu_device.clone(),
             state.configured_max_fps_tier.get(),
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         canvas_width: u32,
         canvas_height: u32,
         initial_spatial_engine: SpatialEngine,
         screen_capture_configured: bool,
         render_acceleration_mode: RenderAccelerationMode,
+        configured_max_fps_tier: FpsTier,
+    ) -> Result<Self> {
+        Self::new_with_gpu_device(
+            canvas_width,
+            canvas_height,
+            initial_spatial_engine,
+            screen_capture_configured,
+            render_acceleration_mode,
+            #[cfg(feature = "wgpu")]
+            None,
+            configured_max_fps_tier,
+        )
+    }
+
+    fn new_with_gpu_device(
+        canvas_width: u32,
+        canvas_height: u32,
+        initial_spatial_engine: SpatialEngine,
+        screen_capture_configured: bool,
+        render_acceleration_mode: RenderAccelerationMode,
+        #[cfg(feature = "wgpu")] render_gpu_device: Option<GpuRenderDevice>,
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
         Ok(Self {
@@ -1031,7 +1057,11 @@ impl PipelineRuntime {
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
-                sparkleflinger: SparkleFlinger::new(render_acceleration_mode)?,
+                sparkleflinger: SparkleFlinger::new_with_gpu_device(
+                    render_acceleration_mode,
+                    #[cfg(feature = "wgpu")]
+                    render_gpu_device,
+                )?,
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
                 render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
