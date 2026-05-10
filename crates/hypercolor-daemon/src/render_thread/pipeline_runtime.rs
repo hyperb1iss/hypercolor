@@ -636,8 +636,6 @@ pub(crate) struct RenderCaches {
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: RenderGroupRuntime,
-    #[cfg(feature = "servo-gpu-import")]
-    pub(crate) render_gpu_device: Option<GpuRenderDevice>,
     pub(crate) render_surface_pool: RenderSurfacePool,
     pub(crate) output_artifacts: OutputArtifactsState,
 }
@@ -944,12 +942,7 @@ impl RenderCaches {
             SurfaceDescriptor::rgba8888(width, height),
             desired_render_surface_slots(0),
         );
-        self.render_group_runtime = RenderGroupRuntime::new_with_gpu_device(
-            width,
-            height,
-            #[cfg(feature = "servo-gpu-import")]
-            self.render_gpu_device.clone(),
-        );
+        self.render_group_runtime = RenderGroupRuntime::new(width, height);
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts.reset_for_canvas_resize();
@@ -1067,18 +1060,11 @@ impl PipelineRuntime {
                 sparkleflinger: SparkleFlinger::new_with_gpu_device(
                     render_acceleration_mode,
                     #[cfg(feature = "wgpu")]
-                    render_gpu_device.clone(),
+                    render_gpu_device,
                 )?,
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
-                render_group_runtime: RenderGroupRuntime::new_with_gpu_device(
-                    canvas_width,
-                    canvas_height,
-                    #[cfg(feature = "servo-gpu-import")]
-                    render_gpu_device.clone(),
-                ),
-                #[cfg(feature = "servo-gpu-import")]
-                render_gpu_device,
+                render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
                     desired_render_surface_slots(0),

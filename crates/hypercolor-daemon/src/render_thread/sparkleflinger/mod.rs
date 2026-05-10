@@ -548,15 +548,6 @@ impl SparkleFlinger {
         }
     }
 
-    #[cfg(feature = "servo-gpu-import")]
-    pub(crate) fn has_pending_preview_work(&self) -> bool {
-        match &self.backend {
-            SparkleFlingerBackend::Cpu(_) => false,
-            #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.has_pending_preview_work(),
-        }
-    }
-
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => false,

@@ -846,15 +846,6 @@ impl GpuSparkleFlinger {
         self.discard_superseded_preview_work();
     }
 
-    #[cfg(feature = "servo-gpu-import")]
-    pub(crate) fn has_pending_preview_work(&self) -> bool {
-        self.pending_output_submission.is_some()
-            || self.pending_preview_readback.is_some()
-            || self.pending_preview_submission.is_some()
-            || self.pending_preview_map.is_some()
-            || self.ready_preview_surface.is_some()
-    }
-
     fn preview_submission_ready(
         &mut self,
         submission_index: wgpu::SubmissionIndex,
