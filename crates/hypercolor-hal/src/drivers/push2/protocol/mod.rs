@@ -27,7 +27,6 @@ const PUSH2_TOUCH_STRIP_LED_COUNT: usize = 31;
 const PUSH2_RGB_BUTTON_COUNT: usize = 28;
 const PUSH2_PALETTE_SIZE: usize = 128;
 const PUSH2_RGB_SLOT_LIMIT: usize = 97;
-const PUSH2_FRAME_MIDI_COMMAND_BUDGET: usize = 8;
 const PUSH2_WHITE_SLOT_START: u8 = 97;
 const PUSH2_WHITE_SLOT_COUNT: u8 = 31;
 const PUSH2_DISPLAY_WIDTH: usize = 960;
@@ -171,10 +170,9 @@ impl Protocol for Push2Protocol {
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
         state.last_colors = [[0; 3]; PUSH2_TOTAL_LEDS];
         state.last_frame_seen = false;
+        drop(state);
 
-        let mut commands = Vec::with_capacity(
-            3 + PUSH2_PALETTE_SIZE + (PUSH2_PALETTE_SIZE - 1) + 1 + PUSH2_MIDI_LED_COUNT + 1,
-        );
+        let mut commands = Vec::with_capacity(3 + PUSH2_PALETTE_SIZE + PUSH2_MIDI_LED_COUNT + 1);
         commands.push(ProtocolCommand {
             data: PUSH2_IDENTITY_REQUEST.to_vec(),
             expects_response: true,
@@ -202,9 +200,6 @@ impl Protocol for Push2Protocol {
                 true,
             ));
         }
-        commands.extend(led_palette::static_palette_setup_commands(&mut state));
-        drop(state);
-
         commands.extend(led_palette::all_leds_off_commands());
         commands
     }

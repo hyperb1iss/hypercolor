@@ -4,40 +4,19 @@
 //! addressed by palette index rather than raw color, so the host must manage
 //! slot assignment, white-button quantization, and factory palette restoration.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::protocol::{CommandBuffer, ProtocolCommand, ProtocolError, TransferType};
 
 use super::{
-    PAD_NOTE_MAP, PUSH2_CMD_SET_TOUCH_STRIP_LEDS, PUSH2_FRAME_MIDI_COMMAND_BUDGET,
-    PUSH2_MIDI_LED_COUNT, PUSH2_PAD_COUNT, PUSH2_PALETTE_SIZE, PUSH2_REAPPLY_PALETTE_MESSAGE,
-    PUSH2_RGB_BUTTON_COUNT, PUSH2_RGB_LED_COUNT, PUSH2_RGB_SLOT_LIMIT, PUSH2_TOUCH_STRIP_LED_COUNT,
-    PUSH2_WHITE_BUTTON_COUNT, PUSH2_WHITE_SLOT_COUNT, PUSH2_WHITE_SLOT_START, Push2State,
-    RGB_BUTTON_CC_MAP, WHITE_BUTTON_CC_MAP, decode_sysex_byte, primary_command,
-    primary_command_slice, set_palette_entry_message,
+    PAD_NOTE_MAP, PUSH2_CMD_SET_TOUCH_STRIP_LEDS, PUSH2_MIDI_LED_COUNT, PUSH2_PAD_COUNT,
+    PUSH2_PALETTE_SIZE, PUSH2_REAPPLY_PALETTE_MESSAGE, PUSH2_RGB_BUTTON_COUNT, PUSH2_RGB_LED_COUNT,
+    PUSH2_RGB_SLOT_LIMIT, PUSH2_TOUCH_STRIP_LED_COUNT, PUSH2_WHITE_BUTTON_COUNT,
+    PUSH2_WHITE_SLOT_COUNT, PUSH2_WHITE_SLOT_START, Push2State, RGB_BUTTON_CC_MAP,
+    WHITE_BUTTON_CC_MAP, decode_sysex_byte, primary_command, primary_command_slice,
+    set_palette_entry_message,
 };
-
-pub(super) fn static_palette_setup_commands(state: &mut Push2State) -> Vec<ProtocolCommand> {
-    let mut commands = Vec::with_capacity(PUSH2_PALETTE_SIZE);
-
-    for slot in 1..PUSH2_RGB_SLOT_LIMIT {
-        let slot = u8::try_from(slot).unwrap_or(u8::MAX);
-        let entry = static_rgb_palette_entry(slot);
-        let message = set_palette_entry_message(slot, entry);
-        commands.push(primary_command_slice(&message, false));
-        state.palette[usize::from(slot)] = entry;
-    }
-
-    for slot in PUSH2_WHITE_SLOT_START..PUSH2_WHITE_SLOT_START + PUSH2_WHITE_SLOT_COUNT {
-        let entry = static_white_palette_entry(slot);
-        let message = set_palette_entry_message(slot, entry);
-        commands.push(primary_command_slice(&message, false));
-        state.palette[usize::from(slot)] = entry;
-    }
-
-    commands.push(primary_command_slice(&PUSH2_REAPPLY_PALETTE_MESSAGE, false));
-    commands
-}
 
 pub(super) fn restore_factory_palette_commands(state: &mut Push2State) -> Vec<ProtocolCommand> {
     let mut commands = Vec::new();
@@ -49,6 +28,10 @@ pub(super) fn restore_factory_palette_commands(state: &mut Push2State) -> Vec<Pr
         }
 
         let factory = state.factory_palette[index];
+        if state.palette[index] == factory {
+            continue;
+        }
+
         let message = set_palette_entry_message(u8::try_from(index).unwrap_or(u8::MAX), factory);
         commands.push(primary_command_slice(&message, false));
         state.palette[index] = factory;
@@ -62,6 +45,10 @@ pub(super) fn restore_factory_palette_commands(state: &mut Push2State) -> Vec<Pr
     commands
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "push2 frame encoding has inherent per-zone complexity"
+)]
 pub(super) fn encode_led_frame(
     state: &mut Push2State,
     normalized: &[[u8; 3]],
@@ -71,38 +58,120 @@ pub(super) fn encode_led_frame(
     let rgb_colors = &normalized[..PUSH2_RGB_LED_COUNT];
     let white_button_colors = &normalized[PUSH2_RGB_LED_COUNT..PUSH2_MIDI_LED_COUNT];
     let touch_strip_colors = &normalized[PUSH2_MIDI_LED_COUNT..];
+    let mut color_slots = HashMap::with_capacity(PUSH2_RGB_LED_COUNT);
+    let mut assigned_slots = [false; PUSH2_PALETTE_SIZE];
+    let live_rgb_slots = collect_live_rgb_slots(&state.prev_led_indices[..PUSH2_RGB_LED_COUNT]);
     let mut white_button_slots = [0_u8; PUSH2_WHITE_BUTTON_COUNT];
-    let mut rgb_slots = [0_u8; PUSH2_RGB_LED_COUNT];
-    let mut remaining_commands = PUSH2_FRAME_MIDI_COMMAND_BUDGET;
+    assigned_slots[0] = true;
+    assigned_slots[PUSH2_RGB_SLOT_LIMIT..].fill(true);
+    color_slots.insert([0, 0, 0], 0_u8);
 
     let mut command_buffer = CommandBuffer::new(commands);
+    let mut palette_dirty = false;
 
     for (index, color) in rgb_colors.iter().enumerate() {
-        rgb_slots[index] = static_rgb_palette_slot(*color);
+        if color_slots.contains_key(color) {
+            continue;
+        }
+
+        let entry = palette_entry(*color);
+        let slot = if let Some(preferred) =
+            preferred_rgb_slot(state, rgb_colors, index, entry, &assigned_slots)
+        {
+            if force_palette_write || state.palette[usize::from(preferred)] != entry {
+                let message = set_palette_entry_message(preferred, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(preferred)] = entry;
+                palette_dirty = true;
+            }
+            preferred
+        } else if let Some(existing) = find_existing_slot(state, entry, &assigned_slots) {
+            if force_palette_write {
+                let message = set_palette_entry_message(existing, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(existing)] = entry;
+                palette_dirty = true;
+            }
+            existing
+        } else if let Some(free_slot) = next_free_inactive_slot(&assigned_slots, &live_rgb_slots) {
+            if force_palette_write || state.palette[usize::from(free_slot)] != entry {
+                let message = set_palette_entry_message(free_slot, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(free_slot)] = entry;
+                palette_dirty = true;
+            }
+            free_slot
+        } else {
+            let free_slot = next_free_slot(&assigned_slots)
+                .expect("Push 2 RGB zones use at most 92 unique colors");
+            if force_palette_write || state.palette[usize::from(free_slot)] != entry {
+                let message = set_palette_entry_message(free_slot, entry);
+                command_buffer.push_slice(
+                    &message,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(free_slot)] = entry;
+                palette_dirty = true;
+            }
+            free_slot
+        };
+        assigned_slots[usize::from(slot)] = true;
+        color_slots.insert(*color, slot);
     }
 
     for (index, color) in white_button_colors.iter().enumerate() {
-        let slot = white_button_palette_slot(*color);
+        let (slot, entry) = white_button_palette_slot(*color);
         white_button_slots[index] = slot;
-    }
-
-    if force_palette_write {
-        for command in static_palette_setup_commands(state) {
+        if slot != 0 && (force_palette_write || state.palette[usize::from(slot)] != entry) {
+            let message = set_palette_entry_message(slot, entry);
             command_buffer.push_slice(
-                command.data.as_slice(),
-                command.expects_response,
-                command.response_delay,
-                command.post_delay,
-                command.transfer_type,
+                &message,
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
             );
+            state.palette[usize::from(slot)] = entry;
+            palette_dirty = true;
         }
     }
 
-    for (index, slot) in rgb_slots.iter().copied().take(PUSH2_PAD_COUNT).enumerate() {
+    if palette_dirty {
+        command_buffer.push_slice(
+            &PUSH2_REAPPLY_PALETTE_MESSAGE,
+            false,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Primary,
+        );
+    }
+
+    for (index, color) in rgb_colors.iter().take(PUSH2_PAD_COUNT).enumerate() {
+        let slot = *color_slots
+            .get(color)
+            .expect("pad colors should always resolve to a palette slot");
         if state.prev_led_indices[index] == slot {
-            continue;
-        }
-        if remaining_commands == 0 {
             continue;
         }
 
@@ -114,15 +183,14 @@ pub(super) fn encode_led_frame(
             TransferType::Primary,
         );
         state.prev_led_indices[index] = slot;
-        remaining_commands -= 1;
     }
 
-    for (index, slot) in rgb_slots[PUSH2_PAD_COUNT..].iter().copied().enumerate() {
+    for (index, color) in rgb_colors[PUSH2_PAD_COUNT..].iter().enumerate() {
+        let slot = *color_slots
+            .get(color)
+            .expect("button colors should always resolve to a palette slot");
         let led_index = PUSH2_PAD_COUNT + index;
         if state.prev_led_indices[led_index] == slot {
-            continue;
-        }
-        if remaining_commands == 0 {
             continue;
         }
 
@@ -134,15 +202,11 @@ pub(super) fn encode_led_frame(
             TransferType::Primary,
         );
         state.prev_led_indices[led_index] = slot;
-        remaining_commands -= 1;
     }
 
     for (index, slot) in white_button_slots.iter().copied().enumerate() {
         let led_index = PUSH2_RGB_LED_COUNT + index;
         if state.prev_led_indices[led_index] == slot {
-            continue;
-        }
-        if remaining_commands == 0 {
             continue;
         }
 
@@ -154,11 +218,10 @@ pub(super) fn encode_led_frame(
             TransferType::Primary,
         );
         state.prev_led_indices[led_index] = slot;
-        remaining_commands -= 1;
     }
 
     let strip_levels = quantize_touch_strip(touch_strip_colors);
-    if strip_levels != state.prev_touch_strip && remaining_commands > 0 {
+    if strip_levels != state.prev_touch_strip {
         let packed = encode_touch_strip(&strip_levels);
         let message = touch_strip_message(&packed);
         command_buffer.push_slice(
@@ -232,46 +295,96 @@ fn palette_entry(rgb: [u8; 3]) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], derive_white_channel(rgb)]
 }
 
-fn static_rgb_palette_slot(rgb: [u8; 3]) -> u8 {
-    if rgb == [0, 0, 0] {
-        return 0;
+fn find_existing_slot(
+    state: &Push2State,
+    entry: [u8; 4],
+    assigned_slots: &[bool; 128],
+) -> Option<u8> {
+    state
+        .palette
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, current)| {
+            (*current == entry && !assigned_slots[index]).then(|| u8::try_from(index).ok())
+        })
+        .flatten()
+}
+
+fn next_free_slot(assigned_slots: &[bool; 128]) -> Option<u8> {
+    assigned_slots
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(PUSH2_RGB_SLOT_LIMIT - 1)
+        .find_map(|(index, assigned)| (!assigned).then(|| u8::try_from(index).ok()))
+        .flatten()
+}
+
+fn collect_live_rgb_slots(prev_led_indices: &[u8]) -> [bool; 128] {
+    let mut live_slots = [false; 128];
+    for slot in prev_led_indices.iter().copied() {
+        if is_rgb_palette_slot(slot) {
+            live_slots[usize::from(slot)] = true;
+        }
+    }
+    live_slots
+}
+
+fn preferred_rgb_slot(
+    state: &Push2State,
+    rgb_colors: &[[u8; 3]],
+    led_index: usize,
+    entry: [u8; 4],
+    assigned_slots: &[bool; 128],
+) -> Option<u8> {
+    let slot = state.prev_led_indices[led_index];
+    if !is_rgb_palette_slot(slot) || assigned_slots[usize::from(slot)] {
+        return None;
     }
 
-    let red = quantize_channel(rgb[0], 3);
-    let green = quantize_channel(rgb[1], 5);
-    let blue = quantize_channel(rgb[2], 3);
-    1 + red * 24 + green * 4 + blue
+    rgb_slot_rewrite_is_safe(
+        &state.prev_led_indices[..PUSH2_RGB_LED_COUNT],
+        rgb_colors,
+        slot,
+        entry,
+    )
+    .then_some(slot)
 }
 
-fn static_rgb_palette_entry(slot: u8) -> [u8; 4] {
-    let index = slot.saturating_sub(1);
-    let red = index / 24;
-    let green = (index % 24) / 4;
-    let blue = index % 4;
-    palette_entry([
-        scale_palette_channel(red, 3),
-        scale_palette_channel(green, 5),
-        scale_palette_channel(blue, 3),
-    ])
+fn rgb_slot_rewrite_is_safe(
+    prev_led_indices: &[u8],
+    rgb_colors: &[[u8; 3]],
+    slot: u8,
+    entry: [u8; 4],
+) -> bool {
+    prev_led_indices
+        .iter()
+        .zip(rgb_colors.iter())
+        .filter(|(current_slot, _)| **current_slot == slot)
+        .all(|(_, color)| palette_entry(*color) == entry)
 }
 
-fn quantize_channel(channel: u8, max_level: u8) -> u8 {
-    u8::try_from((u16::from(channel) * u16::from(max_level) + 127) / 255).unwrap_or(max_level)
+fn next_free_inactive_slot(assigned_slots: &[bool; 128], live_slots: &[bool; 128]) -> Option<u8> {
+    assigned_slots
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(PUSH2_RGB_SLOT_LIMIT - 1)
+        .find_map(|(index, assigned)| {
+            (!assigned && !live_slots[index]).then(|| u8::try_from(index).ok())
+        })
+        .flatten()
 }
 
-fn scale_palette_channel(level: u8, max_level: u8) -> u8 {
-    if max_level == 0 {
-        return 0;
-    }
-
-    u8::try_from((u16::from(level) * 255 + u16::from(max_level) / 2) / u16::from(max_level))
-        .unwrap_or(u8::MAX)
+fn is_rgb_palette_slot(slot: u8) -> bool {
+    usize::from(slot) < PUSH2_RGB_SLOT_LIMIT && slot != 0
 }
 
-fn white_button_palette_slot(rgb: [u8; 3]) -> u8 {
+fn white_button_palette_slot(rgb: [u8; 3]) -> (u8, [u8; 4]) {
     let white = derive_white_channel(rgb);
     if white == 0 {
-        return 0;
+        return (0, [0; 4]);
     }
 
     let level = 1_u8.saturating_add(
@@ -283,15 +396,13 @@ fn white_button_palette_slot(rgb: [u8; 3]) -> u8 {
         .unwrap_or(PUSH2_WHITE_SLOT_COUNT.saturating_sub(1)),
     );
 
-    PUSH2_WHITE_SLOT_START + level - 1
-}
-
-fn static_white_palette_entry(slot: u8) -> [u8; 4] {
-    let level = slot.saturating_sub(PUSH2_WHITE_SLOT_START) + 1;
     let quantized_white =
         u8::try_from((u16::from(level) * 255 + 15) / u16::from(PUSH2_WHITE_SLOT_COUNT))
             .unwrap_or(u8::MAX);
-    [0, 0, 0, quantized_white]
+    (
+        PUSH2_WHITE_SLOT_START + level - 1,
+        [0, 0, 0, quantized_white],
+    )
 }
 
 fn encode_touch_strip(levels: &[u8; PUSH2_TOUCH_STRIP_LED_COUNT]) -> [u8; 16] {

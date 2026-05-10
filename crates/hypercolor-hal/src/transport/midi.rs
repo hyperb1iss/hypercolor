@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use alsa::seq::Seq;
+use alsa::{Direction, Rawmidi, seq::Seq};
 use async_trait::async_trait;
 use midir::{
     ConnectError, Ignore, InitError, MidiIO, MidiInput, MidiInputConnection, MidiOutput,
@@ -16,7 +16,7 @@ use midir::{
 };
 use nusb::transfer::{Buffer, Bulk, Out, TransferError};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::protocol::TransferType;
 use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
@@ -59,8 +59,27 @@ struct Push2PortMatch<P> {
 struct Push2MidiConnections {
     input_name: String,
     output_name: String,
-    midi_out: MidiOutputConnection,
+    midi_out: Push2MidiOutput,
     midi_in: MidiInputConnection<()>,
+}
+
+enum Push2MidiOutput {
+    Midir(MidiOutputConnection),
+    #[cfg(target_os = "linux")]
+    Raw(Rawmidi),
+}
+
+impl Push2MidiOutput {
+    fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        match self {
+            Self::Midir(midi_out) => midi_out.send(data).map_err(map_midi_send_error),
+            #[cfg(target_os = "linux")]
+            Self::Raw(rawmidi) => {
+                let mut io = rawmidi.io();
+                std::io::Write::write_all(&mut io, data).map_err(map_rawmidi_send_error)
+            }
+        }
+    }
 }
 
 /// Composite transport that routes `Primary` traffic over MIDI and `Bulk`
@@ -71,7 +90,7 @@ pub struct Push2Transport {
     bulk_endpoint_address: u8,
     bulk_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
     bulk_buffer: Arc<Mutex<Option<Buffer>>>,
-    midi_out: Arc<Mutex<MidiOutputConnection>>,
+    midi_out: Arc<Mutex<Push2MidiOutput>>,
     midi_next_send_at: AsyncMutex<Option<tokio::time::Instant>>,
     _midi_in: Mutex<Option<MidiInputConnection<()>>>,
     sysex_rx: AsyncMutex<mpsc::Receiver<Vec<u8>>>,
@@ -205,9 +224,7 @@ impl Push2Transport {
         let midi_out = Arc::clone(&self.midi_out);
         let packet = data.to_vec();
         spawn_blocking_transport_io("push2 midi send", move || {
-            lock_mutex(midi_out.as_ref(), "MIDI output")?
-                .send(packet.as_slice())
-                .map_err(map_midi_send_error)
+            lock_mutex(midi_out.as_ref(), "MIDI output")?.send(packet.as_slice())
         })
         .await
     }
@@ -418,9 +435,7 @@ fn open_push2_midi_connections(
             (),
         )
         .map_err(|error| map_midi_connect_error(&error, "input"))?;
-    let midi_out = midi_out
-        .connect(&output_port, "hypercolor-push2-output")
-        .map_err(|error| map_midi_connect_error(&error, "output"))?;
+    let midi_out = open_push2_midi_output(midi_out, &output_port, &output_name)?;
 
     Ok(Push2MidiConnections {
         input_name,
@@ -428,6 +443,54 @@ fn open_push2_midi_connections(
         midi_out,
         midi_in,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn open_push2_midi_output(
+    midi_out: MidiOutput,
+    output_port: &midir::MidiOutputPort,
+    output_name: &str,
+) -> Result<Push2MidiOutput, TransportError> {
+    let output_port_id = output_port.push2_port_id();
+    if let Some(rawmidi_name) = rawmidi_name_from_seq_port_id(&output_port_id) {
+        match Rawmidi::new(&rawmidi_name, Direction::Playback, false) {
+            Ok(rawmidi) => {
+                debug!(
+                    midi_output = output_name,
+                    midi_port_id = output_port_id,
+                    rawmidi = rawmidi_name,
+                    "opened Push 2 raw MIDI output"
+                );
+                return Ok(Push2MidiOutput::Raw(rawmidi));
+            }
+            Err(error) => {
+                warn!(
+                    midi_output = output_name,
+                    midi_port_id = output_port_id,
+                    rawmidi = rawmidi_name,
+                    error = %error,
+                    "failed to open Push 2 raw MIDI output; falling back to sequencer output"
+                );
+            }
+        }
+    }
+
+    midi_out
+        .connect(output_port, "hypercolor-push2-output")
+        .map(Push2MidiOutput::Midir)
+        .map_err(|error| map_midi_connect_error(&error, "output"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_push2_midi_output(
+    midi_out: MidiOutput,
+    output_port: &midir::MidiOutputPort,
+    _output_name: &str,
+) -> Result<Push2MidiOutput, TransportError> {
+    midi_out
+        .connect(output_port, "hypercolor-push2-output")
+        .map(Push2MidiOutput::Midir)
+        .map_err(|error| map_midi_connect_error(&error, "output"))
 }
 
 fn find_push2_port<T: MidiIO>(
@@ -555,8 +618,7 @@ fn describe_push2_port_match<P>(candidate: &Push2PortMatch<P>) -> String {
 
 #[cfg(target_os = "linux")]
 fn resolve_midi_port_usb_path(port_id: &str) -> Option<String> {
-    let (client, _port) = port_id.split_once(':')?;
-    let client = client.parse::<i32>().ok()?;
+    let (client, _port) = parse_seq_port_id(port_id)?;
     let seq = Seq::open(None, None, true).ok()?;
     let client_info = seq.get_any_client_info(client).ok()?;
     let card = client_info.get_card().ok()?;
@@ -573,6 +635,30 @@ fn sound_card_usb_path(card: i32) -> Option<String> {
     let card_path = Path::new("/sys/class/sound").join(format!("card{card}"));
     let canonical = std::fs::canonicalize(card_path).ok()?;
     usb_path_from_sysfs_path(&canonical)
+}
+
+#[cfg(target_os = "linux")]
+fn rawmidi_name_from_seq_port_id(port_id: &str) -> Option<String> {
+    let (client, port) = parse_seq_port_id(port_id)?;
+    let seq = Seq::open(None, None, true).ok()?;
+    let client_info = seq.get_any_client_info(client).ok()?;
+    let card = client_info.get_card().ok()?;
+    rawmidi_name_from_sound_card_and_seq_port(card, port)
+}
+
+#[cfg(target_os = "linux")]
+fn rawmidi_name_from_sound_card_and_seq_port(card: i32, seq_port: i32) -> Option<String> {
+    if card < 0 || seq_port < 0 {
+        return None;
+    }
+
+    Some(format!("hw:{card},0,{seq_port}"))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_seq_port_id(port_id: &str) -> Option<(i32, i32)> {
+    let (client, port) = port_id.split_once(':')?;
+    Some((client.parse().ok()?, port.parse().ok()?))
 }
 
 #[cfg(target_os = "linux")]
@@ -629,6 +715,16 @@ pub fn classify_push2_port_for_testing(name: &str) -> Option<&'static str> {
 #[must_use]
 pub fn midi_usb_path_from_sound_card_sysfs_for_testing(path: &str) -> Option<String> {
     usb_path_from_sysfs_path(Path::new(path))
+}
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+#[must_use]
+pub fn rawmidi_name_from_sound_card_and_seq_port_for_testing(
+    card: i32,
+    seq_port: i32,
+) -> Option<String> {
+    rawmidi_name_from_sound_card_and_seq_port(card, seq_port)
 }
 
 #[doc(hidden)]
@@ -741,6 +837,13 @@ fn map_midi_connect_error<T>(error: &ConnectError<T>, direction: &str) -> Transp
 fn map_midi_send_error(error: SendError) -> TransportError {
     TransportError::IoError {
         detail: error.to_string(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn map_rawmidi_send_error(error: std::io::Error) -> TransportError {
+    TransportError::IoError {
+        detail: format!("raw MIDI write failed: {error}"),
     }
 }
 

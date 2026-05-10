@@ -6,7 +6,10 @@ use hypercolor_hal::transport::midi::{
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use hypercolor_hal::transport::midi::midi_usb_path_from_sound_card_sysfs_for_testing;
+use hypercolor_hal::transport::midi::{
+    midi_usb_path_from_sound_card_sysfs_for_testing,
+    rawmidi_name_from_sound_card_and_seq_port_for_testing,
+};
 
 #[test]
 fn classify_push2_port_recognizes_linux_and_macos_names() {
@@ -87,4 +90,17 @@ fn sound_card_sysfs_path_extracts_usb_path() {
     );
 
     assert_eq!(usb_path.as_deref(), Some("1-12"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_name_maps_alsa_seq_port_to_user_subdevice() {
+    assert_eq!(
+        rawmidi_name_from_sound_card_and_seq_port_for_testing(3, 1).as_deref(),
+        Some("hw:3,0,1")
+    );
+    assert_eq!(
+        rawmidi_name_from_sound_card_and_seq_port_for_testing(3, -1),
+        None
+    );
 }
