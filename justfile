@@ -540,11 +540,20 @@ dev *args='':
     set -euo pipefail
     trap 'kill 0' EXIT
     just prepare-dev-assets
-    compositor_mode="${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-auto}"
-    servo_gpu_import_mode="${HYPERCOLOR_SERVO_GPU_IMPORT_MODE:-auto}"
-    echo "[dev] compositor acceleration mode: ${compositor_mode}"
-    echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode}"
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- --log-level debug --compositor-acceleration-mode "${compositor_mode}" --servo-gpu-import-mode "${servo_gpu_import_mode}" --bind '{{ daemon_bind }}' {{ args }} &
+    daemon_args=(--log-level debug --bind '{{ daemon_bind }}')
+    if [[ -n "${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-}" ]]; then
+      daemon_args+=(--compositor-acceleration-mode "${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE}")
+      echo "[dev] compositor acceleration mode: ${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE}"
+    else
+      echo "[dev] compositor acceleration mode: config"
+    fi
+    if [[ -n "${HYPERCOLOR_SERVO_GPU_IMPORT_MODE:-}" ]]; then
+      daemon_args+=(--servo-gpu-import-mode "${HYPERCOLOR_SERVO_GPU_IMPORT_MODE}")
+      echo "[dev] Servo GPU import mode: ${HYPERCOLOR_SERVO_GPU_IMPORT_MODE}"
+    else
+      echo "[dev] Servo GPU import mode: config"
+    fi
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     sleep 2
     cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait
