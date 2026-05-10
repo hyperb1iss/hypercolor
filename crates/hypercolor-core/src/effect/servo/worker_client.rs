@@ -9,9 +9,9 @@
 //! The states roughly track the lifecycle of an HTML effect:
 //!
 //! ```text
-//! Idle ─load─▶ Loading ─loaded─▶ Running ─unload─▶ Stopping ─▶ Idle
-//!   ▲                                                             │
-//!   └─────────────────── shutdown / failure ──────────────────────┘
+//! Idle ─load─▶ Loading ─loaded─▶ Running
+//!   ▲                                │
+//!   └──── shutdown / failure / destroy ┘
 //! ```
 //!
 //! Rendering only flows while `Running`. Calling `submit_render` from any
@@ -40,7 +40,6 @@ pub(super) struct ServoSessionId(pub(super) u64);
 
 /// Lifecycle state a `ServoWorkerClient` tracks from the caller side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) enum WorkerClientState {
     /// No effect loaded. Ready to accept a `Load` command.
     Idle,
@@ -48,21 +47,17 @@ pub(super) enum WorkerClientState {
     Loading,
     /// Page is loaded and ready to accept render commands.
     Running,
-    /// `Unload` has been issued; waiting for the worker to confirm teardown.
-    Stopping,
 }
 
 impl WorkerClientState {
     const IDLE: u8 = 0;
     const LOADING: u8 = 1;
     const RUNNING: u8 = 2;
-    const STOPPING: u8 = 3;
 
     fn from_u8(value: u8) -> Self {
         match value {
             Self::LOADING => Self::Loading,
             Self::RUNNING => Self::Running,
-            Self::STOPPING => Self::Stopping,
             _ => Self::Idle,
         }
     }
@@ -72,7 +67,6 @@ impl WorkerClientState {
             Self::Idle => Self::IDLE,
             Self::Loading => Self::LOADING,
             Self::Running => Self::RUNNING,
-            Self::Stopping => Self::STOPPING,
         }
     }
 }
@@ -97,14 +91,6 @@ pub(super) enum WorkerCommand {
         url: String,
         width: u32,
         height: u32,
-        response_tx: SyncSender<Result<()>>,
-    },
-    #[expect(
-        dead_code,
-        reason = "explicit unload is kept in the worker protocol for future staged teardown paths"
-    )]
-    Unload {
-        session_id: ServoSessionId,
         response_tx: SyncSender<Result<()>>,
     },
     Render {

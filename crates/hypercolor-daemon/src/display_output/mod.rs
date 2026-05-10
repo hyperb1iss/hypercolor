@@ -19,7 +19,7 @@ use tracing::{debug, info, trace, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
-use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_core::spatial::{SpatialEngine, is_display_zone};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
@@ -809,7 +809,7 @@ fn display_viewport_for_device(
         }
 
         first_matching_zone.get_or_insert(zone);
-        if zone.zone_name.as_deref() == Some("Display") {
+        if is_display_zone(zone) {
             explicit_display_zone = Some(zone);
             break;
         }

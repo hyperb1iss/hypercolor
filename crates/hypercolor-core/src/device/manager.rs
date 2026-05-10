@@ -27,6 +27,8 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, Z
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneAttachment};
 
+use crate::spatial::is_led_sampled_zone;
+
 use super::traits::{DeviceBackend, DeviceFrameSink};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
@@ -2503,7 +2505,7 @@ fn prepare_output_for_leds_scaled(colors: &mut [[u8; 3]], brightness: f32) {
 }
 
 fn should_use_ordered_routing(zone: &DeviceZone) -> bool {
-    zone.zone_name.as_deref() != Some("Display")
+    is_led_sampled_zone(zone)
 }
 
 fn apply_led_perceptual_compensation_channels(red: &mut f32, green: &mut f32, blue: &mut f32) {

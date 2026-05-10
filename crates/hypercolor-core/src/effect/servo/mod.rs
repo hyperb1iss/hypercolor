@@ -16,8 +16,8 @@
 //!   the daemon's render loop.
 //! - [`worker`] — OS thread spawn/teardown, `ServoWorkerRuntime`, and the
 //!   shared `SERVO_WORKER` global.
-//! - [`worker_client`] — client-side `Idle → Loading → Running → Stopping`
-//!   state machine wrapping the command channel.
+//! - [`worker_client`] — client-side `Idle → Loading → Running` state machine
+//!   wrapping the command channel.
 
 mod circuit_breaker;
 mod delegate;

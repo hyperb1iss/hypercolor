@@ -5,7 +5,8 @@
 //! algorithms produce the expected LED colors.
 
 use hypercolor_core::spatial::{
-    PreparedZoneSamples, SpatialEngine, generate_positions, sample_led,
+    DISPLAY_ZONE_NAME, PreparedZoneSamples, SpatialEngine, generate_positions, is_display_zone,
+    is_led_sampled_zone, sample_led,
 };
 use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
@@ -186,6 +187,25 @@ fn expected_bilinear_channel(
     .expect("bilinear blend stays within u16 range");
 
     linear_u16_to_srgb_byte(blended)
+}
+
+#[test]
+fn display_zone_predicates_exclude_viewport_helpers_from_led_sampling() {
+    let mut display_zone = full_canvas_zone("display", LedTopology::Point);
+    display_zone.zone_name = Some(DISPLAY_ZONE_NAME.to_owned());
+    let led_zone = full_canvas_zone("leds", LedTopology::Point);
+
+    assert!(is_display_zone(&display_zone));
+    assert!(!is_led_sampled_zone(&display_zone));
+    assert!(!is_display_zone(&led_zone));
+    assert!(is_led_sampled_zone(&led_zone));
+
+    let layout = test_layout(vec![display_zone, led_zone], 8, 8);
+    let engine = SpatialEngine::new(layout);
+    let zones = engine.sample(&solid_canvas(8, 8, Rgba::new(1, 2, 3, 255)));
+
+    assert_eq!(zones.len(), 1);
+    assert_eq!(zones[0].zone_id, "leds");
 }
 
 // ── Topology Position Generation ────────────────────────────────────────────

@@ -5,12 +5,12 @@ use std::time::Instant;
 use tracing::warn;
 
 use hypercolor_core::scene::interpolate_color;
-use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_core::spatial::{SpatialEngine, is_led_sampled_zone};
 use hypercolor_core::types::canvas::{Canvas, RgbaF32};
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
 use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
@@ -134,10 +134,6 @@ pub(crate) fn can_hold_zone_colors_for_deferred_sampling(
         }
     }
     published_zones.next().is_none()
-}
-
-fn is_led_sampled_zone(zone: &DeviceZone) -> bool {
-    zone.zone_name.as_deref() != Some("Display")
 }
 
 fn try_retire_stale_zone_sampling(

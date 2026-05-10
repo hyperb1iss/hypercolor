@@ -45,7 +45,7 @@ use super::telemetry::{
 };
 use super::worker_client::{
     ServoRenderMode, ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState,
-    UNLOAD_TIMEOUT, WORKER_READY_TIMEOUT, WorkerCommand,
+    WORKER_READY_TIMEOUT, WorkerCommand,
 };
 use crate::effect::servo_bootstrap::bootstrap_rendering_context;
 use crate::effect::traits::EffectRenderOutput;
@@ -1168,13 +1168,6 @@ impl ServoWorkerRuntime {
                     let result = self.load_url(session_id, &url, width, height);
                     let _ = response_tx.send(result);
                 }
-                ScheduledServoWork::Command(WorkerCommand::Unload {
-                    session_id,
-                    response_tx,
-                }) => {
-                    let result = self.unload_effect(session_id);
-                    let _ = response_tx.send(result);
-                }
                 ScheduledServoWork::Render(PendingRenderCommand {
                     session_id,
                     scripts,
@@ -1385,18 +1378,6 @@ impl ServoWorkerRuntime {
                 "Recent console output while loading Servo URL"
             );
         }
-        Ok(())
-    }
-
-    fn unload_effect(&mut self, session_id: ServoSessionId) -> Result<()> {
-        if self.session(session_id)?.loaded_html_path.is_none() {
-            return Ok(());
-        }
-
-        let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
-        debug!("Unloading Servo effect page");
-        self.navigate_webview(session_id, url.clone(), UNLOAD_TIMEOUT)?;
-        self.session_mut(session_id)?.loaded_html_path = None;
         Ok(())
     }
 
@@ -2047,7 +2028,6 @@ pub(super) mod test_support {
             while let Ok(command) = command_rx.recv() {
                 match command {
                     WorkerCommand::CreateSession { response_tx, .. }
-                    | WorkerCommand::Unload { response_tx, .. }
                     | WorkerCommand::Load { response_tx, .. }
                     | WorkerCommand::LoadUrl { response_tx, .. }
                     | WorkerCommand::DestroySession { response_tx, .. } => {
@@ -2123,10 +2103,6 @@ pub(super) mod test_support {
                         let _ = response_tx.send(result.map(EffectRenderOutput::Cpu));
                         let _ = delivered_tx.send(());
                     }
-                    WorkerCommand::Unload { response_tx, .. } => {
-                        let _ = unload_tx.send(());
-                        let _ = response_tx.send(Ok(()));
-                    }
                     WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = unload_tx.send(());
                         let _ = response_tx.send(Ok(()));
@@ -2193,8 +2169,7 @@ pub(super) mod test_support {
                     WorkerCommand::LoadUrl { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    WorkerCommand::Unload { response_tx, .. }
-                    | WorkerCommand::DestroySession { response_tx, .. } => {
+                    WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = unload_tx.send(());
                         let _ = response_tx.send(Ok(()));
                     }
@@ -2257,8 +2232,7 @@ pub(super) mod test_support {
                     | WorkerCommand::LoadUrl { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    WorkerCommand::Unload { response_tx, .. }
-                    | WorkerCommand::DestroySession { response_tx, .. } => {
+                    WorkerCommand::DestroySession { response_tx, .. } => {
                         let _ = unload_tx.send(());
                         let _ = response_tx.send(Ok(()));
                     }

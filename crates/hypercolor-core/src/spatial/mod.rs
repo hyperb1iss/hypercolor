@@ -39,6 +39,21 @@ use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
+/// Layout zone name reserved for display-only viewports.
+pub const DISPLAY_ZONE_NAME: &str = "Display";
+
+/// Return whether a layout zone represents a display viewport instead of LEDs.
+#[must_use]
+pub fn is_display_zone(zone: &DeviceZone) -> bool {
+    zone.zone_name.as_deref() == Some(DISPLAY_ZONE_NAME)
+}
+
+/// Return whether a layout zone contributes sampled LED colors.
+#[must_use]
+pub fn is_led_sampled_zone(zone: &DeviceZone) -> bool {
+    !is_display_zone(zone)
+}
+
 /// The spatial sampling engine.
 ///
 /// Holds a [`SpatialLayout`] with precomputed LED positions for every zone.
@@ -174,17 +189,9 @@ impl SpatialEngine {
         self.prepared_zones = layout
             .zones
             .iter()
-            .filter(|zone| should_sample_zone(zone))
+            .filter(|zone| is_led_sampled_zone(zone))
             .map(|zone| sampler::prepare_zone(zone, layout, self.plan_generation))
             .collect::<Vec<_>>()
             .into();
     }
-}
-
-fn should_sample_zone(zone: &DeviceZone) -> bool {
-    // Display devices render through the dedicated display-output pipeline, but
-    // existing layouts still persist those viewport helpers as `zone_name =
-    // "Display"` matrix zones. Skip them here so the LED sampler only prepares
-    // real LED-bearing zones.
-    zone.zone_name.as_deref() != Some("Display")
 }
