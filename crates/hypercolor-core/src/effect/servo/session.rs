@@ -140,19 +140,6 @@ impl ServoSessionHandle {
         self.render_height = height.max(1);
     }
 
-    #[cfg(not(test))]
-    pub(super) fn prepare_for_reuse(&mut self, width: u32, height: u32) {
-        self.pending_render = None;
-        self.last_canvas = None;
-        self.resize(width, height);
-    }
-
-    #[cfg(not(test))]
-    pub(super) fn discard_frame_state(&mut self) {
-        self.pending_render = None;
-        self.last_canvas = None;
-    }
-
     #[must_use]
     pub fn has_pending_render(&self) -> bool {
         self.pending_render.is_some()

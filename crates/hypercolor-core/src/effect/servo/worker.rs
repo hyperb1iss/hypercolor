@@ -2,11 +2,12 @@
 //!
 //! Servo initializes process-global options exactly once; recreating the
 //! runtime after a shutdown panics inside servo. Hypercolor therefore
-//! keeps one worker alive for the entire daemon lifetime and reuses it
-//! across HTML effect switches. The [`ServoCircuitBreaker`] gates retries
-//! for soft failures so a flaky effect load can't permanently knock HTML
-//! effects offline, while the legacy "poison forever" path still applies
-//! to fatal conditions (channel disconnect, thread exit).
+//! keeps one worker alive for the entire daemon lifetime while creating
+//! and destroying effect sessions on switch. The [`ServoCircuitBreaker`]
+//! gates retries for soft failures so a flaky effect load can't
+//! permanently knock HTML effects offline, while the legacy "poison
+//! forever" path still applies to fatal conditions (channel disconnect,
+//! thread exit).
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -711,6 +712,12 @@ fn trimmed_servo_preferences() -> Preferences {
         threadpools_indexeddb_workers_max: 1,
         threadpools_webstorage_workers_max: 1,
         threadpools_webrender_workers_max: 1,
+        js_mem_gc_empty_chunk_count_min: 0,
+        js_mem_gc_high_frequency_heap_growth_max: 150,
+        js_mem_gc_high_frequency_heap_growth_min: 120,
+        js_mem_gc_high_frequency_high_limit_mb: 128,
+        js_mem_gc_high_frequency_low_limit_mb: 64,
+        js_mem_gc_low_frequency_heap_growth: 120,
         network_http_cache_disabled: true,
         // Disable subsystems Hypercolor does not use.
         devtools_server_enabled: false,
@@ -1988,7 +1995,7 @@ pub(super) mod test_support {
 
     use crate::effect::traits::EffectRenderOutput;
 
-    use super::super::memory::ServoMemoryReportSnapshot;
+    use super::super::memory::{ServoMemoryReportSnapshot, ServoMemoryReportTotals};
     use super::super::worker_client::{
         ServoWorkerClient, ServoWorkerClientSharedState, WorkerCommand,
     };
@@ -2018,7 +2025,7 @@ pub(super) mod test_support {
     fn empty_memory_report() -> ServoMemoryReportSnapshot {
         ServoMemoryReportSnapshot {
             processes: Vec::new(),
-            totals: Default::default(),
+            totals: ServoMemoryReportTotals::default(),
         }
     }
 
@@ -2720,6 +2727,17 @@ mod tests {
         assert!(preferences.js_baseline_jit_enabled);
         assert!(preferences.js_ion_enabled);
         assert!(preferences.js_offthread_compilation_enabled);
+    }
+
+    #[test]
+    fn trimmed_servo_preferences_tighten_embedder_gc_policy() {
+        let preferences = trimmed_servo_preferences();
+        assert_eq!(preferences.js_mem_gc_empty_chunk_count_min, 0);
+        assert_eq!(preferences.js_mem_gc_high_frequency_heap_growth_max, 150);
+        assert_eq!(preferences.js_mem_gc_high_frequency_heap_growth_min, 120);
+        assert_eq!(preferences.js_mem_gc_high_frequency_high_limit_mb, 128);
+        assert_eq!(preferences.js_mem_gc_high_frequency_low_limit_mb, 64);
+        assert_eq!(preferences.js_mem_gc_low_frequency_heap_growth, 120);
     }
 
     #[test]
