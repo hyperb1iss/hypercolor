@@ -22,6 +22,13 @@ pub(crate) enum ProducerFrame {
 
 impl ProducerFrame {
     #[cfg(feature = "wgpu")]
+    #[cfg_attr(
+        not(feature = "servo-gpu-import"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "keeps the CPU and GPU producer frame API feature-stable"
+        )
+    )]
     pub(crate) fn cpu_rgba_bytes(&self) -> Option<&[u8]> {
         match self {
             Self::Canvas(canvas) => Some(canvas.as_rgba_bytes()),
@@ -51,6 +58,13 @@ impl ProducerFrame {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "servo-gpu-import"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "keeps the CPU and GPU producer frame API feature-stable"
+        )
+    )]
     pub(crate) fn into_cpu_render_frame(self) -> Option<(Canvas, Option<PublishedSurface>)> {
         match self {
             Self::Canvas(canvas) => Some((canvas, None)),

@@ -939,6 +939,8 @@ impl GlImportedImageBinding {
             check_gl_error(gl, "glCreateMemoryObjectsEXT")?;
 
             let dedicated = i32::from(glow::TRUE);
+            // SAFETY: memory_object was created by GL above, and dedicated
+            // points to stable storage for the duration of this call.
             unsafe {
                 (gl_external_memory.memory_object_parameteriv_ext)(
                     memory_object,

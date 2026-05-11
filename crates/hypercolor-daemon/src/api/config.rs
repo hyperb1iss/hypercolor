@@ -516,13 +516,13 @@ async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, heigh
     let updated_layout = {
         let spatial = state.spatial_engine.read().await;
         let current = spatial.layout().as_ref().clone();
-        if !canvas_dimensions_differ(current.canvas_width, current.canvas_height, width, height) {
-            None
-        } else {
+        if canvas_dimensions_differ(current.canvas_width, current.canvas_height, width, height) {
             let mut updated = current;
             updated.canvas_width = width;
             updated.canvas_height = height;
             Some(updated)
+        } else {
+            None
         }
     };
 
