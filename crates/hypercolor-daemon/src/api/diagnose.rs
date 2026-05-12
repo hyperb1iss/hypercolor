@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::performance::LatestFrameMetrics;
+
+const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
+const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
 
 #[derive(Debug, Deserialize)]
 pub struct DiagnoseRequest {
@@ -82,6 +86,19 @@ pub async fn run_diagnostics(
                         render_loop_stats.state, render_loop_stats.tier
                     ),
                 });
+                if running {
+                    let performance = state.performance.read().await.snapshot();
+                    let (status, detail) = render_frame_liveness_status(
+                        performance.latest_frame,
+                        state.start_time.elapsed().as_secs_f64() * 1000.0,
+                    );
+                    checks.push(DiagnoseCheck {
+                        category: "render".to_owned(),
+                        name: "frame_liveness".to_owned(),
+                        status: status.to_owned(),
+                        detail,
+                    });
+                }
             }
             "devices" => {
                 let count = state.device_registry.len().await;
@@ -147,6 +164,36 @@ pub async fn run_diagnostics(
     })
 }
 
+fn render_frame_liveness_status(
+    latest_frame: Option<LatestFrameMetrics>,
+    render_elapsed_ms: f64,
+) -> (&'static str, String) {
+    let Some(frame) = latest_frame else {
+        return ("warning", "no completed frame recorded".to_owned());
+    };
+
+    let frame_age_ms = if frame.timestamp_ms > 0 {
+        (render_elapsed_ms - f64::from(frame.timestamp_ms)).max(0.0)
+    } else {
+        0.0
+    };
+    let status = if frame_age_ms >= RENDER_FRAME_STALE_FAIL_MS {
+        "fail"
+    } else if frame_age_ms >= RENDER_FRAME_STALE_WARNING_MS {
+        "warning"
+    } else {
+        "pass"
+    };
+
+    (
+        status,
+        format!(
+            "frame_token={}, frame_age_ms={frame_age_ms:.2}",
+            frame.timeline.frame_token
+        ),
+    )
+}
+
 /// `GET /api/v1/diagnose/memory` — Capture Servo memory profiler output.
 pub async fn memory_diagnostics() -> Response {
     #[cfg(feature = "servo")]
@@ -162,5 +209,48 @@ pub async fn memory_diagnostics() -> Response {
     #[cfg(not(feature = "servo"))]
     {
         ApiError::not_found("Servo memory diagnostics are not available in this build")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::performance::{FrameTimeline, LatestFrameMetrics};
+
+    use super::render_frame_liveness_status;
+
+    #[test]
+    fn render_frame_liveness_fails_stale_running_frame() {
+        let (status, detail) = render_frame_liveness_status(
+            Some(LatestFrameMetrics {
+                timestamp_ms: 1_000,
+                timeline: FrameTimeline {
+                    frame_token: 42,
+                    ..FrameTimeline::default()
+                },
+                ..LatestFrameMetrics::default()
+            }),
+            12_500.0,
+        );
+
+        assert_eq!(status, "fail");
+        assert_eq!(detail, "frame_token=42, frame_age_ms=11500.00");
+    }
+
+    #[test]
+    fn render_frame_liveness_passes_fresh_running_frame() {
+        let (status, detail) = render_frame_liveness_status(
+            Some(LatestFrameMetrics {
+                timestamp_ms: 9_900,
+                timeline: FrameTimeline {
+                    frame_token: 43,
+                    ..FrameTimeline::default()
+                },
+                ..LatestFrameMetrics::default()
+            }),
+            10_000.0,
+        );
+
+        assert_eq!(status, "pass");
+        assert_eq!(detail, "frame_token=43, frame_age_ms=100.00");
     }
 }

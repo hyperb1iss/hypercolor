@@ -30,6 +30,7 @@ const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
 const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
+const GPU_READBACK_WAIT_TIMEOUT: Duration = Duration::from_millis(8);
 static GPU_SOURCE_UPLOAD_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn gpu_source_upload_skipped_total() -> u64 {
@@ -1168,7 +1169,7 @@ impl GpuSparkleFlinger {
 
         let readback_buffer = &surfaces.readback;
         let readback_surfaces = &mut surfaces.readback_surfaces;
-        let sampling_surface = read_back_texture_into_surface(
+        let Some(sampling_surface) = try_read_back_texture_into_surface(
             &self.device,
             readback_buffer,
             u64::from(surfaces.padded_bytes_per_row) * u64::from(height),
@@ -1179,7 +1180,15 @@ impl GpuSparkleFlinger {
             readback_surfaces,
             #[cfg(test)]
             &mut surfaces.last_readback_bytes,
-        )?;
+        )?
+        else {
+            tracing::debug!(
+                width,
+                height,
+                "GPU output readback was not ready without blocking"
+            );
+            return Ok(gpu_composed_without_surfaces());
+        };
         if let Some(key) = readback_key {
             self.cached_readback_surface = Some(CachedReadbackSurface {
                 key: Some(key),
@@ -2261,7 +2270,7 @@ fn set_texture_contents(
     }
 }
 
-fn read_back_texture_into_surface(
+fn try_read_back_texture_into_surface(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
     used_bytes: u64,
@@ -2271,11 +2280,20 @@ fn read_back_texture_into_surface(
     submission_index: wgpu::SubmissionIndex,
     surfaces: &mut RenderSurfacePool,
     #[cfg(test)] last_readback_bytes: &mut u64,
-) -> Result<PublishedSurface> {
+) -> Result<Option<PublishedSurface>> {
     #[cfg(test)]
     {
         *last_readback_bytes = used_bytes;
     }
+    match device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission_index.clone()),
+        timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
+    }) {
+        Ok(_) => {}
+        Err(wgpu::PollError::Timeout) => return Ok(None),
+        Err(error) => return Err(error).context("GPU readback readiness poll failed"),
+    }
+
     let slice = buffer.slice(..used_bytes);
     let (sender, receiver) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -2284,13 +2302,20 @@ fn read_back_texture_into_surface(
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(submission_index),
-            timeout: None,
+            timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
         })
-        .context("GPU readback poll failed")?;
-    receiver
-        .recv()
-        .context("GPU readback channel closed before map completion")?
-        .context("GPU readback buffer mapping failed")?;
+        .context("GPU readback map poll failed")?;
+    match receiver.try_recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error).context("GPU readback buffer mapping failed"),
+        Err(TryRecvError::Disconnected) => {
+            anyhow::bail!("GPU readback channel closed before map completion");
+        }
+        Err(TryRecvError::Empty) => {
+            buffer.unmap();
+            return Ok(None);
+        }
+    }
 
     copy_mapped_readback_buffer_into_surface(
         buffer,
@@ -2302,6 +2327,7 @@ fn read_back_texture_into_surface(
         #[cfg(test)]
         last_readback_bytes,
     )
+    .map(Some)
 }
 
 fn copy_mapped_readback_buffer_into_surface(

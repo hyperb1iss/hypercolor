@@ -577,16 +577,29 @@ pub(crate) fn resolve_led_sampling(
             gpu_sample_deferred = true;
             render_stage.led_sampling_strategy =
                 LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
-        } else if let Err(error) = sampling
-            .sparkleflinger
-            .finish_pending_zone_sampling(pending, sampling.output_artifacts.zones_mut())
-        {
-            warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
-            gpu_zone_sampling = false;
         } else {
-            gpu_sample_wait_blocked = sampling
-                .sparkleflinger
-                .take_last_sample_readback_wait_blocked();
+            let mut pending = pending;
+            match sampling.sparkleflinger.try_finish_pending_zone_sampling(
+                &mut pending,
+                sampling.output_artifacts.zones_mut(),
+            ) {
+                Ok(true) => {
+                    gpu_sample_wait_blocked = sampling
+                        .sparkleflinger
+                        .take_last_sample_readback_wait_blocked();
+                }
+                Ok(false) => {
+                    sampling
+                        .sparkleflinger
+                        .discard_pending_zone_sampling(pending);
+                    warn!("GPU spatial sampling readback was not ready; falling back to CPU");
+                    gpu_zone_sampling = false;
+                }
+                Err(error) => {
+                    warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
+                    gpu_zone_sampling = false;
+                }
+            }
         }
         render_stage.sampled_us = render_stage
             .sampled_us
