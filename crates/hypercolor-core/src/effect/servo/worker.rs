@@ -771,6 +771,27 @@ fn can_reuse_cached_canvas(
         && cached.is_some_and(|cached| cached.width() == width && cached.height() == height)
 }
 
+fn should_reuse_cached_canvas_after_transparent_readback(
+    frame_ready: bool,
+    cached: Option<&Canvas>,
+    candidate: &Canvas,
+    width: u32,
+    height: u32,
+) -> bool {
+    !frame_ready
+        && cached.is_some_and(|cached| cached.width() == width && cached.height() == height)
+        && candidate.width() == width
+        && candidate.height() == height
+        && canvas_is_fully_transparent(candidate)
+}
+
+fn canvas_is_fully_transparent(canvas: &Canvas) -> bool {
+    canvas
+        .as_rgba_bytes()
+        .chunks_exact(4)
+        .all(|pixel| pixel[3] == 0)
+}
+
 fn combined_script(buffer: &mut String, scripts: &[String]) {
     let capacity = scripts.iter().map(String::len).sum::<usize>() + scripts.len();
     buffer.clear();
@@ -1480,14 +1501,46 @@ impl ServoWorkerRuntime {
             }
 
             let output = render_servo_framebuffer(self, session_id, mode, &mut timings)?;
-            let emitted_cpu_frame = output.as_cpu_canvas().is_some();
-            if let Some(canvas) = output.as_cpu_canvas() {
-                let canvas = canvas.clone();
-                let session = self.session_mut(session_id)?;
-                if let Some(previous) = session.last_canvas.replace(canvas) {
-                    session.readback_buffers.retire_canvas(previous);
+            let output = match output {
+                EffectRenderOutput::Cpu(canvas) => {
+                    let session = self.session_mut(session_id)?;
+                    if should_reuse_cached_canvas_after_transparent_readback(
+                        frame_ready,
+                        session.last_canvas.as_ref(),
+                        &canvas,
+                        width,
+                        height,
+                    ) {
+                        let cached = session
+                            .last_canvas
+                            .as_ref()
+                            .expect("cached canvas presence should match reuse check")
+                            .clone();
+                        session.readback_buffers.retire_canvas(canvas);
+                        timings.total_us = elapsed_micros(frame_start);
+                        log_servo_render_stage_timings(
+                            session_id,
+                            width,
+                            height,
+                            script_count,
+                            script_bytes,
+                            frame_ready,
+                            true,
+                            true,
+                            timings,
+                        );
+                        return Ok(EffectRenderOutput::Cpu(cached));
+                    }
+                    let output_canvas = canvas.clone();
+                    if let Some(previous) = session.last_canvas.replace(canvas) {
+                        session.readback_buffers.retire_canvas(previous);
+                    }
+                    EffectRenderOutput::Cpu(output_canvas)
                 }
-            }
+                #[cfg(feature = "servo-gpu-import")]
+                EffectRenderOutput::Gpu(frame) => EffectRenderOutput::Gpu(frame),
+            };
+            let emitted_cpu_frame = output.as_cpu_canvas().is_some();
             timings.total_us = elapsed_micros(frame_start);
             log_servo_render_stage_timings(
                 session_id,
@@ -2672,6 +2725,45 @@ mod tests {
             None,
             320,
             200
+        ));
+    }
+
+    #[test]
+    fn transparent_no_ready_readback_reuses_cached_canvas() {
+        use hypercolor_types::canvas::Rgba;
+
+        let cached = Canvas::new(320, 200);
+        let transparent = Canvas::from_vec(vec![0; 320 * 200 * 4], 320, 200);
+        let mut visible = Canvas::new(320, 200);
+        visible.fill(Rgba::new(12, 34, 56, 255));
+
+        assert!(should_reuse_cached_canvas_after_transparent_readback(
+            false,
+            Some(&cached),
+            &transparent,
+            320,
+            200
+        ));
+        assert!(!should_reuse_cached_canvas_after_transparent_readback(
+            true,
+            Some(&cached),
+            &transparent,
+            320,
+            200
+        ));
+        assert!(!should_reuse_cached_canvas_after_transparent_readback(
+            false,
+            Some(&cached),
+            &visible,
+            320,
+            200
+        ));
+        assert!(!should_reuse_cached_canvas_after_transparent_readback(
+            false,
+            Some(&cached),
+            &transparent,
+            480,
+            480
         ));
     }
 
