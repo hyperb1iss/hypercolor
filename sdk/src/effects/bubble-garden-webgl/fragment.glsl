@@ -141,14 +141,10 @@ BubbleColors resolveBubbleColors(float id, float mixSeed, float bandSeed, float 
         gloss = mix(baseGloss, nextGloss, blend * 0.34);
     }
 
-    body = saturateColor(body, 1.18, 0.88);
-    rim = saturateColor(rim, 1.22, 0.94);
-    gloss = saturateColor(gloss, 1.12, 1.02);
-    return BubbleColors(saturateColor(mix(body, rim, 0.22), 1.18, 0.92), body, gloss, rim);
-}
-
-vec3 screenBlend(vec3 base, vec3 layer) {
-    return base + layer * (1.0 - base);
+    body = saturateColor(body, 1.55, 0.78);
+    rim = saturateColor(rim, 1.7, 0.88);
+    gloss = saturateColor(gloss, 1.5, 0.82);
+    return BubbleColors(saturateColor(mix(body, rim, 0.18), 1.6, 0.74), body, gloss, rim);
 }
 
 float circleMask(float dist, float radius, float aa) {
@@ -171,13 +167,12 @@ void main() {
     float aspect = iResolution.x / iResolution.y;
     Palette palette = themePalette(iTheme);
 
-    vec3 color = iBgColor;
+    vec3 color = iBgColor * 0.55;
     vec2 washCenter = vec2(0.24 + sin(iTime * 0.18) * 0.06, 0.26 + cos(iTime * 0.15) * 0.05);
     float washDist = length(vec2((uv.x - washCenter.x) * aspect, uv.y - washCenter.y));
     float wash = smoothstep(0.9, 0.0, washDist);
-    color = screenBlend(color, palette.primary * wash * 0.14);
-    color = screenBlend(color, palette.secondary * wash * 0.08);
-    color = screenBlend(color, palette.accent * (1.0 - uv.x) * (1.0 - uv.y) * 0.06);
+    color += saturateColor(palette.primary, 1.8, 0.62) * wash * 0.018;
+    color += saturateColor(palette.secondary, 1.8, 0.62) * wash * 0.012;
 
     float count = clamp(floor(iCount + 0.5), 10.0, float(MAX_BUBBLES));
     float sizeScale = max(0.2, iSize / 5.0);
@@ -215,31 +210,26 @@ void main() {
 
         vec2 delta = vec2((uv.x - pos.x) * aspect, uv.y - pos.y);
         float dist = length(delta);
-        float alpha = 0.22 + id / max(1.0, count - 1.0) * 0.24;
         BubbleColors bubble = resolveBubbleColors(id, h5, floor(h6 * 3.0), h7, mode, iTheme, palette);
 
         float angle = atan(delta.y, delta.x);
         float ripple = waveNoise(angle, h5, iTime);
-        float edgeRadius = radius * (0.94 + ripple * 0.03);
-        float aa = max(fwidth(dist) * 1.35, 0.0012);
+        float edgeRadius = radius * (0.94 + ripple * 0.024);
+        float aa = max(fwidth(dist) * 1.05, 0.001);
         float surface = circleMask(dist, edgeRadius, aa);
         float radial = clamp(1.0 - dist / max(edgeRadius, 0.0001), 0.0, 1.0);
-        float body = surface * alpha * mix(0.035, 0.12, h2) * (0.45 + pow(radial, 1.35) * 0.55);
-        float aura = smoothstep(edgeRadius * 1.08, edgeRadius * 1.0, dist) * alpha * mix(0.018, 0.045, h3);
-        float rimWidth = max(edgeRadius * (0.014 + h7 * 0.024 + max(ripple, 0.0) * 0.014), aa * 1.5);
+        float body = surface * (0.86 + pow(radial, 0.9) * 0.14);
         vec2 highlightDir = normalize(vec2(cos(h6 * 6.2831853), sin(h6 * 6.2831853)) * 0.45 + vec2(-0.62, -0.78));
         float crescentAxis = dot(normalize(delta + vec2(0.0001)), highlightDir);
         float arcBreakup = smoothstep(-0.35, 0.9, waveNoise(angle + h7 * 2.4, h5, iTime * 0.35));
-        float rimLight = mix(0.08, 0.26, h1) + smoothstep(-0.05, 0.86, crescentAxis) * 0.68 + arcBreakup * 0.16;
-        rimLight *= 0.62 + arcBreakup * 0.38;
-        float rim = ringMask(dist, edgeRadius, rimWidth, aa) * rimLight * (0.54 + alpha * 0.3);
+        float rim = smoothstep(0.58, 0.9, 1.0 - radial) * surface;
+        float edge = smoothstep(0.88, 0.99, 1.0 - radial) * surface;
+        float edgeLight = mix(0.34, 0.74, smoothstep(-0.08, 0.78, crescentAxis)) * (0.76 + arcBreakup * 0.24);
+        float coverage = surface * 0.82;
 
-        vec3 layer = vec3(0.0);
-        layer += bubble.aura * aura;
-        layer += bubble.body * body;
-        layer += bubble.rim * rim;
-        layer += bubble.gloss * rim * smoothstep(0.35, 0.92, crescentAxis) * 0.28;
-        color = screenBlend(color, clamp(layer, 0.0, 1.0));
+        vec3 ledColor = mix(bubble.body * 0.82, bubble.rim, rim * 0.46 + edge * 0.28);
+        ledColor *= mix(0.72, 0.9, body) * mix(0.86, 1.0, edgeLight);
+        color = mix(color, clamp(ledColor, 0.0, 1.0), coverage);
     }
 
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
