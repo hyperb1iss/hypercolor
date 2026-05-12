@@ -151,6 +151,21 @@ vec3 screenBlend(vec3 base, vec3 layer) {
     return base + layer * (1.0 - base);
 }
 
+float circleMask(float dist, float radius, float aa) {
+    return 1.0 - smoothstep(radius - aa, radius + aa, dist);
+}
+
+float ringMask(float dist, float radius, float width, float aa) {
+    return 1.0 - smoothstep(width - aa, width + aa, abs(dist - radius));
+}
+
+float waveNoise(float angle, float seed, float time) {
+    return
+        sin(angle * 3.0 + seed * 6.2831853 + time * 0.5) * 0.45 +
+        sin(angle * 5.0 - seed * 4.1 + time * 0.32) * 0.3 +
+        sin(angle * 9.0 + seed * 9.7 - time * 0.27) * 0.25;
+}
+
 void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     float aspect = iResolution.x / iResolution.y;
@@ -203,22 +218,27 @@ void main() {
         float alpha = 0.22 + id / max(1.0, count - 1.0) * 0.24;
         BubbleColors bubble = resolveBubbleColors(id, h5, floor(h6 * 3.0), h7, mode, iTheme, palette);
 
-        float aura = smoothstep(radius * 1.35, radius * 0.35, dist) * alpha * 0.22;
-        float body = smoothstep(radius, radius * 0.82, dist) * alpha * 0.82;
-        float inner = smoothstep(radius * 0.62, radius * 0.18, length(delta + vec2(radius * 0.18, radius * 0.22))) * alpha * 0.28;
-        float rimOuter = smoothstep(radius * 1.03, radius * 0.93, dist);
-        float rimInner = smoothstep(radius * 0.64, radius * 0.9, dist);
-        float rim = rimOuter * rimInner * (0.38 + alpha * 0.16);
-        float gloss = smoothstep(radius * 0.2, radius * 0.03, length(delta + vec2(radius * 0.3, radius * 0.32))) * (0.18 + alpha * 0.14);
-        float membrane = smoothstep(radius * 0.88, radius * 0.2, dist) * smoothstep(0.0, radius * 0.92, dist) * 0.06;
+        float angle = atan(delta.y, delta.x);
+        float ripple = waveNoise(angle, h5, iTime);
+        float edgeRadius = radius * (0.94 + ripple * 0.03);
+        float aa = max(fwidth(dist) * 1.35, 0.0012);
+        float surface = circleMask(dist, edgeRadius, aa);
+        float radial = clamp(1.0 - dist / max(edgeRadius, 0.0001), 0.0, 1.0);
+        float body = surface * alpha * mix(0.035, 0.12, h2) * (0.45 + pow(radial, 1.35) * 0.55);
+        float aura = smoothstep(edgeRadius * 1.08, edgeRadius * 1.0, dist) * alpha * mix(0.018, 0.045, h3);
+        float rimWidth = max(edgeRadius * (0.014 + h7 * 0.024 + max(ripple, 0.0) * 0.014), aa * 1.5);
+        vec2 highlightDir = normalize(vec2(cos(h6 * 6.2831853), sin(h6 * 6.2831853)) * 0.45 + vec2(-0.62, -0.78));
+        float crescentAxis = dot(normalize(delta + vec2(0.0001)), highlightDir);
+        float arcBreakup = smoothstep(-0.35, 0.9, waveNoise(angle + h7 * 2.4, h5, iTime * 0.35));
+        float rimLight = mix(0.08, 0.26, h1) + smoothstep(-0.05, 0.86, crescentAxis) * 0.68 + arcBreakup * 0.16;
+        rimLight *= 0.62 + arcBreakup * 0.38;
+        float rim = ringMask(dist, edgeRadius, rimWidth, aa) * rimLight * (0.54 + alpha * 0.3);
 
         vec3 layer = vec3(0.0);
         layer += bubble.aura * aura;
         layer += bubble.body * body;
-        layer += mix(bubble.body, bubble.gloss, 0.34) * inner;
         layer += bubble.rim * rim;
-        layer += bubble.gloss * gloss;
-        layer += palette.accent * membrane * alpha;
+        layer += bubble.gloss * rim * smoothstep(0.35, 0.92, crescentAxis) * 0.28;
         color = screenBlend(color, clamp(layer, 0.0, 1.0));
     }
 
