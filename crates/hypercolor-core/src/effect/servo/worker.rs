@@ -772,17 +772,23 @@ fn can_reuse_cached_canvas(
 }
 
 fn should_reuse_cached_canvas_after_transparent_readback(
-    frame_ready: bool,
     cached: Option<&Canvas>,
     candidate: &Canvas,
     width: u32,
     height: u32,
 ) -> bool {
-    !frame_ready
-        && cached.is_some_and(|cached| cached.width() == width && cached.height() == height)
-        && candidate.width() == width
+    cached.is_some_and(|cached| {
+        cached.width() == width && cached.height() == height && canvas_has_visible_alpha(cached)
+    }) && candidate.width() == width
         && candidate.height() == height
         && canvas_is_fully_transparent(candidate)
+}
+
+fn canvas_has_visible_alpha(canvas: &Canvas) -> bool {
+    canvas
+        .as_rgba_bytes()
+        .chunks_exact(4)
+        .any(|pixel| pixel[3] != 0)
 }
 
 fn canvas_is_fully_transparent(canvas: &Canvas) -> bool {
@@ -1505,7 +1511,6 @@ impl ServoWorkerRuntime {
                 EffectRenderOutput::Cpu(canvas) => {
                     let session = self.session_mut(session_id)?;
                     if should_reuse_cached_canvas_after_transparent_readback(
-                        frame_ready,
                         session.last_canvas.as_ref(),
                         &canvas,
                         width,
@@ -2729,41 +2734,38 @@ mod tests {
     }
 
     #[test]
-    fn transparent_no_ready_readback_reuses_cached_canvas() {
+    fn transparent_readback_reuses_visible_cached_canvas() {
         use hypercolor_types::canvas::Rgba;
 
-        let cached = Canvas::new(320, 200);
+        let mut cached = Canvas::new(320, 200);
+        cached.fill(Rgba::new(12, 34, 56, 255));
         let transparent = Canvas::from_vec(vec![0; 320 * 200 * 4], 320, 200);
         let mut visible = Canvas::new(320, 200);
         visible.fill(Rgba::new(12, 34, 56, 255));
 
         assert!(should_reuse_cached_canvas_after_transparent_readback(
-            false,
             Some(&cached),
             &transparent,
             320,
             200
         ));
         assert!(!should_reuse_cached_canvas_after_transparent_readback(
-            true,
-            Some(&cached),
-            &transparent,
-            320,
-            200
-        ));
-        assert!(!should_reuse_cached_canvas_after_transparent_readback(
-            false,
             Some(&cached),
             &visible,
             320,
             200
         ));
         assert!(!should_reuse_cached_canvas_after_transparent_readback(
-            false,
             Some(&cached),
             &transparent,
             480,
             480
+        ));
+        assert!(!should_reuse_cached_canvas_after_transparent_readback(
+            Some(&transparent),
+            &transparent,
+            320,
+            200
         ));
     }
 
