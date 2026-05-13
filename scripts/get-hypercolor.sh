@@ -4,7 +4,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --version 0.2.0
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --version 0.1.0
 #   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --uninstall
 #
 # Environment:
