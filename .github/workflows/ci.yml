@@ -688,6 +688,7 @@ jobs:
       HYPERCOLOR_E2E_DAEMON_BIN: ${{ github.workspace }}/e2e-stack/bin/hypercolor-daemon
       HYPERCOLOR_E2E_CLI_BIN: ${{ github.workspace }}/e2e-stack/bin/hypercolor
       HYPERCOLOR_E2E_UI_DIST_DIR: ${{ github.workspace }}/crates/hypercolor-ui/dist
+      HYPERCOLOR_E2E_STACK: ${{ matrix.suite }}
     steps:
       - uses: actions/checkout@v6
 

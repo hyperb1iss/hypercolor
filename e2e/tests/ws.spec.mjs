@@ -1,77 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { WebSocket } from "ws";
 
-import { createApi, findRunnableEffect, getStack, readEnvelope } from "./helpers.mjs";
-
-function createMessageInbox(socket) {
-  const queue = [];
-  const waiters = [];
-
-  function clearWaiter(waiter) {
-    clearTimeout(waiter.timeout);
-  }
-
-  function removeWaiter(waiter) {
-    const index = waiters.indexOf(waiter);
-    if (index >= 0) {
-      waiters.splice(index, 1);
-    }
-  }
-
-  function failWaiters(error) {
-    for (const waiter of waiters.splice(0)) {
-      clearWaiter(waiter);
-      waiter.reject(error);
-    }
-  }
-
-  socket.on("message", (raw) => {
-    let parsed = null;
-
-    try {
-      parsed = JSON.parse(raw.toString());
-    } catch {
-      return;
-    }
-
-    const waiter = waiters.find((candidate) => candidate.predicate(parsed));
-    if (waiter) {
-      removeWaiter(waiter);
-      clearWaiter(waiter);
-      waiter.resolve(parsed);
-      return;
-    }
-
-    queue.push(parsed);
-  });
-
-  socket.on("error", failWaiters);
-  socket.on("close", () => failWaiters(new Error("WebSocket closed before the expected message")));
-
-  return {
-    waitFor(predicate, timeoutMs = 10_000) {
-      const queued = queue.find(predicate);
-      if (queued) {
-        queue.splice(queue.indexOf(queued), 1);
-        return Promise.resolve(queued);
-      }
-
-      return new Promise((resolve, reject) => {
-        const waiter = {
-          predicate,
-          resolve,
-          reject,
-          timeout: setTimeout(() => {
-            removeWaiter(waiter);
-            reject(new Error("Timed out waiting for a WebSocket message"));
-          }, timeoutMs),
-        };
-
-        waiters.push(waiter);
-      });
-    },
-  };
-}
+import {
+  createApi,
+  createMessageInbox,
+  findRunnableEffect,
+  getStack,
+  readEnvelope,
+} from "./helpers.mjs";
 
 test("websocket handshake, subscribe ack, and live events flow through the proxy", async ({
   playwright,
