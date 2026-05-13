@@ -13,6 +13,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   # System deps shared across Linux jobs
   LINUX_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
@@ -109,10 +110,25 @@ jobs:
 
   # ── Rust Test ──────────────────────────────────────────────────
   rust-test:
-    name: Rust Test
+    name: Rust Test / ${{ matrix.label }}
     needs: [changes, rust-check]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: shared
+            label: Shared
+            target_dir: .cache/hypercolor/target/rust-test-shared
+          - suite: core-servo
+            label: Core Servo
+            target_dir: .cache/hypercolor/target/rust-test-core-servo
+          - suite: daemon-servo
+            label: Daemon Servo
+            target_dir: .cache/hypercolor/target/rust-test-daemon-servo
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
       - uses: actions/checkout@v6
 
@@ -124,6 +140,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-test-${{ matrix.suite }}
+          workspaces: . -> ${{ matrix.target_dir }}
+          cache-on-failure: "false"
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
@@ -131,31 +151,37 @@ jobs:
           tool: cargo-nextest
 
       - name: Run shared crate tests
+        if: matrix.suite == 'shared'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
 
-      - name: Run core Servo tests
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo nextest run --locked -p hypercolor-core --features servo
-
-      - name: Run daemon Servo tests
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo nextest run --locked -p hypercolor-daemon
-
       - name: Run shared crate doc tests
+        if: matrix.suite == 'shared'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
 
+      - name: Run core Servo tests
+        if: matrix.suite == 'core-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-core --features servo
+
       - name: Run core Servo doc tests
+        if: matrix.suite == 'core-servo'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked -p hypercolor-core --features servo
 
+      - name: Run daemon Servo tests
+        if: matrix.suite == 'daemon-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-daemon
+
       - name: Run daemon Servo doc tests
+        if: matrix.suite == 'daemon-servo'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked -p hypercolor-daemon

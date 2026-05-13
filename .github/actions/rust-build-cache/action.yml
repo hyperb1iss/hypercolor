@@ -26,6 +26,10 @@ inputs:
     description: Cache workspace crate artifacts as well as dependencies.
     required: false
     default: "false"
+  cache-on-failure:
+    description: Whether to save Rust cache entries after failed jobs.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -63,5 +67,5 @@ runs:
           .cache/hypercolor/ccache
         cache-all-crates: ${{ inputs.cache-all-crates }}
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
-        cache-on-failure: true
+        cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}
