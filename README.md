@@ -282,7 +282,7 @@ Service management and permission setup are manual outside Linux.
 ### Run
 
 ```bash
-# Start the daemon (opens UI at http://localhost:9420)
+# Start the daemon (serves UI at http://localhost:9420)
 hypercolor-daemon
 
 # Control from the command line
