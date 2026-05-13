@@ -7,6 +7,7 @@
 #   ./scripts/dist.sh                    # full bundle for the host platform
 #   ./scripts/dist.sh --target linux-amd64
 #   ./scripts/dist.sh --target x86_64-unknown-linux-gnu
+#   ./scripts/dist.sh --version 0.1.0-rc.1
 #   ./scripts/dist.sh --skip-effects     # reuse existing bundled effects/faces
 #   ./scripts/dist.sh --skip-docs        # reuse docs or omit them from the bundle
 #   ./scripts/dist.sh --ci               # use pre-built web assets from --web-assets
@@ -21,6 +22,7 @@ SKIP_DOCS=0
 CI_MODE=0
 WEB_ASSETS_DIR=""
 RUST_TARGET=""
+RELEASE_VERSION=""
 BUILD_ROOT=""
 
 CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --ci)               CI_MODE=1; shift ;;
     --web-assets)       WEB_ASSETS_DIR="$2"; shift 2 ;;
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
+    --version)          RELEASE_VERSION="$2"; shift 2 ;;
     -h|--help)
       cat <<'EOF'
 Usage: ./scripts/dist.sh [options]
@@ -76,6 +79,7 @@ Usage: ./scripts/dist.sh [options]
 Options:
   --target <triple|alias>
                        Rust target triple or release alias (default: host)
+  --version <version>   Override artifact version (default: Cargo package version)
   --skip-effects       Skip SDK effect/face compilation
   --skip-docs          Skip Zola docs compilation
   --ci                 CI mode (expect --web-assets for pre-built UI/effects)
@@ -92,8 +96,11 @@ require_cmd cargo
 require_cmd jq
 require_cmd tar
 
-VERSION=$(cargo metadata --format-version 1 --no-deps \
-  | jq -r '.packages[] | select(.name == "hypercolor-daemon") | .version')
+VERSION="${RELEASE_VERSION}"
+if [[ -z "${VERSION}" ]]; then
+  VERSION=$(cargo metadata --format-version 1 --no-deps \
+    | jq -r '.packages[] | select(.name == "hypercolor-daemon") | .version')
+fi
 [[ -n "${VERSION}" ]] || die "could not determine version from Cargo.toml"
 
 HOST_TARGET="$(rustc -vV | sed -n 's/host: //p')"

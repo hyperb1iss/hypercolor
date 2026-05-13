@@ -7,10 +7,6 @@ on:
       - "v*.*.*"
   pull_request:
   workflow_dispatch:
-    inputs:
-      release_run_id:
-        description: "Run ID of the release workflow (for artifact download)"
-        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,7 +17,7 @@ env:
   LINUX_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
-    ccache cmake nasm pkg-config lld
+    ccache cmake jq nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev
     libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
@@ -730,20 +726,6 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Build daemon (with Servo)
-        run: >-
-          ./scripts/cargo-cache-build.sh cargo build --release --locked
-          -p hypercolor-daemon --features servo
-          --target ${{ matrix.rust-target }}
-
-      - name: Build CLI, tray, and app
-        run: >-
-          ./scripts/cargo-cache-build.sh cargo build --release --locked
-          -p hypercolor-cli
-          -p hypercolor-tray
-          -p hypercolor-app
-          --target ${{ matrix.rust-target }}
-
       - name: Download web assets
         uses: actions/download-artifact@v4
         with:
@@ -758,69 +740,11 @@ jobs:
           echo "dist_name=hypercolor-${VERSION}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
 
       - name: Assemble distribution
-        env:
-          DIST: dist/${{ steps.version.outputs.dist_name }}
-          REL: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust-target }}/release
-        run: |
-          mkdir -p "${DIST}"/{bin,share/hypercolor/{ui,effects/bundled}}
-          mkdir -p "${DIST}"/share/{applications,bash-completion/completions,zsh/site-functions}
-          mkdir -p "${DIST}"/share/icons/hicolor/{scalable,48x48,128x128,256x256}/apps
-          mkdir -p "${DIST}"/share/fish/vendor_completions.d
-
-          # Binaries
-          for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray; do
-            install -m755 "${REL}/${bin}" "${DIST}/bin/${bin}"
-          done
-          install -m755 packaging/bin/hypercolor-tui "${DIST}/bin/"
-          install -m755 packaging/bin/hypercolor-open "${DIST}/bin/"
-          chmod 755 "${DIST}/bin/"*
-
-          # Web assets
-          cp -R web-assets/ui/. "${DIST}/share/hypercolor/ui/"
-          if [ -d web-assets/effects ]; then
-            cp -R web-assets/effects/. "${DIST}/share/hypercolor/effects/bundled/"
-          fi
-
-          # Desktop entry + icons
-          sed 's|@BIN_DIR@|/usr/bin|g' packaging/desktop/hypercolor.desktop.in \
-            > "${DIST}/share/applications/hypercolor.desktop"
-          cp packaging/icons/hypercolor.svg "${DIST}/share/icons/hicolor/scalable/apps/"
-          if command -v rsvg-convert &>/dev/null; then
-            for size in 48 128 256; do
-              rsvg-convert -w "${size}" -h "${size}" packaging/icons/hypercolor.svg \
-                -o "${DIST}/share/icons/hicolor/${size}x${size}/apps/hypercolor.png"
-            done
-          fi
-
-          # Shell completions (host builds only)
-          if [ "${{ matrix.rust-target }}" = "$(rustc -vV | sed -n 's/host: //p')" ]; then
-            "${DIST}/bin/hypercolor" completions bash > "${DIST}/share/bash-completion/completions/hypercolor"
-            "${DIST}/bin/hypercolor" completions zsh  > "${DIST}/share/zsh/site-functions/_hypercolor"
-            "${DIST}/bin/hypercolor" completions fish > "${DIST}/share/fish/vendor_completions.d/hypercolor.fish"
-          fi
-
-          # Linux integration
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            mkdir -p "${DIST}"/{lib/systemd/user,lib/udev/rules.d,etc/modules-load.d}
-            cp packaging/systemd/user/hypercolor.service "${DIST}/lib/systemd/user/"
-            cp packaging/systemd/user/hypercolor.service.system "${DIST}/lib/systemd/user/"
-            cp udev/99-hypercolor.rules "${DIST}/lib/udev/rules.d/"
-            cp packaging/modules-load/i2c-dev.conf "${DIST}/etc/modules-load.d/"
-          fi
-
-          # macOS integration
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            mkdir -p "${DIST}/share/hypercolor/launchd"
-            cp packaging/launchd/tech.hyperbliss.hypercolor.plist \
-              "${DIST}/share/hypercolor/launchd/"
-          fi
-
-          # License
-          cp LICENSE "${DIST}/"
-
-      - name: Create tarball
-        working-directory: dist
-        run: tar czf "${{ steps.version.outputs.dist_name }}.tar.gz" "${{ steps.version.outputs.dist_name }}"
+        run: >-
+          ./scripts/dist.sh --ci --skip-docs
+          --web-assets web-assets
+          --target ${{ matrix.target }}
+          --version ${{ steps.version.outputs.version }}
 
       - name: Upload release tarball
         uses: actions/upload-artifact@v4
@@ -833,14 +757,39 @@ jobs:
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [build-release, build-native-app, python-publish]
-    uses: hyperb1iss/shared-workflows/.github/workflows/github-release.yml@main
-    with:
-      attach-artifacts: true
-      release-notes-run-id: ${{ inputs.release_run_id }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
-    secrets: inherit
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hypercolor-*
+          path: release-artifacts/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find release-artifacts -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release artifacts found" >&2
+            exit 1
+          fi
+
+          args=(
+            "${GITHUB_REF_NAME}"
+            --title "Hypercolor ${GITHUB_REF_NAME#v}"
+            --generate-notes
+            --verify-tag
+          )
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${args[@]}" "${files[@]}"
 
   # ── Update Homebrew Tap ────────────────────────────────────────
   update-homebrew:

@@ -4,47 +4,99 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Explicit version (e.g., 1.2.3) — leave empty to use bump type"
-        required: false
-        default: ""
-      bump:
-        description: "Version bump type (if version not specified)"
-        required: false
-        type: choice
-        default: "patch"
-        options:
-          - patch
-          - minor
-          - major
+        description: "Version or RC version to tag, without leading v"
+        required: true
+        default: "0.1.0"
       dry_run:
-        description: "Dry run (build & test only, skip publish)"
+        description: "Validate the release tag without pushing it"
         required: false
         type: boolean
-        default: false
+        default: true
+
+permissions:
+  contents: write
 
 jobs:
-  release:
-    uses: hyperb1iss/shared-workflows/.github/workflows/rust-release.yml@main
-    with:
-      version: ${{ inputs.version }}
-      bump: ${{ inputs.bump }}
-      dry_run: ${{ inputs.dry_run }}
-      system-deps: >-
-        libudev-dev libdbus-1-dev libasound2-dev libpulse0
-        libpipewire-0.3-dev
-        cmake nasm pkg-config lld
-        libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
-        libxdo-dev
-        libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
-        librsvg2-dev libssl-dev
-      workspace: true
-      all-features: false
-      nextest: true
-      generate-release-notes: true
-      pass-run-id: true
-      cicd-workflow: ci.yml
-      patch-workspace-dep-versions: true
-    permissions:
-      contents: write
-      actions: write
-    secrets: inherit
+  prepare:
+    name: Prepare Release Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install release tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION#v}"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid release version: ${INPUT_VERSION}" >&2
+            exit 1
+          fi
+
+          cargo_version="$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "hypercolor-daemon") | .version')"
+          base_version="${version%%-*}"
+          if [[ "${base_version}" != "${cargo_version}" ]]; then
+            echo "Tag version ${version} does not match Cargo version ${cargo_version}" >&2
+            echo "Update the workspace version before cutting this release." >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "${version}" == *-* ]]; then
+            prerelease=true
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize release plan
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo "## Release plan"
+            echo
+            echo "- Version: ${VERSION}"
+            echo "- Tag: ${TAG}"
+            echo "- Prerelease: ${PRERELEASE}"
+            echo "- Dry run: ${DRY_RUN}"
+            echo
+            echo "Pushing the tag triggers ci.yml to build artifacts and publish the release."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create and push tag
+        if: inputs.dry_run == false
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
