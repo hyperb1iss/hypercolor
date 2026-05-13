@@ -9,6 +9,8 @@ template = "page.html"
 
 Hypercolor needs **Rust 1.94+** (Edition 2024) and a few system libraries to talk to your hardware and capture audio. The fast path: clone the repo, install [just](https://github.com/casey/just), run `just setup`.
 
+Linux is the supported launch install path. macOS setup is useful for release/build testing, and Windows source builds are experimental until the installer and runtime gates are in CI.
+
 ## Quick Start (Recommended)
 
 ```bash
@@ -22,7 +24,7 @@ cargo install just     # or: brew install just / winget install Casey.Just
 just setup
 ```
 
-`just setup` is **idempotent** — re-running it only installs what's missing. It detects your platform (Debian/Ubuntu, Fedora, Arch, macOS, Windows) and uses the right package manager.
+`just setup` is **idempotent** — re-running it only installs what's missing. It detects your platform (Debian/Ubuntu, Fedora, Arch, macOS, Windows) and uses the right package manager. On macOS and Windows this is a developer bootstrap, not a fully supported hardware install path yet.
 
 ### Setup Flags
 

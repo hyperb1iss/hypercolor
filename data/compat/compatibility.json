@@ -74,7 +74,7 @@
     {
       "slug": "alienware",
       "name": "Alienware",
-      "website": "https://dell.com/alienware",
+      "website": null,
       "vids": [
         6268,
         1226,
@@ -1985,7 +1985,7 @@
     {
       "slug": "gigabyte",
       "name": "Gigabyte",
-      "website": "https://gigabyte.com",
+      "website": null,
       "vids": [
         1165,
         4164,
@@ -2825,7 +2825,7 @@
     {
       "slug": "msi",
       "name": "MSI",
-      "website": "https://msi.com",
+      "website": null,
       "vids": [
         5218,
         3504,

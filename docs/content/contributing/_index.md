@@ -18,11 +18,11 @@ cd hypercolor
 # Install all dependencies (Rust targets, Bun for SDK, UI deps)
 just setup
 
-# Run the full verification suite
+# Run the Rust verification gate
 just verify
 ```
 
-`just verify` runs formatting checks, clippy lints, and the test suite. Run it after every change before committing.
+`just verify` runs Rust formatting checks, clippy lints, and the Rust test suite. Run the focused gate for the surface you changed before committing: `just ui-test && just ui-build` for the Leptos UI, `just sdk-lint && just sdk-check && just sdk-build` for the TypeScript SDK, `just python-verify` for the Python client, `just compat-check` for device data, and `just docs-build` for docs.
 
 ## Build Commands
 
@@ -89,7 +89,7 @@ Each crate has clear ownership. Respect the dependency graph:
 
 - **`hypercolor-types`** depends on nothing. All shared data types live here.
 - **`hypercolor-core`** depends on `types`. Engine logic, traits, and abstractions.
-- **`hypercolor-hal`** depends on `types` and `core`. Device drivers only.
+- **`hypercolor-hal`** depends on `types`. Device drivers only.
 - **`hypercolor-daemon`** depends on `core` and `hal`. Never imported by other crates.
 
 Do NOT create circular dependencies between crates. If you need a type in multiple crates, it belongs in `hypercolor-types`.

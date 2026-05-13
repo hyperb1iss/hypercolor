@@ -1,7 +1,6 @@
 [vendor]
 name = "Gigabyte"
 vid = [0x048D, 0x1044, 0x0414]
-website = "https://gigabyte.com"
 
 [[devices]]
 pid = 0x5702

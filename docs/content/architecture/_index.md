@@ -91,15 +91,15 @@ hypercolor-daemon    Binary: `hypercolor-daemon` — REST API + WebSocket + MCP
     +-- hypercolor-ui    Leptos WASM web UI (separate from workspace)
 ```
 
-| Crate               | Depends On      | Responsibility                                                                              |
-| ------------------- | --------------- | ------------------------------------------------------------------------------------------- |
-| `hypercolor-types`  | (none)          | Shared vocabulary types — import from here, never sibling internals                         |
-| `hypercolor-core`   | `types`         | Traits, engine logic, effect registry, audio pipeline, spatial mapping                      |
-| `hypercolor-hal`    | `types`, `core` | USB/HID device drivers, protocol implementations                                            |
-| `hypercolor-daemon` | `core`, `hal`   | HTTP/WS server, REST API, MCP server, daemon lifecycle                                      |
-| `hypercolor-cli`    | `core`          | CLI parsing, output formatting, IPC client                                                  |
-| `hypercolor-tui`    | `core`          | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
-| `hypercolor-ui`     | (standalone)    | Leptos 0.8 CSR web app, compiled to WASM via Trunk                                          |
+| Crate               | Depends On    | Responsibility                                                                              |
+| ------------------- | ------------- | ------------------------------------------------------------------------------------------- |
+| `hypercolor-types`  | (none)        | Shared vocabulary types — import from here, never sibling internals                         |
+| `hypercolor-core`   | `types`       | Traits, engine logic, effect registry, audio pipeline, spatial mapping                      |
+| `hypercolor-hal`    | `types`       | USB/HID device drivers, protocol implementations                                            |
+| `hypercolor-daemon` | `core`, `hal` | HTTP/WS server, REST API, MCP server, daemon lifecycle                                      |
+| `hypercolor-cli`    | `core`        | CLI parsing, output formatting, IPC client                                                  |
+| `hypercolor-tui`    | `core`        | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
+| `hypercolor-ui`     | (standalone)  | Leptos 0.8 CSR web app, compiled to WASM via Trunk                                          |
 
 {% callout(type="note", title="Unsafe boundary policy") %}
 Application, driver, and domain crates inherit the workspace `unsafe_code = "forbid"` lint.
@@ -125,7 +125,7 @@ The render thread is the heart of the system. It runs on a dedicated OS thread w
 
 SparkleFlinger is the composition boundary that lets render groups, overlapping zones, and mixed-cadence producers (Servo at 30fps, native at 60fps, screen capture at whatever PipeWire hands us) all flow into a single deadline-driven frame. See `docs/design/30-sparkleflinger-implementation.md` for the shipped invariants.
 
-The canvas defaults to 640×480 and is configurable via `daemon.canvas_width` / `daemon.canvas_height`. Effects render in normalized `[0.0, 1.0]` spatial coordinates, so they stay resolution-independent — tune the canvas to match your sampling needs without touching effect code. Readback cost scales with the canvas (≈1.17 MB/frame at 640×480, still trivially fast). Changing canvas dimensions requires a daemon restart; target FPS can be retuned live.
+The canvas defaults to 640×480 and is configurable via `daemon.canvas_width` / `daemon.canvas_height`. Effects render in normalized `[0.0, 1.0]` spatial coordinates, so they stay resolution-independent — tune the canvas to match your sampling needs without touching effect code. Readback cost scales with the canvas (≈1.17 MB/frame at 640×480, still trivially fast). Canvas dimensions retune through the scene transaction path at frame boundaries; target FPS can be retuned live too.
 
 ## Dual-Path Effect Engine
 

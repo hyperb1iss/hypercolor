@@ -5,7 +5,7 @@
 <h1 align="center">Hypercolor</h1>
 
 <p align="center">
-  <strong>Open-Source RGB Lighting Engine for Linux, macOS, and Windows</strong><br>
+  <strong>Linux-first open-source RGB lighting engine</strong><br>
   <sub>✦ Your world is a canvas: paint every pixel. ✦</sub>
 </p>
 
@@ -72,7 +72,7 @@ graph LR
     subgraph Hardware
         G[Razer · Corsair · ASUS<br><i>USB / HID / I2C</i>]
         H[WLED · Hue · Nanoleaf<br><i>UDP / REST / mDNS</i>]
-        I[QMK · Dygma · Push 2<br><i>USB HID</i>]
+        I[QMK · Push 2<br><i>USB HID · USB MIDI</i>]
     end
 
     A & B & C --> D
@@ -247,8 +247,8 @@ Runs wherever you have a terminal.
 
 ## 🎯 Get Started
 
-Hypercolor is Linux-first with working macOS and Windows support. Deeper integration on Mac
-and Windows is actively growing.
+Hypercolor is Linux-first. macOS release builds and Windows source builds exist, but Linux is
+the supported launch path for hardware permissions, services, and full runtime verification.
 
 ### Install on Linux
 
@@ -405,9 +405,9 @@ for Windows service/process boundaries. Both deny undocumented unsafe blocks. Ed
 ## 📡 Status
 
 Hypercolor is in active development (v0.1.0). The core engine, effect SDK, web UI, TUI, and
-10 device backends all work today. Linux has the deepest support, with macOS and Windows
-tracking closely. Every screenshot in this README was captured from a live instance running
-on real hardware.
+11 shipping driver families all work today on Linux. macOS arm64 release artifacts and
+Windows source builds are experimental until their installer and runtime gates match Linux.
+Every screenshot in this README was captured from a live instance running on real hardware.
 
 **Coming soon:** effect marketplace, Wasmtime plugin system for community backends, Wooting
 analog keyboards, and driver families for Cooler Master, NZXT, and Logitech. See the

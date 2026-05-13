@@ -166,7 +166,7 @@ If effects aren't reacting to audio:
 
    ```bash
    # Via MCP tool or REST
-   curl http://localhost:9420/api/v1/status | jq '.audio'
+   curl http://localhost:9420/api/v1/status | jq '.data.audio_available'
    ```
 
 4. Verify your system's audio capture is working:
@@ -192,7 +192,7 @@ For audio-reactive effects, you typically want a "monitor" source that captures 
 curl -X POST http://localhost:9420/api/v1/effects/rescan
 
 # List loaded effects
-curl http://localhost:9420/api/v1/effects | jq '.[].name'
+curl http://localhost:9420/api/v1/effects | jq '.data.items[].name'
 
 # Check daemon logs for loading errors
 RUST_LOG=hypercolor_core::effect=debug just daemon

@@ -1,7 +1,6 @@
 [vendor]
 name = "Alienware"
 vid = [0x187C, 0x04CA, 0x0424]
-website = "https://dell.com/alienware"
 
 [[devices]]
 pid = 0x0530

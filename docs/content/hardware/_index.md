@@ -18,11 +18,10 @@ Hypercolor controls RGB devices through a Hardware Abstraction Layer (HAL) that 
 | **WLED**              | Network (UDP)  | DDP / E1.31 (sACN)         | Implemented |
 | **Philips Hue**       | Network (REST) | Hue Bridge API             | Implemented |
 | **Nanoleaf**          | Network (REST) | Nanoleaf OpenAPI           | Implemented |
-| **Dygma Defy**        | USB HID        | Custom keyboard protocol   | Implemented |
 | **QMK**               | USB HID        | QMK raw HID                | Implemented |
 | **Ableton Push 2**    | USB Bulk       | Pad/button RGB protocol    | Implemented |
-| **Lian Li**           | USB HID        | Uni Hub protocol           | Planned     |
-| **ROLI Blocks**       | USB HID        | Lightpad protocol          | Planned     |
+| **Lian Li**           | USB HID        | Uni Hub / TL Fan Hub       | Implemented |
+| **Dygma Defy**        | USB serial     | Firmware-gated RGB control | Blocked     |
 
 ## Architecture
 
@@ -41,14 +40,16 @@ D --> E5[WLED Driver]
 D --> E6[Hue Driver]
 D --> E7[Nanoleaf Driver]
 D --> E8[Dygma / QMK]
+D --> E9[Lian Li Driver]
 E1 -->|USB HID| F1[Razer Peripherals]
 E2 -->|USB HID| F2[Corsair Devices]
 E3 -->|USB/I2C| F3[ASUS Motherboard/GPU]
-E4 -->|USB HID| F4[Lian Li Strimer]
+E4 -->|USB HID| F4[PrismRGB / Nollie Controllers]
 E5 -->|UDP DDP| F5[WLED Strips]
 E6 -->|REST| F6[Hue Bridge]
 E7 -->|REST| F7[Nanoleaf Panels]
-E8 -->|USB HID| F8[Custom Keyboards]
+E8 -->|USB HID / Serial| F8[Custom Keyboards]
+E9 -->|USB HID / Vendor| F9[Uni Hub / TL Fan Hub]
 {% end %}
 
 ### Key Abstractions

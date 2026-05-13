@@ -511,7 +511,7 @@ _Source: [`data/drivers/vendors/ableton.toml`](../../../data/drivers/vendors/abl
 
 ### Alienware {#alienware}
 
-[dell.com](https://dell.com/alienware) · VID 0x187C, 0x04CA, 0x0424
+VID 0x187C, 0x04CA, 0x0424
 
 **Devices tracked:** 3 known
 
@@ -794,7 +794,7 @@ _Source: [`data/drivers/vendors/fnatic.toml`](../../../data/drivers/vendors/fnat
 
 ### Gigabyte {#gigabyte}
 
-[gigabyte.com](https://gigabyte.com) · VID 0x048D, 0x1044, 0x0414
+VID 0x048D, 0x1044, 0x0414
 
 **Devices tracked:** 4 researched · 4 known
 
@@ -959,7 +959,7 @@ _Source: [`data/drivers/vendors/mountain.toml`](../../../data/drivers/vendors/mo
 
 ### MSI {#msi}
 
-[msi.com](https://msi.com) · VID 0x1462, 0x0DB0, 0x1770
+VID 0x1462, 0x0DB0, 0x1770
 
 **Devices tracked:** 7 researched · 4 known
 

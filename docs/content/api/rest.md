@@ -5,7 +5,20 @@ weight = 1
 template = "page.html"
 +++
 
-The Hypercolor daemon serves a REST API on port **9420** (configurable). All endpoints are under the `/api/v1` prefix. Responses are JSON.
+The Hypercolor daemon serves a REST API on port **9420** (configurable). All endpoints are under the `/api/v1` prefix. Success responses use a consistent JSON envelope:
+
+```json
+{
+  "data": {},
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25",
+    "timestamp": "2026-05-13T05:12:00Z"
+  }
+}
+```
+
+Use `meta.request_id` when reporting API errors or correlating logs.
 
 When an API key is configured, include it as a Bearer token:
 
@@ -26,11 +39,25 @@ Current system status including running effect, connected devices, audio state, 
 
 ```json
 {
-  "running": true,
-  "effect": { "id": "borealis", "name": "Borealis" },
-  "devices": 3,
-  "fps": 60.0,
-  "audio": { "enabled": true, "level": 0.42 }
+  "data": {
+    "running": true,
+    "version": "0.1.0",
+    "device_count": 3,
+    "effect_count": 32,
+    "active_effect": "borealis",
+    "global_brightness": 85,
+    "audio_available": true,
+    "render_loop": {
+      "state": "running",
+      "target_fps": 60,
+      "actual_fps": 59.8
+    }
+  },
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25",
+    "timestamp": "2026-05-13T05:12:00Z"
+  }
 }
 ```
 
@@ -43,20 +70,40 @@ Server identity and version information.
 ## Effects
 
 {% api_endpoint(method="GET", path="/api/v1/effects") %}
-List all available effects. Returns an array of effect summaries with ID, name, description, tags, and whether the effect is audio-reactive.
+List all available effects. Returns `data.items`, an array of effect summaries with ID, name, description, tags, and whether the effect is audio-reactive.
 
 **Response:**
 
 ```json
-[
-  {
-    "id": "borealis",
-    "name": "Borealis",
-    "description": "Aurora borealis with domain-warped fBm noise",
-    "tags": ["ambient", "shader"],
-    "audio_reactive": false
+{
+  "data": {
+    "items": [
+      {
+        "id": "borealis",
+        "name": "Borealis",
+        "description": "Aurora borealis with domain-warped fBm noise",
+        "author": "Hypercolor",
+        "category": "ambient",
+        "source": "html",
+        "runnable": true,
+        "tags": ["ambient", "shader"],
+        "version": "1.0.0",
+        "audio_reactive": false
+      }
+    ],
+    "pagination": {
+      "offset": 0,
+      "limit": 50,
+      "total": 32,
+      "has_more": false
+    }
+  },
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25",
+    "timestamp": "2026-05-13T05:12:00Z"
   }
-]
+}
 ```
 
 {% end %}
@@ -68,19 +115,24 @@ Get detailed information about a specific effect, including its full control def
 
 ```json
 {
-  "id": "borealis",
-  "name": "Borealis",
-  "description": "Aurora borealis with domain-warped fBm noise",
-  "controls": [
-    {
-      "id": "speed",
-      "label": "Speed",
-      "type": "number",
-      "min": 1,
-      "max": 10,
-      "default": 5
-    }
-  ]
+  "data": {
+    "id": "borealis",
+    "name": "Borealis",
+    "description": "Aurora borealis with domain-warped fBm noise",
+    "author": "Hypercolor",
+    "category": "ambient",
+    "source": "html",
+    "runnable": true,
+    "tags": ["ambient", "shader"],
+    "version": "1.0.0",
+    "audio_reactive": false,
+    "controls": []
+  },
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25",
+    "timestamp": "2026-05-13T05:12:00Z"
+  }
 }
 ```
 
@@ -104,8 +156,27 @@ Apply an effect to the current output. Optionally include control values to over
 
 ```json
 {
-  "applied": true,
-  "effect_id": "borealis"
+  "data": {
+    "effect": {
+      "id": "borealis",
+      "name": "Borealis"
+    },
+    "applied_controls": {
+      "speed": 7,
+      "palette": "SilkCircuit"
+    },
+    "layout": null,
+    "transition": {
+      "type": "none",
+      "duration_ms": 0
+    },
+    "warnings": []
+  },
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25",
+    "timestamp": "2026-05-13T05:12:00Z"
+  }
 }
 ```
 
@@ -122,8 +193,10 @@ Update control values on the currently running effect. Changes apply on the next
 
 ```json
 {
-  "speed": 3,
-  "intensity": 90
+  "controls": {
+    "speed": 3,
+    "intensity": 90
+  }
 }
 ```
 
@@ -144,20 +217,37 @@ Trigger a rescan of the effects directory. Use this after building new effects t
 ## Devices
 
 {% api_endpoint(method="GET", path="/api/v1/devices") %}
-List all discovered and connected devices.
+List all discovered and connected devices. Returns `data.items`.
 
 **Response:**
 
 ```json
-[
-  {
-    "id": "razer-blackwidow-v4-001",
-    "name": "Razer BlackWidow V4",
-    "backend": "razer",
-    "led_count": 126,
-    "status": "connected"
+{
+  "data": {
+    "items": [
+      {
+        "id": "razer-blackwidow-v4-001",
+        "layout_device_id": "razer-blackwidow-v4-001",
+        "name": "Razer BlackWidow V4",
+        "status": "connected",
+        "brightness": 100,
+        "total_leds": 126,
+        "zones": []
+      }
+    ],
+    "pagination": {
+      "offset": 0,
+      "limit": 50,
+      "total": 1,
+      "has_more": false
+    }
+  },
+  "meta": {
+    "api_version": "1.0",
+    "request_id": "req_019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25",
+    "timestamp": "2026-05-13T05:12:00Z"
   }
-]
+}
 ```
 
 {% end %}

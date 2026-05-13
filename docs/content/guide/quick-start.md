@@ -35,7 +35,7 @@ hypercolor devices list
 curl http://localhost:9420/api/v1/devices | jq
 ```
 
-You should see an array of discovered devices with their names, types, LED counts, and connection status.
+You should see a response envelope with `data.items`, the discovered devices with their names, types, LED counts, and connection status.
 
 {% callout(type="info", title="No hardware yet?") %}
 You can still browse and preview effects through the web UI without physical devices connected. The preview renderer shows what effects look like on a virtual canvas.
@@ -54,7 +54,7 @@ hypercolor effects list
 **Via REST API:**
 
 ```bash
-curl http://localhost:9420/api/v1/effects | jq '.[].name'
+curl http://localhost:9420/api/v1/effects | jq '.data.items[].name'
 ```
 
 **Via Web UI:**
@@ -94,7 +94,7 @@ Most effects expose user-configurable parameters — speed, color palette, inten
 ```bash
 curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
   -H "Content-Type: application/json" \
-  -d '{"speed": 3, "palette": "SilkCircuit"}'
+  -d '{"controls": {"speed": 3, "palette": "SilkCircuit"}}'
 ```
 
 Changes apply immediately. The render loop picks up new control values on the next frame.
