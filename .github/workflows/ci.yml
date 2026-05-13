@@ -348,8 +348,8 @@ jobs:
       - name: Run daemon Servo tests
         if: matrix.suite == 'daemon-servo'
         run: |
-          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-daemon --lib
-          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-daemon --bin hypercolor-daemon
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-daemon --lib -- --test-threads=1
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-daemon --bin hypercolor-daemon -- --test-threads=1
 
       - name: Run daemon Servo doc tests
         if: matrix.suite == 'daemon-servo'
