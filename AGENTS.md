@@ -67,7 +67,7 @@ data/compat/               # Generated compatibility matrix outputs (JSON + mark
 docs/specs/                # Implementation specs (numbered)
 docs/design/               # Design documents (numbered)
 docs/archive/              # Superseded plans, shipped decisions, stale snapshots
-docs/content/              # Public documentation (Zola site at docs.hypercolor.lighting)
+docs/content/              # Public documentation (Zola site at https://hyperb1iss.github.io/hypercolor)
 .agents/                   # AI agent skills and agent definitions
 ```
 

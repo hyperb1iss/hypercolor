@@ -86,6 +86,10 @@ These passed during launch hardening:
 - `scripts/install-release.sh --help`, `scripts/get-hypercolor.sh --help`,
   `scripts/uninstall.sh --help` -> argument parsing ok
 - `git status --short --branch` -> tracking `origin/launch/v0.1-hardening`
+- `gh repo view hyperb1iss/hypercolor` -> repo is `PRIVATE`, Apache-2.0
+  license detected, issues enabled, homepage set to `https://hypercolor.lighting`
+- `curl -I -L https://hypercolor.lighting` -> `HTTP/2 200`
+- `curl -I -L https://hyperb1iss.github.io/hypercolor/` -> `HTTP/2 200`
 - `git status --short --untracked-files=all` -> clean
 
 Known skipped gates:
@@ -93,6 +97,8 @@ Known skipped gates:
 - `just e2e` has not been run because it starts the daemon/browser stack.
 - RC workflow/tag rehearsal has not been run because release orchestration needs
   explicit approval.
+- GitHub repository visibility is still `PRIVATE`; flipping it public is a
+  launch action that needs explicit approval after the final gates pass.
 
 Pending approval runbook:
 
