@@ -88,11 +88,11 @@ Actions builds with:
 The scheduled/manual `.github/workflows/servo-cache-warm.yml` workflow warms
 three compatible shapes:
 
-| Suite | Shared Key | Extra Key | Purpose |
-| ----- | ---------- | --------- | ------- |
-| Core Servo | `servo-core` | empty | core Servo check, test, and clippy artifacts |
-| Daemon Servo | `servo-daemon` | empty | daemon Servo check, test, and clippy artifacts |
-| E2E Servo | `servo-daemon` | `e2e-dev-v1` | daemon and CLI binaries for the normal E2E stack |
+| Suite        | Shared Key     | Extra Key    | Purpose                                          |
+| ------------ | -------------- | ------------ | ------------------------------------------------ |
+| Core Servo   | `servo-core`   | empty        | core Servo check, test, and clippy artifacts     |
+| Daemon Servo | `servo-daemon` | empty        | daemon Servo check, test, and clippy artifacts   |
+| E2E Servo    | `servo-daemon` | `e2e-dev-v1` | daemon and CLI binaries for the normal E2E stack |
 
 The main CI workflow reuses those same shared keys in the explicit Servo check,
 test, and E2E build lanes. Shared non-Servo Rust lanes deliberately keep Servo
