@@ -59,7 +59,8 @@ open a PR:
   OpenAPI schema or generated client changes.
 - **Hardware compatibility data:** `just compat-check`. Run `just compat` first if
   you touched `data/drivers/vendors/*.toml`.
-- **Docs:** `just docs-build`; add `just prettier-check` for prose-heavy changes.
+- **Docs:** `just docs-build`; add `cd docs && zola check` for link/content changes,
+  and `just prettier-check` for prose-heavy changes.
 - **Packaging and release scripts:** `bash -n scripts/{setup,install,dist}.sh` plus
   the relevant `--help` command for any script you touched.
 - **End-to-end stack:** `just e2e-build` is safe for build verification. `just e2e`
