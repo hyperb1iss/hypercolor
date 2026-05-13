@@ -330,7 +330,7 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers
+          --features builtin-drivers --test-threads=1
 
       - name: Run daemon doc tests
         if: matrix.suite == 'daemon'
