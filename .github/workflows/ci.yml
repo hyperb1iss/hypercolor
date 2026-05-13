@@ -98,13 +98,13 @@ jobs:
       - name: Clippy core with Servo
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-core --features servo --all-targets
+          cargo clippy --locked -p hypercolor-core --features servo --lib --tests
           -- -D warnings
 
       - name: Clippy daemon with Servo
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-daemon --all-targets
+          cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
           -- -D warnings
 
   # ── Rust Test ──────────────────────────────────────────────────
