@@ -32,6 +32,8 @@
   <a href="#-get-started">Get Started</a> •
   <a href="#-the-effect-sdk">Effect SDK</a> •
   <a href="#-architecture">Architecture</a> •
+  <a href="#-status">Status</a> •
+  <a href="#security-and-conduct">Security</a> •
   <a href="#-contributing">Contributing</a>
 </p>
 
@@ -409,10 +411,22 @@ Hypercolor is in active development (v0.1.0). The core engine, effect SDK, web U
 Windows source builds are experimental until their installer and runtime gates match Linux.
 Every screenshot in this README was captured from a live instance running on real hardware.
 
+Known launch limitations:
+
+- Linux is the only fully supported install and runtime path for v0.1.0.
+- SDK packages are pre-release and use local checkout or `file:` dependencies until npm publish.
+- The Python client is source-only for launch and is not published to PyPI yet.
+- Windows hardware service setup remains experimental.
+
 **Coming soon:** effect marketplace, Wasmtime plugin system for community backends, Wooting
 analog keyboards, and driver families for Cooler Master, NZXT, and Logitech. See the
 [full compatibility matrix](docs/content/hardware/compatibility.md) for researched hardware
 waiting on implementation.
+
+## Security And Conduct
+
+Please report vulnerabilities through the process in [`SECURITY.md`](SECURITY.md). Community
+participation follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## 💜 Contributing
 
