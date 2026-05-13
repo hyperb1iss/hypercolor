@@ -1,21 +1,31 @@
 # Hypercolor Launch Hardening Plan
 
-**Status:** Local hardening complete; explicit e2e/RC approval pending
+**Status:** remote PR CI hardening in progress; explicit e2e/RC approval pending
 **Created:** 2026-05-13
 **Scope:** public repo launch, v0.1.0 release readiness, announcement readiness
 **Source:** multi-agent launch readiness audit
 
 ## Verdict
 
-The local launch-hardening work is complete. Hypercolor now has green local
-verification for the security, packaging, SDK, UI, Python, docs, compatibility,
-and supply-chain gates covered by this plan.
+The launch-hardening implementation is substantially complete locally, and PR
+[#1](https://github.com/hyperb1iss/hypercolor/pull/1) is open from
+`launch/v0.1-hardening`. Hypercolor now has green local verification for the
+security, packaging, SDK, UI, Python, docs, compatibility, and supply-chain
+gates covered by this plan.
 
-Two launch approval gates remain before public announcement:
+Launch is not done yet. The latest remote PR CI run exposed one remaining CI
+topology blocker: the `Rust Test` shared-crate lane is still pulling Servo into
+the GitHub runner through default features and exhausting disk during
+`servo-script`.
+
+After remote PR CI is green, three explicit launch gates remain before public
+announcement:
 
 - `just e2e`, because it starts the daemon/browser stack.
 - The RC workflow/tag rehearsal, because release tags and workflow dispatches
   require an explicit go-ahead.
+- The repository visibility flip and announcement, because making the repo
+  public is the launch action.
 
 This plan turns the original blockers into executable waves. Each task has a
 concrete verification gate. Work should land as small, goal-aligned
@@ -34,6 +44,8 @@ Hypercolor is launch-ready when all of the following are true:
 - Unsafe-code policy is accurate and documents audited platform interop exceptions.
 - Generated compatibility docs are current and `zola check` is green.
 - The repo has no accidental large untracked launch artifacts.
+- PR CI is green on the launch branch, including Rust check/test lanes, UI,
+  SDK, Python, compatibility, cargo-deny, generated client, and E2E.
 - Local gates pass with receipts:
   - `just verify`
   - `just compat-check`
@@ -50,6 +62,7 @@ Hypercolor is launch-ready when all of the following are true:
 - Explicit approval gates pass:
   - `just e2e`
   - release RC workflow dry run
+  - repository visibility flip
 
 ## Current Green Receipts
 
@@ -92,8 +105,59 @@ These passed during launch hardening:
 - `curl -I -L https://hyperb1iss.github.io/hypercolor/` -> `HTTP/2 200`
 - `git status --short --untracked-files=all` -> clean
 
-Known skipped gates:
+## Remote PR CI State
 
+Latest completed run:
+
+- Run: `25793620943`
+- Head: `bcb23fed`
+- URL: <https://github.com/hyperb1iss/hypercolor/actions/runs/25793620943>
+- Conclusion: canceled after the blocking `Rust Test` failure was identified.
+
+Green jobs from that run:
+
+- Compatibility Matrix
+- UI
+- Detect Changes
+- SDK
+- Cargo Deny
+- Python Client
+- Rust Check
+- Python Generated Client
+
+Blocking failure:
+
+- Job: `Rust Test`
+- Step: `Run shared crate tests`
+- Command:
+  `cargo test --no-run --message-format json-render-diagnostics --workspace --exclude hypercolor-core --exclude hypercolor-daemon --exclude hypercolor-desktop --locked`
+- Error:
+  `failed to build archive ... libscript-...rlib: No space left on device (os error 28)`
+- Root cause to fix:
+  `hypercolor-cli` test dependencies still pull `hypercolor-core` and
+  `hypercolor-daemon` default features, which drags Servo into the shared
+  workspace test lane. Servo coverage should remain in the explicit
+  core/daemon Servo lanes, not the shared lane.
+
+E2E state:
+
+- The remote E2E job was canceled mid-build after the Rust Test blocker was
+  found.
+- Treat that as no verdict on the E2E product path. The next green PR CI run
+  must let E2E finish.
+
+Non-blocking launch polish:
+
+- GitHub Actions now annotates `mozilla-actions/sccache-action@v0.0.9` as a
+  Node 20 action. The annotation says GitHub will force Node 24 by default on
+  June 2, 2026 and remove Node 20 support on September 16, 2026.
+- Prefer opting CI into Node 24 before announcement if the follow-up run stays
+  clean.
+
+Known open gates:
+
+- Remote PR CI is not green yet because `Rust Test` needs the shared-lane Servo
+  dependency fix.
 - `just e2e` has not been run because it starts the daemon/browser stack.
 - RC workflow/tag rehearsal has not been run because release orchestration needs
   explicit approval.
@@ -589,10 +653,36 @@ Verify:
 
 ## Wave 6: Final Verification And RC Rehearsal
 
+### Task 6.0: Fix Remote PR CI Rust Test Topology
+
+**Files:** `crates/hypercolor-cli/Cargo.toml`, `.github/workflows/ci.yml` only if needed
+**Depends on:** Waves 1-5
+**Parallel:** no
+
+Implementation:
+
+- Confirm the shared test lane's Servo dependency path with `cargo tree`.
+- Disable default features on `hypercolor-cli` test-only dependencies if those
+  tests do not require Servo or bundled daemon defaults.
+- If the dependency path cannot be fixed at the manifest level, split the CI
+  test lane so shared crates remain lightweight and Servo coverage stays in the
+  explicit core/daemon lanes.
+- Keep the fix narrow. Do not reduce actual Servo coverage to make CI green.
+- Push the branch and monitor a fresh PR CI run to completion.
+
+Verify:
+
+- `cargo tree -p hypercolor-cli -e all | rg -C 3 "hypercolor-daemon feature \"default\"|hypercolor-core feature \"servo\"|servo feature"`
+- `./scripts/cargo-cache-build.sh cargo test --no-run --message-format short --workspace --exclude hypercolor-core --exclude hypercolor-daemon --exclude hypercolor-desktop --locked`
+- `./scripts/cargo-cache-build.sh cargo test -p hypercolor-cli --locked`
+- Latest PR CI run on the pushed head has green `Rust Test`.
+- Latest PR CI run lets E2E finish instead of being canceled behind a Rust
+  infrastructure failure.
+
 ### Task 6.1: Full Local Gate
 
-**Files:** none unless failures require fixes  
-**Depends on:** Waves 1-5  
+**Files:** none unless failures require fixes
+**Depends on:** Task 6.0 and Waves 1-5
 **Parallel:** no
 
 Verify:
@@ -671,6 +761,49 @@ Verify:
 - `git log --oneline --decorate -20`
 - Review verdict: ready or explicit remaining caveats.
 
+### Task 6.5: Clear Node 20 Action Runtime Warning
+
+**Files:** `.github/workflows/ci.yml`, `.github/workflows/release.yml` if needed
+**Depends on:** Task 6.0
+**Parallel:** yes after the Rust Test topology fix lands
+
+Implementation:
+
+- Opt CI into Node 24 action execution if the current Actions annotation remains
+  after the Rust Test fix.
+- Keep the change isolated so any failure clearly belongs to action runtime
+  migration, not the launch-hardening implementation.
+- Re-run PR CI and release dry-run paths that exercise JavaScript actions.
+
+Verify:
+
+- Latest PR CI run has no Node 20 deprecation annotation.
+- `actions/checkout`, `dorny/paths-filter`, setup actions, cache actions, and
+  upload/download artifact actions still complete successfully.
+
+### Task 6.6: Public Visibility And Announcement Gate
+
+**Files:** none unless final review finds metadata issues
+**Depends on:** Tasks 6.1-6.5
+**Parallel:** no
+
+Implementation:
+
+- Confirm explicit go-ahead before flipping repository visibility.
+- Confirm repository metadata: description, homepage, topics, license, issues,
+  releases, security policy, and default branch.
+- Flip `hyperb1iss/hypercolor` from private to public.
+- Publish the announcement only after the public repo, docs site, release
+  artifacts, and installation path are all accessible.
+
+Verify:
+
+- `gh repo view hyperb1iss/hypercolor --json isPrivate,homepageUrl,licenseInfo,issuesEnabled`
+- `gh release view v0.1.0` or the approved RC/release tag.
+- Public docs site returns `HTTP 200`.
+- Fresh public clone can run the documented setup path.
+- Announcement links resolve without private-repo access.
+
 ## Suggested Commit Boundaries
 
 - `fix(security): require auth for network daemon binds`
@@ -687,6 +820,8 @@ Verify:
 - `build(sdk): make effect scaffolding launch-safe`
 - `build: track frontend lockfiles for reproducible installs`
 - `chore(release): add rc launch checklist`
+- `ci(rust): keep shared tests off daemon defaults`
+- `ci: opt into node 24 action runtime`
 
 ## Critical Path
 
@@ -694,7 +829,12 @@ Verify:
 2. Wave 2 release/install blockers.
 3. Wave 3 package publication or doc rewording.
 4. Wave 4 public docs truth pass.
-5. Wave 6 RC rehearsal.
+5. Task 6.0 remote PR CI Rust Test topology fix.
+6. Task 6.1 full local gate refresh if the CI fix changes behavior.
+7. Task 6.2 explicit local E2E gate.
+8. Task 6.3 release candidate dry run.
+9. Task 6.4 launch review.
+10. Task 6.6 public visibility and announcement gate.
 
 Wave 5 can happen in parallel with Wave 4 once the screenshot strategy is decided.
 
