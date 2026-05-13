@@ -6,7 +6,7 @@ use hypercolor_hal::drivers::corsair::peripheral::bragi::{
 };
 use hypercolor_hal::drivers::corsair::peripheral::devices::{
     BRAGI_INTERFACE, BRAGI_REPORT_ID, PID_K65_MINI, PID_K70_CORE_RGB_VARIANT_2,
-    PID_SCIMITAR_ELITE_BRAGI,
+    PID_K100_OPTICAL_V1, PID_SCIMITAR_ELITE_BRAGI,
 };
 use hypercolor_hal::drivers::corsair::peripheral::types::{
     BRAGI_JUMBO_PACKET_SIZE, BRAGI_LARGE_PACKET_SIZE, BRAGI_PACKET_SIZE, BragiCommand,
@@ -324,6 +324,33 @@ fn k70_core_variant_2_is_registered_with_safe_hidapi_transport() {
         protocol.zones()[0].topology,
         DeviceTopologyHint::Matrix { rows: 6, cols: 21 }
     );
+}
+
+#[test]
+fn k100_uses_jumbo_alternate_rgb_packets() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_K100_OPTICAL_V1)
+        .expect("Corsair K100 RGB Optical descriptor should exist");
+
+    assert_eq!(descriptor.name, "Corsair K100 RGB Optical");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidApi {
+            interface: Some(BRAGI_INTERFACE),
+            report_id: BRAGI_REPORT_ID,
+            report_mode: HidRawReportMode::OutputReportWithReportId,
+            max_report_len: BRAGI_JUMBO_PACKET_SIZE,
+            usage_page: Some(CORSAIR_USAGE_PAGE),
+            usage: None,
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    let colors = [[1_u8, 2, 3]; 193];
+    let commands = protocol.encode_frame(&colors);
+
+    assert_eq!(protocol.total_leds(), 193);
+    assert_eq!(&commands[0].data[3..7], &581_u32.to_le_bytes());
+    assert_eq!(&commands[0].data[7..9], &[0x12, 0x00]);
 }
 
 #[test]

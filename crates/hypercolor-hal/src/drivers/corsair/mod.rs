@@ -30,10 +30,14 @@ pub use link::devices::{PID_ICUE_LINK_SYSTEM_HUB, build_icue_link_system_hub_pro
 pub use link::protocol::{CorsairLinkProtocol, LinkChild};
 pub use peripheral::bragi::CorsairBragiProtocol;
 pub use peripheral::devices::{
-    BRAGI_REPORT_ID, PID_K60_PRO_RGB, PID_K65_MINI, PID_K70_CORE_RGB, PID_K70_CORE_RGB_VARIANT_2,
-    PID_K70_CORE_RGB_VARIANT_3, PID_K70_PRO, PID_K70_TKL, PID_KATAR_PRO, PID_M55_RGB_PRO,
-    PID_MM700, build_k70_core_rgb_protocol, build_k70_core_rgb_variant_2_protocol,
-    build_k70_core_rgb_variant_3_protocol,
+    BRAGI_REPORT_ID, PID_DARK_CORE_RGB_PRO_SE_WIRED, PID_DARK_CORE_RGB_SE_WIRED,
+    PID_HARPOON_WIRELESS_WIRED, PID_IRONCLAW_WIRELESS_WIRED, PID_K55_RGB_PRO, PID_K60_PRO_RGB,
+    PID_K60_PRO_TKL_WHITE, PID_K65_MINI, PID_K70_CORE_RGB, PID_K70_CORE_RGB_TKL,
+    PID_K70_CORE_RGB_VARIANT_2, PID_K70_CORE_RGB_VARIANT_3, PID_K70_PRO, PID_K70_RGB_PRO,
+    PID_K70_TKL, PID_K100_MX_RED, PID_K100_OPTICAL_V1, PID_K100_OPTICAL_V2, PID_KATAR_PRO,
+    PID_KATAR_PRO_V2, PID_M55_RGB_PRO, PID_M65_RGB_ULTRA_WIRED, PID_M65_RGB_ULTRA_WIRELESS_WIRED,
+    PID_M75_GAMING_MOUSE, PID_MM700, PID_MM700_3XL, build_k70_core_rgb_protocol,
+    build_k70_core_rgb_variant_2_protocol, build_k70_core_rgb_variant_3_protocol,
 };
 pub use types::{
     EP_GET_DEVICES, EP_SET_COLOR, EndpointConfig, LightingNodeColorChannel, LightingNodePacketId,

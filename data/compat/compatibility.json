@@ -3,9 +3,9 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 31,
-    "devices": 394,
+    "devices": 410,
     "byStatus": {
-      "supported": 159,
+      "supported": 175,
       "in_progress": 0,
       "planned": 0,
       "researched": 95,
@@ -836,6 +836,28 @@
           "notes": "2 RGB channels + fan control"
         },
         {
+          "pid": 7038,
+          "pidHex": "0x1B7E",
+          "name": "Dark Core RGB Pro SE (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 12,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 6987,
+          "pidHex": "0x1B4B",
+          "name": "Dark Core RGB SE (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 12,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
           "pid": 3129,
           "pidHex": "0x0C39",
           "name": "Elite Capellix LCD",
@@ -858,6 +880,17 @@
           "notes": null
         },
         {
+          "pid": 7006,
+          "pidHex": "0x1B5E",
+          "name": "Harpoon Wireless (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 2,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
           "pid": 3150,
           "pidHex": "0x0C4E",
           "name": "iCUE LINK LCD",
@@ -878,6 +911,61 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": "Hub-and-spoke daisy-chain protocol, dynamic device enumeration"
+        },
+        {
+          "pid": 6988,
+          "pidHex": "0x1B4C",
+          "name": "Ironclaw Wireless (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 6,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7037,
+          "pidHex": "0x1B7D",
+          "name": "K100 MX Red",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, alternate RGB payload"
+        },
+        {
+          "pid": 7036,
+          "pidHex": "0x1B7C",
+          "name": "K100 RGB Optical",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, alternate RGB payload"
+        },
+        {
+          "pid": 7109,
+          "pidHex": "0x1BC5",
+          "name": "K100 RGB Optical",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, alternate RGB payload"
+        },
+        {
+          "pid": 7076,
+          "pidHex": "0x1BA4",
+          "name": "K55 RGB Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 6,
+          "notes": "Bragi 64-byte HID reports, zoned RGB"
         },
         {
           "pid": 7043,
@@ -926,7 +1014,18 @@
         {
           "pid": 7111,
           "pidHex": "0x1BC7",
-          "name": "K60 Pro TKL",
+          "name": "K60 Pro TKL Black",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7149,
+          "pidHex": "0x1BED",
+          "name": "K60 Pro TKL White",
           "type": "keyboard",
           "status": "supported",
           "driver": "corsair",
@@ -979,9 +1078,20 @@
           "notes": "Bragi 64-byte HID reports, per-key RGB"
         },
         {
-          "pid": 7091,
-          "pidHex": "0x1BB3",
-          "name": "K70 Pro",
+          "pid": 11009,
+          "pidHex": "0x2B01",
+          "name": "K70 Core RGB TKL",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 102,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7124,
+          "pidHex": "0x1BD4",
+          "name": "K70 Pro Optical",
           "type": "keyboard",
           "status": "supported",
           "driver": "corsair",
@@ -990,9 +1100,20 @@
           "notes": "Bragi 1024-byte HID reports, per-key RGB"
         },
         {
-          "pid": 7124,
-          "pidHex": "0x1BD4",
-          "name": "K70 Pro Optical",
+          "pid": 7108,
+          "pidHex": "0x1BC4",
+          "name": "K70 RGB Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7091,
+          "pidHex": "0x1BB3",
+          "name": "K70 RGB Pro V2",
           "type": "keyboard",
           "status": "supported",
           "driver": "corsair",
@@ -1041,7 +1162,18 @@
           "status": "supported",
           "driver": "corsair",
           "transport": "usb_hid",
-          "leds": 1,
+          "leds": 2,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7098,
+          "pidHex": "0x1BBA",
+          "name": "Katar Pro V2",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 2,
           "notes": "Bragi 64-byte HID reports"
         },
         {
@@ -1052,7 +1184,7 @@
           "status": "supported",
           "driver": "corsair",
           "transport": "usb_hid",
-          "leds": 1,
+          "leds": 2,
           "notes": "Bragi 64-byte HID reports"
         },
         {
@@ -1111,9 +1243,53 @@
           "notes": "Bragi 64-byte HID reports"
         },
         {
+          "pid": 7070,
+          "pidHex": "0x1B9E",
+          "name": "M65 RGB Ultra Wired",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 3,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7093,
+          "pidHex": "0x1BB5",
+          "name": "M65 RGB Ultra Wireless (Wired)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 2,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7152,
+          "pidHex": "0x1BF0",
+          "name": "M75 Gaming Mouse",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 2,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
           "pid": 7067,
           "pidHex": "0x1B9B",
           "name": "MM700",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 3,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7113,
+          "pidHex": "0x1BC9",
+          "name": "MM700 3XL",
           "type": "mousepad",
           "status": "supported",
           "driver": "corsair",
@@ -1552,14 +1728,14 @@
         }
       ],
       "counts": {
-        "supported": 33,
+        "supported": 49,
         "in_progress": 0,
         "planned": 0,
         "researched": 34,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 67,
+      "totalDevices": 83,
       "drivers": [
         "corsair"
       ],

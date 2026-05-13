@@ -120,32 +120,41 @@ Bragi devices should use the same protocol core with per-device descriptor data:
 | `0x1BAD` | K60 Pro RGB Low Profile | keyboard | 64B | 123 | Per-key |
 | `0x1B8D` | K60 Pro RGB SE | keyboard | 64B | 123 | Per-key |
 | `0x1B83` | K60 Pro Mono | keyboard | 64B | 123 | Monochrome lighting resource |
-| `0x1BC7` | K60 Pro TKL | keyboard | 64B | 123 | Per-key |
+| `0x1BC7` | K60 Pro TKL Black | keyboard | 64B | 123 | Per-key |
+| `0x1BED` | K60 Pro TKL White | keyboard | 64B | 123 | Per-key |
 | `0x1BAF` | K65 Mini | keyboard | 1024B | 123 | Bragi jumbo |
 | `0x1B73` | K70 TKL | keyboard | 1024B | 193 | Bragi jumbo |
 | `0x1BB9` | K70 TKL Champion Optical | keyboard | 1024B | 193 | Bragi jumbo |
-| `0x1BB3` | K70 Pro | keyboard | 1024B | 193 | Bragi jumbo |
+| `0x1BC4` | K70 RGB Pro | keyboard | 1024B | 193 | Bragi jumbo |
+| `0x1BB3` | K70 RGB Pro V2 | keyboard | 1024B | 193 | Bragi jumbo |
 | `0x1BD4` | K70 Pro Optical | keyboard | 1024B | 193 | Bragi jumbo |
 | `0x2B0A` | K70 Core RGB | keyboard | 64B | 123 | Per-key |
 | `0x1BFF` | K70 Core RGB variant 2 | keyboard | 64B | 123 | Per-key |
 | `0x1BFD` | K70 Core RGB variant 3 | keyboard | 64B | 123 | Per-key |
+| `0x2B01` | K70 Core RGB TKL | keyboard | 64B | 102 | Per-key |
 | `0x1B89` | K95 Platinum XT | keyboard | 64B | 156 | Top-bar variant |
-| `0x1B7C` | K100 Optical | keyboard | 1024B | 193 | Bragi jumbo, alt lighting fallback |
-| `0x1B7D` | K100 Mechanical | keyboard | 1024B | 193 | Bragi jumbo, alt lighting fallback |
-| `0x1BC5` | K100 Optical variant | keyboard | 1024B | 193 | Bragi jumbo, alt lighting fallback |
+| `0x1B7C` | K100 Optical | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
+| `0x1B7D` | K100 Mechanical | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
+| `0x1BC5` | K100 Optical variant | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
 | `0x1B70` | M55 RGB Pro | mouse | 64B | 2 | Software packet lacks wheel input |
-| `0x1B4C` | Ironclaw RGB Wireless USB | mouse | 64B | 6 | Wireless-capable |
+| `0x1B4B` | Dark Core RGB SE wired | mouse | 64B | 12 | Extended mouse topology |
+| `0x1B4C` | Ironclaw RGB Wireless wired | mouse | 64B | 6 | Wireless-capable |
 | `0x1B66` | Ironclaw RGB Wireless Dongle | dongle | 64B | 0 | Parent receiver |
-| `0x1B5E` | Harpoon Wireless USB | mouse | 64B | 2 | Endpoint offset quirk |
+| `0x1B5E` | Harpoon Wireless wired | mouse | 64B | 2 | Endpoint offset quirk |
 | `0x1B65` | Harpoon Wireless Dongle | dongle | 64B | 0 | Parent receiver |
-| `0x1B93` | Katar Pro | mouse | 64B | 1 | Single-zone mouse |
-| `0x1BAC` | Katar Pro XT | mouse | 64B | 1 | Single-zone mouse |
+| `0x1B93` | Katar Pro | mouse | 64B | 2 | Two-zone mouse |
+| `0x1BBA` | Katar Pro V2 | mouse | 64B | 2 | Two-zone mouse |
+| `0x1BAC` | Katar Pro XT | mouse | 64B | 2 | Two-zone mouse |
+| `0x1B9E` | M65 RGB Ultra Wired | mouse | 64B | 3 | Three-zone mouse |
+| `0x1BB5` | M65 RGB Ultra Wireless wired | mouse | 64B | 2 | Wireless-capable |
+| `0x1BF0` | M75 Gaming Mouse | mouse | 64B | 2 | Two-zone mouse |
 | `0x1B80` | Dark Core RGB Pro | mouse | 64B | 12 | Extended mouse topology |
 | `0x1B81` | Dark Core RGB Pro Wireless | dongle | 64B | 0 | Parent receiver |
 | `0x1B7E` | Dark Core RGB Pro SE | mouse | 64B | 12 | Extended mouse topology |
 | `0x1B7F` | Dark Core RGB Pro SE Wireless | dongle | 64B | 0 | Parent receiver |
 | `0x1BE3` | Scimitar Elite Bragi | mouse | 128B | 5 | Large packet, short input report |
 | `0x1B9B` | MM700 | mousepad | 64B | 3 | Endpoint offset quirk |
+| `0x1BC9` | MM700 3XL | mousepad | 64B | 3 | Endpoint offset quirk |
 | `0x1BA6` | Generic Bragi Dongle | dongle | 64B | 0 | Multi-device receiver |
 
 Descriptors for dongles must not report RGB zones directly. The paired child devices own LED topology and color state.
@@ -201,7 +210,6 @@ NXP/CUE devices share a 64-byte command grammar but differ sharply in topology a
 | `0x1B5C` | Nightsword | mouse | mouse zones | V3 endpoint override |
 | `0x1B35` | Dark Core | mouse | hardware animation | NXP wireless family |
 | `0x1B64` | Dark Core Wireless | dongle | hardware animation | NXP wireless family |
-| `0x1B4B` | Dark Core SE | mouse | hardware animation | NXP wireless family |
 | `0x1B51` | Dark Core SE Wireless | dongle | hardware animation | NXP wireless family |
 | `0x1B3B` | Polaris | mousepad | mousepad zones | Single endpoint |
 | `0x0A34` | ST100 | headset stand | mousepad-style zones | Single endpoint |
@@ -1102,16 +1110,19 @@ Use `DeviceTopologyHint::Custom` for keyboards with non-rectangular top bars, ma
 | K60 Pro RGB/LP/SE/Mono/TKL | 123 | `Matrix { rows: 6, cols: 21 }` or `Custom` |
 | K65 Mini | 123 | `Matrix { rows: 6, cols: 21 }` or `Custom` |
 | K70 Core RGB | 123 | `Matrix { rows: 6, cols: 21 }` or `Custom` |
+| K70 Core RGB TKL | 102 | `Matrix { rows: 6, cols: 17 }` or `Custom` |
 | K95 Platinum XT | 156 | `Custom` keyboard plus top bar |
 | K100 | 193 | `Custom` keyboard plus wheel/top/side/logo regions |
 | K70 TKL / K70 Pro | 193 | `Custom` keyboard plus logo/top regions |
 | M55 RGB Pro | 2 | `Point`/custom mouse zones |
 | Ironclaw Wireless USB | 6 | custom mouse zones |
 | Harpoon Wireless USB | 2 | custom mouse zones |
-| Katar Pro / XT | 1 | `Point` |
+| Katar Pro / V2 / XT | 2 | custom mouse zones |
+| M65 RGB Ultra | 2 or 3 | custom mouse zones |
+| M75 Gaming Mouse | 2 | custom mouse zones |
 | Dark Core RGB Pro / SE | 12 | custom mouse zones |
 | Scimitar Elite Bragi | 5 | custom mouse zones |
-| MM700 | 3 | `Strip` or custom mousepad zones |
+| MM700 / 3XL | 3 | `Strip` or custom mousepad zones |
 
 ### 7.3 Bragi Mouse Zone Names
 
@@ -1342,12 +1353,12 @@ Initial supported subset should be Bragi wired devices with known packet sizes a
 
 | PID | Model | Why First |
 | --- | ----- | --------- |
-| `0x1BB3` | K70 Pro | Jumbo Bragi keyboard, common modern family |
+| `0x1BB3` | K70 RGB Pro V2 | Jumbo Bragi keyboard, common modern family |
 | `0x1B73` | K70 TKL | Jumbo Bragi keyboard |
 | `0x1BAF` | K65 Mini | Jumbo Bragi compact keyboard |
 | `0x1BA0` | K60 Pro RGB | Standard Bragi keyboard |
 | `0x1B70` | M55 RGB Pro | Simple two-zone Bragi mouse |
-| `0x1B93` | Katar Pro | Simple one-zone Bragi mouse |
+| `0x1B93` | Katar Pro | Simple two-zone Bragi mouse |
 | `0x1B9B` | MM700 | Simple Bragi mousepad |
 
 Keep wireless dongles and NXP devices `researched` until transport safety is verified.
