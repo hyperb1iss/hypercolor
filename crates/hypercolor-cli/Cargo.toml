@@ -38,7 +38,7 @@ open = { workspace = true }
 hypercolor-tui = { workspace = true, optional = true }
 
 [dev-dependencies]
-hypercolor-core = { path = "../hypercolor-core" }
-hypercolor-daemon = { path = "../hypercolor-daemon" }
+hypercolor-core = { path = "../hypercolor-core", default-features = false }
+hypercolor-daemon = { path = "../hypercolor-daemon", default-features = false }
 tempfile = { workspace = true }
 axum = { workspace = true }
