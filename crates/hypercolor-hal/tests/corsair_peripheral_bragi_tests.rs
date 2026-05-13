@@ -15,6 +15,7 @@ use hypercolor_hal::drivers::corsair::peripheral::types::{
 };
 use hypercolor_hal::drivers::corsair::{CORSAIR_USAGE_PAGE, CORSAIR_VID};
 use hypercolor_hal::protocol::Protocol;
+use hypercolor_hal::protocol::{ProtocolError, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::DeviceTopologyHint;
 
@@ -192,6 +193,72 @@ fn keepalive_uses_50_second_poll_packet() {
     assert_eq!(keepalive.commands.len(), 1);
     assert_eq!(keepalive.commands[0].data[0], BRAGI_REPORT_ID);
     assert_eq!(keepalive.commands[0].data[1], BragiCommand::Poll as u8);
+}
+
+#[test]
+fn parse_response_accepts_zero_prefixed_hidapi_ack() {
+    let protocol = bragi_protocol(BRAGI_PACKET_SIZE, 8, BragiLightingFormat::RgbPlanar);
+    let mut response = vec![0_u8; BRAGI_PACKET_SIZE];
+    response[1] = BragiCommand::Set as u8;
+
+    let parsed = protocol
+        .parse_response(&response)
+        .expect("zero-prefixed Bragi ACK should parse");
+
+    assert_eq!(parsed.status, ResponseStatus::Ok);
+    assert_eq!(parsed.data, response);
+}
+
+#[test]
+fn parse_response_accepts_magic_prefixed_ack() {
+    let protocol = bragi_protocol(BRAGI_PACKET_SIZE, 8, BragiLightingFormat::RgbPlanar);
+    let mut response = vec![0_u8; BRAGI_PACKET_SIZE];
+    response[0] = BRAGI_REPORT_ID;
+    response[1] = BragiCommand::Set as u8;
+
+    let parsed = protocol
+        .parse_response(&response)
+        .expect("magic-prefixed Bragi ACK should parse");
+
+    assert_eq!(parsed.status, ResponseStatus::Ok);
+}
+
+#[test]
+fn parse_response_maps_bragi_error_statuses() {
+    let protocol = bragi_protocol(BRAGI_PACKET_SIZE, 8, BragiLightingFormat::RgbPlanar);
+    let mut response = vec![0_u8; BRAGI_PACKET_SIZE];
+    response[1] = BragiCommand::OpenHandle as u8;
+
+    response[2] = 0x03;
+    let busy = protocol
+        .parse_response(&response)
+        .expect("busy Bragi status should parse");
+    assert_eq!(busy.status, ResponseStatus::Busy);
+
+    response[2] = 0x05;
+    let unsupported = protocol
+        .parse_response(&response)
+        .expect("unsupported Bragi status should parse");
+    assert_eq!(unsupported.status, ResponseStatus::Unsupported);
+}
+
+#[test]
+fn parse_response_rejects_failed_and_short_replies() {
+    let protocol = bragi_protocol(BRAGI_PACKET_SIZE, 8, BragiLightingFormat::RgbPlanar);
+    let mut response = vec![0_u8; BRAGI_PACKET_SIZE];
+    response[1] = BragiCommand::Set as u8;
+    response[2] = 0x7F;
+
+    assert!(matches!(
+        protocol.parse_response(&response),
+        Err(ProtocolError::DeviceError {
+            status: ResponseStatus::Failed
+        })
+    ));
+    assert!(matches!(
+        protocol.parse_response(&[0_u8, BragiCommand::Set as u8]),
+        Err(ProtocolError::MalformedResponse { .. })
+    ));
 }
 
 #[test]

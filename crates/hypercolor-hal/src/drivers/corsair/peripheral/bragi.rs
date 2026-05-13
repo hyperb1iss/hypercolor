@@ -208,20 +208,19 @@ impl Protocol for CorsairBragiProtocol {
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
-        let Some((&magic, _rest)) = data.split_first() else {
+        if data.len() < 3 {
             return Err(ProtocolError::MalformedResponse {
-                detail: "empty Corsair Bragi response".to_owned(),
-            });
-        };
-
-        if magic != BRAGI_MAGIC {
-            return Err(ProtocolError::MalformedResponse {
-                detail: format!("unexpected Corsair Bragi response prefix 0x{magic:02X}"),
+                detail: format!("short Corsair Bragi response: {} bytes", data.len()),
             });
         }
 
+        let status = map_bragi_error(data[2]);
+        if status == ResponseStatus::Failed {
+            return Err(ProtocolError::DeviceError { status });
+        }
+
         Ok(ProtocolResponse {
-            status: ResponseStatus::Ok,
+            status,
             data: data.to_vec(),
         })
     }
@@ -278,6 +277,16 @@ fn alternate_rgb_payload(colors: &[[u8; 3]]) -> Vec<u8> {
         payload.extend_from_slice(color);
     }
     payload
+}
+
+const fn map_bragi_error(error: u8) -> ResponseStatus {
+    match error {
+        0x00 => ResponseStatus::Ok,
+        0x01 | 0x03 => ResponseStatus::Busy,
+        0x04 => ResponseStatus::Timeout,
+        0x05 => ResponseStatus::Unsupported,
+        _ => ResponseStatus::Failed,
+    }
 }
 
 #[must_use]
