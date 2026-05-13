@@ -79,6 +79,12 @@ These passed during launch hardening:
   -> Zola built 20 pages and 6 sections
 - `cd docs && zola check` after launch-doc link/package audit
   -> `20 pages`, `6 sections`, done
+- `bash -n scripts/setup.sh scripts/install.sh scripts/dist.sh scripts/install-release.sh scripts/get-hypercolor.sh scripts/uninstall.sh`
+  -> shell syntax ok
+- `shellcheck -e SC2059 scripts/install-release.sh scripts/get-hypercolor.sh scripts/uninstall.sh`
+  -> no findings beyond the existing SilkCircuit color `printf` style
+- `scripts/install-release.sh --help`, `scripts/get-hypercolor.sh --help`,
+  `scripts/uninstall.sh --help` -> argument parsing ok
 - `git status --short --untracked-files=all` -> clean
 
 Known skipped gates:
@@ -86,6 +92,33 @@ Known skipped gates:
 - `just e2e` has not been run because it starts the daemon/browser stack.
 - RC workflow/tag rehearsal has not been run because release orchestration needs
   explicit approval.
+
+Pending approval runbook:
+
+```bash
+# 1. Starts the hermetic daemon/browser e2e stack.
+just e2e
+
+# 2. Builds and smokes a local Linux RC tarball without pushing a tag.
+just dist --version 0.1.0-rc.1 --target linux-amd64
+tar -tzf dist/hypercolor-0.1.0-rc.1-linux-amd64.tar.gz \
+  | rg 'bin/(hypercolor-daemon|hypercolor|hypercolor-app|hypercolor-tray|hypercolor-tui|hypercolor-open)$|systemd|launchd|share/hypercolor/ui|share/hypercolor/effects'
+tmp="$(mktemp -d)"
+tar -xzf dist/hypercolor-0.1.0-rc.1-linux-amd64.tar.gz -C "${tmp}"
+"${tmp}/hypercolor-0.1.0-rc.1-linux-amd64/bin/hypercolor" --help
+"${tmp}/hypercolor-0.1.0-rc.1-linux-amd64/bin/hypercolor-daemon" --help
+"${tmp}/hypercolor-0.1.0-rc.1-linux-amd64/bin/hypercolor" completions bash
+rg 'ExecStart=.*hypercolor-daemon' \
+  "${tmp}/hypercolor-0.1.0-rc.1-linux-amd64/lib/systemd/user/hypercolor.service"
+
+# 3. Validates the GitHub release workflow tag plan without pushing a tag.
+# Requires this branch to exist on GitHub before dispatch.
+gh workflow run release.yml \
+  --ref launch/v0.1-hardening \
+  -f version=0.1.0-rc.1 \
+  -f dry_run=true
+gh run watch
+```
 
 ## Wave 0: Branch Hygiene And Artifact Triage
 

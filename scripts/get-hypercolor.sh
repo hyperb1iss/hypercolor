@@ -166,7 +166,7 @@ do_install() {
 
   # Binaries
   info "Installing binaries to ${bin_dir}"
-  for bin in hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open; do
+  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
     if [[ -f "${src}/bin/${bin}" ]]; then
       install -m 755 "${src}/bin/${bin}" "${bin_dir}/${bin}"
     fi
@@ -273,7 +273,7 @@ do_uninstall() {
   fi
 
   info "Removing binaries"
-  for bin in hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open; do
+  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
     rm -f "${bin_dir}/${bin}"
   done
 

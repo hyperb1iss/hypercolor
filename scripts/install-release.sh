@@ -244,7 +244,7 @@ install_release_payload() {
     stop_service_if_running
 
     local bin
-    for bin in hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open; do
+    for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
         if [[ -f "${RELEASE_DIR}/bin/${bin}" ]]; then
             install -Dm755 "${RELEASE_DIR}/bin/${bin}" "${INSTALL_DIR}/${bin}"
         fi
@@ -517,6 +517,7 @@ do_install() {
     printf "\n"
     printf "  ${DIM}CLI:${RESET}     ${INSTALL_DIR}/hypercolor\n"
     printf "  ${DIM}Daemon:${RESET}  ${INSTALL_DIR}/hypercolor-daemon\n"
+    printf "  ${DIM}App:${RESET}     ${INSTALL_DIR}/hypercolor-app\n"
     printf "  ${DIM}Open UI:${RESET} ${INSTALL_DIR}/hypercolor-open\n"
     printf "  ${DIM}TUI:${RESET}     ${INSTALL_DIR}/hypercolor-tui\n"
     printf "  ${DIM}Web UI:${RESET}  ${CYAN}http://localhost:9420${RESET}\n"
@@ -619,6 +620,7 @@ do_uninstall() {
     info "Removing binaries..."
     rm -f "${INSTALL_DIR}/hypercolor"
     rm -f "${INSTALL_DIR}/hypercolor-daemon"
+    rm -f "${INSTALL_DIR}/hypercolor-app"
     rm -f "${INSTALL_DIR}/hypercolor-tray"
     rm -f "${INSTALL_DIR}/hypercolor-tui"
     rm -f "${INSTALL_DIR}/hypercolor-open"

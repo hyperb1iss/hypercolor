@@ -77,7 +77,7 @@ if [[ -f "${LAUNCHD_PLIST}" ]]; then
 fi
 
 # ── Remove Binaries ──────────────────────────────────────────
-for bin in hypercolor-daemon hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
+for bin in hypercolor-daemon hypercolor hyper hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
   if [[ -f "${BIN_DIR}/${bin}" ]]; then
     info "Removing ${BIN_DIR}/${bin}"
     rm -f "${BIN_DIR}/${bin}"
