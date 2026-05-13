@@ -3,9 +3,9 @@
 # Downloads pre-built binaries from GitHub Releases and installs to ~/.local.
 #
 # Usage:
-#   curl -fsSL https://hypercolor.dev/install.sh | sh
-#   curl -fsSL https://hypercolor.dev/install.sh | sh -s -- --version 0.2.0
-#   curl -fsSL https://hypercolor.dev/install.sh | sh -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --version 0.2.0
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --uninstall
 #
 # Environment:
 #   HYPERCOLOR_VERSION   Override version to install
@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)
       cat <<EOF
-Usage: curl -fsSL https://hypercolor.dev/install.sh | sh
+Usage: curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh
 
 Options:
   --version <ver>   Install a specific version (default: latest)
@@ -344,5 +344,5 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 printf "\n"
 printf "  ${BOLD}Uninstall:${RESET}\n"
-printf "    ${CYAN}curl -fsSL https://hypercolor.dev/install.sh | sh -s -- --uninstall${RESET}\n"
+printf "    ${CYAN}curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --uninstall${RESET}\n"
 printf "\n"

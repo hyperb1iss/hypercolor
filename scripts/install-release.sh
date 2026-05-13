@@ -2,9 +2,9 @@
 # install-release.sh — Hypercolor prebuilt binary installer
 #
 # Usage:
-#   curl -fsSL https://install.hypercolor.dev | bash
-#   curl -fsSL https://install.hypercolor.dev | bash -s -- --version v0.5.0
-#   curl -fsSL https://install.hypercolor.dev | bash -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.5.0
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --uninstall
 #
 # Environment:
 #   HYPERCOLOR_INSTALL_PREFIX  Override install prefix (default: ~/.local)
