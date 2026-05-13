@@ -67,6 +67,18 @@ These passed during launch hardening:
 - `cd docs && zola check` -> `20 pages`, `6 sections`, done
 - `just deny` -> advisories, bans, licenses, and sources ok
 - `just e2e-build` -> daemon/CLI build, effects build, and production UI build succeeded
+- `cargo test -p hypercolor-daemon --test startup_tests network_bind_auth`
+  -> `4 passed`
+- `cargo test -p hypercolor-daemon --test security_api_tests`
+  -> `3 passed`
+- `cargo test -p hypercolor-driver-api --test credential_store_tests`
+  -> `8 passed`
+- `just compat-check` after omitting Thermaltake's broken root URL
+  -> matrix current, `31 vendors`, `410 devices`, `175 supported`
+- `just docs-build` after launch-doc link/package audit
+  -> Zola built 20 pages and 6 sections
+- `cd docs && zola check` after launch-doc link/package audit
+  -> `20 pages`, `6 sections`, done
 - `git status --short --untracked-files=all` -> clean
 
 Known skipped gates:
