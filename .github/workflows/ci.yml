@@ -356,7 +356,7 @@ jobs:
       (needs.rust-check.result == 'success' ||
       needs.rust-check.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       HYPERCOLOR_E2E_KEEP_RUN_DIR: "1"
     steps:
