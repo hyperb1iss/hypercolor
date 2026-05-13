@@ -162,6 +162,10 @@ impl CompositionPlan {
         self
     }
 
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(dead_code, reason = "only used by the optional wgpu compositor lane")
+    )]
     #[cfg(feature = "servo-gpu-import")]
     fn contains_gpu_frames(&self) -> bool {
         self.layers
@@ -169,6 +173,10 @@ impl CompositionPlan {
             .any(|layer| matches!(layer.frame, ProducerFrame::Gpu(_)))
     }
 
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(dead_code, reason = "only used by the optional wgpu compositor lane")
+    )]
     #[cfg(not(feature = "servo-gpu-import"))]
     const fn contains_gpu_frames(&self) -> bool {
         false

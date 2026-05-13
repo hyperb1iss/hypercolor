@@ -78,6 +78,7 @@ def export_openapi(temp_dir: Path) -> Path:
             "hypercolor-daemon",
             "--bin",
             "hypercolor-openapi",
+            "--no-default-features",
             "--quiet",
         ],
         cwd=REPO_ROOT,
