@@ -3,12 +3,12 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 31,
-    "devices": 369,
+    "devices": 394,
     "byStatus": {
       "supported": 159,
       "in_progress": 0,
       "planned": 0,
-      "researched": 70,
+      "researched": 95,
       "known": 138,
       "blocked": 2
     },
@@ -1199,6 +1199,28 @@
           "notes": null
         },
         {
+          "pid": 7039,
+          "pidHex": "0x1B7F",
+          "name": "Dark Core RGB Pro SE Wireless Dongle",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Bragi receiver; child routing is not enabled yet"
+        },
+        {
+          "pid": 7041,
+          "pidHex": "0x1B81",
+          "name": "Dark Core RGB Pro Wireless Dongle",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Bragi receiver; child routing is not enabled yet"
+        },
+        {
           "pid": 6958,
           "pidHex": "0x1B2E",
           "name": "Dominator RAM",
@@ -1221,6 +1243,28 @@
           "notes": null
         },
         {
+          "pid": 7078,
+          "pidHex": "0x1BA6",
+          "name": "Generic Bragi Dongle",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Bragi receiver; child routing is not enabled yet"
+        },
+        {
+          "pid": 7013,
+          "pidHex": "0x1B65",
+          "name": "Harpoon Wireless Dongle",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Bragi receiver; child routing is not enabled yet"
+        },
+        {
           "pid": 2639,
           "pidHex": "0x0A4F",
           "name": "HS80 RGB Wired",
@@ -1232,6 +1276,193 @@
           "notes": null
         },
         {
+          "pid": 7014,
+          "pidHex": "0x1B66",
+          "name": "Ironclaw RGB Wireless Dongle",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Bragi receiver; child routing is not enabled yet"
+        },
+        {
+          "pid": 6973,
+          "pidHex": "0x1B3D",
+          "name": "K55",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE zoned keyboard protocol; transport safety not enabled yet"
+        },
+        {
+          "pid": 7010,
+          "pidHex": "0x1B62",
+          "name": "K57 Wireless Dongle",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Bragi receiver; child routing is not enabled yet"
+        },
+        {
+          "pid": 6919,
+          "pidHex": "0x1B07",
+          "name": "K65 Legacy",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy vendor-control hardware-mode lighting"
+        },
+        {
+          "pid": 6967,
+          "pidHex": "0x1B37",
+          "name": "K65 Lux RGB",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE full-range keyboard protocol"
+        },
+        {
+          "pid": 6935,
+          "pidHex": "0x1B17",
+          "name": "K65 RGB",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE 512-color packed keyboard protocol"
+        },
+        {
+          "pid": 6977,
+          "pidHex": "0x1B41",
+          "name": "K66",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE protocol without backlight"
+        },
+        {
+          "pid": 6921,
+          "pidHex": "0x1B09",
+          "name": "K70 Legacy",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy vendor-control hardware-mode lighting"
+        },
+        {
+          "pid": 6963,
+          "pidHex": "0x1B33",
+          "name": "K70 Lux RGB",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE full-range keyboard protocol"
+        },
+        {
+          "pid": 6985,
+          "pidHex": "0x1B49",
+          "name": "K70 MK.2",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE full-range keyboard protocol"
+        },
+        {
+          "pid": 6931,
+          "pidHex": "0x1B13",
+          "name": "K70 RGB",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE 512-color packed keyboard protocol"
+        },
+        {
+          "pid": 6914,
+          "pidHex": "0x1B02",
+          "name": "K90 Legacy",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy vendor-control hardware-mode lighting"
+        },
+        {
+          "pid": 6920,
+          "pidHex": "0x1B08",
+          "name": "K95 Legacy",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy vendor-control hardware-mode lighting"
+        },
+        {
+          "pid": 6957,
+          "pidHex": "0x1B2D",
+          "name": "K95 Platinum",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE full-range keyboard protocol"
+        },
+        {
+          "pid": 6929,
+          "pidHex": "0x1B11",
+          "name": "K95 RGB",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE 512-color packed keyboard protocol"
+        },
+        {
+          "pid": 6930,
+          "pidHex": "0x1B12",
+          "name": "M65",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE mouse-zone RGB protocol"
+        },
+        {
+          "pid": 6918,
+          "pidHex": "0x1B06",
+          "name": "M95",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "Legacy vendor-control backlight on/off"
+        },
+        {
           "pid": 2628,
           "pidHex": "0x0A44",
           "name": "Nexus LCD Companion",
@@ -1241,6 +1472,50 @@
           "transport": null,
           "leds": null,
           "notes": "5-inch touchscreen, different from AIO LCDs"
+        },
+        {
+          "pid": 6971,
+          "pidHex": "0x1B3B",
+          "name": "Polaris",
+          "type": "mousepad",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE mousepad RGB protocol"
+        },
+        {
+          "pid": 6942,
+          "pidHex": "0x1B1E",
+          "name": "Scimitar",
+          "type": "mouse",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE mouse-zone RGB protocol"
+        },
+        {
+          "pid": 2612,
+          "pidHex": "0x0A34",
+          "name": "ST100",
+          "type": "other",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE mousepad-style RGB protocol"
+        },
+        {
+          "pid": 6944,
+          "pidHex": "0x1B20",
+          "name": "Strafe RGB",
+          "type": "keyboard",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "NXP/CUE full-range keyboard protocol with sidelight quirk"
         },
         {
           "pid": 2641,
@@ -1280,11 +1555,11 @@
         "supported": 33,
         "in_progress": 0,
         "planned": 0,
-        "researched": 9,
+        "researched": 34,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 42,
+      "totalDevices": 67,
       "drivers": [
         "corsair"
       ],
@@ -1300,6 +1575,7 @@
         "lcd",
         "mouse",
         "mousepad",
+        "other",
         "ram",
         "strip"
       ],

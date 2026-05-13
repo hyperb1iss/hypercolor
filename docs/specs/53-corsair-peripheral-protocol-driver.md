@@ -2,7 +2,8 @@
 
 > Native driver specification for Corsair keyboards, mice, mousepads, headset stands, and wireless dongles. Covers Bragi, NXP/CUE, and legacy peripheral protocols with clean HAL integration, topology tables, transport safety rules, and a phased implementation plan.
 
-**Status:** Draft
+**Status:** Implemented (Bragi wired RGB); NXP/CUE and legacy encoders tested but
+not registered until transport safety is hardware-verified
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::corsair::peripheral`
 **Author:** Nova

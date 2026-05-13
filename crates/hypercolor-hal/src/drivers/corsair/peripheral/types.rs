@@ -12,6 +12,10 @@ pub const BRAGI_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const BRAGI_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(50);
 pub const BRAGI_KEYBOARD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 pub const BRAGI_POINTER_FRAME_INTERVAL: Duration = Duration::from_millis(22);
+pub const NXP_PACKET_SIZE: usize = 64;
+pub const NXP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+pub const NXP_KEYBOARD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+pub const NXP_POINTER_FRAME_INTERVAL: Duration = Duration::from_millis(22);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorsairPeripheralClass {
@@ -129,6 +133,119 @@ pub struct BragiDeviceConfig {
     pub topology: CorsairPeripheralTopology,
     pub lighting_format: BragiLightingFormat,
     pub max_fps: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NxpCommand {
+    Set = 0x07,
+    Get = 0x0E,
+    WriteBulk = 0x7F,
+    ReadBulk = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NxpField {
+    Ident = 0x01,
+    Reset = 0x02,
+    Special = 0x04,
+    Lighting = 0x05,
+    PollRate = 0x0A,
+    FirmwareStart = 0x0C,
+    FirmwareData = 0x0D,
+    Mouse = 0x13,
+    KeyboardHardwareColor = 0x14,
+    MouseProfileId = 0x15,
+    MouseProfileName = 0x16,
+    KeyboardHardwareAnimation = 0x17,
+    MouseColor = 0x22,
+    KeyboardZoneColor = 0x25,
+    KeyboardPackedColor = 0x27,
+    KeyboardColor = 0x28,
+    KeyInput = 0x40,
+    Battery = 0x50,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NxpLightingMode {
+    Hardware = 0x01,
+    Software = 0x02,
+    Sidelight = 0x08,
+    WinLock = 0x09,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NxpColorSelector {
+    Red = 0x01,
+    Green = 0x02,
+    Blue = 0x03,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NxpLightingKind {
+    FullRangeKeyboard,
+    Packed512Keyboard,
+    ZonedKeyboard,
+    MonochromeKeyboard,
+    Mouse,
+    Mousepad,
+    NoLights,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NxpDeviceConfig {
+    pub name: &'static str,
+    pub class: CorsairPeripheralClass,
+    pub lighting_kind: NxpLightingKind,
+    pub led_count: usize,
+    pub topology: CorsairPeripheralTopology,
+    pub max_fps: u32,
+    pub requires_unclean_exit: bool,
+}
+
+impl NxpDeviceConfig {
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        class: CorsairPeripheralClass,
+        lighting_kind: NxpLightingKind,
+        led_count: usize,
+        topology: CorsairPeripheralTopology,
+    ) -> Self {
+        Self {
+            name,
+            class,
+            lighting_kind,
+            led_count,
+            topology,
+            max_fps: class.default_max_fps(),
+            requires_unclean_exit: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_max_fps(mut self, max_fps: u32) -> Self {
+        self.max_fps = max_fps;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_unclean_exit(mut self) -> Self {
+        self.requires_unclean_exit = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn supports_direct(self) -> bool {
+        !matches!(self.lighting_kind, NxpLightingKind::NoLights) && self.led_count > 0
+    }
+
+    #[must_use]
+    pub const fn frame_interval(self) -> Duration {
+        match self.class {
+            CorsairPeripheralClass::Mouse => NXP_POINTER_FRAME_INTERVAL,
+            _ => NXP_KEYBOARD_FRAME_INTERVAL,
+        }
+    }
 }
 
 impl BragiDeviceConfig {

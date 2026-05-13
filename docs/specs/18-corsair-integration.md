@@ -63,8 +63,11 @@ The iCUE LINK System Hub is the single USB endpoint for Corsair's modern hub-and
 
 The other protocol families (Commander Core, Lighting Node, V2 Peripherals) are separate USB devices with their own protocol stacks. They can be added as independent drivers in future specs without affecting the LINK implementation.
 
-Peripheral V2 and Legacy Peripheral implementation details are now split into
+Peripheral V2 and Legacy Peripheral implementation details live in
 [Spec 53 -- Corsair Peripheral Protocol Driver](53-corsair-peripheral-protocol-driver.md).
+Bragi wired RGB devices are implemented in HAL; NXP/CUE and legacy encoders
+are tested but remain catalog-only until their HID/control transports are
+hardware-verified for input safety.
 
 ---
 

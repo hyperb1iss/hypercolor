@@ -324,6 +324,187 @@ transport = "usb_hid"
 leds = 3
 notes = "Bragi 64-byte HID reports"
 
+# ─── Bragi Wireless and Receivers ──────────────────────────────────────
+
+[[devices]]
+pid = 0x1B62
+name = "K57 Wireless Dongle"
+type = "other"
+status = "researched"
+notes = "Bragi receiver; child routing is not enabled yet"
+
+[[devices]]
+pid = 0x1B66
+name = "Ironclaw RGB Wireless Dongle"
+type = "other"
+status = "researched"
+notes = "Bragi receiver; child routing is not enabled yet"
+
+[[devices]]
+pid = 0x1B65
+name = "Harpoon Wireless Dongle"
+type = "other"
+status = "researched"
+notes = "Bragi receiver; child routing is not enabled yet"
+
+[[devices]]
+pid = 0x1B81
+name = "Dark Core RGB Pro Wireless Dongle"
+type = "other"
+status = "researched"
+notes = "Bragi receiver; child routing is not enabled yet"
+
+[[devices]]
+pid = 0x1B7F
+name = "Dark Core RGB Pro SE Wireless Dongle"
+type = "other"
+status = "researched"
+notes = "Bragi receiver; child routing is not enabled yet"
+
+[[devices]]
+pid = 0x1BA6
+name = "Generic Bragi Dongle"
+type = "other"
+status = "researched"
+notes = "Bragi receiver; child routing is not enabled yet"
+
+# ─── NXP/CUE Peripherals ───────────────────────────────────────────────
+
+[[devices]]
+pid = 0x1B3D
+name = "K55"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE zoned keyboard protocol; transport safety not enabled yet"
+
+[[devices]]
+pid = 0x1B41
+name = "K66"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE protocol without backlight"
+
+[[devices]]
+pid = 0x1B17
+name = "K65 RGB"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE 512-color packed keyboard protocol"
+
+[[devices]]
+pid = 0x1B37
+name = "K65 Lux RGB"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE full-range keyboard protocol"
+
+[[devices]]
+pid = 0x1B13
+name = "K70 RGB"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE 512-color packed keyboard protocol"
+
+[[devices]]
+pid = 0x1B33
+name = "K70 Lux RGB"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE full-range keyboard protocol"
+
+[[devices]]
+pid = 0x1B49
+name = "K70 MK.2"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE full-range keyboard protocol"
+
+[[devices]]
+pid = 0x1B11
+name = "K95 RGB"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE 512-color packed keyboard protocol"
+
+[[devices]]
+pid = 0x1B2D
+name = "K95 Platinum"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE full-range keyboard protocol"
+
+[[devices]]
+pid = 0x1B20
+name = "Strafe RGB"
+type = "keyboard"
+status = "researched"
+notes = "NXP/CUE full-range keyboard protocol with sidelight quirk"
+
+[[devices]]
+pid = 0x1B12
+name = "M65"
+type = "mouse"
+status = "researched"
+notes = "NXP/CUE mouse-zone RGB protocol"
+
+[[devices]]
+pid = 0x1B1E
+name = "Scimitar"
+type = "mouse"
+status = "researched"
+notes = "NXP/CUE mouse-zone RGB protocol"
+
+[[devices]]
+pid = 0x1B3B
+name = "Polaris"
+type = "mousepad"
+status = "researched"
+notes = "NXP/CUE mousepad RGB protocol"
+
+[[devices]]
+pid = 0x0A34
+name = "ST100"
+type = "other"
+status = "researched"
+notes = "NXP/CUE mousepad-style RGB protocol"
+
+# ─── Legacy Peripherals ────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x1B07
+name = "K65 Legacy"
+type = "keyboard"
+status = "researched"
+notes = "Legacy vendor-control hardware-mode lighting"
+
+[[devices]]
+pid = 0x1B09
+name = "K70 Legacy"
+type = "keyboard"
+status = "researched"
+notes = "Legacy vendor-control hardware-mode lighting"
+
+[[devices]]
+pid = 0x1B02
+name = "K90 Legacy"
+type = "keyboard"
+status = "researched"
+notes = "Legacy vendor-control hardware-mode lighting"
+
+[[devices]]
+pid = 0x1B08
+name = "K95 Legacy"
+type = "keyboard"
+status = "researched"
+notes = "Legacy vendor-control hardware-mode lighting"
+
+[[devices]]
+pid = 0x1B06
+name = "M95"
+type = "mouse"
+status = "researched"
+notes = "Legacy vendor-control backlight on/off"
+
 # ─── Not Yet Supported ───────────────────────────────────────────────
 
 [[devices]]
