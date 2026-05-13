@@ -48,6 +48,7 @@ docs/review/
 
 # Screenshot drafts — capture tool output, reviewed locally before publication.
 /effects/screenshots/
+/crates/hypercolor-ui/--full-page
 
 # Trunk dev output
 crates/hypercolor-ui/dist/
