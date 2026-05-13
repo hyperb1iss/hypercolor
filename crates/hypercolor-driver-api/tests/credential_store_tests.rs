@@ -3,6 +3,23 @@ use tempfile::tempdir;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[cfg(unix)]
+fn file_mode(path: impl AsRef<std::path::Path>) -> TestResult<u32> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    Ok(std::fs::metadata(path)?.permissions().mode() & 0o777)
+}
+
+#[cfg(unix)]
+fn set_file_mode(path: impl AsRef<std::path::Path>, mode: u32) -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut permissions = std::fs::metadata(path.as_ref())?.permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn credential_store_round_trips_and_reopens() -> TestResult {
     let tempdir = tempdir()?;
@@ -228,6 +245,51 @@ async fn credential_store_keeps_plaintext_out_of_encrypted_file() -> TestResult 
         !raw_text.contains("visible-client-key"),
         "encrypted store should not leak plaintext client keys"
     );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn credential_store_creates_secret_files_with_private_permissions() -> TestResult {
+    let tempdir = tempdir()?;
+    let store = CredentialStore::open(tempdir.path()).await?;
+    let seed_path = tempdir.path().join(".credential_seed");
+    let store_path = tempdir.path().join("credentials.json.enc");
+
+    assert_eq!(file_mode(&seed_path)?, 0o600);
+
+    store
+        .store_driver_json("alpha", "bridge-1", serde_json::json!({ "api_key": "key" }))
+        .await?;
+
+    assert_eq!(file_mode(&seed_path)?, 0o600);
+    assert_eq!(file_mode(&store_path)?, 0o600);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn credential_store_restricts_existing_secret_file_permissions() -> TestResult {
+    let tempdir = tempdir()?;
+    let store = CredentialStore::open(tempdir.path()).await?;
+    let seed_path = tempdir.path().join(".credential_seed");
+    let store_path = tempdir.path().join("credentials.json.enc");
+    store
+        .store_driver_json("alpha", "bridge-1", serde_json::json!({ "api_key": "key" }))
+        .await?;
+    set_file_mode(&seed_path, 0o644)?;
+    set_file_mode(&store_path, 0o644)?;
+
+    let reopened = CredentialStore::open(tempdir.path()).await?;
+
+    assert_eq!(
+        reopened.get_driver_json("alpha", "bridge-1").await,
+        Some(serde_json::json!({ "api_key": "key" }))
+    );
+    assert_eq!(file_mode(&seed_path)?, 0o600);
+    assert_eq!(file_mode(&store_path)?, 0o600);
 
     Ok(())
 }

@@ -21,6 +21,8 @@ static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const STORE_FILE_NAME: &str = "credentials.json.enc";
 const SEED_FILE_NAME: &str = ".credential_seed";
 const NONCE_BYTES: usize = 12;
+#[cfg(unix)]
+const CREDENTIAL_FILE_MODE: u32 = 0o600;
 
 /// Encrypted credential store rooted in Hypercolor's data directory.
 pub struct CredentialStore {
@@ -144,12 +146,14 @@ impl CredentialStore {
         let payload = encrypt_snapshot(&self.cipher, snapshot)?;
 
         let tmp_path = temp_store_path(&self.store_path);
-        fs::write(&tmp_path, payload).await.with_context(|| {
-            format!(
-                "failed to write temporary credential store {}",
-                tmp_path.display()
-            )
-        })?;
+        write_secret_file(&tmp_path, &payload)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write temporary credential store {}",
+                    tmp_path.display()
+                )
+            })?;
         fs::rename(&tmp_path, &self.store_path)
             .await
             .with_context(|| {
@@ -158,6 +162,7 @@ impl CredentialStore {
                     self.store_path.display()
                 )
             })?;
+        restrict_file_permissions(&self.store_path).await?;
 
         Ok(())
     }
@@ -184,6 +189,7 @@ fn scoped_credential_key(driver_id: &str, key: &str) -> String {
 
 fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {
     if path.exists() {
+        restrict_file_permissions_blocking(path)?;
         let bytes = std::fs::read(path)
             .with_context(|| format!("failed to read credential seed {}", path.display()))?;
         if bytes.len() != 32 {
@@ -200,13 +206,14 @@ fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {
     }
 
     let seed = rand::random::<[u8; 32]>();
-    std::fs::write(path, seed)
+    write_secret_file_blocking(path, &seed)
         .with_context(|| format!("failed to write credential seed {}", path.display()))?;
     Ok(seed)
 }
 
 async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
     if path.exists() {
+        restrict_file_permissions(path).await?;
         let bytes = fs::read(path)
             .await
             .with_context(|| format!("failed to read credential seed {}", path.display()))?;
@@ -224,7 +231,7 @@ async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
     }
 
     let seed = rand::random::<[u8; 32]>();
-    fs::write(path, seed)
+    write_secret_file(path, &seed)
         .await
         .with_context(|| format!("failed to write credential seed {}", path.display()))?;
     Ok(seed)
@@ -235,6 +242,7 @@ fn load_cache_blocking(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<
         return Ok(HashMap::new());
     }
 
+    restrict_file_permissions_blocking(store_path)?;
     let payload = std::fs::read(store_path)
         .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
     if payload.is_empty() {
@@ -257,6 +265,7 @@ async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<Str
         return Ok(HashMap::new());
     }
 
+    restrict_file_permissions(store_path).await?;
     let payload = fs::read(store_path)
         .await
         .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
@@ -297,6 +306,88 @@ fn encrypt_snapshot(cipher: &Aes256Gcm, snapshot: &HashMap<String, Value>) -> Re
     payload.extend_from_slice(&nonce_bytes);
     payload.extend_from_slice(&ciphertext);
     Ok(payload)
+}
+
+#[cfg(unix)]
+fn write_secret_file_blocking(path: &Path, payload: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(CREDENTIAL_FILE_MODE)
+        .open(path)
+        .with_context(|| format!("failed to create secret file {}", path.display()))?;
+    file.write_all(payload)
+        .with_context(|| format!("failed to write secret file {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file_blocking(path: &Path, payload: &[u8]) -> Result<()> {
+    std::fs::write(path, payload)
+        .with_context(|| format!("failed to write secret file {}", path.display()))
+}
+
+#[cfg(unix)]
+async fn write_secret_file(path: &Path, payload: &[u8]) -> Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(CREDENTIAL_FILE_MODE)
+        .open(path)
+        .await
+        .with_context(|| format!("failed to create secret file {}", path.display()))?;
+    file.write_all(payload)
+        .await
+        .with_context(|| format!("failed to write secret file {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn write_secret_file(path: &Path, payload: &[u8]) -> Result<()> {
+    fs::write(path, payload)
+        .await
+        .with_context(|| format!("failed to write secret file {}", path.display()))
+}
+
+#[cfg(unix)]
+fn restrict_file_permissions_blocking(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut permissions = std::fs::metadata(path)
+        .with_context(|| format!("failed to inspect secret file {}", path.display()))?
+        .permissions();
+    permissions.set_mode(CREDENTIAL_FILE_MODE);
+    std::fs::set_permissions(path, permissions)
+        .with_context(|| format!("failed to restrict secret file {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_file_permissions_blocking(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn restrict_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut permissions = fs::metadata(path)
+        .await
+        .with_context(|| format!("failed to inspect secret file {}", path.display()))?
+        .permissions();
+    permissions.set_mode(CREDENTIAL_FILE_MODE);
+    fs::set_permissions(path, permissions)
+        .await
+        .with_context(|| format!("failed to restrict secret file {}", path.display()))
+}
+
+#[cfg(not(unix))]
+async fn restrict_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn temp_store_path(store_path: &Path) -> PathBuf {
