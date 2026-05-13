@@ -373,10 +373,10 @@ graph TD
     D --> CLI & TUI & UI & DT & TR
 ```
 
-It's Rust all the way down. 16 crates, zero `unsafe`, clippy pedantic. The daemon, CLI, TUI,
-tray applet, and HAL drivers are all Rust. The web UI is Rust compiled to WASM via Leptos.
-Even the embedded browser is Servo (Rust). The only non-Rust code is the TypeScript effect
-SDK and the GLSL shaders it compiles.
+It's Rust all the way down. The daemon, CLI, TUI, tray applet, and HAL drivers are
+all Rust. The web UI is Rust compiled to WASM via Leptos. Even the embedded browser
+is Servo (Rust). The only non-Rust code is the TypeScript effect SDK and the GLSL
+shaders it compiles.
 
 The render thread runs on a dedicated OS thread with adaptive FPS (10 to 60, auto-shifting
 across 5 tiers based on measured budget). Each tick, SparkleFlinger composes frame producers
@@ -386,7 +386,12 @@ frame data and `broadcast` for discrete events. `zerocopy` structs handle wire-f
 at zero allocation cost per frame. The spatial engine caches LED positions and samples the
 composed frame with configurable interpolation (nearest, bilinear, area average, Gaussian).
 
-`#![forbid(unsafe_code)]` across the entire workspace. Edition 2024. Rust 1.94+.
+Workspace lints forbid `unsafe` in application, driver, and domain crates. The explicit
+exceptions are audited platform interop crates:
+[`hypercolor-linux-gpu-interop`](crates/hypercolor-linux-gpu-interop) for Linux GPU
+surface import and [`hypercolor-windows-pawnio`](crates/hypercolor-windows-pawnio)
+for Windows service/process boundaries. Both deny undocumented unsafe blocks. Edition
+2024. Rust 1.94+.
 
 ## 📡 Status
 

@@ -103,16 +103,10 @@ backend.
 The implementation probably needs `wgpu-hal`, raw Vulkan handles, and raw GL
 external-memory calls. That is an unsafe boundary.
 
-Hypercolor currently forbids `unsafe_code` in workspace crates. Before landing
-the real import module, choose one of these approaches:
-
-1. Keep the unsafe code in a small external dependency with a safe Hypercolor
-   wrapper.
-2. Create a tiny optional interop crate with an explicit audited unsafe
-   exception and keep the rest of the workspace on `unsafe_code = "forbid"`.
-
-This decision must be explicit before implementation. A spec-compliant patch
-does not hide unsafe inside unrelated render-thread code.
+Hypercolor keeps `unsafe_code` forbidden in application, driver, and domain crates.
+Linux surface import lives in the audited `hypercolor-linux-gpu-interop` opt-out crate,
+while the render thread consumes a safe wrapper. A spec-compliant patch does not hide
+unsafe inside unrelated render-thread code.
 
 ## 5. Target Architecture
 

@@ -7,7 +7,7 @@ template = "page.html"
 
 ## Prerequisites
 
-Hypercolor needs **Rust 1.85+** (Edition 2024) and a few system libraries to talk to your hardware and capture audio. The fast path: clone the repo, install [just](https://github.com/casey/just), run `just setup`.
+Hypercolor needs **Rust 1.94+** (Edition 2024) and a few system libraries to talk to your hardware and capture audio. The fast path: clone the repo, install [just](https://github.com/casey/just), run `just setup`.
 
 ## Quick Start (Recommended)
 

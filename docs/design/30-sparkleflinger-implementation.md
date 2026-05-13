@@ -541,7 +541,8 @@ surface is cached by `(width, height, color)`; the render-group reconcile
 is gated by `reconciled_groups_revision`; the zones buffer is recycled
 through the frame watch channel.
 
-**`unsafe_code` is forbidden.** Inherited from the workspace lint config.
+**`unsafe_code` is forbidden here.** SparkleFlinger stays in the safe application
+surface; the only workspace opt-outs are audited platform interop crates.
 
 ## 6. Telemetry surfaces
 

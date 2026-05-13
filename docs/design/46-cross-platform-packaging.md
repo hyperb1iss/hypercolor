@@ -204,8 +204,9 @@ single-instance = "0.3"
 single-instance = "0.3"
 ```
 
-Workspace lints stay enforced (`unsafe_code = "forbid"`, clippy pedantic). `win32job` is
-a vetted safe wrapper around the Win32 Job Object API.
+Workspace lint defaults stay enforced (`unsafe_code = "forbid"`, clippy pedantic).
+Windows platform interop that needs raw OS boundaries lives in audited opt-out crates,
+and `win32job` remains a vetted safe wrapper around the Win32 Job Object API.
 
 ---
 
@@ -1351,7 +1352,8 @@ Verified file:line citations from this doc:
 - Logging stdout/ANSI detection: `crates/hypercolor-daemon/src/startup/logging.rs:153-158`
 - Windows service dispatcher: `crates/hypercolor-daemon/src/windows_service.rs:9-25`
 - SCM service installer port collision detection: `scripts/install-windows-service.ps1:125,139`
-- Workspace `unsafe_code = "forbid"`: `Cargo.toml:19`
+- Workspace `unsafe_code` default plus platform opt-out crates:
+  `Cargo.toml:19`, `crates/hypercolor-windows-pawnio/Cargo.toml:12`
 
 ### 16.4 SilkCircuit Brand Notes
 

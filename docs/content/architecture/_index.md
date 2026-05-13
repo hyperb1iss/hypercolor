@@ -101,6 +101,13 @@ hypercolor-daemon    Binary: `hypercolor-daemon` — REST API + WebSocket + MCP
 | `hypercolor-tui`    | `core`          | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
 | `hypercolor-ui`     | (standalone)    | Leptos 0.8 CSR web app, compiled to WASM via Trunk                                          |
 
+{% callout(type="note", title="Unsafe boundary policy") %}
+Application, driver, and domain crates inherit the workspace `unsafe_code = "forbid"` lint.
+The only current opt-outs are `hypercolor-linux-gpu-interop` for Linux GPU surface import
+and `hypercolor-windows-pawnio` for Windows service/process interop. Those crates isolate
+raw platform calls and deny undocumented unsafe blocks.
+{% end %}
+
 {% callout(type="warning", title="UI crate exclusion") %}
 `hypercolor-ui` is excluded from the Cargo workspace because it targets `wasm32-unknown-unknown`. Running `cargo check --workspace` does NOT cover it. Build the UI separately with `just ui-dev` or `cd crates/hypercolor-ui && trunk build`.
 {% end %}

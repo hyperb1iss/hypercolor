@@ -44,9 +44,11 @@ just verify
 
 ### Rust Conventions
 
-- **Edition 2024**, Rust 1.85+
+- **Edition 2024**, Rust 1.94+
 - **Clippy pedantic** enforced at `deny` level
-- **`unsafe` code is forbidden** across the entire workspace
+- **`unsafe` code is forbidden by default** in application, driver, and domain crates.
+  The only current exceptions are the audited `hypercolor-linux-gpu-interop` and
+  `hypercolor-windows-pawnio` platform boundary crates, and both deny undocumented unsafe blocks.
 - **`unwrap()` is forbidden** — use `?`, `.ok()`, `expect("reason")`, or proper error handling
 - **`thiserror`** for library error types, **`anyhow`** for application errors
 - **`tracing`** for all logging — never `println!` in library code
