@@ -255,12 +255,15 @@ and Windows is actively growing.
 ```bash
 git clone https://github.com/hyperb1iss/hypercolor.git
 cd hypercolor
-./scripts/install.sh
+cargo install just
+just setup
+just install
 ```
 
-The installer builds the daemon, CLI, TUI, and web UI, installs a systemd user service, sets
-up udev rules for USB device access, and persists `i2c-dev` so SMBus RGB devices survive
-reboot.
+Setup installs the Rust toolchain, system packages, Bun, Trunk, cargo-deny, and frontend
+dependencies. The installer then builds the daemon, CLI, TUI, web UI, and bundled effects,
+installs a systemd user service, sets up udev rules for USB device access, and persists
+`i2c-dev` so SMBus RGB devices survive reboot.
 
 ### Install on macOS and Windows
 

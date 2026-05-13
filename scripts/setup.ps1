@@ -239,14 +239,14 @@ if (Has-Cmd bun) {
 # ─── 5. Frontend dependencies ────────────────────────────────────────
 Section 'frontend dependencies'
 
-if (-not (Has-Cmd npm)) {
-    Warn 'npm not found — install Node.js (winget install OpenJS.NodeJS.LTS)'
-} else {
-    Info 'npm ci in crates/hypercolor-ui (Tailwind v4)'
+if (Has-Cmd bun) {
+    Info 'bun install in crates/hypercolor-ui (Tailwind v4)'
     Push-Location (Join-Path $Root 'crates/hypercolor-ui')
-    try { & npm ci --silent --no-audit --no-fund | Out-Null; Ok 'crates/hypercolor-ui ready' }
-    catch { Warn 'hypercolor-ui npm ci failed' }
+    try { & bun install --silent | Out-Null; Ok 'crates/hypercolor-ui ready' }
+    catch { Warn 'hypercolor-ui bun install failed' }
     finally { Pop-Location }
+} else {
+    Warn 'bun not found — skipping UI dependencies'
 }
 
 if (Has-Cmd bun) {

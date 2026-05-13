@@ -21,11 +21,11 @@ open = false
 # Compile Tailwind CSS before each build
 [[hooks]]
 stage = "pre_build"
-command = "npx"
+command = "bunx"
 command_arguments = ["@tailwindcss/cli", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
 
 [hooks.windows]
-command = "npx.cmd"
+command = "bunx.exe"
 command_arguments = ["@tailwindcss/cli", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
 
 [[proxy]]

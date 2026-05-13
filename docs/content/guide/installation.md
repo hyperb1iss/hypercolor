@@ -18,7 +18,7 @@ cd hypercolor
 # Install just if you don't have it
 cargo install just     # or: brew install just / winget install Casey.Just
 
-# Bootstrap everything: system packages, Rust toolchain, cargo tools, bun, frontend deps
+# Bootstrap everything: system packages, Rust toolchain, cargo tools, Bun, frontend deps
 just setup
 ```
 
@@ -104,12 +104,13 @@ just setup-wasm
 ```bash
 cargo install --locked trunk cargo-deny    # required
 cargo install --locked sccache             # optional but recommended
+curl -fsSL https://bun.sh/install | bash   # required for UI and SDK assets
 ```
 
 ### Frontend Dependencies
 
 ```bash
-cd crates/hypercolor-ui && npm ci          # Tailwind v4
+cd crates/hypercolor-ui && bun install     # Tailwind v4
 cd ../../sdk && bun install                # SDK
 cd ../e2e && npm ci                        # Playwright e2e (optional)
 ```

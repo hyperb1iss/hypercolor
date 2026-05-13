@@ -131,14 +131,14 @@ install_completions() {
 }
 
 build_ui() {
-  require_cmd npm
+  require_cmd bun
   require_cmd trunk
 
   if [[ ! -d "${ROOT_DIR}/crates/hypercolor-ui/node_modules" ]]; then
-    info "installing UI npm dependencies"
+    info "installing UI dependencies"
     (
       cd "${ROOT_DIR}/crates/hypercolor-ui"
-      npm install
+      bun install
     )
   fi
 

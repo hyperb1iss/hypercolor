@@ -85,7 +85,6 @@ function Assert-Prerequisites {
     Require-Command "rustc" "Install Rust from https://rustup.rs/."
     Require-Command "bun" "Install Bun from https://bun.sh/."
     Require-Command "trunk" "Install with: cargo install trunk --locked"
-    Require-Command "npx" "Install Node.js so Trunk can run the Tailwind prebuild hook."
 
     $tauriVersion = & cargo tauri --version 2>$null
     if ($LASTEXITCODE -ne 0) {

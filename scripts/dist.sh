@@ -162,7 +162,6 @@ if [[ "${CI_MODE}" -eq 1 ]]; then
   [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
   info "Using pre-built web assets from ${WEB_ASSETS_DIR}"
 else
-  require_cmd npm
   require_cmd trunk
   require_cmd bun
 
@@ -170,7 +169,7 @@ else
   (
     cd crates/hypercolor-ui
     if [[ ! -d node_modules ]]; then
-      npm install
+      bun install
     fi
     if command -v rustup >/dev/null 2>&1; then
       rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true

@@ -350,28 +350,30 @@ else
     ok "bun $(bun --version)"
   else
     err "bun install failed — see https://bun.sh"
+    exit 1
   fi
 fi
 
 # ─── 5. Frontend dependencies ────────────────────────────────────────
 section "frontend dependencies"
 
-info "npm ci in crates/hypercolor-ui (Tailwind v4)"
-(cd "$ROOT/crates/hypercolor-ui" && npm ci --silent --no-audit --no-fund 2>&1 | tail -5) || \
-  warn "hypercolor-ui npm ci failed"
+info "bun install in crates/hypercolor-ui (Tailwind v4)"
+(cd "$ROOT/crates/hypercolor-ui" && bun install --silent)
 ok "crates/hypercolor-ui ready"
 
 info "bun install in sdk/"
 (cd "$ROOT/sdk" && bun install --silent)
 ok "sdk/ ready"
 
-if [ -f "$ROOT/e2e/package.json" ]; then
+if [ -f "$ROOT/e2e/package.json" ] && need npm; then
   info "npm ci in e2e/"
   if (cd "$ROOT/e2e" && npm ci --silent --no-audit --no-fund 2>&1 | tail -3); then
     ok "e2e/ ready"
   else
     warn "e2e/ npm ci failed (non-fatal — needed for 'just e2e')"
   fi
+elif [ -f "$ROOT/e2e/package.json" ]; then
+  warn "npm not found — skipping optional e2e dependencies"
 fi
 
 # ─── 6. Python client (optional) ─────────────────────────────────────
