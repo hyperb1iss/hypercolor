@@ -21,13 +21,13 @@ and [installation bootstrap spec](20-installation-bootstrap.md) (user-local inst
 
 ## Distribution Channels
 
-### 1. Curl Installer (`install.hypercolor.dev`)
+### 1. Curl Installer
 
 A single shell script that detects the platform, downloads the correct prebuilt binaries
 from GitHub Releases, and sets up system integration.
 
 ```bash
-curl -fsSL https://install.hypercolor.dev | bash
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
 ```
 
 **Detection logic:**
@@ -82,8 +82,9 @@ ARTIFACT = hypercolor-{os}-{arch}   (e.g., hypercolor-linux-amd64)
 - Verifies SHA256 checksum of downloaded binaries against release asset checksums
 - Colorized output with status indicators, respects `NO_COLOR`
 
-**Hosted at:** The script lives in the repo at `scripts/install-release.sh` and is served
-via GitHub Pages or a redirect from `install.hypercolor.dev`.
+**Hosted at:** The script lives in the repo at `scripts/install-release.sh`. For launch,
+use the raw GitHub URL above. A shorter vanity redirect can replace it once DNS and
+hosting are live.
 
 ### 2. Homebrew (macOS)
 
