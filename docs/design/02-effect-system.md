@@ -21,7 +21,7 @@
 
 ## 1. Effect Taxonomy
 
-Every effect rendered on the 320x200 canvas falls into one or more of these categories. Categories are not mutually exclusive -- an effect can be both **Ambient** and **Audio-Reactive**, or both **Generative** and **Interactive**. The taxonomy serves two purposes: organizing the effect library for users, and guiding authoring decisions for creators.
+Every effect rendered on the legacy 320 by 200 canvas falls into one or more of these categories. Categories are not mutually exclusive -- an effect can be both **Ambient** and **Audio-Reactive**, or both **Generative** and **Interactive**. The taxonomy serves two purposes: organizing the effect library for users, and guiding authoring decisions for creators.
 
 ### 1.1 Ambient
 
@@ -130,17 +130,17 @@ Effects that mirror or respond to on-screen content. The bridge between display 
 
 ### 1.6 Generative
 
-Algorithmically-generated visuals with emergent complexity. These effects are why the 320x200 canvas exists -- they create visual richness that simple color cycling cannot.
+Algorithmically-generated visuals with emergent complexity. These effects are why the legacy 320 by 200 canvas exists -- they create visual richness that simple color cycling cannot.
 
-| Effect Pattern         | Description                                     | Algorithm                                                    |
-| ---------------------- | ----------------------------------------------- | ------------------------------------------------------------ |
-| **Particle Systems**   | Hundreds of colored particles with physics      | Position + velocity + acceleration, with spawn/die lifecycle |
-| **Cellular Automata**  | Conway's Game of Life variants                  | Grid state with configurable rule sets (B3/S23, etc.)        |
-| **Fractals**           | Mandelbrot, Julia, or L-system renderings       | Iterative computation, zoom animation                        |
-| **Voronoi**            | Cell-based color regions with drifting seeds    | Fortune's algorithm or brute-force at 320x200 (tractable)    |
-| **Reaction-Diffusion** | Gray-Scott or Belousov-Zhabotinsky patterns     | Two-chemical simulation on pixel grid                        |
-| **Flow Fields**        | Particles following Perlin noise vector field   | Noise-based velocity field, particle trails with fade        |
-| **Plasma**             | Classic demoscene plasma with sine interference | `sin(x + t) + sin(y + t) + sin(x + y + t)` -> palette lookup |
+| Effect Pattern         | Description                                     | Algorithm                                                           |
+| ---------------------- | ----------------------------------------------- | ------------------------------------------------------------------- |
+| **Particle Systems**   | Hundreds of colored particles with physics      | Position + velocity + acceleration, with spawn/die lifecycle        |
+| **Cellular Automata**  | Conway's Game of Life variants                  | Grid state with configurable rule sets (B3/S23, etc.)               |
+| **Fractals**           | Mandelbrot, Julia, or L-system renderings       | Iterative computation, zoom animation                               |
+| **Voronoi**            | Cell-based color regions with drifting seeds    | Fortune's algorithm or brute-force at legacy 320 by 200 (tractable) |
+| **Reaction-Diffusion** | Gray-Scott or Belousov-Zhabotinsky patterns     | Two-chemical simulation on pixel grid                               |
+| **Flow Fields**        | Particles following Perlin noise vector field   | Noise-based velocity field, particle trails with fade               |
+| **Plasma**             | Classic demoscene plasma with sine interference | `sin(x + t) + sin(y + t) + sin(x + y + t)` -> palette lookup        |
 
 **Shared characteristics:** Computationally expensive relative to simple effects. The wgpu path is ideal for these -- WGSL compute shaders can run cellular automata or reaction-diffusion on the GPU in microseconds. For the Servo path, WebGL shaders handle the heavy lifting. Canvas 2D implementations should be avoided for complex generative effects due to CPU overhead.
 
@@ -207,7 +207,7 @@ pub enum EffectCategory {
 
 ## 2. Effect Authoring Experience
 
-The authoring experience determines whether Hypercolor grows a creator community or stays a personal project. Three authoring paths serve three audiences: web developers (HTML/Canvas), shader artists (WGSL), and visual thinkers (node editor). All three paths converge on the same output: pixels on the 320x200 canvas.
+The authoring experience determines whether Hypercolor grows a creator community or stays a personal project. Three authoring paths serve three audiences: web developers (HTML/Canvas), shader artists (WGSL), and visual thinkers (node editor). All three paths converge on the same output: pixels on the legacy 320 by 200 canvas.
 
 ### 2.1 HTML/Canvas Path (The Familiar Path)
 
@@ -218,7 +218,7 @@ This is the path of least resistance. Anyone who can write a web page can write 
 ```
 my-effect/
   my-effect.html      # The effect (required)
-  my-effect.png       # Preview thumbnail (recommended, 320x200)
+  my-effect.png       # Preview thumbnail (recommended, legacy 320 by 200)
   README.md           # Description, credits (optional)
 ```
 
@@ -490,7 +490,7 @@ graph TD
 - Frame time histogram (detect jank)
 - Audio data inspector (see the FFT bins, beat state, mel bands)
 - Control panel (auto-generated from meta tags)
-- Canvas zoom (the 320x200 canvas is tiny -- zoom to see pixel detail)
+- Canvas zoom (the legacy 320 by 200 canvas is tiny -- zoom to see pixel detail)
 - Error console (JS errors, shader compilation errors)
 
 ---
@@ -534,11 +534,11 @@ Static thumbnails are insufficient. Effects are animated -- the preview must con
 
 **Preview tiers:**
 
-| Tier                 | Format                                | When Used                    | Storage                                 |
-| -------------------- | ------------------------------------- | ---------------------------- | --------------------------------------- |
-| **Thumbnail**        | 320x200 PNG                           | Grid view, search results    | Bundled with effect                     |
-| **Animated Preview** | 320x200 WebP animation (3-5 sec loop) | Hover state, expanded card   | Generated on install or first browse    |
-| **Live Preview**     | Real-time canvas render               | Detail view, before applying | Rendered by the effect engine on demand |
+| Tier                 | Format                                          | When Used                    | Storage                                 |
+| -------------------- | ----------------------------------------------- | ---------------------------- | --------------------------------------- |
+| **Thumbnail**        | legacy 320 by 200 PNG                           | Grid view, search results    | Bundled with effect                     |
+| **Animated Preview** | legacy 320 by 200 WebP animation (3-5 sec loop) | Hover state, expanded card   | Generated on install or first browse    |
+| **Live Preview**     | Real-time canvas render                         | Detail view, before applying | Rendered by the effect engine on demand |
 
 **Animated preview generation:** When a new effect is installed, the daemon renders 180 frames (3 seconds at 60fps) with default parameters and encodes them as an animated WebP. For audio-reactive effects, a standard test signal (pink noise + 120 BPM beat) is used. Previews are cached in `~/.local/share/hypercolor/previews/`.
 
@@ -785,7 +785,7 @@ graph TD
     L3["Layer 3: Beat Pulse<br/>(audio-reactive flash)<br/>Blend: Add, Opacity: 60%"]
     L2["Layer 2: Spectrum Bars<br/>(audio-reactive bars)<br/>Blend: Screen, Opacity: 80%"]
     L1["Layer 1: Aurora<br/>(ambient base)<br/>Blend: Normal, Opacity: 100%"]
-    Out["Composited 320x200 canvas"]
+    Out["Composited legacy 320 by 200 canvas"]
 
     L3 --> L2 --> L1 --> Out
 ```
@@ -818,7 +818,7 @@ pub enum BlendMode {
 }
 ```
 
-**Compositing implementation:** Each layer renders to its own 320x200 RGBA buffer. The compositor blends them bottom-to-top using the specified blend mode. At 320x200, the per-pixel blend math is trivially fast -- 64,000 pixels x 8 blend operations = microseconds on any modern CPU. For the wgpu path, compositing runs as a compute shader for zero CPU cost.
+**Compositing implementation:** Each layer renders to its own legacy 320 by 200 RGBA buffer. The compositor blends them bottom-to-top using the specified blend mode. At legacy 320 by 200, the per-pixel blend math is trivially fast -- 64,000 pixels x 8 blend operations = microseconds on any modern CPU. For the wgpu path, compositing runs as a compute shader for zero CPU cost.
 
 ### 5.2 Per-Zone Effect Assignment
 
@@ -843,7 +843,7 @@ Zone Mapping:
 
 **Implementation options:**
 
-**Option A: Multiple canvases.** Each zone group gets its own 320x200 canvas and effect engine instance. Zones sample from their assigned canvas. Simple but expensive -- multiple Servo instances or shader pipelines.
+**Option A: Multiple canvases.** Each zone group gets its own legacy 320 by 200 canvas and effect engine instance. Zones sample from their assigned canvas. Simple but expensive -- multiple Servo instances or shader pipelines.
 
 **Option B: Single canvas, zone masking.** One effect renders to the full canvas. Zone-specific effects render to separate smaller buffers and are composited into the main canvas at the zone's position. More efficient, slightly more complex.
 
@@ -1260,7 +1260,7 @@ The audio-visual synchronization budget:
 | Beat detection       | ~0ms         | Runs inline with FFT                                                                     |
 | Event bus publish    | <1ms         | tokio watch channel, essentially free                                                    |
 | Effect render        | 1-10ms       | Depends on effect complexity                                                             |
-| Spatial sampling     | <1ms         | 320x200 bilinear sampling                                                                |
+| Spatial sampling     | <1ms         | legacy 320 by 200 bilinear sampling                                                      |
 | Device push          | 1-5ms        | USB HID or UDP                                                                           |
 | **Total**            | **~28-40ms** | 1.5-2.5 frames at 60fps                                                                  |
 
@@ -1311,7 +1311,7 @@ If an effect consistently exceeds its budget (30+ consecutive overruns), the dae
 | Three.js scene                            | Servo (GPU)                          | Three.js requires WebGL context                             |
 | Composition (multi-layer)                 | wgpu compute shader                  | Blend operations are trivially parallel                     |
 
-**Fallback chain:** If the GPU is unavailable (headless server, broken driver), all rendering falls back to Servo's `SoftwareRenderingContext`. At 320x200, software rendering is fast enough for most effects (not WebGL, which requires a GPU by definition).
+**Fallback chain:** If the GPU is unavailable (headless server, broken driver), all rendering falls back to Servo's `SoftwareRenderingContext`. At legacy 320 by 200, software rendering is fast enough for most effects (not WebGL, which requires a GPU by definition).
 
 ### 8.3 Frame Dropping Behavior
 
@@ -1340,13 +1340,13 @@ Frame budget exceeded?
 
 ### 8.4 Memory Limits
 
-| Resource                     | Limit             | Enforcement                                   |
-| ---------------------------- | ----------------- | --------------------------------------------- |
-| Canvas buffer                | 256KB (320x200x4) | Fixed allocation, cannot grow                 |
-| Per-effect JS heap (Servo)   | 64MB              | Servo's SpiderMonkey GC enforced              |
-| Per-effect GPU memory (wgpu) | 32MB              | Texture/buffer allocation cap                 |
-| Preview cache (all effects)  | 256MB             | LRU eviction of animated previews             |
-| Total effect engine memory   | 512MB             | Hard cap, daemon refuses to load more effects |
+| Resource                     | Limit                       | Enforcement                                   |
+| ---------------------------- | --------------------------- | --------------------------------------------- |
+| Canvas buffer                | 256KB (legacy 320 by 200x4) | Fixed allocation, cannot grow                 |
+| Per-effect JS heap (Servo)   | 64MB                        | Servo's SpiderMonkey GC enforced              |
+| Per-effect GPU memory (wgpu) | 32MB                        | Texture/buffer allocation cap                 |
+| Preview cache (all effects)  | 256MB                       | LRU eviction of animated previews             |
+| Total effect engine memory   | 512MB                       | Hard cap, daemon refuses to load more effects |
 
 ### 8.5 Sandboxing
 
@@ -1633,7 +1633,7 @@ The remaining effects (Lava Lamp, Ocean Depths, Nebula, Fireflies, Bass Wave, Ch
 Required:
   <title>           Effect name
   <meta description> Effect description
-  <canvas>          320x200 render target (id="exCanvas")
+  <canvas>          legacy 320 by 200 render target (id="exCanvas")
   <script>          Effect logic with requestAnimationFrame loop
 
 Optional:
@@ -1658,7 +1658,7 @@ Required:
   effect.wgsl                  Fragment shader (or compute shader)
 
 Optional:
-  effect.png                   320x200 preview thumbnail
+  effect.png                   legacy 320 by 200 preview thumbnail
   presets/*.toml               Named parameter presets
 
 Uniform bindings:
@@ -1675,7 +1675,7 @@ Uniform bindings:
 
 | Term                 | Definition                                                                              |
 | -------------------- | --------------------------------------------------------------------------------------- |
-| **Canvas**           | The 320x200 RGBA pixel buffer that effects render to                                    |
+| **Canvas**           | The legacy 320 by 200 RGBA pixel buffer that effects render to                          |
 | **Spatial sampling** | Extracting LED colors from the canvas at physical LED positions                         |
 | **Zone**             | A group of LEDs belonging to one device channel (e.g., "Fan 1", "Strimer ATX")          |
 | **Lightscript**      | TypeScript framework for LightScript-compatible effect authoring                        |

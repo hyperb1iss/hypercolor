@@ -104,7 +104,7 @@ The audit found five structural issues:
 
 ### 2.2 Why This Matters
 
-A full-frame canvas is ~256 KB at 320x200 or ~1.17 MB at the 640x480 default.
+A full-frame canvas is ~256 KB at legacy 320 by 200 or ~1.17 MB at the 640x480 default.
 One hidden clone per frame at 60 FPS is 15-70 MB/s of memory traffic before
 transport encoding, display cropping, or screen-capture duplication. That is
 not fatal on

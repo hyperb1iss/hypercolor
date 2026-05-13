@@ -2928,15 +2928,15 @@ hypercolor status
 
 ## 16. Crate Dependencies (Desktop Integration)
 
-| Crate              | Purpose                               | License    |
-| ------------------ | ------------------------------------- | ---------- |
-| `zbus`             | D-Bus client + server                 | MIT        |
-| `sd-notify`        | systemd watchdog + ready notification | MIT/Apache |
-| `listenfd`         | systemd socket activation             | MIT/Apache |
-| `tracing-journald` | Journal log subscriber                | MIT        |
-| `ksni`             | StatusNotifierItem system tray        | Apache-2.0 |
-| `open`             | Open URLs in default browser          | MIT/Apache |
-| `swayipc-async`    | sway/i3 IPC events                    | MIT        |
-| `dirs`             | XDG directory paths                   | MIT/Apache |
+| Crate              | Purpose                               | License           |
+| ------------------ | ------------------------------------- | ----------------- |
+| `zbus`             | D-Bus client + server                 | MIT               |
+| `sd-notify`        | systemd watchdog + ready notification | MIT OR Apache-2.0 |
+| `listenfd`         | systemd socket activation             | MIT OR Apache-2.0 |
+| `tracing-journald` | Journal log subscriber                | MIT               |
+| `ksni`             | StatusNotifierItem system tray        | Apache-2.0        |
+| `open`             | Open URLs in default browser          | MIT OR Apache-2.0 |
+| `swayipc-async`    | sway/i3 IPC events                    | MIT               |
+| `dirs`             | XDG directory paths                   | MIT OR Apache-2.0 |
 
-All MIT/Apache-2.0 compatible. No GPL contamination in the desktop integration layer.
+All Apache-2.0 compatible. No GPL contamination in the desktop integration layer.

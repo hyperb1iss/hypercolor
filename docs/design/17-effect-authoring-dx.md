@@ -11,7 +11,7 @@ The effect authoring experience is the lifeblood of Hypercolor. Without a compel
 ### Design Principles
 
 1. **Zero to LEDs in 5 minutes.** A web developer with no RGB experience should see their first custom effect on hardware within a single `hypercolor new` + `hypercolor dev` cycle.
-2. **The web is the foundation.** HTML/Canvas effects are the on-ramp. The 320x200 canvas, the `<meta>` tag controls, the `requestAnimationFrame` loop -- this is deliberately simple. Don't abstract it away.
+2. **The web is the foundation.** HTML/Canvas effects are the on-ramp. The legacy 320 by 200 canvas, the `<meta>` tag controls, the `requestAnimationFrame` loop -- this is deliberately simple. Don't abstract it away.
 3. **Progressive complexity.** Canvas 2D -> WebGL/Three.js -> WGSL compute shaders. Each step unlocks more power without invalidating what came before.
 4. **Hot-reload everything.** Save a file, see the change on LEDs. No restart, no rebuild, no manual refresh. This is non-negotiable.
 5. **Hardware is optional for development.** The dev server provides a complete simulation environment. You should be able to author effects on a laptop with zero RGB hardware connected.
@@ -52,7 +52,7 @@ The dev server is a lightweight Axum instance separate from the main Hypercolor 
 hypercolor dev my-effect.html
        │
        ├── Browser Preview (localhost:9421)
-       │   ├── Live effect rendering (320x200 canvas)
+       │   ├── Live effect rendering (legacy 320 by 200 canvas)
        │   ├── Virtual LED layout viewer
        │   ├── Control panel (auto-generated from meta tags)
        │   ├── Audio input simulator
@@ -120,7 +120,7 @@ The dev server serves a purpose-built development interface at `localhost:9421`:
 │                                                            │
 │  ┌──────────────────────────────────┐  ┌────────────────┐ │
 │  │                                  │  │  Controls       │ │
-│  │     320x200 Effect Canvas        │  │                 │ │
+│  │     legacy 320 by 200 Effect Canvas        │  │                 │ │
 │  │     (actual rendered output)     │  │  Speed: ████░ 7 │ │
 │  │                                  │  │  Color: [____]  │ │
 │  │                                  │  │  Style: [combo] │ │
@@ -148,7 +148,7 @@ The dev server serves a purpose-built development interface at `localhost:9421`:
 
 **Key panels:**
 
-- **Effect Canvas** -- The actual 320x200 output, scaled up for visibility. Pixel-perfect rendering, no interpolation artifacts. Click to inspect pixel color values.
+- **Effect Canvas** -- The actual legacy 320 by 200 output, scaled up for visibility. Pixel-perfect rendering, no interpolation artifacts. Click to inspect pixel color values.
 - **Virtual LED Layout** -- Shows how the effect maps to physical devices. Uses the spatial layout engine to sample the canvas at LED positions and render colored dots/strips/rings. Switchable between layout presets.
 - **Controls** -- Auto-generated from `<meta>` tags (HTML effects) or uniform declarations (shaders). Changes are injected live without reload. Drag a slider, see it instantly.
 - **Audio Panel** -- Source selector (system audio, simulator, file), BPM display, real-time spectrum visualization, individual band controls for the simulator.
@@ -819,7 +819,7 @@ For creators who think in colors and layers, not code. The visual builder is a b
 
 ### 4.2 Layer-Based Compositor (v1 Target)
 
-The compositor stacks visual layers, each with its own generator, blend mode, and animation. The output is a 320x200 canvas that feeds into the standard spatial mapping pipeline.
+The compositor stacks visual layers, each with its own generator, blend mode, and animation. The output is a legacy 320 by 200 canvas that feeds into the standard spatial mapping pipeline.
 
 **Layer types:**
 
@@ -1043,7 +1043,7 @@ Every template includes:
 1. **Tutorial comments** -- Not just "what" but "why." Explain the rendering model, the audio API, the spatial mapping. Comments are written for someone who's never built an LED effect.
 
    ```typescript
-   // The canvas is 320x200 pixels. This is the "virtual screen" that
+   // The canvas is legacy 320 by 200 pixels. This is the "virtual screen" that
    // Hypercolor samples to determine LED colors. Your effect draws to
    // this canvas, and the spatial layout engine maps regions of the
    // canvas to physical LED positions on your hardware.
@@ -1129,7 +1129,7 @@ hypercolor bench effects/custom/my-effect.html
 # │  Performance Benchmark: my-effect.html       │
 # ├──────────────────────────────────────────────┤
 # │  Renderer:    Servo (HTML/Canvas)            │
-# │  Resolution:  320x200                        │
+# │  Resolution:  legacy 320 by 200                        │
 # │  Duration:    10 seconds (600 frames)        │
 # │                                              │
 # │  Frame Time:                                 │
@@ -1282,7 +1282,7 @@ docs.hypercolor.dev
 │   └── Seasonal / Themed Effects
 │
 ├── Concepts
-│   ├── The 320x200 Canvas
+│   ├── The legacy 320 by 200 Canvas
 │   ├── Spatial Mapping (canvas → LEDs)
 │   ├── The Render Loop
 │   ├── Audio Pipeline (capture → FFT → bands → effects)
@@ -1444,7 +1444,7 @@ Validating my-effect.html...
   ✓ Description present (48 chars)
   ✓ Publisher: hyperb1iss
   ✓ Controls valid: 4 controls, all typed correctly
-  ✓ Canvas dimensions: 320x200
+  ✓ Canvas dimensions: legacy 320 by 200
   ✓ No console errors during 5-second render
   ✓ Frame rate: 60fps (2.1ms avg frame time)
   ✓ Memory stable: no growth over 30 seconds
@@ -1456,20 +1456,20 @@ Validating my-effect.html...
 
 **Validation rules:**
 
-| Check                | Required             | Description                                              |
-| -------------------- | -------------------- | -------------------------------------------------------- |
-| Title                | Yes                  | Non-empty, max 50 characters                             |
-| Description          | Yes                  | Non-empty, max 200 characters                            |
-| Author/Publisher     | Yes                  | Non-empty                                                |
-| Tags                 | Yes (2+)             | From a controlled vocabulary + freeform                  |
-| Canvas size          | Yes                  | Must be 320x200 (or compatible)                          |
-| No JS errors         | Yes                  | Effect runs without throwing for 5 seconds               |
-| Frame rate           | Warn                 | Warning if below 30fps, fail if below 15fps              |
-| Memory stability     | Warn                 | Warning if memory grows >1MB/min                         |
-| Preview image        | Required for publish | Auto-generated or manually provided                      |
-| No external requests | Warn                 | Effects should be self-contained (CDN deps get vendored) |
-| License              | Recommended          | Default: MIT if not specified                            |
-| Version              | Yes for updates      | Semantic versioning (1.0.0 format)                       |
+| Check                | Required             | Description                                                   |
+| -------------------- | -------------------- | ------------------------------------------------------------- |
+| Title                | Yes                  | Non-empty, max 50 characters                                  |
+| Description          | Yes                  | Non-empty, max 200 characters                                 |
+| Author/Publisher     | Yes                  | Non-empty                                                     |
+| Tags                 | Yes (2+)             | From a controlled vocabulary + freeform                       |
+| Canvas size          | Yes                  | Must adapt to the configured canvas or declare a design basis |
+| No JS errors         | Yes                  | Effect runs without throwing for 5 seconds                    |
+| Frame rate           | Warn                 | Warning if below 30fps, fail if below 15fps                   |
+| Memory stability     | Warn                 | Warning if memory grows >1MB/min                              |
+| Preview image        | Required for publish | Auto-generated or manually provided                           |
+| No external requests | Warn                 | Effects should be self-contained (CDN deps get vendored)      |
+| License              | Recommended          | Default: MIT if not specified                                 |
+| Version              | Yes for updates      | Semantic versioning (1.0.0 format)                            |
 
 ### 8.3 `hypercolor package`
 
@@ -1488,7 +1488,7 @@ hypercolor package my-effect/
 #
 # Output: neon-rain-1.0.0.hyper
 #   ├── neon-rain.html         (bundled effect, 48KB)
-#   ├── neon-rain-preview.png  (320x200 static preview)
+#   ├── neon-rain-preview.png  (legacy 320 by 200 static preview)
 #   ├── neon-rain-preview.webm (3-second animated preview, 128KB)
 #   ├── neon-rain-thumb.png    (80x50 thumbnail)
 #   └── manifest.toml          (metadata, checksums)
@@ -1502,7 +1502,7 @@ hypercolor package my-effect/
    - Prefer frames with audio reactivity visible (if audio-reactive)
    - Avoid transition frames (partial fades, etc.)
 3. Generate:
-   - Static preview: 320x200 PNG of the selected frame
+   - Static preview: legacy 320 by 200 PNG of the selected frame
    - Animated preview: 3-second WebM at 30fps (compressed, typically 50-200KB)
    - Thumbnail: 80x50 PNG for list views
 
@@ -1537,7 +1537,7 @@ neon-rain-1.0.0.hyper (tar.gz)
 │       └── (redundant listing for registry indexing without unpacking)
 │
 ├── neon-rain.html           # The effect file (or .wgsl / .glsl)
-├── preview.png              # 320x200 static preview
+├── preview.png              # legacy 320 by 200 static preview
 ├── preview.webm             # 3-second animated preview
 └── thumb.png                # 80x50 thumbnail
 ```
@@ -1925,7 +1925,7 @@ Minute 2-5: Scaffold
 
 Minute 5-10: Understand the Canvas
   # Reads the tutorial comments in the generated code:
-  # "The canvas is 320x200 pixels... effects draw to this canvas...
+  # "The canvas is legacy 320 by 200 pixels... effects draw to this canvas...
   #  the spatial layout engine maps regions to LED positions..."
   #
   # Modifies the gradient colors. Saves. Sees it update instantly.

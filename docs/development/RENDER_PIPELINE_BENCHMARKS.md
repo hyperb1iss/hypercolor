@@ -32,7 +32,7 @@ Use `just bench-gate --strict` when a branch should fail on over-budget samples.
 `daemon_sparkleflinger` covers the compositor decision surface:
 
 - `single_replace_bypass` measures the zero-composition handoff path.
-- `alpha_two_layer_compose` measures the normal 320x200 transition shape.
+- `alpha_two_layer_compose` measures the normal legacy 320 by 200 transition shape.
 - `alpha_two_layer_compose_640x480` measures preview-resolution CPU composition.
 - `alpha_two_layer_compose_640x480_fresh` defeats CPU replay caching.
 - `multi_blend_alpha_add_screen_640x480` measures representative face composition with alpha, additive glow, and screen overlay layers.

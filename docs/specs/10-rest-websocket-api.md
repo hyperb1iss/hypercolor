@@ -202,7 +202,7 @@ Searches across name, description, author, and tags. Results are ordered by rele
 
 ### 3.1 Local Access (No Auth)
 
-When the daemon is bound to `127.0.0.1` or `::1` (the default), **no authentication is required**. Requests from the loopback interface and the Unix socket are always trusted.
+When the daemon is bound to `127.0.0.1` or `::1` (the default), **no authentication is required**. Requests from the loopback interface are trusted.
 
 ### 3.2 Network Access (API Key)
 
@@ -284,7 +284,7 @@ When the daemon is localhost-only, CORS is permissive (`*`) since cross-origin a
 
 ## 5. Rate Limiting
 
-Rate limiting applies **only** when the daemon is network-accessible (non-loopback bind address). Localhost and Unix socket access is always unlimited.
+Rate limiting applies **only** when the daemon is network-accessible (non-loopback bind address). Localhost access is always unlimited.
 
 ### 5.1 Rate Tiers
 
@@ -349,14 +349,14 @@ GET /api/v1/devices
 
 **Query parameters:**
 
-| Parameter | Type      | Default  | Description                                                                  |
-| --------- | --------- | -------- | ---------------------------------------------------------------------------- |
-| `status`  | `string`  | all      | Filter: `"connected"`, `"disconnected"`, `"error"`                           |
-| `backend_id` | `string` | all      | Filter by output backend route, for example `"usb"` or `"wled"`              |
-| `driver`  | `string`  | all      | Filter by owning driver module, for example `"govee"` or `"prismrgb"`        |
-| `q`       | `string`  | --       | Search by name                                                               |
-| `offset`  | `integer` | `0`      | Pagination offset                                                            |
-| `limit`   | `integer` | `50`     | Pagination limit                                                             |
+| Parameter    | Type      | Default | Description                                                           |
+| ------------ | --------- | ------- | --------------------------------------------------------------------- |
+| `status`     | `string`  | all     | Filter: `"connected"`, `"disconnected"`, `"error"`                    |
+| `backend_id` | `string`  | all     | Filter by output backend route, for example `"usb"` or `"wled"`       |
+| `driver`     | `string`  | all     | Filter by owning driver module, for example `"govee"` or `"prismrgb"` |
+| `q`          | `string`  | --      | Search by name                                                        |
+| `offset`     | `integer` | `0`     | Pagination offset                                                     |
+| `limit`      | `integer` | `50`    | Pagination limit                                                      |
 
 **Response — `200 OK`:**
 
@@ -416,40 +416,40 @@ GET /api/v1/devices
 
 **Device object schema:**
 
-| Field              | Type         | Nullable | Description                                                  |
-| ------------------ | ------------ | -------- | ------------------------------------------------------------ |
-| `id`               | `string`     | no       | Stable device identifier                                     |
-| `layout_device_id` | `string`     | no       | Stable layout target identifier                              |
-| `name`             | `string`     | no       | Display name (user-editable)                                 |
-| `origin`           | `DeviceOrigin` | no     | Owning driver, output backend, transport, and protocol ID     |
-| `presentation`     | `DriverPresentation` | no | Driver-provided label, colors, icon, and device class hints   |
-| `status`           | `string`     | no       | `"connected"`, `"disconnected"`, `"error"`, `"initializing"` |
-| `brightness`       | `integer`    | no       | Device brightness as `0..100` percent                        |
-| `firmware_version` | `string`     | yes      | Firmware/driver version if known                             |
-| `total_leds`       | `integer`    | no       | Sum of LEDs across all zones                                 |
-| `zones`            | `Zone[]`     | no       | Array of device zones                                        |
-| `connection`       | `Connection` | no       | Connection details                                           |
-| `auth`             | `DeviceAuthSummary` | yes | Optional pairing/authentication state                        |
+| Field              | Type                 | Nullable | Description                                                  |
+| ------------------ | -------------------- | -------- | ------------------------------------------------------------ |
+| `id`               | `string`             | no       | Stable device identifier                                     |
+| `layout_device_id` | `string`             | no       | Stable layout target identifier                              |
+| `name`             | `string`             | no       | Display name (user-editable)                                 |
+| `origin`           | `DeviceOrigin`       | no       | Owning driver, output backend, transport, and protocol ID    |
+| `presentation`     | `DriverPresentation` | no       | Driver-provided label, colors, icon, and device class hints  |
+| `status`           | `string`             | no       | `"connected"`, `"disconnected"`, `"error"`, `"initializing"` |
+| `brightness`       | `integer`            | no       | Device brightness as `0..100` percent                        |
+| `firmware_version` | `string`             | yes      | Firmware/driver version if known                             |
+| `total_leds`       | `integer`            | no       | Sum of LEDs across all zones                                 |
+| `zones`            | `Zone[]`             | no       | Array of device zones                                        |
+| `connection`       | `Connection`         | no       | Connection details                                           |
+| `auth`             | `DeviceAuthSummary`  | yes      | Optional pairing/authentication state                        |
 
 **Zone object schema:**
 
-| Field         | Type      | Description                                             |
-| ------------- | --------- | ------------------------------------------------------- |
-| `id`          | `string`  | Zone identifier (unique within device)                  |
-| `name`        | `string`  | Display name                                            |
-| `led_count`   | `integer` | Number of LEDs in this zone                             |
-| `topology`    | `string`  | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
-| `topology_hint` | `ZoneTopologySummary` | Structured topology details for UI layout hints |
+| Field           | Type                  | Description                                             |
+| --------------- | --------------------- | ------------------------------------------------------- |
+| `id`            | `string`              | Zone identifier (unique within device)                  |
+| `name`          | `string`              | Display name                                            |
+| `led_count`     | `integer`             | Number of LEDs in this zone                             |
+| `topology`      | `string`              | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
+| `topology_hint` | `ZoneTopologySummary` | Structured topology details for UI layout hints         |
 
 **Connection object schema:**
 
-| Field       | Type     | Description                                      |
-| ----------- | -------- | ------------------------------------------------ |
+| Field       | Type     | Description                                       |
+| ----------- | -------- | ------------------------------------------------- |
 | `transport` | `string` | Transport category such as `"network"` or `"usb"` |
-| `label`     | `string` | Optional display label                           |
-| `endpoint`  | `string` | Optional endpoint summary                        |
-| `ip`        | `string` | Optional IP address                              |
-| `hostname`  | `string` | Optional hostname                                |
+| `label`     | `string` | Optional display label                            |
+| `endpoint`  | `string` | Optional endpoint summary                         |
+| `ip`        | `string` | Optional IP address                               |
+| `hostname`  | `string` | Optional hostname                                 |
 
 **Error responses:**
 
@@ -571,10 +571,10 @@ Triggers an asynchronous scan across all configured discovery targets. Discovery
 }
 ```
 
-| Field        | Type       | Required | Default     | Description                           |
-| ------------ | ---------- | -------- | ----------- | ------------------------------------- |
+| Field        | Type       | Required | Default     | Description                              |
+| ------------ | ---------- | -------- | ----------- | ---------------------------------------- |
 | `targets`    | `string[]` | no       | all enabled | Limit scan to specific discovery targets |
-| `timeout_ms` | `integer`  | no       | `10000`     | Maximum scan duration in milliseconds |
+| `timeout_ms` | `integer`  | no       | `10000`     | Maximum scan duration in milliseconds    |
 
 **Response — `202 Accepted`:**
 
@@ -666,11 +666,11 @@ PATCH /api/v1/devices/{id}/zones/{zone_id}
 }
 ```
 
-| Field         | Type      | Required | Description                                             |
-| ------------- | --------- | -------- | ------------------------------------------------------- |
-| `name`        | `string`  | no       | Zone display name                                       |
-| `led_count`   | `integer` | no       | Override LED count (for manual calibration)             |
-| `topology`    | `string`  | no       | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
+| Field       | Type      | Required | Description                                             |
+| ----------- | --------- | -------- | ------------------------------------------------------- |
+| `name`      | `string`  | no       | Zone display name                                       |
+| `led_count` | `integer` | no       | Override LED count (for manual calibration)             |
+| `topology`  | `string`  | no       | `"strip"`, `"matrix"`, `"ring"`, `"single"`, `"custom"` |
 
 **Response — `200 OK`:**
 
@@ -3366,13 +3366,13 @@ Clients control bandwidth by subscribing to specific channels. By default, only 
 
 ### 14.4 Available Channels
 
-| Channel    | Data Type | Default FPS | Description                                     |
-| ---------- | --------- | ----------- | ----------------------------------------------- |
-| `frames`   | Binary    | 30          | LED color data for all (or selected) zones      |
-| `spectrum` | Binary    | 30          | Audio FFT spectrum data                         |
-| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes) |
-| `canvas`   | Binary    | 15          | Raw 320x200 canvas pixels (for UI preview)      |
-| `metrics`  | JSON      | 1 Hz        | Performance metrics (FPS, latency, memory)      |
+| Channel    | Data Type | Default FPS | Description                                          |
+| ---------- | --------- | ----------- | ---------------------------------------------------- |
+| `frames`   | Binary    | 30          | LED color data for all (or selected) zones           |
+| `spectrum` | Binary    | 30          | Audio FFT spectrum data                              |
+| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes)      |
+| `canvas`   | Binary    | 15          | Raw legacy 320 by 200 canvas pixels (for UI preview) |
+| `metrics`  | JSON      | 1 Hz        | Performance metrics (FPS, latency, memory)           |
 
 ---
 
@@ -3858,78 +3858,78 @@ PaginationMeta:
 
 ## Appendix A: Complete Endpoint Reference
 
-| Method           | Path                               | Description                     |
-| ---------------- | ---------------------------------- | ------------------------------- |
-| **Devices**      |                                    |                                 |
-| `GET`            | `/devices`                         | List all devices                |
-| `GET`            | `/devices/{id}`                     | Get device details              |
-| `PATCH`          | `/devices/{id}`                     | Update device config            |
-| `DELETE`         | `/devices/{id}`                     | Remove device                   |
-| `POST`           | `/devices/discover`                | Trigger discovery scan          |
-| `GET`            | `/devices/{id}/zones`               | List device zones               |
+| Method           | Path                                 | Description                     |
+| ---------------- | ------------------------------------ | ------------------------------- |
+| **Devices**      |                                      |                                 |
+| `GET`            | `/devices`                           | List all devices                |
+| `GET`            | `/devices/{id}`                      | Get device details              |
+| `PATCH`          | `/devices/{id}`                      | Update device config            |
+| `DELETE`         | `/devices/{id}`                      | Remove device                   |
+| `POST`           | `/devices/discover`                  | Trigger discovery scan          |
+| `GET`            | `/devices/{id}/zones`                | List device zones               |
 | `GET`            | `/devices/{id}/zones/{zone_id}`      | Get zone details                |
 | `PATCH`          | `/devices/{id}/zones/{zone_id}`      | Update zone config              |
-| `POST`           | `/devices/{id}/identify`            | Flash device for identification |
-| `POST`           | `/devices/{id}/test`                | Send test color frame           |
-| **Effects**      |                                    |                                 |
-| `GET`            | `/effects`                         | List effects                    |
-| `GET`            | `/effects/{id}`                     | Get effect details + controls   |
-| `POST`           | `/effects/{id}/apply`               | Apply effect                    |
-| `GET`            | `/effects/current`                 | Get current effect              |
-| `PATCH`          | `/effects/current/controls`        | Update active controls          |
-| `GET`            | `/effects/{id}/presets`             | List presets                    |
-| `POST`           | `/effects/{id}/presets`             | Create preset                   |
+| `POST`           | `/devices/{id}/identify`             | Flash device for identification |
+| `POST`           | `/devices/{id}/test`                 | Send test color frame           |
+| **Effects**      |                                      |                                 |
+| `GET`            | `/effects`                           | List effects                    |
+| `GET`            | `/effects/{id}`                      | Get effect details + controls   |
+| `POST`           | `/effects/{id}/apply`                | Apply effect                    |
+| `GET`            | `/effects/current`                   | Get current effect              |
+| `PATCH`          | `/effects/current/controls`          | Update active controls          |
+| `GET`            | `/effects/{id}/presets`              | List presets                    |
+| `POST`           | `/effects/{id}/presets`              | Create preset                   |
 | `PATCH`          | `/effects/{id}/presets/{name}`       | Update preset                   |
 | `DELETE`         | `/effects/{id}/presets/{name}`       | Delete preset                   |
 | `POST`           | `/effects/{id}/presets/{name}/apply` | Apply preset                    |
-| `POST`           | `/effects/next`                    | Next in history                 |
-| `POST`           | `/effects/previous`                | Previous in history             |
-| `POST`           | `/effects/shuffle`                 | Random effect                   |
-| `GET`            | `/effects/{id}/thumbnail`           | Get effect thumbnail            |
-| **Profiles**     |                                    |                                 |
-| `GET`            | `/profiles`                        | List profiles                   |
-| `GET`            | `/profiles/{id}`                    | Get profile details             |
-| `POST`           | `/profiles`                        | Create profile                  |
-| `PUT`            | `/profiles/{id}`                    | Update profile                  |
-| `DELETE`         | `/profiles/{id}`                    | Delete profile                  |
-| `POST`           | `/profiles/{id}/apply`              | Apply profile                   |
-| `POST`           | `/profiles/snapshot`               | Save current state as profile   |
-| `GET`            | `/profiles/{id}/export`             | Export profile as TOML          |
-| **Layouts**      |                                    |                                 |
-| `GET`            | `/layouts`                         | List layouts                    |
-| `GET`            | `/layouts/{id}`                     | Get layout details              |
-| `POST`           | `/layouts`                         | Create layout                   |
-| `PUT`            | `/layouts/{id}`                     | Update layout                   |
-| `DELETE`         | `/layouts/{id}`                     | Delete layout                   |
-| `POST`           | `/layouts/{id}/apply`               | Set as active layout            |
-| `GET`            | `/layouts/current`                 | Get current layout              |
-| **Scenes**       |                                    |                                 |
-| `GET`            | `/scenes`                          | List scenes                     |
-| `GET`            | `/scenes/{id}`                      | Get scene details               |
-| `POST`           | `/scenes`                          | Create scene                    |
-| `PUT`            | `/scenes/{id}`                      | Update scene                    |
-| `DELETE`         | `/scenes/{id}`                      | Delete scene                    |
-| `POST`           | `/scenes/{id}/activate`             | Manually trigger scene          |
-| `PATCH`          | `/scenes/{id}/enabled`              | Enable/disable scene            |
-| **Inputs**       |                                    |                                 |
-| `GET`            | `/inputs`                          | List input sources              |
-| `GET`            | `/inputs/{id}`                      | Get input details + status      |
-| `PATCH`          | `/inputs/{id}`                      | Configure input                 |
-| `POST`           | `/inputs/{id}/enable`               | Enable input                    |
-| `POST`           | `/inputs/{id}/disable`              | Disable input                   |
-| `GET`            | `/inputs/audio/spectrum`           | Get audio spectrum snapshot     |
-| `GET`            | `/inputs/audio/config`             | Get audio analysis config       |
-| `PATCH`          | `/inputs/audio/config`             | Update audio analysis config    |
-| **System State** |                                    |                                 |
-| `GET`            | `/state`                           | Full state snapshot             |
-| `GET`            | `/state/health`                    | Health check                    |
-| `GET`            | `/state/metrics`                   | Prometheus metrics              |
-| `PATCH`          | `/state/brightness`                | Set global brightness           |
-| `PATCH`          | `/state/fps`                       | Set target FPS                  |
-| `POST`           | `/state/pause`                     | Pause rendering                 |
-| `POST`           | `/state/resume`                    | Resume rendering                |
-| **Bulk**         |                                    |                                 |
-| `POST`           | `/bulk`                            | Execute multiple operations     |
-| **OpenAPI**      |                                    |                                 |
-| `GET`            | `/openapi.json`                    | OpenAPI 3.1 spec                |
-| `GET`            | `/docs`                            | Swagger UI                      |
+| `POST`           | `/effects/next`                      | Next in history                 |
+| `POST`           | `/effects/previous`                  | Previous in history             |
+| `POST`           | `/effects/shuffle`                   | Random effect                   |
+| `GET`            | `/effects/{id}/thumbnail`            | Get effect thumbnail            |
+| **Profiles**     |                                      |                                 |
+| `GET`            | `/profiles`                          | List profiles                   |
+| `GET`            | `/profiles/{id}`                     | Get profile details             |
+| `POST`           | `/profiles`                          | Create profile                  |
+| `PUT`            | `/profiles/{id}`                     | Update profile                  |
+| `DELETE`         | `/profiles/{id}`                     | Delete profile                  |
+| `POST`           | `/profiles/{id}/apply`               | Apply profile                   |
+| `POST`           | `/profiles/snapshot`                 | Save current state as profile   |
+| `GET`            | `/profiles/{id}/export`              | Export profile as TOML          |
+| **Layouts**      |                                      |                                 |
+| `GET`            | `/layouts`                           | List layouts                    |
+| `GET`            | `/layouts/{id}`                      | Get layout details              |
+| `POST`           | `/layouts`                           | Create layout                   |
+| `PUT`            | `/layouts/{id}`                      | Update layout                   |
+| `DELETE`         | `/layouts/{id}`                      | Delete layout                   |
+| `POST`           | `/layouts/{id}/apply`                | Set as active layout            |
+| `GET`            | `/layouts/current`                   | Get current layout              |
+| **Scenes**       |                                      |                                 |
+| `GET`            | `/scenes`                            | List scenes                     |
+| `GET`            | `/scenes/{id}`                       | Get scene details               |
+| `POST`           | `/scenes`                            | Create scene                    |
+| `PUT`            | `/scenes/{id}`                       | Update scene                    |
+| `DELETE`         | `/scenes/{id}`                       | Delete scene                    |
+| `POST`           | `/scenes/{id}/activate`              | Manually trigger scene          |
+| `PATCH`          | `/scenes/{id}/enabled`               | Enable/disable scene            |
+| **Inputs**       |                                      |                                 |
+| `GET`            | `/inputs`                            | List input sources              |
+| `GET`            | `/inputs/{id}`                       | Get input details + status      |
+| `PATCH`          | `/inputs/{id}`                       | Configure input                 |
+| `POST`           | `/inputs/{id}/enable`                | Enable input                    |
+| `POST`           | `/inputs/{id}/disable`               | Disable input                   |
+| `GET`            | `/inputs/audio/spectrum`             | Get audio spectrum snapshot     |
+| `GET`            | `/inputs/audio/config`               | Get audio analysis config       |
+| `PATCH`          | `/inputs/audio/config`               | Update audio analysis config    |
+| **System State** |                                      |                                 |
+| `GET`            | `/state`                             | Full state snapshot             |
+| `GET`            | `/state/health`                      | Health check                    |
+| `GET`            | `/state/metrics`                     | Prometheus metrics              |
+| `PATCH`          | `/state/brightness`                  | Set global brightness           |
+| `PATCH`          | `/state/fps`                         | Set target FPS                  |
+| `POST`           | `/state/pause`                       | Pause rendering                 |
+| `POST`           | `/state/resume`                      | Resume rendering                |
+| **Bulk**         |                                      |                                 |
+| `POST`           | `/bulk`                              | Execute multiple operations     |
+| **OpenAPI**      |                                      |                                 |
+| `GET`            | `/openapi.json`                      | OpenAPI 3.1 spec                |
+| `GET`            | `/docs`                              | Swagger UI                      |

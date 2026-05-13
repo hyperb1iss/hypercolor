@@ -1,6 +1,6 @@
 # 15 -- CLI Command Specification
 
-> Every `hypercolor` invocation is a spell cast into a Unix socket. Make it count.
+> Every `hypercolor` invocation speaks to the daemon's REST API. Make it count.
 
 ---
 
@@ -20,7 +20,7 @@
 12. [`hypercolor profile`](#12-hypercolor-profile)
 13. [`hypercolor scene`](#13-hypercolor-scene)
 14. [`hypercolor capture`](#14-hypercolor-capture)
-15. [`hypercolor config`](#15-hypercolor-config)
+15. [`hypercolor config`](#15-config-command)
 16. [`hypercolor plugin`](#16-hypercolor-plugin)
 17. [`hypercolor watch`](#17-hypercolor-watch)
 18. [`hypercolor export`](#18-hypercolor-export)
@@ -35,15 +35,15 @@
 
 ## 1. Overview
 
-The `hypercolor` binary is the single entry point for all CLI and TUI interaction. It uses [clap](https://docs.rs/clap) derive-mode for type-safe argument parsing, communicates with the running daemon over a Unix socket (local) or REST API (remote), and produces styled human-readable output by default with `--json` for machine consumption.
+The `hypercolor` binary is the single entry point for all CLI and TUI interaction. It uses [clap](https://docs.rs/clap) derive-mode for type-safe argument parsing, communicates with the running daemon over HTTP REST, and produces styled human-readable output by default with `--json` for machine consumption.
 
 **Binary name:** `hypercolor`
 
 **Transport selection:**
 
-- If `--host` is set or `HYPERCOLOR_HOST` is defined, connect via TCP/REST to `http://<host>/api/v1`.
-- Otherwise, connect via Unix socket at `HYPERCOLOR_SOCKET` (default: `/run/hypercolor/hypercolor.sock`).
-- If the socket does not exist and no `--host` is given, exit with code `2` and a helpful error message.
+- Use `--host`/`HYPERCOLOR_HOST` and `--port`/`HYPERCOLOR_PORT` to select the daemon endpoint.
+- Defaults target the loopback daemon at `http://localhost:9420`.
+- Use `--api-key`/`HYPERCOLOR_API_KEY` when connecting to authenticated non-loopback daemons.
 
 **Design contract:** Every command that mutates state returns both human output (confirming what changed) and a JSON representation (for scripting). Every command that reads state returns a styled table or summary, or raw JSON. No command is fire-and-forget -- the daemon always acknowledges.
 
@@ -55,25 +55,27 @@ The `hypercolor` binary is the single entry point for all CLI and TUI interactio
 
 These flags are available on every subcommand via clap's `global = true`.
 
-| Flag              | Short | Type             | Default                           | Description                                                      |
-| ----------------- | ----- | ---------------- | --------------------------------- | ---------------------------------------------------------------- |
-| `--host <HOST>`   |       | `Option<String>` | `None`                            | Remote daemon address (`host:port`). Overrides socket transport. |
-| `--socket <PATH>` |       | `Option<String>` | `/run/hypercolor/hypercolor.sock` | Unix socket path for local daemon communication.                 |
-| `--json`          | `-j`  | `bool`           | `false`                           | Output machine-readable JSON instead of styled text.             |
-| `--quiet`         | `-q`  | `bool`           | `false`                           | Suppress all non-essential output. Only emit the core data.      |
-| `--no-color`      |       | `bool`           | `false`                           | Disable ANSI color codes in output.                              |
-| `--verbose`       | `-v`  | `bool`           | `false`                           | Enable verbose/debug output. Repeatable (`-vv` for trace).       |
+| Flag              | Short | Type             | Default     | Description                                                 |
+| ----------------- | ----- | ---------------- | ----------- | ----------------------------------------------------------- |
+| `--host <HOST>`   |       | `String`         | `localhost` | Daemon hostname or IP.                                      |
+| `--port <PORT>`   |       | `u16`            | `9420`      | Daemon port.                                                |
+| `--api-key <KEY>` |       | `Option<String>` | _(none)_    | Bearer token for authenticated requests.                    |
+| `--json`          | `-j`  | `bool`           | `false`     | Output machine-readable JSON instead of styled text.        |
+| `--quiet`         | `-q`  | `bool`           | `false`     | Suppress all non-essential output. Only emit the core data. |
+| `--no-color`      |       | `bool`           | `false`     | Disable ANSI color codes in output.                         |
+| `--verbose`       | `-v`  | `u8`             | `0`         | Increase verbosity. Repeatable (`-vv` for trace).           |
 
 ### Environment Variables
 
-| Variable            | Default                            | Description                                                                          |
-| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------ |
-| `HYPERCOLOR_SOCKET` | `/run/hypercolor/hypercolor.sock`  | Unix socket path. Overridden by `--socket`.                                          |
-| `HYPERCOLOR_HOST`   | _(none)_                           | Remote daemon address. Overridden by `--host`.                                       |
-| `HYPERCOLOR_CONFIG` | `~/.config/hypercolor/config.toml` | Configuration file path.                                                             |
-| `HYPERCOLOR_COLOR`  | `auto`                             | Color mode: `auto`, `always`, `never`.                                               |
-| `NO_COLOR`          | _(none)_                           | When set to any value, disables color output ([no-color.org](https://no-color.org)). |
-| `HYPERCOLOR_LOG`    | `warn`                             | Log level for daemon startup: `error`, `warn`, `info`, `debug`, `trace`.             |
+| Variable             | Default                            | Description                                                                          |
+| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------------ |
+| `HYPERCOLOR_HOST`    | `localhost`                        | Daemon hostname or IP. Overridden by `--host`.                                       |
+| `HYPERCOLOR_PORT`    | `9420`                             | Daemon port. Overridden by `--port`.                                                 |
+| `HYPERCOLOR_API_KEY` | _(none)_                           | Bearer token for authenticated requests.                                             |
+| `HYPERCOLOR_CONFIG`  | `~/.config/hypercolor/config.toml` | Configuration file path.                                                             |
+| `HYPERCOLOR_COLOR`   | `auto`                             | Color mode: `auto`, `always`, `never`.                                               |
+| `NO_COLOR`           | _(none)_                           | When set to any value, disables color output ([no-color.org](https://no-color.org)). |
+| `HYPERCOLOR_LOG`     | `warn`                             | Log level for daemon startup: `error`, `warn`, `info`, `debug`, `trace`.             |
 
 ### Color Resolution Order
 
@@ -101,13 +103,13 @@ use std::path::PathBuf;
 #[command(propagate_version = true)]
 #[command(styles = hypercolor_clap_styles())]
 pub struct Cli {
-    /// Remote daemon address (host:port). Uses REST transport.
+    /// Daemon hostname or IP.
     #[arg(long, global = true, env = "HYPERCOLOR_HOST")]
-    pub host: Option<String>,
+    pub host: String,
 
-    /// Unix socket path for local daemon communication
-    #[arg(long, global = true, env = "HYPERCOLOR_SOCKET")]
-    pub socket: Option<PathBuf>,
+    /// Daemon port.
+    #[arg(long, global = true, env = "HYPERCOLOR_PORT")]
+    pub port: u16,
 
     /// Output machine-readable JSON
     #[arg(long, short = 'j', global = true)]
@@ -305,7 +307,6 @@ hypercolor daemon restart
   Uptime     3h 42m
   Engine     wgpu (Vulkan 1.3)
   API        http://127.0.0.1:9420
-  Socket     /run/hypercolor/hypercolor.sock
   Web UI     http://127.0.0.1:9420/
   Devices    4 connected (1,356 LEDs)
   Effect     Rainbow Wave
@@ -328,7 +329,7 @@ hypercolor daemon restart
     "address": "127.0.0.1",
     "port": 9420,
     "web_ui": true,
-    "socket": "/run/hypercolor/hypercolor.sock"
+    "url": "http://127.0.0.1:9420"
   },
   "devices": {
     "connected": 4,
@@ -1845,6 +1846,8 @@ hypercolor capture screen stop
 
 ---
 
+<a id="15-config-command"></a>
+
 ## 15. `hypercolor config`
 
 Read and write daemon/CLI configuration values. The config file is TOML at `~/.config/hypercolor/config.toml`.
@@ -2369,7 +2372,7 @@ hypercolor export profiles ~/hypercolor-profiles.toml
 hypercolor export layouts ~/hypercolor-layouts.toml
 
 # Export config
-hypercolor export config ~/hypercolor-config.toml
+hypercolor export config ~/hypercolor.toml
 
 # Full backup to a directory
 hypercolor export all ~/hypercolor-backup/
@@ -2603,7 +2606,6 @@ hypercolor diagnose --check daemon --check render
 
   ── Daemon ────────────────────────────────────────
   ✓ Daemon running                    pid 4821
-  ✓ Socket accessible                 /run/hypercolor/hypercolor.sock
   ✓ API responding                    http://127.0.0.1:9420
   ✓ Web UI accessible                 http://127.0.0.1:9420/
 
@@ -2915,7 +2917,7 @@ Errors are actionable. Every error includes:
 
 ```
   ✗ Cannot connect to daemon
-    Socket /run/hypercolor/hypercolor.sock does not exist.
+    http://127.0.0.1:9420 is not responding.
     Start the daemon with: hypercolor daemon start
 ```
 

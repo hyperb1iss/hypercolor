@@ -1074,7 +1074,7 @@ The compiled HTML is identical regardless of which API or tier authored the effe
 
 Runtime contract with Servo (unchanged):
 
-- Canvas: `id="exCanvas"`, 320x200
+- Canvas: `id="exCanvas"`, legacy 320 by 200
 - Controls: `window[propertyName]`
 - Update: `window.update()`
 - Audio: `window.engine.audio.*`
@@ -1280,7 +1280,7 @@ Edge cases requiring manual intervention:
 
 1. **Should Tier 0 (pragma) produce a `.glsl` → `.html` pipeline directly?** Or should it generate an intermediate TypeScript file that then goes through the existing esbuild pipeline? Direct is simpler; intermediate reuses existing tooling.
 
-2. **Canvas effect dimensions.** Currently hardcoded 320x200. Should `canvas()` accept custom dimensions, or is 320x200 the universal Hypercolor canvas contract?
+2. **Canvas effect dimensions.** Currently hardcoded legacy 320 by 200. Should `canvas()` accept custom dimensions, or is legacy 320 by 200 the universal Hypercolor canvas contract?
 
 3. **Palette function caching.** `palette(t)` does Oklab interpolation on every call. Should it cache results? For 60fps with hundreds of particles, this could matter. Possibly pre-compute a 256-entry LUT on palette change.
 

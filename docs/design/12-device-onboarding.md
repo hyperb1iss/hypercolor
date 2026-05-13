@@ -642,7 +642,7 @@ Place devices on the spatial canvas. This is a simplified version of the full la
 │   Place Your Devices                                             │
 │                                                                  │
 │   ┌──────────────────────────────────────────────────────────┐   │
-│   │                      Canvas (320×200)                     │   │
+│   │                      Canvas (legacy 320 by 200)                     │   │
 │   │                                                          │   │
 │   │    ┌──┐  [ASUS AURA]  ┌──┐                               │   │
 │   │    │  │               │  │  ← RAM sticks                 │   │

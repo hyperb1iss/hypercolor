@@ -1703,7 +1703,7 @@ The Summed Area Table (SAT), also known as an integral image, enables O(1) recta
 
 ### Construction
 
-The SAT stores cumulative channel sums from the origin `(0,0)` to every pixel `(x,y)`. For a 320x200 canvas with 3 channels, the table has 64,000 entries of `(u64, u64, u64)`.
+The SAT stores cumulative channel sums from the origin `(0,0)` to every pixel `(x,y)`. For a legacy 320 by 200 canvas with 3 channels, the table has 64,000 entries of `(u64, u64, u64)`.
 
 **Math:**
 
@@ -1723,7 +1723,7 @@ Recurrence (row-major, single pass):
 /// Summed Area Table for O(1) rectangle-average queries.
 ///
 /// Rebuilt every frame from the canvas buffer. Construction is O(W*H) = O(64,000)
-/// for a 320x200 canvas, taking approximately 20-40 microseconds.
+/// for a legacy 320 by 200 canvas, taking approximately 20-40 microseconds.
 pub struct SummedAreaTable {
     /// Cumulative sums per channel. Indexed as [y * width + x].
     /// Using u64 to handle accumulation without overflow:
@@ -1855,7 +1855,7 @@ impl SummedAreaTable {
 
 ### Integration with Area Average Sampling
 
-The SAT is rebuilt every frame (it depends on canvas content, which changes every frame). The cost is O(W \* H) = O(64,000) for a 320x200 canvas, approximately 20-40 microseconds.
+The SAT is rebuilt every frame (it depends on canvas content, which changes every frame). The cost is O(W \* H) = O(64,000) for a legacy 320 by 200 canvas, approximately 20-40 microseconds.
 
 After SAT construction, every area-average query is O(1) regardless of the query rectangle's size. For a setup with 20 ambient lights, each with a large sampling radius:
 
@@ -2584,14 +2584,14 @@ pub enum SamplingMode {
 
 ## Appendix C: Performance Characteristics
 
-| Operation                          | Complexity             | Time @ 320x200     | Notes                                      |
-| ---------------------------------- | ---------------------- | ------------------ | ------------------------------------------ |
-| Sampler LUT rebuild                | O(total LEDs)          | ~10 us / 1000 LEDs | On layout change only                      |
-| SAT construction                   | O(W \* H)              | ~30 us             | Once per frame, only if area sampling used |
-| Nearest sample                     | O(1) per LED           | ~20 ns             | 1 pixel read                               |
-| Bilinear sample                    | O(1) per LED           | ~50 ns             | 4 pixel reads + 3 lerps                    |
-| Area average (SAT)                 | O(1) per LED           | ~30 ns             | After SAT construction                     |
-| Gaussian sample                    | O(kernel area) per LED | ~300 ns (r=8)      | Precomputed kernel weights                 |
-| Full frame (1,000 LEDs, bilinear)  | O(N)                   | ~50 us             | Well within 1ms budget                     |
-| Full frame (10,000 LEDs, bilinear) | O(N)                   | ~500 us            | Still under 1ms                            |
-| Full frame (50,000 LEDs, bilinear) | O(N)                   | ~2.5 ms            | Requires SIMD optimization                 |
+| Operation                          | Complexity             | Time @ legacy 320 by 200 | Notes                                      |
+| ---------------------------------- | ---------------------- | ------------------------ | ------------------------------------------ |
+| Sampler LUT rebuild                | O(total LEDs)          | ~10 us / 1000 LEDs       | On layout change only                      |
+| SAT construction                   | O(W \* H)              | ~30 us                   | Once per frame, only if area sampling used |
+| Nearest sample                     | O(1) per LED           | ~20 ns                   | 1 pixel read                               |
+| Bilinear sample                    | O(1) per LED           | ~50 ns                   | 4 pixel reads + 3 lerps                    |
+| Area average (SAT)                 | O(1) per LED           | ~30 ns                   | After SAT construction                     |
+| Gaussian sample                    | O(kernel area) per LED | ~300 ns (r=8)            | Precomputed kernel weights                 |
+| Full frame (1,000 LEDs, bilinear)  | O(N)                   | ~50 us                   | Well within 1ms budget                     |
+| Full frame (10,000 LEDs, bilinear) | O(N)                   | ~500 us                  | Still under 1ms                            |
+| Full frame (50,000 LEDs, bilinear) | O(N)                   | ~2.5 ms                  | Requires SIMD optimization                 |

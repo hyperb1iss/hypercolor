@@ -1609,13 +1609,13 @@ If even this is too much, compute it on demand only when an effect declares `aud
 
 ## Crate Dependencies
 
-| Crate              | Purpose                                              | License         |
-| ------------------ | ---------------------------------------------------- | --------------- |
-| `cpal`             | Cross-platform audio capture                         | Apache-2.0      |
-| `realfft`          | FFT (faster than spectrum-analyzer for our use case) | Apache-2.0/MIT  |
-| `libpulse-binding` | PulseAudio API for monitor source discovery          | MIT/Apache      |
-| `crossbeam`        | Lock-free ring buffer and atomic utilities           | MIT/Apache      |
-| `bytemuck`         | Zero-copy GPU buffer marshaling                      | MIT/Apache/Zlib |
+| Crate              | Purpose                                              | License                   |
+| ------------------ | ---------------------------------------------------- | ------------------------- |
+| `cpal`             | Cross-platform audio capture                         | Apache-2.0                |
+| `realfft`          | FFT (faster than spectrum-analyzer for our use case) | Apache-2.0/MIT            |
+| `libpulse-binding` | PulseAudio API for monitor source discovery          | MIT OR Apache-2.0         |
+| `crossbeam`        | Lock-free ring buffer and atomic utilities           | MIT OR Apache-2.0         |
+| `bytemuck`         | Zero-copy GPU buffer marshaling                      | MIT OR Apache-2.0 OR Zlib |
 
 The `spectrum-analyzer` crate (listed in ARCHITECTURE.md) wraps `realfft` with windowing and frequency analysis. Either works; `realfft` gives us more control over the pipeline, while `spectrum-analyzer` gives us a higher-level API. Recommendation: start with `spectrum-analyzer` for rapid prototyping, drop to `realfft` if we need finer control over the DSP chain.
 

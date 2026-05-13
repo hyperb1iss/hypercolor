@@ -108,7 +108,7 @@ settings_panel = "ui/settings.js"
 - Same WIT-derived interfaces, serialized over protobuf
 - Separate binary lifecycle management with health checks and restart logic
 
-**Example:** `hypercolor-openrgb-bridge` (GPL-2.0) spawned as separate process; core daemon stays MIT/Apache-2.0.
+**Example:** `hypercolor-openrgb-bridge` (GPL-2.0) spawned as separate process; core daemon stays Apache-2.0.
 
 ---
 
@@ -638,7 +638,7 @@ destroy()
    - **Status:** Unresolved
    - **Impact:** Affects SDK CLI design
 
-2. **Canvas effect dimensions:** Hardcoded 320x200 or user-configurable?
+2. **Canvas effect dimensions:** Hardcoded legacy 320 by 200 or user-configurable?
    - **Status:** Unresolved
    - **Impact:** Breaking change if changed post-1.0
 
@@ -790,8 +790,8 @@ let render_result = WasmRenderOutput {
    - Input source `sample`: 4ms budget
    - Overrun → skip frame / passthrough / reuse last value (depends on extension point)
 
-5. **Canvas dimensions: 320x200 for effects** — `docs/specs/21-sdk-effect-authoring.md:169, 31-effect-developer-experience.md:164`
-   - Effects authored at 320x200 design size
+5. **Canvas dimensions: legacy 320 by 200 for effects** — `docs/specs/21-sdk-effect-authoring.md:169, 31-effect-developer-experience.md:164`
+   - Effects authored at legacy 320 by 200 design size
    - Runtime injects actual `window.engine.width/height`
    - SDK's `scaleContext()` helper for legacy compatibility
 
@@ -856,7 +856,7 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 
 **Current assumption (from SDK):**
 
-- Effects render to 320x200 canvas
+- Effects render to legacy 320 by 200 canvas
 - Spatial sampler maps canvas colors → LED colors based on device layout
 - This is how Servo effects work
 
@@ -976,7 +976,7 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 
 > "GPL isolation is architectural, not philosophical. The `openrgb2` crate is GPL-2.0. Rather than debating license compatibility, we run it as a separate process (`hypercolor-openrgb-bridge`) communicating over gRPC/Unix socket. Clean boundary. No contamination."
 
-**Why it matters:** WASM effects run in-process (unlike gRPC plugins). Ensure license contamination cannot happen; MIT/Apache-2.0 must stay pure.
+**Why it matters:** WASM effects run in-process (unlike gRPC plugins). Ensure license contamination cannot happen; Apache-2.0 must stay pure.
 
 ---
 
@@ -989,7 +989,7 @@ If WASM effects ship, what is the **exact Rust-to-WASM boundary**?
 - EffectRenderer trait contract (5 methods, lifecycle)
 - FrameInput per-frame payload shape
 - ControlDefinition and ControlValue types
-- Current HTML effect contract (320x200 canvas, meta tags, JS globals)
+- Current HTML effect contract (legacy 320 by 200 canvas, meta tags, JS globals)
 - Current native effect patterns (10+ builtin effects)
 - TypeScript SDK (implemented, Spec 21)
 - WIT interface model (defined in design doc)

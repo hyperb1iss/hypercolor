@@ -89,13 +89,13 @@ Frequency:        Variable (1Hz for weather, 60Hz for MIDI, 44100Hz for audio)
 
 **Examples:** Shadertoy GLSL loader, Processing/p5.js runner, TouchDesigner-style node graphs, Rive animations, Lottie animations, GIF/APNG player, video file player.
 
-**Interface:** `EffectRenderer` trait -- accepts uniforms/inputs, produces a 320x200 RGBA canvas buffer.
+**Interface:** `EffectRenderer` trait -- accepts uniforms/inputs, produces a legacy 320 by 200 RGBA canvas buffer.
 
 **Best mechanism:** Compile-time (these are performance-critical and deeply integrated). A Wasm-based effect renderer would add latency on the hot path -- acceptable for some formats, not others.
 
 ```
 Extension surface: Frame rendering pipeline
-Data flow:        InputData + uniforms → plugin → Canvas (320x200 RGBA)
+Data flow:        InputData + uniforms → plugin → Canvas (legacy 320 by 200 RGBA)
 Frequency:        60fps (hottest path)
 Performance:      Must produce a frame in <16ms
 ```
@@ -135,13 +135,13 @@ Performance:      Must process N LEDs in <2ms
 
 ### 2.6 UI Panels
 
-**What:** Custom web UI components that extend the SvelteKit frontend.
+**What:** Custom web UI components that extend the Leptos frontend.
 
 **Examples:** Custom device configuration panels (Govee-specific settings), visualization widgets (3D room view), analytics dashboards (frame timing, power consumption), effect authoring tools (node-based shader editor).
 
-**Interface:** Web Components standard (custom elements). Plugins register panels via manifest. The SvelteKit shell renders them in designated slots.
+**Interface:** Web Components standard (custom elements). Plugins register panels via manifest. The Leptos shell renders them in designated slots.
 
-**Best mechanism:** Not Wasm -- these are standard web components loaded into the SvelteKit frontend. Distributed as ES modules alongside the plugin package.
+**Best mechanism:** Not Wasm -- these are standard web components loaded into the Leptos frontend. Distributed as ES modules alongside the plugin package.
 
 ```
 Extension surface: Web UI shell
@@ -346,7 +346,7 @@ settings_panel = "ui/settings.js"    # Optional web component
 
 ```mermaid
 graph LR
-    Daemon["hypercolor-daemon<br/>(MIT/Apache-2.0)"]
+    Daemon["hypercolor-daemon<br/>(Apache-2.0)"]
 
     OpenRGB["hypercolor-openrgb-bridge<br/>(GPL-2.0, separate binary)<br/>openrgb2 crate → OpenRGB daemon (TCP 6742)"]
     Nanoleaf["hypercolor-nanoleaf-plugin<br/>(Go binary)<br/>Nanoleaf LAN API (mDNS + HTTP)"]
@@ -1354,7 +1354,7 @@ Updates are downloaded in the background, applied on next daemon restart (or liv
 
 ## 9. Plugin Marketplace UI
 
-The marketplace is a section of the SvelteKit web UI, not a separate website. It pulls data from `registry.hypercolor.dev` and renders it inline.
+The marketplace is a section of the Leptos web UI, not a separate website. It pulls data from `registry.hypercolor.dev` and renders it inline.
 
 ### 9.1 Browse & Search
 
@@ -1739,18 +1739,18 @@ If Plugin A traps (OOM, fuel exhaustion, panic), Plugins B and C continue runnin
 
 These are the bones of the system. Extracting them would create indirection without benefit:
 
-| Component                 | Why Core                                                                                     |
-| ------------------------- | -------------------------------------------------------------------------------------------- |
-| **Render loop**           | The timing-critical heartbeat. Plugins participate in it; they don't own it.                 |
-| **wgpu renderer**         | Native shader pipeline, deeply coupled to GPU state management.                              |
-| **Servo renderer**        | HTML effect runner, complex lifecycle, ~20 min build time.                                   |
-| **Spatial layout engine** | Canvas-to-LED mapping, geometry transforms. Pure math, no hardware specificity.              |
-| **Event bus**             | The nervous system. All communication flows through it.                                      |
-| **Configuration system**  | Profile, scene, layout persistence. Plugins read/write their own namespace.                  |
-| **Web UI shell**          | SvelteKit app, Axum server, WebSocket frame streaming. Plugins contribute panels, not pages. |
-| **TUI**                   | Ratatui rendering, Unix socket client. Displays plugin status, doesn't host plugins.         |
-| **CLI**                   | clap command structure. `hypercolor plugin *` subcommands interact with the plugin system.   |
-| **Plugin host**           | WasmPluginHost, BridgeManager. The meta-plugin system itself is core.                        |
+| Component                 | Why Core                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| **Render loop**           | The timing-critical heartbeat. Plugins participate in it; they don't own it.               |
+| **wgpu renderer**         | Native shader pipeline, deeply coupled to GPU state management.                            |
+| **Servo renderer**        | HTML effect runner, complex lifecycle, ~20 min build time.                                 |
+| **Spatial layout engine** | Canvas-to-LED mapping, geometry transforms. Pure math, no hardware specificity.            |
+| **Event bus**             | The nervous system. All communication flows through it.                                    |
+| **Configuration system**  | Profile, scene, layout persistence. Plugins read/write their own namespace.                |
+| **Web UI shell**          | Leptos app, Axum server, WebSocket frame streaming. Plugins contribute panels, not pages.  |
+| **TUI**                   | Ratatui rendering, Unix socket client. Displays plugin status, doesn't host plugins.       |
+| **CLI**                   | clap command structure. `hypercolor plugin *` subcommands interact with the plugin system. |
+| **Plugin host**           | WasmPluginHost, BridgeManager. The meta-plugin system itself is core.                      |
 
 ### 12.2 What Ships as First-Party Plugins
 

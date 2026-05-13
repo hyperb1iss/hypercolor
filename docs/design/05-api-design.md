@@ -1,6 +1,6 @@
 # 05 — API Design
 
-> Every surface Hypercolor speaks through — REST, WebSocket, MCP, D-Bus, Unix socket, webhooks.
+> Every surface Hypercolor speaks through: REST, WebSocket, MCP, and local desktop integrations.
 
 ---
 
@@ -22,13 +22,13 @@
 
 ## 1. Design Philosophy
 
-Hypercolor exposes multiple API surfaces because different consumers have fundamentally different needs. A Web UI needs 60fps binary frame data. A CLI needs terse JSON over a Unix socket. Home Assistant needs REST webhooks. Claude needs natural language tool mappings. Each surface is purpose-built, but they all share the same event bus, state model, and resource semantics.
+Hypercolor exposes multiple API surfaces because different consumers have fundamentally different needs. A Web UI needs 60fps binary frame data. A CLI needs terse JSON over HTTP. Home Assistant needs REST webhooks. Claude needs natural language tool mappings. Each surface is purpose-built, but they all share the same event bus, state model, and resource semantics.
 
 **Core principles:**
 
 - **Resource-oriented** — Devices, effects, profiles, layouts, scenes, and inputs are first-class resources with stable IDs, CRUD semantics, and consistent representations across all surfaces.
 - **Event-driven** — State changes propagate through a unified event bus. Every API surface subscribes to the same stream. No polling required.
-- **Local-first** — The daemon runs on the same machine as the hardware. Network access is opt-in, not assumed. The default path is zero-auth Unix socket or localhost HTTP.
+- **Local-first** — The daemon runs on the same machine as the hardware. Network access is opt-in, not assumed. The default path is loopback HTTP/WebSocket.
 - **Binary where it matters** — Frame data and audio spectra use compact binary formats. Everything else is JSON.
 - **Progressive complexity** — Simple things are simple (`POST /effects/aurora/apply`). Power features are discoverable, not required.
 
@@ -41,14 +41,13 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 
 **Base configuration:**
 
-| Surface     | Default Binding                   | Protocol             |
-| ----------- | --------------------------------- | -------------------- |
-| REST API    | `127.0.0.1:9420`                  | HTTP/1.1 + HTTP/2    |
-| WebSocket   | `ws://127.0.0.1:9420/api/v1/ws`   | WebSocket (RFC 6455) |
-| Web UI      | `http://127.0.0.1:9420/`          | Embedded SvelteKit   |
-| Unix socket | `/run/hypercolor/hypercolor.sock` | Custom JSON-RPC      |
-| D-Bus       | `tech.hyperbliss.Hypercolor1`     | D-Bus session bus    |
-| MCP         | stdio (default) or SSE transport  | MCP SDK              |
+| Surface   | Default Binding                  | Protocol             |
+| --------- | -------------------------------- | -------------------- |
+| REST API  | `127.0.0.1:9420`                 | HTTP/1.1 + HTTP/2    |
+| WebSocket | `ws://127.0.0.1:9420/api/v1/ws`  | WebSocket (RFC 6455) |
+| Web UI    | `http://127.0.0.1:9420/`         | Leptos static assets |
+| D-Bus     | `tech.hyperbliss.Hypercolor1`    | D-Bus session bus    |
+| MCP       | stdio (default) or SSE transport | MCP SDK              |
 
 ---
 
@@ -212,7 +211,7 @@ Discovery is async — the client polls or subscribes via WebSocket for `DeviceD
 
 #### Effects
 
-An effect is a visual program (HTML/Canvas, WGSL shader, or native Rust) that renders to the 320x200 canvas.
+An effect is a visual program (HTML/Canvas, WGSL shader, or native Rust) that renders to the legacy 320 by 200 canvas.
 
 ```
 GET    /api/v1/effects                      # List all effects
@@ -380,7 +379,7 @@ POST   /api/v1/profiles/snapshot            # Save current state as a new profil
 
 #### Layouts
 
-A spatial layout defines how device zones map onto the 320x200 effect canvas.
+A spatial layout defines how device zones map onto the legacy 320 by 200 effect canvas.
 
 ```
 GET    /api/v1/layouts                      # List all layouts
@@ -676,7 +675,7 @@ Rate limiting applies only to network-accessible API (when `bind_address` is not
 | Bulk operations        | 10 req/min  | Per IP |
 | Discovery scans        | 2 req/min   | Global |
 
-Implemented via `tower::limit::RateLimitLayer` or `governor` crate. Localhost (`127.0.0.1`, `::1`, Unix socket) is always unlimited.
+Implemented via `tower::limit::RateLimitLayer` or `governor` crate. Localhost (`127.0.0.1`, `::1`) is always unlimited.
 
 Rate limit headers:
 
@@ -745,13 +744,13 @@ Clients subscribe to specific channels to control bandwidth. By default, only `e
 
 **Available channels:**
 
-| Channel    | Data Type | Default FPS | Description                                     |
-| ---------- | --------- | ----------- | ----------------------------------------------- |
-| `frames`   | Binary    | 30          | LED color data for all zones                    |
-| `spectrum` | Binary    | 30          | Audio FFT spectrum data                         |
-| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes) |
-| `canvas`   | Binary    | 15          | Raw 320x200 canvas pixels (for UI preview)      |
-| `metrics`  | JSON      | 1           | Performance metrics (FPS, latency, memory)      |
+| Channel    | Data Type | Default FPS | Description                                          |
+| ---------- | --------- | ----------- | ---------------------------------------------------- |
+| `frames`   | Binary    | 30          | LED color data for all zones                         |
+| `spectrum` | Binary    | 30          | Audio FFT spectrum data                              |
+| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes)      |
+| `canvas`   | Binary    | 15          | Raw legacy 320 by 200 canvas pixels (for UI preview) |
+| `metrics`  | JSON      | 1           | Performance metrics (FPS, latency, memory)           |
 
 Unsubscribe:
 
@@ -1478,13 +1477,13 @@ Device management.
 
 **Methods:**
 
-| Method          | Signature        | Description                                       |
-| --------------- | ---------------- | ------------------------------------------------- |
-| `ListDevices`   | `() -> aa{sv}`   | Returns device maps with id, name, origin, led_count, and status |
-| `GetDevice`     | `(s) -> a{sv}`   | Full device details by ID                         |
-| `Discover`      | `()`             | Trigger device discovery scan                     |
-| `EnableDevice`  | `(s)`            | Enable a device by ID                             |
-| `DisableDevice` | `(s)`            | Disable a device by ID                            |
+| Method          | Signature      | Description                                                      |
+| --------------- | -------------- | ---------------------------------------------------------------- |
+| `ListDevices`   | `() -> aa{sv}` | Returns device maps with id, name, origin, led_count, and status |
+| `GetDevice`     | `(s) -> a{sv}` | Full device details by ID                                        |
+| `Discover`      | `()`           | Trigger device discovery scan                                    |
+| `EnableDevice`  | `(s)`          | Enable a device by ID                                            |
+| `DisableDevice` | `(s)`          | Disable a device by ID                                           |
 
 **Properties:**
 
@@ -1590,20 +1589,20 @@ bindsym $mod+F6 exec busctl --user call tech.hyperbliss.Hypercolor1 \
 
 ## 6. CLI Protocol
 
-The CLI (`hypercolor` binary) communicates with the running daemon over a Unix domain socket for maximum speed and zero network overhead. REST is available as a fallback when the daemon is on a remote machine.
+The CLI (`hypercolor` binary) communicates with the running daemon over the REST API.
 
 ### 6.1 Transport Selection
 
 ```
-Local (default):  /run/hypercolor/hypercolor.sock
-Remote (--host):  http://<host>:9420/api/v1
+Local (default):   http://127.0.0.1:9420/api/v1
+Remote (--host):   http://<host>:9420/api/v1
 ```
 
-The CLI auto-detects: if the socket exists, use it. If `--host` is specified, use REST.
+The CLI defaults to loopback and uses `--host`/`--port` for explicit remote targets.
 
-### 6.2 Unix Socket Protocol
+### 6.2 HTTP Protocol
 
-The Unix socket uses a simple framed JSON-RPC 2.0 protocol with length-prefixed messages.
+The CLI uses the same response envelope as other REST clients.
 
 **Frame format:**
 
@@ -2020,7 +2019,7 @@ Client libraries planned for: Python, TypeScript/Node, Rust (via `hypercolor-cor
 
 ### 8.1 Event Taxonomy
 
-Every state change in Hypercolor produces an event on the internal `tokio::broadcast` bus. All API surfaces (WebSocket, D-Bus signals, Unix socket subscriptions, MQTT) deliver the same events.
+Every state change in Hypercolor produces an event on the internal `tokio::broadcast` bus. API surfaces such as WebSocket, D-Bus signals, and MQTT deliver the same events.
 
 ```rust
 #[derive(Debug, Clone, Serialize)]
@@ -2209,7 +2208,6 @@ When bound to `127.0.0.1` (the default), no authentication is required. The reas
 
 - The daemon runs as the user's own process
 - Only processes on the same machine can connect
-- The Unix socket has filesystem permissions (`0660`, user + group)
 - D-Bus session bus is already authenticated per the D-Bus spec
 
 This matches the security model of OpenRGB (TCP 6742, no auth), WLED (HTTP, no auth on local network), and other RGB tools (HTTP API, local only by default).
@@ -2493,13 +2491,13 @@ Stream Deck button 3: "Lights Off"
 
 Only the REST API is versioned in the URL. Other surfaces version differently:
 
-| Surface     | Versioning Method                                              |
-| ----------- | -------------------------------------------------------------- |
-| REST        | URL prefix (`/api/v1/`)                                        |
-| WebSocket   | Protocol header (`hypercolor-v1`)                              |
-| D-Bus       | Bus name suffix (`Hypercolor1`)                                |
-| MCP         | Capability negotiation in `hello`                              |
-| Unix socket | JSON-RPC method names (add new methods, don't change old ones) |
+| Surface   | Versioning Method                                                    |
+| --------- | -------------------------------------------------------------------- |
+| REST      | URL prefix (`/api/v1/`)                                              |
+| WebSocket | Protocol header (`hypercolor-v1`)                                    |
+| D-Bus     | Bus name suffix (`Hypercolor1`)                                      |
+| MCP       | Capability negotiation in `hello`                                    |
+| REST/CLI  | JSON fields and URL paths (add fields/routes, don't change old ones) |
 
 ### 11.2 Compatibility Rules
 

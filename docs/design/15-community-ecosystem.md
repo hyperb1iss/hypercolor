@@ -24,15 +24,15 @@
 
 ### 1.1 License Architecture
 
-Hypercolor uses **MIT/Apache-2.0 dual licensing** for all original code, with GPL-licensed components isolated behind process boundaries.
+Hypercolor uses **Apache-2.0 dual licensing** for all original code, with GPL-licensed components isolated behind process boundaries.
 
 ```
-hypercolor (MIT/Apache-2.0)
-├── hypercolor-core/          MIT/Apache-2.0
-├── hypercolor-daemon/        MIT/Apache-2.0
-├── hypercolor-tui/           MIT/Apache-2.0
-├── hypercolor-cli/           MIT/Apache-2.0
-├── web/ (SvelteKit)          MIT/Apache-2.0
+hypercolor (Apache-2.0)
+├── hypercolor-core/          Apache-2.0
+├── hypercolor-daemon/        Apache-2.0
+├── hypercolor-tui/           Apache-2.0
+├── hypercolor-cli/           Apache-2.0
+├── web/ (Leptos)          Apache-2.0
 │
 ├── Servo integration         MPL-2.0 (file-level copyleft, no viral spread)
 │
@@ -40,14 +40,14 @@ hypercolor (MIT/Apache-2.0)
     └── openrgb2 crate        GPL-2.0
 ```
 
-**Rationale for dual MIT/Apache-2.0:**
+**Rationale for dual Apache-2.0:**
 
 - **Maximum adoption.** MIT is the most recognized permissive license. Apache-2.0 adds explicit patent grants -- critical for a project that touches hardware protocols and USB HID. Dual licensing lets downstream consumers pick whichever fits their needs.
 - **Corporate-friendly.** Hardware manufacturers and commercial integrators can embed Hypercolor without legal anxiety. This matters for the partnership strategy (Section 5).
 - **Community-compatible.** Contributors don't face license friction. No CLA required for simple contributions -- the inbound=outbound principle applies.
 - **GPL isolation is architectural, not philosophical.** The `openrgb2` crate is GPL-2.0. Rather than debating license compatibility, we run it as a separate process (`hypercolor-openrgb-bridge`) communicating over gRPC/Unix socket. Clean boundary. No contamination. OpenRGB users get full functionality; the core engine stays permissive.
 
-**MPL-2.0 (Servo):** File-level copyleft. Only modified Servo source files carry MPL obligations. Our wrapper code, our effect engine code, our spatial sampler -- all MIT/Apache-2.0. The Servo integration is a dependency, not a derivative work of our codebase.
+**MPL-2.0 (Servo):** File-level copyleft. Only modified Servo source files carry MPL obligations. Our wrapper code, our effect engine code, our spatial sampler -- all Apache-2.0. The Servo integration is a dependency, not a derivative work of our codebase.
 
 ### 1.2 Contribution Model
 
@@ -106,7 +106,7 @@ As the project grows, delegate subsystem ownership:
 | **Core engine** (render loop, event bus) | Project lead (Bliss)                                  |
 | **Device backends**                      | Backend maintainer(s) -- one per major backend family |
 | **Effect system** (wgpu + Servo)         | Effect engine maintainer                              |
-| **Web UI** (SvelteKit)                   | Frontend maintainer                                   |
+| **Web UI** (Leptos)                      | Frontend maintainer                                   |
 | **TUI/CLI**                              | CLI/TUI maintainer                                    |
 | **Documentation**                        | Docs maintainer                                       |
 | **Community effects**                    | Effect curator(s)                                     |
@@ -250,7 +250,7 @@ HYPERCOLOR
 │   ├── #dev-general      Architecture discussion, PR reviews
 │   ├── #effects          Effect authoring, sharing WIP
 │   ├── #backends         Device backend development
-│   ├── #web-ui           SvelteKit frontend work
+│   ├── #web-ui           Leptos frontend work
 │   └── #tui-cli          Terminal interface development
 │
 ├── EFFECTS LAB
@@ -420,7 +420,7 @@ mirror = { type = "boolean", label = "Mirror Mode", default = false }
 **Submission requirements:**
 
 1. **Must render at 60fps** on the reference hardware profile (integrated Intel GPU minimum)
-2. **Must include animated preview** (GIF or WebM, 3-5 seconds, 320x200 or scaled)
+2. **Must include animated preview** (GIF or WebM, 3-5 seconds, legacy 320 by 200 or scaled)
 3. **Must include `effect.toml`** with complete metadata
 4. **Must declare renderer** -- effects that claim `wgpu` must not secretly require Servo
 5. **Must handle missing audio gracefully** if `audio.required = false`
@@ -512,7 +512,7 @@ original_url = "https://..."
 1. **Built-in proprietary effects:** Do NOT port. These are proprietary to their respective owners. Period.
 2. **Community effects with explicit open-source licenses:** Port freely with attribution.
 3. **Community effects with no license:** Contact the author. Request permission and a license grant. Document the permission in the effect's `effect.toml`.
-4. **Effects from the Lightscript Workshop or similar open frameworks:** Check the framework license. If MIT/Apache/similar, ports are fine with attribution.
+4. **Effects from the Lightscript Workshop or similar open frameworks:** Check the framework license. If MIT OR Apache-2.0/similar, ports are fine with attribution.
 5. **Inspired-by effects:** Writing a new effect that produces a similar visual result is always fine. You can't copyright a visual style. Just don't copy code.
 
 **"Compatibility, not piracy."** The Servo renderer can RUN existing HTML effects, but the marketplace should contain properly licensed content. Users can point Hypercolor at their own effect files -- that's their prerogative.
@@ -700,7 +700,7 @@ This is the most strategic early partnership. Bliss has already reverse-engineer
 **What we offer Lian Li:**
 
 - First-ever Linux support for PrismRGB controllers
-- Open-source driver code (MIT/Apache-2.0) they can reference or bundle
+- Open-source driver code (Apache-2.0) they can reference or bundle
 - Testing and bug reports from a dedicated community
 - Marketing: "PrismRGB now works on Linux" is a headline
 
@@ -721,7 +721,7 @@ This is the most strategic early partnership. Bliss has already reverse-engineer
 >
 > PrismRGB currently has zero Linux support. I'd love to collaborate to make this official. I'm offering:
 >
-> - MIT/Apache-2.0 licensed driver code you can reference freely
+> - Apache-2.0 licensed driver code you can reference freely
 > - Community testing across Linux distributions
 > - "PrismRGB Certified" status in our compatibility list
 >
@@ -809,7 +809,7 @@ WLED is the most natural ally. It's already open source, already has a massive c
 | Dimension                | Closed-Source Alternative    | Hypercolor                           |
 | ------------------------ | ---------------------------- | ------------------------------------ |
 | **Platform**             | Windows only                 | Linux-first (future: cross-platform) |
-| **License**              | Proprietary                  | MIT/Apache-2.0                       |
+| **License**              | Proprietary                  | Apache-2.0                           |
 | **Effect compatibility** | Native                       | ~90% via Servo compatibility layer   |
 | **Effect format**        | HTML/Canvas (proprietary)    | HTML/Canvas + native wgpu shaders    |
 | **Performance**          | 60fps (proprietary renderer) | 60fps (Servo) + 1000s fps (wgpu)     |
@@ -879,7 +879,7 @@ WLED is the most natural ally. It's already open source, already has a massive c
 | **Performance** | Python (adequate)   | Rust (no ceiling)                       |
 | **Effects**     | Audio-reactive only | Audio, static, screen capture, scripted |
 | **Hardware**    | WLED, some others   | OpenRGB + WLED + HID + Hue + plugins    |
-| **UI**          | React web app       | SvelteKit web + Ratatui TUI + CLI       |
+| **UI**          | React web app       | Leptos web + Ratatui TUI + CLI          |
 
 ### 6.6 Hypercolor's Unique Value Propositions
 
@@ -966,7 +966,7 @@ docs.hypercolor.dev (mdBook)
 │   ├── REST API (OpenAPI/Swagger)
 │   ├── WebSocket Protocol
 │   ├── D-Bus Interface
-│   └── Unix Socket Protocol
+│   └── WebSocket Protocol
 │
 └── Community
     ├── Contributing (CONTRIBUTING.md)

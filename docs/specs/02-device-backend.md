@@ -2311,7 +2311,7 @@ the daemon's startup orchestration.
    The current design puts discovery and communication in one trait for simplicity.
    If backends grow complex, splitting may improve testability.
 
-2. **`async_trait` vs. native async in trait (Rust 1.85+).** Native async-in-trait
+2. **`async_trait` vs. native async in trait (Rust 1.94+).** Native async-in-trait
    is stabilized but doesn't support `dyn` dispatch without `#[trait_variant]`.
    Revisit when the `trait_variant` proc macro stabilizes.
 

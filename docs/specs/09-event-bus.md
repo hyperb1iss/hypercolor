@@ -60,13 +60,13 @@ Events carry discrete state transitions (device connected, effect changed, error
                      +---+------+------+------+---+
                          |      |      |      |
                +---------v+ +--v----+ |  +---v----------+
-               | WebSocket| | Unix  | |  | D-Bus        |
-               | (Axum)   | |Socket | |  | (zbus)       |
+               | WebSocket| | REST | |  | D-Bus        |
+               | (Axum)   | | API  | |  | (zbus)       |
                +----+-----+ +--+---+  |  +---+----------+
                     |           |      |      |
                +----v----+ +--v--+ +--v--+   |
                | Web UI  | | TUI | | CLI |   |
-               |SvelteKit| |     | |     |   |
+               | Leptos  | |     | |     |   |
                +---------+ +-----+ +-----+   |
                                         +-----v---------+
                                         | Desktop / HA  |
@@ -77,7 +77,7 @@ Events carry discrete state transitions (device connected, effect changed, error
 
 ## 2. HypercolorEvent Enum
 
-The complete taxonomy of every discrete state change in the system. All API surfaces -- WebSocket, Unix socket, D-Bus signals, MQTT -- deliver the same events with the same structure.
+The complete taxonomy of every discrete state change in the system. API surfaces such as WebSocket, D-Bus signals, and MQTT deliver the same events with the same structure.
 
 ### 2.1 Rust Definition
 
@@ -979,7 +979,7 @@ impl FrameData {
 
 ### 5.2 Binary Wire Format
 
-When transmitted over WebSocket or Unix socket, `FrameData` uses a compact binary encoding to minimize bandwidth. No compression -- the data is already compact and compression would add latency.
+When transmitted over WebSocket, `FrameData` uses a compact binary encoding to minimize bandwidth. No compression -- the data is already compact and compression would add latency.
 
 ```
 Binary Frame Layout (type discriminator 0x01):
@@ -1630,20 +1630,20 @@ let mut frames = bus.subscribe_frames();
 
 ---
 
-## 8. IPC Protocol for TUI/CLI
+## 8. Client Protocol for TUI/CLI
 
-The TUI and CLI communicate with the daemon over a local socket. The protocol is length-prefixed JSON-RPC 2.0 with streaming extensions for event subscriptions and binary data channels.
+The shipping v0.1 clients use the daemon's REST and WebSocket endpoints on `:9420`. Older platform-native IPC sketches in this section are retained as design background, not as the current CLI transport contract.
 
 ### 8.1 Transport Selection
 
-| Platform    | Primary IPC        | Path / Name                       | Fallback             |
-| ----------- | ------------------ | --------------------------------- | -------------------- |
-| **Linux**   | Unix domain socket | `/run/hypercolor/hypercolor.sock` | TCP `127.0.0.1:9421` |
-| **macOS**   | Unix domain socket | `/tmp/hypercolor/hypercolor.sock` | TCP `127.0.0.1:9421` |
-| **Windows** | Named pipe         | `\\.\pipe\hypercolor`             | TCP `127.0.0.1:9421` |
-| **Remote**  | TCP                | `<host>:9421`                     | (no fallback)        |
+| Platform    | Primary IPC    | Path / Name           | Fallback                   |
+| ----------- | -------------- | --------------------- | -------------------------- |
+| **Linux**   | WebSocket/REST | `127.0.0.1:9420`      | Explicit non-loopback bind |
+| **macOS**   | WebSocket/REST | `127.0.0.1:9420`      | Explicit non-loopback bind |
+| **Windows** | Named pipe     | `\\.\pipe\hypercolor` | TCP `127.0.0.1:9421`       |
+| **Remote**  | TCP            | `<host>:9421`         | (no fallback)              |
 
-Transport selection is automatic. The client tries in order: platform-native IPC, then TCP fallback. The `--socket` and `--host` flags override auto-detection.
+Transport selection is explicit: clients default to loopback and use host/port settings for non-loopback daemons.
 
 ### 8.2 Framing
 
@@ -2073,7 +2073,7 @@ CLI/TUI                                    Daemon
 
 ### 8.7 Connection Lifecycle
 
-1. **Connect** -- Client opens Unix socket / named pipe / TCP connection.
+1. **Connect** -- Client opens a WebSocket, named pipe, or TCP connection.
 2. **Hello** -- Daemon sends an unsolicited notification:
 
 ```json
@@ -2098,7 +2098,7 @@ CLI/TUI                                    Daemon
 ```rust
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// A bidirectional IPC stream. Wraps Unix socket, named pipe, or TCP.
+/// A bidirectional IPC stream. Wraps WebSocket, named pipe, or TCP.
 pub enum IpcStream {
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
@@ -2126,7 +2126,7 @@ impl IpcListener {
         {
             match tokio::net::UnixListener::bind(&config.socket_path) {
                 Ok(listener) => return Ok(Self::Unix(listener)),
-                Err(e) => tracing::warn!("Unix socket failed, falling back to TCP: {e}"),
+                Err(e) => tracing::warn!("local transport failed, falling back to TCP: {e}"),
             }
         }
 
@@ -2146,22 +2146,22 @@ impl IpcListener {
 
 ### 8.9 Transport Comparison
 
-| Property               | Unix Socket                      | Named Pipe                     | TCP Localhost               |
-| ---------------------- | -------------------------------- | ------------------------------ | --------------------------- |
-| **Latency**            | ~2us                             | ~5us                           | ~30us                       |
-| **Throughput**         | Kernel-limited                   | Kernel-limited                 | ~1 Gbps                     |
-| **Auth**               | File permissions + `SO_PEERCRED` | Security descriptors           | None (localhost) or API key |
-| **Firewall**           | Not affected                     | Not affected                   | May be blocked              |
-| **Remote**             | No                               | No                             | Yes                         |
-| **Cleanup**            | Must remove stale socket file    | Automatic                      | Automatic                   |
-| **Max connections**    | ulimit (typically 1024+)         | `max_instances` (configurable) | ulimit                      |
-| **Container-friendly** | Volume mount required            | N/A                            | Yes                         |
+| Property               | WebSocket                | Named Pipe                     | TCP Localhost               |
+| ---------------------- | ------------------------ | ------------------------------ | --------------------------- |
+| **Latency**            | Low                      | ~5us                           | ~30us                       |
+| **Throughput**         | Preview-limited          | Kernel-limited                 | ~1 Gbps                     |
+| **Auth**               | Loopback/API key         | Security descriptors           | None (localhost) or API key |
+| **Firewall**           | Not affected             | Not affected                   | May be blocked              |
+| **Remote**             | No                       | No                             | Yes                         |
+| **Cleanup**            | Automatic                | Automatic                      | Automatic                   |
+| **Max connections**    | ulimit (typically 1024+) | `max_instances` (configurable) | ulimit                      |
+| **Container-friendly** | Yes                      | N/A                            | Yes                         |
 
 ---
 
 ## 9. WebSocket Bridge
 
-The WebSocket at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel for the SvelteKit web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
+The WebSocket at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel for the Leptos web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
 
 ### 9.1 Connection & Handshake
 
@@ -2509,13 +2509,13 @@ For the event bus itself (the `tokio::broadcast` channel), events are passed as 
 
 **Serialization strategy by transport:**
 
-| Transport                      | Event Format                   | Frame/Spectrum Format                   |
-| ------------------------------ | ------------------------------ | --------------------------------------- |
-| In-process (bus)               | Native Rust struct (zero-cost) | Native Rust struct                      |
-| IPC (Unix socket / named pipe) | JSON-RPC (serde_json)          | Custom binary (0x01/0x02)               |
-| WebSocket                      | JSON text frame                | Binary WebSocket frame (0x01/0x02/0x03) |
-| D-Bus                          | D-Bus signal marshaling (zbus) | N/A (not streamed over D-Bus)           |
-| MQTT                           | JSON                           | N/A (not streamed over MQTT)            |
+| Transport                    | Event Format                   | Frame/Spectrum Format                   |
+| ---------------------------- | ------------------------------ | --------------------------------------- |
+| In-process (bus)             | Native Rust struct (zero-cost) | Native Rust struct                      |
+| IPC (WebSocket / named pipe) | JSON-RPC (serde_json)          | Custom binary (0x01/0x02)               |
+| WebSocket                    | JSON text frame                | Binary WebSocket frame (0x01/0x02/0x03) |
+| D-Bus                        | D-Bus signal marshaling (zbus) | N/A (not streamed over D-Bus)           |
+| MQTT                         | JSON                           | N/A (not streamed over MQTT)            |
 
 ### 10.3 Bincode for Persistent Event Log
 
@@ -2775,9 +2775,9 @@ match events.recv().await {
 6. Drop the watch senders (frame, spectrum, active_effect, fps)
    -- subscribers see channel closed
 7. Drop the broadcast sender -- subscribers see channel closed
-8. Close IPC listeners (Unix socket, named pipe, TCP)
+8. Close IPC listeners (WebSocket, named pipe, TCP)
 9. Close WebSocket connections (send Close frame)
-10. Clean up socket file / named pipe
+10. Clean up named pipe or platform-local resources
 11. Exit
 ```
 
@@ -2808,7 +2808,7 @@ Canvas is the expensive channel. Only subscribe when the spatial editor is open.
 
 **Unit tests:** Instantiate `HypercolorBus` with real tokio channels. Publish events, assert subscribers receive them. Verify `watch` latest-value semantics by publishing multiple frames and confirming the subscriber only sees the last. Test `EventFilter` matching logic exhaustively.
 
-**Integration tests:** Spawn a real daemon in test mode, connect via Unix socket, exercise the full JSON-RPC protocol. Verify subscription lifecycle, binary frame decoding, and reconnection behavior.
+**Integration tests:** Spawn a real daemon in test mode, connect via WebSocket, exercise the full JSON protocol. Verify subscription lifecycle, binary frame decoding, and reconnection behavior.
 
 **Fuzz testing:** Fuzz the binary frame decoder (`FrameData::from_binary`, `SpectrumData::from_binary`) with arbitrary byte sequences. Fuzz the JSON-RPC dispatcher with malformed JSON. The daemon must never crash on malformed input.
 

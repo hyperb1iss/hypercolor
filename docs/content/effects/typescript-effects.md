@@ -114,7 +114,7 @@ canvas("Orbit", controls, (ctx, time, controls) => {
 });
 ```
 
-For effects authored against a fixed grid (most commonly 320x200, the legacy LightScript default), pass a `designBasis` and use `scaleContext`:
+For effects authored against a fixed grid (most commonly legacy 320 by 200, the legacy LightScript default), pass a `designBasis` and use `scaleContext`:
 
 ```typescript
 import { canvas, scaleContext } from "@hypercolor/sdk";

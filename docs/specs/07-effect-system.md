@@ -700,7 +700,7 @@ The universal output type for all renderers.
 ///
 /// Dimensions come from `daemon.canvas_width` / `daemon.canvas_height`
 /// (default 640x480, ~1.17 MB). The historical LightScript grid of
-/// 320x200 remains the canonical SDK target — effects should read
+/// legacy 320 by 200 remains the canonical SDK target — effects should read
 /// `canvas.width`/`height` every frame rather than hardcoding.
 #[derive(Debug, Clone)]
 pub struct Canvas {
@@ -838,7 +838,7 @@ pub struct WgpuRenderer {
     uniform_layout: UniformLayout,
     /// MAP_READ buffer for GPU -> CPU pixel readback.
     staging_buffer: wgpu::Buffer,
-    /// Render target texture (320x200 RGBA8).
+    /// Render target texture (legacy 320 by 200 RGBA8).
     output_texture: wgpu::Texture,
     /// Optional audio spectrum texture (200x1 R32Float).
     spectrum_texture: Option<wgpu::Texture>,
@@ -990,7 +990,7 @@ impl ServoRenderer {
     /// Initialize Servo and load the effect HTML.
     ///
     /// Steps:
-    /// 1. Create SoftwareRenderingContext at 320x200
+    /// 1. Create SoftwareRenderingContext at legacy 320 by 200
     /// 2. Initialize Servo with MinimalEmbedder (no window chrome)
     /// 3. Create WebView targeting the effect HTML file
     /// 4. Wait for initial page load
@@ -1465,7 +1465,7 @@ Native effects use a two-file format: a `.wgsl` shader and a `.toml` metadata si
 effects/native/my-effect/
 ├── my-effect.wgsl       # Shader source (required)
 ├── my-effect.toml       # Metadata + controls (required)
-└── my-effect.png        # Preview thumbnail (optional, 320x200)
+└── my-effect.png        # Preview thumbnail (optional, legacy 320 by 200)
 ```
 
 Or flat (no subdirectory):
@@ -1723,7 +1723,7 @@ The composition system layers multiple effects into a single canvas output.
 ///
 /// Replaces a single active effect with a stack of blended layers.
 /// Each layer renders independently; the compositor blends them
-/// bottom-to-top into the final 320x200 canvas.
+/// bottom-to-top into the final legacy 320 by 200 canvas.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectComposition {
     /// Ordered layer stack. Index 0 is the bottom (background) layer.
@@ -1765,7 +1765,7 @@ fn default_true() -> bool { true }
 /// Blend modes for layer compositing.
 ///
 /// All blend operations work on premultiplied-alpha RGBA pixels.
-/// At 320x200 (64,000 pixels), blending is trivially fast on CPU.
+/// At legacy 320 by 200 (64,000 pixels), blending is trivially fast on CPU.
 /// The wgpu path runs compositing as a compute shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1961,12 +1961,12 @@ The effect system never crashes the daemon. The degradation chain:
 
 ## 13. Open Questions
 
-| #   | Question                                                                                                                                                             | Context                                                                                                       |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| 1   | **Compute shader state buffer sizing.** Should the state buffer size be declared in the TOML sidecar, or should the engine infer it from the WGSL `@group/@binding`? | Compute shaders for cellular automata and fluid sims need persistent state.                                   |
-| 2   | **GLSL multi-pass shaders.** Should we support Shadertoy's Buffer A/B/C/D pattern, or require manual conversion to compute passes?                                   | Multi-pass covers ~30% of Shadertoy effects.                                                                  |
-| 3   | **Effect sandboxing boundaries.** Should Servo effects be process-isolated (separate child process), or is in-process Servo sufficient?                              | Process isolation adds latency but prevents effect crashes from affecting the daemon.                         |
-| 4   | **Uniform buffer reflection.** Use naga's module reflection to auto-build the uniform layout, or require an explicit layout declaration in the TOML?                 | Auto-reflection is elegant but fragile if the shader struct layout doesn't match expectations.                |
-| 5   | **Hot-reload state preservation.** When a WGSL shader is recompiled, should the compute state buffer be preserved or reset?                                          | Preserving state makes iteration faster; resetting prevents stale-state bugs.                                 |
-| 6   | **Color control representation.** Should `Color` controls carry alpha? Some effects want translucent colors.                                                         | Current spec: RGB only `[u8; 3]`. RGBA would be `[u8; 4]`.                                                    |
-| 7   | **Composition performance.** At how many simultaneous layers does CPU compositing become a bottleneck? Should the wgpu compute compositor be the default?            | At 320x200, even 8 layers is fast on CPU. GPU compositor adds complexity for minimal gain at this resolution. |
+| #   | Question                                                                                                                                                             | Context                                                                                                                 |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Compute shader state buffer sizing.** Should the state buffer size be declared in the TOML sidecar, or should the engine infer it from the WGSL `@group/@binding`? | Compute shaders for cellular automata and fluid sims need persistent state.                                             |
+| 2   | **GLSL multi-pass shaders.** Should we support Shadertoy's Buffer A/B/C/D pattern, or require manual conversion to compute passes?                                   | Multi-pass covers ~30% of Shadertoy effects.                                                                            |
+| 3   | **Effect sandboxing boundaries.** Should Servo effects be process-isolated (separate child process), or is in-process Servo sufficient?                              | Process isolation adds latency but prevents effect crashes from affecting the daemon.                                   |
+| 4   | **Uniform buffer reflection.** Use naga's module reflection to auto-build the uniform layout, or require an explicit layout declaration in the TOML?                 | Auto-reflection is elegant but fragile if the shader struct layout doesn't match expectations.                          |
+| 5   | **Hot-reload state preservation.** When a WGSL shader is recompiled, should the compute state buffer be preserved or reset?                                          | Preserving state makes iteration faster; resetting prevents stale-state bugs.                                           |
+| 6   | **Color control representation.** Should `Color` controls carry alpha? Some effects want translucent colors.                                                         | Current spec: RGB only `[u8; 3]`. RGBA would be `[u8; 4]`.                                                              |
+| 7   | **Composition performance.** At how many simultaneous layers does CPU compositing become a bottleneck? Should the wgpu compute compositor be the default?            | At legacy 320 by 200, even 8 layers is fast on CPU. GPU compositor adds complexity for minimal gain at this resolution. |

@@ -1078,7 +1078,7 @@ The staggered device-by-device brightening creates a "cascade" feeling — like 
 
 ## Appendix A: Component Inventory
 
-Key SvelteKit components that implement this design:
+Key Leptos components that implement this design:
 
 | Component               | Location            | Purpose                      |
 | ----------------------- | ------------------- | ---------------------------- |

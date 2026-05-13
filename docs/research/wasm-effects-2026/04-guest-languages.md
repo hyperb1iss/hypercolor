@@ -212,7 +212,7 @@ Component Model, Zig authors will wait for native bindgen support.
 Zig is the binary-size champion. For an effect kernel:
 
 - Trivial function: 100-500 bytes
-- Full rainbow-wave effect with HSV math and a 320x200 buffer: **~1-3 KB**
+- Full rainbow-wave effect with HSV math and a legacy 320 by 200 buffer: **~1-3 KB**
 - Same effect with WASI output: +2-5 KB
 
 This is an order of magnitude smaller than Rust release + `opt-z`, and two
@@ -623,7 +623,7 @@ class Effect:
         return bytes(self.canvas)
 ```
 
-For a 320x200 canvas, that double-nested loop in pure Python will miss
+For a legacy 320 by 200 canvas, that double-nested loop in pure Python will miss
 every frame budget we have. NumPy is not available without more bundling
 pain. The right way to use Python in WASM is for orchestration / glue,
 not per-pixel kernels. Wrong fit for effects.
@@ -658,7 +658,7 @@ That is it. The whole file.
 
 - `#[unsafe(no_mangle)] extern "C" fn hypercolor_init()` that allocates
   the pixel buffer (size from `#[effect(canvas = "640x480")]` attr or
-  defaulting to 320x200)
+  defaulting to legacy 320 by 200)
 - `hypercolor_canvas_ptr()` / `hypercolor_canvas_len()` exports
 - `hypercolor_render(time_ms: u32, audio_ptr: *const u8, audio_len: u32,
 ...)` that decodes the `FrameInput` struct from linear memory, calls

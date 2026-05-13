@@ -680,7 +680,7 @@ transition_time_ms = 100               # Hue-specific transition smoothing
 
 ## 6. Spatial Layout Configuration
 
-Layouts map devices to positions on the 320x200 effect canvas.
+Layouts map devices to positions on the legacy 320 by 200 effect canvas.
 
 ```toml
 # ~/.config/hypercolor/layouts/default.toml
@@ -1039,7 +1039,7 @@ pub struct MigrationReport {
 
 **Known limitations documented in the wizard output:**
 
-- The LightScript canvas is always 320x200; Hypercolor matches this by default
+- LightScript effects may declare a legacy design basis; Hypercolor scales them onto the configured canvas
 - The `<meta>` control values map directly to Lightscript globals
 - WebGL effects require Servo renderer (won't work with wgpu path)
 - Screen Ambience effect needs PipeWire reconfiguration for Linux
@@ -1790,7 +1790,7 @@ hypercolor import --lightscript /mnt/windows/Users/Robin/AppData/Local/VortxEngi
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
-Robin opens the web UI, adjusts the spatial layout (the imported coordinate system maps to 320x200 but zone positions need visual tweaking), and she's running the same effects on Linux within 10 minutes.
+Robin opens the web UI, adjusts the spatial layout (the imported coordinate system maps to legacy 320 by 200 but zone positions need visual tweaking), and she's running the same effects on Linux within 10 minutes.
 
 ---
 

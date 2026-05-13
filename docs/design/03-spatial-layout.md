@@ -93,7 +93,7 @@ space it represents can range from 40cm to 40 meters.
 
 ### Editor Overview
 
-The spatial layout editor lives in the web UI (SvelteKit + Canvas 2D / Three.js). It is the primary
+The spatial layout editor lives in the web UI (Leptos + Canvas 2D / Three.js). It is the primary
 interface for telling Hypercolor where devices exist relative to each other.
 
 ```
@@ -863,7 +863,7 @@ Each space gets its own canvas or shares one. Three modes:
 **1. Unified Canvas (One Effect, All Spaces)**
 
 ```
-┌─────────────── Single 320x200 Canvas ─────────────────┐
+┌─────────────── Single legacy 320 by 200 Canvas ─────────────────┐
 │                                                         │
 │  ┌─ Office ──────┐  ┌─ Living Room ─┐  ┌─ Bedroom ──┐ │
 │  │ ●●● ◦◦◦ ●●●  │  │  ●●●●●●       │  │   ●●●●●    │ │
@@ -884,7 +884,7 @@ locations. A wave effect literally ripples through the house.
 
 ```
 ┌─ Office Canvas ──┐  ┌─ Living Room ────┐  ┌─ Bedroom ──────┐
-│   320x200         │  │   320x200         │  │   320x200       │
+│   legacy 320 by 200         │  │   legacy 320 by 200         │  │   legacy 320 by 200       │
 │   Effect: Nebula  │  │   Effect: Chill   │  │   Effect: Glow  │
 │                    │  │                    │  │                 │
 │   ●●● ◦◦◦ ●●●    │  │   ●●●●●●          │  │    ●●●●●        │
@@ -902,7 +902,7 @@ living room has a calm ambient glow, the bedroom has a warm breathing effect.
 
 ```
 ┌─ Office Canvas ──┐  ┌─ Living Room ────┐
-│   320x200         │  │   320x200         │
+│   legacy 320 by 200         │  │   legacy 320 by 200         │
 │   Effect: Wave    │  │   Effect: Wave    │
 │   Phase: 0°       │  │   Phase: +120°    │
 │                    │  │                    │
@@ -960,7 +960,7 @@ World Layout (top-down floorplan):
     │                   │                 │
     └──────────────────┴────────────────┘
 
-    → Mapped to 320x200 canvas proportionally:
+    → Mapped to legacy 320 by 200 canvas proportionally:
 
     ┌──────────┬──────────────┐
     │  Office   │  Living Room │  y: 0-114
@@ -1577,7 +1577,7 @@ impl SummedAreaTable {
 }
 ```
 
-Building the summed area table is O(width \* height) -- e.g. ~64K ops for 320x200 or ~307K for
+Building the summed area table is O(width \* height) -- e.g. ~64K ops for legacy 320 by 200 or ~307K for
 640x480 -- still negligible at 60fps. After that, every area average query is O(1).
 
 ### Gaussian-Weighted Area Average
@@ -2190,17 +2190,17 @@ Alex's Layout (Unified Canvas, Multi-Room):
 
 **The key challenge for Alex:** 30 devices on one canvas means each device occupies a tiny region.
 Effects designed for PC-scale (6 devices) may look wrong at room-scale (30 devices in the same
-320x200 space). Solutions:
+legacy 320 by 200 space). Solutions:
 
-1. **Per-space canvas mode** -- each room gets its own full 320x200 canvas and runs the same effect
+1. **Per-space canvas mode** -- each room gets its own full legacy 320 by 200 canvas and runs the same effect
    independently. The effect fills each room without being diluted.
 2. **Linked spaces with phase offset** -- each room runs the same effect but with a time delay,
    creating a wave-through-the-house illusion without cramming everything onto one canvas.
 3. **Higher canvas resolution** -- for room-scale, Hypercolor could render at 640x400 or 960x600.
    This is configurable per-layout. The performance impact is minimal (256KB → 1MB per frame).
 
-**Design implication:** The canvas resolution should not be hardcoded at 320x200. It should be
-configurable, with 320x200 as the default for LightScript compatibility and higher resolutions
+**Design implication:** The canvas resolution should not be hardcoded at legacy 320 by 200. It should be
+configurable, with legacy 320 by 200 as the default for LightScript compatibility and higher resolutions
 available for multi-room setups.
 
 ```rust
@@ -2226,7 +2226,7 @@ SPATIAL ENGINE DATA FLOW (COMPLETE)
 
   ┌──────────┐    RGBA buffer    ┌──────────────┐   DeviceColors   ┌──────────┐
   │  wgpu /  │ ───────────────→  │ Precomputed  │ ──────────────→  │ OpenRGB  │
-  │  Servo   │    320x200        │  Sampler     │                   │ (TCP)    │
+  │  Servo   │    legacy 320 by 200        │  Sampler     │                   │ (TCP)    │
   │ Renderer │    256 KB/frame   │              │   DeviceColors   ├──────────┤
   └──────────┘                   │  for each    │ ──────────────→  │  WLED    │
                                   │  LED:        │                   │ (DDP)    │
@@ -2268,7 +2268,7 @@ Which sampling mode should a zone use?
 ```
 
 Bilinear is the universal default. Area average is the exception for ambient/point devices. Nearest-
-neighbor is available as a performance escape hatch but should rarely be needed at 320x200 canvas
+neighbor is available as a performance escape hatch but should rarely be needed at legacy 320 by 200 canvas
 resolution.
 
 ---

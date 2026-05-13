@@ -227,7 +227,7 @@ that declare UI controls and effect metadata; the `<body>` has a
 roughness), and `engine.audio.freq[]` (200-element FFT). Per-LED sampling is
 handled _by the engine_, not the effect: the engine reads pixel colors off
 your `<canvas>` at the device's LED positions and forwards them to the
-hardware. The effect author's mental model is "paint a 320×200 canvas; the
+hardware. The effect author's mental model is "paint a legacy 320 by 200 canvas; the
 lighting happens to someone else." (Sources:
 [SignalRGB LightScript intro](https://docs.signalrgb.com/developer/lightscripts/it-s-a-webpage/),
 [Audio Visualizer tutorial](https://docs.signalrgb.com/developer/lightscripts/audio-visualizer/),
@@ -270,7 +270,7 @@ contract that the engine never actually tells the effect "here are your 144
 LEDs at these positions." The effect paints and hopes. This is fine for
 ambient stuff, terrible for anything wanting to know _where_ a keyboard key
 is in the layout. (Hypercolor already dodges this problem by generating a
-logical 320×200 canvas and letting the spatial sampler map pixels to LEDs.
+logical legacy 320 by 200 canvas and letting the spatial sampler map pixels to LEDs.
 The SignalRGB model is, in essence, already how the daemon thinks.)
 
 ---
@@ -508,7 +508,7 @@ their own canvas as usual). Premature compositing bloats the core API.
 
 ## 11 · Three candidate API shapes
 
-All three target a `rainbow wave with audio-reactive intensity` on a 320×200
+All three target a `rainbow wave with audio-reactive intensity` on a legacy 320 by 200
 RGBA canvas at ~60 fps. All three are real Rust code that would compile
 against a WIT-generated guest binding assuming standard types
 (`Canvas`, `Frame`, `AudioData`). Aliases shorten the noise.
@@ -580,7 +580,7 @@ boundary cost.
 the closure compiles to inline SIMD-friendly code in the guest. Parameters
 are plain `f32`/enum fields, no string lookups. Audio data is handed in
 once as a borrow; inline helpers (`bass_energy()`) are monomorphized in
-the guest. Expected frame cost for this effect at 320×200: **<0.3 ms**.
+the guest. Expected frame cost for this effect at legacy 320 by 200: **<0.3 ms**.
 
 **Flexibility.** Highest for Rust guests. Enum params auto-serialize.
 Nested groups work (`#[param(group = "Motion")] speed`). Advanced users can
@@ -811,7 +811,7 @@ specifically because every design pressure points at it:
 
 1. **`hypercolor-effect-sdk` crate.** Pure-library types: `Frame`,
    `Canvas` (WASM-friendly wrapper over a shared linear-memory buffer),
-   `AudioData`, helper math (`oklch`, `hsl`, `smoothstep`), zero unsafe.
+   `AudioData`, helper math (`oklch`, `hsl`, `smoothstep`), unsafe-free domain crates.
    Re-exports of `ControlValue` types.
 2. **`hypercolor-effect-macros` crate.** The `#[derive(Effect)]`,
    `#[derive(Param)]`, and `export_effect!` macros. Expand into WIT

@@ -2575,15 +2575,15 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 
 ## Appendix: Crate Dependencies (New)
 
-| Crate        | Purpose                        | License    |
-| ------------ | ------------------------------ | ---------- |
-| `cron`       | Cron expression parsing        | MIT/Apache |
-| `sun`        | Sunrise/sunset calculation     | MIT        |
-| `chrono-tz`  | Timezone handling              | MIT/Apache |
-| `rumqttc`    | MQTT client (async)            | Apache-2.0 |
-| `oklab`      | Perceptual color interpolation | MIT        |
-| `uuid`       | Scene IDs (v7 time-sorted)     | MIT/Apache |
-| `serde_json` | Trigger payloads, HA API       | MIT/Apache |
+| Crate        | Purpose                        | License           |
+| ------------ | ------------------------------ | ----------------- |
+| `cron`       | Cron expression parsing        | MIT OR Apache-2.0 |
+| `sun`        | Sunrise/sunset calculation     | MIT               |
+| `chrono-tz`  | Timezone handling              | MIT OR Apache-2.0 |
+| `rumqttc`    | MQTT client (async)            | Apache-2.0        |
+| `oklab`      | Perceptual color interpolation | MIT               |
+| `uuid`       | Scene IDs (v7 time-sorted)     | MIT OR Apache-2.0 |
+| `serde_json` | Trigger payloads, HA API       | MIT OR Apache-2.0 |
 
 ---
 

@@ -1443,14 +1443,14 @@ One frame of the DSP pipeline, executed every hop (5.3ms at 60 Hz, 10.6ms at 30 
 
 ## Appendix B: Crate Dependencies
 
-| Crate              | Purpose                                                 | License         |
-| ------------------ | ------------------------------------------------------- | --------------- |
-| `cpal`             | Cross-platform audio I/O (WASAPI, PulseAudio/ALSA)      | Apache-2.0      |
-| `realfft`          | In-place real-to-complex FFT                            | Apache-2.0/MIT  |
-| `libpulse-binding` | PulseAudio API for Linux monitor source discovery       | MIT/Apache      |
-| `crossbeam`        | Lock-free SPSC ring buffer (`ArrayQueue`)               | MIT/Apache      |
-| `triple-buffer`    | Lock-free single-producer single-consumer triple buffer | MIT             |
-| `bytemuck`         | Zero-copy GPU buffer marshaling (`Pod`, `Zeroable`)     | MIT/Apache/Zlib |
+| Crate              | Purpose                                                 | License                   |
+| ------------------ | ------------------------------------------------------- | ------------------------- |
+| `cpal`             | Cross-platform audio I/O (WASAPI, PulseAudio/ALSA)      | Apache-2.0                |
+| `realfft`          | In-place real-to-complex FFT                            | Apache-2.0/MIT            |
+| `libpulse-binding` | PulseAudio API for Linux monitor source discovery       | MIT OR Apache-2.0         |
+| `crossbeam`        | Lock-free SPSC ring buffer (`ArrayQueue`)               | MIT OR Apache-2.0         |
+| `triple-buffer`    | Lock-free single-producer single-consumer triple buffer | MIT                       |
+| `bytemuck`         | Zero-copy GPU buffer marshaling (`Pod`, `Zeroable`)     | MIT OR Apache-2.0 OR Zlib |
 
 ## Appendix C: Spectral Feature Formulas
 

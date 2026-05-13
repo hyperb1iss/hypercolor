@@ -1,7 +1,7 @@
 # WebAssembly for Real-Time RGB Effects: Performance Reality in 2026
 
 **Scope:** Can a modern WASM runtime, embedded inside our Rust daemon, render
-RGB effects onto a 320x200 to 640x480 RGBA canvas at 30-60 FPS without burning
+RGB effects onto a legacy 320 by 200 to 640x480 RGBA canvas at 30-60 FPS without burning
 the per-frame budget?
 
 **Target workload:**

@@ -42,7 +42,7 @@ The arithmetic changes too. A naive per-pixel kernel on 640×480 runs in ~150 µ
            │                         │           └──────────────┬──────────────┘
            │                         │                          │
            ▼                         ▼                          ▼
-                            Canvas (RGBA, 320x200 → 640x480)
+                            Canvas (RGBA, legacy 320 by 200 → 640x480)
                                        │
                                        ▼
                              SpatialEngine → devices

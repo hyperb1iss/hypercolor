@@ -2120,18 +2120,18 @@ On startup:
 
 ## Crate Dependencies
 
-| Crate        | Version | Purpose                           | License        |
-| ------------ | ------- | --------------------------------- | -------------- |
-| `cron`       | 0.13+   | Cron expression parsing           | MIT/Apache-2.0 |
-| `sun`        | 0.2+    | Sunrise/sunset solar position     | MIT            |
-| `chrono`     | 0.4+    | Date/time handling                | MIT/Apache-2.0 |
-| `chrono-tz`  | 0.10+   | Timezone database                 | MIT/Apache-2.0 |
-| `rumqttc`    | 0.24+   | Async MQTT client                 | Apache-2.0     |
-| `oklab`      | 1.0+    | Perceptual color space conversion | MIT            |
-| `uuid`       | 1.0+    | UUID v7 scene/rule identifiers    | MIT/Apache-2.0 |
-| `serde_json` | 1.0+    | Trigger payloads, HA API          | MIT/Apache-2.0 |
-| `regex`      | 1.0+    | Condition expression matching     | MIT/Apache-2.0 |
-| `tokio`      | 1.0+    | Async runtime (scheduler, timers) | MIT            |
+| Crate        | Version | Purpose                           | License    |
+| ------------ | ------- | --------------------------------- | ---------- |
+| `cron`       | 0.13+   | Cron expression parsing           | Apache-2.0 |
+| `sun`        | 0.2+    | Sunrise/sunset solar position     | MIT        |
+| `chrono`     | 0.4+    | Date/time handling                | Apache-2.0 |
+| `chrono-tz`  | 0.10+   | Timezone database                 | Apache-2.0 |
+| `rumqttc`    | 0.24+   | Async MQTT client                 | Apache-2.0 |
+| `oklab`      | 1.0+    | Perceptual color space conversion | MIT        |
+| `uuid`       | 1.0+    | UUID v7 scene/rule identifiers    | Apache-2.0 |
+| `serde_json` | 1.0+    | Trigger payloads, HA API          | Apache-2.0 |
+| `regex`      | 1.0+    | Condition expression matching     | Apache-2.0 |
+| `tokio`      | 1.0+    | Async runtime (scheduler, timers) | MIT        |
 
 ---
 

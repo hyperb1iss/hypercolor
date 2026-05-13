@@ -165,7 +165,7 @@ or warn on unsupported versions.
   The runtime injects them as `window.engine.width` / `window.engine.height` and
   the SDK auto-resizes the canvas every frame. Read `ctx.canvas.width/height`
   inside your draw function — never hardcode. For effects ported from the
-  legacy 320x200 SDK grid, use `scaleContext(ctx.canvas, { width: 320, height: 200 })`
+  legacy legacy 320 by 200 SDK grid, use `scaleContext(ctx.canvas, { width: 320, height: 200 })`
   from `@hypercolor/sdk` to translate design-space coordinates.
 - Background: black (`#000000`)
 
@@ -1081,7 +1081,7 @@ producing an in-memory blob served to the iframe without writing to disk.
 │                          │  [Default] [Chill] [Fire]    │
 │                          │                              │
 ├──────────────────────────┴──────────────────────────────┤
-│  Status: Connected │ FPS: 60 │ Canvas: 320x200          │
+│  Status: Connected │ FPS: 60 │ Canvas: legacy 320 by 200          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -1219,7 +1219,7 @@ Assemble the final HTML file from:
 
 - Meta tags generated from extracted metadata
 - `hypercolor-version` meta tag (value: `1`)
-- Canvas element (320x200 for effects; face container for face effects)
+- Canvas element (legacy 320 by 200 for effects; face container for face effects)
 - Inline script with the bundled JS
 
 **Step 4: Output**

@@ -238,29 +238,29 @@ lock-free transport contracts.
 
 #### Core Buffers
 
-| Component                          | Size   | Count               | Total      | Notes                           |
-| ---------------------------------- | ------ | ------------------- | ---------- | ------------------------------- |
-| Canvas buffer (320x200 RGBA)       | 256 KB | 2 (double-buffered) | 512 KB     | Render output                   |
-| LED color buffer (2000 LEDs x RGB) | 6 KB   | 2                   | 12 KB      | Output + staging                |
-| Audio FFT bins                     | 800 B  | 3 (triple-buffered) | 2.4 KB     | 200 bins x f32                  |
-| Audio sample ring buffer           | 64 KB  | 1                   | 64 KB      | 16384 samples x f32             |
-| Screen capture frame               | 8 MB   | 3 (triple-buffered) | 24 MB      | 1920x1080 RGBA downsample src   |
-| Screen capture downsampled         | 256 KB | 2                   | 512 KB     | 320x200 for effect input        |
-| Event bus buffers                  | ~64 KB | —                   | 64 KB      | broadcast(256) + watch channels |
-| Spatial layout data                | ~20 KB | 1                   | 20 KB      | 2000 LEDs with transforms       |
-| **Core subtotal**                  |        |                     | **~25 MB** |                                 |
+| Component                              | Size   | Count               | Total      | Notes                              |
+| -------------------------------------- | ------ | ------------------- | ---------- | ---------------------------------- |
+| Canvas buffer (legacy 320 by 200 RGBA) | 256 KB | 2 (double-buffered) | 512 KB     | Render output                      |
+| LED color buffer (2000 LEDs x RGB)     | 6 KB   | 2                   | 12 KB      | Output + staging                   |
+| Audio FFT bins                         | 800 B  | 3 (triple-buffered) | 2.4 KB     | 200 bins x f32                     |
+| Audio sample ring buffer               | 64 KB  | 1                   | 64 KB      | 16384 samples x f32                |
+| Screen capture frame                   | 8 MB   | 3 (triple-buffered) | 24 MB      | 1920x1080 RGBA downsample src      |
+| Screen capture downsampled             | 256 KB | 2                   | 512 KB     | legacy 320 by 200 for effect input |
+| Event bus buffers                      | ~64 KB | —                   | 64 KB      | broadcast(256) + watch channels    |
+| Spatial layout data                    | ~20 KB | 1                   | 20 KB      | 2000 LEDs with transforms          |
+| **Core subtotal**                      |        |                     | **~25 MB** |                                    |
 
 #### wgpu Resources
 
-| Component                     | Size      | Notes                             |
-| ----------------------------- | --------- | --------------------------------- |
-| Device + queue state          | ~5 MB     | Vulkan/OpenGL driver overhead     |
-| Render pipeline (320x200)     | ~1 MB     | Compiled shaders, descriptor sets |
-| Output texture (320x200 RGBA) | 256 KB    | GPU-side render target            |
-| Staging buffer (MAP_READ)     | 256 KB    | CPU-readable pixel readback       |
-| Uniform buffers               | ~4 KB     | Time, resolution, audio uniforms  |
-| Shader cache                  | ~2 MB     | Compiled SPIR-V / driver cache    |
-| **wgpu subtotal**             | **~9 MB** |                                   |
+| Component                               | Size      | Notes                             |
+| --------------------------------------- | --------- | --------------------------------- |
+| Device + queue state                    | ~5 MB     | Vulkan/OpenGL driver overhead     |
+| Render pipeline (legacy 320 by 200)     | ~1 MB     | Compiled shaders, descriptor sets |
+| Output texture (legacy 320 by 200 RGBA) | 256 KB    | GPU-side render target            |
+| Staging buffer (MAP_READ)               | 256 KB    | CPU-readable pixel readback       |
+| Uniform buffers                         | ~4 KB     | Time, resolution, audio uniforms  |
+| Shader cache                            | ~2 MB     | Compiled SPIR-V / driver cache    |
+| **wgpu subtotal**                       | **~9 MB** |                                   |
 
 #### Servo Resources
 
@@ -268,7 +268,7 @@ lock-free transport contracts.
 | --------------------------- | ------------- | ------------------------------------------------- |
 | SpiderMonkey heap (default) | 32-64 MB      | Configurable via `SetGCParameter(JSGC_MAX_BYTES)` |
 | DOM + style system          | 5-20 MB       | Depends on effect complexity                      |
-| Canvas 2D backing store     | 256 KB        | 320x200 — trivial                                 |
+| Canvas 2D backing store     | 256 KB        | legacy 320 by 200 — trivial                       |
 | WebGL context (if used)     | 5-15 MB       | GPU state, texture cache                          |
 | Network/resource loading    | 2-5 MB        | Servo's resource cache                            |
 | Layout engine               | 5-10 MB       | Style trees, box trees                            |
@@ -336,7 +336,7 @@ impl MemoryMonitor {
 
 Hypercolor renders on the same GPU that games use. The key insight: **our workload is negligible, but we must not cause contention.**
 
-A 320x200 render is approximately 64,000 pixels. A 4K game renders 8,294,400 pixels. Hypercolor's GPU work is 0.77% of a single 4K frame — effectively invisible to the GPU scheduler, _as long as we don't block on synchronization or starve the game of submission bandwidth._
+A legacy 320 by 200 render is approximately 64,000 pixels. A 4K game renders 8,294,400 pixels. Hypercolor's GPU work is 0.77% of a single 4K frame — effectively invisible to the GPU scheduler, _as long as we don't block on synchronization or starve the game of submission bandwidth._
 
 ### wgpu Path: Zero-Contention Strategy
 
@@ -365,7 +365,7 @@ pub struct GpuResourcePolicy {
 
 **GPU memory allocation:**
 
-- Total GPU memory for Hypercolor: <5MB (one 320x200 texture + staging buffer + uniform buffers)
+- Total GPU memory for Hypercolor: <5MB (one legacy 320 by 200 texture + staging buffer + uniform buffers)
 - Use `wgpu::MemoryHints::MemoryBudget(budget)` to advertise our tiny footprint
 - Never allocate GPU memory in the render loop — all resources created at pipeline setup
 
@@ -395,17 +395,17 @@ pub fn select_servo_render_path(system: &SystemState) -> ServoRenderPath {
 }
 ```
 
-The software path for Servo at 320x200 is cheap: Canvas 2D operations at this resolution are CPU-trivial (we measured similar workloads at <2ms on modern CPUs). WebGL effects may be slower in software, but most community HTML effects use Canvas 2D.
+The software path for Servo at legacy 320 by 200 is cheap: Canvas 2D operations at this resolution are CPU-trivial (we measured similar workloads at <2ms on modern CPUs). WebGL effects may be slower in software, but most community HTML effects use Canvas 2D.
 
 ### GPU Contention Mitigation
 
-| Technique              | Implementation                           | Impact                                  |
-| ---------------------- | ---------------------------------------- | --------------------------------------- |
-| **Low-priority queue** | Vulkan `VK_QUEUE_GLOBAL_PRIORITY_LOW`    | GPU scheduler preempts us for game work |
-| **Micro-submissions**  | Single 320x200 dispatch per frame        | Completes in <100us GPU time            |
-| **Async readback**     | Map staging buffer from _previous_ frame | Eliminates GPU pipeline stalls          |
-| **Shared-nothing**     | Separate `VkDevice` from game (via wgpu) | No implicit synchronization             |
-| **Software fallback**  | Servo software path, CPU compute shaders | Zero GPU usage when gaming              |
+| Technique              | Implementation                              | Impact                                  |
+| ---------------------- | ------------------------------------------- | --------------------------------------- |
+| **Low-priority queue** | Vulkan `VK_QUEUE_GLOBAL_PRIORITY_LOW`       | GPU scheduler preempts us for game work |
+| **Micro-submissions**  | Single legacy 320 by 200 dispatch per frame | Completes in <100us GPU time            |
+| **Async readback**     | Map staging buffer from _previous_ frame    | Eliminates GPU pipeline stalls          |
+| **Shared-nothing**     | Separate `VkDevice` from game (via wgpu)    | No implicit synchronization             |
+| **Software fallback**  | Servo software path, CPU compute shaders    | Zero GPU usage when gaming              |
 
 ### Async Readback Pipeline
 
@@ -1242,7 +1242,7 @@ NoNewPrivileges=yes
 
 #### Category 1: Effect Rendering Throughput
 
-Measure time per frame for each renderer at the canonical 320x200 resolution.
+Measure time per frame for each renderer at the canonical legacy 320 by 200 resolution.
 
 ```rust
 #[bench]
@@ -1496,7 +1496,7 @@ The benchmark suite generates a report on every release:
 ║  Hypercolor v0.3.0 Performance Report                        ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                               ║
-║  Render Pipeline (320x200)                                   ║
+║  Render Pipeline (legacy 320 by 200)                                   ║
 ║  ├─ wgpu solid color:       0.31ms  (target: <0.5ms)   ✅   ║
 ║  ├─ wgpu fractal noise:     1.82ms  (target: <2.0ms)   ✅   ║
 ║  ├─ wgpu pixel readback:    0.18ms  (target: <0.3ms)   ✅   ║

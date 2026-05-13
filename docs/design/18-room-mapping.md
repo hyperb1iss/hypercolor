@@ -125,7 +125,7 @@ Why normalized? Two reasons:
 
 ### 2.3 Canvas Space
 
-The 320x200 effect canvas. This is where the effect engine lives. All room-space coordinates are mapped to canvas pixels.
+The legacy 320 by 200 effect canvas. This is where the effect engine lives. All room-space coordinates are mapped to canvas pixels.
 
 ```rust
 /// Canvas pixel coordinates
@@ -139,7 +139,7 @@ pub struct CanvasViewport {
     /// Which region of room space maps to the canvas
     pub room_rect: Rect2D,    // (x_min, y_min, x_max, y_max) in room coords
 
-    /// Canvas dimensions (always 320x200 currently)
+    /// Canvas dimensions from the active layout/configuration
     pub width: u32,
     pub height: u32,
 
@@ -157,25 +157,25 @@ pub enum ViewportFit {
 }
 ```
 
-**The 320x200 question: how does it map to a 5m x 3m room?**
+**The legacy 320 by 200 question: how does it map to a 5m x 3m room?**
 
-For a single room, the entire canvas maps to the room's 2D projection. The default projection is top-down (bird's eye), so a 5m x 3m room maps to 320x200 pixels. That's 64 pixels per meter horizontally, 66.7 pixels per meter vertically. For a WLED strip at 60 LEDs/m, one meter of strip maps to ~64 canvas pixels -- more than enough resolution for smooth sampling.
+For a single room, the entire canvas maps to the room's 2D projection. The default projection is top-down (bird's eye), so a 5m x 3m room maps to legacy 320 by 200 pixels. That's 64 pixels per meter horizontally, 66.7 pixels per meter vertically. For a WLED strip at 60 LEDs/m, one meter of strip maps to ~64 canvas pixels -- more than enough resolution for smooth sampling.
 
 For a house with multiple rooms, two strategies:
 
-**Strategy A: Shared Canvas.** The entire house floor plan maps to 320x200. A 15m x 10m house gets ~21 pixels/meter. Still sufficient for most effects (gradients, waves, ambient washes), but fine-grained effects lose detail. Best for house-wide sweeping effects.
+**Strategy A: Shared Canvas.** The entire house floor plan maps to legacy 320 by 200. A 15m x 10m house gets ~21 pixels/meter. Still sufficient for most effects (gradients, waves, ambient washes), but fine-grained effects lose detail. Best for house-wide sweeping effects.
 
-**Strategy B: Per-Room Canvas (default).** Each room gets its own 320x200 canvas. Cross-room effects use a compositor that tiles or blends room canvases. This preserves full detail everywhere and is the recommended approach.
+**Strategy B: Per-Room Canvas (default).** Each room gets its own legacy 320 by 200 canvas. Cross-room effects use a compositor that tiles or blends room canvases. This preserves full detail everywhere and is the recommended approach.
 
 ```
 Strategy A: Shared Canvas               Strategy B: Per-Room Canvas
 
 ┌──────────────────────────┐             ┌──────────┐ ┌──────────┐
-│   320 x 200 canvas       │             │ 320x200  │ │ 320x200  │
+│   320 x 200 canvas       │             │ legacy 320 by 200  │ │ legacy 320 by 200  │
 │                          │             │ Room A   │ │ Room B   │
 │  ┌──────┐  ┌──────┐     │             └──────────┘ └──────────┘
 │  │Room A│  │Room B│     │             ┌──────────┐ ┌──────────┐
-│  └──────┘  └──────┘     │             │ 320x200  │ │ 320x200  │
+│  └──────┘  └──────┘     │             │ legacy 320 by 200  │ │ legacy 320 by 200  │
 │  ┌──────────────────┐   │             │ Room C   │ │ Room D   │
 │  │     Room C       │   │             └──────────┘ └──────────┘
 │  └──────────────────┘   │
@@ -951,10 +951,10 @@ WLED 2D Matrix (16x16):
 Hypercolor can either:
 
 A) Treat as a spatial zone -- map the 16x16 grid to a region
-   of the 320x200 canvas. Each matrix pixel samples its canvas
+   of the legacy 320 by 200 canvas. Each matrix pixel samples its canvas
    position. The matrix displays a zoomed-in portion of the effect.
 
-B) Treat as a display -- send the entire 320x200 canvas downscaled
+B) Treat as a display -- send the entire legacy 320 by 200 canvas downscaled
    to 16x16 and push it as a complete frame. The matrix shows a
    thumbnail of the full effect.
 
@@ -1067,7 +1067,7 @@ When rooms share a wall and the user enables `ContinuousEffect` sync mode, effec
 
 ```
 Room A (Office)                    Room B (Hallway)
-Canvas A (320x200)                 Canvas B (320x200)
+Canvas A (legacy 320 by 200)                 Canvas B (legacy 320 by 200)
 
 ┌──────────────────────────┐      ┌──────────────────────────┐
 │                          │      │                          │
@@ -1395,7 +1395,7 @@ Photos are stored as separate files alongside the JSON layout. Shared layouts ca
 
 **Effect flow: One unified effect across everything.**
 
-All devices share a single 320x200 canvas. The effect engine renders "ADHD Hyperfocus" -- a custom audio-reactive shader. The spatial sampler maps each LED to its canvas position:
+All devices share a single legacy 320 by 200 canvas. The effect engine renders "ADHD Hyperfocus" -- a custom audio-reactive shader. The spatial sampler maps each LED to its canvas position:
 
 - **PC case** (Feature role): maps to bottom-right quadrant of canvas. High detail, per-LED sampling. Strimers use Matrix topology, fans use Ring topology.
 - **Desk underglow** (Feature role): maps to bottom center. Path topology following desk perimeter.

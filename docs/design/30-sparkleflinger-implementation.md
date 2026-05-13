@@ -612,7 +612,7 @@ no dedicated presenter cadence.
 The design doc calls for WebRTC with H.264 + VP8 fallback after Wave 6 is
 stable.
 
-**Wave 8 GPU compositor — intentional.** CPU composition at 320×200 is
+**Wave 8 GPU compositor — intentional.** CPU composition at legacy 320 by 200 is
 cheap enough (see the `single_replace_bypass` and `alpha_two_layer_compose`
 benches) that the design doc explicitly positions GPU composition as a
 post-CPU optimization.

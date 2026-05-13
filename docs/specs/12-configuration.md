@@ -3,8 +3,8 @@
 > Every file, every field, every default. The complete schema for Hypercolor's persistent state.
 
 **Status:** Implementation-ready
-**Crate:** `hypercolor-config`
-**Module path:** `hypercolor_config::{daemon, profile, scene, layout, device, rules, loader, migrate}`
+**Crate:** `hypercolor-types`
+**Module path:** `hypercolor_types::config`
 
 ---
 
@@ -77,7 +77,7 @@ $XDG_CACHE_HOME/hypercolor/          # Default: ~/.cache/hypercolor/
 +-- discovery-cache.toml             # Cached mDNS/network discovery results
 
 $XDG_RUNTIME_DIR/hypercolor/         # Default: /run/user/$UID/hypercolor/
-+-- hypercolor.sock                  # Unix domain socket (IPC)
++-- hypercolor.toml                  # Main daemon configuration
 +-- hypercolor.pid                   # PID file
 +-- frame.shm                        # Shared memory for frame data (optional)
 ```
@@ -113,7 +113,7 @@ $XDG_RUNTIME_DIR/hypercolor/         # Default: /run/user/$UID/hypercolor/
 +-- discovery-cache.toml
 ```
 
-Windows does not use Unix sockets or PID files. IPC uses a named pipe at `\\.\pipe\hypercolor`.
+Windows service supervision uses platform-native service control instead of Linux PID files.
 
 ### 1.3 System-Wide Defaults (Linux Only)
 
@@ -274,7 +274,7 @@ include = ["hypercolor.local.toml"]
 # Network binding for the REST API and WebSocket server.
 listen_address = "127.0.0.1"        # Default: localhost only
 port = 9420                          # Default: 9420
-unix_socket = true                   # Enable Unix socket IPC (Linux only)
+remote_access = false                # Require explicit opt-in for non-loopback API binds
 
 # Render loop performance.
 target_fps = 60                      # Target frames per second
@@ -707,7 +707,7 @@ Applying a scene with a non-`full` scope leaves unaddressed zones unchanged.
 **Schema version:** `1` (current)
 **Location:** `$CONFIG_DIR/hypercolor/layouts/`
 
-Layouts map device zones to positions on the 320x200 effect canvas. The spatial sampler uses this mapping to convert rendered pixel frames into per-LED color arrays.
+Layouts map device zones to normalized positions on the configured effect canvas. The spatial sampler uses this mapping to convert rendered pixel frames into per-LED color arrays.
 
 ### 5.1 Complete Annotated Example
 
@@ -2545,7 +2545,7 @@ pub fn load_config() -> Result<HypercolorConfig> {
 
 | Feature           | Linux                    | Windows                              |
 | ----------------- | ------------------------ | ------------------------------------ |
-| IPC mechanism     | Unix domain socket       | Named pipe                           |
+| Service control   | systemd user service     | Windows service                      |
 | D-Bus integration | Yes (`[dbus]` section)   | Skipped                              |
 | Screen capture    | PipeWire, X11            | DXGI (Desktop Duplication API)       |
 | Audio capture     | PulseAudio/PipeWire      | WASAPI                               |

@@ -375,7 +375,7 @@ last frame from the previous effect (or black if new).
 
 ### 5.5 Resource Budget
 
-Each canvas is 320×200×4 = 250 KB. Even 10 simultaneous groups = 2.5 MB. Memory is not
+Each canvas is legacy 320 by 200×4 = 250 KB. Even 10 simultaneous groups = 2.5 MB. Memory is not
 a concern.
 
 Servo renderers are heavyweight (~50 MB each). The pool should enforce a configurable cap
@@ -503,7 +503,7 @@ Each RenderGroup has its own canvas. The canvas dimensions come from the group's
 let canvas = Canvas::new(group.layout.canvas_width, group.layout.canvas_height);
 ```
 
-Groups MAY have different canvas sizes, though 320×200 is the standard default. A group
+Groups MAY have different canvas sizes, though legacy 320 by 200 is the standard default. A group
 running a 1D strip effect might use 320×1 for efficiency.
 
 ### 8.2 Preview Compositing

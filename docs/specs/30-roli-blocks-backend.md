@@ -132,7 +132,7 @@ graph LR
         SysEx --> USB
     end
 
-    Blocks -->|Unix Socket| API
+    Blocks -->|WebSocket| API
 ```
 
 Hypercolor sends RGB888 frames over the socket. blocksd converts to RGB565, computes diffs, packs
@@ -743,7 +743,7 @@ graph TD
     Engine["Effect Engine (60 fps)"] --> Sampler["Spatial Sampler<br/>(maps canvas to 15x15 matrix)"]
     Sampler --> BM["BackendManager::write_colors()"]
     BM --> BB["BlocksBackend::write_colors()<br/>(device_id, &[[u8; 3]; 225])"]
-    BB -->|"Binary frame message (681 bytes)"| Socket[Unix Socket]
+    BB -->|"Binary frame message (681 bytes)"| Socket[WebSocket]
     Socket --> blocksd
 
     subgraph blocksd_processing [blocksd]

@@ -454,7 +454,7 @@ Daemon configuration and TUI preferences.
 │      │ │  ── Network ────────────────────────────────────────────────────────────         │  │
 │      │ │                                                                                  │  │
 │      │ │   Listen Address     0.0.0.0                                                     │  │
-│      │ │   Unix Socket        /run/hypercolor/hypercolor.sock                             │  │
+│      │ │   WebSocket        /run/hypercolor/hypercolor.sock                             │  │
 │      │ │   WebSocket Port     9421                                                        │  │
 │      │ │                                                                                  │  │
 │      │ └──────────────────────────────────────────────────────────────────────────────────┘  │

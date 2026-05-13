@@ -1511,14 +1511,14 @@ game_profiles_dir = "~/.config/hypercolor/games/"
 
 ## Dependencies
 
-| Crate            | Purpose                                        | License    | Feature Flag      |
-| ---------------- | ---------------------------------------------- | ---------- | ----------------- |
-| `lamco-pipewire` | Wayland screen capture via PipeWire            | MIT        | `screen-pipewire` |
-| `lamco-portal`   | XDG Desktop Portal for permissions             | MIT        | `screen-pipewire` |
-| `xcap`           | X11 screen capture (XShm) + fallback           | Apache-2.0 | `screen-x11`      |
-| `zbus`           | D-Bus for portal, notifications, session state | MIT        | (already in core) |
-| `image`          | Pixel buffer types, downsampling               | MIT/Apache | (already in core) |
-| `wgpu`           | GPU compute shader for downsampling            | MIT/Apache | (already in core) |
+| Crate            | Purpose                                        | License           | Feature Flag      |
+| ---------------- | ---------------------------------------------- | ----------------- | ----------------- |
+| `lamco-pipewire` | Wayland screen capture via PipeWire            | MIT               | `screen-pipewire` |
+| `lamco-portal`   | XDG Desktop Portal for permissions             | MIT               | `screen-pipewire` |
+| `xcap`           | X11 screen capture (XShm) + fallback           | Apache-2.0        | `screen-x11`      |
+| `zbus`           | D-Bus for portal, notifications, session state | MIT               | (already in core) |
+| `image`          | Pixel buffer types, downsampling               | MIT OR Apache-2.0 | (already in core) |
+| `wgpu`           | GPU compute shader for downsampling            | MIT OR Apache-2.0 | (already in core) |
 
 Feature flags keep the dependency tree lean. A headless server build without screen capture compiles without PipeWire or X11 dependencies.
 
