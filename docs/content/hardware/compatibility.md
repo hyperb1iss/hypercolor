@@ -1314,7 +1314,7 @@ _Source: [`data/drivers/vendors/steelseries.toml`](../../../data/drivers/vendors
 
 ### Thermaltake {#thermaltake}
 
-[thermaltake.com](https://thermaltake.com) · VID 0x264A
+VID 0x264A
 
 **Devices tracked:** 10 known
 

@@ -1,7 +1,6 @@
 [vendor]
 name = "Thermaltake"
 vid = [0x264A]
-website = "https://thermaltake.com"
 notes = "Large lighting controller portfolio with Riing fans"
 
 [[devices]]

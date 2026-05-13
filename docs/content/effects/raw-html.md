@@ -201,13 +201,8 @@ All the rules from [Color Science for RGB LEDs](@/effects/color-science.md) appl
 
 ## Validating raw HTML
 
-Even without a workspace, the SDK validator works on a standalone file if you have Bun and `@hypercolor/sdk` installed globally:
-
-```bash
-bunx @hypercolor/sdk validate my-effect.html
-```
-
-or from inside any workspace:
+The SDK validator works on a standalone file from inside any workspace that
+depends on the local `@hypercolor/sdk` package:
 
 ```bash
 bunx hypercolor validate ../path/to/my-effect.html
