@@ -24,6 +24,7 @@
 - [ ] `cd docs && zola check` passes (required for docs link/content changes)
 - [ ] Packaging scripts were syntax-checked (required for `scripts/` or `packaging/`)
 - [ ] `just e2e-build` passes (required for daemon/UI/effect integration changes)
+- [ ] `just e2e` passes (required for end-to-end behavior changes; starts daemon/browser)
 - [ ] Tested on real hardware, simulator, or e2e harness (describe below)
 
 ## Notes for reviewers
