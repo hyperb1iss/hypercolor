@@ -85,6 +85,8 @@ These passed during launch hardening:
   -> no findings beyond the existing SilkCircuit color `printf` style
 - `scripts/install-release.sh --help`, `scripts/get-hypercolor.sh --help`,
   `scripts/uninstall.sh --help` -> argument parsing ok
+- `git ls-remote --heads origin launch/v0.1-hardening`
+  -> `c367aa55... refs/heads/launch/v0.1-hardening`
 - `git status --short --untracked-files=all` -> clean
 
 Known skipped gates:
@@ -112,7 +114,6 @@ rg 'ExecStart=.*hypercolor-daemon' \
   "${tmp}/hypercolor-0.1.0-rc.1-linux-amd64/lib/systemd/user/hypercolor.service"
 
 # 3. Validates the GitHub release workflow tag plan without pushing a tag.
-# Requires this branch to exist on GitHub before dispatch.
 gh workflow run release.yml \
   --ref launch/v0.1-hardening \
   -f version=0.1.0-rc.1 \
