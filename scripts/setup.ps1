@@ -234,6 +234,10 @@ if (Has-Cmd bun) {
     }
     $env:Path = "$env:USERPROFILE\.bun\bin;$env:Path"
     if (Has-Cmd bun) { Ok "bun $(& bun --version)" }
+    else {
+        Err 'bun install failed — see https://bun.sh'
+        exit 1
+    }
 }
 
 # ─── 5. Frontend dependencies ────────────────────────────────────────
@@ -242,19 +246,32 @@ Section 'frontend dependencies'
 if (Has-Cmd bun) {
     Info 'bun install in crates/hypercolor-ui (Tailwind v4)'
     Push-Location (Join-Path $Root 'crates/hypercolor-ui')
-    try { & bun install --frozen-lockfile --silent | Out-Null; Ok 'crates/hypercolor-ui ready' }
-    catch { Warn 'hypercolor-ui bun install failed' }
-    finally { Pop-Location }
+    try {
+        & bun install --frozen-lockfile --silent | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Err 'hypercolor-ui bun install failed'
+            exit 1
+        }
+        Ok 'crates/hypercolor-ui ready'
+    } finally {
+        Pop-Location
+    }
 } else {
-    Warn 'bun not found — skipping UI dependencies'
+    Err 'bun not found — cannot install UI dependencies'
+    exit 1
 }
 
-if (Has-Cmd bun) {
-    Info 'bun install in sdk/'
-    Push-Location (Join-Path $Root 'sdk')
-    try { & bun install --frozen-lockfile --silent | Out-Null; Ok 'sdk/ ready' }
-    catch { Warn 'sdk/ bun install failed' }
-    finally { Pop-Location }
+Info 'bun install in sdk/'
+Push-Location (Join-Path $Root 'sdk')
+try {
+    & bun install --frozen-lockfile --silent | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Err 'sdk/ bun install failed'
+        exit 1
+    }
+    Ok 'sdk/ ready'
+} finally {
+    Pop-Location
 }
 
 if ((Test-Path (Join-Path $Root 'e2e/package.json')) -and (Has-Cmd npm)) {
