@@ -68,9 +68,11 @@ jobs:
             prerelease=true
           fi
 
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "prerelease=${prerelease}"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Summarize release plan
         env:
@@ -88,7 +90,7 @@ jobs:
             echo "- Dry run: ${DRY_RUN}"
             echo
             echo "Pushing the tag triggers ci.yml to build artifacts and publish the release."
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Create and push tag
         if: inputs.dry_run == false
