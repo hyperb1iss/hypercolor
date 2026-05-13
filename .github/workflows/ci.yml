@@ -84,6 +84,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-shared
     steps:
@@ -127,6 +128,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -187,6 +189,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-native
     steps:
@@ -225,9 +228,10 @@ jobs:
   # ── Rust Test ──────────────────────────────────────────────────
   rust-test:
     name: Rust Test / ${{ matrix.label }}
-    needs: changes
+    needs: [changes, sdk]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -274,6 +278,13 @@ jobs:
           shared-key: ${{ matrix.shared_key }}
           workspaces: . -> ${{ matrix.target_dir }}
           cache-on-failure: "false"
+
+      - name: Download generated effects
+        if: matrix.suite == 'shared'
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-effects
+          path: effects/hypercolor
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
@@ -499,6 +510,13 @@ jobs:
       - run: bun run typecheck
       - run: bun run build
       - run: bun run build:effects
+
+      - name: Upload generated effects
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-effects
+          path: effects/hypercolor
+          if-no-files-found: error
 
   # ── UI (Leptos / Trunk) ────────────────────────────────────────
   ui:
