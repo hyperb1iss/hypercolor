@@ -568,7 +568,7 @@ jobs:
 
   # ── End-to-End (Playwright) ──────────────────────────────────
   e2e:
-    name: E2E
+    name: E2E / ${{ matrix.label }}
     needs: rust-check-shared
     if: >-
       always() &&
@@ -576,8 +576,24 @@ jobs:
       needs.rust-check-shared.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: servo
+            label: Servo
+            build_recipe: e2e-build
+            shared_key: servo-daemon
+            target_dir: .cache/hypercolor/target/servo-daemon
+          - suite: cpu
+            label: CPU Smoke
+            build_recipe: e2e-build-cpu
+            shared_key: e2e-cpu
+            target_dir: .cache/hypercolor/target/e2e-cpu
     env:
       HYPERCOLOR_E2E_KEEP_RUN_DIR: "1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
+      HYPERCOLOR_E2E_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
       - uses: actions/checkout@v6
 
@@ -610,6 +626,10 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: ${{ matrix.shared_key }}
+          workspaces: . -> ${{ matrix.target_dir }}
+          cache-on-failure: "false"
 
       - name: Install just
         uses: taiki-e/install-action@v2
@@ -632,7 +652,7 @@ jobs:
         run: npm ci
 
       - name: Build e2e stack
-        run: just e2e-build
+        run: just ${{ matrix.build_recipe }}
 
       - name: Install Playwright Chromium
         working-directory: e2e
@@ -645,7 +665,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-artifacts
+          name: e2e-artifacts-${{ matrix.suite }}
           path: |
             e2e/playwright-report
             e2e/test-results
