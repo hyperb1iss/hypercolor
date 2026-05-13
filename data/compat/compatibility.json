@@ -3,9 +3,9 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 31,
-    "devices": 350,
+    "devices": 369,
     "byStatus": {
-      "supported": 140,
+      "supported": 159,
       "in_progress": 0,
       "planned": 0,
       "researched": 70,
@@ -880,6 +880,182 @@
           "notes": "Hub-and-spoke daisy-chain protocol, dynamic device enumeration"
         },
         {
+          "pid": 7043,
+          "pidHex": "0x1B83",
+          "name": "K60 Pro Mono",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi monochrome lighting resource"
+        },
+        {
+          "pid": 7072,
+          "pidHex": "0x1BA0",
+          "name": "K60 Pro RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7085,
+          "pidHex": "0x1BAD",
+          "name": "K60 Pro RGB Low Profile",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7053,
+          "pidHex": "0x1B8D",
+          "name": "K60 Pro RGB SE",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7111,
+          "pidHex": "0x1BC7",
+          "name": "K60 Pro TKL",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7087,
+          "pidHex": "0x1BAF",
+          "name": "K65 Mini",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 11018,
+          "pidHex": "0x2B0A",
+          "name": "K70 Core RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7167,
+          "pidHex": "0x1BFF",
+          "name": "K70 Core RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7165,
+          "pidHex": "0x1BFD",
+          "name": "K70 Core RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 123,
+          "notes": "Bragi 64-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7091,
+          "pidHex": "0x1BB3",
+          "name": "K70 Pro",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7124,
+          "pidHex": "0x1BD4",
+          "name": "K70 Pro Optical",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7027,
+          "pidHex": "0x1B73",
+          "name": "K70 TKL",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7097,
+          "pidHex": "0x1BB9",
+          "name": "K70 TKL Champion Optical",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 193,
+          "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 7049,
+          "pidHex": "0x1B89",
+          "name": "K95 Platinum XT",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 156,
+          "notes": "Bragi 64-byte HID reports, top-bar keyboard topology"
+        },
+        {
+          "pid": 7059,
+          "pidHex": "0x1B93",
+          "name": "Katar Pro",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7084,
+          "pidHex": "0x1BAC",
+          "name": "Katar Pro XT",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
           "pid": 3098,
           "pidHex": "0x0C1A",
           "name": "Lighting Node Core",
@@ -924,6 +1100,28 @@
           "notes": "2 channels"
         },
         {
+          "pid": 7024,
+          "pidHex": "0x1B70",
+          "name": "M55 RGB Pro",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 2,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
+          "pid": 7067,
+          "pidHex": "0x1B9B",
+          "name": "MM700",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 3,
+          "notes": "Bragi 64-byte HID reports"
+        },
+        {
           "pid": 3157,
           "pidHex": "0x0C55",
           "name": "Nautilus RS LCD",
@@ -933,6 +1131,17 @@
           "transport": "usb_bulk",
           "leds": null,
           "notes": null
+        },
+        {
+          "pid": 7139,
+          "pidHex": "0x1BE3",
+          "name": "Scimitar Elite",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 5,
+          "notes": "Bragi 128-byte HID reports"
         },
         {
           "pid": 7428,
@@ -1068,14 +1277,14 @@
         }
       ],
       "counts": {
-        "supported": 14,
+        "supported": 33,
         "in_progress": 0,
         "planned": 0,
         "researched": 9,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 23,
+      "totalDevices": 42,
       "drivers": [
         "corsair"
       ],
@@ -1087,7 +1296,10 @@
         "argb_controller",
         "fan_controller",
         "headset",
+        "keyboard",
         "lcd",
+        "mouse",
+        "mousepad",
         "ram",
         "strip"
       ],

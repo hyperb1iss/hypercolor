@@ -132,6 +132,198 @@ driver = "corsair"
 transport = "usb_hid"
 notes = "2 channels"
 
+# ─── Bragi Peripherals ─────────────────────────────────────────────────
+
+[[devices]]
+pid = 0x1BA0
+name = "K60 Pro RGB"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BAD
+name = "K60 Pro RGB Low Profile"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1B8D
+name = "K60 Pro RGB SE"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1B83
+name = "K60 Pro Mono"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi monochrome lighting resource"
+
+[[devices]]
+pid = 0x1BC7
+name = "K60 Pro TKL"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BAF
+name = "K65 Mini"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 1024-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1B73
+name = "K70 TKL"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 193
+notes = "Bragi 1024-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BB9
+name = "K70 TKL Champion Optical"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 193
+notes = "Bragi 1024-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BB3
+name = "K70 Pro"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 193
+notes = "Bragi 1024-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BD4
+name = "K70 Pro Optical"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 193
+notes = "Bragi 1024-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x2B0A
+name = "K70 Core RGB"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BFF
+name = "K70 Core RGB"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1BFD
+name = "K70 Core RGB"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 123
+notes = "Bragi 64-byte HID reports, per-key RGB"
+
+[[devices]]
+pid = 0x1B89
+name = "K95 Platinum XT"
+type = "keyboard"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 156
+notes = "Bragi 64-byte HID reports, top-bar keyboard topology"
+
+[[devices]]
+pid = 0x1B70
+name = "M55 RGB Pro"
+type = "mouse"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 2
+notes = "Bragi 64-byte HID reports"
+
+[[devices]]
+pid = 0x1B93
+name = "Katar Pro"
+type = "mouse"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 1
+notes = "Bragi 64-byte HID reports"
+
+[[devices]]
+pid = 0x1BAC
+name = "Katar Pro XT"
+type = "mouse"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 1
+notes = "Bragi 64-byte HID reports"
+
+[[devices]]
+pid = 0x1BE3
+name = "Scimitar Elite"
+type = "mouse"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 5
+notes = "Bragi 128-byte HID reports"
+
+[[devices]]
+pid = 0x1B9B
+name = "MM700"
+type = "mousepad"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 3
+notes = "Bragi 64-byte HID reports"
+
 # ─── Not Yet Supported ───────────────────────────────────────────────
 
 [[devices]]
