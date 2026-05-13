@@ -48,10 +48,17 @@ jobs:
           - suite: core-servo
             label: Core
             shared_key: servo-core
+            key: ""
             target_dir: .cache/hypercolor/target/servo-core
           - suite: daemon-servo
             label: Daemon
             shared_key: servo-daemon
+            key: ""
+            target_dir: .cache/hypercolor/target/servo-daemon
+          - suite: e2e-servo
+            label: E2E
+            shared_key: servo-daemon
+            key: e2e-dev-v1
             target_dir: .cache/hypercolor/target/servo-daemon
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
@@ -79,6 +86,7 @@ jobs:
       - uses: ./.github/actions/rust-build-cache
         with:
           shared-key: ${{ matrix.shared_key }}
+          key: ${{ matrix.key }}
           workspaces: . -> ${{ matrix.target_dir }}
           cache-on-failure: "false"
 
@@ -119,3 +127,9 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
           -- -D warnings
+
+      - name: Warm Servo e2e build artifacts
+        if: matrix.suite == 'e2e-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo build --locked -p hypercolor-daemon -p hypercolor-cli

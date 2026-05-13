@@ -567,15 +567,12 @@ jobs:
       - run: env -u NO_COLOR trunk build --release
 
   # ── End-to-End (Playwright) ──────────────────────────────────
-  e2e:
-    name: E2E / ${{ matrix.label }}
-    needs: rust-check-shared
-    if: >-
-      always() &&
-      (needs.rust-check-shared.result == 'success' ||
-      needs.rust-check-shared.result == 'skipped')
+  e2e-build:
+    name: E2E Build / ${{ matrix.label }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -584,18 +581,121 @@ jobs:
             label: Servo
             build_recipe: e2e-build
             shared_key: servo-daemon
+            cache_key: e2e-dev-v1
             target_dir: .cache/hypercolor/target/servo-daemon
           - suite: cpu
             label: CPU Smoke
             build_recipe: e2e-build-cpu
             shared_key: e2e-cpu
+            cache_key: ""
             target_dir: .cache/hypercolor/target/e2e-cpu
     env:
-      HYPERCOLOR_E2E_KEEP_RUN_DIR: "1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
-      HYPERCOLOR_E2E_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Dpkg::Use-Pty=0 \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - uses: ./.github/actions/bun-cache
+        with:
+          key: e2e-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: ${{ matrix.shared_key }}
+          key: ${{ matrix.cache_key }}
+          workspaces: . -> ${{ matrix.target_dir }}
+          cache-on-failure: "false"
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install Trunk
+        run: cargo install trunk --locked
+
+      - name: Install SDK dependencies
+        working-directory: sdk
+        run: bun install --frozen-lockfile
+
+      - name: Install UI dependencies
+        working-directory: crates/hypercolor-ui
+        run: bun install --frozen-lockfile
+
+      - name: Build e2e stack
+        run: just ${{ matrix.build_recipe }}
+
+      - name: Stage e2e stack
+        run: |
+          rm -rf e2e-stack
+          mkdir -p e2e-stack/bin e2e-stack/effects e2e-stack/ui
+          install -m755 "${CARGO_TARGET_DIR}/debug/hypercolor-daemon" \
+            e2e-stack/bin/hypercolor-daemon
+          install -m755 "${CARGO_TARGET_DIR}/debug/hypercolor" \
+            e2e-stack/bin/hypercolor
+          cp -R crates/hypercolor-ui/dist/. e2e-stack/ui/
+          cp -R effects/hypercolor/. e2e-stack/effects/
+
+      - name: Upload e2e stack
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-stack-${{ matrix.suite }}
+          path: e2e-stack
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e:
+    name: E2E / ${{ matrix.label }}
+    needs: [rust-check-shared, e2e-build]
+    if: >-
+      always() &&
+      (needs.rust-check-shared.result == 'success' ||
+      needs.rust-check-shared.result == 'skipped') &&
+      needs.e2e-build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: servo
+            label: Servo
+          - suite: cpu
+            label: CPU Smoke
+    env:
+      HYPERCOLOR_E2E_KEEP_RUN_DIR: "1"
+      HYPERCOLOR_E2E_DAEMON_BIN: ${{ github.workspace }}/e2e-stack/bin/hypercolor-daemon
+      HYPERCOLOR_E2E_CLI_BIN: ${{ github.workspace }}/e2e-stack/bin/hypercolor
+      HYPERCOLOR_E2E_UI_DIST_DIR: ${{ github.workspace }}/crates/hypercolor-ui/dist
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download e2e stack
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-stack-${{ matrix.suite }}
+          path: e2e-stack
 
       - name: Install system dependencies
         run: |
@@ -617,49 +717,25 @@ jobs:
           cache: npm
           cache-dependency-path: e2e/package-lock.json
 
-      - uses: ./.github/actions/bun-cache
-        with:
-          key: e2e-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - uses: ./.github/actions/rust-build-cache
-        with:
-          shared-key: ${{ matrix.shared_key }}
-          workspaces: . -> ${{ matrix.target_dir }}
-          cache-on-failure: "false"
-
-      - name: Install just
-        uses: taiki-e/install-action@v2
-        with:
-          tool: just
-
-      - name: Install Trunk
-        run: cargo install trunk --locked
-
-      - name: Install SDK dependencies
-        working-directory: sdk
-        run: bun install --frozen-lockfile
-
-      - name: Install UI dependencies
-        working-directory: crates/hypercolor-ui
-        run: bun install --frozen-lockfile
+      - name: Restore e2e stack
+        run: |
+          chmod +x e2e-stack/bin/hypercolor-daemon e2e-stack/bin/hypercolor
+          rm -rf crates/hypercolor-ui/dist effects/hypercolor
+          mkdir -p crates/hypercolor-ui/dist effects/hypercolor
+          cp -R e2e-stack/ui/. crates/hypercolor-ui/dist/
+          cp -R e2e-stack/effects/. effects/hypercolor/
 
       - name: Install e2e dependencies
         working-directory: e2e
         run: npm ci
-
-      - name: Build e2e stack
-        run: just ${{ matrix.build_recipe }}
 
       - name: Install Playwright Chromium
         working-directory: e2e
         run: npx playwright install --with-deps chromium
 
       - name: Run e2e suite
-        run: just e2e
+        working-directory: e2e
+        run: npm test
 
       - name: Upload e2e artifacts
         if: failure()
