@@ -14,7 +14,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  APT_STEP_TIMEOUT: 20m
+  APT_STEP_TIMEOUT: 35m
   APT_HTTP_TIMEOUT: "20"
   APT_RETRIES: "5"
   # System deps shared across Linux jobs
@@ -318,6 +318,12 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked -p hypercolor-app -p hypercolor-tray
+
+      - name: Seed effect cover fixture
+        if: matrix.suite == 'daemon'
+        run: |
+          mkdir -p effects/screenshots/curated/rainbow
+          printf 'RIFFtest-webp-fixture' > effects/screenshots/curated/rainbow/default.webp
 
       - name: Run daemon tests
         if: matrix.suite == 'daemon'
