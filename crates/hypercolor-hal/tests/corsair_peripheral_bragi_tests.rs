@@ -206,7 +206,7 @@ fn parse_response_accepts_zero_prefixed_hidapi_ack() {
         .expect("zero-prefixed Bragi ACK should parse");
 
     assert_eq!(parsed.status, ResponseStatus::Ok);
-    assert_eq!(parsed.data, response);
+    assert!(parsed.data.is_empty());
 }
 
 #[test]
@@ -221,6 +221,7 @@ fn parse_response_accepts_magic_prefixed_ack() {
         .expect("magic-prefixed Bragi ACK should parse");
 
     assert_eq!(parsed.status, ResponseStatus::Ok);
+    assert!(parsed.data.is_empty());
 }
 
 #[test]
@@ -259,6 +260,41 @@ fn parse_response_rejects_failed_and_short_replies() {
         protocol.parse_response(&[0_u8, BragiCommand::Set as u8]),
         Err(ProtocolError::MalformedResponse { .. })
     ));
+}
+
+#[test]
+fn encode_frame_into_reuses_existing_command_buffers() {
+    let protocol = bragi_protocol(BRAGI_PACKET_SIZE, 123, BragiLightingFormat::RgbPlanar);
+    let colors = vec![[0_u8, 0, 0]; 123];
+    let mut commands = Vec::new();
+
+    protocol.encode_frame_into(&colors, &mut commands);
+    let first_pointers = commands
+        .iter()
+        .map(|command| command.data.as_ptr())
+        .collect::<Vec<_>>();
+    let first_capacities = commands
+        .iter()
+        .map(|command| command.data.capacity())
+        .collect::<Vec<_>>();
+
+    protocol.encode_frame_into(&colors, &mut commands);
+
+    assert_eq!(commands.len(), 7);
+    assert_eq!(
+        first_pointers,
+        commands
+            .iter()
+            .map(|command| command.data.as_ptr())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        first_capacities,
+        commands
+            .iter()
+            .map(|command| command.data.capacity())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

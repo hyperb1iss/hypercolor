@@ -9,8 +9,8 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceFeatures};
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ProtocolZone, ResponseStatus, TransferType,
 };
 
 use super::topology::zones_for_bragi;
@@ -112,34 +112,86 @@ impl CorsairBragiProtocol {
         Self::command(packet, true)
     }
 
-    fn frame_payload(&self, colors: &[[u8; 3]]) -> Vec<u8> {
+    const fn payload_len(&self) -> usize {
         match self.config.lighting_format {
-            BragiLightingFormat::RgbPlanar => planar_rgb_payload(colors),
-            BragiLightingFormat::Monochrome => monochrome_payload(colors),
-            BragiLightingFormat::AlternateRgb => alternate_rgb_payload(colors),
+            BragiLightingFormat::RgbPlanar => self.config.led_count.saturating_mul(3),
+            BragiLightingFormat::Monochrome => self.config.led_count,
+            BragiLightingFormat::AlternateRgb => {
+                2_usize.saturating_add(self.config.led_count.saturating_mul(3))
+            }
         }
     }
 
-    fn append_write_commands(&self, payload: &[u8], commands: &mut Vec<ProtocolCommand>) {
+    fn push_packet<F>(&self, commands: &mut CommandBuffer<'_>, expects_response: bool, fill: F)
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        commands.push_fill(
+            expects_response,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Primary,
+            |packet| {
+                packet.resize(self.config.packet_size, 0);
+                packet.fill(0);
+                packet[0] = BRAGI_MAGIC;
+                fill(packet);
+            },
+        );
+    }
+
+    fn push_property_set(
+        &self,
+        commands: &mut CommandBuffer<'_>,
+        property: BragiProperty,
+        value: u16,
+    ) {
+        self.push_packet(commands, true, |packet| {
+            packet[1] = BragiCommand::Set as u8;
+            packet[2] = property as u8;
+            packet[3] = 0x00;
+            packet[4..6].copy_from_slice(&value.to_le_bytes());
+        });
+    }
+
+    fn copy_payload_chunk(&self, colors: &[[u8; 3]], payload_offset: usize, out: &mut [u8]) {
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = self.payload_byte(colors, payload_offset + index);
+        }
+    }
+
+    fn payload_byte(&self, colors: &[[u8; 3]], index: usize) -> u8 {
+        match self.config.lighting_format {
+            BragiLightingFormat::RgbPlanar => planar_rgb_byte(colors, index),
+            BragiLightingFormat::Monochrome => monochrome_byte(colors, index),
+            BragiLightingFormat::AlternateRgb => alternate_rgb_byte(colors, index),
+        }
+    }
+
+    fn append_write_commands(&self, colors: &[[u8; 3]], commands: &mut CommandBuffer<'_>) {
         let first_capacity = self.config.packet_size.saturating_sub(7);
         let continue_capacity = self.config.packet_size.saturating_sub(3);
-        let declared_len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+        let payload_len = self.payload_len();
+        let declared_len = u32::try_from(payload_len).unwrap_or(u32::MAX);
+        let first_len = payload_len.min(first_capacity);
 
-        let mut first = self.fixed_packet();
-        first[1] = BragiCommand::WriteData as u8;
-        first[2] = BragiHandle::Lighting as u8;
-        first[3..7].copy_from_slice(&declared_len.to_le_bytes());
-
-        let first_len = payload.len().min(first_capacity);
-        first[7..7 + first_len].copy_from_slice(&payload[..first_len]);
-        commands.push(Self::command(first, true));
-
-        for chunk in payload[first_len..].chunks(continue_capacity) {
-            let mut packet = self.fixed_packet();
-            packet[1] = BragiCommand::ContinueWrite as u8;
+        self.push_packet(commands, true, |packet| {
+            packet[1] = BragiCommand::WriteData as u8;
             packet[2] = BragiHandle::Lighting as u8;
-            packet[3..3 + chunk.len()].copy_from_slice(chunk);
-            commands.push(Self::command(packet, true));
+            packet[3..7].copy_from_slice(&declared_len.to_le_bytes());
+            self.copy_payload_chunk(colors, 0, &mut packet[7..7 + first_len]);
+        });
+
+        let mut payload_offset = first_len;
+        while payload_offset < payload_len {
+            let chunk_len = (payload_len - payload_offset).min(continue_capacity);
+            self.push_packet(commands, true, |packet| {
+                packet[1] = BragiCommand::ContinueWrite as u8;
+                packet[2] = BragiHandle::Lighting as u8;
+                self.copy_payload_chunk(colors, payload_offset, &mut packet[3..3 + chunk_len]);
+            });
+
+            payload_offset += chunk_len;
         }
     }
 }
@@ -170,14 +222,14 @@ impl Protocol for CorsairBragiProtocol {
     }
 
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
-        commands.truncate(0);
         if self.config.led_count == 0 {
+            commands.clear();
             return;
         }
 
         let normalized = self.normalize_colors(colors);
-        let payload = self.frame_payload(normalized.as_ref());
-        self.append_write_commands(&payload, commands);
+        let mut buffer = CommandBuffer::new(commands);
+        self.append_write_commands(normalized.as_ref(), &mut buffer);
 
         let any_nonzero = normalized
             .iter()
@@ -185,10 +237,11 @@ impl Protocol for CorsairBragiProtocol {
         let previous_nonzero = self.last_frame_nonzero.swap(any_nonzero, Ordering::AcqRel);
 
         if previous_nonzero && !any_nonzero {
-            commands.push(self.property_set(BragiProperty::Brightness, 0));
+            self.push_property_set(&mut buffer, BragiProperty::Brightness, 0);
         } else if !previous_nonzero && any_nonzero {
-            commands.push(self.property_set(BragiProperty::Brightness, 1_000));
+            self.push_property_set(&mut buffer, BragiProperty::Brightness, 1_000);
         }
+        buffer.finish();
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
@@ -221,7 +274,7 @@ impl Protocol for CorsairBragiProtocol {
 
         Ok(ProtocolResponse {
             status,
-            data: data.to_vec(),
+            data: Vec::new(),
         })
     }
 
@@ -255,28 +308,27 @@ impl Protocol for CorsairBragiProtocol {
     }
 }
 
-fn planar_rgb_payload(colors: &[[u8; 3]]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(colors.len().saturating_mul(3));
-    payload.extend(colors.iter().map(|color| color[0]));
-    payload.extend(colors.iter().map(|color| color[1]));
-    payload.extend(colors.iter().map(|color| color[2]));
-    payload
+fn planar_rgb_byte(colors: &[[u8; 3]], index: usize) -> u8 {
+    let led_count = colors.len();
+    let color = &colors[index % led_count];
+    color[index / led_count]
 }
 
-fn monochrome_payload(colors: &[[u8; 3]]) -> Vec<u8> {
-    colors
-        .iter()
-        .map(|color| color[0].max(color[1]).max(color[2]))
-        .collect()
+fn monochrome_byte(colors: &[[u8; 3]], index: usize) -> u8 {
+    let color = colors[index];
+    color[0].max(color[1]).max(color[2])
 }
 
-fn alternate_rgb_payload(colors: &[[u8; 3]]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(2 + colors.len().saturating_mul(3));
-    payload.extend_from_slice(&[0x12, 0x00]);
-    for color in colors {
-        payload.extend_from_slice(color);
+fn alternate_rgb_byte(colors: &[[u8; 3]], index: usize) -> u8 {
+    match index {
+        0 => 0x12,
+        1 => 0x00,
+        _ => {
+            let color_index = (index - 2) / 3;
+            let channel = (index - 2) % 3;
+            colors[color_index][channel]
+        }
     }
-    payload
 }
 
 const fn map_bragi_error(error: u8) -> ResponseStatus {
