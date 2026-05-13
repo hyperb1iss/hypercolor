@@ -155,7 +155,7 @@ fn collector_smooths_fps_after_initial_rate_sample() {
     );
     let collected = collector.update_from_statistics_at(
         vec![sample_stats(device_id, 40, 420, 0, None)],
-        started_at + Duration::from_millis(1_000),
+        started_at + Duration::from_secs(1),
         2_000,
     );
 
