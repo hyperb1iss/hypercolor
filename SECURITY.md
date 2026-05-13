@@ -29,10 +29,11 @@ with you once a fix is available.
 
 ## Scope
 
-Hypercolor runs as a local daemon communicating with USB/HID devices and a web UI. The primary
+Hypercolor runs as a local daemon communicating with USB/HID devices and a web UI. The daemon
+binds to localhost by default; non-loopback control surfaces require an API key. The primary
 attack surface includes:
 
-- **REST API / WebSocket** on localhost (`:9420`)
+- **REST API / WebSocket / MCP** on localhost by default (`:9420`)
 - **USB/HID communication** with connected devices
 - **HTML effects** rendered via embedded Servo
 
