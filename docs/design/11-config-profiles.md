@@ -107,10 +107,9 @@ shutdown_color = "#1a1a2e"             # Used when shutdown_behavior = "static"
 [web_ui]
 enabled = true
 open_browser = false                   # Auto-open browser on daemon start
-cors_origins = []                      # Additional CORS origins (empty = localhost only)
+cors_origins = []                      # Extra origins allowed only when API key auth is active
 websocket_fps = 30                     # Preview frame rate for web clients
-auth_enabled = false                   # HTTP basic auth for remote access
-# auth credentials stored in system keyring, NOT here
+# API key auth is configured with HYPERCOLOR_API_KEY and HYPERCOLOR_READ_API_KEY.
 
 [effect_engine]
 # Renderer selection

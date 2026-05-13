@@ -60,7 +60,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{
-    EffectErrorFallbackPolicy, HypercolorConfig, McpConfig, RenderAccelerationMode,
+    EffectErrorFallbackPolicy, HypercolorConfig, McpConfig, RenderAccelerationMode, WebConfig,
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
@@ -922,11 +922,15 @@ pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::Discovery
 #[expect(clippy::too_many_lines)]
 pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let security_state = state.security_state.clone();
-    let mcp_config: McpConfig = state
-        .config_manager
-        .as_ref()
-        .map(|manager| manager.get().mcp.clone())
-        .unwrap_or_default();
+    let (mcp_config, web_config): (McpConfig, WebConfig) =
+        state.config_manager.as_ref().map_or_else(
+            || (McpConfig::default(), WebConfig::default()),
+            |manager| {
+                let config = manager.get();
+                (config.mcp.clone(), config.web.clone())
+            },
+        );
+    let cors_origin = cors_origins(&web_config, security_state.security_enabled());
 
     let api = Router::new()
         // ── Devices ──────────────────────────────────────────────────
@@ -1329,7 +1333,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         ))
         .layer(
             CorsLayer::new()
-                .allow_origin(loopback_cors_origins())
+                .allow_origin(cors_origin)
                 .allow_methods([
                     Method::GET,
                     Method::HEAD,
@@ -1345,8 +1349,54 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .with_state(state)
 }
 
-fn loopback_cors_origins() -> AllowOrigin {
-    AllowOrigin::predicate(|origin: &HeaderValue, _| is_loopback_origin(origin))
+fn cors_origins(web_config: &WebConfig, api_auth_required: bool) -> AllowOrigin {
+    let configured_origins = configured_cors_origins(web_config, api_auth_required);
+    AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+        is_allowed_cors_origin(origin, &configured_origins)
+    })
+}
+
+fn configured_cors_origins(web_config: &WebConfig, api_auth_required: bool) -> Vec<HeaderValue> {
+    if !api_auth_required {
+        return Vec::new();
+    }
+
+    web_config
+        .cors_origins
+        .iter()
+        .filter_map(|origin| configured_cors_origin(origin))
+        .collect()
+}
+
+fn configured_cors_origin(origin: &str) -> Option<HeaderValue> {
+    let origin = origin.trim();
+    if !is_http_origin(origin) {
+        warn!(origin, "Ignoring invalid configured CORS origin");
+        return None;
+    }
+
+    match HeaderValue::from_str(origin) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warn!(origin, %error, "Ignoring invalid configured CORS origin");
+            None
+        }
+    }
+}
+
+fn is_allowed_cors_origin(origin: &HeaderValue, configured_origins: &[HeaderValue]) -> bool {
+    is_loopback_origin(origin) || configured_origins.iter().any(|allowed| allowed == origin)
+}
+
+fn is_http_origin(origin: &str) -> bool {
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    matches!(uri.scheme_str(), Some("http" | "https"))
+        && uri.host().is_some()
+        && uri
+            .path_and_query()
+            .is_none_or(|path| matches!(path.as_str(), "" | "/"))
 }
 
 fn is_loopback_origin(origin: &HeaderValue) -> bool {
@@ -1368,4 +1418,66 @@ fn is_loopback_origin(origin: &HeaderValue) -> bool {
     }
 
     host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use axum::http::HeaderValue;
+    use hypercolor_types::config::WebConfig;
+
+    use super::{configured_cors_origins, is_allowed_cors_origin};
+
+    fn origin(value: &str) -> HeaderValue {
+        HeaderValue::from_str(value).expect("origin should be a valid header value")
+    }
+
+    #[test]
+    fn loopback_origin_is_allowed_without_api_auth() {
+        let configured = configured_cors_origins(&WebConfig::default(), false);
+
+        assert!(is_allowed_cors_origin(
+            &origin("http://localhost:9430"),
+            &configured
+        ));
+        assert!(is_allowed_cors_origin(
+            &origin("http://127.0.0.1:9430"),
+            &configured
+        ));
+    }
+
+    #[test]
+    fn configured_origin_requires_api_auth() {
+        let config = WebConfig {
+            cors_origins: vec!["https://studio.example".to_owned()],
+            ..WebConfig::default()
+        };
+
+        let unsecured = configured_cors_origins(&config, false);
+        assert!(!is_allowed_cors_origin(
+            &origin("https://studio.example"),
+            &unsecured
+        ));
+
+        let secured = configured_cors_origins(&config, true);
+        assert!(is_allowed_cors_origin(
+            &origin("https://studio.example"),
+            &secured
+        ));
+    }
+
+    #[test]
+    fn invalid_configured_origin_is_ignored() {
+        let config = WebConfig {
+            cors_origins: vec![
+                "*".to_owned(),
+                "https://studio.example/path".to_owned(),
+                "https://studio.example".to_owned(),
+            ],
+            ..WebConfig::default()
+        };
+
+        let configured = configured_cors_origins(&config, true);
+
+        assert_eq!(configured, vec![origin("https://studio.example")]);
+    }
 }

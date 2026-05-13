@@ -35,7 +35,6 @@ fn web_defaults_match_spec() {
     assert!(!w.open_browser);
     assert!(w.cors_origins.is_empty());
     assert_eq!(w.websocket_fps, 30);
-    assert!(!w.auth_enabled);
 }
 
 #[test]

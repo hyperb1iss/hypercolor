@@ -390,9 +390,6 @@ pub struct WebConfig {
 
     #[serde(default = "defaults::websocket_fps")]
     pub websocket_fps: u32,
-
-    #[serde(default)]
-    pub auth_enabled: bool,
 }
 
 impl Default for WebConfig {
@@ -402,7 +399,6 @@ impl Default for WebConfig {
             open_browser: false,
             cors_origins: Vec::new(),
             websocket_fps: defaults::websocket_fps(),
-            auth_enabled: false,
         }
     }
 }

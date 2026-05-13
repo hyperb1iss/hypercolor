@@ -296,11 +296,9 @@ shutdown_color = "#1a1a2e"           # Color when shutdown_behavior = "static"
 [web]
 enabled = true                       # Serve the web UI on the daemon port
 open_browser = false                 # Auto-open browser on daemon start
-cors_origins = []                    # Additional CORS origins (empty = localhost only)
+cors_origins = []                    # Extra origins allowed only when API key auth is active
 websocket_fps = 30                   # Preview frame rate for WebSocket clients
-auth_enabled = false                 # HTTP basic auth for remote access
-# Auth credentials stored in system keyring, NOT here.
-# Key: "hypercolor/web-ui/password"
+# API key auth is configured with HYPERCOLOR_API_KEY and HYPERCOLOR_READ_API_KEY.
 
 # ─── Effect Engine ─────────────────────────────────────────────
 
@@ -1374,9 +1372,6 @@ pub struct WebConfig {
 
     #[serde(default = "defaults::websocket_fps")]
     pub websocket_fps: u32,
-
-    #[serde(default)]
-    pub auth_enabled: bool,
 }
 ```
 
@@ -2184,9 +2179,8 @@ Every field has a compile-time default. A fresh install with zero config files s
 |                   | `shutdown_color`               | `"#1a1a2e"`                     |                                                                             |
 | **web**           | `enabled`                      | `true`                          |                                                                             |
 |                   | `open_browser`                 | `false`                         |                                                                             |
-|                   | `cors_origins`                 | `[]`                            | localhost only                                                              |
+|                   | `cors_origins`                 | `[]`                            | extra origins allowed only when API key auth is active                      |
 |                   | `websocket_fps`                | `30`                            |                                                                             |
-|                   | `auth_enabled`                 | `false`                         |                                                                             |
 | **effect_engine** | `preferred_renderer`           | `"auto"`                        |                                                                             |
 |                   | `servo_enabled`                | `true`                          |                                                                             |
 |                   | `wgpu_backend`                 | `"auto"`                        |                                                                             |

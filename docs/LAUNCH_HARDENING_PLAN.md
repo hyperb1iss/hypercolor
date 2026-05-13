@@ -133,8 +133,8 @@ Verify:
 
 Implementation:
 
-- Either wire `web.auth_enabled` and `web.cors_origins`, or remove/deprecate them from public config.
-- If wired, make CORS respect configured origins only when remote auth is active.
+- Remove the stale web auth config field from public config.
+- Wire `web.cors_origins` so configured origins are honored only when API key auth is active.
 - Add tests for loopback defaults, configured origins, and remote access.
 - Update docs to match actual behavior.
 
@@ -142,7 +142,7 @@ Verify:
 
 - `cargo test -p hypercolor-types --test config_tests`
 - `cargo test -p hypercolor-daemon --test security_api_tests`
-- `rg -n "auth_enabled|cors_origins" docs crates` shows only truthful references.
+- `rg -n "cors_origins|auth config field" docs crates` shows only truthful references.
 
 ### Task 1.3: Harden Driver Credential Storage
 

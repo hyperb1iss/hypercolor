@@ -107,7 +107,7 @@ impl SecurityState {
         }
     }
 
-    fn security_enabled(&self) -> bool {
+    pub(crate) fn security_enabled(&self) -> bool {
         self.auth.control_key.is_some() || self.auth.read_key.is_some()
     }
 }
