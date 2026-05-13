@@ -1,17 +1,25 @@
 # Hypercolor Launch Hardening Plan
 
-**Status:** Draft  
-**Created:** 2026-05-13  
-**Scope:** public repo launch, v0.1.0 release readiness, announcement readiness  
+**Status:** Local hardening complete; explicit e2e/RC approval pending
+**Created:** 2026-05-13
+**Scope:** public repo launch, v0.1.0 release readiness, announcement readiness
 **Source:** multi-agent launch readiness audit
 
 ## Verdict
 
-Hypercolor is not ready to open the repository and announce yet.
+The local launch-hardening work is complete. Hypercolor now has green local
+verification for the security, packaging, SDK, UI, Python, docs, compatibility,
+and supply-chain gates covered by this plan.
 
-The core product is strong: the Rust workspace, SDK, UI, Python client, docs build, compatibility generation, and e2e build all pass. The launch blockers are concentrated in secure remote exposure, release/install reliability, public package availability, and public docs truthfulness.
+Two launch approval gates remain before public announcement:
 
-This plan turns those blockers into executable waves. Each task has a concrete verification gate. Work should land as small, goal-aligned Conventional Commit commits with bodies.
+- `just e2e`, because it starts the daemon/browser stack.
+- The RC workflow/tag rehearsal, because release tags and workflow dispatches
+  require an explicit go-ahead.
+
+This plan turns the original blockers into executable waves. Each task has a
+concrete verification gate. Work should land as small, goal-aligned
+Conventional Commit commits with bodies.
 
 ## Success Criteria
 
@@ -26,7 +34,7 @@ Hypercolor is launch-ready when all of the following are true:
 - Unsafe-code policy is accurate and documents audited platform interop exceptions.
 - Generated compatibility docs are current and `zola check` is green.
 - The repo has no accidental large untracked launch artifacts.
-- Full gates pass with receipts:
+- Local gates pass with receipts:
   - `just verify`
   - `just compat-check`
   - `just sdk-lint`
@@ -37,13 +45,15 @@ Hypercolor is launch-ready when all of the following are true:
   - `just python-verify`
   - `just docs-build`
   - `cd docs && zola check`
-  - `just e2e`
   - `just deny`
+  - `just e2e-build`
+- Explicit approval gates pass:
+  - `just e2e`
   - release RC workflow dry run
 
 ## Current Green Receipts
 
-These passed during the audit:
+These passed during launch hardening:
 
 - `just verify` -> `All checks passed`
 - `just compat-check` -> compatibility matrix current, `31 vendors`, `410 devices`, `175 supported`
@@ -54,13 +64,16 @@ These passed during the audit:
 - `just ui-build` -> Trunk release build succeeded
 - `just python-verify` -> Ruff, format, ty, protocol check, and `49 passed`
 - `just docs-build` -> Zola built 20 pages and 6 sections
+- `cd docs && zola check` -> `20 pages`, `6 sections`, done
+- `just deny` -> advisories, bans, licenses, and sources ok
 - `just e2e-build` -> daemon/CLI build, effects build, and production UI build succeeded
+- `git status --short --untracked-files=all` -> clean
 
-Known failed or skipped gates:
+Known skipped gates:
 
-- `just deny` failed locally because `cargo-deny` was not installed.
-- `cd docs && zola check` failed on three external vendor links returning 403.
-- `just e2e` was not run during the audit because it starts the daemon/browser stack.
+- `just e2e` has not been run because it starts the daemon/browser stack.
+- RC workflow/tag rehearsal has not been run because release orchestration needs
+  explicit approval.
 
 ## Wave 0: Branch Hygiene And Artifact Triage
 
