@@ -584,7 +584,8 @@ e2e-browsers:
 
 # Build the daemon, CLI, generated effects, and production web UI for e2e
 e2e-build:
-    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
     just effects-build
     just ui-build
 
