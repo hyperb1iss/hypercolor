@@ -85,8 +85,7 @@ These passed during launch hardening:
   -> no findings beyond the existing SilkCircuit color `printf` style
 - `scripts/install-release.sh --help`, `scripts/get-hypercolor.sh --help`,
   `scripts/uninstall.sh --help` -> argument parsing ok
-- `git ls-remote --heads origin launch/v0.1-hardening`
-  -> `c367aa55... refs/heads/launch/v0.1-hardening`
+- `git status --short --branch` -> tracking `origin/launch/v0.1-hardening`
 - `git status --short --untracked-files=all` -> clean
 
 Known skipped gates:
