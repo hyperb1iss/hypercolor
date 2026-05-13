@@ -330,14 +330,14 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers,wgpu
+          --features builtin-drivers
 
       - name: Run daemon doc tests
         if: matrix.suite == 'daemon'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers,wgpu
+          --features builtin-drivers
 
       - name: Run core Servo tests
         if: matrix.suite == 'core-servo'
