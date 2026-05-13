@@ -366,10 +366,10 @@ fn WebViewportPaneStub(
                         bg-surface-sunken/50 px-4 py-10 text-fg-tertiary">
                 <Icon icon=icondata::LuEye width="24" height="24" />
                 <span class="text-sm text-fg-secondary">
-                    "Servo preview + drag-to-resize overlay land in the next commit."
+                    "Manual viewport controls are active."
                 </span>
                 <span class="text-[11px] text-fg-tertiary/80">
-                    "Use the numeric inputs below to position the crop in the meantime."
+                    "Use the numeric inputs below to position the crop."
                 </span>
             </div>
 
@@ -419,7 +419,7 @@ fn ScreenCastPaneStub() -> impl IntoView {
                     bg-surface-sunken/50 px-4 py-12 text-fg-tertiary">
             <Icon icon=icondata::LuMonitor width="24" height="24" />
             <span class="text-sm text-fg-secondary">
-                "Screen Capture pane wiring lands in the next commit."
+                "Screen capture preview is unavailable in this build."
             </span>
         </div>
     }

@@ -22,11 +22,11 @@ open = false
 [[hooks]]
 stage = "pre_build"
 command = "bunx"
-command_arguments = ["@tailwindcss/cli", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
+command_arguments = ["--no-install", "tailwindcss", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
 
 [hooks.windows]
 command = "bunx.exe"
-command_arguments = ["@tailwindcss/cli", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
+command_arguments = ["--no-install", "tailwindcss", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
 
 [[proxy]]
 backend = "http://127.0.0.1:9420/api"

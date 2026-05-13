@@ -169,7 +169,7 @@ else
   (
     cd crates/hypercolor-ui
     if [[ ! -d node_modules ]]; then
-      bun install
+      bun install --frozen-lockfile
     fi
     if command -v rustup >/dev/null 2>&1; then
       rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
@@ -182,7 +182,7 @@ else
     (
       cd sdk
       if [[ ! -d node_modules ]]; then
-        bun install
+        bun install --frozen-lockfile
       fi
       bun run build:effects
     )

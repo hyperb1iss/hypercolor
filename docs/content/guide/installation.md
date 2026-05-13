@@ -112,8 +112,8 @@ curl -fsSL https://bun.sh/install | bash   # required for UI and SDK assets
 ### Frontend Dependencies
 
 ```bash
-cd crates/hypercolor-ui && bun install     # Tailwind v4
-cd ../../sdk && bun install                # SDK
+cd crates/hypercolor-ui && bun install --frozen-lockfile  # Tailwind v4
+cd ../../sdk && bun install --frozen-lockfile             # SDK
 cd ../e2e && npm ci                        # Playwright e2e (optional)
 ```
 

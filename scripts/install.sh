@@ -138,7 +138,7 @@ build_ui() {
     info "installing UI dependencies"
     (
       cd "${ROOT_DIR}/crates/hypercolor-ui"
-      bun install
+      bun install --frozen-lockfile
     )
   fi
 
@@ -159,7 +159,7 @@ build_ui() {
 build_effects() {
   if [[ ! -d "${ROOT_DIR}/sdk/node_modules" ]]; then
     info "installing SDK dependencies"
-    (cd "${ROOT_DIR}/sdk" && bun install)
+    (cd "${ROOT_DIR}/sdk" && bun install --frozen-lockfile)
   fi
 
   info "building SDK effects"

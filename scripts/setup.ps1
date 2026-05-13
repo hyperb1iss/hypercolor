@@ -242,7 +242,7 @@ Section 'frontend dependencies'
 if (Has-Cmd bun) {
     Info 'bun install in crates/hypercolor-ui (Tailwind v4)'
     Push-Location (Join-Path $Root 'crates/hypercolor-ui')
-    try { & bun install --silent | Out-Null; Ok 'crates/hypercolor-ui ready' }
+    try { & bun install --frozen-lockfile --silent | Out-Null; Ok 'crates/hypercolor-ui ready' }
     catch { Warn 'hypercolor-ui bun install failed' }
     finally { Pop-Location }
 } else {
@@ -252,7 +252,7 @@ if (Has-Cmd bun) {
 if (Has-Cmd bun) {
     Info 'bun install in sdk/'
     Push-Location (Join-Path $Root 'sdk')
-    try { & bun install --silent | Out-Null; Ok 'sdk/ ready' }
+    try { & bun install --frozen-lockfile --silent | Out-Null; Ok 'sdk/ ready' }
     catch { Warn 'sdk/ bun install failed' }
     finally { Pop-Location }
 }

@@ -33,7 +33,6 @@ e2e/test-results/
 web/dist/
 web/.svelte-kit/
 sdk/packages/*/dist/
-bun.lock
 
 # Environment
 .env

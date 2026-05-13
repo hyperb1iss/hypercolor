@@ -358,11 +358,11 @@ fi
 section "frontend dependencies"
 
 info "bun install in crates/hypercolor-ui (Tailwind v4)"
-(cd "$ROOT/crates/hypercolor-ui" && bun install --silent)
+(cd "$ROOT/crates/hypercolor-ui" && bun install --frozen-lockfile --silent)
 ok "crates/hypercolor-ui ready"
 
 info "bun install in sdk/"
-(cd "$ROOT/sdk" && bun install --silent)
+(cd "$ROOT/sdk" && bun install --frozen-lockfile --silent)
 ok "sdk/ ready"
 
 if [ -f "$ROOT/e2e/package.json" ] && need npm; then
