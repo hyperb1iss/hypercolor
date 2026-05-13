@@ -14,6 +14,9 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  APT_STEP_TIMEOUT: 20m
+  APT_HTTP_TIMEOUT: "20"
+  APT_RETRIES: "5"
   # System deps shared across Linux jobs
   LINUX_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
@@ -23,7 +26,7 @@ env:
     libxdo-dev
     libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
     librsvg2-dev libfontconfig1-dev libssl-dev
-  LINUX_SERVO_DEPS: >-
+  LINUX_RUST_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
     ccache cmake jq nasm pkg-config lld
@@ -36,6 +39,8 @@ env:
     --exclude hypercolor-core
     --exclude hypercolor-daemon
     --exclude hypercolor-desktop
+    --exclude hypercolor-app
+    --exclude hypercolor-tray
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
@@ -87,11 +92,17 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
             -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries=3 \
-            install -y --no-install-recommends ${{ env.LINUX_DEPS }}
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -136,11 +147,17 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
             -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries=3 \
-            install -y --no-install-recommends ${{ env.LINUX_SERVO_DEPS }}
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -166,6 +183,46 @@ jobs:
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
           -- -D warnings
 
+  rust-check-native:
+    name: Rust Check / Native App
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-native
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Dpkg::Use-Pty=0 \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_DEPS }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-check-native
+          workspaces: . -> .cache/hypercolor/target/rust-check-native
+          cache-on-failure: "false"
+
+      - name: Clippy native app crates
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-app -p hypercolor-tray --all-targets
+          -- -D warnings
+
   # ── Rust Test ──────────────────────────────────────────────────
   rust-test:
     name: Rust Test / ${{ matrix.label }}
@@ -180,6 +237,10 @@ jobs:
             label: Shared
             shared_key: rust-test-shared
             target_dir: .cache/hypercolor/target/rust-test-shared
+          - suite: native
+            label: Native App
+            shared_key: rust-test-native
+            target_dir: .cache/hypercolor/target/rust-test-native
           - suite: core-servo
             label: Core Servo
             shared_key: servo-core
@@ -195,11 +256,17 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
             -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries=3 \
-            install -y --no-install-recommends ${{ matrix.suite != 'shared' && env.LINUX_SERVO_DEPS || env.LINUX_DEPS }}
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ matrix.suite == 'native' && env.LINUX_DEPS || env.LINUX_RUST_DEPS }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -225,6 +292,18 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo test --doc --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }}
+
+      - name: Run native app tests
+        if: matrix.suite == 'native'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo nextest run --locked -p hypercolor-app -p hypercolor-tray
+
+      - name: Run native app doc tests
+        if: matrix.suite == 'native'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --doc --locked -p hypercolor-app -p hypercolor-tray
 
       - name: Run core Servo tests
         if: matrix.suite == 'core-servo'
@@ -337,11 +416,17 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
             -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries=3 \
-            install -y --no-install-recommends ${{ env.LINUX_DEPS }}
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -457,11 +542,17 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
             -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries=3 \
-            install -y --no-install-recommends ${{ env.LINUX_DEPS }}
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
       - uses: actions/setup-node@v6
         with:
@@ -604,7 +695,7 @@ jobs:
   build-native-app:
     name: Native App (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust-check-shared, rust-check-servo, rust-test, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-servo, rust-check-native, rust-test, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -767,7 +858,7 @@ jobs:
   # ── Build Release Tarballs ────────────────────────────────────
   build-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust-check-shared, rust-check-servo, rust-test, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-servo, rust-check-native, rust-test, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -788,10 +879,16 @@ jobs:
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
-          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
             -o Dpkg::Use-Pty=0 \
-            -o Acquire::Retries=3 \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_DEPS }} librsvg2-bin
 
       - uses: dtolnay/rust-toolchain@stable
