@@ -14,7 +14,8 @@ Generation details live in `../docs/development/CLIENT_GENERATION.md`.
 uv sync
 ```
 
-Once the package is published, apps should depend on it normally:
+The package is source-only for the v0.1 launch and is not published to PyPI yet.
+Once it is published, apps should depend on it normally:
 
 ```bash
 uv add hypercolor

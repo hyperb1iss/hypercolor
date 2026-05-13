@@ -12,7 +12,16 @@ Hypercolor effects are self-contained visual programs that render into a canvas,
 Create a fresh workspace:
 
 ```bash
-bunx create-hypercolor-effect aurora-lab
+mkdir -p ~/dev
+cd ~/dev
+git clone https://github.com/hyperb1iss/hypercolor.git
+cd hypercolor/sdk
+bun install
+cd ../..
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js aurora-lab \
+    --template canvas \
+    --first aurora \
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
 cd aurora-lab
 ```
 

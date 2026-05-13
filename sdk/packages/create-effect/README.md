@@ -6,17 +6,27 @@ One command gives you a ready-to-run Bun workspace with `@hypercolor/sdk` wired 
 
 ## Quick start
 
+The package is pre-release and not on npm yet. From a directory that contains a
+`hypercolor/` checkout:
+
 ```bash
-bunx create-hypercolor-effect my-effects
+cd hypercolor/sdk
+bun install
+cd ../..
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
+    --template canvas \
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
 ```
 
-The scaffolder prompts you for a template and a first effect. For non-interactive use:
+The scaffolder prompts you for any omitted template or first-effect option. For
+audio-reactive starter boilerplate:
 
 ```bash
-bunx create-hypercolor-effect my-effects \
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
     --template canvas \
     --first aurora \
-    --audio
+    --audio \
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
 ```
 
 Then:
@@ -45,9 +55,9 @@ create-hypercolor-effect [name] [options]
   --audio                 Include audio-reactive starter boilerplate
   --no-git                Skip git init
   --no-install            Skip bun install
-  --sdk-spec <spec>       Override the generated @hypercolor/sdk dependency.
-                          While the SDK is pre-release, point at a local
-                          checkout: file:../hypercolor/sdk/packages/core
+  --sdk-spec <spec>       Required while @hypercolor/sdk is pre-release.
+                          Point at a local checkout:
+                          file:../hypercolor/sdk/packages/core
                           (HYPERCOLOR_SDK_PACKAGE_SPEC env var also works).
 ```
 

@@ -28,6 +28,31 @@ beforeAll(async () => {
 })
 
 describe('@hypercolor/create-effect', () => {
+    test('requires an SDK package spec while the SDK is unpublished', async () => {
+        const previousSpec = process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
+        delete process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
+
+        const errors: string[] = []
+        try {
+            const exitCode = await scaffoldCli(['test-effects', '--template', 'canvas', '--no-git', '--no-install'], {
+                cwd: tmpdir(),
+                stdout: {
+                    error: (message: string) => errors.push(message),
+                    log: () => {},
+                },
+            })
+
+            expect(exitCode).toBe(1)
+            expect(errors.join('\n')).toContain('--sdk-spec')
+        } finally {
+            if (previousSpec === undefined) {
+                delete process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
+            } else {
+                process.env.HYPERCOLOR_SDK_PACKAGE_SPEC = previousSpec
+            }
+        }
+    })
+
     test('scaffolds a TypeScript workspace and dogfoods add/build/validate/install', async () => {
         const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-create-effect-'))
         const workspaceDir = join(tempRoot, 'test-effects')

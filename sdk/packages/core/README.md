@@ -9,7 +9,13 @@ One declarative function call turns your idea into a shippable artifact. The SDK
 Scaffold a fresh workspace with the companion package:
 
 ```bash
-bunx create-hypercolor-effect my-effects
+cd /path/that/contains/hypercolor
+cd hypercolor/sdk
+bun install
+cd ../..
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
+    --template canvas \
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
 cd my-effects
 bun run build
 ```

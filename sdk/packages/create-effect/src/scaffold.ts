@@ -104,8 +104,8 @@ export async function scaffoldWorkspace(options: ScaffoldWorkspaceOptions): Prom
     }
 }
 
-export function defaultSdkPackageSpec(): string {
-    return process.env.HYPERCOLOR_SDK_PACKAGE_SPEC ?? '^0.1.0'
+export function defaultSdkPackageSpec(): string | undefined {
+    return process.env.HYPERCOLOR_SDK_PACKAGE_SPEC
 }
 
 export function resolveWorkspaceTarget(cwd: string, workspaceName: string): string {

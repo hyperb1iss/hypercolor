@@ -1,11 +1,11 @@
 +++
 title = "Setup"
-description = "Install Bun, scaffold a workspace, and connect @hypercolor/sdk"
+description = "Install Bun, scaffold from a Hypercolor checkout, and connect @hypercolor/sdk"
 weight = 1
 template = "page.html"
 +++
 
-Every Hypercolor effect lives in a Bun workspace that depends on `@hypercolor/sdk`. The scaffolder generates a ready-to-run workspace in seconds. This page covers the one-time install, the first workspace, and the two shapes of project you're likely to build inside of.
+Every Hypercolor effect lives in a Bun workspace that depends on `@hypercolor/sdk`. The SDK packages are pre-release and not on npm yet, so the launch path is a local Hypercolor checkout plus a `file:` dependency. This page covers the one-time install, the first workspace, and the two shapes of project you're likely to build inside of.
 
 ## Install Bun
 
@@ -23,22 +23,34 @@ bun --version
 
 If you already have Node installed, that's fine. The scaffolder and CLI run on Bun directly; Node is only required if you want to invoke the `create-hypercolor-effect` bin from a shell that shims `node`.
 
+## Get the SDK source
+
+Clone Hypercolor next to the workspace you want to create, then install the SDK
+workspace dependencies:
+
+```bash
+mkdir -p ~/dev
+cd ~/dev
+git clone https://github.com/hyperb1iss/hypercolor.git
+cd hypercolor/sdk
+bun install
+cd ../..
+```
+
 ## Scaffold a workspace
 
-From the directory you want your new workspace to sit in:
+From the directory that contains your `hypercolor/` clone:
 
 ```bash
-bunx create-hypercolor-effect my-effects
-```
-
-The scaffolder prompts you for a template and a first effect. If you want it non-interactive, pass the options explicitly:
-
-```bash
-bunx create-hypercolor-effect my-effects \
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
     --template canvas \
     --first aurora \
-    --audio
+    --sdk-spec "file:../hypercolor/sdk/packages/core"
 ```
+
+You can omit `--template` or `--first` if you want interactive prompts, but keep `--sdk-spec` while the SDK is unpublished.
+
+Add `--audio` if you want audio-reactive starter boilerplate.
 
 Available templates:
 
@@ -88,7 +100,7 @@ The SDK is still pre-release. While it's unpublished, scaffolded workspaces need
 If your workspace is a sibling of a `hypercolor/` clone (for example `~/dev/my-effects` and `~/dev/hypercolor`), use a relative `file:` spec:
 
 ```bash
-bunx create-hypercolor-effect my-effects \
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects \
     --template canvas \
     --sdk-spec "file:../hypercolor/sdk/packages/core"
 ```
@@ -97,7 +109,7 @@ You can also set it globally via the environment:
 
 ```bash
 export HYPERCOLOR_SDK_PACKAGE_SPEC="file:../hypercolor/sdk/packages/core"
-bunx create-hypercolor-effect my-effects --template canvas
+bun ./hypercolor/sdk/packages/create-effect/bin/create-hypercolor-effect.js my-effects --template canvas
 ```
 
 {% callout(type="warning", title="Don't use link:") %}
@@ -118,7 +130,7 @@ All three run the same Bun authoring core that standalone workspaces use.
 
 ## Once it's published
 
-Once `@hypercolor/sdk` lands on npm, the scaffolder's default `^0.1.0` spec will just work and you can omit `--sdk-spec` entirely. Your existing workspaces can migrate by editing `package.json`:
+Once `@hypercolor/sdk` lands on npm, the scaffolder can default to `^0.1.0` and you can omit `--sdk-spec` entirely. Your existing workspaces can migrate by editing `package.json`:
 
 ```diff
 - "@hypercolor/sdk": "file:../hypercolor/sdk/packages/core"
