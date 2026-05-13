@@ -85,8 +85,8 @@ Hypercolor tracks **410 devices** across **31 vendors** in `data/drivers/vendors
 | Corsair | iCUE LINK System Hub | 0x0C3F | Fan controller | `corsair` | USB HID | — | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
 | Corsair | Ironclaw Wireless (Wired) | 0x1B4C | Mouse | `corsair` | USB HID | 6 | Bragi 64-byte HID reports |
 | Corsair | K100 MX Red | 0x1B7D | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
-| Corsair | K100 RGB Optical | 0x1B7C | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
-| Corsair | K100 RGB Optical | 0x1BC5 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
+| Corsair | K100 RGB Optical V1 | 0x1B7C | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
+| Corsair | K100 RGB Optical V2 | 0x1BC5 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
 | Corsair | K55 RGB Pro | 0x1BA4 | Keyboard | `corsair` | USB HID | 6 | Bragi 64-byte HID reports, zoned RGB |
 | Corsair | K60 Pro Mono | 0x1B83 | Keyboard | `corsair` | USB HID | 123 | Bragi monochrome lighting resource |
 | Corsair | K60 Pro RGB | 0x1BA0 | Keyboard | `corsair` | USB HID | 123 | Bragi 64-byte HID reports, per-key RGB |
@@ -661,8 +661,8 @@ _Source: [`data/drivers/vendors/coolermaster.toml`](../../../data/drivers/vendor
 | iCUE LINK System Hub | 0x0C3F | Fan controller | `corsair` | USB HID | — | Hub-and-spoke daisy-chain protocol, dynamic device enumeration |
 | Ironclaw Wireless (Wired) | 0x1B4C | Mouse | `corsair` | USB HID | 6 | Bragi 64-byte HID reports |
 | K100 MX Red | 0x1B7D | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
-| K100 RGB Optical | 0x1B7C | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
-| K100 RGB Optical | 0x1BC5 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
+| K100 RGB Optical V1 | 0x1B7C | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
+| K100 RGB Optical V2 | 0x1BC5 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, alternate RGB payload |
 | K55 RGB Pro | 0x1BA4 | Keyboard | `corsair` | USB HID | 6 | Bragi 64-byte HID reports, zoned RGB |
 | K60 Pro Mono | 0x1B83 | Keyboard | `corsair` | USB HID | 123 | Bragi monochrome lighting resource |
 | K60 Pro RGB | 0x1BA0 | Keyboard | `corsair` | USB HID | 123 | Bragi 64-byte HID reports, per-key RGB |

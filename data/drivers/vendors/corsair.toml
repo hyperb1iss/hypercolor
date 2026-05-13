@@ -316,7 +316,7 @@ notes = "Bragi 64-byte HID reports, top-bar keyboard topology"
 
 [[devices]]
 pid = 0x1B7C
-name = "K100 RGB Optical"
+name = "K100 RGB Optical V1"
 type = "keyboard"
 status = "supported"
 driver = "corsair"
@@ -326,7 +326,7 @@ notes = "Bragi 1024-byte HID reports, alternate RGB payload"
 
 [[devices]]
 pid = 0x1BC5
-name = "K100 RGB Optical"
+name = "K100 RGB Optical V2"
 type = "keyboard"
 status = "supported"
 driver = "corsair"

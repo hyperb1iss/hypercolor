@@ -118,6 +118,8 @@ fn bragi_dongles_are_researched_but_not_registered_as_rgb_devices() {
     assert!(ProtocolDatabase::lookup(CORSAIR_VID, 0x1B62).is_none());
     assert!(ProtocolDatabase::lookup(CORSAIR_VID, 0x1B65).is_none());
     assert!(ProtocolDatabase::lookup(CORSAIR_VID, 0x1B66).is_none());
+    assert!(ProtocolDatabase::lookup(CORSAIR_VID, 0x1B7F).is_none());
+    assert!(ProtocolDatabase::lookup(CORSAIR_VID, 0x1B81).is_none());
     assert!(ProtocolDatabase::lookup(CORSAIR_VID, 0x1BA6).is_none());
 }
 

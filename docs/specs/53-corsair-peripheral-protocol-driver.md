@@ -133,9 +133,9 @@ Bragi devices should use the same protocol core with per-device descriptor data:
 | `0x1BFD` | K70 Core RGB variant 3 | keyboard | 64B | 123 | Per-key |
 | `0x2B01` | K70 Core RGB TKL | keyboard | 64B | 102 | Per-key |
 | `0x1B89` | K95 Platinum XT | keyboard | 64B | 156 | Top-bar variant |
-| `0x1B7C` | K100 Optical | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
+| `0x1B7C` | K100 RGB Optical V1 | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
 | `0x1B7D` | K100 Mechanical | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
-| `0x1BC5` | K100 Optical variant | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
+| `0x1BC5` | K100 RGB Optical V2 | keyboard | 1024B | 193 | Bragi jumbo, alternate RGB payload |
 | `0x1B70` | M55 RGB Pro | mouse | 64B | 2 | Software packet lacks wheel input |
 | `0x1B4B` | Dark Core RGB SE wired | mouse | 64B | 12 | Extended mouse topology |
 | `0x1B4C` | Ironclaw RGB Wireless wired | mouse | 64B | 6 | Wireless-capable |

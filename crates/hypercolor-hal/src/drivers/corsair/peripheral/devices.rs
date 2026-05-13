@@ -260,7 +260,7 @@ pub fn build_k95_platinum_xt_protocol() -> Box<dyn Protocol> {
 pub fn build_k100_optical_v1_protocol() -> Box<dyn Protocol> {
     build_protocol(
         bragi_keyboard_config(
-            "Corsair K100 RGB Optical",
+            "Corsair K100 RGB Optical V1",
             BRAGI_JUMBO_PACKET_SIZE,
             193,
             KEYBOARD_288,
@@ -272,7 +272,7 @@ pub fn build_k100_optical_v1_protocol() -> Box<dyn Protocol> {
 pub fn build_k100_optical_v2_protocol() -> Box<dyn Protocol> {
     build_protocol(
         bragi_keyboard_config(
-            "Corsair K100 RGB Optical",
+            "Corsair K100 RGB Optical V2",
             BRAGI_JUMBO_PACKET_SIZE,
             193,
             KEYBOARD_288,
@@ -535,7 +535,7 @@ static PERIPHERAL_DESCRIPTORS: &[DeviceDescriptor] = &[
         pid: PID_K70_PRO,
         name: "Corsair K70 RGB Pro V2",
         packet_size: BRAGI_JUMBO_PACKET_SIZE,
-        protocol_id: "corsair/bragi-k70-rgb-pro-v2",
+        protocol_id: "corsair/bragi-k70-pro",
         builder: build_k70_pro_protocol
     ),
     bragi_descriptor!(
@@ -582,14 +582,14 @@ static PERIPHERAL_DESCRIPTORS: &[DeviceDescriptor] = &[
     ),
     bragi_descriptor!(
         pid: PID_K100_OPTICAL_V1,
-        name: "Corsair K100 RGB Optical",
+        name: "Corsair K100 RGB Optical V1",
         packet_size: BRAGI_JUMBO_PACKET_SIZE,
         protocol_id: "corsair/bragi-k100-rgb-optical-v1",
         builder: build_k100_optical_v1_protocol
     ),
     bragi_descriptor!(
         pid: PID_K100_OPTICAL_V2,
-        name: "Corsair K100 RGB Optical",
+        name: "Corsair K100 RGB Optical V2",
         packet_size: BRAGI_JUMBO_PACKET_SIZE,
         protocol_id: "corsair/bragi-k100-rgb-optical-v2",
         builder: build_k100_optical_v2_protocol

@@ -937,7 +937,7 @@
         {
           "pid": 7036,
           "pidHex": "0x1B7C",
-          "name": "K100 RGB Optical",
+          "name": "K100 RGB Optical V1",
           "type": "keyboard",
           "status": "supported",
           "driver": "corsair",
@@ -948,7 +948,7 @@
         {
           "pid": 7109,
           "pidHex": "0x1BC5",
-          "name": "K100 RGB Optical",
+          "name": "K100 RGB Optical V2",
           "type": "keyboard",
           "status": "supported",
           "driver": "corsair",

@@ -331,7 +331,7 @@ fn k100_uses_jumbo_alternate_rgb_packets() {
     let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_K100_OPTICAL_V1)
         .expect("Corsair K100 RGB Optical descriptor should exist");
 
-    assert_eq!(descriptor.name, "Corsair K100 RGB Optical");
+    assert_eq!(descriptor.name, "Corsair K100 RGB Optical V1");
     assert_eq!(
         descriptor.transport,
         TransportType::UsbHidApi {

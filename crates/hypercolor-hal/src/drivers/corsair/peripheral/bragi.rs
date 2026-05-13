@@ -133,7 +133,6 @@ impl CorsairBragiProtocol {
             TransferType::Primary,
             |packet| {
                 packet.resize(self.config.packet_size, 0);
-                packet.fill(0);
                 packet[0] = BRAGI_MAGIC;
                 fill(packet);
             },
