@@ -75,7 +75,44 @@ jobs:
               - '.github/workflows/ci.yml'
 
   # ── Rust Check (fmt + clippy) ──────────────────────────────────
-  rust-check:
+  rust-check-shared:
+    name: Rust Check / Shared
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-shared
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo timeout --kill-after=30s 10m apt-get -o Acquire::Retries=3 update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
+            -o Dpkg::Use-Pty=0 \
+            -o Acquire::Retries=3 \
+            install -y --no-install-recommends ${{ env.LINUX_DEPS }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: rust-check-shared
+          workspaces: . -> .cache/hypercolor/target/rust-check-shared
+          cache-on-failure: "false"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy shared crates
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
+          -- -D warnings
+
+  rust-check-servo:
     name: Rust Check / ${{ matrix.label }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -84,10 +121,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: shared
-            label: Shared
-            shared_key: rust-check-shared
-            target_dir: .cache/hypercolor/target/rust-check-shared
           - suite: core-servo
             label: Core Servo
             shared_key: servo-core
@@ -107,7 +140,7 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s 10m apt-get \
             -o Dpkg::Use-Pty=0 \
             -o Acquire::Retries=3 \
-            install -y --no-install-recommends ${{ matrix.suite != 'shared' && env.LINUX_SERVO_DEPS || env.LINUX_DEPS }}
+            install -y --no-install-recommends ${{ env.LINUX_SERVO_DEPS }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -118,17 +151,6 @@ jobs:
           shared-key: ${{ matrix.shared_key }}
           workspaces: . -> ${{ matrix.target_dir }}
           cache-on-failure: "false"
-
-      - name: Check formatting
-        if: matrix.suite == 'shared'
-        run: cargo fmt --all --check
-
-      - name: Clippy shared crates
-        if: matrix.suite == 'shared'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
-          -- -D warnings
 
       - name: Clippy core with Servo
         if: matrix.suite == 'core-servo'
@@ -298,14 +320,14 @@ jobs:
   # ── Python Generated Client Drift ──────────────────────────────
   python-generated:
     name: Python Generated Client
-    needs: [changes, rust-check]
+    needs: [changes, rust-check-shared]
     if: >-
       always() &&
       (startsWith(github.ref, 'refs/tags/') ||
       needs.changes.outputs.python == 'true' ||
       needs.changes.outputs.rust == 'true') &&
-      (needs.rust-check.result == 'success' ||
-      needs.rust-check.result == 'skipped')
+      (needs.rust-check-shared.result == 'success' ||
+      needs.rust-check-shared.result == 'skipped')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -421,11 +443,11 @@ jobs:
   # ── End-to-End (Playwright) ──────────────────────────────────
   e2e:
     name: E2E
-    needs: rust-check
+    needs: rust-check-shared
     if: >-
       always() &&
-      (needs.rust-check.result == 'success' ||
-      needs.rust-check.result == 'skipped')
+      (needs.rust-check-shared.result == 'success' ||
+      needs.rust-check-shared.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -582,7 +604,7 @@ jobs:
   build-native-app:
     name: Native App (${{ matrix.target }})
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust-check, rust-test, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-servo, rust-test, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -745,7 +767,7 @@ jobs:
   # ── Build Release Tarballs ────────────────────────────────────
   build-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust-check, rust-test, rust-deny, sdk, ui, e2e, web-assets]
+    needs: [rust-check-shared, rust-check-servo, rust-test, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
       matrix:
