@@ -10,13 +10,18 @@
 
 ## Verification
 
-<!-- Check what applies. If none apply, say why below. -->
+<!-- Check every gate that matches the files this PR touched. -->
 
-- [ ] `just verify` passes locally (fmt + lint + test)
-- [ ] `just compat-check` passes (required if this touched `data/drivers/vendors/*.toml`)
-- [ ] Tested on real hardware (list which devices in notes)
 - [ ] Added or updated tests
 - [ ] Added or updated docs (README, AGENTS.md, relevant spec, or guide)
+- [ ] `just verify` passes locally (Rust fmt + lint + test)
+- [ ] `just ui-test` and `just ui-build` pass (required for `crates/hypercolor-ui/`)
+- [ ] `just sdk-lint`, `just sdk-check`, and `just sdk-build` pass (required for `sdk/`)
+- [ ] `just python-verify` passes (required for `python/`)
+- [ ] `just compat-check` passes (required for `data/drivers/vendors/*.toml`)
+- [ ] `just docs-build` passes (required for docs or README changes)
+- [ ] Packaging scripts were syntax-checked (required for `scripts/` or `packaging/`)
+- [ ] Tested on real hardware, simulator, or e2e harness (describe below)
 
 ## Notes for reviewers
 

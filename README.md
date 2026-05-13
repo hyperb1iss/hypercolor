@@ -298,12 +298,18 @@ Hacking on Hypercolor itself? We use [just](https://github.com/casey/just) for d
 workflows.
 
 ```bash
-just daemon          # Run daemon with hot reload
+just daemon          # Run daemon locally
 just tui             # Run the TUI
 just ui-dev          # Leptos UI dev server on :9430
 just sdk-dev         # SDK dev server with HMR
 just verify          # fmt + lint + test
 ```
+
+`just verify` covers the Rust workspace. Use the focused gates for surfaces outside
+that workspace: `just ui-test && just ui-build` for the Leptos UI, `just sdk-lint
+&& just sdk-check && just sdk-build` for the TypeScript SDK, `just python-verify`
+for the Python client, `just compat-check` for device data, and `just docs-build`
+for documentation.
 
 ## ✦ The Effect SDK
 

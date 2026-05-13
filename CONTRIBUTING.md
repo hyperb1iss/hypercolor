@@ -36,7 +36,7 @@ development skills in `.agents/skills/hal-driver-development/` and
 ## Development Workflow
 
 ```bash
-just verify          # Format, lint, and test everything
+just verify          # Format, lint, and test the Rust workspace
 just check           # Quick type-check
 just test            # Run tests only
 just test-crate hypercolor-hal   # Test a specific crate
@@ -45,9 +45,30 @@ just ui-dev          # Leptos UI dev server
 just sdk-dev         # SDK dev server with HMR
 ```
 
+### Verification Gates
+
+`just verify` is the baseline for Rust changes. Some areas live outside that
+workspace or generate checked-in artifacts, so run the matching gate before you
+open a PR:
+
+- **Rust crates:** `just verify`; add `just deny` when dependencies change.
+- **Web UI:** `just ui-test` and `just ui-build`.
+- **SDK and built-in effects:** `just sdk-lint`, `just sdk-check`, `just sdk-build`;
+  add `just effects-build` when bundled effects change.
+- **Python client:** `just python-verify`; add `just python-generate-check` when the
+  OpenAPI schema or generated client changes.
+- **Hardware compatibility data:** `just compat-check`. Run `just compat` first if
+  you touched `data/drivers/vendors/*.toml`.
+- **Docs:** `just docs-build`; add `just prettier-check` for prose-heavy changes.
+- **Packaging and release scripts:** `bash -n scripts/{setup,install,dist}.sh` plus
+  the relevant `--help` command for any script you touched.
+- **End-to-end stack:** `just e2e-build` is safe for build verification. `just e2e`
+  starts the local daemon and browser harness, so call that out in the PR notes.
+
 ## Code Standards
 
-- **No `unsafe` code.** It's forbidden workspace-wide.
+- **No routine `unsafe` code.** It is forbidden by default. Platform interop crates
+  that opt out must document the boundary and keep it reviewed.
 - **No `unwrap()`.** Use `?`, `.ok()`, or `expect("reason")`.
 - **Clippy pedantic** is enforced at deny level. Run `just lint` before submitting.
 - **Tests go in `tests/` directories**, not inline `#[cfg(test)]` blocks.
@@ -58,7 +79,8 @@ just sdk-dev         # SDK dev server with HMR
 ## Submitting Changes
 
 1. Fork the repository and create your branch from `main`.
-2. Write your code, add tests, and make sure `just verify` passes.
+2. Write your code, add tests, and run the verification gates for the files you
+   touched.
 3. Write a clear PR description explaining what changed and why.
 4. If you're adding a new device driver, note whether you tested on real hardware.
 
