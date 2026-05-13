@@ -167,9 +167,38 @@ check_dependencies() {
     for cmd in curl tar; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        missing+=("sha256sum or shasum")
+    fi
     if [[ ${#missing[@]} -gt 0 ]]; then
         fatal "Missing required tools: ${missing[*]}"
     fi
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print tolower($1)}'
+    else
+        shasum -a 256 "$1" | awk '{print tolower($1)}'
+    fi
+}
+
+verify_release_artifact() {
+    local file="$1"
+    local checksum_file="$2"
+    local expected actual
+
+    expected="$(awk 'NF { print tolower($1); exit }' "$checksum_file")"
+    [[ -n "$expected" ]] || fatal "Checksum file is empty: ${checksum_file}"
+    [[ "$expected" =~ ^[a-f0-9]{64}$ ]] \
+        || fatal "Invalid SHA256 checksum file: ${checksum_file}"
+
+    actual="$(sha256_file "$file")"
+    if [[ "$actual" != "$expected" ]]; then
+        fatal "Checksum mismatch for $(basename "$file")"
+    fi
+
+    success "Verified SHA256 checksum"
 }
 
 # ─── GitHub API helpers ───────────────────────────────────────────────────────
@@ -199,15 +228,26 @@ download_release_artifact() {
     local tarball="hypercolor-${version_no_v}-${ARTIFACT_SUFFIX}.tar.gz"
     local url="${GITHUB_DL}/${VERSION}/${tarball}"
     local dest="${TMPDIR_INSTALL}/${tarball}"
+    local checksum_dest="${dest}.sha256"
 
     info "Downloading ${tarball}..."
     if ! curl -fsSL --progress-bar -o "$dest" "$url"; then
         fatal "Failed to download ${url}"
     fi
 
+    info "Downloading ${tarball}.sha256..."
+    if ! curl -fsSL -o "$checksum_dest" "${url}.sha256"; then
+        fatal "Failed to download ${url}.sha256"
+    fi
+
     if [[ ! -s "$dest" ]]; then
         fatal "Downloaded file is empty: ${tarball}"
     fi
+    if [[ ! -s "$checksum_dest" ]]; then
+        fatal "Downloaded checksum is empty: ${tarball}.sha256"
+    fi
+
+    verify_release_artifact "$dest" "$checksum_dest"
 
     info "Extracting ${tarball}..."
     tar -xzf "$dest" -C "$TMPDIR_INSTALL"

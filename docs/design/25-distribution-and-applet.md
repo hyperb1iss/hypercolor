@@ -79,7 +79,7 @@ ARTIFACT = hypercolor-{os}-{arch}   (e.g., hypercolor-linux-amd64)
 - `--uninstall` — remove binaries, service, and config (prompts for confirmation)
 - Respects `HYPERCOLOR_INSTALL_DIR` env var (default: `~/.local/bin`)
 - Idempotent — safe to re-run for upgrades
-- Verifies SHA256 checksum of downloaded binaries against release asset checksums
+- Verifies the SHA256 checksum of the downloaded tarball before extraction
 - Colorized output with status indicators, respects `NO_COLOR`
 
 **Hosted at:** The script lives in the repo at `scripts/install-release.sh`. For launch,

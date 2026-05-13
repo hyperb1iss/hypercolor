@@ -3,9 +3,9 @@
 # Downloads pre-built binaries from GitHub Releases and installs to ~/.local.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --version 0.1.0
-#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | bash -s -- --version 0.1.0
+#   curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | bash -s -- --uninstall
 #
 # Environment:
 #   HYPERCOLOR_VERSION   Override version to install
@@ -47,6 +47,28 @@ ART
   printf "${RESET}\n"
 }
 
+sha256_file() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  else
+    die "sha256sum or shasum is required"
+  fi
+}
+
+verify_checksum() {
+  local file="$1" checksum_file="$2" expected actual
+  expected=$(awk 'NF { print tolower($1); exit }' "${checksum_file}")
+  [[ -n "${expected}" ]] || die "Checksum file is empty: ${checksum_file}"
+  [[ "${expected}" =~ ^[a-f0-9]{64}$ ]] \
+    || die "Invalid SHA256 checksum file: ${checksum_file}"
+
+  actual=$(sha256_file "${file}")
+  [[ "${actual}" == "${expected}" ]] || die "Checksum mismatch for $(basename "${file}")"
+  ok "Verified SHA256 checksum"
+}
+
 # ── Argument Parsing ─────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,7 +77,7 @@ while [[ $# -gt 0 ]]; do
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)
       cat <<EOF
-Usage: curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh
+Usage: curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | bash
 
 Options:
   --version <ver>   Install a specific version (default: latest)
@@ -142,10 +164,16 @@ download_and_extract() {
   if command -v curl &>/dev/null; then
     curl -fSL --progress-bar "${url}" -o "${tmpdir}/${tarball}" \
       || die "Download failed. Check that v${version} exists at:\n  ${url}"
+    curl -fsSL "${url}.sha256" -o "${tmpdir}/${tarball}.sha256" \
+      || die "Checksum download failed. Check that v${version} includes ${tarball}.sha256"
   else
     wget -q --show-progress "${url}" -O "${tmpdir}/${tarball}" \
       || die "Download failed."
+    wget -q "${url}.sha256" -O "${tmpdir}/${tarball}.sha256" \
+      || die "Checksum download failed."
   fi
+
+  verify_checksum "${tmpdir}/${tarball}" "${tmpdir}/${tarball}.sha256"
 
   info "Extracting..."
   tar xzf "${tmpdir}/${tarball}" -C "${tmpdir}"
@@ -344,5 +372,5 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 printf "\n"
 printf "  ${BOLD}Uninstall:${RESET}\n"
-printf "    ${CYAN}curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | sh -s -- --uninstall${RESET}\n"
+printf "    ${CYAN}curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/get-hypercolor.sh | bash -s -- --uninstall${RESET}\n"
 printf "\n"

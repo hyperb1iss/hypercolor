@@ -1057,11 +1057,28 @@ jobs:
           --target ${{ matrix.target }}
           --version ${{ steps.version.outputs.version }}
 
+      - name: Generate release checksum
+        run: |
+          set -euo pipefail
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          tarball="${dist_name}.tar.gz"
+          (
+            cd dist
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${tarball}" > "${tarball}.sha256"
+            else
+              shasum -a 256 "${tarball}" > "${tarball}.sha256"
+            fi
+            cat "${tarball}.sha256"
+          )
+
       - name: Upload release tarball
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.version.outputs.dist_name }}
-          path: dist/${{ steps.version.outputs.dist_name }}.tar.gz
+          path: |
+            dist/${{ steps.version.outputs.dist_name }}.tar.gz
+            dist/${{ steps.version.outputs.dist_name }}.tar.gz.sha256
           if-no-files-found: error
 
   # ── Create GitHub Release ──────────────────────────────────────
