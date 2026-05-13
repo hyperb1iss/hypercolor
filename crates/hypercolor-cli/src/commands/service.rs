@@ -138,10 +138,8 @@ async fn execute_status(ctx: &OutputContext) -> Result<()> {
                         memory = format_bytes(bytes);
                     }
                 }
-                "ActiveEnterTimestamp" => {
-                    if !value.is_empty() {
-                        since = value.to_string();
-                    }
+                "ActiveEnterTimestamp" if !value.is_empty() => {
+                    since = value.to_string();
                 }
                 _ => {}
             }
