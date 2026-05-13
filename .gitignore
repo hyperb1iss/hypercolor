@@ -34,6 +34,11 @@ web/dist/
 web/.svelte-kit/
 sdk/packages/*/dist/
 
+# Local agent/audit scratch
+.codex
+docs/review/
+/t
+
 # Environment
 .env
 .env.local
@@ -41,8 +46,8 @@ sdk/packages/*/dist/
 # Effects — generated build output (SDK effects)
 /effects/hypercolor/
 
-# Screenshot drafts — capture tool output, reviewed locally then promoted to curated/
-/effects/screenshots/drafts/
+# Screenshot drafts — capture tool output, reviewed locally before publication.
+/effects/screenshots/
 
 # Trunk dev output
 crates/hypercolor-ui/dist/

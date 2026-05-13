@@ -168,9 +168,7 @@ else
   info "Building web UI (Leptos/Trunk)"
   (
     cd crates/hypercolor-ui
-    if [[ ! -d node_modules ]]; then
-      bun install --frozen-lockfile
-    fi
+    bun install --frozen-lockfile
     if command -v rustup >/dev/null 2>&1; then
       rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
     fi
@@ -181,9 +179,7 @@ else
     info "Building bundled effects and faces"
     (
       cd sdk
-      if [[ ! -d node_modules ]]; then
-        bun install --frozen-lockfile
-      fi
+      bun install --frozen-lockfile
       bun run build:effects
     )
   fi

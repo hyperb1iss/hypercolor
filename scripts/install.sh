@@ -134,13 +134,11 @@ build_ui() {
   require_cmd bun
   require_cmd trunk
 
-  if [[ ! -d "${ROOT_DIR}/crates/hypercolor-ui/node_modules" ]]; then
-    info "installing UI dependencies"
-    (
-      cd "${ROOT_DIR}/crates/hypercolor-ui"
-      bun install --frozen-lockfile
-    )
-  fi
+  info "installing UI dependencies"
+  (
+    cd "${ROOT_DIR}/crates/hypercolor-ui"
+    bun install --frozen-lockfile
+  )
 
   if command -v rustup >/dev/null 2>&1; then
     info "ensuring wasm target is installed"
@@ -157,10 +155,8 @@ build_ui() {
 }
 
 build_effects() {
-  if [[ ! -d "${ROOT_DIR}/sdk/node_modules" ]]; then
-    info "installing SDK dependencies"
-    (cd "${ROOT_DIR}/sdk" && bun install --frozen-lockfile)
-  fi
+  info "installing SDK dependencies"
+  (cd "${ROOT_DIR}/sdk" && bun install --frozen-lockfile)
 
   info "building SDK effects"
   (cd "${ROOT_DIR}/sdk" && bun run build:effects)
