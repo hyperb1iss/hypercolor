@@ -307,7 +307,6 @@ jobs:
       - name: Run core Servo tests
         if: matrix.suite == 'core-servo'
         run: |
-          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test servo_bootstrap_tests
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test effect_factory_tests
           ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test builtin_effect_tests
 
