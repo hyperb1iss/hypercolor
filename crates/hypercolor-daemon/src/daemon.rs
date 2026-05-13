@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, RenderAccelerationMode, ServoGpuImportMode,
 };
@@ -102,13 +102,7 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
     );
 
     let bind = resolve_bind_address(&options, &config).await?;
-
-    if !bind.ip().is_loopback() && !api::security::control_api_key_configured_from_env() {
-        warn!(
-            bind = %bind,
-            "Network-accessible without API key — anyone on your network can control your lights"
-        );
-    }
+    validate_network_bind_auth(bind, api::security::control_api_key_configured_from_env())?;
 
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
     daemon_state.start().await?;
@@ -280,6 +274,25 @@ async fn resolve_bind_address(
     config: &HypercolorConfig,
 ) -> Result<SocketAddr> {
     resolve_socket_addr(&effective_bind_target(options, config)).await
+}
+
+/// Validate that network-reachable binds require control-tier authentication.
+///
+/// # Errors
+///
+/// Returns an error when `bind` is non-loopback and no control API key is configured.
+pub fn validate_network_bind_auth(
+    bind: SocketAddr,
+    control_api_key_configured: bool,
+) -> Result<()> {
+    if bind.ip().is_loopback() || control_api_key_configured {
+        return Ok(());
+    }
+
+    bail!(
+        "refusing to bind Hypercolor control API to {bind} without HYPERCOLOR_API_KEY; \
+         set HYPERCOLOR_API_KEY or bind to 127.0.0.1"
+    );
 }
 
 #[must_use]

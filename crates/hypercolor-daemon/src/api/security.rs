@@ -96,8 +96,8 @@ impl SecurityState {
             };
         }
 
-        let control_key = std::env::var("HYPERCOLOR_API_KEY").ok();
-        let read_key = std::env::var("HYPERCOLOR_READ_API_KEY").ok();
+        let control_key = api_key_from_env("HYPERCOLOR_API_KEY");
+        let read_key = api_key_from_env("HYPERCOLOR_READ_API_KEY");
         Self {
             auth: AuthConfig {
                 control_key,
@@ -114,14 +114,22 @@ impl SecurityState {
 
 #[must_use]
 pub fn api_auth_required_from_env() -> bool {
-    let control_key = std::env::var("HYPERCOLOR_API_KEY").ok();
-    let read_key = std::env::var("HYPERCOLOR_READ_API_KEY").ok();
+    let control_key = api_key_from_env("HYPERCOLOR_API_KEY");
+    let read_key = api_key_from_env("HYPERCOLOR_READ_API_KEY");
     control_key.is_some() || read_key.is_some()
 }
 
 #[must_use]
 pub fn control_api_key_configured_from_env() -> bool {
-    std::env::var("HYPERCOLOR_API_KEY").ok().is_some()
+    api_key_from_env("HYPERCOLOR_API_KEY").is_some()
+}
+
+fn api_key_from_env(name: &str) -> Option<String> {
+    normalize_api_key(std::env::var(name).ok())
+}
+
+fn normalize_api_key(value: Option<String>) -> Option<String> {
+    value.filter(|key| !key.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -564,7 +572,7 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use super::{SecurityState, enforce_security};
+    use super::{SecurityState, enforce_security, normalize_api_key};
 
     const CONTROL_KEY: &str = "hc_ak_control_test";
     const READ_KEY: &str = "hc_ak_r_read_test";
@@ -607,6 +615,21 @@ mod tests {
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::new(ip, port)));
         request
+    }
+
+    #[test]
+    fn normalize_api_key_ignores_missing_or_blank_values() {
+        assert_eq!(normalize_api_key(None), None);
+        assert_eq!(normalize_api_key(Some(String::new())), None);
+        assert_eq!(normalize_api_key(Some("   ".to_owned())), None);
+    }
+
+    #[test]
+    fn normalize_api_key_keeps_configured_value() {
+        assert_eq!(
+            normalize_api_key(Some(CONTROL_KEY.to_owned())),
+            Some(CONTROL_KEY.to_owned())
+        );
     }
 
     #[tokio::test]

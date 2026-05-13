@@ -1,6 +1,7 @@
 //! Integration tests for daemon startup orchestration.
 
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -15,7 +16,9 @@ use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
 use hypercolor_daemon::api::{AppState, system::get_status};
-use hypercolor_daemon::daemon::{DaemonRunOptions, effective_bind_target};
+use hypercolor_daemon::daemon::{
+    DaemonRunOptions, effective_bind_target, validate_network_bind_auth,
+};
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
@@ -445,6 +448,63 @@ fn effective_bind_target_normalizes_bind_alias_with_port() {
     };
 
     assert_eq!(effective_bind_target(&options, &config), "0.0.0.0:9444");
+}
+
+#[test]
+fn network_bind_auth_allows_localhost_without_control_key() {
+    let config = default_config();
+    let options = DaemonRunOptions::default();
+    let bind = effective_bind_target(&options, &config)
+        .parse::<SocketAddr>()
+        .expect("default bind target should parse as a socket address");
+
+    validate_network_bind_auth(bind, false).expect("localhost should not require API key");
+}
+
+#[test]
+fn network_bind_auth_rejects_listen_all_without_control_key() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        listen_all: true,
+        ..DaemonRunOptions::default()
+    };
+    let bind = effective_bind_target(&options, &config)
+        .parse::<SocketAddr>()
+        .expect("listen-all bind target should parse as a socket address");
+
+    let error =
+        validate_network_bind_auth(bind, false).expect_err("listen-all should require auth");
+    let message = error.to_string();
+    assert!(message.contains("0.0.0.0:9420"));
+    assert!(message.contains("HYPERCOLOR_API_KEY"));
+}
+
+#[test]
+fn network_bind_auth_rejects_remote_access_without_control_key() {
+    let mut config = default_config();
+    config.network.remote_access = true;
+    let options = DaemonRunOptions::default();
+    let bind = effective_bind_target(&options, &config)
+        .parse::<SocketAddr>()
+        .expect("remote-access bind target should parse as a socket address");
+
+    let error =
+        validate_network_bind_auth(bind, false).expect_err("remote access should require auth");
+    assert!(error.to_string().contains("HYPERCOLOR_API_KEY"));
+}
+
+#[test]
+fn network_bind_auth_allows_network_bind_with_control_key() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        listen_address: Some("192.168.1.42".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+    let bind = effective_bind_target(&options, &config)
+        .parse::<SocketAddr>()
+        .expect("custom bind target should parse as a socket address");
+
+    validate_network_bind_auth(bind, true).expect("control API key should allow network bind");
 }
 
 // ── DaemonState Initialization ──────────────────────────────────────────────
