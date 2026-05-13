@@ -869,3 +869,103 @@ jobs:
           git add Formula/hypercolor.rb Casks/hypercolor-app.rb
           git commit -m "hypercolor: update to ${{ steps.version.outputs.version }}"
           git push
+
+  # ── Update AUR Package ────────────────────────────────────────
+  update-aur:
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts and compute checksums
+        id: checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          for platform in linux-amd64 linux-arm64; do
+            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
+            gh release download "v${VERSION}" \
+              --repo "${{ github.repository }}" \
+              --pattern "${tarball}" \
+              --dir release-artifacts
+            sha=$(sha256sum "release-artifacts/${tarball}" | cut -d' ' -f1)
+            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
+            echo "  ${platform}: ${sha}"
+          done
+
+      - name: Generate AUR package files
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p aur
+          sed \
+            -e "s/pkgver=.*/pkgver=${VERSION}/" \
+            -e "s/SHA256_LINUX_AMD64/${{ steps.checksums.outputs.sha256_linux_amd64 }}/g" \
+            -e "s/SHA256_LINUX_ARM64/${{ steps.checksums.outputs.sha256_linux_arm64 }}/g" \
+            packaging/aur/PKGBUILD > aur/PKGBUILD
+          cp packaging/aur/hypercolor.install aur/hypercolor.install
+
+          if grep -Eq "SKIP|SHA256_LINUX_" aur/PKGBUILD; then
+            echo "Generated PKGBUILD still contains checksum placeholders" >&2
+            exit 1
+          fi
+          grep -Eq "sha256sums_x86_64=\('[a-f0-9]{64}'\)" aur/PKGBUILD
+          grep -Eq "sha256sums_aarch64=\('[a-f0-9]{64}'\)" aur/PKGBUILD
+
+          echo "Generated AUR PKGBUILD:"
+          cat aur/PKGBUILD
+
+      - name: Generate AUR .SRCINFO
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${PWD}/aur:/pkg" archlinux:base-devel bash -lc '
+            set -euo pipefail
+            useradd -m builder
+            chown -R builder:builder /pkg
+            su builder -c "cd /pkg && makepkg --printsrcinfo > .SRCINFO"
+          '
+
+      - name: Upload AUR package files
+        uses: actions/upload-artifact@v4
+        with:
+          name: aur-hypercolor-bin-${{ steps.version.outputs.version }}
+          path: aur/
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Push to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ]; then
+            echo "AUR_SSH_PRIVATE_KEY is not configured; artifact only."
+            exit 0
+          fi
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          git clone ssh://aur@aur.archlinux.org/hypercolor-bin.git aur-remote
+          cp aur/PKGBUILD aur/.SRCINFO aur/hypercolor.install aur-remote/
+          cd aur-remote
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .SRCINFO PKGBUILD hypercolor.install
+          git commit -m "hypercolor-bin: update to ${VERSION}" || exit 0
+          git push

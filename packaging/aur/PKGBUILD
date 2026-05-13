@@ -31,9 +31,9 @@ _base_url="https://github.com/hyperb1iss/hypercolor/releases/download/v${pkgver}
 source_x86_64=("${_base_url}/hypercolor-${pkgver}-linux-amd64.tar.gz")
 source_aarch64=("${_base_url}/hypercolor-${pkgver}-linux-arm64.tar.gz")
 
-# Updated by CI during release — do not edit manually
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+# Template placeholders are replaced by the release workflow.
+sha256sums_x86_64=('SHA256_LINUX_AMD64')
+sha256sums_aarch64=('SHA256_LINUX_ARM64')
 
 package() {
   local _srcdir
