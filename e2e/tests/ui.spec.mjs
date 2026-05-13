@@ -24,7 +24,7 @@ test("effects page can activate an effect through the live UI", async ({ page, p
 
     await page.getByRole("main").locator("button").filter({ hasText: runnableEffect.name }).first().click();
 
-    await expect(page.getByRole("button", { name: "Stop effect" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Pause effect" })).toBeVisible();
 
     await expect
       .poll(async () => {
