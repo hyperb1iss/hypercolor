@@ -32,11 +32,10 @@ env:
     ccache cmake jq nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev libfontconfig1-dev libssl-dev
-  # Core and daemon run separately with Servo so their feature union does not
-  # force unrelated crates, especially hypercolor-app, to link Servo too.
+  # Servo and native app checks run separately so their feature/system deps do
+  # not force unrelated crates onto the slow path.
   RUST_SHARED_WORKSPACE_ARGS: >-
     --workspace
-    --exclude hypercolor-core
     --exclude hypercolor-daemon
     --exclude hypercolor-desktop
     --exclude hypercolor-app
@@ -307,9 +306,10 @@ jobs:
 
       - name: Run core Servo tests
         if: matrix.suite == 'core-servo'
-        run: >-
-          ./scripts/cargo-cache-build.sh
-          cargo nextest run --locked -p hypercolor-core --features servo
+        run: |
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test servo_bootstrap_tests
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test effect_factory_tests
+          ./scripts/cargo-cache-build.sh cargo test --locked -p hypercolor-core --features servo --test builtin_effect_tests
 
       - name: Run core Servo doc tests
         if: matrix.suite == 'core-servo'
