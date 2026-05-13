@@ -61,10 +61,13 @@ open a PR:
   you touched `data/drivers/vendors/*.toml`.
 - **Docs:** `just docs-build`; add `cd docs && zola check` for link/content changes,
   and `just prettier-check` for prose-heavy changes.
-- **Packaging and release scripts:** `bash -n scripts/{setup,install,dist}.sh` plus
-  the relevant `--help` command for any script you touched.
-- **End-to-end stack:** `just e2e-build` is safe for build verification. `just e2e`
-  starts the local daemon and browser harness, so call that out in the PR notes.
+- **Packaging and release scripts:** syntax-check the launch scripts with
+  `bash -n scripts/setup.sh scripts/install.sh scripts/dist.sh scripts/install-release.sh scripts/get-hypercolor.sh scripts/uninstall.sh`;
+  run the relevant `--help` command for any script you touched.
+- **End-to-end stack:** `just e2e-build` verifies the normal Servo stack without
+  starting browsers. `just e2e-build-cpu` is only a CPU smoke-stack build.
+  `just e2e` starts the local daemon and browser harness; call that out in the
+  PR notes and treat the Servo path as the integration gate.
 
 ## Code Standards
 

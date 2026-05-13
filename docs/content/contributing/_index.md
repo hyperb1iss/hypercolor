@@ -24,6 +24,8 @@ just verify
 
 `just verify` runs Rust formatting checks, clippy lints, and the Rust test suite. Run the focused gate for the surface you changed before committing: `just ui-test && just ui-build` for the Leptos UI, `just sdk-lint && just sdk-check && just sdk-build` for the TypeScript SDK, `just python-verify` for the Python client, `just compat-check` for device data, and `just docs-build` for docs.
 
+For launch-sensitive surfaces, use the same gates as CI: `just deny` when dependency or license metadata changes, `cd docs && zola check` for docs link/content changes, `just python-generate-check` when the OpenAPI schema changes, and `just e2e-build` for daemon/UI/effect integration changes. `just e2e` starts the local daemon and browser harness; the Servo stack is the normal integration path, while CPU E2E is only a smoke fallback.
+
 ## Build Commands
 
 | Command            | Description                                        |
