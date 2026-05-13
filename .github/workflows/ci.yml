@@ -61,7 +61,8 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'deny.toml'
-              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+              - '.github/workflows/*.yml'
             python:
               - 'python/**'
               - 'justfile'
@@ -69,10 +70,28 @@ jobs:
 
   # ── Rust Check (fmt + clippy) ──────────────────────────────────
   rust-check:
-    name: Rust Check
+    name: Rust Check / ${{ matrix.label }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: shared
+            label: Shared
+            shared_key: rust-check-shared
+            target_dir: .cache/hypercolor/target/rust-check-shared
+          - suite: core-servo
+            label: Core Servo
+            shared_key: servo-core
+            target_dir: .cache/hypercolor/target/servo-core
+          - suite: daemon-servo
+            label: Daemon Servo
+            shared_key: servo-daemon
+            target_dir: .cache/hypercolor/target/servo-daemon
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
       - uses: actions/checkout@v6
 
@@ -86,23 +105,31 @@ jobs:
           components: clippy
 
       - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: ${{ matrix.shared_key }}
+          workspaces: . -> ${{ matrix.target_dir }}
+          cache-on-failure: "false"
 
       - name: Check formatting
+        if: matrix.suite == 'shared'
         run: cargo fmt --all --check
 
       - name: Clippy shared crates
+        if: matrix.suite == 'shared'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
       - name: Clippy core with Servo
+        if: matrix.suite == 'core-servo'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-core --features servo --lib --tests
           -- -D warnings
 
       - name: Clippy daemon with Servo
+        if: matrix.suite == 'daemon-servo'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
@@ -111,7 +138,7 @@ jobs:
   # ── Rust Test ──────────────────────────────────────────────────
   rust-test:
     name: Rust Test / ${{ matrix.label }}
-    needs: [changes, rust-check]
+    needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -120,13 +147,16 @@ jobs:
         include:
           - suite: shared
             label: Shared
+            shared_key: rust-test-shared
             target_dir: .cache/hypercolor/target/rust-test-shared
           - suite: core-servo
             label: Core Servo
-            target_dir: .cache/hypercolor/target/rust-test-core-servo
+            shared_key: servo-core
+            target_dir: .cache/hypercolor/target/servo-core
           - suite: daemon-servo
             label: Daemon Servo
-            target_dir: .cache/hypercolor/target/rust-test-daemon-servo
+            shared_key: servo-daemon
+            target_dir: .cache/hypercolor/target/servo-daemon
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
@@ -141,7 +171,7 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
-          shared-key: rust-test-${{ matrix.suite }}
+          shared-key: ${{ matrix.shared_key }}
           workspaces: . -> ${{ matrix.target_dir }}
           cache-on-failure: "false"
 

@@ -1,0 +1,111 @@
+name: Servo Cache Warm
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 8 * * 1,4"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/actions/**"
+      - ".github/workflows/servo-cache-warm.yml"
+      - "scripts/cargo-cache-build.sh"
+
+concurrency:
+  group: servo-cache-warm-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  LINUX_DEPS: >-
+    libudev-dev libdbus-1-dev libasound2-dev libpulse0
+    libpipewire-0.3-dev
+    ccache cmake jq nasm pkg-config lld
+    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+    libxdo-dev
+    libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+    librsvg2-dev libssl-dev
+  HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
+  MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
+  CARGO_INCREMENTAL: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  warm-servo:
+    name: Servo Cache / ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: core-servo
+            label: Core
+            shared_key: servo-core
+            target_dir: .cache/hypercolor/target/servo-core
+          - suite: daemon-servo
+            label: Daemon
+            shared_key: servo-daemon
+            target_dir: .cache/hypercolor/target/servo-daemon
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.LINUX_DEPS }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: ${{ matrix.shared_key }}
+          workspaces: . -> ${{ matrix.target_dir }}
+          cache-on-failure: "false"
+
+      - name: Warm core Servo check artifacts
+        if: matrix.suite == 'core-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo check --locked -p hypercolor-core --features servo --lib --tests
+
+      - name: Warm core Servo test artifacts
+        if: matrix.suite == 'core-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --locked --no-run -p hypercolor-core --features servo
+
+      - name: Warm core Servo clippy artifacts
+        if: matrix.suite == 'core-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-core --features servo --lib --tests
+          -- -D warnings
+
+      - name: Warm daemon Servo check artifacts
+        if: matrix.suite == 'daemon-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo check --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
+
+      - name: Warm daemon Servo test artifacts
+        if: matrix.suite == 'daemon-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --locked --no-run -p hypercolor-daemon
+
+      - name: Warm daemon Servo clippy artifacts
+        if: matrix.suite == 'daemon-servo'
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
+          -- -D warnings
