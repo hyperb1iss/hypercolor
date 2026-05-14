@@ -1,0 +1,86 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    groups:
+      rust-patch:
+        update-types: ["patch"]
+
+  - package-ecosystem: "cargo"
+    directory: "/crates/hypercolor-ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:20"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    groups:
+      ui-rust-patch:
+        update-types: ["patch"]
+
+  - package-ecosystem: "bun"
+    directory: "/sdk"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:40"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    groups:
+      sdk-bun-patch:
+        update-types: ["patch"]
+
+  - package-ecosystem: "bun"
+    directory: "/crates/hypercolor-ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    groups:
+      ui-bun-patch:
+        update-types: ["patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/e2e"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:20"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    groups:
+      e2e-npm-patch:
+        update-types: ["patch"]
+
+  - package-ecosystem: "uv"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:40"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    groups:
+      python-uv-patch:
+        update-types: ["patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "11:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-patch:
+        update-types: ["patch"]
