@@ -29,7 +29,7 @@ env:
     libpipewire-0.3-dev
     ccache cmake jq nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
-    libxdo-dev libfontconfig1-dev libssl-dev
+    libxdo-dev libfontconfig1-dev libegl1 libssl-dev
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
   CARGO_INCREMENTAL: "0"

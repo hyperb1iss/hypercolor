@@ -193,7 +193,7 @@ else
             libxdo-dev libgtk-3-dev libwebkit2gtk-4.1-dev
             libayatana-appindicator3-dev librsvg2-dev libssl-dev
             clang lld)
-      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf libgtk-3-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev)
+      [ "$WITH_SERVO" -eq 1 ] && pkgs+=(gperf libegl1 libgtk-3-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev)
       missing=()
       for p in "${pkgs[@]}"; do
         if dpkg -s "$p" >/dev/null 2>&1; then ok "$p"; else missing+=("$p"); fi
