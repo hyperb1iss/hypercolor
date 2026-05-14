@@ -7,6 +7,12 @@
 **Date:** 2026-04-16
 **Runtime:** Bun (primary); Node.js 24 LTS (minimum for library consumers)
 
+**Launch status:** The npm package flow in this spec is the post-publish
+target. For the v0.1 launch, `@hypercolor/sdk` and
+`@hypercolor/create-effect` are source-only from this repository; public effect
+authoring docs use a local Hypercolor checkout plus a `file:` SDK dependency
+until the packages are published.
+
 ---
 
 ## Table of Contents
@@ -54,10 +60,11 @@ conforms to the effect contract (section 3).
 1. **HTML is the universal format.** The SDK is one way to produce it, not the
    only way.
 2. **Two packages, not three.** `@hypercolor/sdk` is both the library and the
-   CLI. `@hypercolor/create-effect` is the scaffolder. Nothing else to install.
+   CLI. `@hypercolor/create-effect` is the scaffolder. After npm publish,
+   nothing else is required beyond those packages.
 3. **Bun-native tooling, Node 24 library compat.** The `hypercolor` CLI runs on
    Bun (uses `Bun.build`, `Bun.serve`, native TypeScript, `.glsl` text loader).
-   Scaffolded projects are Bun projects. The published `@hypercolor/sdk`
+   Scaffolded projects are Bun projects. Once published, the `@hypercolor/sdk`
    library is plain ESM and consumable from Node 24+ toolchains (Vite, Next,
    etc.) for authors who need to embed effects elsewhere, but effect
    development itself assumes Bun.
@@ -606,7 +613,7 @@ A `bun create` initializer. Scaffolds a new effect _workspace_ — a directory
 structured to hold one or many effects. The first effect is generated from the
 chosen template; adding more is `hypercolor add <name>` (see §6.5).
 
-### 5.1 Usage
+### 5.1 Post-Publish Usage
 
 ```bash
 # Interactive — Bun's native initializer
@@ -622,10 +629,10 @@ pnpm create @hypercolor/effect my-effects
 
 ### 5.2 CLI Arguments
 
-The scaffolder binary (published as `@hypercolor/create-effect`) is invoked
-via `bun create @hypercolor/effect`. Bun's `create` resolves `@scope/foo` to
-the `@scope/create-foo` package, so the package name and the invocation
-command are related by that convention, not identity.
+After npm publish, the scaffolder binary (`@hypercolor/create-effect`) is
+invoked via `bun create @hypercolor/effect`. Bun's `create` resolves
+`@scope/foo` to the `@scope/create-foo` package, so the package name and the
+invocation command are related by that convention, not identity.
 
 ```
 bun create @hypercolor/effect [name] [options]
@@ -1650,7 +1657,7 @@ ship the scaffolder.
 | 1.8  | Scaffolder | Implement `@hypercolor/create-effect` with canvas, shader, face, html templates — all producing the multi-effect workspace layout                                                                        |
 | 1.9  | Scaffolder | Publish `@hypercolor/create-effect@0.1.0`                                                                                                                                                                |
 
-**Verify:** `bun create @hypercolor/effect test-effects --template canvas --first aurora && cd test-effects && bun run build` produces `dist/aurora.html`, which passes `hypercolor validate` without warnings.
+**Verify after npm publish:** `bun create @hypercolor/effect test-effects --template canvas --first aurora && cd test-effects && bun run build` produces `dist/aurora.html`, which passes `hypercolor validate` without warnings.
 
 **Dogfood check:** `just effects-build` in the monorepo produces byte-identical output to the old `sdk/scripts/build-effect.ts --all`. If any diffs exist, they must be justified by the new tool or the old tool is updated first.
 
@@ -1668,7 +1675,7 @@ Build the live development experience on `Bun.serve`.
 | 2.6  | SDK   | File watcher (`fs.watch` on `effects/`, 150ms debounce) → `Bun.build` → WebSocket reload                                 |
 | 2.7  | SDK   | Effect picker: when started with no entry, list workspace effects and let the shell switch without restarting the server |
 
-**Verify:** `bun create @hypercolor/effect test && cd test && bun dev` opens a browser with live-updating effect preview and working controls. Editing a control's default in source rebuilds in under 300ms.
+**Verify after npm publish:** `bun create @hypercolor/effect test && cd test && bun dev` opens a browser with live-updating effect preview and working controls. Editing a control's default in source rebuilds in under 300ms.
 
 ### Phase 3: Daemon Integration
 
