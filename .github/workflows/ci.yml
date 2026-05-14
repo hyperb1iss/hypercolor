@@ -279,7 +279,7 @@ jobs:
         working-directory: sdk
         run: bun run build:effects
       - name: Upload generated effects
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: generated-effects
           path: effects/hypercolor
@@ -619,7 +619,7 @@ jobs:
         run: uv build
 
       - name: Upload Python distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-dist
           path: python/dist/*
@@ -767,7 +767,7 @@ jobs:
           cp -R effects/hypercolor/. e2e-stack/effects/
 
       - name: Upload e2e stack
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-stack-${{ matrix.suite }}
           path: e2e-stack
@@ -849,7 +849,7 @@ jobs:
 
       - name: Upload e2e artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-artifacts-${{ matrix.suite }}
           path: |
@@ -932,7 +932,7 @@ jobs:
           fi
 
       - name: Upload web assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-assets
           path: staging/
@@ -1096,7 +1096,7 @@ jobs:
           }
 
       - name: Upload native app bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: ${{ matrix.artifact-path }}
@@ -1182,7 +1182,7 @@ jobs:
           )
 
       - name: Upload release tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.version.outputs.dist_name }}
           path: |
@@ -1292,7 +1292,7 @@ jobs:
           cat hypercolor-app.rb
 
       - name: Upload Homebrew files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: homebrew-hypercolor-${{ steps.version.outputs.version }}
           path: |
@@ -1388,7 +1388,7 @@ jobs:
           '
 
       - name: Upload AUR package files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aur-hypercolor-bin-${{ steps.version.outputs.version }}
           path: aur/
