@@ -285,7 +285,7 @@ jobs:
 
       - name: Download generated effects
         if: matrix.suite == 'shared'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: generated-effects
           path: effects/hypercolor
@@ -693,7 +693,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download e2e stack
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-stack-${{ matrix.suite }}
           path: e2e-stack
@@ -888,7 +888,7 @@ jobs:
         run: cargo install tauri-cli --version "^2.0.0" --locked
 
       - name: Download web assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-assets
           path: web-assets/
@@ -1038,7 +1038,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Download web assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-assets
           path: web-assets/
@@ -1090,7 +1090,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: hypercolor-*
           path: release-artifacts/
