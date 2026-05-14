@@ -5009,7 +5009,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "euclid",
- "glow 0.16.0",
+ "glow 0.17.0",
  "libc",
  "pollster",
  "surfman",
