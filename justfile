@@ -582,13 +582,13 @@ e2e-install:
 e2e-browsers:
     cd e2e && npx playwright install chromium
 
-# Build the daemon, CLI, generated effects, and production web UI for e2e
+# Build the normal Servo daemon, CLI, generated effects, and production web UI for e2e
 e2e-build:
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
     just effects-build
     just ui-build
 
-# Build the e2e stack with the CPU/builtin-driver daemon feature set
+# Build the fallback CPU smoke stack without the Servo renderer
 e2e-build-cpu:
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli

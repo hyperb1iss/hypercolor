@@ -23,8 +23,9 @@
 - [ ] `just docs-build` passes (required for docs or README changes)
 - [ ] `cd docs && zola check` passes (required for docs link/content changes)
 - [ ] Packaging scripts were syntax-checked (required for `scripts/` or `packaging/`)
-- [ ] `just e2e-build` passes (required for daemon/UI/effect integration changes)
-- [ ] `just e2e` passes (required for end-to-end behavior changes; starts daemon/browser)
+- [ ] `just e2e-build` passes with the normal Servo stack (required for daemon/UI/effect integration changes)
+- [ ] `just e2e-build-cpu` passes when validating the CPU smoke fallback
+- [ ] `just e2e` passes against the Servo stack (required for end-to-end behavior changes; starts daemon/browser)
 - [ ] Tested on real hardware, simulator, or e2e harness (describe below)
 
 ## Notes for reviewers
