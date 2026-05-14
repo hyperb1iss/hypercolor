@@ -2,18 +2,6 @@ name: Servo Cache Warm
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "37 8 * * 1,4"
-  push:
-    branches: [main]
-    paths:
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/actions/**"
-      - ".github/workflows/servo-cache-warm.yml"
-      - "scripts/cargo-cache-build.sh"
 
 concurrency:
   group: servo-cache-warm-${{ github.ref }}

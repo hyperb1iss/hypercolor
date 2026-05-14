@@ -85,8 +85,8 @@ Actions builds with:
 - `.cache/hypercolor/toolchain`
 - `.cache/hypercolor/ccache`
 
-The scheduled/manual `.github/workflows/servo-cache-warm.yml` workflow warms
-three compatible shapes:
+The manual `.github/workflows/servo-cache-warm.yml` workflow warms three
+compatible shapes when a maintainer deliberately refreshes Servo caches:
 
 | Suite        | Shared Key     | Extra Key    | Purpose                                          |
 | ------------ | -------------- | ------------ | ------------------------------------------------ |
@@ -95,8 +95,13 @@ three compatible shapes:
 | E2E Servo    | `servo-daemon` | `e2e-dev-v1` | daemon and CLI binaries for the normal E2E stack |
 
 The main CI workflow reuses those same shared keys in the explicit Servo check,
-test, and E2E build lanes. Shared non-Servo Rust lanes deliberately keep Servo
-out of their dependency graph so routine crates do not rebuild `servo-script`.
+test, and E2E build lanes. Pull requests keep the separate Servo check/test
+lanes out of the default path and rely on the normal Servo E2E stack for HTML
+renderer coverage. Pushes to `main`, tags, and manual CI dispatches still run
+the full Servo check/test gates.
+
+Shared non-Servo Rust lanes deliberately keep Servo out of their dependency
+graph so routine crates do not rebuild `servo-script`.
 
 ## E2E Policy
 
@@ -107,8 +112,8 @@ CI builds and runs two E2E stacks:
 - **CPU Smoke:** `just e2e-build-cpu`, builtin-driver daemon feature set, and a
   reduced proof that the non-Servo stack still boots.
 
-The Servo lane is the launch gate. Do not remove it to save time. If it gets
-slow, warm or repair the cache instead.
+The Servo lane is the PR integration gate. The CPU smoke lane remains a fallback
+shape for builtin-driver coverage and release confidence.
 
 ## Cache Miss Checklist
 
