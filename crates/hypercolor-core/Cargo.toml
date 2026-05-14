@@ -80,7 +80,7 @@ zbus = { workspace = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 servo = { version = "0.1.0", default-features = false, features = ["baked-in-resources", "js_jit", "no-wgl"], optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
+tao = { version = "0.35", default-features = false, features = ["rwh_06"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

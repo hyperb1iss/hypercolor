@@ -69,10 +69,10 @@ wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-sd-notify = "0.4"
+sd-notify = "0.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-service = "0.8.0"
+windows-service = "0.8.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

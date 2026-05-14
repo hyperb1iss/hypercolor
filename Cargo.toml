@@ -76,7 +76,7 @@ needless_continue = { level = "allow", priority = 36 }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "1.0"
 base64 = "0.22"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "serde"] }
 
@@ -97,15 +97,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Data structures
-uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+uuid = { version = "1.23", features = ["v4", "v7", "serde"] }
 ulid = { version = "1.2.1", features = ["serde"] }
-sha2 = "0.10"
-arc-swap = "1.7"
-strum = { version = "0.27", features = ["derive"] }
+sha2 = "0.11"
+arc-swap = "1.9"
+strum = { version = "0.28", features = ["derive"] }
 
 # Config
 dirs = "6.0"
-notify = "7.0"
+notify = "8.2"
 sysinfo = "0.38.4"
 nvml-wrapper = "0.12.1"
 
@@ -118,7 +118,7 @@ keyring-core = "1.0.0"
 rand = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 webrtc-dtls = "0.12.0"
-webrtc-util = "0.11.0"
+webrtc-util = "0.17.1"
 windows-native-keyring-store = "1.0.0"
 
 # Workspace crates
@@ -147,22 +147,22 @@ device_query = "4.0.1"
 evdev = "0.13.2"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # Zero-copy byte reinterpretation for wire-format protocol structs
 zerocopy = { version = "0.8", features = ["derive"] }
 
 # Network / device backends
-mdns-sd = "0.11"
+mdns-sd = "0.19"
 tonic = "0.12"
 prost = "0.13"
 nusb = { version = "0.2.2", features = ["tokio"] }
-zbus = { version = "=5.13.0", default-features = false, features = ["tokio"] }
+zbus = { version = "=5.15.0", default-features = false, features = ["tokio"] }
 
 # Screen capture
 ash = "0.38"
-ashpd = { version = "0.13.9", default-features = false, features = ["tokio", "screencast"] }
-glow = "0.16"
+ashpd = { version = "0.13.11", default-features = false, features = ["tokio", "screencast"] }
+glow = "0.17"
 libc = "0.2"
 pipewire = "0.9.2"
 
@@ -170,13 +170,13 @@ pipewire = "0.9.2"
 axum = { version = "0.8", features = ["multipart", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
-rmcp = { version = "1.1.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
+rmcp = { version = "1.7.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"] }
 
 # CLI
-clap = { version = "4.5", features = ["derive", "cargo", "env"] }
-clap_complete = "4.5"
+clap = { version = "4.6", features = ["derive", "cargo", "env"] }
+clap_complete = "4.6"
 owo-colors = "4"
 unicode-width = "0.2.2"
 
@@ -186,8 +186,8 @@ crossterm = "0.29"
 dpi = "0.1"
 opaline = { version = "0.4", features = ["global-state", "owo-colors", "widgets", "discovery"] }
 tachyonfx = "0.25"
-ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"] }
-tokio-tungstenite = "0.26"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
+tokio-tungstenite = "0.29"
 open = "5"
 
 # Imaging
@@ -195,8 +195,8 @@ image = { version = "0.25.10", default-features = false, features = ["gif", "jpe
 gif = "0.14.2"
 turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", "require-simd"] }
 fast_image_resize = "6.0.0"
-wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
-wgpu-hal = { version = "29.0.1", default-features = false, features = ["vulkan"] }
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
+wgpu-hal = { version = "29.0.3", default-features = false, features = ["vulkan"] }
 pollster = "0.4.0"
 
 # Testing
