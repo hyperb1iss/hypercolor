@@ -41,8 +41,5 @@ unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    "https://github.com/servo/servo",
-    "https://github.com/servo/media",
-    "https://github.com/servo/stylo",
-    "https://github.com/hyperb1iss/opaline",
+    "https://github.com/hyperb1iss/surfman",
 ]
