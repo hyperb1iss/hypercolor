@@ -1994,10 +1994,12 @@ Response:
 
 ### 7.5 Scriptable Integration Pattern
 
-For developers who want to build custom integrations, the Python client library provides the cleanest path:
+For developers who want to build custom integrations, the Python client library
+provides the cleanest path. For the v0.1 launch it is source-only from
+`python/`; PyPI packaging can replace that with a normal dependency once the
+client is published.
 
 ```python
-# pip install hypercolor
 from hypercolor import HypercolorClient
 
 async def ci_build_lights():
