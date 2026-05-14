@@ -34,7 +34,7 @@ dev = [
     { include-group = "types" },
 ]
 generate = [
-    "openapi-python-client==0.28.3",
+    "openapi-python-client==0.28.4",
 ]
 lint = [
     "ruff>=0.15.12",
@@ -46,7 +46,7 @@ test = [
     "respx>=0.23.1",
 ]
 types = [
-    "ty>=0.0.32",
+    "ty>=0.0.35",
 ]
 
 [project.urls]
