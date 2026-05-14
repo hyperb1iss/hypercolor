@@ -86,12 +86,12 @@ pub fn EffectsPage() -> impl IntoView {
     // Panel layout state (persisted to localStorage)
     let (detail_width, set_detail_width) = signal(crate::storage::get_clamped(
         "hc-fx-detail-width",
-        380.0,
+        620.0,
         MIN_DETAIL_WIDTH,
         MAX_DETAIL_WIDTH,
     ));
     let (controls_detached, set_controls_detached) =
-        signal(crate::storage::get("hc-fx-controls-detached").as_deref() != Some("false"));
+        signal(crate::storage::get("hc-fx-controls-detached").as_deref() == Some("true"));
     let (controls_width, set_controls_width) = signal(crate::storage::get_clamped(
         "hc-fx-controls-width",
         320.0,
