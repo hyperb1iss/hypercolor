@@ -46,8 +46,9 @@ docs/review/
 # Effects — generated build output (SDK effects)
 /effects/hypercolor/
 
-# Screenshot drafts — capture tool output, reviewed locally before publication.
-/effects/screenshots/
+# Effect screenshot capture output. Track only the policy README for launch.
+/effects/screenshots/*
+!/effects/screenshots/README.md
 /crates/hypercolor-ui/--full-page
 
 # Trunk dev output
