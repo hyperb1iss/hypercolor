@@ -4,83 +4,76 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "09:00"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     groups:
-      rust-patch:
-        update-types: ["patch"]
+      rust:
+        patterns: ["*"]
 
   - package-ecosystem: "cargo"
     directory: "/crates/hypercolor-ui"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "09:20"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     groups:
-      ui-rust-patch:
-        update-types: ["patch"]
+      ui-rust:
+        patterns: ["*"]
 
   - package-ecosystem: "bun"
     directory: "/sdk"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "09:40"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     groups:
-      sdk-bun-patch:
-        update-types: ["patch"]
+      sdk-bun:
+        patterns: ["*"]
 
   - package-ecosystem: "bun"
     directory: "/crates/hypercolor-ui"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "10:00"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     groups:
-      ui-bun-patch:
-        update-types: ["patch"]
+      ui-bun:
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/e2e"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "10:20"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     groups:
-      e2e-npm-patch:
-        update-types: ["patch"]
+      e2e-npm:
+        patterns: ["*"]
 
   - package-ecosystem: "uv"
     directory: "/python"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "10:40"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     groups:
-      python-uv-patch:
-        update-types: ["patch"]
+      python-uv:
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "11:00"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
     groups:
-      github-actions-patch:
-        update-types: ["patch"]
+      github-actions:
+        patterns: ["*"]
