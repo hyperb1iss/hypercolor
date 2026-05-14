@@ -20,10 +20,10 @@
         "capture:promote": "bun scripts/capture-screenshots.ts --promote"
     },
     "devDependencies": {
-        "@biomejs/biome": "2.4.6",
-        "typescript": "^5.9.3"
+        "@biomejs/biome": "2.4.15",
+        "typescript": "^6.0.3"
     },
     "dependencies": {
-        "sharp": "^0.33.5"
+        "sharp": "^0.34.5"
     }
 }
