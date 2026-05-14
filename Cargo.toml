@@ -187,7 +187,7 @@ dpi = "0.1"
 opaline = { version = "0.4", features = ["global-state", "owo-colors", "widgets", "discovery"] }
 tachyonfx = "0.25"
 ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.28"
 open = "5"
 
 # Imaging

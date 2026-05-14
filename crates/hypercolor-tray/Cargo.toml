@@ -23,7 +23,7 @@ tray-icon = "0.19"
 # Async runtime + HTTP/WS client
 tokio = { workspace = true }
 reqwest = { workspace = true }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = { workspace = true }
 
 # Serialization
