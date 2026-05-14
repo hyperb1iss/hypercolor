@@ -97,11 +97,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Data structures
-uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+uuid = { version = "1.23", features = ["v4", "v7", "serde"] }
 ulid = { version = "1.2.1", features = ["serde"] }
 sha2 = "0.10"
 arc-swap = "1.7"
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 
 # Config
 dirs = "6.0"
@@ -171,7 +171,7 @@ axum = { version = "0.8", features = ["multipart", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 rmcp = { version = "1.1.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"] }
 
 # CLI
