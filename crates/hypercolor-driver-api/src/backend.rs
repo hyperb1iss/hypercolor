@@ -32,6 +32,24 @@ pub trait DeviceFrameSink: Send + Sync {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()>;
 }
 
+/// Cloneable hot-path display output lane for one connected, display-capable device.
+///
+/// Successful writes only mean the sink accepted the latest payload; the
+/// backend may still deliver the bytes asynchronously.
+#[async_trait::async_trait]
+pub trait DeviceDisplaySink: Send + Sync {
+    /// Push an owned display payload to this device's output lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device output lane is no longer available or
+    /// the driver has observed an asynchronous transport failure.
+    async fn write_display_payload_owned(
+        &self,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()>;
+}
+
 /// Core device communication trait.
 #[async_trait::async_trait]
 pub trait DeviceBackend: Send + Sync {
@@ -102,6 +120,13 @@ pub trait DeviceBackend: Send + Sync {
     /// Return a cloneable hot-path frame sink for a connected device.
     #[must_use]
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        let _ = id;
+        None
+    }
+
+    /// Return a cloneable hot-path display sink for a healthy connected display device.
+    #[must_use]
+    fn display_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceDisplaySink>> {
         let _ = id;
         None
     }

@@ -37,7 +37,9 @@ pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
     StateTransitionRecord,
 };
-pub use traits::{BackendInfo, DeviceBackend, DeviceFrameSink, DevicePlugin, HealthStatus};
+pub use traits::{
+    BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink, DevicePlugin, HealthStatus,
+};
 pub use usb_backend::{
     UsbActorMetricsSnapshot, UsbBackend, UsbProtocolConfigStore, usb_actor_metrics_snapshot,
 };

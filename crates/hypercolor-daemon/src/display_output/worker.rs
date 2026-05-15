@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
 use hypercolor_core::bus::CanvasFrame;
-use hypercolor_core::device::BackendIo;
+use hypercolor_core::device::{BackendIo, DeviceDisplaySink};
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePayload};
 use hypercolor_types::session::OffOutputBehavior;
 
@@ -27,6 +27,8 @@ use super::{
 use crate::deadline::advance_deadline;
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::session::OutputPowerState;
+
+const DISPLAY_SINK_LOOKUP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 
 async fn publish_display_frame_snapshot(
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
@@ -62,6 +64,54 @@ pub(super) struct DisplayWorkerHandle {
     tx: watch::Sender<Option<DisplayWorkerFrameSet>>,
     join_handle: JoinHandle<()>,
     pub config_signature: DisplayWorkerConfigSignature,
+}
+
+struct DisplayDeviceWriter {
+    backend_io: BackendIo,
+    display_sink: Option<Arc<dyn DeviceDisplaySink>>,
+    next_display_sink_lookup_at: Option<Instant>,
+}
+
+impl DisplayDeviceWriter {
+    const fn new(backend_io: BackendIo, display_sink: Option<Arc<dyn DeviceDisplaySink>>) -> Self {
+        Self {
+            backend_io,
+            display_sink,
+            next_display_sink_lookup_at: None,
+        }
+    }
+
+    async fn write_display_payload_owned(
+        &mut self,
+        device_id: DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> anyhow::Result<()> {
+        let now = Instant::now();
+        if self.display_sink.is_none()
+            && self
+                .next_display_sink_lookup_at
+                .is_none_or(|retry_at| now >= retry_at)
+        {
+            self.display_sink = self.backend_io.display_sink(device_id).await;
+            self.next_display_sink_lookup_at = self
+                .display_sink
+                .is_none()
+                .then_some(now + DISPLAY_SINK_LOOKUP_RETRY_INTERVAL);
+        }
+
+        if let Some(sink) = self.display_sink.as_ref() {
+            if let Err(error) = sink.write_display_payload_owned(Arc::clone(&payload)).await {
+                self.display_sink = None;
+                self.next_display_sink_lookup_at = None;
+                return Err(error);
+            }
+            return Ok(());
+        }
+
+        self.backend_io
+            .write_display_payload_owned(device_id, payload)
+            .await
+    }
 }
 
 #[derive(Clone)]
@@ -259,6 +309,7 @@ impl DisplayWorkerHandle {
     pub fn spawn(
         target: Arc<DisplayTarget>,
         backend_io: BackendIo,
+        display_sink: Option<Arc<dyn DeviceDisplaySink>>,
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
         display_frames: Arc<RwLock<DisplayFrameRuntime>>,
@@ -267,8 +318,9 @@ impl DisplayWorkerHandle {
         let worker_backend_id = target.backend_id.clone();
         let worker_device_id = target.device_id;
         let config_signature = target.worker_config_signature();
+        let writer = DisplayDeviceWriter::new(backend_io, display_sink);
         let join_handle = tokio::spawn(run_display_worker(
-            backend_io,
+            writer,
             worker_backend_id,
             worker_device_id,
             target.as_ref().clone(),
@@ -304,7 +356,7 @@ impl DisplayWorkerHandle {
     reason = "display worker borrows every subsystem it drives"
 )]
 async fn run_display_worker(
-    backend_io: BackendIo,
+    mut writer: DisplayDeviceWriter,
     backend_key: String,
     device_id: DeviceId,
     target: DisplayTarget,
@@ -445,7 +497,7 @@ async fn run_display_worker(
                     .await;
                 }
                 record_display_write_attempt(&display_frames, false).await;
-                let write_result = backend_io
+                let write_result = writer
                     .write_display_payload_owned(device_id, Arc::clone(payload))
                     .await;
                 if let Err(error) = write_result {
@@ -506,7 +558,7 @@ async fn run_display_worker(
                 .await;
             }
             record_display_write_attempt(&display_frames, retry_attempt).await;
-            let write_result = backend_io
+            let write_result = writer
                 .write_display_payload_owned(device_id, Arc::clone(payload))
                 .await;
             if let Err(error) = write_result {
@@ -630,7 +682,7 @@ async fn run_display_worker(
             .await;
         }
         record_display_write_attempt(&display_frames, retry_attempt).await;
-        let write_result = backend_io
+        let write_result = writer
             .write_display_payload_owned(device_id, Arc::clone(&payload))
             .await;
         let display_format = payload.format;

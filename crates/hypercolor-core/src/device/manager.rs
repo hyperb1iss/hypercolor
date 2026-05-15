@@ -29,10 +29,11 @@ use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneAttachment};
 
 use crate::spatial::is_led_sampled_zone;
 
-use super::traits::{DeviceBackend, DeviceFrameSink};
+use super::traits::{DeviceBackend, DeviceDisplaySink, DeviceFrameSink};
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;
+type DeviceDisplaySinkHandle = Arc<dyn DeviceDisplaySink>;
 type BackendDeviceKey = (String, DeviceId);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const OUTPUT_WRITE_FAILURE_REPEAT_LOG_INTERVAL: u64 = 60;
@@ -221,6 +222,12 @@ impl BackendIo {
     pub async fn frame_sink(&self, device_id: DeviceId) -> Option<DeviceFrameSinkHandle> {
         let backend = self.backend.lock().await;
         backend.frame_sink(&device_id)
+    }
+
+    /// Clone the hot-path display sink for a connected device, if the backend exposes one.
+    pub async fn display_sink(&self, device_id: DeviceId) -> Option<DeviceDisplaySinkHandle> {
+        let backend = self.backend.lock().await;
+        backend.display_sink(&device_id)
     }
 
     /// Whether this backend can briefly connect an idle device for direct control.

@@ -34,6 +34,7 @@ use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
+const RAW_DISPLAY_OUTPUT_MAX_FPS: u32 = 30;
 pub(crate) const DISPLAY_FACE_DEFAULT_FPS: u32 = 30;
 const DISPLAY_OUTPUT_DISPATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub const DEFAULT_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_secs(20);
@@ -587,11 +588,13 @@ async fn reconcile_display_workers(
 
         match backend_io {
             Some(backend_io) => {
+                let display_sink = backend_io.display_sink(target.device_id).await;
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
                         Arc::clone(target),
                         backend_io,
+                        display_sink,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
                         Arc::clone(&state.display_frames),
@@ -744,6 +747,7 @@ async fn display_targets(
             target_fps: capped_display_target_fps(
                 tracked.info.capabilities.max_fps,
                 &canvas_source,
+                frame_format,
             ),
             brightness: tracked.user_settings.brightness,
             geometry,
@@ -873,9 +877,15 @@ fn display_zone_targets_physical_device(
         .is_some_and(|entry| entry.physical_device_id == physical_device_id)
 }
 
-fn capped_display_target_fps(device_max_fps: u32, canvas_source: &DisplayCanvasSource) -> u32 {
+fn capped_display_target_fps(
+    device_max_fps: u32,
+    canvas_source: &DisplayCanvasSource,
+    frame_format: DisplayFrameFormat,
+) -> u32 {
     let (default_fps, max_fps) = if canvas_source.is_group_direct() {
         (DISPLAY_FACE_DEFAULT_FPS, DISPLAY_FACE_DEFAULT_FPS)
+    } else if frame_format == DisplayFrameFormat::Rgb {
+        (RAW_DISPLAY_OUTPUT_MAX_FPS, RAW_DISPLAY_OUTPUT_MAX_FPS)
     } else {
         (DISPLAY_OUTPUT_MAX_FPS, DISPLAY_OUTPUT_MAX_FPS)
     };

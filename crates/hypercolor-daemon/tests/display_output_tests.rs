@@ -1,5 +1,8 @@
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -9,7 +12,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupTarget, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceDisplaySink};
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -141,6 +144,155 @@ impl RecordingDisplayBackend {
             display_write_times.lock().await.push(Instant::now());
         }
         Ok(())
+    }
+}
+
+struct RecordingDisplaySink {
+    writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    entered_count: Arc<AtomicUsize>,
+    write_count: Arc<AtomicUsize>,
+    failures_remaining: Arc<AtomicUsize>,
+    delay: Duration,
+}
+
+impl RecordingDisplaySink {
+    fn new(delay: Duration) -> Self {
+        Self {
+            writes: Arc::new(Mutex::new(Vec::new())),
+            entered_count: Arc::new(AtomicUsize::new(0)),
+            write_count: Arc::new(AtomicUsize::new(0)),
+            failures_remaining: Arc::new(AtomicUsize::new(0)),
+            delay,
+        }
+    }
+
+    fn with_transient_failures(self, failure_count: usize) -> Self {
+        self.failures_remaining
+            .store(failure_count, Ordering::SeqCst);
+        self
+    }
+}
+
+#[async_trait]
+impl DeviceDisplaySink for RecordingDisplaySink {
+    async fn write_display_payload_owned(
+        &self,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        self.entered_count.fetch_add(1, Ordering::SeqCst);
+
+        if self.failures_remaining.load(Ordering::SeqCst) > 0 {
+            self.failures_remaining.fetch_sub(1, Ordering::SeqCst);
+            bail!("intentional transient display sink failure");
+        }
+
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
+
+        self.writes.lock().await.push(payload.data.to_vec());
+        self.write_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct MultiDisplaySinkBackend {
+    connected: HashSet<DeviceId>,
+    sinks: HashMap<DeviceId, Arc<RecordingDisplaySink>>,
+    sinks_available: Arc<AtomicBool>,
+    display_sink_lookup_count: Arc<AtomicUsize>,
+    fallback_write_count: Arc<AtomicUsize>,
+}
+
+impl MultiDisplaySinkBackend {
+    fn new(
+        sinks: HashMap<DeviceId, Arc<RecordingDisplaySink>>,
+        fallback_write_count: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            connected: HashSet::new(),
+            sinks,
+            sinks_available: Arc::new(AtomicBool::new(true)),
+            display_sink_lookup_count: Arc::new(AtomicUsize::new(0)),
+            fallback_write_count,
+        }
+    }
+
+    fn with_sinks_available(mut self, sinks_available: Arc<AtomicBool>) -> Self {
+        self.sinks_available = sinks_available;
+        self
+    }
+
+    fn with_display_sink_lookup_count(mut self, lookup_count: Arc<AtomicUsize>) -> Self {
+        self.display_sink_lookup_count = lookup_count;
+        self
+    }
+}
+
+#[async_trait]
+impl DeviceBackend for MultiDisplaySinkBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "usb".to_owned(),
+            name: "USB Multi Display Sink".to_owned(),
+            description: "Test backend for isolated display sinks".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if !self.sinks.contains_key(id) {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected.insert(*id);
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if !self.sinks.contains_key(id) {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected.remove(id);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if !self.sinks.contains_key(id) {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(())
+    }
+
+    async fn write_display_payload_owned(
+        &mut self,
+        id: &DeviceId,
+        _payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        if !self.connected.contains(id) {
+            bail!("display write while disconnected");
+        }
+
+        self.fallback_write_count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn display_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceDisplaySink>> {
+        self.display_sink_lookup_count
+            .fetch_add(1, Ordering::SeqCst);
+
+        if !self.connected.contains(id) || !self.sinks_available.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        self.sinks
+            .get(id)
+            .map(|sink| Arc::clone(sink) as Arc<dyn DeviceDisplaySink>)
     }
 }
 
@@ -441,6 +593,17 @@ fn display_zone(
     }
 }
 
+fn display_zone_with_id(
+    zone_id: &str,
+    device_id: &str,
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+) -> DeviceZone {
+    let mut zone = display_zone(device_id, position, size);
+    zone_id.clone_into(&mut zone.id);
+    zone
+}
+
 fn default_power_state_rx() -> watch::Receiver<OutputPowerState> {
     let (tx, rx) = watch::channel(OutputPowerState::default());
     let _ = Box::leak(Box::new(tx));
@@ -601,6 +764,25 @@ async fn wait_for_display_attempt_count(
     .expect("display output should reach expected attempt count within timeout")
 }
 
+async fn wait_for_atomic_count(
+    count: &AtomicUsize,
+    expected_count: usize,
+    timeout: Duration,
+) -> usize {
+    tokio::time::timeout(timeout, async {
+        loop {
+            let observed = count.load(Ordering::SeqCst);
+            if observed >= expected_count {
+                return observed;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("counter should reach expected count within timeout")
+}
+
 async fn wait_for_display_frame_snapshot(
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     device_id: DeviceId,
@@ -630,6 +812,136 @@ async fn wait_for_scene_canvas_receiver_count(event_bus: &HypercolorBus, expecte
     })
     .await
     .expect("authoritative scene canvas receiver should appear within timeout");
+}
+
+async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat) -> Duration {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let display_write_times = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(
+        RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
+            .with_timestamps(Arc::clone(&display_write_times)),
+    ));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info_with_format_and_max_fps(
+            device_id,
+            true,
+            320,
+            200,
+            false,
+            color_format,
+            60,
+        ))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(1, 0, 0, 255)),
+            1,
+            16,
+        ));
+    let _ = wait_for_display_write_count(&display_writes, 1).await;
+
+    display_writes.lock().await.clear();
+    display_write_times.lock().await.clear();
+
+    for frame in 0_u32..100 {
+        let red = u8::try_from(frame.saturating_add(2)).unwrap_or(u8::MAX);
+        event_bus
+            .scene_canvas_sender()
+            .send_replace(CanvasFrame::from_canvas(
+                &solid_canvas(Rgba::new(red, 0, 0, 255)),
+                frame.saturating_add(2),
+                frame.saturating_add(2).saturating_mul(16),
+            ));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let write_times = tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
+        loop {
+            let write_times = display_write_times.lock().await.clone();
+            if write_times.len() >= 7 {
+                return write_times;
+            }
+
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("display output should produce enough writes to measure cadence");
+
+    let interval_nanos = write_times
+        .windows(2)
+        .skip(1)
+        .map(|times| times[1].saturating_duration_since(times[0]).as_nanos())
+        .collect::<Vec<_>>();
+    let total_nanos = interval_nanos.iter().sum::<u128>();
+    let average_nanos = total_nanos / u128::try_from(interval_nanos.len()).unwrap_or(1);
+    let cadence = Duration::from_nanos(u64::try_from(average_nanos).unwrap_or(u64::MAX));
+    thread.shutdown().await.expect("display thread should stop");
+    cadence
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scene_raw_rgb_display_output_uses_30_fps_cadence_on_60_fps_devices() {
+    let cadence = scene_display_write_cadence_for_format(DeviceColorFormat::Rgb).await;
+
+    assert!(
+        cadence >= Duration::from_millis(24) && cadence <= Duration::from_millis(55),
+        "expected raw RGB scene display cadence near 30 fps, got {cadence:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scene_jpeg_display_output_remains_capped_at_15_fps_on_60_fps_devices() {
+    let cadence = scene_display_write_cadence_for_format(DeviceColorFormat::Jpeg).await;
+
+    assert!(
+        cadence >= Duration::from_millis(55),
+        "expected JPEG scene display cadence to stay capped near 15 fps, got {cadence:?}"
+    );
 }
 
 fn decode_jpeg(bytes: &[u8]) -> image::RgbaImage {
@@ -743,6 +1055,341 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let writes = wait_for_display_writes(&display_writes).await;
     assert!(!writes[0].is_empty());
     assert_eq!(&writes[0][..3], &[0xFF, 0xD8, 0xFF]);
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_uses_device_display_sinks_without_cross_device_blocking() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let slow_device_id = DeviceId::new();
+    let fast_device_id = DeviceId::new();
+    let slow_logical_id = insert_default_logical_device(&logical_devices, slow_device_id).await;
+    let fast_logical_id = insert_default_logical_device(&logical_devices, fast_device_id).await;
+    let slow_sink = Arc::new(RecordingDisplaySink::new(Duration::from_millis(800)));
+    let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
+    let fallback_write_count = Arc::new(AtomicUsize::new(0));
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![
+            display_zone_with_id(
+                "zone-slow-display",
+                slow_logical_id.as_str(),
+                NormalizedPosition::new(0.25, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+            ),
+            display_zone_with_id(
+                "zone-fast-display",
+                fast_logical_id.as_str(),
+                NormalizedPosition::new(0.75, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+            ),
+        ]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(MultiDisplaySinkBackend::new(
+        HashMap::from([
+            (slow_device_id, Arc::clone(&slow_sink)),
+            (fast_device_id, Arc::clone(&fast_sink)),
+        ]),
+        Arc::clone(&fallback_write_count),
+    )));
+    backend_manager
+        .connect_device("usb", slow_device_id, "corsair:slow-display")
+        .await
+        .expect("slow backend device should connect");
+    backend_manager
+        .connect_device("usb", fast_device_id, "corsair:fast-display")
+        .await
+        .expect("fast backend device should connect");
+
+    for device_id in [slow_device_id, fast_device_id] {
+        let tracked_id = device_registry
+            .add(display_device_info(device_id, true, 64, 64, false))
+            .await;
+        assert_eq!(tracked_id, device_id);
+        assert!(
+            device_registry
+                .set_state(&device_id, DeviceState::Active)
+                .await
+        );
+    }
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(32, 64, 96, 255)),
+            1,
+            16,
+        ));
+
+    wait_for_atomic_count(slow_sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    wait_for_atomic_count(
+        fast_sink.write_count.as_ref(),
+        1,
+        Duration::from_millis(500),
+    )
+    .await;
+
+    assert_eq!(
+        slow_sink.write_count.load(Ordering::SeqCst),
+        0,
+        "slow display sink should still be waiting while the fast display writes"
+    );
+    assert_eq!(
+        fallback_write_count.load(Ordering::SeqCst),
+        0,
+        "display output should bypass the shared backend write path when a sink exists"
+    );
+    wait_for_atomic_count(slow_sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_spawn() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+    let sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
+    let fallback_write_count = Arc::new(AtomicUsize::new(0));
+    let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
+    let sinks_available = Arc::new(AtomicBool::new(false));
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(
+        MultiDisplaySinkBackend::new(
+            HashMap::from([(device_id, Arc::clone(&sink))]),
+            Arc::clone(&fallback_write_count),
+        )
+        .with_sinks_available(Arc::clone(&sinks_available))
+        .with_display_sink_lookup_count(Arc::clone(&display_sink_lookup_count)),
+    ));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend device should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 64, 64, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(96, 64, 32, 255)),
+            1,
+            16,
+        ));
+    let fallback_before_promotion =
+        wait_for_atomic_count(fallback_write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        2,
+        "worker should look up once at spawn and once on the first write"
+    );
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(64, 96, 32, 255)),
+            2,
+            32,
+        ));
+    let fallback_after_cached_negative = wait_for_atomic_count(
+        fallback_write_count.as_ref(),
+        fallback_before_promotion + 1,
+        DISPLAY_TEST_TIMEOUT,
+    )
+    .await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        2,
+        "worker should cache a negative display-sink lookup briefly"
+    );
+
+    sinks_available.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(32, 96, 64, 255)),
+            3,
+            48,
+        ));
+
+    wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        3,
+        "worker should re-check for a sink once before promoting"
+    );
+    assert_eq!(
+        fallback_write_count.load(Ordering::SeqCst),
+        fallback_after_cached_negative,
+        "display output should promote to a sink instead of staying on backend fallback"
+    );
+
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(64, 32, 96, 255)),
+            4,
+            64,
+        ));
+    wait_for_atomic_count(sink.write_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        3,
+        "cached display sink should be reused after promotion"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+    let sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO).with_transient_failures(1));
+    let fallback_write_count = Arc::new(AtomicUsize::new(0));
+    let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(
+        MultiDisplaySinkBackend::new(
+            HashMap::from([(device_id, Arc::clone(&sink))]),
+            Arc::clone(&fallback_write_count),
+        )
+        .with_display_sink_lookup_count(Arc::clone(&display_sink_lookup_count)),
+    ));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend device should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 64, 64, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(48, 48, 128, 255)),
+            1,
+            16,
+        ));
+
+    wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    wait_for_atomic_count(display_sink_lookup_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        2,
+        "worker should re-acquire exactly once after the sink error"
+    );
+    assert_eq!(
+        fallback_write_count.load(Ordering::SeqCst),
+        0,
+        "display sink retry should reacquire the sink without falling back to the backend lock"
+    );
+
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(128, 48, 48, 255)),
+            2,
+            32,
+        ));
+    wait_for_atomic_count(sink.write_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        2,
+        "cached display sink should be reused after recovery"
+    );
 
     thread.shutdown().await.expect("display thread should stop");
 }

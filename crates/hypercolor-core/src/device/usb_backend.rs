@@ -33,7 +33,7 @@ use tracing::{debug, info, trace, warn};
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
-use super::traits::{BackendInfo, DeviceBackend, DeviceFrameSink};
+use super::traits::{BackendInfo, DeviceBackend, DeviceDisplaySink, DeviceFrameSink};
 use super::usb_scanner::UsbScanner;
 use super::{DiscoveredDevice, TransportScanner};
 use crate::attachment::AttachmentRegistry;
@@ -175,6 +175,15 @@ impl UsbDevice {
         })
     }
 
+    fn display_sink(&self, device_id: DeviceId) -> Arc<dyn DeviceDisplaySink> {
+        Arc::new(UsbDisplaySink {
+            device_id,
+            display_tx: self.display_tx.clone(),
+            active: Arc::clone(&self.active),
+            last_async_error: Arc::clone(&self.last_async_error),
+        })
+    }
+
     fn queue_display_frame(&self, payload: Arc<OwnedDisplayFramePayload>) {
         self.display_tx
             .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
@@ -297,6 +306,41 @@ impl DeviceFrameSink for UsbFrameSink {
 
         self.frame_tx
             .send_replace(Some(Arc::new(UsbFramePayload { colors })));
+        Ok(())
+    }
+}
+
+struct UsbDisplaySink {
+    device_id: DeviceId,
+    display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
+    active: Arc<AtomicBool>,
+    last_async_error: Arc<StdMutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl DeviceDisplaySink for UsbDisplaySink {
+    async fn write_display_payload_owned(
+        &self,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        if !self.active.load(Ordering::Acquire) {
+            bail!(
+                "USB device actor is not running for device {}",
+                self.device_id
+            );
+        }
+
+        if let Some(error) = self
+            .last_async_error
+            .lock()
+            .map_err(|_| anyhow!("USB device async error state lock poisoned"))?
+            .clone()
+        {
+            bail!("{error}");
+        }
+
+        self.display_tx
+            .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
         Ok(())
     }
 }
@@ -1649,6 +1693,20 @@ impl DeviceBackend for UsbBackend {
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
         self.connected.get(id).map(|device| device.frame_sink(*id))
+    }
+
+    fn display_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceDisplaySink>> {
+        self.connected
+            .get(id)
+            .filter(|device| {
+                device.info_template.capabilities.has_display
+                    && device.active.load(Ordering::Acquire)
+                    && device
+                        .actor_task
+                        .as_ref()
+                        .is_some_and(|task| !task.is_finished())
+            })
+            .map(|device| device.display_sink(*id))
     }
 }
 
