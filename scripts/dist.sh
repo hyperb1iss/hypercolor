@@ -142,21 +142,13 @@ SITE_BUILD_DIR=""
 info "Building Hypercolor v${VERSION} for ${PLATFORM} (${RUST_TARGET})"
 info "Rust artifacts will land in ${CARGO_TARGET_DIR}"
 
-info "Building daemon (full renderer set)"
-./scripts/cargo-cache-build.sh cargo build --release \
-  -p hypercolor-daemon --bin hypercolor-daemon "${TARGET_FLAG[@]}"
-
-info "Building CLI"
-./scripts/cargo-cache-build.sh cargo build --release \
-  -p hypercolor-cli --bin hypercolor "${TARGET_FLAG[@]}"
-
-info "Building tray applet"
-./scripts/cargo-cache-build.sh cargo build --release \
-  -p hypercolor-tray --bin hypercolor-tray "${TARGET_FLAG[@]}"
-
-info "Building unified desktop app"
-./scripts/cargo-cache-build.sh cargo build --release \
-  -p hypercolor-app --bin hypercolor-app "${TARGET_FLAG[@]}"
+info "Building release binaries"
+./scripts/cargo-cache-build.sh cargo build --release --locked \
+  -p hypercolor-daemon --bin hypercolor-daemon \
+  -p hypercolor-cli --bin hypercolor \
+  -p hypercolor-tray --bin hypercolor-tray \
+  -p hypercolor-app --bin hypercolor-app \
+  "${TARGET_FLAG[@]}"
 
 if [[ "${CI_MODE}" -eq 1 ]]; then
   [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
