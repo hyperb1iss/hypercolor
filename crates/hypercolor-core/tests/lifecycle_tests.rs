@@ -361,6 +361,91 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
 }
 
 #[test]
+fn repeated_auto_discovery_suppresses_duplicate_connect_while_in_flight() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Push 2");
+    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+
+    let first_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        first_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "initial discovery should queue the connect"
+    );
+
+    let duplicate_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        !duplicate_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "rediscovery should not queue a second connect while the first is running"
+    );
+
+    lifecycle
+        .on_connect_abandoned(device_id)
+        .expect("finished connect should clear the in-flight guard");
+    let retry_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        retry_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "a completed attempt should allow a fresh discovery connect"
+    );
+}
+
+#[test]
+fn repeated_reconnect_attempt_suppresses_duplicate_connect_while_in_flight() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Desk Strip");
+
+    lifecycle.on_discovered(device_id, &info, None);
+    lifecycle
+        .on_connect_failed(device_id)
+        .expect("connect failure should enter reconnecting");
+
+    assert!(
+        matches!(
+            lifecycle.on_reconnect_attempt(device_id),
+            Some(LifecycleAction::Connect { .. })
+        ),
+        "first reconnect tick should queue a connect"
+    );
+    assert!(
+        lifecycle.on_reconnect_attempt(device_id).is_none(),
+        "second reconnect tick should wait for the running connect"
+    );
+
+    lifecycle
+        .on_reconnect_failed(device_id)
+        .expect("finished reconnect should clear the in-flight guard");
+    assert!(
+        matches!(
+            lifecycle.on_reconnect_attempt(device_id),
+            Some(LifecycleAction::Connect { .. })
+        ),
+        "a completed reconnect attempt should allow the next scheduled tick"
+    );
+}
+
+#[test]
 fn deferred_discovery_disconnects_connected_device() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();

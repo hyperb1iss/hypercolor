@@ -266,7 +266,7 @@ pub(crate) async fn execute_frame(
     let output_done_us = micros_between(frame_start, output_done_at);
 
     if let Some(runtime) = &state.discovery_runtime {
-        handle_async_write_failures(runtime, async_failures).await;
+        handle_async_write_failures(runtime, async_failures);
     }
     {
         let mut sampling = render.sampling_runtime();

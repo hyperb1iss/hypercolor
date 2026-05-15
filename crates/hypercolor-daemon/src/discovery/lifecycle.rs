@@ -499,25 +499,40 @@ pub(crate) async fn execute_lifecycle_actions(
     }
 }
 
-pub(crate) async fn handle_async_write_failures(
+pub(crate) fn handle_async_write_failures(
     runtime: &DiscoveryRuntime,
     failures: Vec<AsyncWriteFailure>,
 ) {
+    if failures.is_empty() {
+        return;
+    }
+
+    let actions = if let Ok(mut lifecycle) = runtime.lifecycle_manager.try_lock() {
+        async_write_failure_actions(&mut lifecycle, failures)
+    } else {
+        spawn_async_write_failure_worker(runtime.clone(), failures);
+        return;
+    };
+
+    spawn_async_write_failure_actions(runtime.clone(), actions);
+}
+
+fn async_write_failure_actions(
+    lifecycle: &mut DeviceLifecycleManager,
+    failures: Vec<AsyncWriteFailure>,
+) -> Vec<(DeviceId, Vec<LifecycleAction>)> {
     let mut handled = HashSet::new();
+    let mut planned = Vec::new();
 
     for failure in failures {
         if !handled.insert(failure.device_id) {
             continue;
         }
 
-        let should_handle = {
-            let lifecycle = runtime.lifecycle_manager.lock().await;
-            lifecycle
-                .state(failure.device_id)
-                .is_some_and(|state| state.is_renderable())
-        };
-
-        if !should_handle {
+        if !lifecycle
+            .state(failure.device_id)
+            .is_some_and(|state| state.is_renderable())
+        {
             continue;
         }
 
@@ -528,15 +543,9 @@ pub(crate) async fn handle_async_write_failures(
             "async device write failed; entering reconnect flow"
         );
 
-        let actions = {
-            let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            lifecycle.on_comm_error(failure.device_id)
-        };
-
-        match actions {
+        match lifecycle.on_comm_error(failure.device_id) {
             Ok(actions) => {
-                execute_lifecycle_actions(runtime.clone(), actions).await;
-                sync_registry_state(runtime, failure.device_id).await;
+                planned.push((failure.device_id, actions));
             }
             Err(error) => {
                 warn!(
@@ -547,6 +556,44 @@ pub(crate) async fn handle_async_write_failures(
                 );
             }
         }
+    }
+
+    planned
+}
+
+fn spawn_async_write_failure_worker(runtime: DiscoveryRuntime, failures: Vec<AsyncWriteFailure>) {
+    let task_spawner = runtime.task_spawner.clone();
+    std::mem::drop(task_spawner.spawn(async move {
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            async_write_failure_actions(&mut lifecycle, failures)
+        };
+
+        run_async_write_failure_actions(runtime, actions).await;
+    }));
+}
+
+fn spawn_async_write_failure_actions(
+    runtime: DiscoveryRuntime,
+    actions: Vec<(DeviceId, Vec<LifecycleAction>)>,
+) {
+    if actions.is_empty() {
+        return;
+    }
+
+    let task_spawner = runtime.task_spawner.clone();
+    std::mem::drop(task_spawner.spawn(async move {
+        run_async_write_failure_actions(runtime, actions).await;
+    }));
+}
+
+async fn run_async_write_failure_actions(
+    runtime: DiscoveryRuntime,
+    actions: Vec<(DeviceId, Vec<LifecycleAction>)>,
+) {
+    for (device_id, actions) in actions {
+        execute_lifecycle_actions(runtime.clone(), actions).await;
+        sync_registry_state(&runtime, device_id).await;
     }
 }
 
@@ -569,7 +616,7 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
             .remove(&device_id);
 
         let connect_action = {
-            let lifecycle = runtime_for_task.lifecycle_manager.lock().await;
+            let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
             lifecycle.on_reconnect_attempt(device_id)
         };
         let Some(LifecycleAction::Connect {

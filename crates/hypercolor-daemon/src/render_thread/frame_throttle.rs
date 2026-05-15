@@ -146,7 +146,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let output_done_us = micros_between(frame_start, output_done_at);
 
     if let Some(runtime) = &state.discovery_runtime {
-        handle_async_write_failures(runtime, async_failures).await;
+        handle_async_write_failures(runtime, async_failures);
     }
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);

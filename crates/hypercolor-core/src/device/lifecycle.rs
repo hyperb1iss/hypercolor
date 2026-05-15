@@ -66,6 +66,7 @@ struct ManagedDevice {
 /// async executors. This keeps the manager deterministic and easy to unit test.
 pub struct DeviceLifecycleManager {
     devices: HashMap<DeviceId, ManagedDevice>,
+    connect_in_flight: HashSet<DeviceId>,
     reconnect_scheduled: HashSet<DeviceId>,
     reconnect_policy: ReconnectPolicy,
 }
@@ -78,6 +79,7 @@ impl Default for DeviceLifecycleManager {
         };
         Self {
             devices: HashMap::new(),
+            connect_in_flight: HashSet::new(),
             reconnect_scheduled: HashSet::new(),
             reconnect_policy,
         }
@@ -96,6 +98,7 @@ impl DeviceLifecycleManager {
     pub fn with_reconnect_policy(reconnect_policy: ReconnectPolicy) -> Self {
         Self {
             devices: HashMap::new(),
+            connect_in_flight: HashSet::new(),
             reconnect_scheduled: HashSet::new(),
             reconnect_policy,
         }
@@ -157,50 +160,61 @@ impl DeviceLifecycleManager {
     ) -> Vec<LifecycleAction> {
         let backend_id = device_info.output_backend_id().to_ascii_lowercase();
         let layout_device_id = Self::layout_device_id_with_fingerprint(device_info, fingerprint);
+        let connect_already_in_flight = self.connect_in_flight.contains(&device_id);
+        let mut mark_connect_in_flight = false;
 
-        let managed = self.devices.entry(device_id).or_insert_with(|| {
-            let identifier = Self::identifier_for_device(device_info, fingerprint);
-            ManagedDevice {
-                state_machine: DeviceStateMachine::with_policy(
-                    identifier.clone(),
-                    self.reconnect_policy.clone(),
-                ),
-                backend_id: backend_id.clone(),
-                layout_device_id: layout_device_id.clone(),
-                identifier,
-                connect_behavior,
-            }
-        });
-
-        managed.backend_id = backend_id;
-        managed.layout_device_id = layout_device_id;
-        managed.connect_behavior = connect_behavior;
-
-        let mut actions = Vec::new();
-        if self.reconnect_scheduled.remove(&device_id) {
-            actions.push(LifecycleAction::CancelReconnect { device_id });
-        }
-
-        let previous_state = managed.state_machine.state().clone();
-        if !managed.connect_behavior.should_auto_connect() {
-            match previous_state {
-                DeviceState::Connected | DeviceState::Active => {
-                    managed.state_machine.on_hot_unplug();
-                    actions.push(Self::disconnect_action(device_id, managed));
-                    actions.push(LifecycleAction::Unmap {
-                        layout_device_id: managed.layout_device_id.clone(),
-                    });
+        let actions = {
+            let managed = self.devices.entry(device_id).or_insert_with(|| {
+                let identifier = Self::identifier_for_device(device_info, fingerprint);
+                ManagedDevice {
+                    state_machine: DeviceStateMachine::with_policy(
+                        identifier.clone(),
+                        self.reconnect_policy.clone(),
+                    ),
+                    backend_id: backend_id.clone(),
+                    layout_device_id: layout_device_id.clone(),
+                    identifier,
+                    connect_behavior,
                 }
-                DeviceState::Reconnecting => {
-                    managed.state_machine.on_hot_unplug();
-                }
-                DeviceState::Known | DeviceState::Disabled => {}
-            }
-            return actions;
-        }
+            });
 
-        if *managed.state_machine.state() == DeviceState::Known {
-            actions.push(Self::connect_action(device_id, managed));
+            managed.backend_id = backend_id;
+            managed.layout_device_id = layout_device_id;
+            managed.connect_behavior = connect_behavior;
+
+            let mut actions = Vec::new();
+            if self.reconnect_scheduled.remove(&device_id) {
+                actions.push(LifecycleAction::CancelReconnect { device_id });
+            }
+
+            let previous_state = managed.state_machine.state().clone();
+            if !managed.connect_behavior.should_auto_connect() {
+                match previous_state {
+                    DeviceState::Connected | DeviceState::Active => {
+                        managed.state_machine.on_hot_unplug();
+                        actions.push(Self::disconnect_action(device_id, managed));
+                        actions.push(LifecycleAction::Unmap {
+                            layout_device_id: managed.layout_device_id.clone(),
+                        });
+                    }
+                    DeviceState::Reconnecting => {
+                        managed.state_machine.on_hot_unplug();
+                    }
+                    DeviceState::Known | DeviceState::Disabled => {}
+                }
+                return actions;
+            }
+
+            if *managed.state_machine.state() == DeviceState::Known && !connect_already_in_flight {
+                actions.push(Self::connect_action(device_id, managed));
+                mark_connect_in_flight = true;
+            }
+
+            actions
+        };
+
+        if mark_connect_in_flight {
+            self.connect_in_flight.insert(device_id);
         }
 
         actions
@@ -211,6 +225,7 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.connect_in_flight.remove(&device_id);
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
 
@@ -229,6 +244,7 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.connect_in_flight.remove(&device_id);
         let delay = {
             let managed = self.managed_mut(device_id)?;
             managed.state_machine.on_connect_failed()?
@@ -242,6 +258,7 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.connect_in_flight.remove(&device_id);
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
         managed.state_machine.on_connect_abandoned();
@@ -264,6 +281,7 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.connect_in_flight.remove(&device_id);
         let (disconnect_action, unmap_action, next_retry_delay) = {
             let managed = self.managed_mut(device_id)?;
             managed.state_machine.on_comm_error()?;
@@ -291,12 +309,21 @@ impl DeviceLifecycleManager {
 
     /// Build a reconnect connect action after retry delay elapses.
     #[must_use]
-    pub fn on_reconnect_attempt(&self, device_id: DeviceId) -> Option<LifecycleAction> {
-        let managed = self.devices.get(&device_id)?;
-        if *managed.state_machine.state() != DeviceState::Reconnecting {
+    pub fn on_reconnect_attempt(&mut self, device_id: DeviceId) -> Option<LifecycleAction> {
+        if self.connect_in_flight.contains(&device_id) {
             return None;
         }
-        Some(Self::connect_action(device_id, managed))
+
+        let action = {
+            let managed = self.devices.get(&device_id)?;
+            if *managed.state_machine.state() != DeviceState::Reconnecting {
+                return None;
+            }
+            Self::connect_action(device_id, managed)
+        };
+
+        self.connect_in_flight.insert(device_id);
+        Some(action)
     }
 
     /// Update reconnect backoff after a failed retry attempt.
@@ -304,6 +331,7 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.connect_in_flight.remove(&device_id);
         let next_delay = {
             let managed = self.managed_mut(device_id)?;
             managed.state_machine.on_reconnect_failed()
@@ -333,6 +361,7 @@ impl DeviceLifecycleManager {
 
         let previous = managed.state_machine.state().clone();
         managed.state_machine.on_hot_unplug();
+        self.connect_in_flight.remove(&device_id);
 
         let mut actions = vec![LifecycleAction::Unmap {
             layout_device_id: managed.layout_device_id.clone(),
@@ -355,6 +384,7 @@ impl DeviceLifecycleManager {
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
+        self.connect_in_flight.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
         let previous = managed.state_machine.state().clone();
         managed.state_machine.on_user_disable();
@@ -376,18 +406,29 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
-        let managed = self.managed_mut(device_id)?;
-        let was_disabled = *managed.state_machine.state() == DeviceState::Disabled;
-        managed.state_machine.on_user_enable();
+        let connect_already_in_flight = self.connect_in_flight.contains(&device_id);
+        let mut mark_connect_in_flight = false;
+        let action = {
+            let managed = self.managed_mut(device_id)?;
+            let was_disabled = *managed.state_machine.state() == DeviceState::Disabled;
+            managed.state_machine.on_user_enable();
 
-        let mut actions = Vec::new();
-        if was_disabled
-            && *managed.state_machine.state() == DeviceState::Known
-            && managed.connect_behavior.should_auto_connect()
-        {
-            actions.push(Self::connect_action(device_id, managed));
+            if was_disabled
+                && *managed.state_machine.state() == DeviceState::Known
+                && managed.connect_behavior.should_auto_connect()
+                && !connect_already_in_flight
+            {
+                mark_connect_in_flight = true;
+                Some(Self::connect_action(device_id, managed))
+            } else {
+                None
+            }
+        };
+
+        if mark_connect_in_flight {
+            self.connect_in_flight.insert(device_id);
         }
-        Ok(actions)
+        Ok(action.into_iter().collect())
     }
 
     /// Runtime-driven standby transition when a discovered device is not
@@ -397,6 +438,7 @@ impl DeviceLifecycleManager {
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
+        self.connect_in_flight.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
         let previous = managed.state_machine.state().clone();
 

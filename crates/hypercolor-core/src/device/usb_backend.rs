@@ -1332,6 +1332,14 @@ impl DeviceBackend for UsbBackend {
         reason = "USB connect owns discovery handoff, init, diagnostics, and actor startup"
     )]
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if let Some(device) = self.connected.get_mut(id) {
+            device.ensure_actor_ready(*id).await.with_context(|| {
+                format!("USB device {id} is already connected but its actor is unhealthy")
+            })?;
+            debug!(device_id = %id, "USB device already connected; skipping duplicate connect");
+            return Ok(());
+        }
+
         let pending_ids = self
             .pending
             .keys()

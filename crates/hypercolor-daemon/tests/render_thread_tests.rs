@@ -12,14 +12,14 @@ use std::time::Duration;
 
 #[cfg(feature = "wgpu")]
 use tokio::sync::oneshot;
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
-    BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
-    UsbProtocolConfigStore,
+    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
+    ReconnectPolicy, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -32,7 +32,7 @@ use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, ZoneColors,
@@ -146,6 +146,64 @@ fn builtin_effect_metadata(registry: &EffectRegistry, stem: &str) -> EffectMetad
             (entry.metadata.source.source_stem() == Some(stem)).then_some(entry.metadata.clone())
         })
         .expect("builtin effect should exist")
+}
+
+struct SlowDisconnectFailBackend {
+    info: DeviceInfo,
+    disconnect_started: Arc<Notify>,
+    disconnect_delay: Duration,
+    connected: bool,
+}
+
+impl SlowDisconnectFailBackend {
+    fn new(info: DeviceInfo, disconnect_started: Arc<Notify>, disconnect_delay: Duration) -> Self {
+        Self {
+            info,
+            disconnect_started,
+            disconnect_delay,
+            connected: true,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for SlowDisconnectFailBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".to_owned(),
+            name: "Slow Disconnect Mock".to_owned(),
+            description: "Fails writes and delays disconnect for render loop tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> anyhow::Result<Vec<DeviceInfo>> {
+        Ok(vec![self.info.clone()])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+        if *id != self.info.id {
+            anyhow::bail!("unknown slow-disconnect test device {id}");
+        }
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+        if *id != self.info.id {
+            anyhow::bail!("unknown slow-disconnect test device {id}");
+        }
+        self.disconnect_started.notify_waiters();
+        tokio::time::sleep(self.disconnect_delay).await;
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> anyhow::Result<()> {
+        if !self.connected {
+            anyhow::bail!("slow-disconnect test device {id} is disconnected");
+        }
+        anyhow::bail!("forced async write failure for slow-disconnect test device {id}");
+    }
 }
 
 #[derive(Clone)]
@@ -2474,6 +2532,179 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         registry_state.is_ok(),
         "expected registry state to sync to reconnecting"
     );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let reconnect_tasks = {
+        let mut tasks = discovery_runtime
+            .reconnect_tasks
+            .lock()
+            .expect("reconnect task map lock poisoned");
+        tasks.drain().map(|(_, handle)| handle).collect::<Vec<_>>()
+    };
+    for handle in reconnect_tasks {
+        handle.abort();
+    }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this regression test wires the real render thread, output queue, and lifecycle handoff"
+)]
+async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Slow Disconnect Strip".into(),
+        led_count: 8,
+        topology: LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mock_backend = MockDeviceBackend::new().with_device(&mock_config);
+    let info = mock_backend
+        .device_infos()
+        .first()
+        .cloned()
+        .expect("mock backend should expose one device");
+    let layout_device_id = DeviceLifecycleManager::layout_device_id(&info);
+    let disconnect_started = Arc::new(Notify::new());
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(SlowDisconnectFailBackend::new(
+        info.clone(),
+        Arc::clone(&disconnect_started),
+        Duration::from_millis(650),
+    )));
+    backend_manager.map_device(&layout_device_id, "mock", device_id);
+
+    let device_registry = DeviceRegistry::new();
+    let registered_id = device_registry.add(info.clone()).await;
+    assert_eq!(registered_id, device_id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::with_reconnect_policy(
+        ReconnectPolicy {
+            initial_delay: Duration::from_secs(5),
+            ..ReconnectPolicy::default()
+        },
+    )));
+    {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("connected state should be valid");
+        lifecycle
+            .on_frame_success(device_id)
+            .expect("frame success should move device to active");
+    }
+
+    let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
+    let mut state = make_render_state(
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
+        SpatialEngine::new(layout),
+        backend_manager,
+    );
+    let backend_manager = Arc::clone(&state.backend_manager);
+    let event_bus = Arc::clone(&state.event_bus);
+    let spatial_engine = Arc::clone(&state.spatial_engine);
+    let discovery_runtime = DiscoveryRuntime {
+        device_registry: device_registry.clone(),
+        backend_manager: Arc::clone(&backend_manager),
+        lifecycle_manager: Arc::clone(&lifecycle_manager),
+        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
+        event_bus: Arc::clone(&event_bus),
+        spatial_engine,
+        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+        layouts: Arc::new(RwLock::new(HashMap::new())),
+        layouts_path: PathBuf::from("layouts.json"),
+        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
+        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(PathBuf::from(
+            "attachment-profiles.json",
+        )))),
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
+        )))),
+        scene_transactions: SceneTransactionQueue::default(),
+        runtime_state_path: PathBuf::from("runtime-state.json"),
+        usb_protocol_configs: UsbProtocolConfigStore::new(),
+        credential_store: Arc::new(
+            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
+                "hypercolor-test-credentials-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .expect("test credential store"),
+        ),
+        in_progress: Arc::new(AtomicBool::new(false)),
+        task_spawner: tokio::runtime::Handle::current(),
+    };
+    state.discovery_runtime = Some(discovery_runtime.clone());
+
+    let mut event_rx = event_bus.subscribe_all();
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(1), disconnect_started.notified())
+        .await
+        .expect("async failure should start slow disconnect");
+
+    loop {
+        match event_rx.try_recv() {
+            Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                panic!("render event channel closed")
+            }
+        }
+    }
+
+    let frame_after_disconnect_started = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) if matches!(event.event, HypercolorEvent::FrameRendered { .. }) => break,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("render event channel closed")
+                }
+            }
+        }
+    })
+    .await;
+    assert!(
+        frame_after_disconnect_started.is_ok(),
+        "render thread should keep publishing frames while lifecycle disconnect I/O is in flight"
+    );
+
+    wait_for_device_state(
+        &lifecycle_manager,
+        device_id,
+        DeviceState::Reconnecting,
+        Duration::from_millis(250),
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if backend_manager.lock().await.mapped_device_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("slow disconnect should eventually unmap the failed device");
 
     {
         let mut rl = state.render_loop.write().await;
