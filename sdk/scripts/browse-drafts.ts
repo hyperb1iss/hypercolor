@@ -42,9 +42,7 @@ async function listVariants(effectDir: string): Promise<VariantEntry[]> {
     for (const name of names.sort()) {
         const variantDir = resolve(effectDir, name)
         if (!(await isDir(variantDir))) continue
-        const files = (await readdir(variantDir))
-            .filter((f) => /^rank-\d+\.png$/.test(f))
-            .sort()
+        const files = (await readdir(variantDir)).filter((f) => /^rank-\d+\.png$/.test(f)).sort()
         if (files.length === 0) continue
         variants.push({
             key: name,
@@ -69,8 +67,7 @@ async function collectEffects(): Promise<EffectEntry[]> {
 function escapeHtml(input: string): string {
     return input.replace(
         /[&<>"']/g,
-        (ch) =>
-            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch,
+        (ch) => ({ "'": '&#39;', '"': '&quot;', '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch] ?? ch,
     )
 }
 
@@ -111,9 +108,7 @@ function renderHtml(effects: EffectEntry[]): string {
         })
         .join('\n')
 
-    const toc = effects
-        .map((e) => `<li><a href="#${escapeHtml(e.slug)}">${escapeHtml(e.slug)}</a></li>`)
-        .join('\n')
+    const toc = effects.map((e) => `<li><a href="#${escapeHtml(e.slug)}">${escapeHtml(e.slug)}</a></li>`).join('\n')
 
     return `<!doctype html>
 <html lang="en">
