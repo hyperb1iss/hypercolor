@@ -7,6 +7,19 @@ on:
       - "v*.*.*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_artifacts:
+        description: "Build release artifacts without publishing a GitHub Release"
+        required: false
+        type: choice
+        default: none
+        options:
+          - none
+          - smoke
+          - full
+      release_version:
+        description: "Dry-run semver for artifact names (blank = Cargo version + -ci.0)"
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,12 +70,12 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      full: ${{ github.event_name != 'pull_request' || startsWith(github.ref, 'refs/tags/') }}
-      rust: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.rust }}
-      python: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.python }}
-      sdk: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.sdk }}
-      ui: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.ui }}
-      compat: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.compat }}
+      full: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.release_artifacts != 'smoke')) }}
+      rust: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.rust }}
+      python: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.python }}
+      sdk: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.sdk }}
+      ui: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.ui }}
+      compat: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.compat }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v6
@@ -894,7 +907,10 @@ jobs:
   # ── Web Assets (built once, shared across release platforms) ───
   web-assets:
     name: Web Assets
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.release_artifacts != 'none')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -941,7 +957,10 @@ jobs:
   # ── Build Native App Installers ───────────────────────────────
   build-native-app:
     name: Native App (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.release_artifacts == 'full')
     needs: [rust-check-shared, rust-check-servo, rust-check-native, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
@@ -1005,8 +1024,34 @@ jobs:
       - name: Determine version
         id: version
         shell: pwsh
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $ErrorActionPreference = "Stop"
+          function Get-CargoVersion {
+            $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+            return ($metadata.packages | Where-Object { $_.name -eq "hypercolor-daemon" }).version
+          }
+
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $version = $env:INPUT_RELEASE_VERSION -replace '^v', ''
+            if ([string]::IsNullOrWhiteSpace($version)) {
+              $version = "$(Get-CargoVersion)-ci.0"
+            }
+          }
+
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "Invalid release version: $version"
+          }
+
+          $cargoVersion = Get-CargoVersion
+          $baseVersion = ($version -split '-', 2)[0]
+          if ($baseVersion -ne $cargoVersion) {
+            throw "Release version $version does not match Cargo version $cargoVersion"
+          }
+
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Patch app version from tag
@@ -1103,8 +1148,89 @@ jobs:
           if-no-files-found: error
 
   # ── Build Release Tarballs ────────────────────────────────────
+  build-release-smoke:
+    name: Release Tarball Smoke (linux-amd64)
+    if: github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke'
+    needs: web-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Dpkg::Use-Pty=0 \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_DEPS }} librsvg2-bin
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          key: release-smoke-linux-amd64
+
+      - name: Download web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: web-assets/
+
+      - name: Determine version
+        id: version
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          version="$(./scripts/resolve-release-version.sh "${INPUT_RELEASE_VERSION}")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "dist_name=hypercolor-${version}-linux-amd64" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble distribution
+        run: >-
+          ./scripts/dist.sh --ci --skip-docs
+          --web-assets web-assets
+          --target linux-amd64
+          --version "${{ steps.version.outputs.version }}"
+
+      - name: Generate release checksum
+        run: |
+          set -euo pipefail
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          tarball="${dist_name}.tar.gz"
+          (
+            cd dist
+            sha256sum "${tarball}" > "${tarball}.sha256"
+            cat "${tarball}.sha256"
+          )
+
+      - name: Verify release tarball
+        run: |
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          ./scripts/verify-release-artifact.sh \
+            "dist/${dist_name}.tar.gz" \
+            "dist/${dist_name}.tar.gz.sha256"
+
+      - name: Upload release tarball smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.dist_name }}
+          path: |
+            dist/${{ steps.version.outputs.dist_name }}.tar.gz
+            dist/${{ steps.version.outputs.dist_name }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   build-release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.release_artifacts == 'full')
     needs: [rust-check-shared, rust-check-servo, rust-check-native, rust-test, rust-test-servo, rust-deny, sdk, ui, e2e, web-assets]
     strategy:
       fail-fast: false
@@ -1154,8 +1280,10 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$(./scripts/resolve-release-version.sh "${INPUT_RELEASE_VERSION}")"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "dist_name=hypercolor-${VERSION}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
 
@@ -1164,7 +1292,7 @@ jobs:
           ./scripts/dist.sh --ci --skip-docs
           --web-assets web-assets
           --target ${{ matrix.target }}
-          --version ${{ steps.version.outputs.version }}
+          --version "${{ steps.version.outputs.version }}"
 
       - name: Generate release checksum
         run: |
@@ -1181,6 +1309,13 @@ jobs:
             cat "${tarball}.sha256"
           )
 
+      - name: Verify release tarball
+        run: |
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          ./scripts/verify-release-artifact.sh \
+            "dist/${dist_name}.tar.gz" \
+            "dist/${dist_name}.tar.gz.sha256"
+
       - name: Upload release tarball
         uses: actions/upload-artifact@v4
         with:
@@ -1192,7 +1327,7 @@ jobs:
 
   # ── Create GitHub Release ──────────────────────────────────────
   create-release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: [build-release, build-native-app]
     runs-on: ubuntu-latest
     permissions:
@@ -1230,7 +1365,10 @@ jobs:
 
   # ── Update Homebrew Tap ────────────────────────────────────────
   update-homebrew:
-    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !contains(github.ref_name, '-')
     needs: create-release
     runs-on: ubuntu-latest
     permissions:
@@ -1323,7 +1461,10 @@ jobs:
 
   # ── Update AUR Package ────────────────────────────────────────
   update-aur:
-    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !contains(github.ref_name, '-')
     needs: create-release
     runs-on: ubuntu-latest
     permissions:

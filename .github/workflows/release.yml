@@ -93,6 +93,7 @@ jobs:
             echo "- Dry run: ${DRY_RUN}"
             echo
             echo "Pushing the tag triggers ci.yml to build artifacts and publish the release."
+            echo "For artifact rehearsal without a tag, dispatch CI/CD with release_artifacts=smoke or full."
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Create and push tag
