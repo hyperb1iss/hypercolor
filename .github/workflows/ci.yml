@@ -685,7 +685,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: cargo test
       - name: Install Trunk
-        run: cargo install trunk --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
       - run: env -u NO_COLOR trunk build --release
 
   # ── End-to-End (Playwright) ──────────────────────────────────
@@ -755,7 +757,9 @@ jobs:
           tool: just
 
       - name: Install Trunk
-        run: cargo install trunk --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
 
       - name: Install SDK dependencies
         working-directory: sdk
@@ -925,7 +929,9 @@ jobs:
           key: web-assets
 
       - name: Install Trunk
-        run: cargo install trunk --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
 
       - name: Build UI
         working-directory: crates/hypercolor-ui
