@@ -199,6 +199,65 @@ fn raw_gl_pooled_importer_reports_exhaustion_when_slots_are_held() {
     importer.destroy_gl_resources(&raw_gl.gl);
 }
 
+#[test]
+fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held() {
+    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+        return;
+    }
+
+    let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
+    let raw_gl =
+        RawGlFixture::new(WIDTH, HEIGHT).expect("raw GL import fixture should create GL surface");
+    let gl_external_memory = raw_gl
+        .load_external_memory_functions()
+        .expect("raw GL import fixture should load GL external memory functions");
+    let descriptor =
+        LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
+            .expect("fixture dimensions should be valid");
+    let mut importer = LinuxGlFramebufferImporter::new(
+        &wgpu.device,
+        &raw_gl.gl,
+        gl_external_memory,
+        descriptor,
+        1,
+    )
+    .expect("raw GL fixture should create pooled importer");
+
+    let first_color = [255, 0, 64, 255];
+    raw_gl.clear(first_color);
+    let first = importer
+        .import_framebuffer_pipelined(
+            &raw_gl.gl,
+            GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+        )
+        .expect("first pipelined import should block until a completed frame exists");
+    let first_pixels =
+        read_texture_pixels(&wgpu.device, &wgpu.queue, &first.texture, WIDTH, HEIGHT);
+    for pixel in first_pixels.chunks_exact(4) {
+        assert_eq!(pixel, first_color);
+    }
+
+    raw_gl.clear([0, 255, 128, 255]);
+    let reused = importer
+        .import_framebuffer_pipelined(
+            &raw_gl.gl,
+            GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+        )
+        .expect("held slots should reuse the latest completed frame");
+    assert_eq!(reused.storage_id, first.storage_id);
+    let reused_pixels =
+        read_texture_pixels(&wgpu.device, &wgpu.queue, &reused.texture, WIDTH, HEIGHT);
+    for pixel in reused_pixels.chunks_exact(4) {
+        assert_eq!(pixel, first_color);
+    }
+
+    drop(first);
+    drop(reused);
+    let _ = wgpu.device.poll(wgpu::PollType::Poll);
+    importer.destroy_gl_resources(&raw_gl.gl);
+}
+
 struct WgpuFixture {
     _instance: wgpu::Instance,
     device: wgpu::Device,

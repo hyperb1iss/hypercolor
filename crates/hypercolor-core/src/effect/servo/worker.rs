@@ -1797,7 +1797,7 @@ impl ServoWorkerRuntime {
             .gpu_importer
             .as_mut()
             .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        Ok(importer.import_framebuffer(gl.as_ref(), source_framebuffer)?)
+        Ok(importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer)?)
     }
 
     fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {

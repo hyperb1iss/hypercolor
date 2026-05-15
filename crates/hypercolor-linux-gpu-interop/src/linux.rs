@@ -286,6 +286,7 @@ impl LinuxGlFramebufferImporter {
         source_framebuffer: GlFramebufferSource,
     ) -> Result<ImportedEffectFrame> {
         let total_start = Instant::now();
+        self.poll_pending_imports(gl)?;
         let gl_external_memory = self.gl_external_memory;
         let descriptor = self.descriptor;
         let slot = self.next_slot()?;
@@ -293,6 +294,55 @@ impl LinuxGlFramebufferImporter {
             slot.blit_from_framebuffer(gl, gl_external_memory, source_framebuffer, descriptor)?;
         timings.total_us = elapsed_micros(total_start);
         Ok(slot.frame(descriptor, timings))
+    }
+
+    /// Queues a GL framebuffer blit and returns the newest completed import.
+    ///
+    /// The first call blocks until its own blit completes. Later calls return a
+    /// previously completed slot while the current blit finishes on the GPU.
+    pub fn import_framebuffer_pipelined(
+        &mut self,
+        gl: &glow::Context,
+        source_framebuffer: GlFramebufferSource,
+    ) -> Result<ImportedEffectFrame> {
+        self.poll_pending_imports(gl)?;
+
+        let issued_slot = if let Some(index) = self.next_pipelined_slot() {
+            let total_start = Instant::now();
+            let gl_external_memory = self.gl_external_memory;
+            let descriptor = self.descriptor;
+            let slot = &mut self.slots[index];
+            let mut pending = slot.blit_from_framebuffer_pipelined(
+                gl,
+                gl_external_memory,
+                source_framebuffer,
+                descriptor,
+            )?;
+            pending.timings.total_us = elapsed_micros(total_start);
+            slot.pending = Some(pending);
+            self.next_slot = (index + 1) % self.slots.len();
+            Some(index)
+        } else {
+            None
+        };
+
+        self.poll_pending_imports(gl)?;
+        if let Some(frame) = self.latest_completed_frame() {
+            return Ok(frame);
+        }
+
+        if let Some(index) = issued_slot {
+            self.slots[index].wait_pending_import(gl)?;
+            return self.slots[index].completed_frame(self.descriptor).ok_or(
+                LinuxGpuInteropError::ImportSlotsExhausted {
+                    slot_count: self.slots.len(),
+                },
+            );
+        }
+
+        Err(LinuxGpuInteropError::ImportSlotsExhausted {
+            slot_count: self.slots.len(),
+        })
     }
 
     /// Deletes pooled GL objects while their context is current.
@@ -311,6 +361,44 @@ impl LinuxGlFramebufferImporter {
             .ok_or(LinuxGpuInteropError::ImportSlotsExhausted { slot_count })?;
         self.next_slot = (selected + 1) % slot_count;
         Ok(&mut self.slots[selected])
+    }
+
+    fn next_pipelined_slot(&self) -> Option<usize> {
+        let slot_count = self.slots.len();
+        let preferred = self.next_slot;
+        let latest_completed_index = self.latest_completed_index();
+        let mut fallback = None;
+        for index in (0..slot_count).map(|offset| (preferred + offset) % slot_count) {
+            if !self.slots[index].is_available() {
+                continue;
+            }
+            if Some(index) != latest_completed_index {
+                return Some(index);
+            }
+            fallback = Some(index);
+        }
+        fallback
+    }
+
+    fn latest_completed_index(&self) -> Option<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.completed.map(|completed| (index, completed)))
+            .max_by_key(|(_, completed)| completed.storage_id)
+            .map(|(index, _)| index)
+    }
+
+    fn latest_completed_frame(&self) -> Option<ImportedEffectFrame> {
+        self.latest_completed_index()
+            .and_then(|index| self.slots[index].completed_frame(self.descriptor))
+    }
+
+    fn poll_pending_imports(&mut self, gl: &glow::Context) -> Result<()> {
+        for slot in &mut self.slots {
+            slot.poll_pending_import(gl)?;
+        }
+        Ok(())
     }
 }
 
@@ -603,6 +691,20 @@ struct ImportedFrameSlot {
     gl_binding: GlImportedImageBinding,
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
+    pending: Option<PendingImport>,
+    completed: Option<CompletedImport>,
+}
+
+struct PendingImport {
+    fence: glow::NativeFence,
+    storage_id: u64,
+    timings: ImportedFrameTimings,
+}
+
+#[derive(Clone, Copy)]
+struct CompletedImport {
+    storage_id: u64,
+    timings: ImportedFrameTimings,
 }
 
 impl ImportedFrameSlot {
@@ -644,11 +746,15 @@ impl ImportedFrameSlot {
             gl_binding,
             texture: texture.texture,
             view: texture.view,
+            pending: None,
+            completed: None,
         })
     }
 
     fn is_available(&self) -> bool {
-        Arc::strong_count(&self.texture) == 1 && Arc::strong_count(&self.view) == 1
+        self.pending.is_none()
+            && Arc::strong_count(&self.texture) == 1
+            && Arc::strong_count(&self.view) == 1
     }
 
     fn blit_from_framebuffer(
@@ -666,20 +772,110 @@ impl ImportedFrameSlot {
         )
     }
 
+    fn blit_from_framebuffer_pipelined(
+        &self,
+        gl: &glow::Context,
+        gl_external_memory: GlExternalMemoryFunctions,
+        source_framebuffer: GlFramebufferSource,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<PendingImport> {
+        let timings = self.gl_binding.blit_from_framebuffer_pipelined(
+            gl,
+            gl_external_memory,
+            source_framebuffer,
+            descriptor,
+        )?;
+        Ok(PendingImport {
+            fence: timings.fence,
+            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            timings: timings.timings,
+        })
+    }
+
     fn frame(
         &self,
         descriptor: LinuxGlFramebufferImportDescriptor,
+        timings: ImportedFrameTimings,
+    ) -> ImportedEffectFrame {
+        self.frame_with_storage_id(
+            descriptor,
+            NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            timings,
+        )
+    }
+
+    fn completed_frame(
+        &self,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Option<ImportedEffectFrame> {
+        self.completed.map(|completed| {
+            self.frame_with_storage_id(descriptor, completed.storage_id, completed.timings)
+        })
+    }
+
+    fn frame_with_storage_id(
+        &self,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+        storage_id: u64,
         timings: ImportedFrameTimings,
     ) -> ImportedEffectFrame {
         ImportedEffectFrame {
             width: descriptor.width,
             height: descriptor.height,
             format: descriptor.format,
-            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            storage_id,
             texture: Arc::clone(&self.texture),
             view: Arc::clone(&self.view),
             timings,
         }
+    }
+
+    fn poll_pending_import(&mut self, gl: &glow::Context) -> Result<()> {
+        let Some(mut pending) = self.pending.take() else {
+            return Ok(());
+        };
+
+        let sync_start = Instant::now();
+        let status = match poll_gl_fence(gl, pending.fence) {
+            Ok(status) => status,
+            Err(error) => {
+                self.pending = Some(pending);
+                return Err(error);
+            }
+        };
+        pending.timings.sync_us = pending
+            .timings
+            .sync_us
+            .saturating_add(elapsed_micros(sync_start));
+
+        match status {
+            GlFenceStatus::Complete => {
+                delete_gl_fence(gl, pending.fence);
+                self.completed = Some(CompletedImport {
+                    storage_id: pending.storage_id,
+                    timings: pending.timings,
+                });
+            }
+            GlFenceStatus::Pending => {
+                self.pending = Some(pending);
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_pending_import(&mut self, gl: &glow::Context) -> Result<()> {
+        let Some(mut pending) = self.pending.take() else {
+            return Ok(());
+        };
+        let sync_result = wait_for_gl_fence_completion(gl, pending.fence);
+        delete_gl_fence(gl, pending.fence);
+        let sync_us = sync_result?;
+        pending.timings.sync_us = pending.timings.sync_us.saturating_add(sync_us);
+        self.completed = Some(CompletedImport {
+            storage_id: pending.storage_id,
+            timings: pending.timings,
+        });
+        Ok(())
     }
 
     fn destroy_gl_resources(
@@ -687,6 +883,9 @@ impl ImportedFrameSlot {
         gl: &glow::Context,
         gl_external_memory: GlExternalMemoryFunctions,
     ) {
+        if let Some(pending) = self.pending.take() {
+            delete_gl_fence(gl, pending.fence);
+        }
         self.gl_binding.destroy(gl, gl_external_memory);
     }
 }
@@ -920,6 +1119,11 @@ struct GlImportedImageBinding {
     framebuffer: Option<glow::NativeFramebuffer>,
 }
 
+struct PendingGlBlit {
+    fence: glow::NativeFence,
+    timings: ImportedFrameTimings,
+}
+
 impl GlImportedImageBinding {
     fn create(
         gl: &glow::Context,
@@ -1091,6 +1295,67 @@ impl GlImportedImageBinding {
         result
     }
 
+    fn blit_from_framebuffer_pipelined(
+        &self,
+        gl: &glow::Context,
+        _gl_external_memory: GlExternalMemoryFunctions,
+        source_framebuffer: GlFramebufferSource,
+        descriptor: LinuxGlFramebufferImportDescriptor,
+    ) -> Result<PendingGlBlit> {
+        let bindings = capture_gl_bindings(gl);
+        clear_gl_errors(gl);
+        let result = (|| {
+            let blit_start = Instant::now();
+            // SAFETY: source_framebuffer is supplied by the current GL context;
+            // the destination framebuffer is complete and backed by external memory.
+            unsafe {
+                if let GlFramebufferSource::Framebuffer(source_framebuffer) = source_framebuffer {
+                    gl.bind_framebuffer(glow::READ_FRAMEBUFFER, source_framebuffer);
+                }
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.framebuffer);
+                gl.blit_framebuffer(
+                    0,
+                    0,
+                    descriptor.width_i32(),
+                    descriptor.height_i32(),
+                    0,
+                    descriptor.height_i32(),
+                    descriptor.width_i32(),
+                    0,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+            }
+            let blit_us = elapsed_micros(blit_start);
+            check_gl_error(gl, "glBlitFramebuffer")?;
+
+            let sync_start = Instant::now();
+            let fence = create_gl_fence(gl)?;
+            // SAFETY: the fence was inserted after the blit on this current GL
+            // context; flushing lets later non-blocking polls observe progress.
+            unsafe {
+                gl.flush();
+            }
+            if let Err(error) = check_gl_error(gl, "glFlush") {
+                delete_gl_fence(gl, fence);
+                return Err(error);
+            }
+            let sync_us = elapsed_micros(sync_start);
+
+            Ok(PendingGlBlit {
+                fence,
+                timings: ImportedFrameTimings {
+                    blit_us,
+                    sync_us,
+                    total_us: 0,
+                },
+            })
+        })();
+
+        restore_gl_bindings(gl, bindings);
+        result
+    }
+
     fn destroy(&mut self, gl: &glow::Context, gl_external_memory: GlExternalMemoryFunctions) {
         cleanup_gl_import_resources(
             gl,
@@ -1202,7 +1467,12 @@ fn lookup_raw_symbol(handle: usize, symbol: &CStr) -> Option<*const c_void> {
     (!ptr.is_null()).then_some(ptr.cast_const())
 }
 
-fn wait_for_gl_blit_completion(gl: &glow::Context) -> Result<u64> {
+enum GlFenceStatus {
+    Complete,
+    Pending,
+}
+
+fn create_gl_fence(gl: &glow::Context) -> Result<glow::NativeFence> {
     // SAFETY: the caller holds the current GL context and the fence is inserted
     // after the framebuffer blit commands issued on that same context.
     let fence = unsafe {
@@ -1219,18 +1489,23 @@ fn wait_for_gl_blit_completion(gl: &glow::Context) -> Result<u64> {
         });
     }
     check_gl_error(gl, "glFenceSync")?;
+    Ok(fence)
+}
 
+fn wait_for_gl_blit_completion(gl: &glow::Context) -> Result<u64> {
+    let fence = create_gl_fence(gl)?;
+    let result = wait_for_gl_fence_completion(gl, fence);
+    delete_gl_fence(gl, fence);
+    result
+}
+
+fn wait_for_gl_fence_completion(gl: &glow::Context, fence: glow::NativeFence) -> Result<u64> {
     let sync_start = Instant::now();
     // SAFETY: `fence` was created in this context above and remains live until
-    // the explicit delete after the wait returns.
+    // the caller deletes it after the wait returns.
     let status =
         unsafe { gl.client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED_NS) };
     let sync_us = elapsed_micros(sync_start);
-    // SAFETY: the fence belongs to this current GL context and is no longer
-    // needed after the client wait completes or reports failure.
-    unsafe {
-        gl.delete_sync(fence);
-    }
     check_gl_error(gl, "glClientWaitSync")?;
 
     match status {
@@ -1239,6 +1514,30 @@ fn wait_for_gl_blit_completion(gl: &glow::Context) -> Result<u64> {
             operation: "glClientWaitSync",
             code,
         }),
+    }
+}
+
+fn poll_gl_fence(gl: &glow::Context, fence: glow::NativeFence) -> Result<GlFenceStatus> {
+    // SAFETY: `fence` was created in this context and remains live while owned
+    // by the pending import slot.
+    let status = unsafe { gl.client_wait_sync(fence, 0, 0) };
+    check_gl_error(gl, "glClientWaitSync")?;
+
+    match status {
+        glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => Ok(GlFenceStatus::Complete),
+        glow::TIMEOUT_EXPIRED => Ok(GlFenceStatus::Pending),
+        code => Err(LinuxGpuInteropError::GlOperation {
+            operation: "glClientWaitSync",
+            code,
+        }),
+    }
+}
+
+fn delete_gl_fence(gl: &glow::Context, fence: glow::NativeFence) {
+    // SAFETY: the fence belongs to this current GL context and is no longer
+    // needed by the caller.
+    unsafe {
+        gl.delete_sync(fence);
     }
 }
 

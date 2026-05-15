@@ -170,6 +170,15 @@ impl LinuxGlFramebufferImporter {
         Err(LinuxGpuInteropError::UnsupportedPlatform)
     }
 
+    /// Queues a GL framebuffer blit and returns the newest completed import.
+    pub fn import_framebuffer_pipelined(
+        &mut self,
+        _gl: &glow::Context,
+        _source_framebuffer: GlFramebufferSource,
+    ) -> Result<ImportedEffectFrame> {
+        Err(LinuxGpuInteropError::UnsupportedPlatform)
+    }
+
     /// Deletes pooled GL objects while their context is current.
     pub fn destroy_gl_resources(&mut self, _gl: &glow::Context) {}
 }
