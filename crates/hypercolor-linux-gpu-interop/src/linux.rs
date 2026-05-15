@@ -12,6 +12,7 @@ use thiserror::Error;
 
 const GL_DEDICATED_MEMORY_OBJECT_EXT: u32 = 0x9581;
 const GL_HANDLE_TYPE_OPAQUE_FD_EXT: u32 = 0x9586;
+const GL_TIMEOUT_IGNORED_NS: i32 = -1;
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static PROCESS_GL_LOADER: OnceLock<Option<ProcessGlLoader>> = OnceLock::new();
@@ -1073,18 +1074,11 @@ impl GlImportedImageBinding {
                     glow::COLOR_BUFFER_BIT,
                     glow::NEAREST,
                 );
-                gl.flush();
             }
             let blit_us = elapsed_micros(blit_start);
-
-            let sync_start = Instant::now();
-            // SAFETY: the current GL context owns the queued blit and `finish`
-            // only blocks until that context has completed prior commands.
-            unsafe {
-                gl.finish();
-            }
-            let sync_us = elapsed_micros(sync_start);
             check_gl_error(gl, "glBlitFramebuffer")?;
+
+            let sync_us = wait_for_gl_blit_completion(gl)?;
 
             Ok(ImportedFrameTimings {
                 blit_us,
@@ -1206,6 +1200,46 @@ fn lookup_raw_symbol(handle: usize, symbol: &CStr) -> Option<*const c_void> {
     // SAFETY: handle came from dlopen and symbol is NUL-terminated.
     let ptr = unsafe { libc::dlsym(handle as *mut c_void, symbol.as_ptr()) };
     (!ptr.is_null()).then_some(ptr.cast_const())
+}
+
+fn wait_for_gl_blit_completion(gl: &glow::Context) -> Result<u64> {
+    // SAFETY: the caller holds the current GL context and the fence is inserted
+    // after the framebuffer blit commands issued on that same context.
+    let fence = unsafe {
+        gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
+            .map_err(|message| LinuxGpuInteropError::GlCreateResource {
+                resource: "sync object",
+                message,
+            })?
+    };
+    if fence.0.is_null() {
+        return Err(LinuxGpuInteropError::GlCreateResource {
+            resource: "sync object",
+            message: "glFenceSync returned null".to_owned(),
+        });
+    }
+    check_gl_error(gl, "glFenceSync")?;
+
+    let sync_start = Instant::now();
+    // SAFETY: `fence` was created in this context above and remains live until
+    // the explicit delete after the wait returns.
+    let status =
+        unsafe { gl.client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED_NS) };
+    let sync_us = elapsed_micros(sync_start);
+    // SAFETY: the fence belongs to this current GL context and is no longer
+    // needed after the client wait completes or reports failure.
+    unsafe {
+        gl.delete_sync(fence);
+    }
+    check_gl_error(gl, "glClientWaitSync")?;
+
+    match status {
+        glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => Ok(sync_us),
+        code => Err(LinuxGpuInteropError::GlOperation {
+            operation: "glClientWaitSync",
+            code,
+        }),
+    }
 }
 
 fn cleanup_gl_import_resources(

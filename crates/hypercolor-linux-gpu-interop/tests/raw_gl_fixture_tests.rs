@@ -364,6 +364,8 @@ impl RawGlFixture {
     fn paint_orientation_fixture(&self) {
         let half_width = self.width / 2;
         let half_height = self.height / 2;
+        // SAFETY: the fixture owns the current GL context and framebuffer for
+        // the duration of the orientation paint.
         unsafe {
             self.gl
                 .bind_framebuffer(glow::FRAMEBUFFER, self.framebuffer);
@@ -399,6 +401,8 @@ impl RawGlFixture {
 
     fn clear_rect(&self, x: u32, y: u32, width: u32, height: u32, pixel: [u8; 4]) {
         let [red, green, blue, alpha] = pixel.map(|channel| f32::from(channel) / 255.0);
+        // SAFETY: the caller has bound this fixture's framebuffer and enabled
+        // scissor state for the current GL context.
         unsafe {
             self.gl.scissor(
                 i32::try_from(x).expect("fixture x should fit i32"),
