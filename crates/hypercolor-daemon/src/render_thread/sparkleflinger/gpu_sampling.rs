@@ -1,4 +1,7 @@
-use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{
+    Arc,
+    mpsc::{self, TryRecvError},
+};
 
 use anyhow::{Context, Result};
 use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
@@ -58,7 +61,7 @@ pub(super) struct GpuZoneRange {
 #[derive(Debug, Clone)]
 pub(super) struct GpuSamplingPlan {
     pub(super) points: Vec<GpuSamplePoint>,
-    pub(super) zones: Vec<GpuZoneRange>,
+    pub(super) zones: Arc<[GpuZoneRange]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +107,7 @@ pub(super) struct PendingGpuSampleReadback {
     submission_index: wgpu::SubmissionIndex,
     used_bytes: u64,
     buffer: wgpu::Buffer,
-    zones: Vec<GpuZoneRange>,
+    zones: Arc<[GpuZoneRange]>,
     receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
     map_ready: bool,
     slot: usize,
@@ -196,7 +199,10 @@ impl GpuSamplingPlan {
             });
         }
 
-        Some(Self { points, zones })
+        Some(Self {
+            points,
+            zones: zones.into(),
+        })
     }
 }
 
@@ -439,10 +445,14 @@ impl GpuSpatialSampler {
         };
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_bytes);
         let submission_index = queue.submit(Some(encoder.finish()));
-        let zone_ranges = self
-            .cached_plan
-            .as_ref()
-            .map_or_else(Vec::new, |cached| cached.plan.zones.clone());
+        let zone_ranges = Arc::clone(
+            &self
+                .cached_plan
+                .as_ref()
+                .expect("GPU sampling plan should be cached before readback")
+                .plan
+                .zones,
+        );
         Ok(GpuSamplingDispatch {
             sampled: true,
             queue_saturated: false,
@@ -729,7 +739,7 @@ fn begin_zone_color_readback(
     buffer: &wgpu::Buffer,
     used_bytes: u64,
     submission_index: wgpu::SubmissionIndex,
-    zones: Vec<GpuZoneRange>,
+    zones: Arc<[GpuZoneRange]>,
     slot: usize,
 ) -> PendingGpuSampleReadback {
     let slice = buffer.slice(..used_bytes);
@@ -848,7 +858,9 @@ fn rebuild_zone_colors_from_mapped_bytes(
         if zone.zone_id != zone_plan.zone_id {
             zone.zone_id.clone_from(&zone_plan.zone_id);
         }
-        zone.colors.resize(zone_plan.len, [0_u8; 3]);
+        if zone.colors.len() != zone_plan.len {
+            zone.colors.resize(zone_plan.len, [0_u8; 3]);
+        }
         let start = zone_plan.start.saturating_mul(4);
         let end = zone_plan
             .start
