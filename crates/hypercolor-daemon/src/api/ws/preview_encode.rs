@@ -267,14 +267,10 @@ fn copy_rgba_to_rgb(rgba: &[u8], brightness_lut: Option<&[u8; 256]>, out: &mut V
         out.resize(required_len, 0);
     }
 
-    for (pixel, out_pixel) in rgba.chunks_exact(4).zip(out.chunks_exact_mut(3)) {
-        if let Some(brightness_lut) = brightness_lut {
-            out_pixel[0] = brightness_lut[usize::from(pixel[0])];
-            out_pixel[1] = brightness_lut[usize::from(pixel[1])];
-            out_pixel[2] = brightness_lut[usize::from(pixel[2])];
-        } else {
-            out_pixel.copy_from_slice(&pixel[..3]);
-        }
+    if let Some(brightness_lut) = brightness_lut {
+        copy_rgba_to_rgb_with_lut(rgba, brightness_lut, out);
+    } else {
+        copy_rgba_to_rgb_raw(rgba, out);
     }
 }
 
@@ -284,14 +280,65 @@ fn copy_rgba_to_rgba(rgba: &[u8], brightness_lut: Option<&[u8; 256]>, out: &mut 
     }
 
     if let Some(brightness_lut) = brightness_lut {
-        for (pixel, out_pixel) in rgba.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
-            out_pixel[0] = brightness_lut[usize::from(pixel[0])];
-            out_pixel[1] = brightness_lut[usize::from(pixel[1])];
-            out_pixel[2] = brightness_lut[usize::from(pixel[2])];
-            out_pixel[3] = pixel[3];
-        }
+        copy_rgba_to_rgba_with_lut(rgba, brightness_lut, out);
     } else {
         out.copy_from_slice(rgba);
+    }
+}
+
+fn copy_rgba_to_rgb_raw(rgba: &[u8], out: &mut [u8]) {
+    let mut src = 0;
+    let mut dst = 0;
+    let unrolled_src_len = rgba.len() / 16 * 16;
+
+    while src < unrolled_src_len {
+        out[dst] = rgba[src];
+        out[dst + 1] = rgba[src + 1];
+        out[dst + 2] = rgba[src + 2];
+        out[dst + 3] = rgba[src + 4];
+        out[dst + 4] = rgba[src + 5];
+        out[dst + 5] = rgba[src + 6];
+        out[dst + 6] = rgba[src + 8];
+        out[dst + 7] = rgba[src + 9];
+        out[dst + 8] = rgba[src + 10];
+        out[dst + 9] = rgba[src + 12];
+        out[dst + 10] = rgba[src + 13];
+        out[dst + 11] = rgba[src + 14];
+        src += 16;
+        dst += 12;
+    }
+
+    while src + 3 < rgba.len() {
+        out[dst] = rgba[src];
+        out[dst + 1] = rgba[src + 1];
+        out[dst + 2] = rgba[src + 2];
+        src += 4;
+        dst += 3;
+    }
+}
+
+fn copy_rgba_to_rgb_with_lut(rgba: &[u8], brightness_lut: &[u8; 256], out: &mut [u8]) {
+    let mut src = 0;
+    let mut dst = 0;
+
+    while src + 3 < rgba.len() {
+        out[dst] = brightness_lut[usize::from(rgba[src])];
+        out[dst + 1] = brightness_lut[usize::from(rgba[src + 1])];
+        out[dst + 2] = brightness_lut[usize::from(rgba[src + 2])];
+        src += 4;
+        dst += 3;
+    }
+}
+
+fn copy_rgba_to_rgba_with_lut(rgba: &[u8], brightness_lut: &[u8; 256], out: &mut [u8]) {
+    let mut offset = 0;
+
+    while offset + 3 < rgba.len() {
+        out[offset] = brightness_lut[usize::from(rgba[offset])];
+        out[offset + 1] = brightness_lut[usize::from(rgba[offset + 1])];
+        out[offset + 2] = brightness_lut[usize::from(rgba[offset + 2])];
+        out[offset + 3] = rgba[offset + 3];
+        offset += 4;
     }
 }
 

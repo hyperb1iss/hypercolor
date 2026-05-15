@@ -99,7 +99,7 @@ impl PendingDisplayFrame {
 #[derive(Clone)]
 struct CapturedDisplaySource {
     identity: DisplaySourceIdentity,
-    content_hash: u64,
+    content_hash: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -198,19 +198,20 @@ fn display_source_matches(
         (None, None) => true,
         (Some(captured), Some(source)) => {
             let source_identity = display_source_identity(source.as_ref());
-            captured.identity == source_identity
-                || (captured.identity.width == source.width
-                    && captured.identity.height == source.height
-                    && captured.content_hash == display_source_content_hash(source.as_ref()))
+            captured.identity == source_identity || display_source_content_matches(captured, source)
         }
         _ => false,
     }
 }
 
 fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedDisplaySource> {
-    source.map(|source| CapturedDisplaySource {
-        identity: display_source_identity(source.as_ref()),
-        content_hash: display_source_content_hash(source.as_ref()),
+    source.map(|source| {
+        let identity = display_source_identity(source.as_ref());
+        CapturedDisplaySource {
+            identity,
+            content_hash: should_hash_display_source_identity(identity)
+                .then(|| display_source_content_hash(source.as_ref())),
+        }
     })
 }
 
@@ -221,6 +222,25 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
         width: source.width,
         height: source.height,
     }
+}
+
+fn display_source_content_matches(captured: &CapturedDisplaySource, source: &CanvasFrame) -> bool {
+    if !should_hash_display_source_identity(captured.identity) {
+        return false;
+    }
+
+    let Some(captured_hash) = captured.content_hash else {
+        return false;
+    };
+    let source_identity = display_source_identity(source);
+    captured.identity.width == source_identity.width
+        && captured.identity.height == source_identity.height
+        && should_hash_display_source_identity(source_identity)
+        && captured_hash == display_source_content_hash(source)
+}
+
+fn should_hash_display_source_identity(identity: DisplaySourceIdentity) -> bool {
+    identity.generation == 0
 }
 
 fn display_source_content_hash(source: &CanvasFrame) -> u64 {

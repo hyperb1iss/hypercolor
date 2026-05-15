@@ -2016,6 +2016,23 @@ fn canvas_preview_binary_applies_brightness_without_mutating_source() {
 }
 
 #[test]
+fn canvas_preview_rgb_binary_applies_brightness_without_alpha() {
+    let mut canvas = Canvas::new(1, 1);
+    canvas.set_pixel(0, 0, Rgba::new(255, 128, 0, 200));
+    let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+    let encoded = encode_canvas_preview_binary(&frame, CanvasFormat::Rgb, 0.5);
+    let expected = [
+        linear_to_srgb_u8(srgb_u8_to_linear(255) * 0.5),
+        linear_to_srgb_u8(srgb_u8_to_linear(128) * 0.5),
+        linear_to_srgb_u8(srgb_u8_to_linear(0) * 0.5),
+    ];
+
+    assert_eq!(&encoded[14..17], &expected);
+    assert_eq!(frame.rgba_bytes(), &[255, 128, 0, 200]);
+}
+
+#[test]
 fn canvas_preview_binary_zero_brightness_preserves_alpha() {
     let mut canvas = Canvas::new(1, 1);
     canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 123));
