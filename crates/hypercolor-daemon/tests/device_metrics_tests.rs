@@ -37,6 +37,8 @@ fn sample_stats_with_received(
         device_id,
         mapped_layout_ids: vec!["device:test".to_owned()],
         target_fps: 60,
+        uses_frame_sink: false,
+        worker_finished: false,
         frames_received,
         frames_sent,
         bytes_sent,

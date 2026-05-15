@@ -473,6 +473,12 @@ pub struct OutputQueueDebugSnapshot {
     /// Configured target frame rate for this queue.
     pub target_fps: u32,
 
+    /// Whether this queue writes through a per-device hot-path frame sink.
+    pub uses_frame_sink: bool,
+
+    /// Whether the queue worker task has finished unexpectedly.
+    pub worker_finished: bool,
+
     /// Total frames accepted from the render loop.
     pub frames_received: u64,
 
@@ -525,6 +531,12 @@ pub struct DeviceOutputStatistics {
     /// Configured target frame rate for this queue.
     pub target_fps: u32,
 
+    /// Whether this queue writes through a per-device hot-path frame sink.
+    pub uses_frame_sink: bool,
+
+    /// Whether the queue worker task has finished unexpectedly.
+    pub worker_finished: bool,
+
     /// Total frames accepted from the render loop.
     pub frames_received: u64,
 
@@ -569,6 +581,8 @@ impl DeviceOutputStatistics {
             device_id: self.device_id.to_string(),
             mapped_layout_ids: self.mapped_layout_ids,
             target_fps: self.target_fps,
+            uses_frame_sink: self.uses_frame_sink,
+            worker_finished: self.worker_finished,
             frames_received: self.frames_received,
             frames_sent: self.frames_sent,
             bytes_sent: self.bytes_sent,
@@ -696,6 +710,8 @@ impl OutputQueueMetrics {
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
         target_fps: u32,
+        uses_frame_sink: bool,
+        worker_finished: bool,
     ) -> DeviceOutputStatistics {
         let frames_received = self.frames_received.load(Ordering::Relaxed);
         let frames_sent = self.frames_sent.load(Ordering::Relaxed);
@@ -732,6 +748,8 @@ impl OutputQueueMetrics {
             device_id,
             mapped_layout_ids,
             target_fps,
+            uses_frame_sink,
+            worker_finished,
             frames_received,
             frames_sent,
             bytes_sent,
@@ -1104,8 +1122,14 @@ impl OutputQueue {
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
     ) -> DeviceOutputStatistics {
-        self.metrics
-            .snapshot(backend_id, device_id, mapped_layout_ids, self.target_fps)
+        self.metrics.snapshot(
+            backend_id,
+            device_id,
+            mapped_layout_ids,
+            self.target_fps,
+            self.uses_frame_sink,
+            self.io_task.is_finished(),
+        )
     }
 }
 
@@ -1683,6 +1707,25 @@ impl BackendManager {
             let key = (backend_id.to_owned(), device_id);
             self.remove_device_target_state(&key);
         }
+
+        if removed > 0 {
+            self.invalidate_routing_plan();
+        }
+        removed
+    }
+
+    /// Remove layout mappings for a connected physical target while keeping
+    /// its output queue, frame sink, FPS cache, and direct-control state.
+    pub fn clear_device_mappings_for_physical(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> usize {
+        let before = self.device_map.len();
+        self.device_map.retain(|_, mapping| {
+            !(mapping.backend_id == backend_id && mapping.device_id == device_id)
+        });
+        let removed = before.saturating_sub(self.device_map.len());
 
         if removed > 0 {
             self.invalidate_routing_plan();

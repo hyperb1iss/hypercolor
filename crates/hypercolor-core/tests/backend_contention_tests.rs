@@ -507,6 +507,88 @@ async fn same_backend_frame_sinks_do_not_block_each_other() {
     .await;
 }
 
+#[tokio::test]
+async fn remapping_same_backend_device_preserves_frame_sink_isolation() {
+    const SLOW_DELAY: Duration = Duration::from_millis(250);
+
+    let mut manager = BackendManager::new();
+    let slow_device = DeviceId::new();
+    let fast_device = DeviceId::new();
+    let backend = MultiDeviceSinkBackend::new("sink-lanes", slow_device, fast_device, SLOW_DELAY);
+    let slow_sink = backend.sink(slow_device);
+    let fast_sink = backend.sink(fast_device);
+    let fallback_count = backend.fallback_count();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .connect_device("sink-lanes", slow_device, "sink:slow")
+        .await
+        .expect("slow device should connect");
+    manager
+        .connect_device("sink-lanes", fast_device, "sink:fast")
+        .await
+        .expect("fast device should connect");
+
+    assert_eq!(
+        manager.clear_device_mappings_for_physical("sink-lanes", slow_device),
+        1
+    );
+    manager.map_device("sink:slow-remapped", "sink-lanes", slow_device);
+    assert_eq!(
+        manager.clear_device_mappings_for_physical("sink-lanes", fast_device),
+        1
+    );
+    manager.map_device("sink:fast-remapped", "sink-lanes", fast_device);
+
+    let layout = make_layout(vec![
+        make_zone("slow-zone", "sink:slow-remapped"),
+        make_zone("fast-zone", "sink:fast-remapped"),
+    ]);
+    let frame = vec![
+        ZoneColors {
+            zone_id: "slow-zone".into(),
+            colors: vec![[0x10, 0, 0]; 4],
+        },
+        ZoneColors {
+            zone_id: "fast-zone".into(),
+            colors: vec![[0, 0x20, 0]; 4],
+        },
+    ];
+
+    let stats = manager.write_frame(&frame, &layout).await;
+    assert_eq!(stats.devices_written, 2);
+    assert!(stats.errors.is_empty());
+
+    wait_for_flag(
+        &slow_sink.entered,
+        &slow_sink.entered_notify,
+        Duration::from_millis(100),
+    )
+    .await;
+    wait_for_count(
+        &fast_sink.write_count,
+        &fast_sink.write_notify,
+        1,
+        Duration::from_millis(100),
+    )
+    .await;
+
+    assert_eq!(
+        fallback_count.load(Ordering::Acquire),
+        0,
+        "logical remaps must keep device sinks instead of falling back to the backend mutex"
+    );
+
+    let snapshot = manager.debug_snapshot();
+    assert!(
+        snapshot
+            .queues
+            .iter()
+            .all(|queue| queue.uses_frame_sink && !queue.worker_finished),
+        "remapped queues should still use live per-device frame sinks"
+    );
+}
+
 // ── Scenario 1: Concurrent writes to different backends ─────────────────────
 
 #[tokio::test]

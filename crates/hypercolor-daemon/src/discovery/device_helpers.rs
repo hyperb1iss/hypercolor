@@ -251,7 +251,7 @@ pub(super) async fn sync_logical_mappings_for_device(
     };
 
     let mut manager = runtime.backend_manager.lock().await;
-    let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
+    let _ = manager.clear_device_mappings_for_physical(backend_id, device_id);
 
     let fallback = SegmentRange::new(0, usize::try_from(total_leds).unwrap_or_default());
 
