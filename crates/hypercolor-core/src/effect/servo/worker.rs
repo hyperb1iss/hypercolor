@@ -1742,6 +1742,15 @@ impl ServoWorkerRuntime {
         device: &wgpu::Device,
         descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
     ) -> Result<()> {
+        let should_recreate = self
+            .session(session_id)?
+            .gpu_importer
+            .as_ref()
+            .is_none_or(|importer| importer.descriptor() != descriptor);
+        if !should_recreate {
+            return Ok(());
+        }
+
         let gl = {
             let session = self.session(session_id)?;
             session
@@ -1752,21 +1761,16 @@ impl ServoWorkerRuntime {
             session.rendering_context.glow_gl_api()
         };
 
-        let should_recreate = self
-            .session(session_id)?
-            .gpu_importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if should_recreate {
-            self.clear_gpu_importer(session_id);
-            let importer =
-                hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter::new_from_process(
-                    device,
-                    gl.as_ref(),
-                    descriptor,
-                )?;
-            self.session_mut(session_id)?.gpu_importer = Some(importer);
+        if let Some(importer) = self.session_mut(session_id)?.gpu_importer.as_mut() {
+            importer.destroy_gl_resources(gl.as_ref());
         }
+        self.session_mut(session_id)?.gpu_importer = None;
+        let importer = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter::new_from_process(
+            device,
+            gl.as_ref(),
+            descriptor,
+        )?;
+        self.session_mut(session_id)?.gpu_importer = Some(importer);
 
         Ok(())
     }
