@@ -76,3 +76,4 @@ site/out/
 # Claude vomit
 .agents/scheduled_tasks.lock
 .agents/settings.local.json
+drafts-browser.html

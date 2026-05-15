@@ -791,7 +791,79 @@ fn round_unit_to_u16(value: f32) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_types::canvas::Canvas;
+    use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
+    use turbojpeg::Decompressor as TurboJpegDecompressor;
+
     use super::*;
+
+    const TEST_WIDTH: u32 = 16;
+    const TEST_HEIGHT: u32 = 16;
+    const RED_RGBA: [u8; 4] = [255, 0, 0, 255];
+    const GREEN_RGBA: [u8; 4] = [0, 255, 0, 255];
+    const BLUE_RGBA: [u8; 4] = [0, 0, 255, 255];
+    const YELLOW_RGBA: [u8; 4] = [255, 255, 0, 255];
+    const RED_RGB: [u8; 3] = [255, 0, 0];
+    const GREEN_RGB: [u8; 3] = [0, 255, 0];
+    const BLUE_RGB: [u8; 3] = [0, 0, 255];
+    const YELLOW_RGB: [u8; 3] = [255, 255, 0];
+
+    #[test]
+    fn display_face_rgb_encode_preserves_direct_canvas_orientation() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let frame =
+            CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
+
+        let encoded = encode_face_scene_blend(
+            None,
+            &frame,
+            &default_viewport(),
+            &test_geometry(),
+            1.0,
+            DisplayFaceBlendMode::Replace,
+            1.0,
+            DisplayFrameFormat::Rgb,
+            false,
+            &mut state,
+        )
+        .expect("face encode should succeed");
+
+        assert_eq!(encoded.format, DisplayFrameFormat::Rgb);
+        assert_eq!(
+            rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
+            [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
+        );
+    }
+
+    #[test]
+    fn display_face_jpeg_encode_preserves_direct_canvas_orientation() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let frame =
+            CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
+
+        let encoded = encode_face_scene_blend(
+            None,
+            &frame,
+            &default_viewport(),
+            &test_geometry(),
+            1.0,
+            DisplayFaceBlendMode::Replace,
+            1.0,
+            DisplayFrameFormat::Jpeg,
+            false,
+            &mut state,
+        )
+        .expect("face encode should succeed");
+        let decoded = decode_jpeg_rgb(&encoded.data, TEST_WIDTH, TEST_HEIGHT);
+
+        assert_eq!(encoded.format, DisplayFrameFormat::Jpeg);
+        assert_rgb_corners_close(
+            rgb_corner_pixels(&decoded, TEST_WIDTH, TEST_HEIGHT),
+            [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
+            36,
+        );
+    }
 
     #[test]
     fn display_brightness_factor_clamps_and_rounds_to_byte_policy() {
@@ -821,5 +893,109 @@ mod tests {
         apply_display_brightness_rgba(&mut rgba, &state.brightness_lut);
 
         assert_eq!(rgba, [128, 64, 32, 127, 5, 10, 15, 255]);
+    }
+
+    fn test_geometry() -> DisplayGeometry {
+        DisplayGeometry {
+            width: TEST_WIDTH,
+            height: TEST_HEIGHT,
+            circular: false,
+        }
+    }
+
+    fn default_viewport() -> DisplayViewport {
+        DisplayViewport {
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Clamp,
+        }
+    }
+
+    fn orientation_canvas(width: u32, height: u32) -> Canvas {
+        let width_usize = usize::try_from(width).expect("test width should fit usize");
+        let height_usize = usize::try_from(height).expect("test height should fit usize");
+        let mut rgba = vec![0; width_usize * height_usize * TurboJpegPixelFormat::RGBA.size()];
+
+        for y in 0..height_usize {
+            for x in 0..width_usize {
+                let color = match (x < width_usize / 2, y < height_usize / 2) {
+                    (true, true) => RED_RGBA,
+                    (false, true) => GREEN_RGBA,
+                    (true, false) => BLUE_RGBA,
+                    (false, false) => YELLOW_RGBA,
+                };
+                let offset = ((y * width_usize) + x) * TurboJpegPixelFormat::RGBA.size();
+                rgba[offset..offset + TurboJpegPixelFormat::RGBA.size()].copy_from_slice(&color);
+            }
+        }
+
+        Canvas::from_vec(rgba, width, height)
+    }
+
+    fn rgb_corner_pixels(data: &[u8], width: u32, height: u32) -> [[u8; 3]; 4] {
+        [
+            rgb_pixel_at(data, width, 0, 0),
+            rgb_pixel_at(data, width, width - 1, 0),
+            rgb_pixel_at(data, width, 0, height - 1),
+            rgb_pixel_at(data, width, width - 1, height - 1),
+        ]
+    }
+
+    fn rgb_pixel_at(data: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+        let width_usize = usize::try_from(width).expect("test width should fit usize");
+        let x_usize = usize::try_from(x).expect("test x should fit usize");
+        let y_usize = usize::try_from(y).expect("test y should fit usize");
+        let offset = ((y_usize * width_usize) + x_usize) * TurboJpegPixelFormat::RGB.size();
+        [data[offset], data[offset + 1], data[offset + 2]]
+    }
+
+    fn decode_jpeg_rgb(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let width_usize = usize::try_from(width).expect("test width should fit usize");
+        let height_usize = usize::try_from(height).expect("test height should fit usize");
+        let mut decompressor =
+            TurboJpegDecompressor::new().expect("TurboJPEG decompressor should initialize");
+        let header = decompressor
+            .read_header(data)
+            .expect("encoded test JPEG should have a readable header");
+        assert_eq!(header.width, width_usize);
+        assert_eq!(header.height, height_usize);
+
+        let pixel_format = TurboJpegPixelFormat::RGB;
+        let pitch = width_usize
+            .checked_mul(pixel_format.size())
+            .expect("test JPEG pitch should fit usize");
+        let mut rgb = vec![
+            0;
+            pitch
+                .checked_mul(height_usize)
+                .expect("test RGB buffer should fit usize")
+        ];
+
+        decompressor
+            .decompress(
+                data,
+                TurboJpegImage {
+                    pixels: rgb.as_mut_slice(),
+                    width: width_usize,
+                    pitch,
+                    height: height_usize,
+                    format: pixel_format,
+                },
+            )
+            .expect("encoded test JPEG should decode");
+        rgb
+    }
+
+    fn assert_rgb_corners_close(actual: [[u8; 3]; 4], expected: [[u8; 3]; 4], tolerance: u8) {
+        for (actual_pixel, expected_pixel) in actual.into_iter().zip(expected) {
+            for (actual_channel, expected_channel) in actual_pixel.into_iter().zip(expected_pixel) {
+                assert!(
+                    actual_channel.abs_diff(expected_channel) <= tolerance,
+                    "actual corner pixels {actual:?} differed from expected {expected:?}"
+                );
+            }
+        }
     }
 }

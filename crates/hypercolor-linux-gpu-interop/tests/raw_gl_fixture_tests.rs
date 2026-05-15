@@ -17,6 +17,10 @@ use surfman::{
 const WIDTH: u32 = 4;
 const HEIGHT: u32 = 4;
 const EXPECTED_PIXEL: [u8; 4] = [0, 255, 255, 255];
+const TOP_LEFT: [u8; 4] = [255, 0, 0, 255];
+const TOP_RIGHT: [u8; 4] = [0, 255, 0, 255];
+const BOTTOM_LEFT: [u8; 4] = [0, 0, 255, 255];
+const BOTTOM_RIGHT: [u8; 4] = [255, 255, 0, 255];
 const IMPORT_ITERATIONS: usize = 8;
 const POOLED_IMPORT_SLOTS: usize = 2;
 const RUN_FIXTURE_ENV: &str = "HYPERCOLOR_RUN_GPU_INTEROP_FIXTURE";
@@ -59,6 +63,40 @@ fn raw_gl_solid_color_import_matches_wgpu_readback() {
         }
         let _ = wgpu.device.poll(wgpu::PollType::Poll);
     }
+}
+
+#[test]
+fn raw_gl_orientation_import_preserves_top_left_wgpu_readback() {
+    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
+        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+        return;
+    }
+
+    let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
+    let raw_gl =
+        RawGlFixture::new(WIDTH, HEIGHT).expect("raw GL import fixture should create GL surface");
+    let gl_external_memory = raw_gl
+        .load_external_memory_functions()
+        .expect("raw GL import fixture should load GL external memory functions");
+
+    raw_gl.paint_orientation_fixture();
+    let descriptor =
+        LinuxGlFramebufferImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm)
+            .expect("fixture dimensions should be valid");
+    let frame = import_gl_framebuffer_to_wgpu(
+        &wgpu.device,
+        &raw_gl.gl,
+        gl_external_memory,
+        GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
+        descriptor,
+    )
+    .expect("raw GL orientation fixture should import into wgpu");
+    let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
+
+    assert_eq!(
+        corner_pixels(&pixels, WIDTH, HEIGHT),
+        [TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT]
+    );
 }
 
 #[test]
@@ -316,9 +354,60 @@ impl RawGlFixture {
                 .bind_framebuffer(glow::FRAMEBUFFER, self.framebuffer);
             self.gl
                 .viewport(0, 0, self.width as i32, self.height as i32);
+            self.gl.disable(glow::SCISSOR_TEST);
             self.gl.clear_color(red, green, blue, alpha);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
             self.gl.finish();
+        }
+    }
+
+    fn paint_orientation_fixture(&self) {
+        let half_width = self.width / 2;
+        let half_height = self.height / 2;
+        unsafe {
+            self.gl
+                .bind_framebuffer(glow::FRAMEBUFFER, self.framebuffer);
+            self.gl
+                .viewport(0, 0, self.width as i32, self.height as i32);
+            self.gl.enable(glow::SCISSOR_TEST);
+            self.clear_rect(
+                0,
+                half_height,
+                half_width,
+                self.height - half_height,
+                TOP_LEFT,
+            );
+            self.clear_rect(
+                half_width,
+                half_height,
+                self.width - half_width,
+                self.height - half_height,
+                TOP_RIGHT,
+            );
+            self.clear_rect(0, 0, half_width, half_height, BOTTOM_LEFT);
+            self.clear_rect(
+                half_width,
+                0,
+                self.width - half_width,
+                half_height,
+                BOTTOM_RIGHT,
+            );
+            self.gl.disable(glow::SCISSOR_TEST);
+            self.gl.finish();
+        }
+    }
+
+    fn clear_rect(&self, x: u32, y: u32, width: u32, height: u32, pixel: [u8; 4]) {
+        let [red, green, blue, alpha] = pixel.map(|channel| f32::from(channel) / 255.0);
+        unsafe {
+            self.gl.scissor(
+                i32::try_from(x).expect("fixture x should fit i32"),
+                i32::try_from(y).expect("fixture y should fit i32"),
+                i32::try_from(width).expect("fixture width should fit i32"),
+                i32::try_from(height).expect("fixture height should fit i32"),
+            );
+            self.gl.clear_color(red, green, blue, alpha);
+            self.gl.clear(glow::COLOR_BUFFER_BIT);
         }
     }
 }
@@ -416,4 +505,21 @@ const fn padded_bytes_per_row(width: u32) -> u32 {
     let unpadded = width * 4;
     let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     unpadded.div_ceil(alignment) * alignment
+}
+
+fn corner_pixels(pixels: &[u8], width: u32, height: u32) -> [[u8; 4]; 4] {
+    [
+        pixel_at(pixels, width, 0, 0),
+        pixel_at(pixels, width, width - 1, 0),
+        pixel_at(pixels, width, 0, height - 1),
+        pixel_at(pixels, width, width - 1, height - 1),
+    ]
+}
+
+fn pixel_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let index = usize::try_from(y * width + x).expect("fixture pixel index should fit usize");
+    let offset = index * 4;
+    pixels[offset..offset + 4]
+        .try_into()
+        .expect("fixture pixel should contain four channels")
 }

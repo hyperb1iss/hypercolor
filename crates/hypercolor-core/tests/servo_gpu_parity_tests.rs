@@ -22,7 +22,10 @@ use uuid::Uuid;
 
 const WIDTH: u32 = 8;
 const HEIGHT: u32 = 8;
-const EXPECTED_PIXEL: [u8; 4] = [0, 255, 255, 255];
+const TOP_LEFT: [u8; 4] = [255, 0, 0, 255];
+const TOP_RIGHT: [u8; 4] = [0, 255, 0, 255];
+const BOTTOM_LEFT: [u8; 4] = [0, 0, 255, 255];
+const BOTTOM_RIGHT: [u8; 4] = [255, 255, 0, 255];
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const RENDER_ATTEMPTS: u64 = 180;
 const RUN_PARITY_ENV: &str = "HYPERCOLOR_RUN_SERVO_GPU_PARITY";
@@ -74,7 +77,7 @@ fn run_deterministic_servo_gpu_import_parity() {
 
     set_servo_gpu_import_mode(ServoGpuImportMode::Off);
     let cpu_canvas = render_cpu_canvas(metadata.clone());
-    assert_solid_cyan(&cpu_canvas);
+    assert_orientation_fixture(&cpu_canvas);
 
     let wgpu = WgpuFixture::new().expect("Servo GPU parity fixture should create wgpu device");
     if servo_gpu_import_device().is_err() {
@@ -130,11 +133,41 @@ html, body {
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #00ffff;
+  background: #000000;
+}
+.q {
+  position: absolute;
+  width: 50%;
+  height: 50%;
+}
+.tl {
+  left: 0;
+  top: 0;
+  background: #ff0000;
+}
+.tr {
+  right: 0;
+  top: 0;
+  background: #00ff00;
+}
+.bl {
+  left: 0;
+  bottom: 0;
+  background: #0000ff;
+}
+.br {
+  right: 0;
+  bottom: 0;
+  background: #ffff00;
 }
 </style>
 </head>
-<body></body>
+<body>
+  <div class="q tl"></div>
+  <div class="q tr"></div>
+  <div class="q bl"></div>
+  <div class="q br"></div>
+</body>
 </html>
 "#
 }
@@ -169,7 +202,7 @@ fn render_cpu_canvas(metadata: EffectMetadata) -> Canvas {
             .render_output(&input)
             .expect("CPU Servo render should succeed");
         if let EffectRenderOutput::Cpu(canvas) = output
-            && canvas_is_solid_cyan(&canvas)
+            && canvas_has_orientation_fixture(&canvas)
         {
             std::mem::forget(renderer);
             return canvas;
@@ -230,18 +263,38 @@ fn frame_input(frame_number: u64) -> FrameInput<'static> {
     }
 }
 
-fn assert_solid_cyan(canvas: &Canvas) {
-    assert!(
-        canvas_is_solid_cyan(canvas),
-        "CPU Servo fixture did not produce solid cyan"
+fn assert_orientation_fixture(canvas: &Canvas) {
+    assert_eq!(canvas.width(), WIDTH);
+    assert_eq!(canvas.height(), HEIGHT);
+    assert_eq!(
+        corner_pixels(canvas.as_rgba_bytes(), WIDTH, HEIGHT),
+        [TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT],
+        "CPU Servo fixture did not preserve top-left canvas orientation"
     );
 }
 
-fn canvas_is_solid_cyan(canvas: &Canvas) -> bool {
-    canvas
-        .as_rgba_bytes()
-        .chunks_exact(4)
-        .all(|pixel| pixel == EXPECTED_PIXEL)
+fn canvas_has_orientation_fixture(canvas: &Canvas) -> bool {
+    canvas.width() == WIDTH
+        && canvas.height() == HEIGHT
+        && corner_pixels(canvas.as_rgba_bytes(), WIDTH, HEIGHT)
+            == [TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT]
+}
+
+fn corner_pixels(pixels: &[u8], width: u32, height: u32) -> [[u8; 4]; 4] {
+    [
+        pixel_at(pixels, width, 0, 0),
+        pixel_at(pixels, width, width - 1, 0),
+        pixel_at(pixels, width, 0, height - 1),
+        pixel_at(pixels, width, width - 1, height - 1),
+    ]
+}
+
+fn pixel_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let index = usize::try_from(y * width + x).expect("fixture pixel index should fit usize");
+    let offset = index * 4;
+    pixels[offset..offset + 4]
+        .try_into()
+        .expect("fixture pixel should contain four channels")
 }
 
 struct WgpuFixture {
