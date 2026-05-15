@@ -18,6 +18,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RUST_TOOLCHAIN: "1.95.0"
 
 jobs:
   prepare:
@@ -37,7 +38,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Resolve release version
         id: version

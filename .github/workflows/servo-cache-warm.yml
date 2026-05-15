@@ -9,6 +9,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RUST_TOOLCHAIN: "1.95.0"
   APT_STEP_TIMEOUT: 20m
   APT_HTTP_TIMEOUT: "20"
   APT_RETRIES: "5"
@@ -67,8 +68,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
       - uses: ./.github/actions/rust-build-cache

@@ -27,6 +27,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RUST_TOOLCHAIN: "1.95.0"
   APT_STEP_TIMEOUT: 35m
   APT_HTTP_TIMEOUT: "20"
   APT_RETRIES: "5"
@@ -151,8 +152,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
       - uses: ./.github/actions/rust-build-cache
@@ -209,8 +211,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
       - uses: ./.github/actions/rust-build-cache
@@ -258,8 +261,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_DEPS }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
       - uses: ./.github/actions/rust-build-cache
@@ -340,7 +344,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ matrix.suite == 'native' && env.LINUX_DEPS || env.LINUX_RUST_DEPS }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -443,7 +449,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -593,7 +601,9 @@ jobs:
         with:
           python-version-file: python/.python-version
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: ./.github/actions/rust-build-cache
 
@@ -676,8 +686,9 @@ jobs:
       - uses: ./.github/actions/bun-cache
         with:
           key: ui-${{ hashFiles('crates/hypercolor-ui/bun.lock') }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -740,8 +751,9 @@ jobs:
         with:
           key: e2e-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-build-cache
@@ -921,8 +933,9 @@ jobs:
       - uses: ./.github/actions/bun-cache
         with:
           key: web-assets-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -1009,8 +1022,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.rust-target }}
 
       - uses: ./.github/actions/rust-build-cache
@@ -1176,7 +1190,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_DEPS }} librsvg2-bin
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: ./.github/actions/rust-build-cache
         with:
@@ -1270,8 +1286,9 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_DEPS }} librsvg2-bin
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.rust-target }}
 
       - uses: ./.github/actions/rust-build-cache
