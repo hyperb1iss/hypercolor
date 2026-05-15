@@ -7,6 +7,8 @@ const INSTALL_BUNDLED_PAWNIO_PS1: &str =
     include_str!("../../../scripts/install-bundled-pawnio.ps1");
 const INSTALL_PAWNIO_MODULES_PS1: &str =
     include_str!("../../../scripts/install-pawnio-modules.ps1");
+const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
+const VERIFY_DEB_SH: &str = include_str!("../../../scripts/verify-deb-package.sh");
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 
@@ -52,6 +54,21 @@ fn ci_publishes_homebrew_formula_and_cask() {
     assert!(CI_WORKFLOW.contains("sha256_macos_app_x86_64"));
     assert!(CI_WORKFLOW.contains("tap/Casks"));
     assert!(CI_WORKFLOW.contains("Casks/hypercolor-app.rb"));
+}
+
+#[test]
+fn ci_builds_debian_packages_for_linux_release_artifacts() {
+    assert!(CI_WORKFLOW.contains("Build Debian package"));
+    assert!(CI_WORKFLOW.contains("Verify Debian package"));
+    assert!(CI_WORKFLOW.contains("./scripts/package-deb.sh"));
+    assert!(CI_WORKFLOW.contains("./scripts/verify-deb-package.sh"));
+    assert!(CI_WORKFLOW.contains("hypercolor-deb-${{ steps.version.outputs.version }}"));
+}
+
+#[test]
+fn ci_windows_native_bundle_applies_windows_overlay() {
+    assert!(CI_WORKFLOW.contains("tauri.windows.bundle.conf.json"));
+    assert!(CI_WORKFLOW.contains("$env:RUNNER_OS -eq \"Windows\""));
 }
 
 #[test]
@@ -128,6 +145,40 @@ fn windows_installer_target_builds_all_bundle_inputs() {
         assert!(
             WINDOWS_INSTALLER_SCRIPT.contains(required),
             "Windows installer script should include {required}"
+        );
+    }
+}
+
+#[test]
+fn debian_package_script_maps_release_payload() {
+    for required in [
+        "linux-amd64) DEB_ARCH=\"amd64\"",
+        "linux-arm64) DEB_ARCH=\"arm64\"",
+        "install -Dm755 \"${DIST_DIR}/bin/hypercolor-daemon\"",
+        "${PACKAGE_ROOT}/usr/lib/systemd/user/hypercolor.service",
+        "${PACKAGE_ROOT}/usr/lib/udev/rules.d/99-hypercolor.rules",
+        "${PACKAGE_ROOT}/usr/lib/modules-load.d/i2c-dev.conf",
+        "libwebkit2gtk-4.1-0",
+    ] {
+        assert!(
+            PACKAGE_DEB_SH.contains(required),
+            "Debian package script should include {required}"
+        );
+    }
+}
+
+#[test]
+fn debian_verifier_checks_package_payload() {
+    for required in [
+        "dpkg-deb --field",
+        "require_path \"./usr/bin/hypercolor-daemon\"",
+        "require_path \"./usr/share/hypercolor/ui/index.html\"",
+        "require_path \"./usr/lib/systemd/user/hypercolor.service\"",
+        "libwebkit2gtk-4.1-0",
+    ] {
+        assert!(
+            VERIFY_DEB_SH.contains(required),
+            "Debian verifier should include {required}"
         );
     }
 }

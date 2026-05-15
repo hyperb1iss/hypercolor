@@ -1132,6 +1132,9 @@ jobs:
           if (Test-Path "tauri.bundle.conf.json") {
             $configArgs += @("--config", "tauri.bundle.conf.json")
           }
+          if ($env:RUNNER_OS -eq "Windows" -and (Test-Path "tauri.windows.bundle.conf.json")) {
+            $configArgs += @("--config", "tauri.windows.bundle.conf.json")
+          }
           cargo tauri build --ci --no-sign --bundles $env:TAURI_BUNDLES @configArgs
 
       - name: Normalize macOS DMG artifact name
@@ -1238,6 +1241,21 @@ jobs:
             "dist/${dist_name}.tar.gz" \
             "dist/${dist_name}.tar.gz.sha256"
 
+      - name: Build Debian package
+        run: |
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          ./scripts/package-deb.sh "dist/${dist_name}" dist
+
+      - name: Verify Debian package
+        run: |
+          mapfile -t debs < <(find dist -maxdepth 1 -type f -name 'hypercolor_*.deb' | sort)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            printf 'expected exactly one Debian package, found %s\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+          ./scripts/verify-deb-package.sh "${debs[0]}"
+
       - name: Upload release tarball smoke
         uses: actions/upload-artifact@v4
         with:
@@ -1245,6 +1263,14 @@ jobs:
           path: |
             dist/${{ steps.version.outputs.dist_name }}.tar.gz
             dist/${{ steps.version.outputs.dist_name }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Debian package smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: hypercolor-deb-${{ steps.version.outputs.version }}-linux-amd64
+          path: dist/hypercolor_*.deb
           if-no-files-found: error
           retention-days: 7
 
@@ -1339,6 +1365,23 @@ jobs:
             "dist/${dist_name}.tar.gz" \
             "dist/${dist_name}.tar.gz.sha256"
 
+      - name: Build Debian package
+        if: runner.os == 'Linux'
+        run: |
+          dist_name="${{ steps.version.outputs.dist_name }}"
+          ./scripts/package-deb.sh "dist/${dist_name}" dist
+
+      - name: Verify Debian package
+        if: runner.os == 'Linux'
+        run: |
+          mapfile -t debs < <(find dist -maxdepth 1 -type f -name 'hypercolor_*.deb' | sort)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            printf 'expected exactly one Debian package, found %s\n' "${#debs[@]}" >&2
+            printf '%s\n' "${debs[@]}" >&2
+            exit 1
+          fi
+          ./scripts/verify-deb-package.sh "${debs[0]}"
+
       - name: Upload release tarball
         uses: actions/upload-artifact@v4
         with:
@@ -1346,6 +1389,14 @@ jobs:
           path: |
             dist/${{ steps.version.outputs.dist_name }}.tar.gz
             dist/${{ steps.version.outputs.dist_name }}.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Upload Debian package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hypercolor-deb-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: dist/hypercolor_*.deb
           if-no-files-found: error
 
   # ── Create GitHub Release ──────────────────────────────────────
