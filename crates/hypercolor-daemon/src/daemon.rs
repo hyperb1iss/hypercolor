@@ -86,7 +86,17 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 
     crate::startup::logging::install(env_filter);
 
-    let listen_targets = effective_bind_targets(&options, &config);
+    let requested_listen_targets = effective_bind_targets(&options, &config);
+    let control_api_key_configured = api::security::control_api_key_configured_from_env();
+    let (listen_targets, fell_back_to_loopback) =
+        effective_startup_bind_targets(&options, &config, control_api_key_configured);
+    if fell_back_to_loopback {
+        warn!(
+            requested = %requested_listen_targets.join(", "),
+            effective = %listen_targets.join(", "),
+            "Network listen config requires HYPERCOLOR_API_KEY; falling back to loopback"
+        );
+    }
     let listen_addr = listen_targets.join(", ");
     crate::startup::banner::print(
         env!("CARGO_PKG_VERSION"),
@@ -107,8 +117,7 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
         "Configuration ready"
     );
 
-    let binds = resolve_bind_addresses(&options, &config).await?;
-    let control_api_key_configured = api::security::control_api_key_configured_from_env();
+    let binds = resolve_bind_targets(&listen_targets).await?;
     for bind in &binds {
         validate_network_bind_auth(*bind, control_api_key_configured)?;
     }
@@ -270,14 +279,11 @@ const fn config_log_level_name(level: &LogLevel) -> &'static str {
     }
 }
 
-async fn resolve_bind_addresses(
-    options: &DaemonRunOptions,
-    config: &HypercolorConfig,
-) -> Result<Vec<SocketAddr>> {
+async fn resolve_bind_targets(targets: &[String]) -> Result<Vec<SocketAddr>> {
     let mut resolved = Vec::new();
 
-    for target in effective_bind_targets(options, config) {
-        let bind = resolve_socket_addr(&target).await?;
+    for target in targets {
+        let bind = resolve_socket_addr(target).await?;
         if !resolved.contains(&bind) {
             resolved.push(bind);
         }
@@ -420,6 +426,38 @@ pub fn effective_bind_targets(
         .collect()
 }
 
+#[must_use]
+pub fn effective_startup_bind_targets(
+    options: &DaemonRunOptions,
+    config: &HypercolorConfig,
+    control_api_key_configured: bool,
+) -> (Vec<String>, bool) {
+    let targets = effective_bind_targets(options, config);
+    if control_api_key_configured || has_explicit_bind_override(options) {
+        return (targets, false);
+    }
+
+    if targets.iter().any(|target| bind_target_needs_auth(target)) {
+        return (loopback_bind_targets(config.daemon.port), true);
+    }
+
+    (targets, false)
+}
+
+fn has_explicit_bind_override(options: &DaemonRunOptions) -> bool {
+    options.bind.is_some() || options.listen_address.is_some() || options.listen_all
+}
+
+fn bind_target_needs_auth(target: &str) -> bool {
+    let normalized = normalize_bind_target(target);
+    let Some((host, _)) = split_bind_host_port(&normalized) else {
+        return true;
+    };
+
+    let host = unbracket_host(host);
+    !is_loopback_host(host)
+}
+
 async fn resolve_socket_addr(bind: &str) -> Result<SocketAddr> {
     let mut addrs = tokio::net::lookup_host(bind)
         .await
@@ -512,6 +550,10 @@ const fn all_interfaces_host() -> &'static str {
 
 fn all_interface_hosts() -> Vec<String> {
     vec![all_interfaces_host().to_owned(), "::".to_owned()]
+}
+
+fn loopback_bind_targets(port: u16) -> Vec<String> {
+    vec![format!("127.0.0.1:{port}"), format!("[::1]:{port}")]
 }
 
 fn expand_listen_host(host: &str) -> Vec<String> {

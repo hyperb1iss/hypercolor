@@ -17,7 +17,8 @@ use hypercolor_core::device::manager::{
 };
 use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::daemon::{
-    DaemonRunOptions, effective_bind_target, effective_bind_targets, validate_network_bind_auth,
+    DaemonRunOptions, effective_bind_target, effective_bind_targets,
+    effective_startup_bind_targets, validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
@@ -604,6 +605,44 @@ fn network_bind_auth_allows_network_bind_with_control_key() {
         .expect("custom bind target should parse as a socket address");
 
     validate_network_bind_auth(bind, true).expect("control API key should allow network bind");
+}
+
+#[test]
+fn startup_bind_targets_fall_back_to_loopback_for_config_remote_access_without_control_key() {
+    let mut config = default_config();
+    config.network.remote_access = true;
+    let options = DaemonRunOptions::default();
+
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false);
+
+    assert!(fell_back);
+    assert_eq!(targets, vec!["127.0.0.1:9420", "[::1]:9420"]);
+}
+
+#[test]
+fn startup_bind_targets_keep_config_remote_access_with_control_key() {
+    let mut config = default_config();
+    config.network.remote_access = true;
+    let options = DaemonRunOptions::default();
+
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, true);
+
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
+}
+
+#[test]
+fn startup_bind_targets_keep_explicit_listen_all_for_auth_validation() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        listen_all: true,
+        ..DaemonRunOptions::default()
+    };
+
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false);
+
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
 }
 
 // ── DaemonState Initialization ──────────────────────────────────────────────
