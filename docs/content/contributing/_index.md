@@ -83,7 +83,11 @@ test(hal): add PrismRGB frame encoding roundtrip tests
 docs(api): document WebSocket binary frame format
 ```
 
-Scopes match crate names: `core`, `hal`, `daemon`, `cli`, `tui`, `ui`, `sdk`, `types`, `driver-api`, `driver-wled`, `driver-hue`, `driver-nanoleaf`, `network`.
+Scopes match crate short-names (drop the `hypercolor-` prefix):
+
+`types`, `core`, `hal`, `linux-gpu-interop`, `windows-pawnio`, `driver-api`, `driver-builtin`, `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network`, `daemon`, `cli`, `tui`, `tray`, `desktop`, `app`, `cloud-api`, `cloud-client`, `daemon-link`, `leptos-ext`, `leptos-ext-macros`, `ui`
+
+Use `sdk` for TypeScript SDK changes (not a Rust crate, but follows the same scope convention).
 
 ## Crate Boundaries
 
@@ -92,7 +96,7 @@ Each crate has clear ownership. Respect the dependency graph:
 - **`hypercolor-types`** depends on nothing. All shared data types live here.
 - **`hypercolor-core`** depends on `types`. Engine logic, traits, and abstractions.
 - **`hypercolor-hal`** depends on `types`. Device drivers only.
-- **`hypercolor-daemon`** depends on `core` and `hal`. Never imported by other crates.
+- **`hypercolor-daemon`** depends directly on `core`, `driver-api`, `network`, and `leptos-ext`; optionally on `driver-builtin` (which bundles `hal` and the network drivers) and `cloud-client`. Binary crate — not imported upstream.
 
 Do NOT create circular dependencies between crates. If you need a type in multiple crates, it belongs in `hypercolor-types`.
 

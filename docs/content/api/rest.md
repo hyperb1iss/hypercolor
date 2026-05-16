@@ -214,6 +214,40 @@ Stop the currently running effect. LEDs go dark.
 Trigger a rescan of the effects directory. Use this after building new effects to pick them up without restarting the daemon.
 {% end %}
 
+{% api_endpoint(method="POST", path="/api/v1/effects/install") %}
+Install an effect from an uploaded file. Use this to deploy a freshly built HTML effect bundle to the daemon's effect library without a manual file copy.
+
+**Request body:** Multipart form upload with the effect file.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/effects/{id}/cover") %}
+Get the cover image for a specific effect.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/effects/active/cover") %}
+Get the cover image for the currently active effect.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/effects/{id}/layout") %}
+Get the layout associated with a specific effect.
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/effects/{id}/layout") %}
+Associate a specific effect with a layout.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/effects/{id}/layout") %}
+Clear the layout association for a specific effect.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/effects/{id}/controls") %}
+Update control values on a specific effect by ID (as opposed to the currently active effect).
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/effects/current/controls/{name}/binding") %}
+Bind a named control on the currently running effect to an input source (audio band, sensor, etc.).
+{% end %}
+
 ## Devices
 
 {% api_endpoint(method="GET", path="/api/v1/devices") %}
@@ -272,6 +306,210 @@ Trigger device discovery across all backends. Returns newly found devices.
 Flash a device's LEDs to help identify it physically.
 {% end %}
 
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/zones/{zone_id}/identify") %}
+Flash a specific zone on a device to identify it.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/devices/{id}/controls") %}
+Get the control surface for a specific device — fields, types, and current values.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/devices/{id}/attachments") %}
+Get the attachment configuration for a device.
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/devices/{id}/attachments") %}
+Update the attachment configuration for a device.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/devices/{id}/attachments") %}
+Clear attachment configuration from a device.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/preview") %}
+Preview attachment placement on a device without persisting the change.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/{slot_id}/identify") %}
+Identify a specific attachment slot on a device by flashing its LEDs.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/devices/{id}/logical-devices") %}
+List logical device segments defined for this physical device.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/logical-devices") %}
+Create a new logical device segment on a physical device.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/devices/{id}/pair") %}
+Initiate pairing for a device that requires authentication.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/devices/{id}/pair") %}
+Remove the pairing for a device.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/devices/metrics") %}
+Get a per-device output telemetry snapshot (frame counts, errors, latency).
+{% end %}
+
+## Logical Devices
+
+{% api_endpoint(method="GET", path="/api/v1/logical-devices") %}
+List all logical device segments across all physical devices.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/logical-devices/{id}") %}
+Get a specific logical device segment.
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/logical-devices/{id}") %}
+Update a logical device segment.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/logical-devices/{id}") %}
+Delete a logical device segment.
+{% end %}
+
+## Drivers
+
+{% api_endpoint(method="GET", path="/api/v1/drivers") %}
+List all registered driver modules with their ID, name, and connection state.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/drivers/{id}/config") %}
+Get the configuration for a specific driver module.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/drivers/{id}/controls") %}
+Get the control surface for a specific driver module — fields, types, and current values.
+{% end %}
+
+## Displays
+
+Display devices are physical screens that can show HTML effects via the display-face system.
+
+{% api_endpoint(method="GET", path="/api/v1/displays") %}
+List all connected display devices.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/displays/{id}/preview.jpg") %}
+Get a JPEG preview frame from a display device.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/displays/{id}/face") %}
+Get the active display-face effect configuration for a display device.
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/displays/{id}/face") %}
+Set the display-face effect on a display device. Associates an HTML effect with the device in the active scene.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/displays/{id}/face") %}
+Remove the display-face assignment from a display device.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/displays/{id}/face/controls") %}
+Update control values on the active display-face effect for a display device.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/displays/{id}/face/composition") %}
+Update composition parameters (blend mode, z-order, opacity) for a display-face render group.
+{% end %}
+
+## Simulators
+
+Virtual display simulators let you develop and test display-face effects without physical hardware.
+
+{% api_endpoint(method="GET", path="/api/v1/simulators/displays") %}
+List all simulated display devices.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/simulators/displays") %}
+Create a new simulated display device.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/simulators/displays/{id}") %}
+Get a specific simulated display.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/simulators/displays/{id}") %}
+Update a simulated display's configuration.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/simulators/displays/{id}") %}
+Delete a simulated display.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/simulators/displays/{id}/frame") %}
+Get the latest composited frame from a simulated display.
+{% end %}
+
+## Attachments
+
+Attachment templates describe physical accessories (keycaps, case panels, stands) that clip onto device slots and have their own LED zones.
+
+{% api_endpoint(method="GET", path="/api/v1/attachments/templates") %}
+List all available attachment templates (built-in and user-defined).
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/attachments/templates") %}
+Create a new user-defined attachment template.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/attachments/templates/{id}") %}
+Get a specific attachment template.
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/attachments/templates/{id}") %}
+Update a user-defined attachment template.
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/attachments/templates/{id}") %}
+Delete a user-defined attachment template.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/attachments/categories") %}
+List all attachment categories (e.g., keycap-set, case-panel, stand).
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/attachments/vendors") %}
+List all attachment vendors with available templates.
+{% end %}
+
+## Control Surfaces
+
+Control surfaces expose typed fields and actions for dynamic device or driver configuration (e.g., WLED protocol selection, Hue bridge IP). The web UI reads these surfaces to render device-specific settings panels.
+
+{% api_endpoint(method="GET", path="/api/v1/control-surfaces") %}
+List all registered control surfaces across devices and drivers.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/control-surfaces/{surface_id}") %}
+Get a specific control surface with current field values.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/control-surfaces/{surface_id}/values") %}
+Apply typed field values to a control surface.
+
+**Request body:**
+
+```json
+{
+  "fields": {
+    "protocol": { "type": "enum", "value": "ddp" },
+    "ip_address": { "type": "ip", "value": "10.0.0.50" }
+  }
+}
+```
+
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/control-surfaces/{surface_id}/actions/{action_id}") %}
+Invoke a typed control surface action (e.g., "Discover", "Sync", "Reset").
+{% end %}
+
 ## Scenes
 
 {% api_endpoint(method="GET", path="/api/v1/scenes") %}
@@ -306,8 +544,16 @@ Update an existing scene.
 Delete a scene.
 {% end %}
 
+{% api_endpoint(method="GET", path="/api/v1/scenes/active") %}
+Get the currently active scene and its configuration.
+{% end %}
+
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/activate") %}
 Activate a scene, applying its effect and controls with the configured transition.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/scenes/deactivate") %}
+Deactivate the current scene, returning to the default free-running state.
 {% end %}
 
 ## Profiles
@@ -369,6 +615,10 @@ Update a layout.
 
 {% api_endpoint(method="DELETE", path="/api/v1/layouts/{id}") %}
 Delete a layout.
+{% end %}
+
+{% api_endpoint(method="PUT", path="/api/v1/layouts/active/preview") %}
+Preview a layout without applying it permanently. Returns the zone-to-LED mapping that would result, so the UI can render a visual preview.
 {% end %}
 
 {% api_endpoint(method="POST", path="/api/v1/layouts/{id}/apply") %}
@@ -483,6 +733,14 @@ Set the global brightness level (0.0 to 1.0).
 List available audio capture devices for reactive effects.
 {% end %}
 
+{% api_endpoint(method="GET", path="/api/v1/system/sensors") %}
+Get the latest hardware sensor snapshot — CPU temperature, GPU load, RAM usage, and raw component readings.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/system/sensors/{label}") %}
+Get a single named sensor reading. Common labels: `cpu_temp`, `gpu_load`, `ram_used`.
+{% end %}
+
 ## Configuration
 
 {% api_endpoint(method="GET", path="/api/v1/config") %}
@@ -524,4 +782,8 @@ Reset a configuration value to its default.
 
 {% api_endpoint(method="POST", path="/api/v1/diagnose") %}
 Run system diagnostics. Checks device connectivity, audio capture status, effect engine health, and configuration validity.
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/diagnose/memory") %}
+Get a memory diagnostics snapshot — daemon RSS, Servo renderer RSS, canvas buffer size, and allocation counters. Useful when diagnosing slow memory growth.
 {% end %}

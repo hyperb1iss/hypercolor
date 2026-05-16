@@ -76,6 +76,30 @@ Apply with custom controls:
 hypercolor effects activate borealis --param speed=7 --param palette=SilkCircuit
 ```
 
+Update controls on the running effect without re-applying it:
+
+```bash
+hypercolor effects patch --param speed=3 --param intensity=90
+```
+
+Other `effects` subcommands:
+
+```bash
+hypercolor effects reset              # Reset controls to defaults
+hypercolor effects layout show        # Show current effect-layout association
+hypercolor effects layout set <id>    # Associate active effect with a layout
+hypercolor effects layout clear       # Clear the association
+```
+
+### `hypercolor brightness`
+
+Global output brightness control.
+
+```bash
+hypercolor brightness get            # Show current brightness (0-100)
+hypercolor brightness set 75         # Set brightness to 75
+```
+
 ### `hypercolor scenes`
 
 Scene management for automated lighting triggers.
@@ -118,6 +142,37 @@ hypercolor layouts show <id>         # Show layout details
 hypercolor layouts update <id>       # Update a layout
 ```
 
+### `hypercolor audio`
+
+Audio input device listing.
+
+```bash
+hypercolor audio devices             # List available audio capture devices
+```
+
+### `hypercolor controls`
+
+Dynamic control surface inspection and mutation for devices and drivers.
+
+```bash
+hypercolor controls list --device <id>     # List control surfaces for a device
+hypercolor controls list --driver <id>     # List control surfaces for a driver
+hypercolor controls show --device <id>     # Show one device-level control surface
+hypercolor controls set --device <id>      # Apply values to a device control surface
+hypercolor controls action --device <id>   # Invoke a control surface action
+```
+
+### `hypercolor drivers`
+
+Driver module inventory and controls.
+
+```bash
+hypercolor drivers list                     # List registered driver modules
+hypercolor drivers controls <driver>        # Show one driver-level control surface
+hypercolor drivers set-control <driver> <field> <value>  # Set a driver control value
+hypercolor drivers action <driver>          # Invoke a driver-level action
+```
+
 ### `hypercolor config`
 
 Configuration management.
@@ -130,10 +185,28 @@ hypercolor config set <key> <value>  # Set a value
 
 ### `hypercolor service`
 
-Daemon service lifecycle management.
+Daemon service lifecycle management via systemd (Linux) or launchd (macOS).
 
 ```bash
-hypercolor service status            # Check daemon status
+hypercolor service start             # Start the daemon service
+hypercolor service stop              # Stop the daemon service
+hypercolor service restart           # Restart the daemon service
+hypercolor service status            # Show service status
+hypercolor service enable            # Enable autostart on login
+hypercolor service disable           # Disable autostart on login
+hypercolor service logs              # Show daemon logs (last 50 lines)
+hypercolor service logs --follow     # Follow logs in real time
+hypercolor service logs --lines 200  # Show last 200 lines
+hypercolor service logs --since 1h   # Show logs from the last hour (Linux only)
+```
+
+### `hypercolor server`
+
+The connected daemon's own identity and health. Not to be confused with `servers` (mDNS network discovery).
+
+```bash
+hypercolor server info               # Show daemon version, name, and capabilities
+hypercolor server health             # Run a quick health check
 ```
 
 ### `hypercolor diagnose`
@@ -146,9 +219,23 @@ hypercolor diagnose
 
 Checks device connectivity, audio capture status, effect engine health, USB permissions, and configuration validity. Outputs a diagnostic report with pass/fail status for each check.
 
+### `hypercolor cloud`
+
+Hypercolor Cloud account and daemon-link controls.
+
+```bash
+hypercolor cloud login               # Log this daemon into Hypercolor Cloud
+hypercolor cloud logout              # Log this daemon out of Hypercolor Cloud
+hypercolor cloud connection          # Show daemon cloud socket readiness
+hypercolor cloud entitlement         # Show cached cloud entitlement status
+hypercolor cloud status              # Show daemon cloud feature/configuration status
+hypercolor cloud session             # Show local cloud login/session status
+hypercolor cloud identity            # Create or show this daemon's cloud identity
+```
+
 ### `hypercolor servers`
 
-Discover Hypercolor daemons on the local network.
+Discover Hypercolor daemons on the local network (mDNS). Different from `server`, which queries the currently connected daemon.
 
 ```bash
 hypercolor servers discover          # Find daemons via mDNS

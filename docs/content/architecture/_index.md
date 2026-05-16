@@ -36,7 +36,10 @@ end
         F4[PrismRGB USB HID]
         F5[WLED UDP DDP]
         F6[Hue / Nanoleaf REST]
-        F7[Dygma / QMK USB HID]
+        F7[QMK USB HID]
+        F8[Lian Li USB HID]
+        F9[Govee LAN / Cloud]
+        F10[Dygma USB Serial<br/>⚠ blocked]
     end
 
     subgraph Client Interfaces
@@ -62,6 +65,9 @@ end
     E --> F5
     E --> F6
     E --> F7
+    E --> F8
+    E --> F9
+    E --> F10
 
     D <--> G1
     D <--> G2
@@ -75,31 +81,66 @@ end
 
 ## Crate Structure
 
-The project is organized into focused crates with strict dependency boundaries:
+The project is organized into focused crates with strict dependency boundaries, grouped by layer:
 
-```
-hypercolor-types     Pure data types — zero deps, no logic, no I/O
-    |
-hypercolor-core      Engine: traits, bus, sampler, config, render loop
-    |
-hypercolor-hal       Hardware abstraction — USB/HID drivers
-    |
-hypercolor-daemon    Binary: `hypercolor-daemon` — REST API + WebSocket + MCP
-    |
-    +-- hypercolor-cli   Binary: `hypercolor` — CLI tool (also hosts `hypercolor tui`)
-    +-- hypercolor-tui   Library: terminal UI (Ratatui), launched via `hypercolor tui`
-    +-- hypercolor-ui    Leptos WASM web UI (separate from workspace)
-```
+### 💎 Shared Types
 
-| Crate               | Depends On    | Responsibility                                                                              |
-| ------------------- | ------------- | ------------------------------------------------------------------------------------------- |
-| `hypercolor-types`  | (none)        | Shared vocabulary types — import from here, never sibling internals                         |
-| `hypercolor-core`   | `types`       | Traits, engine logic, effect registry, audio pipeline, spatial mapping                      |
-| `hypercolor-hal`    | `types`       | USB/HID device drivers, protocol implementations                                            |
-| `hypercolor-daemon` | `core`, `hal` | HTTP/WS server, REST API, MCP server, daemon lifecycle                                      |
-| `hypercolor-cli`    | `core`        | CLI parsing, output formatting, IPC client                                                  |
-| `hypercolor-tui`    | `core`        | Terminal UI library (launched by `hypercolor tui`) with LED preview and spectrum visualizer |
-| `hypercolor-ui`     | (standalone)  | Leptos 0.8 CSR web app, compiled to WASM via Trunk                                          |
+| Crate                  | Depends On | Responsibility                                               |
+| ---------------------- | ---------- | ------------------------------------------------------------ |
+| `hypercolor-types`     | (none)     | Zero-dependency shared data vocabulary — import from here, never sibling internals |
+
+### Engine Core
+
+| Crate                  | Depends On        | Responsibility                                                                      |
+| ---------------------- | ----------------- | ----------------------------------------------------------------------------------- |
+| `hypercolor-core`      | `types`           | Render loop, device backends, Servo renderer, event bus, spatial sampler, input pipeline, scenes |
+
+### HAL + Platform Interop
+
+| Crate                           | Depends On | Responsibility                                                           |
+| ------------------------------- | ---------- | ------------------------------------------------------------------------ |
+| `hypercolor-hal`                | `types`    | Hardware abstraction: USB/HID/SMBus protocol encoding and transport       |
+| `hypercolor-linux-gpu-interop`  | `types`    | Linux zero-copy GL→wgpu texture import; stubbed on other platforms *(unsafe boundary)* |
+| `hypercolor-windows-pawnio`     | `types`    | Windows SMBus via the PawnIO kernel driver; stubbed elsewhere *(unsafe boundary)* |
+
+### Driver Layer
+
+| Crate                      | Depends On            | Responsibility                                                               |
+| -------------------------- | --------------------- | ---------------------------------------------------------------------------- |
+| `hypercolor-driver-api`    | `types`, `core`       | Stable trait/type boundary between daemon and drivers                        |
+| `hypercolor-driver-builtin`| `driver-api`, `hal`, network drivers | Compile-time bundle of HAL + network drivers via feature flags |
+
+### Network Driver Layer
+
+| Crate                       | Depends On   | Responsibility                                           |
+| --------------------------- | ------------ | -------------------------------------------------------- |
+| `hypercolor-driver-hue`     | `driver-api` | Philips Hue Bridge driver (Entertainment API over DTLS)  |
+| `hypercolor-driver-nanoleaf`| `driver-api` | Nanoleaf panels driver (HTTP pairing + UDP control)      |
+| `hypercolor-driver-wled`    | `driver-api` | WLED driver (DDP / E1.31 sACN)                           |
+| `hypercolor-driver-govee`   | `driver-api` | Govee driver (LAN UDP + Govee Cloud API)                 |
+| `hypercolor-network`        | `driver-api` | Network driver registry and orchestration                |
+
+### Daemon + API
+
+| Crate                    | Depends On                                                            | Responsibility                                               |
+| ------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `hypercolor-daemon`      | `types`, `core`, `driver-api`, `network`, `leptos-ext`; optionally `driver-builtin` (hal + drivers), `cloud-client` | Daemon binary: render-loop host, REST/WebSocket/MCP server |
+| `hypercolor-cloud-api`   | `types`                                                               | Shared data-contract types for the cloud HTTP API            |
+| `hypercolor-cloud-client`| `types`, `cloud-api`                                                  | Daemon-side cloud client (OAuth, keyring, identity, sync)    |
+| `hypercolor-daemon-link` | `types`                                                               | Daemon↔cloud multiplexed WebSocket tunnel protocol           |
+
+### Clients and UIs
+
+| Crate                        | Depends On       | Responsibility                                                                      |
+| ---------------------------- | ---------------- | ----------------------------------------------------------------------------------- |
+| `hypercolor-cli`             | `core`           | The `hypercolor` CLI binary — parsing, output formatting, IPC client                |
+| `hypercolor-tui`             | `types`          | Ratatui terminal UI library, launched via `hypercolor tui`                          |
+| `hypercolor-tray`            | `types`, `core`  | System tray applet binary                                                           |
+| `hypercolor-desktop`         | (standalone)     | Tauri 2 native shell — excluded from default CI                                     |
+| `hypercolor-app`             | `types`, `core`  | Unified desktop app shell: supervises daemon, owns tray, handles autostart          |
+| `hypercolor-leptos-ext`      | (standalone)     | Leptos 0.8 extension helpers for the web UI                                         |
+| `hypercolor-leptos-ext-macros`| (standalone)    | Proc macros powering `hypercolor-leptos-ext`                                        |
+| `hypercolor-ui`              | (standalone)     | Leptos 0.8 CSR web app, compiled to WASM via Trunk — excluded from the workspace   |
 
 {% callout(type="note", title="Unsafe boundary policy") %}
 Application, driver, and domain crates inherit the workspace `unsafe_code = "forbid"` lint.

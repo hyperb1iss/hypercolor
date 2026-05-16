@@ -1,11 +1,11 @@
 +++
 title = "WebSocket API"
-description = "Real-time state streaming and bidirectional communication"
+description = "Real-time channel subscription and bidirectional communication"
 weight = 2
 template = "page.html"
 +++
 
-The WebSocket API provides real-time, bidirectional communication between clients and the Hypercolor daemon. The web UI, TUI, and any custom clients use this channel for live state updates.
+The WebSocket API provides real-time, bidirectional communication between clients and the Hypercolor daemon. The web UI, TUI, and custom clients use this channel for live state updates, streaming LED frame data, and issuing commands without opening separate HTTP connections.
 
 ## Connection
 
@@ -29,52 +29,166 @@ Using [websocat](https://github.com/vi/websocat):
 websocat ws://localhost:9420/api/v1/ws
 ```
 
-Using JavaScript:
+## Protocol Overview
 
-```javascript
-const ws = new WebSocket("ws://localhost:9420/api/v1/ws");
+The WebSocket server is a **subscription-channel multiplexer**. Clients choose which data streams they want by subscribing to named channels. The server never pushes data a client has not subscribed to, except for the default `events` channel that is active on every connection.
 
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  console.log(message.type, message.data);
-};
+All messages are JSON with a `type` tag:
+
+```json
+{ "type": "message_type", ... }
 ```
 
-## Message Format
+Binary messages are data payloads for the `frames`, `canvas`, `screen_canvas`, `web_viewport_canvas`, and `display_preview` channels. They are never JSON.
 
-All messages are JSON with a consistent envelope:
+## Connect Handshake
+
+On connection the server sends exactly one `hello` message, then begins relaying events. No further server messages arrive until the client subscribes to additional channels.
+
+**Server → Client: `hello`**
 
 ```json
 {
-  "type": "event_type",
-  "data": { ... }
+  "type": "hello",
+  "version": "0.1.0",
+  "server": {
+    "instance_id": "a1b2c3d4-...",
+    "instance_name": "hypercolor",
+    "version": "0.1.0"
+  },
+  "state": {
+    "running": true,
+    "paused": false,
+    "brightness": 85,
+    "fps": { "target": 60, "actual": 59.8 },
+    "effect": { "id": "borealis", "name": "Borealis" },
+    "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
+    "profile": { "id": "gaming", "name": "Gaming" },
+    "layout": { "id": "default", "name": "Default Layout" },
+    "device_count": 3,
+    "total_leds": 432
+  },
+  "capabilities": ["frames", "spectrum", "events", "canvas", "screen_canvas",
+                   "web_viewport_canvas", "metrics", "device_metrics",
+                   "display_preview", "commands", "canvas_format_jpeg"],
+  "subscriptions": ["events"]
 }
 ```
 
-### Server-to-Client Events
+The `subscriptions` field lists which channels are already active. Only `events` is subscribed by default. Every other channel requires an explicit `subscribe` command.
 
-The daemon pushes these events to all connected WebSocket clients:
+## Channels
 
-**`state`** — Full system state snapshot. Sent on connection and whenever significant state changes occur.
+| Channel              | Data type | Description                                         |
+| -------------------- | --------- | --------------------------------------------------- |
+| `events`             | JSON      | HypercolorEvent bus relay — active by default       |
+| `frames`             | Binary    | LED color frames per zone                           |
+| `spectrum`           | JSON      | Audio spectrum data                                 |
+| `canvas`             | Binary    | Rendered RGBA canvas stream                         |
+| `screen_canvas`      | Binary    | Screen-capture canvas stream                        |
+| `web_viewport_canvas`| Binary    | Web viewport canvas stream                          |
+| `metrics`            | JSON      | Render performance metrics (periodic snapshot)      |
+| `device_metrics`     | JSON      | Per-device output telemetry (periodic snapshot)     |
+| `display_preview`    | Binary    | Per-display JPEG preview frames                     |
+
+## Client Commands
+
+Clients send JSON messages to subscribe, unsubscribe, or issue REST-equivalent commands.
+
+### `subscribe`
+
+Subscribe to one or more channels. An optional `config` patch sets per-channel parameters at the same time.
 
 ```json
 {
-  "type": "state",
-  "data": {
-    "running": true,
-    "effect": { "id": "borealis", "name": "Borealis" },
-    "controls": { "speed": 5, "intensity": 82 },
-    "devices": [...],
-    "brightness": 0.8
+  "type": "subscribe",
+  "channels": ["frames", "metrics"],
+  "config": {
+    "frames": {
+      "fps": 30,
+      "format": "binary",
+      "zones": ["all"]
+    },
+    "metrics": {
+      "interval_ms": 1000
+    }
   }
 }
 ```
 
-**`effect_changed`** — Emitted when the active effect changes.
+**Server acknowledges with `subscribed`:**
 
 ```json
 {
-  "type": "effect_changed",
+  "type": "subscribed",
+  "channels": ["frames", "metrics"],
+  "config": {
+    "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
+    "metrics": { "interval_ms": 1000 }
+  }
+}
+```
+
+### `unsubscribe`
+
+```json
+{
+  "type": "unsubscribe",
+  "channels": ["frames"]
+}
+```
+
+**Server acknowledges with `unsubscribed`:**
+
+```json
+{
+  "type": "unsubscribed",
+  "channels": ["frames"],
+  "remaining": ["events", "metrics"]
+}
+```
+
+### `command`
+
+Proxy any REST API call over the WebSocket. This lets a single connection both receive streams and issue mutations without opening a separate HTTP connection.
+
+```json
+{
+  "type": "command",
+  "id": "cmd-001",
+  "method": "POST",
+  "path": "/api/v1/effects/borealis/apply",
+  "body": { "controls": { "speed": 7 } }
+}
+```
+
+**Server responds with `response`:**
+
+```json
+{
+  "type": "response",
+  "id": "cmd-001",
+  "status": 200,
+  "data": {
+    "effect": { "id": "borealis", "name": "Borealis" },
+    "applied_controls": { "speed": 7 }
+  }
+}
+```
+
+The `id` field is client-assigned and echoed back so concurrent commands can be correlated. On error, `status` reflects the HTTP status code and `error` is populated instead of `data`.
+
+## Server Messages
+
+### `event`
+
+Relayed from the HypercolorEvent bus. Event names are snake_case derivations of the internal enum variants.
+
+```json
+{
+  "type": "event",
+  "event": "effect_started",
+  "timestamp": "2026-05-16T02:14:00Z",
   "data": {
     "effect_id": "borealis",
     "effect_name": "Borealis"
@@ -82,128 +196,136 @@ The daemon pushes these events to all connected WebSocket clients:
 }
 ```
 
-**`controls_changed`** — Emitted when effect control values are updated.
+Common event names: `effect_started`, `effect_stopped`, `effect_control_changed`, `device_connected`, `device_disconnected`, `active_scene_changed`, `beat_detected`, `profile_applied`.
+
+### `metrics`
+
+Periodic render performance snapshot, sent on the `metrics` channel at the configured `interval_ms` (default: 1000 ms). The `data` object includes FPS, frame time percentiles, stage timing breakdowns, memory usage, and WebSocket statistics.
 
 ```json
 {
-  "type": "controls_changed",
+  "type": "metrics",
+  "timestamp": "2026-05-16T02:14:01Z",
   "data": {
-    "speed": 7,
-    "palette": "SilkCircuit"
+    "fps": { "target": 60, "ceiling": 60, "actual": 59.8, "dropped": 0 },
+    "frame_time": { "avg_ms": 4.2, "p95_ms": 5.1, "p99_ms": 6.0, "max_ms": 8.3 },
+    "devices": { "connected": 3, "total_leds": 432, "output_errors": 0 }
   }
 }
 ```
 
-**`device_connected`** — A new device was discovered and connected.
+### `device_metrics`
+
+Periodic per-device output telemetry snapshot, sent on the `device_metrics` channel.
+
+### `backpressure`
+
+Sent when the server is dropping binary frames for a slow consumer.
 
 ```json
 {
-  "type": "device_connected",
-  "data": {
-    "id": "razer-blackwidow-v4-001",
-    "name": "Razer BlackWidow V4",
-    "backend": "razer",
-    "led_count": 126
-  }
+  "type": "backpressure",
+  "dropped_frames": 12,
+  "channel": "frames",
+  "recommendation": "Reduce fps or zone count to keep up with the stream",
+  "suggested_fps": 15
 }
 ```
 
-**`device_disconnected`** — A device was disconnected.
+React to this by reducing the channel's `fps` with an `unsubscribe`/`subscribe` round-trip or by sending a `subscribe` with an updated `config` patch.
 
-```json
-{
-  "type": "device_disconnected",
-  "data": {
-    "id": "razer-blackwidow-v4-001"
-  }
-}
-```
+### `error`
 
-**`profile_loaded`** — A profile was applied.
-
-```json
-{
-  "type": "profile_loaded",
-  "data": {
-    "profile_id": "gaming",
-    "profile_name": "Gaming"
-  }
-}
-```
-
-**`scene_activated`** — A scene was activated.
-
-```json
-{
-  "type": "scene_activated",
-  "data": {
-    "scene_id": "late-night",
-    "scene_name": "Late Night"
-  }
-}
-```
-
-**`error`** — An error occurred.
+Protocol-level error, such as an unknown channel name or an invalid config value.
 
 ```json
 {
   "type": "error",
-  "data": {
-    "code": "device_error",
-    "message": "USB device disconnected unexpectedly"
+  "code": "unsupported_channel",
+  "message": "Channel 'bogus' is not supported by this server",
+  "details": { "channel": "bogus" }
+}
+```
+
+Error codes: `invalid_request`, `invalid_config`, `unsupported_channel`.
+
+## Channel Configuration
+
+Each channel has configurable parameters that control throughput and format. Send them via the `config` field on a `subscribe` message. Only channels present in `config` are updated; the rest keep their current settings.
+
+### `frames` config
+
+| Field    | Type            | Default    | Range / Values                  |
+| -------- | --------------- | ---------- | ------------------------------- |
+| `fps`    | integer         | `30`       | 1..=60                          |
+| `format` | string          | `"binary"` | `"binary"` or `"json"`          |
+| `zones`  | array of string | `["all"]`  | zone IDs or `["all"]`           |
+
+Binary frame format is a flat array of RGB bytes ordered by zone then by LED index. JSON format wraps the same data as a structured object. Binary is strongly preferred for performance.
+
+### `spectrum` config
+
+| Field  | Type    | Default | Range / Values               |
+| ------ | ------- | ------- | ---------------------------- |
+| `fps`  | integer | `30`    | 1..=60                       |
+| `bins` | integer | `64`    | one of: 8, 16, 32, 64, 128  |
+
+### `canvas` / `screen_canvas` / `web_viewport_canvas` config
+
+| Field    | Type    | Default | Range / Values                                |
+| -------- | ------- | ------- | --------------------------------------------- |
+| `fps`    | integer | `15`    | 1..=60                                        |
+| `format` | string  | `"rgb"` | `"rgb"`, `"rgba"`, `"jpeg"`                   |
+| `width`  | integer | `0`     | 0..=4096 (0 = use daemon canvas width)        |
+| `height` | integer | `0`     | 0..=4096 (0 = use daemon canvas height)       |
+
+### `metrics` / `device_metrics` config
+
+| Field         | Type    | Default | Range / Values   |
+| ------------- | ------- | ------- | ---------------- |
+| `interval_ms` | integer | `1000`  | 100..=10000      |
+
+### `display_preview` config
+
+| Field       | Type            | Default | Notes                               |
+| ----------- | --------------- | ------- | ----------------------------------- |
+| `device_id` | string or null  | none    | Target display device ID; `null` to stop |
+| `fps`       | integer         | `15`    | 1..=30                              |
+
+Binary payloads on this channel are JPEG-encoded frames for the targeted display.
+
+## Frame Streaming Example 🌊
+
+A minimal JavaScript client that connects, subscribes to frames, and renders them:
+
+```javascript
+const ws = new WebSocket("ws://localhost:9420/api/v1/ws");
+
+ws.onmessage = (event) => {
+  if (event.data instanceof ArrayBuffer) {
+    // Binary frame payload: flat RGB bytes
+    renderFrame(new Uint8Array(event.data));
+    return;
   }
-}
-```
 
-### Client-to-Server Commands
+  const msg = JSON.parse(event.data);
 
-Clients can send commands through the WebSocket as an alternative to REST calls:
-
-**Apply an effect:**
-
-```json
-{
-  "type": "apply_effect",
-  "data": {
-    "effect_id": "borealis",
-    "controls": { "speed": 7 }
+  if (msg.type === "hello") {
+    // Subscribe to LED frames at 30fps after the handshake
+    ws.send(JSON.stringify({
+      type: "subscribe",
+      channels: ["frames"],
+      config: { frames: { fps: 30, format: "binary", zones: ["all"] } }
+    }));
   }
-}
+};
 ```
-
-**Update controls:**
-
-```json
-{
-  "type": "set_controls",
-  "data": {
-    "speed": 3,
-    "intensity": 90
-  }
-}
-```
-
-**Stop the effect:**
-
-```json
-{
-  "type": "stop_effect"
-}
-```
-
-## Frame Streaming
-
-The WebSocket can stream live LED color data for preview rendering. The web UI uses this to show a real-time visualization of what the LEDs are doing.
-
-Frame data is sent as binary WebSocket messages when frame streaming is active. Each frame contains the current LED colors for all active zones, allowing clients to render a visual preview without needing physical hardware.
-
-{% callout(type="tip", title="Performance") %}
-Frame streaming runs at a configurable rate (default: 30fps for previews). The frame rate is independent of the daemon's internal render rate (60fps). This keeps network bandwidth reasonable while still providing smooth previews.
-{% end %}
 
 ## Connection Lifecycle
 
-- On connect, the server sends an initial `state` message with the full system snapshot
-- The connection is kept alive with periodic WebSocket pings
-- If the daemon restarts, clients must reconnect — there is no automatic reconnection at the protocol level (clients should implement their own reconnect logic)
-- Multiple concurrent WebSocket connections are supported
+- The server sends `hello` immediately on connection. No polling is needed.
+- The `events` channel is subscribed by default. No subscribe message is required to receive events.
+- The connection is kept alive with periodic WebSocket pings from the server.
+- If the daemon restarts, clients must reconnect. There is no automatic reconnection at the protocol level; implement your own reconnect loop.
+- Multiple concurrent WebSocket connections are supported.
+- Binary channel data and JSON messages may be interleaved in any order.

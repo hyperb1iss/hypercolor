@@ -209,7 +209,13 @@ import {
   getFrequencyRange,
   getMelRange,
   getPitchClassName,
+  getPitchClassIndex,
+  getPitchEnergy,
   pitchClassToHue,
+  getHarmonicColor,
+  getMoodColor,
+  getBeatAnticipation,
+  getScreenZoneData,
   isOnBeat,
   normalizeAudioLevel,
   normalizeFrequencyBin,
@@ -218,6 +224,14 @@ import {
 ```
 
 `getFrequencyRange(audio, lowHz, highHz)` averages FFT bins across a custom band if the default three bands aren't what you need. `smoothValue(current, target, rate, deltaTime)` is a useful exponential smoother when you want to damp a jittery field.
+
+`getPitchClassIndex(audio)` returns the integer index (0–11) of the dominant pitch class. `getPitchEnergy(audio, pitchClass)` returns the chromagram energy at a specific pitch class. These are lower-level companions to `dominantPitch` for effects that need to react to individual notes.
+
+`getHarmonicColor(audio)` maps the current harmonic analysis to a CSS color string ready for `fillStyle`. `getMoodColor(audio)` derives a mood-based color from `chordMood` and `harmonicHue`.
+
+`getBeatAnticipation(audio)` returns a value that rises before the predicted next beat, useful for pre-fire effects that should start moving slightly ahead of the kick.
+
+`getScreenZoneData(audio, zone)` returns screen zone sampling data for screen-reactive effects. Use it when your effect needs to respond to a specific region of the captured screen rather than the full-frame audio stream.
 
 ## Designing audio reactivity
 

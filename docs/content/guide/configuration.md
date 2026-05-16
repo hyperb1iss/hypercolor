@@ -1,7 +1,7 @@
 +++
 title = "Configuration"
 description = "Configure profiles, audio input, device mappings, and daemon settings"
-weight = 3
+weight = 4
 template = "page.html"
 +++
 

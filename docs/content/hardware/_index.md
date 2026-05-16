@@ -21,7 +21,12 @@ Hypercolor controls RGB devices through a Hardware Abstraction Layer (HAL) that 
 | **QMK**               | USB HID        | QMK raw HID                | Implemented |
 | **Ableton Push 2**    | USB Bulk       | Pad/button RGB protocol    | Implemented |
 | **Lian Li**           | USB HID        | Uni Hub / TL Fan Hub       | Implemented |
+| **Govee**             | Network (LAN / Cloud) | Govee LAN UDP + Cloud API | Implemented |
 | **Dygma Defy**        | USB serial     | Firmware-gated RGB control | Blocked     |
+
+{% callout(type="note", title="Govee device catalog") %}
+The Govee network driver (`hypercolor-driver-govee`) is implemented and ships with Hypercolor, covering LAN UDP control and the Govee Cloud API. Its device-catalog entry in `data/drivers/vendors/` is still pending, so Govee devices do not appear in the [compatibility matrix](@/hardware/compatibility.md) yet. Govee strip and bulb support is functional; catalog registration and device count will be added in a follow-up.
+{% end %}
 
 ## Architecture
 
@@ -39,8 +44,10 @@ D --> E4[PrismRGB Driver]
 D --> E5[WLED Driver]
 D --> E6[Hue Driver]
 D --> E7[Nanoleaf Driver]
-D --> E8[Dygma / QMK]
+D --> E8[QMK Driver]
 D --> E9[Lian Li Driver]
+D --> E10[Govee Driver]
+D -.->|blocked| E11[Dygma Driver]
 E1 -->|USB HID| F1[Razer Peripherals]
 E2 -->|USB HID| F2[Corsair Devices]
 E3 -->|USB/I2C| F3[ASUS Motherboard/GPU]
@@ -48,8 +55,10 @@ E4 -->|USB HID| F4[PrismRGB / Nollie Controllers]
 E5 -->|UDP DDP| F5[WLED Strips]
 E6 -->|REST| F6[Hue Bridge]
 E7 -->|REST| F7[Nanoleaf Panels]
-E8 -->|USB HID / Serial| F8[Custom Keyboards]
+E8 -->|USB HID| F8[QMK Keyboards]
 E9 -->|USB HID / Vendor| F9[Uni Hub / TL Fan Hub]
+E10 -->|LAN UDP / Cloud| F10[Govee Strips & Bulbs]
+E11 -.->|USB serial| F11[Dygma Defy]
 {% end %}
 
 ### Key Abstractions

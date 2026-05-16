@@ -43,7 +43,7 @@ You can still browse and preview effects through the web UI without physical dev
 
 ## 3. Browse Effects
 
-Hypercolor ships with a library of 30+ built-in effects: audio-reactive visualizers, ambient gradients, particle systems, and more.
+Hypercolor ships with a library of 44 built-in effects: audio-reactive visualizers, ambient gradients, particle systems, and more.
 
 **Via CLI:**
 

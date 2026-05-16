@@ -166,6 +166,57 @@ You should get a `200 OK` response.
 `just daemon` uses the `preview` build profile — optimized for runtime performance while keeping reasonable compile times. For maximum performance, use `just daemon-release`.
 {% end %}
 
+## Service and Autostart
+
+For everyday use you'll want the daemon to start automatically on login rather than running it manually from the terminal.
+
+### Linux (systemd user service)
+
+Install the systemd user service and enable it for autostart on login:
+
+```bash
+hypercolor service enable
+```
+
+This installs the service unit and calls `systemctl --user enable hypercolor`. To start it immediately in the same step:
+
+```bash
+hypercolor service start
+```
+
+Check service status at any time:
+
+```bash
+hypercolor service status
+```
+
+The full service lifecycle:
+
+```bash
+hypercolor service start
+hypercolor service stop
+hypercolor service restart
+hypercolor service logs           # last 50 lines
+hypercolor service logs --follow  # live tail
+```
+
+### macOS (LaunchAgent)
+
+The LaunchAgent plist (`packaging/launchd/tech.hyperbliss.hypercolor.plist`) handles autostart on macOS. Copy it to your LaunchAgents directory and load it:
+
+```bash
+cp packaging/launchd/tech.hyperbliss.hypercolor.plist \
+  ~/Library/LaunchAgents/
+hypercolor service enable
+```
+
+`hypercolor service enable` on macOS calls `launchctl load` on the installed plist. The same `start`, `stop`, `status`, and `logs` subcommands work on macOS.
+
+### Pre-built Packages
+
+- **Arch Linux (AUR):** A `hypercolor` PKGBUILD is available in `packaging/aur/` and will be published to the AUR at v0.1 release. Once available: `yay -S hypercolor`.
+- **Homebrew (macOS):** A formula template is in `packaging/homebrew/hypercolor.rb`. It will be published to a tap when the release artifacts are finalized; check the [releases page](https://github.com/hyperb1iss/hypercolor/releases) for the current install command.
+
 ## What's Next
 
 With the daemon running, head to the [Quick Start](@/guide/quick-start.md) to connect a device and apply your first effect.
