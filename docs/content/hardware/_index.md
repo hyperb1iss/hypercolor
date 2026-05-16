@@ -24,10 +24,6 @@ Hypercolor controls RGB devices through a Hardware Abstraction Layer (HAL) that 
 | **Govee**             | Network (LAN / Cloud) | Govee LAN UDP + Cloud API | Implemented |
 | **Dygma Defy**        | USB serial     | Firmware-gated RGB control | Blocked     |
 
-{% callout(type="note", title="Govee device catalog") %}
-The Govee network driver (`hypercolor-driver-govee`) is implemented and ships with Hypercolor, covering LAN UDP control and the Govee Cloud API. Its device-catalog entry in `data/drivers/vendors/` is still pending, so Govee devices do not appear in the [compatibility matrix](@/hardware/compatibility.md) yet. Govee strip and bulb support is functional; catalog registration and device count will be added in a follow-up.
-{% end %}
-
 ## Architecture
 
 The HAL is structured in layers:

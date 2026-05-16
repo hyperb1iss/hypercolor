@@ -1,0 +1,37 @@
+[vendor]
+name = "Govee"
+vid = []
+website = "https://govee.com"
+notes = "Discovered by UDP multicast on the Govee LAN protocol; LAN devices stream RGB frames directly. The Govee Developer API v1 adds cloud inventory enrichment and a control fallback for cloud-only SKUs such as bulbs. A built-in capability database maps each SKU to its LED count, segment topology, and protocol flags."
+
+[[devices]]
+name = "Govee RGBIC LED Strip"
+type = "strip"
+status = "supported"
+driver = "govee"
+transport = "network_udp"
+notes = "Per-segment RGBIC strips streamed over the Govee LAN protocol. Select SKUs (H619A, H70B1) also support Razer streaming for higher frame rates."
+
+[[devices]]
+name = "Govee RGBIC Light Bars"
+type = "lightbar"
+status = "supported"
+driver = "govee"
+transport = "network_udp"
+notes = "Govee Flow and Flow Pro desktop light bars and similar segmented RGBIC bars."
+
+[[devices]]
+name = "Govee RGBIC TV Backlight"
+type = "strip"
+status = "supported"
+driver = "govee"
+transport = "network_udp"
+notes = "Immersion and Envisual TV backlight kits. The backlight strip streams over the Govee LAN protocol; the bundled camera module is not used."
+
+[[devices]]
+name = "Govee Outdoor & String Lights"
+type = "strip"
+status = "supported"
+driver = "govee"
+transport = "network_udp"
+notes = "Outdoor string lights, curtain lights, and permanent outdoor lights with Govee LAN protocol support."

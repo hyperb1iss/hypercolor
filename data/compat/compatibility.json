@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
-    "vendors": 31,
-    "devices": 410,
+    "vendors": 32,
+    "devices": 414,
     "byStatus": {
-      "supported": 175,
+      "supported": 179,
       "in_progress": 0,
       "planned": 0,
       "researched": 95,
@@ -15,6 +15,7 @@
     "drivers": [
       "asus",
       "corsair",
+      "govee",
       "hue",
       "lianli",
       "nanoleaf",
@@ -2195,6 +2196,80 @@
         "mouse"
       ],
       "sourceFile": "data/drivers/vendors/glorious.toml"
+    },
+    {
+      "slug": "govee",
+      "name": "Govee",
+      "website": "https://govee.com",
+      "vids": [],
+      "vidsHex": [],
+      "notes": "Discovered by UDP multicast on the Govee LAN protocol; LAN devices stream RGB frames directly. The Govee Developer API v1 adds cloud inventory enrichment and a control fallback for cloud-only SKUs such as bulbs. A built-in capability database maps each SKU to its LED count, segment topology, and protocol flags.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Govee Outdoor & String Lights",
+          "type": "strip",
+          "status": "supported",
+          "driver": "govee",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Outdoor string lights, curtain lights, and permanent outdoor lights with Govee LAN protocol support."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Govee RGBIC LED Strip",
+          "type": "strip",
+          "status": "supported",
+          "driver": "govee",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Per-segment RGBIC strips streamed over the Govee LAN protocol. Select SKUs (H619A, H70B1) also support Razer streaming for higher frame rates."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Govee RGBIC Light Bars",
+          "type": "lightbar",
+          "status": "supported",
+          "driver": "govee",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Govee Flow and Flow Pro desktop light bars and similar segmented RGBIC bars."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "name": "Govee RGBIC TV Backlight",
+          "type": "strip",
+          "status": "supported",
+          "driver": "govee",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Immersion and Envisual TV backlight kits. The backlight strip streams over the Govee LAN protocol; the bundled camera module is not used."
+        }
+      ],
+      "counts": {
+        "supported": 4,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [
+        "govee"
+      ],
+      "transports": [
+        "network_udp"
+      ],
+      "deviceTypes": [
+        "lightbar",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/govee.toml"
     },
     {
       "slug": "hyperx",
