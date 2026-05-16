@@ -43,7 +43,7 @@ Binary messages are data payloads for the `frames`, `canvas`, `screen_canvas`, `
 
 ## Connect Handshake
 
-On connection the server sends exactly one `hello` message, then begins relaying events. No further server messages arrive until the client subscribes to additional channels.
+On connection the server sends exactly one `hello` message, then begins relaying discrete events. No high-rate frame, canvas, spectrum, or telemetry data is sent until the client subscribes to additional channels.
 
 **Server → Client: `hello`**
 
@@ -68,7 +68,7 @@ On connection the server sends exactly one `hello` message, then begins relaying
     "device_count": 3,
     "total_leds": 432
   },
-  "capabilities": ["frames", "spectrum", "events", "canvas", "screen_canvas",
+  "capabilities": ["frames", "spectrum", "events", "frame_events", "canvas", "screen_canvas",
                    "web_viewport_canvas", "metrics", "device_metrics",
                    "display_preview", "commands", "canvas_format_jpeg"],
   "subscriptions": ["events"]
@@ -81,7 +81,8 @@ The `subscriptions` field lists which channels are already active. Only `events`
 
 | Channel              | Data type | Description                                         |
 | -------------------- | --------- | --------------------------------------------------- |
-| `events`             | JSON      | HypercolorEvent bus relay — active by default       |
+| `events`             | JSON      | Discrete HypercolorEvent relay — active by default  |
+| `frame_events`       | JSON      | High-rate per-frame render timing diagnostics       |
 | `frames`             | Binary    | LED color frames per zone                           |
 | `spectrum`           | JSON      | Audio spectrum data                                 |
 | `canvas`             | Binary    | Rendered RGBA canvas stream                         |
@@ -182,7 +183,7 @@ The `id` field is client-assigned and echoed back so concurrent commands can be 
 
 ### `event`
 
-Relayed from the HypercolorEvent bus. Event names are snake_case derivations of the internal enum variants.
+Relayed from the HypercolorEvent bus. Event names are snake_case derivations of the internal enum variants. High-rate `frame_rendered` events are excluded from `events`; subscribe to `frame_events` only when raw per-frame timing is useful.
 
 ```json
 {

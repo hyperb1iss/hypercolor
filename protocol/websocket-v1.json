@@ -23,6 +23,11 @@
       "description": "Discrete daemon and render lifecycle events."
     },
     {
+      "name": "frame_events",
+      "kind": "json",
+      "description": "Raw per-frame render timing events for diagnostics."
+    },
+    {
       "name": "canvas",
       "kind": "binary",
       "default_fps": 15,
@@ -63,6 +68,7 @@
     "frames",
     "spectrum",
     "events",
+    "frame_events",
     "canvas",
     "screen_canvas",
     "web_viewport_canvas",

@@ -978,6 +978,7 @@ fn parse_channels_accepts_supported_channel() {
         "spectrum".to_owned(),
         "canvas".to_owned(),
         "screen_canvas".to_owned(),
+        "frame_events".to_owned(),
         "metrics".to_owned(),
         "device_metrics".to_owned(),
     ];
@@ -990,6 +991,7 @@ fn parse_channels_accepts_supported_channel() {
             WsChannel::Spectrum,
             WsChannel::Canvas,
             WsChannel::ScreenCanvas,
+            WsChannel::FrameEvents,
             WsChannel::Metrics,
             WsChannel::DeviceMetrics,
         ]
@@ -1182,7 +1184,7 @@ fn event_message_parts_serializes_active_scene_changed() {
 }
 
 #[test]
-fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
+fn frame_rendered_events_require_frame_events_even_with_metrics() {
     let channels = ChannelSet::from_channels(&[WsChannel::Events, WsChannel::Metrics]);
     let event = HypercolorEvent::FrameRendered {
         frame_number: 7,
@@ -1201,7 +1203,7 @@ fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
 }
 
 #[test]
-fn frame_rendered_events_are_suppressed_when_device_metrics_are_subscribed() {
+fn frame_rendered_events_require_frame_events_even_with_device_metrics() {
     let channels = ChannelSet::from_channels(&[WsChannel::Events, WsChannel::DeviceMetrics]);
     let event = HypercolorEvent::FrameRendered {
         frame_number: 7,
@@ -1220,8 +1222,27 @@ fn frame_rendered_events_are_suppressed_when_device_metrics_are_subscribed() {
 }
 
 #[test]
-fn frame_rendered_events_pass_through_for_event_only_clients() {
+fn frame_rendered_events_are_suppressed_for_event_only_clients() {
     let channels = ChannelSet::from_channels(&[WsChannel::Events]);
+    let event = HypercolorEvent::FrameRendered {
+        frame_number: 7,
+        timing: FrameTiming {
+            producer_us: 0,
+            composition_us: 0,
+            render_us: 0,
+            sample_us: 0,
+            push_us: 0,
+            total_us: 0,
+            budget_us: 16_666,
+        },
+    };
+
+    assert!(!should_relay_event(&event, channels));
+}
+
+#[test]
+fn frame_rendered_events_pass_through_for_frame_event_clients() {
+    let channels = ChannelSet::from_channels(&[WsChannel::FrameEvents]);
     let event = HypercolorEvent::FrameRendered {
         frame_number: 7,
         timing: FrameTiming {
@@ -1242,6 +1263,7 @@ fn frame_rendered_events_pass_through_for_event_only_clients() {
 fn ws_capabilities_include_commands() {
     let capabilities = ws_capabilities();
     assert!(capabilities.contains(&"events".to_owned()));
+    assert!(capabilities.contains(&"frame_events".to_owned()));
     assert!(capabilities.contains(&"frames".to_owned()));
     assert!(capabilities.contains(&"spectrum".to_owned()));
     assert!(capabilities.contains(&"canvas".to_owned()));

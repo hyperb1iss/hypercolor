@@ -21,6 +21,7 @@ pub(super) enum WsChannel {
     Frames,
     Spectrum,
     Events,
+    FrameEvents,
     Canvas,
     ScreenCanvas,
     WebViewportCanvas,
@@ -30,10 +31,11 @@ pub(super) enum WsChannel {
 }
 
 impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 9] = [
+    pub(super) const SUPPORTED: [Self; 10] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
+        Self::FrameEvents,
         Self::Canvas,
         Self::ScreenCanvas,
         Self::WebViewportCanvas,
@@ -47,6 +49,7 @@ impl WsChannel {
             Self::Frames => "frames",
             Self::Spectrum => "spectrum",
             Self::Events => "events",
+            Self::FrameEvents => "frame_events",
             Self::Canvas => "canvas",
             Self::ScreenCanvas => "screen_canvas",
             Self::WebViewportCanvas => "web_viewport_canvas",
@@ -61,6 +64,7 @@ impl WsChannel {
             "frames" => Some(Self::Frames),
             "spectrum" => Some(Self::Spectrum),
             "events" => Some(Self::Events),
+            "frame_events" => Some(Self::FrameEvents),
             "canvas" => Some(Self::Canvas),
             "screen_canvas" => Some(Self::ScreenCanvas),
             "web_viewport_canvas" => Some(Self::WebViewportCanvas),
@@ -80,12 +84,13 @@ impl WsChannel {
             Self::Frames => 1 << 0,
             Self::Spectrum => 1 << 1,
             Self::Events => 1 << 2,
-            Self::Canvas => 1 << 3,
-            Self::ScreenCanvas => 1 << 4,
-            Self::WebViewportCanvas => 1 << 5,
-            Self::Metrics => 1 << 6,
-            Self::DeviceMetrics => 1 << 7,
-            Self::DisplayPreview => 1 << 8,
+            Self::FrameEvents => 1 << 3,
+            Self::Canvas => 1 << 4,
+            Self::ScreenCanvas => 1 << 5,
+            Self::WebViewportCanvas => 1 << 6,
+            Self::Metrics => 1 << 7,
+            Self::DeviceMetrics => 1 << 8,
+            Self::DisplayPreview => 1 << 9,
         }
     }
 }
@@ -339,7 +344,7 @@ impl ChannelConfig {
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
                 WsChannel::DeviceMetrics => serde_json::to_value(&self.device_metrics),
                 WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
-                WsChannel::Events => continue,
+                WsChannel::Events | WsChannel::FrameEvents => continue,
             };
 
             if let Ok(json_value) = value {
@@ -1172,21 +1177,12 @@ pub(super) fn should_relay_event(
     event: &hypercolor_types::event::HypercolorEvent,
     channels: ChannelSet,
 ) -> bool {
-    if !channels.contains(WsChannel::Events) {
-        return false;
-    }
-
     if matches!(
         event,
         hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
-    ) && (channels.contains(WsChannel::Frames)
-        || channels.contains(WsChannel::Canvas)
-        || channels.contains(WsChannel::ScreenCanvas)
-        || channels.contains(WsChannel::Metrics)
-        || channels.contains(WsChannel::DeviceMetrics))
-    {
-        return false;
+    ) {
+        return channels.contains(WsChannel::FrameEvents);
     }
 
-    true
+    channels.contains(WsChannel::Events)
 }

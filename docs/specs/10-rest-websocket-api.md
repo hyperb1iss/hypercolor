@@ -3269,6 +3269,7 @@ On connection, the server immediately sends a `hello` message with a full state 
     "frames",
     "spectrum",
     "events",
+    "frame_events",
     "commands",
     "canvas",
     "metrics"
@@ -3372,7 +3373,8 @@ Clients control bandwidth by subscribing to specific channels. By default, only 
 | ---------- | --------- | ----------- | ---------------------------------------------------- |
 | `frames`   | Binary    | 30          | LED color data for all (or selected) zones           |
 | `spectrum` | Binary    | 30          | Audio FFT spectrum data                              |
-| `events`   | JSON      | N/A (push)  | System events (device, effect, profile changes)      |
+| `events`   | JSON      | N/A (push)  | Discrete events (device, effect, profile changes)    |
+| `frame_events` | JSON | N/A (push)  | High-rate per-frame render timing diagnostics        |
 | `canvas`   | Binary    | 15          | Raw legacy 320 by 200 canvas pixels (for UI preview) |
 | `metrics`  | JSON      | 1 Hz        | Performance metrics (FPS, latency, memory)           |
 
