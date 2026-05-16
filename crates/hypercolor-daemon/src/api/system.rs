@@ -16,7 +16,6 @@ use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::security;
 use crate::api::settings;
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
@@ -410,7 +409,7 @@ pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(ServerInfo {
         identity: state.server_identity.clone(),
         device_count,
-        auth_required: security::api_auth_required_from_env(),
+        auth_required: state.security_state.security_enabled(),
     })
 }
 

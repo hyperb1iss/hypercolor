@@ -88,8 +88,12 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 
     let requested_listen_targets = effective_bind_targets(&options, &config);
     let control_api_key_configured = api::security::control_api_key_configured_from_env();
-    let (listen_targets, fell_back_to_loopback) =
-        effective_startup_bind_targets(&options, &config, control_api_key_configured);
+    let (listen_targets, fell_back_to_loopback) = effective_startup_bind_targets(
+        &options,
+        &config,
+        control_api_key_configured,
+        config.network.allow_unauthenticated_remote_access,
+    );
     if fell_back_to_loopback {
         warn!(
             requested = %requested_listen_targets.join(", "),
@@ -119,7 +123,11 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 
     let binds = resolve_bind_targets(&listen_targets).await?;
     for bind in &binds {
-        validate_network_bind_auth(*bind, control_api_key_configured)?;
+        validate_network_bind_auth(
+            *bind,
+            control_api_key_configured,
+            config.network.allow_unauthenticated_remote_access,
+        )?;
     }
 
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
@@ -382,14 +390,17 @@ async fn serve_api_listeners(
 pub fn validate_network_bind_auth(
     bind: SocketAddr,
     control_api_key_configured: bool,
+    allow_unauthenticated_remote_access: bool,
 ) -> Result<()> {
-    if bind.ip().is_loopback() || control_api_key_configured {
+    if bind.ip().is_loopback() || control_api_key_configured || allow_unauthenticated_remote_access
+    {
         return Ok(());
     }
 
     bail!(
         "refusing to bind Hypercolor control API to {bind} without HYPERCOLOR_API_KEY; \
-         set HYPERCOLOR_API_KEY or bind to a loopback address"
+         set HYPERCOLOR_API_KEY, bind to a loopback address, or set \
+         network.allow_unauthenticated_remote_access = true"
     );
 }
 
@@ -431,9 +442,13 @@ pub fn effective_startup_bind_targets(
     options: &DaemonRunOptions,
     config: &HypercolorConfig,
     control_api_key_configured: bool,
+    allow_unauthenticated_remote_access: bool,
 ) -> (Vec<String>, bool) {
     let targets = effective_bind_targets(options, config);
-    if control_api_key_configured || has_explicit_bind_override(options) {
+    if control_api_key_configured
+        || allow_unauthenticated_remote_access
+        || has_explicit_bind_override(options)
+    {
         return (targets, false);
     }
 

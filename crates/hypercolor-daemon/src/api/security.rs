@@ -8,6 +8,7 @@
 //! require a control-tier key.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -20,6 +21,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::api::envelope::ApiError;
+use hypercolor_types::config::{HypercolorConfig, NetworkConfig};
 
 const RATE_WINDOW: Duration = Duration::from_mins(1);
 const READ_LIMIT_PER_MIN: u32 = 120;
@@ -35,6 +37,7 @@ const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
 #[derive(Clone)]
 pub struct SecurityState {
     auth: AuthConfig,
+    network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
@@ -92,6 +95,7 @@ impl SecurityState {
         if cfg!(test) {
             return Self {
                 auth: AuthConfig::default(),
+                network: NetworkAccessPolicy::default(),
                 rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             };
         }
@@ -103,8 +107,16 @@ impl SecurityState {
                 control_key,
                 read_key,
             },
+            network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
+    }
+
+    #[must_use]
+    pub fn from_config(config: &HypercolorConfig) -> Self {
+        let mut state = Self::from_env();
+        state.network = NetworkAccessPolicy::from_config(&config.network);
+        state
     }
 
     pub(crate) fn security_enabled(&self) -> bool {
@@ -140,6 +152,15 @@ impl SecurityState {
                 control_key: control_key.map(ToOwned::to_owned),
                 read_key: read_key.map(ToOwned::to_owned),
             },
+            network: NetworkAccessPolicy::default(),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+        }
+    }
+
+    pub(crate) fn with_network_config(network: NetworkConfig) -> Self {
+        Self {
+            auth: AuthConfig::default(),
+            network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
     }
@@ -149,6 +170,100 @@ impl SecurityState {
 struct AuthConfig {
     control_key: Option<String>,
     read_key: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct NetworkAccessPolicy {
+    allowed_clients: Vec<ClientAddressRule>,
+    invalid_rules: Vec<String>,
+}
+
+impl NetworkAccessPolicy {
+    fn from_config(config: &NetworkConfig) -> Self {
+        let mut allowed_clients = Vec::new();
+        let mut invalid_rules = Vec::new();
+
+        for raw_rule in &config.allowed_clients {
+            let trimmed = raw_rule.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match ClientAddressRule::parse(trimmed) {
+                Some(rule) => allowed_clients.push(rule),
+                None => invalid_rules.push(trimmed.to_owned()),
+            }
+        }
+
+        Self {
+            allowed_clients,
+            invalid_rules,
+        }
+    }
+
+    fn reject_request(&self, request: &Request<Body>) -> Option<Response> {
+        if self.allowed_clients.is_empty() && self.invalid_rules.is_empty() {
+            return None;
+        }
+
+        let Some(client_ip) = client_ip(request) else {
+            return Some(ApiError::forbidden(
+                "Client IP is required by network.allowed_clients",
+            ));
+        };
+
+        if client_ip.is_loopback() {
+            return None;
+        }
+
+        if !self.invalid_rules.is_empty() {
+            return Some(ApiError::forbidden_with_details(
+                "Invalid network.allowed_clients entries; remote clients are blocked",
+                json!({ "invalid_rules": &self.invalid_rules }),
+            ));
+        }
+
+        if self
+            .allowed_clients
+            .iter()
+            .any(|rule| rule.matches(client_ip))
+        {
+            return None;
+        }
+
+        Some(ApiError::forbidden_with_details(
+            "Client IP is not allowed by network.allowed_clients",
+            json!({ "client_ip": client_ip.to_string() }),
+        ))
+    }
+}
+
+#[derive(Clone)]
+enum ClientAddressRule {
+    Exact(IpAddr),
+    Cidr { network: IpAddr, prefix: u8 },
+}
+
+impl ClientAddressRule {
+    fn parse(raw: &str) -> Option<Self> {
+        if let Some((network, prefix)) = raw.split_once('/') {
+            let network = network.parse::<IpAddr>().ok()?;
+            let prefix = prefix.parse::<u8>().ok()?;
+            if cidr_prefix_valid(network, prefix) {
+                return Some(Self::Cidr { network, prefix });
+            }
+            return None;
+        }
+
+        raw.parse::<IpAddr>().ok().map(Self::Exact)
+    }
+
+    fn matches(&self, client: IpAddr) -> bool {
+        match *self {
+            Self::Exact(ip) => ip == client,
+            Self::Cidr { network, prefix } => cidr_contains(network, prefix, client),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +397,10 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
+
+    if let Some(response) = state.network.reject_request(&request) {
+        return response;
+    }
 
     if is_exempt_path(request.uri().path()) {
         request
@@ -490,19 +609,24 @@ fn allows_query_token(request: &Request<Body>) -> bool {
 }
 
 fn client_identity(request: &Request<Body>) -> String {
+    client_ip(request).map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
+}
+
+fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     if let Some(ConnectInfo(socket_addr)) = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
     {
         if socket_addr.ip().is_loopback()
             && let Some(forwarded_client) = forwarded_client_ip(request)
+            && let Ok(forwarded_ip) = forwarded_client.parse::<IpAddr>()
         {
-            return forwarded_client;
+            return Some(forwarded_ip);
         }
-        return socket_addr.ip().to_string();
+        return Some(socket_addr.ip());
     }
 
-    "unknown".to_owned()
+    None
 }
 
 fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
@@ -560,6 +684,45 @@ fn unix_now_secs() -> u64 {
         .as_secs()
 }
 
+fn cidr_prefix_valid(network: IpAddr, prefix: u8) -> bool {
+    match network {
+        IpAddr::V4(_) => prefix <= 32,
+        IpAddr::V6(_) => prefix <= 128,
+    }
+}
+
+fn cidr_contains(network: IpAddr, prefix: u8, client: IpAddr) -> bool {
+    match (network, client) {
+        (IpAddr::V4(network), IpAddr::V4(client)) => {
+            masked_v4(network, prefix) == masked_v4(client, prefix)
+        }
+        (IpAddr::V6(network), IpAddr::V6(client)) => {
+            masked_v6(network, prefix) == masked_v6(client, prefix)
+        }
+        _ => false,
+    }
+}
+
+fn masked_v4(address: Ipv4Addr, prefix: u8) -> u32 {
+    let bits = u32::from(address);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    bits & mask
+}
+
+fn masked_v6(address: Ipv6Addr, prefix: u8) -> u128 {
+    let bits = u128::from_be_bytes(address.octets());
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    bits & mask
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -572,6 +735,8 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
+    use hypercolor_types::config::NetworkConfig;
+
     use super::{SecurityState, enforce_security, normalize_api_key};
 
     const CONTROL_KEY: &str = "hc_ak_control_test";
@@ -579,7 +744,10 @@ mod tests {
 
     fn secured_test_router() -> Router {
         let state = SecurityState::with_keys(Some(CONTROL_KEY), Some(READ_KEY));
+        router_with_security_state(state)
+    }
 
+    fn router_with_security_state(state: SecurityState) -> Router {
         Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
             .route("/api/v1/status", get(|| async { StatusCode::OK }))
@@ -597,6 +765,13 @@ mod tests {
                 state,
                 enforce_security,
             ))
+    }
+
+    fn allowlist_test_router(allowed_clients: Vec<String>) -> Router {
+        router_with_security_state(SecurityState::with_network_config(NetworkConfig {
+            allowed_clients,
+            ..NetworkConfig::default()
+        }))
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
@@ -756,6 +931,44 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn network_allowlist_allows_configured_cidr() {
+        let app = allowlist_test_router(vec!["192.168.1.0/24".to_owned()]);
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42)),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn network_allowlist_rejects_clients_outside_configured_cidr() {
+        let app = allowlist_test_router(vec!["192.168.1.0/24".to_owned()]);
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 2, 42)),
+                2042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "forbidden");
     }
 
     #[tokio::test]

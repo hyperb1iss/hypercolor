@@ -31,6 +31,8 @@ log_level = "info"          # trace, debug, info, warn, error
 
 [network]
 remote_access = false       # true also opens the default bind to the LAN
+allow_unauthenticated_remote_access = false
+allowed_clients = []        # optional exact IPs/CIDR ranges, e.g. ["192.168.1.0/24"]
 
 [mcp]
 enabled = true              # Enable MCP server for AI integration
@@ -68,6 +70,10 @@ curl -H "Authorization: Bearer <your-key>" http://localhost:9420/api/v1/status
 ```
 
 The CLI can pass it via `--api-key` or the same `HYPERCOLOR_API_KEY` environment variable.
+
+If `remote_access` is enabled without a control API key, Hypercolor falls back to
+loopback unless `allow_unauthenticated_remote_access = true` is also set. Use
+`allowed_clients` to restrict network callers by exact IP or CIDR range.
 
 ## Profile System
 

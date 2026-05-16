@@ -658,6 +658,12 @@ pub struct NetworkConfig {
     pub remote_access: bool,
 
     #[serde(default)]
+    pub allow_unauthenticated_remote_access: bool,
+
+    #[serde(default)]
+    pub allowed_clients: Vec<String>,
+
+    #[serde(default)]
     pub instance_name: Option<String>,
 }
 
@@ -666,6 +672,8 @@ impl Default for NetworkConfig {
         Self {
             mdns_publish: defaults::bool_true(),
             remote_access: defaults::remote_access(),
+            allow_unauthenticated_remote_access: false,
+            allowed_clients: Vec::new(),
             instance_name: None,
         }
     }

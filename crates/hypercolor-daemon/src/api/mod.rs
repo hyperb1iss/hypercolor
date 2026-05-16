@@ -526,7 +526,7 @@ impl AppState {
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
-            security_state: security::SecurityState::from_env(),
+            security_state: security::SecurityState::from_config(&HypercolorConfig::default()),
             #[cfg(feature = "cloud")]
             cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "cloud")]
@@ -616,7 +616,7 @@ impl AppState {
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
-            security_state: security::SecurityState::from_env(),
+            security_state: security::SecurityState::from_config(&daemon.config_manager.get()),
             #[cfg(feature = "cloud")]
             cloud_login_sessions: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "cloud")]

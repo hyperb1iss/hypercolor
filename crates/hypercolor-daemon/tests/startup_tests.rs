@@ -536,7 +536,7 @@ fn network_bind_auth_allows_localhost_without_control_key() {
         .parse::<SocketAddr>()
         .expect("default bind target should parse as a socket address");
 
-    validate_network_bind_auth(bind, false).expect("localhost should not require API key");
+    validate_network_bind_auth(bind, false, false).expect("localhost should not require API key");
 }
 
 #[test]
@@ -545,7 +545,8 @@ fn network_bind_auth_allows_ipv6_loopback_without_control_key() {
         .parse::<SocketAddr>()
         .expect("IPv6 loopback bind target should parse as a socket address");
 
-    validate_network_bind_auth(bind, false).expect("IPv6 localhost should not require API key");
+    validate_network_bind_auth(bind, false, false)
+        .expect("IPv6 localhost should not require API key");
 }
 
 #[test]
@@ -560,7 +561,7 @@ fn network_bind_auth_rejects_listen_all_without_control_key() {
         .expect("listen-all bind target should parse as a socket address");
 
     let error =
-        validate_network_bind_auth(bind, false).expect_err("listen-all should require auth");
+        validate_network_bind_auth(bind, false, false).expect_err("listen-all should require auth");
     let message = error.to_string();
     assert!(message.contains("0.0.0.0:9420"));
     assert!(message.contains("HYPERCOLOR_API_KEY"));
@@ -572,7 +573,7 @@ fn network_bind_auth_rejects_ipv6_all_without_control_key() {
         .parse::<SocketAddr>()
         .expect("IPv6 all-interface bind target should parse as a socket address");
 
-    let error = validate_network_bind_auth(bind, false)
+    let error = validate_network_bind_auth(bind, false, false)
         .expect_err("IPv6 all-interface bind should require auth");
     let message = error.to_string();
     assert!(message.contains("[::]:9420"));
@@ -588,8 +589,8 @@ fn network_bind_auth_rejects_remote_access_without_control_key() {
         .parse::<SocketAddr>()
         .expect("remote-access bind target should parse as a socket address");
 
-    let error =
-        validate_network_bind_auth(bind, false).expect_err("remote access should require auth");
+    let error = validate_network_bind_auth(bind, false, false)
+        .expect_err("remote access should require auth");
     assert!(error.to_string().contains("HYPERCOLOR_API_KEY"));
 }
 
@@ -604,7 +605,18 @@ fn network_bind_auth_allows_network_bind_with_control_key() {
         .parse::<SocketAddr>()
         .expect("custom bind target should parse as a socket address");
 
-    validate_network_bind_auth(bind, true).expect("control API key should allow network bind");
+    validate_network_bind_auth(bind, true, false)
+        .expect("control API key should allow network bind");
+}
+
+#[test]
+fn network_bind_auth_allows_network_bind_with_explicit_unauthenticated_access() {
+    let bind = "0.0.0.0:9420"
+        .parse::<SocketAddr>()
+        .expect("all-interface bind target should parse as a socket address");
+
+    validate_network_bind_auth(bind, false, true)
+        .expect("explicit unauthenticated access should allow network bind");
 }
 
 #[test]
@@ -613,7 +625,7 @@ fn startup_bind_targets_fall_back_to_loopback_for_config_remote_access_without_c
     config.network.remote_access = true;
     let options = DaemonRunOptions::default();
 
-    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false);
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false, false);
 
     assert!(fell_back);
     assert_eq!(targets, vec!["127.0.0.1:9420", "[::1]:9420"]);
@@ -625,7 +637,20 @@ fn startup_bind_targets_keep_config_remote_access_with_control_key() {
     config.network.remote_access = true;
     let options = DaemonRunOptions::default();
 
-    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, true);
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, true, false);
+
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
+}
+
+#[test]
+fn startup_bind_targets_keep_config_remote_access_with_explicit_unauthenticated_access() {
+    let mut config = default_config();
+    config.network.remote_access = true;
+    config.network.allow_unauthenticated_remote_access = true;
+    let options = DaemonRunOptions::default();
+
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false, true);
 
     assert!(!fell_back);
     assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
@@ -639,7 +664,7 @@ fn startup_bind_targets_keep_explicit_listen_all_for_auth_validation() {
         ..DaemonRunOptions::default()
     };
 
-    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false);
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false, false);
 
     assert!(!fell_back);
     assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);

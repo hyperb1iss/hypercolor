@@ -99,6 +99,8 @@ fn network_defaults_match_spec() {
     let n = NetworkConfig::default();
     assert!(n.mdns_publish);
     assert!(!n.remote_access);
+    assert!(!n.allow_unauthenticated_remote_access);
+    assert!(n.allowed_clients.is_empty());
     assert_eq!(n.instance_name, None);
 }
 
@@ -238,6 +240,8 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
+    assert!(!restored.network.allow_unauthenticated_remote_access);
+    assert!(restored.network.allowed_clients.is_empty());
     assert!(!restored.cloud.enabled);
     assert_eq!(restored.cloud.base_url, "https://api.hypercolor.lighting");
     assert!(restored.drivers.is_empty());
@@ -269,6 +273,8 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
+    assert!(!config.network.allow_unauthenticated_remote_access);
+    assert!(config.network.allowed_clients.is_empty());
     assert!(!config.cloud.enabled);
     assert_eq!(config.cloud.base_url, "https://api.hypercolor.lighting");
     assert!(config.cloud.connect_on_start);
@@ -394,6 +400,8 @@ fft_size = 2048
 [network]
 mdns_publish = false
 remote_access = true
+allow_unauthenticated_remote_access = true
+allowed_clients = ["192.168.1.0/24", "fd00::/8"]
 instance_name = "desk-pc"
 
 [cloud]
@@ -421,6 +429,11 @@ dedup_threshold = 0
     assert_eq!(config.audio.fft_size, 2048);
     assert!(!config.network.mdns_publish);
     assert!(config.network.remote_access);
+    assert!(config.network.allow_unauthenticated_remote_access);
+    assert_eq!(
+        config.network.allowed_clients,
+        vec!["192.168.1.0/24".to_owned(), "fd00::/8".to_owned()]
+    );
     assert_eq!(config.network.instance_name.as_deref(), Some("desk-pc"));
     assert!(config.cloud.enabled);
     assert_eq!(

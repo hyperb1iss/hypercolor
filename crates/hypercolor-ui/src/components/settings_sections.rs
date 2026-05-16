@@ -396,6 +396,14 @@ pub fn NetworkSection(
     let port = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.port)));
     let remote_access =
         Signal::derive(move || read_config(config, |cfg| cfg.network.remote_access));
+    let allow_unauthenticated_remote_access = Signal::derive(move || {
+        read_config(config, |cfg| {
+            cfg.network.allow_unauthenticated_remote_access
+        })
+    });
+    let allowed_clients = Signal::derive(move || {
+        read_config(config, |cfg| cfg.network.allowed_clients.join(", "))
+    });
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
     let mcp_enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
     let scope_options = vec![
@@ -448,6 +456,16 @@ pub fn NetworkSection(
         ));
         on_change.run((key, value));
     });
+    let allowed_clients_change = Callback::new(move |(key, value): (String, serde_json::Value)| {
+        let clients = value.as_str().map_or_else(Vec::new, |raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        });
+        on_change.run((key, serde_json::json!(clients)));
+    });
 
     view! {
         <section id="section-network" class="pt-5 pb-3 space-y-0">
@@ -482,6 +500,23 @@ pub fn NetworkSection(
                 restart_required=true
             />
             <SettingToggle
+                label="Allow Without API Key"
+                description="Permit remote clients when no control API key is configured"
+                key="network.allow_unauthenticated_remote_access"
+                value=allow_unauthenticated_remote_access
+                on_change=on_change
+                restart_required=true
+            />
+            <SettingTextInput
+                label="Allowed Clients"
+                description="Exact IPs or CIDR ranges, comma-separated"
+                key="network.allowed_clients"
+                value=allowed_clients
+                on_change=allowed_clients_change
+                restart_required=true
+                placeholder="192.168.1.0/24"
+            />
+            <SettingToggle
                 label="Open Browser on Start"
                 description="Automatically open the web UI when the daemon starts"
                 key="web.open_browser"
@@ -499,6 +534,7 @@ pub fn NetworkSection(
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
                 for key in &[
                     "daemon.listen_address", "daemon.port", "network.remote_access",
+                    "network.allow_unauthenticated_remote_access", "network.allowed_clients",
                     "web.open_browser", "mcp.enabled",
                 ] {
                     on_reset.run(key.to_string());
