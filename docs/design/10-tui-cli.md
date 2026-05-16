@@ -32,7 +32,7 @@ The TUI should feel like you're looking through a window into your lighting rig.
 - **Alive, not static.** Every view has motion. The LED preview strip is always updating. The spectrum analyzer is always listening. Even idle screens shimmer with subtle TachyonFX transitions.
 - **Keyboard-first, mouse-aware.** Vim bindings for power users, arrow keys for everyone else. No interaction requires a mouse, but mouse clicks and scrolling work where they make sense.
 - **Information-dense, not cluttered.** Think htop's data density meets neomutt's clean hierarchy. Every pixel of terminal real estate earns its place.
-- **SSH-native.** The TUI connects to the daemon over Unix socket. No GPU, no display server, no X11 forwarding. SSH into your rig from your phone and switch effects.
+- **SSH-native.** The TUI connects to the daemon over HTTP on `:9420`. No GPU, no display server, no X11 forwarding. SSH into your rig from your phone and switch effects.
 - **SilkCircuit identity.** The TUI _is_ SilkCircuit Neon. Electric Purple accents, Neon Cyan interactions, Coral data points. The palette isn't decoration -- it's wayfinding.
 
 ### The Half-Block LED Preview
@@ -453,9 +453,9 @@ Daemon configuration and TUI preferences.
 │      │ │                                                                                  │  │
 │      │ │  ── Network ────────────────────────────────────────────────────────────         │  │
 │      │ │                                                                                  │  │
-│      │ │   Listen Address     0.0.0.0                                                     │  │
-│      │ │   WebSocket        /run/hypercolor/hypercolor.sock                             │  │
-│      │ │   WebSocket Port     9421                                                        │  │
+│      │ │   Daemon Address     127.0.0.1:9420                                               │  │
+│      │ │   WebSocket URL    ws://127.0.0.1:9420/api/v1/ws                               │  │
+│      │ │   WebSocket Port     9420                                                        │  │
 │      │ │                                                                                  │  │
 │      │ └──────────────────────────────────────────────────────────────────────────────────┘  │
 ├──────┴────────────────┬──────────────────────────────────────────────────────────────────────┤
@@ -516,7 +516,7 @@ For development and troubleshooting. Shows the internals.
 - **FPS history** -- sparkline graph over the last 60 seconds
 - **Per-device latency** -- transport-level timing for each output backend
 - **Event log** -- scrollable log of `HypercolorEvent` stream with timestamps
-- **IPC traffic** -- raw request/response pairs on the Unix socket (for TUI/CLI development)
+- **IPC traffic** -- raw HTTP request/response pairs to the daemon REST API (for TUI/CLI development)
 
 ---
 
@@ -632,7 +632,7 @@ Mouse events are handled via crossterm's mouse capture. The TUI works perfectly 
 
 ## 5. CLI Commands
 
-The CLI is a standalone binary (`hypercolor`) using clap's derive API. Every command communicates with the daemon over Unix socket (or TCP for remote connections).
+The CLI is a standalone binary (`hypercolor`) using clap's derive API. Every command communicates with the daemon over HTTP (`reqwest` client, `http://localhost:9420` by default).
 
 ### Command Tree
 
@@ -743,9 +743,9 @@ pub struct Cli {
     #[arg(long, global = true, env = "HYPERCOLOR_HOST")]
     pub host: Option<String>,
 
-    /// Unix socket path
-    #[arg(long, global = true, env = "HYPERCOLOR_SOCKET")]
-    pub socket: Option<String>,
+    /// Daemon port (used with HYPERCOLOR_HOST)
+    #[arg(long, global = true, env = "HYPERCOLOR_PORT", default_value = "9420")]
+    pub port: Option<u16>,
 
     /// Output format
     #[arg(long, global = true, default_value = "text")]
@@ -972,7 +972,7 @@ Errors use the Error Red palette with clear, actionable messages:
 
 ```
   ✗ Cannot connect to daemon
-    Socket /run/hypercolor/hypercolor.sock does not exist.
+    http://127.0.0.1:9420 — connection refused.
     Start the daemon with: hypercolor daemon start
 ```
 
@@ -1028,8 +1028,8 @@ Completions include:
 
 | Variable            | Default                            | Purpose                                              |
 | ------------------- | ---------------------------------- | ---------------------------------------------------- |
-| `HYPERCOLOR_SOCKET` | `/run/hypercolor/hypercolor.sock`  | Unix socket path                                     |
-| `HYPERCOLOR_HOST`   | (none)                             | Remote daemon address (overrides socket)             |
+| `HYPERCOLOR_HOST`   | `127.0.0.1`                        | Daemon host address                                  |
+| `HYPERCOLOR_PORT`   | `9420`                             | Daemon port                                          |
 | `HYPERCOLOR_CONFIG` | `~/.config/hypercolor/config.toml` | Config file path                                     |
 | `HYPERCOLOR_COLOR`  | `auto`                             | Color output: `auto`, `always`, `never`              |
 | `NO_COLOR`          | (none)                             | Disable color when set (any value)                   |
@@ -1118,19 +1118,19 @@ vim_mode = true             # vim keybindings (vs arrow-only)
 
 ### Architecture
 
-The TUI is a client. The daemon is the server. They communicate over a Unix socket (local) or TCP socket (remote). The TUI never touches hardware directly -- it sends commands and receives state updates.
+The TUI is a client. The daemon is the server. They communicate over HTTP and WebSocket on `:9420`. The TUI never touches hardware directly -- it sends commands and receives state updates.
 
 ```
 Local:
-  hypercolor-tui ──── /run/hypercolor/hypercolor.sock ──── hypercolor-daemon
+  hypercolor-tui ──── http://127.0.0.1:9420 ──── hypercolor-daemon
 
 Remote (SSH):
   ssh user@desktop "hypercolor tui"
-  └─ hypercolor-tui ── Unix socket ── hypercolor-daemon (on desktop)
+  └─ hypercolor-tui ── http://127.0.0.1:9420 ── hypercolor-daemon (on desktop)
 
-Remote (TCP):
+Remote (TCP, direct):
   hypercolor tui --host 192.168.1.42:9420
-  └─ hypercolor-tui ── TCP ── hypercolor-daemon (on 192.168.1.42)
+  └─ hypercolor-tui ── http://192.168.1.42:9420 ── hypercolor-daemon
 ```
 
 ### SSH Usage
@@ -1211,11 +1211,11 @@ export HYPERCOLOR_HOST=192.168.1.100:9420
 hypercolor status
 ```
 
-The daemon's network listener is disabled by default (Unix socket only). Enable in config:
+The daemon binds `127.0.0.1:9420` by default. To allow remote connections, configure a broader listen address:
 
 ```toml
 [daemon.network]
-listen = "0.0.0.0:9420"              # TCP listener for remote CLI/TUI
+listen = "0.0.0.0:9420"              # Accept connections from the local network
 auth_token = "..."                    # Required for network connections
 tls = false                           # TLS for production deployments
 ```
@@ -1488,24 +1488,20 @@ Custom Ratatui widgets built for Hypercolor:
 | `FpsGraph`     | Sparkline-style FPS history over time                        | `widgets/fps_graph.rs`     |
 | `BeatPulse`    | Animated beat indicator dots                                 | `widgets/beat_pulse.rs`    |
 
-## Appendix B: IPC Protocol
+## Appendix B: Transport Protocol
 
-TUI/CLI communicate with the daemon over Unix socket using a simple framed JSON protocol:
-
-```
-Request:  { "id": 1, "method": "set_effect", "params": { "name": "Rainbow Wave", "speed": 65 } }
-Response: { "id": 1, "ok": true, "result": { "effect": "Rainbow Wave", "active": true } }
-
-Stream:   { "type": "frame", "data": { "fps": 60.0, "leds": [...] } }
-Stream:   { "type": "spectrum", "data": { "bins": [...], "level": 0.72, "beat": true } }
-Stream:   { "type": "event", "data": { "kind": "device_connected", "device": "WLED Strip" } }
-```
-
-Request/response pairs use incrementing IDs for correlation. Streams are server-pushed after subscribing:
+TUI/CLI communicate with the daemon over HTTP REST and WebSocket on `:9420`. The CLI uses `reqwest` for one-shot REST calls. The TUI upgrades to a WebSocket connection (`/api/v1/ws`) for real-time state pushes.
 
 ```
-Subscribe: { "id": 2, "method": "subscribe", "params": { "channels": ["frame", "spectrum", "events"] } }
+REST request:   POST /api/v1/effects/rainbow-wave/apply
+REST response:  { "data": { "effect": "Rainbow Wave", "active": true }, "meta": { ... } }
+
+WS stream:  { "type": "frame",    "data": { "fps": 60.0, "leds": [...] } }
+WS stream:  { "type": "spectrum", "data": { "bins": [...], "level": 0.72, "beat": true } }
+WS stream:  { "type": "event",    "data": { "kind": "device_connected", "device": "WLED Strip" } }
 ```
+
+WebSocket messages are server-pushed after the client connects. All responses follow the standard envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 
 Frame data is sent at the TUI's requested rate (default 30fps), not the daemon's render rate (60fps). The daemon decimates frames to match the client's consumption rate.
 

@@ -4,13 +4,22 @@
 
 ---
 
+> **Roadmap document — not yet implemented.**
+> The D-Bus service (`tech.hyperbliss.hypercolor1`), Unix socket IPC, and tray-over-D-Bus
+> architecture described here are the **planned** desktop integration design.
+> What ships today: the daemon exposes only REST + WebSocket + MCP on `:9420`, and the
+> system tray applet (`hypercolor-tray`) communicates with the daemon over REST HTTP.
+> The design below is preserved as the specification for the future DE integration layer.
+
+---
+
 ## Overview
 
 Linux isn't one desktop -- it's a constellation. GNOME, KDE Plasma, Hyprland, sway, i3, COSMIC, and countless others each have their own integration patterns, IPC mechanisms, and user expectations. Hypercolor must feel "installed" on all of them -- not like a web app that happens to run in the background.
 
-The daemon (`hypercolor-daemon`) is the central nervous system. It exposes a D-Bus interface (`tech.hyperbliss.hypercolor1`), runs as a systemd user service, and speaks XDG standards for cross-desktop compatibility. Per-DE integrations layer on top: GNOME Shell extensions, KDE Plasma widgets, Waybar modules, i3blocks scripts, and COSMIC applets. Each integration is a thin client that talks to the daemon over D-Bus.
+The daemon (`hypercolor-daemon`) is the central nervous system. It runs as a systemd user service and speaks XDG standards for cross-desktop compatibility. Per-DE integrations layer on top: GNOME Shell extensions, KDE Plasma widgets, Waybar modules, i3blocks scripts, and COSMIC applets.
 
-**Design principle:** The daemon is desktop-agnostic. All desktop-specific code lives in separate packages (extensions, widgets, modules) that communicate exclusively through D-Bus and CLI. No GNOME code in the daemon. No KDE code in the daemon. Clean separation.
+**Design principle:** The daemon is desktop-agnostic. All desktop-specific code lives in separate packages (extensions, widgets, modules). No GNOME code in the daemon. No KDE code in the daemon. Clean separation.
 
 ---
 

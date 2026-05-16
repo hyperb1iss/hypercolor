@@ -45,7 +45,7 @@ hypercolor (Apache-2.0)
 - **Maximum adoption.** MIT is the most recognized permissive license. Apache-2.0 adds explicit patent grants -- critical for a project that touches hardware protocols and USB HID. Dual licensing lets downstream consumers pick whichever fits their needs.
 - **Corporate-friendly.** Hardware manufacturers and commercial integrators can embed Hypercolor without legal anxiety. This matters for the partnership strategy (Section 5).
 - **Community-compatible.** Contributors don't face license friction. No CLA required for simple contributions -- the inbound=outbound principle applies.
-- **GPL isolation is architectural, not philosophical.** The `openrgb2` crate is GPL-2.0. Rather than debating license compatibility, we run it as a separate process (`hypercolor-openrgb-bridge`) communicating over gRPC/Unix socket. Clean boundary. No contamination. OpenRGB users get full functionality; the core engine stays permissive.
+- **GPL isolation is architectural, not philosophical.** The `openrgb2` crate is GPL-2.0. The intended isolation mechanism was a separate process communicating over gRPC. That specific bridge (`hypercolor-openrgb-bridge`) was abandoned in 2026-03; if OpenRGB integration is revived, the gRPC process bridge pattern from doc 09 provides the correct isolation mechanism.
 
 **MPL-2.0 (Servo):** File-level copyleft. Only modified Servo source files carry MPL obligations. Our wrapper code, our effect engine code, our spatial sampler -- all Apache-2.0. The Servo integration is a dependency, not a derivative work of our codebase.
 
@@ -893,9 +893,9 @@ No other project offers this combination:
 
 4. **Rust performance + safety.** 60fps render loop, zero-copy frame delivery, safe USB HID access, no GC pauses, no Python GIL.
 
-5. **Daemon-first architecture.** Runs headless on a server, NAS, or Raspberry Pi. Control via web UI, TUI over SSH, CLI scripts, D-Bus, or REST API. No GUI required.
+5. **Daemon-first architecture.** Runs headless on a server, NAS, or Raspberry Pi. Control via web UI, TUI over SSH, CLI scripts, or REST API on `:9420`. No GUI required.
 
-6. **Smart home integration.** Home Assistant, MQTT, D-Bus. Your RGB is part of your home automation, not a standalone island.
+6. **Smart home integration.** Home Assistant, MQTT, WebSocket events. Your RGB is part of your home automation, not a standalone island.
 
 7. **Founded by CyanogenMod's creator.** Not just another weekend project. Built by someone who has shipped open-source platform software to millions of devices.
 
@@ -965,8 +965,8 @@ docs.hypercolor.dev (mdBook)
 ├── API Reference
 │   ├── REST API (OpenAPI/Swagger)
 │   ├── WebSocket Protocol
-│   ├── D-Bus Interface
-│   └── WebSocket Protocol
+│   ├── MCP Tools Reference
+│   └── Effect SDK Reference
 │
 └── Community
     ├── Contributing (CONTRIBUTING.md)

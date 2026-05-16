@@ -436,18 +436,11 @@ When devices are found, the user sees them immediately — both in the UI and as
 └──────────────────────────────────────────┘
 ```
 
-**D-Bus notification (desktop integration):**
+**Desktop notification (planned — D-Bus service not yet implemented):**
 
-```rust
-// Emit desktop notification via D-Bus
-fn notify_discovery(count: usize, device_names: &[String]) {
-    let summary = format!("Hypercolor: Found {} new device{}", count,
-        if count == 1 { "" } else { "s" });
-    let body = device_names.join("\n");
-    // org.freedesktop.Notifications.Notify
-    dbus_notify(&summary, &body, "hypercolor-device-found");
-}
-```
+The daemon will emit a desktop notification via `org.freedesktop.Notifications` when
+device discovery completes. Today the discovery event is broadcast over the WebSocket
+connection (`/api/v1/ws`) and the web UI displays it inline.
 
 **Physical confirmation:** Each newly discovered device gets a brief cyan flash (the SilkCircuit accent color `#80ffea`) to visually confirm "yes, that device is connected and responsive."
 
@@ -774,7 +767,7 @@ Linux USB device access is the #1 reason onboarding fails. Hypercolor must handl
 | i2c bus (`/dev/i2c-*`)           | root only          | Read + Write (SMBus RGB)     | udev rule + kernel module |
 | PipeWire audio capture           | User session       | Capture monitor source       | PipeWire permission grant |
 | Network sockets (UDP/TCP)        | User               | Outbound to WLED/Hue/OpenRGB | No action needed          |
-| D-Bus session bus                | User session       | Publish service interface    | No action needed          |
+| D-Bus session bus                | User session       | Subscribe to logind/screensaver signals (client only) | No action needed |
 
 ### 4.2 udev Rules
 
@@ -883,7 +876,7 @@ Hypercolor Permission Check
   i2c bus access (/dev/i2c-*)        ▲ No udev rule
   PipeWire audio capture             ● OK
   Network (UDP/TCP outbound)         ● OK
-  D-Bus session bus                  ● OK
+  D-Bus (logind/screensaver client)  ● OK
 ───────────────────────────────────────────────
   User groups: plugdev ● i2c ▲
 
@@ -1816,7 +1809,7 @@ for backend in &mut self.backends {
 
 ### 8.7 Notification Behavior
 
-| Event                   | Web UI                              | Desktop (D-Bus)          | TUI                |
+| Event                   | Web UI                              | Desktop (planned)        | TUI                |
 | ----------------------- | ----------------------------------- | ------------------------ | ------------------ |
 | Device connected        | Toast: "PrismRGB Prism 8 connected" | Notification bubble      | Status bar update  |
 | Device disconnected     | Toast: "WLED Kitchen offline"       | Notification bubble      | Status bar update  |

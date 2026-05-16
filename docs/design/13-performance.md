@@ -142,8 +142,7 @@ model is:
 │    - Render thread runtime (2 workers)                            │
 │    - Axum web server + WebSocket streaming                        │
 │    - Device backend I/O (TCP for OpenRGB, UDP for WLED/DDP)       │
-│    - D-Bus service (zbus)                                         │
-│    - Unix socket IPC (TUI/CLI connections)                        │
+│    - zbus client (logind/screensaver signals; no service registered)│
 │    - mDNS discovery                                               │
 │    - Configuration file watching                                  │
 │                                                                   │
@@ -1084,8 +1083,7 @@ At 60fps with multiple device backends, file descriptor hygiene is critical:
 | UDP sockets (DDP, E1.31)  | 1 per network target      | Held while connected     |
 | TCP connections (OpenRGB) | 1 per OpenRGB server      | Reconnect on error       |
 | DTLS sessions (Hue)       | 1 per Hue bridge          | Reconnect on timeout     |
-| Unix socket (IPC)         | 1 listener + 1 per client | Closed on disconnect     |
-| TCP listener (Axum)       | 1 + 1 per HTTP connection | HTTP keep-alive timeout  |
+| TCP listener (Axum, :9420)| 1 + 1 per HTTP connection | HTTP keep-alive timeout  |
 | PipeWire                  | 2-3 (screen capture)      | Held while capturing     |
 | cpal audio                | 1-2 (ALSA/PipeWire)       | Held while running       |
 | inotify (config watch)    | 1                         | Held for daemon lifetime |

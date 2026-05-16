@@ -2,7 +2,7 @@
 
 ## Current State
 
-Hypercolor supports **~160 devices** across 11 driver families spanning USB and network:
+Hypercolor supports **~160 devices** across 13 driver families spanning USB and network:
 
 ### USB Drivers (hypercolor-hal)
 
@@ -14,16 +14,18 @@ Hypercolor supports **~160 devices** across 11 driver families spanning USB and 
 | Lian Li        | 10      | Ene6k77, TlFan, LegacyUniHub                         | USB HID    |
 | QMK            | 10      | QmkProtocol (standardized)                           | USB HID    |
 | PrismRGB       | 4       | PrismRgb                                             | USB HID    |
+| Nollie         | 4       | Nollie (Gen1/Gen2/Legacy)                            | USB HID    |
 | Dygma          | 2       | Dygma (wired/wireless)                               | USB Serial |
 | Ableton Push 2 | 1       | Push2 (MIDI + display)                               | USB MIDI   |
 
 ### Network Drivers (hypercolor-driver-\*)
 
-| Driver      | Protocol                      | Transport             | Features                                                 |
-| ----------- | ----------------------------- | --------------------- | -------------------------------------------------------- |
-| WLED        | DDP + E1.31 UDP               | Network (HTTP + UDP)  | mDNS discovery, segment management                       |
-| Philips Hue | REST + DTLS Entertainment API | Network (HTTP + DTLS) | nUPnP/mDNS discovery, link button pairing, CIE XYb color |
-| Nanoleaf    | REST + UDP External Control   | Network (HTTP + UDP)  | mDNS discovery, panel topology, power button pairing     |
+| Driver      | Protocol                      | Transport              | Features                                                  |
+| ----------- | ----------------------------- | ---------------------- | --------------------------------------------------------- |
+| WLED        | DDP + E1.31 UDP               | Network (HTTP + UDP)   | mDNS discovery, segment management                        |
+| Philips Hue | REST + DTLS Entertainment API | Network (HTTP + DTLS)  | nUPnP/mDNS discovery, link button pairing, CIE XYb color  |
+| Nanoleaf    | REST + UDP External Control   | Network (HTTP + UDP)   | mDNS discovery, panel topology, power button pairing      |
+| Govee       | Govee LAN (UDP port 4003)     | Network (UDP + HTTP)   | LAN discovery, cloud inventory, Razer-streaming for compatible SKUs |
 
 Plus the ROLI Blocks out-of-process bridge (Spec 30) and Corsair iCUE LINK Phase 2
 (native per-LED protocol, Spec 18) in progress.
@@ -76,6 +78,13 @@ nUPnP/mDNS bridge discovery, link button pairing, and CIE XYb color space conver
 **Nanoleaf** — Full network driver with UDP External Control streaming, mDNS discovery,
 panel topology mapping, and power button pairing. ~1,300 lines across driver crate and
 core backend.
+
+**Govee** — Full network driver using the Govee LAN protocol (UDP port 4003). Supports
+LAN discovery, cloud inventory enrichment, and Razer-streaming for compatible SKUs.
+Covers Govee LED strips, panels, and bulbs.
+
+**Nollie** — USB HID driver supporting Gen1, Gen2, and Legacy controller variants. Expand
+device table as new Nollie hardware ships.
 
 ### Tier 2: High-Impact Additions
 
@@ -152,10 +161,9 @@ Lower urgency but meaningful additions for completeness.
 
 #### Govee
 
-- **Key devices:** LED strips, light bars, ambient lighting
-- **Protocol:** WiFi + BLE (proprietary), LAN API recently opened
-- **Effort:** Medium-High — LAN API is documented but BLE path is not
-- **Impact:** Popular ambient lighting brand, complements existing Hue/Nanoleaf/WLED
+*Moved to Tier 1 — the Govee LAN driver (`hypercolor-driver-govee`) shipped in v0.1
+covering LED strips, light bars, and ambient lighting via UDP port 4003. BLE/cloud paths
+remain future work.*
 
 ### Tier 4: Hard Problems
 
@@ -240,7 +248,7 @@ Key open-source projects to convert into facts-only protocol specs before implem
 - Cooler Master, Thermaltake, Wooting drivers
 - Corsair Commander Core/XT family
 - HyperX (after NGENUITY protocol stabilizes)
-- Govee LAN API
+- Govee BLE/cloud path (LAN API driver shipped in v0.1)
 
 ### Not Planned
 
@@ -252,7 +260,7 @@ Key open-source projects to convert into facts-only protocol specs before implem
 
 | Milestone         | Target                                           |
 | ----------------- | ------------------------------------------------ |
-| Tier 1 solidified | Stable across all 11 driver families             |
+| Tier 1 solidified | Stable across all 13 driver families             |
 | NZXT shipped      | First AIO cooler support on Linux                |
 | Tier 2 complete   | ~250+ devices, covers 80% of enthusiast builds   |
 | Tier 3 complete   | ~350+ devices, competitive with OpenRGB coverage |

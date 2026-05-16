@@ -41,13 +41,13 @@ Hypercolor exposes multiple API surfaces because different consumers have fundam
 
 **Base configuration:**
 
-| Surface   | Default Binding                  | Protocol             |
-| --------- | -------------------------------- | -------------------- |
-| REST API  | `127.0.0.1:9420`                 | HTTP/1.1 + HTTP/2    |
-| WebSocket | `ws://127.0.0.1:9420/api/v1/ws`  | WebSocket (RFC 6455) |
-| Web UI    | `http://127.0.0.1:9420/`         | Leptos static assets |
-| D-Bus     | `tech.hyperbliss.Hypercolor1`    | D-Bus session bus    |
-| MCP       | stdio (default) or SSE transport | MCP SDK              |
+| Surface   | Default Binding                  | Protocol             | Ships?              |
+| --------- | -------------------------------- | -------------------- | ------------------- |
+| REST API  | `127.0.0.1:9420`                 | HTTP/1.1 + HTTP/2    | Yes                 |
+| WebSocket | `ws://127.0.0.1:9420/api/v1/ws`  | WebSocket (RFC 6455) | Yes                 |
+| Web UI    | `http://127.0.0.1:9420/`         | Leptos static assets | Yes                 |
+| MCP       | stdio (default) or SSE transport | MCP SDK              | Yes                 |
+| D-Bus     | `tech.hyperbliss.Hypercolor1`    | D-Bus session bus    | Planned (section 5) |
 
 ---
 
@@ -1408,6 +1408,11 @@ async fn apply_effect(&self, query: String, controls: Option<HashMap<String, Val
 ---
 
 ## 5. D-Bus Interface
+
+> **Planned — not yet implemented.** The daemon currently exposes no D-Bus service.
+> `zbus` is used only as a *client* for session monitoring (logind, screensaver signals).
+> This section describes the target integration design for a future release.
+> The shipped API surfaces are REST, WebSocket, and MCP (sections 1–4).
 
 D-Bus provides desktop integration — GNOME extensions, KDE widgets, systemd control, and hotkey-driven lighting changes without needing the full web UI.
 

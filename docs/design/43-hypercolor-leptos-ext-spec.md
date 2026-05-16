@@ -1,16 +1,14 @@
 # 43. Spec: `hypercolor-leptos-ext`
 
-**Status:** Implementation spec. Revised for buildability after full Cinder doc review. Targets Year 1 Phase 0 per RFC 40.
+**Status:** Implementation spec. Targets Year 1 Phase 0.
 **Date:** 2026-04-23.
 **Author:** Bliss (with Nova).
-**Depends on:** [35](35-next-gen-web-framework.md), [36](36-cinder-web-rfc.md), [37](37-cinder-stream-rfc.md), [41](41-cinder-boundary-contract.md).
-**Supersedes:** `cinder-leptos-ext` prototype mentioned in RFC 41 Section 12.
 
 ## Summary
 
 `hypercolor-leptos-ext` is an internal Hypercolor crate that prototypes the `cinder-web` and `cinder-stream` primitives in-tree before extraction to standalone published crates. It ships inside `crates/hypercolor-leptos-ext/` as a path dependency of `hypercolor-ui` (and `hypercolor-daemon` for the server-side codec pieces). API shapes match the intended public surface of RFCs 36 and 37 so extraction is mechanical renaming, not rewriting.
 
-This crate is the **Year 1 canary** mandated by RFC 41's scope cut. It validates:
+This crate is the **Year 1 canary** for the `cinder-web` / `cinder-stream` primitive extraction. It validates:
 
 1. Typed DOM event parsing eliminates the 32 `HtmlInputElement` dyn_into sites.
 2. A narrow raw-WebSocket `BinaryChannel<T, P>` layer reduces `hypercolor-ui/src/ws/` by 60-70%, while borrowing proven stream semantics from RSocket where useful.
@@ -19,7 +17,7 @@ This crate is the **Year 1 canary** mandated by RFC 41's scope cut. It validates
 5. Schema-evolved binary frames via `#[derive(BinaryFrame)]` eliminate the 19-call `Uint8Array::get_index` decoder.
 6. A preview-media spike determines whether visual frames should remain WebSocket messages or move to browser-native media machinery (`VideoDecoder` / WebRTC).
 
-Success metrics are measured against `docs/archive/2026-03-cinder-audit-snapshot.txt` before and after each migration PR lands.
+Success metrics are measured against the baseline `hypercolor-ui` line counts before and after each migration PR lands.
 
 ## Non-goals
 
@@ -40,7 +38,7 @@ The crate is intentionally split by feature so it can participate in both the na
 - **UI imports browser features explicitly.** `hypercolor-ui` uses `features = ["events", "canvas", "raf", "prelude", "ws-client-wasm", "leptos"]`.
 - **No unsafe code.** Hypercolor forbids `unsafe_code`; event wrappers may use safe `JsCast` APIs, but the public API must not expose `unsafe fn` or require undocumented unsafe blocks.
 - **WebGPU is not in the first migration.** `wgpu` is current at `29.x` and is expensive for compile time and bundle size. The prototype keeps WebGL first and leaves `webgpu` behind an explicit opt-in feature.
-- **No dependency on stale stream stacks.** RFC 37 treats RSocket as protocol inspiration, not the default dependency path. PR 5 starts with a short RSocket health check; only a live maintained implementation earns a deeper adoption spike.
+- **No dependency on stale stream stacks.** RSocket is treated as protocol inspiration, not the default dependency path. PR 5 starts with a short RSocket health check; only a live maintained implementation earns a deeper adoption spike.
 - **Do not confuse preview media with app state.** The control/state stream is still in scope. The visual preview path is explicitly allowed to use WebCodecs or WebRTC if a spike proves that browser-native video beats custom frame messages.
 
 ## Dependencies
@@ -66,7 +64,7 @@ The crate is intentionally split by feature so it can participate in both the na
   - `pin-project-lite = "0.2"`
   - `send_wrapper = "0.6"` (for `!Send` values in `Send` contexts)
   - `wgpu = "29"` (optional, only behind `webgpu`)
-- **Candidate RSocket dependencies** (only added if the RFC 37 health check finds a maintained implementation and the deeper spike passes):
+- **Candidate RSocket dependencies** (only added if the RSocket health check finds a maintained implementation and the deeper spike passes):
   - `rsocket_rust = "0.7"`
   - `rsocket_rust_transport_websocket = "0.7"` (daemon/server-side WebSocket transport)
   - `rsocket_rust_transport_wasm = "0.7"` (browser WASM WebSocket transport)
@@ -84,7 +82,7 @@ The crate is intentionally split by feature so it can participate in both the na
 
 ## Feature flags
 
-Matches the intended `cinder-stream` feature matrix from RFC 37 so extraction is mechanical:
+Matches the intended `cinder-stream` feature matrix so extraction is mechanical:
 
 ```toml
 [features]
@@ -168,7 +166,7 @@ crates/hypercolor-leptos-ext/
 │   │   │   └── in_memory.rs        # InMemoryTransport for tests
 │   │   ├── reconnect.rs            # Connector, Reconnecting<C, P>, ReconnectPolicy, ExponentialBackoff
 │   │   ├── rpc.rs                  # RpcRequest/RpcResponse, RpcClient
-│   │   └── websocket_raw.rs        # Raw web_sys::WebSocket wrapper per RFC 41 Seam 1
+│   │   └── websocket_raw.rs        # Raw web_sys::WebSocket wrapper (Seam 1)
 │   │
 │   ├── axum/                       # [axum feature]
 │   │   ├── mod.rs                  # Server-side integration
@@ -800,9 +798,9 @@ pub trait CinderDatagramTransport: MaybeSend + 'static {
 
 #### 4.3 `WebSocketTransport` (WASM)
 
-Protocol adoption note: sections 4.3 through 4.8 describe the expected Hypercolor channel facade. RSocket remains a semantic reference unless the RFC 37 health check finds a maintained Rust/WASM implementation worth shipping.
+Protocol adoption note: sections 4.3 through 4.8 describe the expected Hypercolor channel facade. RSocket remains a semantic reference unless the health check finds a maintained Rust/WASM implementation worth shipping.
 
-Year 1 ships the raw variant per RFC 41 phasing. Wraps `web_sys::WebSocket` directly via `wasm-bindgen-futures` and an internal mpsc.
+Year 1 ships the raw variant. Wraps `web_sys::WebSocket` directly via `wasm-bindgen-futures` and an internal mpsc.
 
 ```rust
 pub struct WebSocketTransport {
@@ -954,7 +952,7 @@ impl ExponentialBackoff {
 
 #### 4.8 `SessionRecorder` + `SessionPlayer`
 
-Per RFC 37 wire format. Implement the core types to validate the format; file output is optional for v0.1.
+Implements the stream wire format. Implement the core types to validate the format; file output is optional for v0.1.
 
 ```rust
 pub enum SessionRecord {
@@ -1106,9 +1104,9 @@ pub struct UnsyncBroadcast<T> { /* thread-local watch-like channel */ }
 
 ## Migration PR plan
 
-Six PRs, grouped by phase. Each PR is its own review, its own CI run, its own measurement against `cinder-audit-snapshot.txt`.
+Six PRs, grouped by phase. Each PR is its own review, its own CI run, its own measurement against the baseline `hypercolor-ui` line counts.
 
-**Phase A is the RFC 41 Year 1 canary:** PR 1, PR 5, and PR 6. These must land first if the goal is extracting `cinder-stream 0.1`.
+**Phase A is the Year 1 canary:** PR 1, PR 5, and PR 6. These must land first if the goal is extracting `cinder-stream 0.1`.
 
 **Phase B is the browser-ergonomics prototype:** PR 2, PR 3, and PR 4. These can land earlier only if they do not delay the stream canary; otherwise they move behind PR 6.
 
@@ -1160,8 +1158,8 @@ Six PRs, grouped by phase. Each PR is its own review, its own CI run, its own me
 
 ### PR 5: `ws/` module + `BinaryFrame` derive + `hypercolor-v2` codec migration
 
-- Mandatory first task: run the RFC 37 RSocket health check. If no maintained Rust/WASM implementation exists, document that and proceed with the Hypercolor channel path.
-- Mandatory second task: run the RFC 37 preview-media spike. Compare current raw/JPEG WebSocket preview against WebCodecs and WebRTC for latency, CPU, daemon dependency cost, browser support, color fidelity, and implementation size. Do not migrate canvas pixels to `CanvasFrameV2` until this decision is made.
+- Mandatory first task: run the RSocket health check. If no maintained Rust/WASM implementation exists, document that and proceed with the Hypercolor channel path.
+- Mandatory second task: run the preview-media spike. Compare current raw/JPEG WebSocket preview against WebCodecs and WebRTC for latency, CPU, daemon dependency cost, browser support, color fidelity, and implementation size. Do not migrate canvas pixels to `CanvasFrameV2` until this decision is made.
 - `BinaryFrame` derive implemented for tag + schema + header + body layout.
 - `WebSocketTransport` (WASM raw variant).
 - `BinaryChannel<T, P>` with all five policies.

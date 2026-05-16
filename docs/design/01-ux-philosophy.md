@@ -1078,24 +1078,24 @@ The staggered device-by-device brightening creates a "cascade" feeling — like 
 
 ## Appendix A: Component Inventory
 
-Key Leptos components that implement this design:
+Key Leptos components that implement this design (all in `crates/hypercolor-ui/src/components/`):
 
-| Component               | Location            | Purpose                      |
-| ----------------------- | ------------------- | ---------------------------- |
-| `Sidebar.svelte`        | Global shell        | Fixed 7-item navigation      |
-| `CommandPalette.svelte` | Global overlay      | Ctrl+K search/action         |
-| `EffectGrid.svelte`     | Effects > Browse    | Animated thumbnail grid      |
-| `EffectPreview.svelte`  | Effects > Active    | Full-width live canvas       |
-| `ControlPanel.svelte`   | Inspector           | Auto-generated from metadata |
-| `SpatialEditor.svelte`  | Layout              | Three.js zone placement      |
-| `DeviceCard.svelte`     | Devices             | Per-device status + preview  |
-| `SceneCard.svelte`      | Dashboard / Scenes  | One-tap scene activation     |
-| `Toast.svelte`          | Global overlay      | Non-blocking notifications   |
-| `SetupWizard.svelte`    | First-run           | 5-step onboarding flow       |
-| `DebugPanel.svelte`     | Settings > Advanced | Event log, frame timing      |
-| `AudioSpectrum.svelte`  | Inputs / Dashboard  | FFT visualizer               |
-| `Slider.svelte`         | Controls            | Branded range input          |
-| `MiniPreview.svelte`    | Dashboard           | Spatial map with live colors |
+| Component                  | Module                   | Purpose                             |
+| -------------------------- | ------------------------ | ----------------------------------- |
+| `Sidebar`                  | `sidebar.rs`             | Fixed navigation shell              |
+| `Shell`                    | `shell.rs`               | App-level layout frame              |
+| `EffectCard`               | `effect_card.rs`         | Animated effect thumbnail           |
+| `CanvasPreview`            | `canvas_preview.rs`      | Full-width live canvas preview      |
+| `PreviewCabinet`           | `preview_cabinet.rs`     | Preview container with controls     |
+| `ControlPanel`             | `control_panel/mod.rs`   | Auto-generated from effect metadata |
+| `LayoutCanvas`             | `layout_canvas.rs`       | Spatial zone placement canvas       |
+| `LayoutBuilder`            | `layout_builder.rs`      | Zone construction UI                |
+| `DeviceCard`               | `device_card.rs`         | Per-device status and LED preview   |
+| `DeviceDetail`             | `device_detail.rs`       | Device info and zone config         |
+| `DeviceMetricsStrip`       | `device_metrics_strip.rs`| Per-device frame timing strip       |
+| `PresetPanel`              | `preset_panel.rs`        | Save/load effect presets            |
+| `PerfCharts`               | `perf_charts.rs`         | FPS and frame timing graphs         |
+| `PageHeader` / `PageSearchBar` | `page_header.rs` / `page_search_bar.rs` | Section chrome |
 
 ## Appendix B: Animation Timing Reference
 

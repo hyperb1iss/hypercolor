@@ -61,7 +61,6 @@ $XDG_CACHE_HOME/hypercolor/          # ~/.cache/hypercolor/
 └── discovery-cache.toml             # Cached mDNS/network discovery results
 
 $XDG_RUNTIME_DIR/hypercolor/         # /run/user/1000/hypercolor/
-├── hypercolor.sock                  # Unix domain socket (IPC)
 ├── hypercolor.pid                   # PID file
 └── frame.shm                        # Shared memory for frame data (optional)
 ```
@@ -87,7 +86,7 @@ schema_version = 3
 # Network
 listen_address = "127.0.0.1"
 port = 9420
-unix_socket = true                     # Enable Unix socket IPC
+# unix_socket — config field exists but has no effect; daemon always uses TCP on `port`
 
 # Performance
 target_fps = 60
@@ -147,9 +146,7 @@ hue_scan = true
 openrgb_host = "127.0.0.1"
 openrgb_port = 6742
 
-[dbus]
-enabled = true
-bus_name = "tech.hyperbliss.hypercolor1"
+# [dbus] — D-Bus service is not yet implemented; section reserved for future use
 
 # Feature flags — experimental or in-progress features
 [features]
@@ -345,9 +342,9 @@ enabled = false
 # cron = "0 20 * * FRI"              # Every Friday at 8 PM
 # condition = "audio_idle > 30s"     # Or: activate when audio is idle for 30s
 
-# Optional: D-Bus / HA triggers
+# Optional: HA triggers (D-Bus trigger is planned, not yet implemented)
 [scene.triggers]
-dbus_signal = ""                       # e.g., "org.mpris.MediaPlayer2.Playing"
+# dbus_signal = ""                     # Planned: e.g., "org.mpris.MediaPlayer2.Playing"
 home_assistant_entity = ""             # e.g., "media_player.living_room"
 home_assistant_state = ""              # e.g., "playing"
 ```
@@ -483,7 +480,7 @@ pub enum ChangeAction {
 2. Daemon checks: current revision == 14?
    - Yes → apply change, increment to 15, persist to disk, broadcast ConfigChanged
    - No  → return 409 Conflict with current revision + current values
-3. All connected frontends receive ConfigChanged event via WebSocket / Unix socket
+3. All connected frontends receive ConfigChanged event via WebSocket
 4. Each frontend updates its local state from the event payload
 ```
 
@@ -1810,7 +1807,7 @@ pub struct HypercolorConfig {
     pub audio: AudioConfig,
     pub screen_capture: ScreenCaptureConfig,
     pub discovery: DiscoveryConfig,
-    pub dbus: DBusConfig,
+    // pub dbus: DBusConfig,  // Reserved; D-Bus service not yet implemented
     pub features: FeatureFlags,
 }
 

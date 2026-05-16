@@ -8,7 +8,9 @@
 
 Scenes and automation are the layer where Hypercolor stops being a toy and starts being infrastructure. A scene captures a complete lighting state across every device. Automation decides _when_ and _why_ scenes change. Together, they make your lighting respond to your life without you touching a single button.
 
-This document defines the data model, transition system, scheduling engine, trigger framework, automation rule language, smart home integration, and contextual awareness system. Everything flows through the existing event bus (`HypercolorBus`) and is controllable via REST API, D-Bus, CLI, TUI, and web UI.
+This document defines the data model, transition system, scheduling engine, trigger framework, automation rule language, smart home integration, and contextual awareness system. Everything flows through the existing event bus (`HypercolorBus`) and is controllable via REST API, CLI, TUI, and web UI.[^dbus]
+
+[^dbus]: D-Bus integration is a planned desktop integration layer; see [14-desktop-integration.md](14-desktop-integration.md).
 
 ---
 
@@ -2448,7 +2450,7 @@ graph TD
         EffectEngine["Effect Engine<br/>wgpu path (native) + Servo path (HTML/JS)<br/>Renders each zone's assigned effect"]
         SpatialLayout["Spatial Layout Engine<br/>Canvas pixel coords → physical LED positions"]
         DeviceBackends["Device Backends<br/>OpenRGB | WLED | Hue | USB HID | Network health monitor"]
-        EventBus["Event Bus<br/>→ Web UI, TUI, CLI, D-Bus, MQTT publisher, HA component"]
+        EventBus["Event Bus<br/>→ Web UI, TUI, CLI, WebSocket, MQTT publisher, HA component"]
     end
 
     triggers -->|TriggerEvent| Context
@@ -2520,7 +2522,7 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 - Scene save/load/activate via CLI and REST API
 - Crossfade and cut transitions (Oklab interpolation)
 - Global brightness control
-- Scene switching via D-Bus (desktop hotkeys)
+- Scene switching via CLI and REST (D-Bus hotkey integration is a future phase)
 - Basic priority stack (manual > schedule > default)
 
 ### Phase 3B: Scheduling

@@ -340,7 +340,12 @@ settings_panel = "ui/settings.js"    # Optional web component
 
 ### Phase 3: gRPC Process Bridge (Out-of-Process Plugins)
 
-**When:** Needed from Phase 1 for OpenRGB (GPL isolation). Becomes the "write in any language" escape hatch.
+**When:** Needed for GPL-isolated or polyglot plugins. Becomes the "write in any language" escape hatch for Phase 3+.
+
+> **Note:** The `hypercolor-openrgb-bridge` described below was abandoned as of the
+> 2026-03-03 decision review. No bridge crate exists in the workspace. The gRPC process
+> bridge pattern remains valid for future third-party plugin authors who need GPL isolation
+> or a non-Rust language target — it is accurately described here as a roadmap mechanism.
 
 **Model:** Plugins run as separate processes, communicating with the daemon over Unix domain sockets using gRPC (tonic on the Rust side). The same WIT-derived interfaces, but serialized over protobuf instead of Wasm memory.
 
@@ -348,9 +353,9 @@ settings_panel = "ui/settings.js"    # Optional web component
 graph LR
     Daemon["hypercolor-daemon<br/>(Apache-2.0)"]
 
-    OpenRGB["hypercolor-openrgb-bridge<br/>(GPL-2.0, separate binary)<br/>openrgb2 crate → OpenRGB daemon (TCP 6742)"]
-    Nanoleaf["hypercolor-nanoleaf-plugin<br/>(Go binary)<br/>Nanoleaf LAN API (mDNS + HTTP)"]
-    HA["hypercolor-home-assistant<br/>(Python process)<br/>HA WebSocket API"]
+    OpenRGB["hypercolor-openrgb-bridge<br/>(GPL-2.0, separate binary — abandoned 2026-03)<br/>Concept: openrgb2 crate → OpenRGB daemon (TCP 6742)"]
+    Nanoleaf["hypercolor-nanoleaf-plugin<br/>(Go binary, example)<br/>Nanoleaf LAN API (mDNS + HTTP)"]
+    HA["hypercolor-home-assistant<br/>(Python process, example)<br/>HA WebSocket API"]
 
     Daemon -->|Unix socket + gRPC| OpenRGB
     Daemon -->|Unix socket + gRPC| Nanoleaf
@@ -407,21 +412,15 @@ message PluginInfo {
 **Bridge lifecycle:** The daemon spawns bridge processes on startup (configured in `~/.config/hypercolor/config.toml`), monitors them via health checks, and restarts them on crash with exponential backoff.
 
 ```toml
-# ~/.config/hypercolor/config.toml
+# ~/.config/hypercolor/config.toml (Phase 3 bridge config — planned)
 
 [[bridge]]
-id = "openrgb"
-command = "hypercolor-openrgb-bridge"
-socket = "/run/hypercolor/openrgb.sock"
-restart_policy = "always"
+id = "my-plugin"
+command = "/opt/hypercolor/plugins/my-plugin"
+socket = "/run/hypercolor/my-plugin.sock"
+restart_policy = "on-failure"
 restart_delay_ms = 1000
 max_restarts = 5
-
-[[bridge]]
-id = "nanoleaf-go"
-command = "/opt/hypercolor/plugins/nanoleaf-plugin"
-socket = "/run/hypercolor/nanoleaf.sock"
-restart_policy = "on-failure"
 ```
 
 ---
@@ -1220,7 +1219,7 @@ crates/plugins/
 ├── hypercolor-hue/           # Philips Hue backend (compile-time, ~400 LOC)
 ├── hypercolor-audio/         # Audio FFT input source (compile-time, ~600 LOC)
 ├── hypercolor-screen/        # Screen capture input (compile-time, ~400 LOC)
-├── hypercolor-openrgb-bridge/ # OpenRGB gRPC bridge (GPL-2.0, ~350 LOC)
+├── hypercolor-openrgb-bridge/ # OpenRGB gRPC bridge (GPL-2.0) — abandoned 2026-03
 └── examples/
     ├── example-wasm-backend/   # Minimal Wasm device backend (~100 LOC)
     ├── example-wasm-input/     # Weather API input source (~80 LOC)
@@ -1748,7 +1747,7 @@ These are the bones of the system. Extracting them would create indirection with
 | **Event bus**             | The nervous system. All communication flows through it.                                    |
 | **Configuration system**  | Profile, scene, layout persistence. Plugins read/write their own namespace.                |
 | **Web UI shell**          | Leptos app, Axum server, WebSocket frame streaming. Plugins contribute panels, not pages.  |
-| **TUI**                   | Ratatui rendering, Unix socket client. Displays plugin status, doesn't host plugins.       |
+| **TUI**                   | Ratatui rendering, HTTP client to daemon REST API. Displays plugin status, doesn't host plugins. |
 | **CLI**                   | clap command structure. `hypercolor plugin *` subcommands interact with the plugin system. |
 | **Plugin host**           | WasmPluginHost, BridgeManager. The meta-plugin system itself is core.                      |
 

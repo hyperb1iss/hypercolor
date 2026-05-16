@@ -78,7 +78,7 @@
 - `hypercolor daemon` starts at boot via systemd, TUI available over SSH
 - `hypercolor dev --watch effects/custom/aurora.ts` hot-reloads with live preview in terminal
 - Spatial layout persists in TOML, version-controlled in her dotfiles
-- D-Bus integration so Hyprland keybinds can trigger profile switches
+- CLI one-liners so Hyprland keybinds can trigger profile switches (D-Bus integration is a future roadmap item)
 - Frame timing overlay: render time, push latency per device, dropped frames
 - Effect debugger: freeze frame, step forward, inspect per-LED color values
 - Full Lightscript API compatibility so her existing effects just work
@@ -240,7 +240,7 @@
 
 ### Edge Cases & Pain Points
 
-- **Roommate complaints.** Needs a quick "dim everything to 20%" option without changing the effect. A global brightness slider accessible from system tray / D-Bus.
+- **Roommate complaints.** Needs a quick "dim everything to 20%" option without changing the effect. A global brightness slider accessible from the system tray or via `hypercolor brightness 20`.
 - **Laptop mode.** When he plugs his keyboard into his laptop for class, the keyboard should revert to a static color (or off). Device disconnect handling matters.
 - **Firmware fights.** His Corsair K70 has onboard profiles. If OpenRGB and the keyboard firmware both try to control RGB, they fight. Need to properly take/release hardware control.
 - **Doesn't read docs.** The web UI needs to be self-explanatory. Tooltips, not manpages.
@@ -1096,7 +1096,7 @@ She puts on a synthwave playlist. Manually activates `vibe` profile from the TUI
 She's working on a new effect for Hypercolor itself. Opens `hypercolor dev --watch effects/custom/silk-cascade.ts --preview tui`. Split terminal: Neovim on left, TUI preview on right. She tweaks shader uniforms, saves, watches the preview update in <100ms. Adjusts the chromagram color mapping. Saves again. The SilkCircuit palette shimmers across 30 virtual LEDs in the TUI. Satisfied.
 
 **18:30 — Gaming**
-Launches Steam. The D-Bus integration detects Gamescope activating for Elden Ring. Profile switches to `gaming`. Everything goes reactive: audio-driven, high intensity, warm fire palette. Keyboard per-key effects react to keypresses. The room comes alive.
+Launches Steam. A Hyprland keybind fires `hypercolor profile apply gaming` when Gamescope activates for Elden Ring. Profile switches to `gaming`. Everything goes reactive: audio-driven, high intensity, warm fire palette. Keyboard per-key effects react to keypresses. The room comes alive.
 
 **21:00 — Movie Night**
 Activates `movie` profile. All case RGB dims to near-zero. Only the WLED monitor backlight remains active in screen-ambience mode, capturing the display colors and projecting them onto the wall behind the monitors. Hue Play bars match. The room becomes the screen.

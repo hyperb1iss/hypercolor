@@ -13,9 +13,10 @@ Hypercolor runs as a background daemon serving a web UI on `localhost:9420`. Use
 3. A status bar presence for quick controls
 4. The full UI accessible in their browser
 
-This spec covers all four across Linux and macOS. It builds on the existing
-[desktop integration spec](14-desktop-integration.md) (systemd, D-Bus, XDG, SNI tray)
-and [installation bootstrap spec](20-installation-bootstrap.md) (user-local install layout).
+This spec covers all four across Linux and macOS. It builds on the
+[installation bootstrap spec](20-installation-bootstrap.md) (user-local install layout)
+and references [14-desktop-integration.md](14-desktop-integration.md) for the planned
+D-Bus/XDG integration roadmap (not yet implemented).
 
 ---
 
@@ -295,8 +296,8 @@ graph LR
 - Consistent cross-platform interface (same code path on Linux and macOS)
 - D-Bus is Linux-only; REST API works everywhere the daemon runs
 - WebSocket for real-time state updates (effect changes, device connect/disconnect)
-- D-Bus integration remains available for desktop environments that prefer it
-  (GNOME extension, KDE integration) as specced in 14-desktop-integration.md
+- D-Bus integration is planned for desktop environments that prefer it
+  (GNOME extension, KDE integration); see 14-desktop-integration.md for the roadmap
 
 ### Linux Implementation
 

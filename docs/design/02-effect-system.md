@@ -90,7 +90,7 @@ Effects that visualize system telemetry, notifications, or time. Functional beau
 | **GPU Load**           | Bar or radial fill showing GPU utilization | NVIDIA/AMD driver APIs -> 0-100% mapped to fill level          |
 | **Network Activity**   | Sparkle/pulse on upload/download           | `/proc/net/dev` delta -> particle burst intensity              |
 | **Clock**              | Time displayed as color patterns           | Hour -> hue, minute -> position, second -> animation phase     |
-| **Notification Pulse** | Brief flash on desktop notification        | D-Bus notification signal -> color burst with app-specific hue |
+| **Notification Pulse** | Brief flash on desktop notification        | `org.freedesktop.Notifications` signal (future) -> color burst with app-specific hue |
 | **Disk I/O**           | Activity indicator for storage operations  | `iostat` data -> brightness/speed modulation                   |
 | **RAM Pressure**       | Fill level showing memory usage            | `/proc/meminfo` -> gradient fill from green to red             |
 
@@ -1473,18 +1473,15 @@ In the web UI's composition editor, she sets up a two-layer stack:
 
 **Step 3: Transition trigger**
 
-She configures a scheduled transition: when she clicks "Go Live" (or triggers via CLI/D-Bus), the composition crossfades Layer 2's opacity from 0% to 80% over 5 seconds. Her brand colors remain visible underneath the spectrum bars.
+She configures a scheduled transition: when she clicks "Go Live" (or triggers via CLI), the composition crossfades Layer 2's opacity from 0% to 80% over 5 seconds. Her brand colors remain visible underneath the spectrum bars.
 
 **Step 4: Automate**
 
-Luna adds a D-Bus trigger from her streaming software (OBS). When OBS starts streaming, it fires a D-Bus signal that Hypercolor catches:
+Luna wires up a REST webhook from her streaming software (OBS). When OBS starts streaming, an OBS script calls the Hypercolor REST API:
 
 ```bash
 # OBS script calls:
-dbus-send --dest=tech.hyperbliss.hypercolor1 \
-  /tech/hyperbliss/hypercolor1 \
-  tech.hyperbliss.hypercolor1.SetEffect \
-  string:"luna-stream-starting"
+curl -s -X POST http://localhost:9420/api/v1/scenes/luna-stream-starting/activate
 ```
 
 **Step 5: The result**
