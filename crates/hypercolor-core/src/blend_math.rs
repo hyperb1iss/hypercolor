@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use crate::types::canvas::{BlendMode, linear_to_srgb_u8, srgb_u8_to_linear};
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
-const DIFFERENCE_BLEND_LUT_SIZE: usize = 256 * 256;
+const CHANNEL_PAIR_LUT_SIZE: usize = 256 * 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RgbaBlendMode {
@@ -44,8 +44,20 @@ static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
         .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
         .collect()
 });
+static SCREEN_BLEND_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    (0..CHANNEL_PAIR_LUT_SIZE)
+        .map(|index| {
+            let dst = u8::try_from(index >> 8).expect("LUT high byte must fit in u8");
+            let src = u8::try_from(index & 0xff).expect("LUT low byte must fit in u8");
+            encode_srgb_channel(screen_blend(
+                decode_srgb_channel(dst),
+                decode_srgb_channel(src),
+            ))
+        })
+        .collect()
+});
 static DIFFERENCE_BLEND_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    (0..DIFFERENCE_BLEND_LUT_SIZE)
+    (0..CHANNEL_PAIR_LUT_SIZE)
         .map(|index| {
             let dst = u8::try_from(index >> 8).expect("LUT high byte must fit in u8");
             let src = u8::try_from(index & 0xff).expect("LUT low byte must fit in u8");
@@ -157,8 +169,10 @@ pub fn blend_rgba_pixels_in_place(
                 }
             }
         }
+        RgbaBlendMode::Screen => {
+            blend_screen_rgba_pixels_in_place(target_pixels, source_pixels, opacity);
+        }
         RgbaBlendMode::Add
-        | RgbaBlendMode::Screen
         | RgbaBlendMode::Multiply
         | RgbaBlendMode::Overlay
         | RgbaBlendMode::SoftLight
@@ -179,6 +193,42 @@ pub fn blend_rgba_pixels_in_place(
         RgbaBlendMode::Difference => {
             blend_difference_rgba_pixels_in_place(target_pixels, source_pixels, opacity);
         }
+    }
+}
+
+fn blend_screen_rgba_pixels_in_place(target_pixels: &mut [u8], source_pixels: &[u8], opacity: f32) {
+    if opacity < 1.0 {
+        blend_rgba_pixels_with_reference(
+            target_pixels,
+            source_pixels,
+            RgbaBlendMode::Screen,
+            opacity,
+        );
+        return;
+    }
+
+    for (dst_px, src_px) in target_pixels
+        .chunks_exact_mut(4)
+        .zip(source_pixels.chunks_exact(4))
+    {
+        if src_px[3] == 0 {
+            continue;
+        }
+
+        if src_px[3] == 255 && dst_px[3] == 255 {
+            dst_px[0] = screen_blend_channel(dst_px[0], src_px[0]);
+            dst_px[1] = screen_blend_channel(dst_px[1], src_px[1]);
+            dst_px[2] = screen_blend_channel(dst_px[2], src_px[2]);
+            continue;
+        }
+
+        let blended = blend_rgba_pixel(
+            [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
+            [src_px[0], src_px[1], src_px[2], src_px[3]],
+            RgbaBlendMode::Screen,
+            opacity,
+        );
+        dst_px.copy_from_slice(&blended);
     }
 }
 
@@ -240,6 +290,10 @@ fn blend_rgba_pixels_with_reference(
         );
         dst_px.copy_from_slice(&blended);
     }
+}
+
+fn screen_blend_channel(dst: u8, src: u8) -> u8 {
+    SCREEN_BLEND_LUT[(usize::from(dst) << 8) | usize::from(src)]
 }
 
 fn difference_blend_channel(dst: u8, src: u8) -> u8 {

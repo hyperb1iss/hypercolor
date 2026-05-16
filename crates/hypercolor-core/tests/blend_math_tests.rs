@@ -94,6 +94,32 @@ fn difference_slice_blend_matches_single_pixel_reference() {
 }
 
 #[test]
+fn screen_slice_blend_matches_single_pixel_reference() {
+    let mut dst = vec![
+        12, 34, 56, 255, 210, 180, 140, 255, 24, 48, 96, 128, 2, 4, 8, 255,
+    ];
+    let src = vec![
+        90, 80, 70, 255, 1, 2, 3, 128, 220, 180, 140, 255, 200, 100, 50, 0,
+    ];
+    let expected: Vec<u8> = dst
+        .chunks_exact(4)
+        .zip(src.chunks_exact(4))
+        .flat_map(|(dst_px, src_px)| {
+            blend_rgba_pixel(
+                [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
+                [src_px[0], src_px[1], src_px[2], src_px[3]],
+                RgbaBlendMode::Screen,
+                1.0,
+            )
+        })
+        .collect();
+
+    blend_rgba_pixels_in_place(&mut dst, &src, RgbaBlendMode::Screen, 1.0);
+
+    assert_eq!(dst, expected);
+}
+
+#[test]
 fn opaque_normal_slice_blend_copies_source_at_full_opacity() {
     let mut dst = vec![12, 34, 56, 255, 78, 90, 123, 255];
     let src = vec![210, 180, 140, 255, 1, 2, 3, 255];
