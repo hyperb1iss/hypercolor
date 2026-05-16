@@ -2573,6 +2573,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
         first_pixel[0] < 60 && first_pixel[1] < 60,
         "expected black fallback to avoid stale effect color, got {first_pixel:?}"
     );
+    display_writes.lock().await.clear();
 
     event_bus
         .scene_canvas_sender()
@@ -2581,8 +2582,8 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
             2,
             32,
         ));
-    let writes = wait_for_display_write_count(&display_writes, 2).await;
-    let image = decode_jpeg(&writes[1]);
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
     let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
 
     assert!(

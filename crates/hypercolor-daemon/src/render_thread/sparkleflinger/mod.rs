@@ -217,6 +217,7 @@ pub struct SparkleFlinger {
     backend: SparkleFlingerBackend,
     preview_surface_pool: RenderSurfacePool,
     composition_surface_pool: RenderSurfacePool,
+    face_overlay_surface_pool: RenderSurfacePool,
 }
 
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
@@ -238,6 +239,7 @@ impl SparkleFlinger {
             backend: SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new()),
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
+            face_overlay_surface_pool: new_composition_surface_pool(),
         }
     }
 
@@ -269,6 +271,7 @@ impl SparkleFlinger {
             backend,
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
+            face_overlay_surface_pool: new_composition_surface_pool(),
         })
     }
 
@@ -329,6 +332,26 @@ impl SparkleFlinger {
                 composed
             }
         }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "display-face composition keeps the reusable surface path beside the slice path"
+    )]
+    pub(crate) fn compose_face_overlay(
+        &mut self,
+        scene: &PublishedSurface,
+        face: &PublishedSurface,
+        blend_mode: DisplayFaceBlendMode,
+        opacity: f32,
+    ) -> PublishedSurface {
+        face_overlay::compose_face_overlay(
+            scene,
+            face,
+            blend_mode,
+            opacity,
+            &mut self.face_overlay_surface_pool,
+        )
     }
 
     pub(crate) fn blend_face_overlay_rgba(
@@ -793,6 +816,7 @@ mod tests {
         blend_mode: DisplayFaceBlendMode,
         opacity: f32,
     ) -> Vec<u8> {
+        // Independent copy of the previous display encoder math, kept as a regression fence.
         let mut target_rgba = scene.rgba_bytes().to_vec();
         match blend_mode {
             DisplayFaceBlendMode::Replace => {
@@ -966,6 +990,7 @@ mod tests {
     fn sparkleflinger_face_overlay_matches_legacy_math_for_every_mode() {
         let scene = patterned_surface(48);
         let face = patterned_surface(144);
+        let mut sparkleflinger = SparkleFlinger::cpu();
 
         for blend_mode in [
             DisplayFaceBlendMode::Replace,
@@ -991,9 +1016,33 @@ mod tests {
 
             assert_eq!(
                 composed, expected,
-                "face overlay mismatch for {blend_mode:?}",
+                "slice face overlay mismatch for {blend_mode:?}",
+            );
+
+            let surface = sparkleflinger.compose_face_overlay(&scene, &face, blend_mode, 0.6);
+            assert_eq!(
+                surface.rgba_bytes(),
+                expected.as_slice(),
+                "surface face overlay mismatch for {blend_mode:?}",
             );
         }
+    }
+
+    #[test]
+    fn sparkleflinger_face_overlay_uses_black_when_scene_dims_do_not_match_face() {
+        let scene =
+            PublishedSurface::from_owned_canvas(solid_canvas(Rgba::new(255, 0, 0, 255)), 7, 11);
+        let mut face_canvas = Canvas::new(1, 1);
+        face_canvas.fill(Rgba::new(0, 0, 255, 255));
+        let face = PublishedSurface::from_owned_canvas(face_canvas, 8, 12);
+        let black = PublishedSurface::from_owned_canvas(Canvas::new(1, 1), 0, 0);
+        let expected = legacy_face_overlay_rgba(&black, &face, DisplayFaceBlendMode::Tint, 0.75);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+
+        let surface =
+            sparkleflinger.compose_face_overlay(&scene, &face, DisplayFaceBlendMode::Tint, 0.75);
+
+        assert_eq!(surface.rgba_bytes(), expected.as_slice());
     }
 
     #[test]

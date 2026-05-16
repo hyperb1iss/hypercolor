@@ -2,7 +2,65 @@ use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
     screen_blend,
 };
+use hypercolor_core::types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
+};
 use hypercolor_types::scene::DisplayFaceBlendMode;
+
+#[allow(
+    dead_code,
+    reason = "display-face composition keeps the reusable surface path beside the slice path"
+)]
+pub(super) fn compose_face_overlay(
+    scene: &PublishedSurface,
+    face: &PublishedSurface,
+    blend_mode: DisplayFaceBlendMode,
+    opacity: f32,
+    surface_pool: &mut RenderSurfacePool,
+) -> PublishedSurface {
+    let width = face.width();
+    let height = face.height();
+    let descriptor = SurfaceDescriptor::rgba8888(width, height);
+    if surface_pool.descriptor() != descriptor {
+        *surface_pool = RenderSurfacePool::with_slot_count(descriptor, 2);
+    }
+
+    let Some(mut lease) = surface_pool.dequeue() else {
+        let mut canvas = Canvas::new(width, height);
+        if scene.width() == width && scene.height() == height {
+            canvas
+                .as_rgba_bytes_mut()
+                .copy_from_slice(scene.rgba_bytes());
+        }
+        blend_face_overlay_rgba(
+            canvas.as_rgba_bytes_mut(),
+            face.rgba_bytes(),
+            blend_mode,
+            opacity,
+        );
+        return PublishedSurface::from_owned_canvas(
+            canvas,
+            face.frame_number(),
+            face.timestamp_ms(),
+        );
+    };
+
+    let target = lease.canvas_mut();
+    if scene.width() == width && scene.height() == height {
+        target
+            .as_rgba_bytes_mut()
+            .copy_from_slice(scene.rgba_bytes());
+    } else {
+        target.clear();
+    }
+    blend_face_overlay_rgba(
+        target.as_rgba_bytes_mut(),
+        face.rgba_bytes(),
+        blend_mode,
+        opacity,
+    );
+    lease.submit(face.frame_number(), face.timestamp_ms())
+}
 
 pub(super) fn blend_face_overlay_rgba(
     scene_rgba: &mut [u8],
