@@ -45,24 +45,32 @@ sccache/ccache, clang+lld linking on Linux, and Servo build state.
 
 ```
 crates/
-  hypercolor-types/        # Pure data types — zero deps, no logic, no I/O
-  hypercolor-core/         # Engine: traits, bus, sampler, config, render loop
-  hypercolor-hal/          # Hardware abstraction — USB/HID drivers
-  hypercolor-driver-api/   # Stable boundary for network driver plugins
-  hypercolor-driver-hue/   # Philips Hue network driver
-  hypercolor-driver-nanoleaf/  # Nanoleaf network driver
-  hypercolor-driver-wled/  # WLED network driver
-  hypercolor-network/      # Driver registry and orchestration
-  hypercolor-daemon/       # Binary: daemon + REST API + WebSocket + MCP
-  hypercolor-cli/          # Binary: `hypercolor` CLI tool
-  hypercolor-tui/          # Library: Ratatui terminal UI, launched via `hypercolor tui`
-  hypercolor-tray/         # Binary: system tray applet
-  hypercolor-desktop/      # Binary: Tauri native shell (excluded from default CI)
-  hypercolor-leptos-ext/   # Leptos 0.8 extension helpers for the web UI
+  hypercolor-types/              # Zero-dependency shared data vocabulary; every crate depends on it
+  hypercolor-core/               # Engine: render loop, device backends, Servo effect renderer, event bus, spatial sampler, input pipeline, scene/session management
+  hypercolor-hal/                # Hardware abstraction: USB/HID/SMBus protocol encoding and transport for the local driver families
+  hypercolor-linux-gpu-interop/  # Linux zero-copy GL→wgpu texture import for Servo frames; stubbed on other platforms
+  hypercolor-windows-pawnio/     # Windows SMBus access via the PawnIO kernel driver, with a broker service; stubbed on other platforms
+  hypercolor-driver-api/         # Stable trait/type boundary between the daemon and all driver implementations
+  hypercolor-driver-builtin/     # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
+  hypercolor-driver-hue/         # Philips Hue Bridge driver (Entertainment API over DTLS)
+  hypercolor-driver-nanoleaf/    # Nanoleaf panels driver (HTTP pairing + UDP external control)
+  hypercolor-driver-wled/        # WLED driver (DDP / E1.31 sACN streaming)
+  hypercolor-driver-govee/       # Govee smart-lighting driver (LAN UDP + Govee Cloud API)
+  hypercolor-network/            # Network driver registry and orchestration
+  hypercolor-daemon/             # Daemon binary: render-loop host + REST/WebSocket/MCP server on :9420
+  hypercolor-cli/                # The `hypercolor` CLI binary
+  hypercolor-tui/                # Ratatui terminal UI library, launched via `hypercolor tui`
+  hypercolor-tray/               # System tray applet binary
+  hypercolor-desktop/            # Tauri 2 native shell (webview wrapper; excluded from default CI)
+  hypercolor-app/                # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
+  hypercolor-cloud-api/          # Shared data-contract types for the cloud HTTP API
+  hypercolor-cloud-client/       # Daemon-side cloud client (OAuth, keyring, device identity, sync)
+  hypercolor-daemon-link/        # Daemon↔cloud multiplexed WebSocket tunnel protocol
+  hypercolor-leptos-ext/         # Leptos 0.8 extension helpers for the web UI
   hypercolor-leptos-ext-macros/  # Proc macros powering hypercolor-leptos-ext
-  hypercolor-ui/           # Leptos 0.8 CSR web UI (WASM, Trunk) — EXCLUDED from workspace
+  hypercolor-ui/                 # Leptos 0.8 CSR web UI (WASM, Trunk) — EXCLUDED from workspace
 sdk/                       # TypeScript SDK for HTML effects (Bun monorepo)
-data/drivers/vendors/      # Canonical device database (30 vendor TOMLs, consumed by `just compat`)
+data/drivers/vendors/      # Canonical device database (31 vendor TOMLs, consumed by `just compat`)
 data/compat/               # Generated compatibility matrix outputs (JSON + markdown snippets)
 docs/specs/                # Implementation specs (numbered)
 docs/design/               # Design documents (numbered)
@@ -77,17 +85,27 @@ docs/content/              # Public documentation (Zola site at https://hyperb1i
 graph TD
     T[hypercolor-types] --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
+    T --> LGI[hypercolor-linux-gpu-interop]
+    T --> WPI[hypercolor-windows-pawnio]
     HAL --> CORE
+    LGI --> CORE
+    WPI --> CORE
     T & CORE --> DAPI[hypercolor-driver-api]
     DAPI --> HUE[hypercolor-driver-hue]
     DAPI --> NL[hypercolor-driver-nanoleaf]
     DAPI --> WLED[hypercolor-driver-wled]
+    DAPI --> GV[hypercolor-driver-govee]
     DAPI --> NET[hypercolor-network]
-    CORE & HAL & DAPI & HUE & NL & WLED & NET --> D[hypercolor-daemon]
+    HAL & HUE & NL & WLED & GV --> DB[hypercolor-driver-builtin]
+    CORE & HAL & DB & NET --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     CORE & T --> TRAY[hypercolor-tray]
-    DT[hypercolor-desktop] ~~~ D
+    CAPI[hypercolor-cloud-api] --> CC[hypercolor-cloud-client]
+    CAPI --> DL[hypercolor-daemon-link]
+    D --> CC & DL
+    APP[hypercolor-app] --> D & TRAY
+    DT[hypercolor-desktop] ~~~ APP
     T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
 ```
 
@@ -281,7 +299,7 @@ hold detailed deep-dives.
 ```
 
 **Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
-Dygma, Ableton Push 2, QMK, PrismRGB. Network backends: Hue, Nanoleaf, WLED.
+Dygma, Ableton Push 2, QMK, PrismRGB, Nollie. Network backends: Hue, Nanoleaf, WLED, Govee.
 
 For HAL driver implementation patterns (zerocopy structs, CommandBuffer, Protocol trait,
 wire-format gotchas), see the `hal-driver-development` skill. For protocol research

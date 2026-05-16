@@ -144,9 +144,9 @@ New drivers land often. Full matrix: [docs/content/hardware/compatibility.md](do
 
 ### 🎨 44 Built-In Effects
 
-Hypercolor ships 44 effects across four curated packs: Synthwave, Cosmic, Audio Reactive, and Organic.
-Ambient backgrounds, shader-heavy showpieces, and beat-synced visualizers. Every one is open
-source and built to be forked.
+Hypercolor ships 44 built-in effects spanning ambient, audio-reactive, shader, and generative
+styles. Ambient backgrounds, shader-heavy showpieces, and beat-synced visualizers. Every one is
+open source and built to be forked.
 
 |               |                   |               |               |
 | ------------- | ----------------- | ------------- | ------------- |
@@ -352,7 +352,12 @@ graph TD
     end
 
     subgraph hal [hypercolor-hal]
-        H[USB/HID Drivers<br><i>Razer · Corsair · ASUS · QMK · ...</i>]
+        H[USB/HID Drivers<br><i>Razer · Corsair · ASUS · Nollie · QMK · ...</i>]
+    end
+
+    subgraph platform [Platform Interop]
+        LGI[linux-gpu-interop<br><i>GL→wgpu texture import</i>]
+        WPI[windows-pawnio<br><i>SMBus via PawnIO</i>]
     end
 
     subgraph core [hypercolor-core]
@@ -360,13 +365,25 @@ graph TD
     end
 
     subgraph drivers [Network Drivers]
-        API[driver-api] --> HUE[Hue]
+        API[driver-api]
+        DB[driver-builtin<br><i>compile-time bundle</i>]
+        API --> HUE[Hue]
         API --> NL[Nanoleaf]
         API --> WL[WLED]
+        API --> GV[Govee]
+        HUE & NL & WL & GV --> DB
     end
 
     subgraph daemon [hypercolor-daemon]
         D[REST API · WebSocket · MCP<br><i>Axum on :9420</i>]
+    end
+
+    subgraph cloud [Cloud]
+        CAPI[cloud-api<br><i>contract types</i>]
+        CC[cloud-client<br><i>OAuth · sync</i>]
+        DL[daemon-link<br><i>mux WebSocket tunnel</i>]
+        CAPI --> CC
+        CAPI --> DL
     end
 
     subgraph clients [Clients]
@@ -375,13 +392,18 @@ graph TD
         UI[Web UI<br><i>Leptos WASM</i>]
         DT[Desktop<br><i>Tauri</i>]
         TR[Tray<br><i>System applet</i>]
+        APP[app<br><i>unified shell</i>]
     end
 
-    T --> H & C
+    T --> H & C & LGI & WPI
     H --> C
+    LGI & WPI --> C
     C --> API
-    C & H & API --> D
-    D --> CLI & TUI & UI & DT & TR
+    H --> DB
+    C & H & DB --> D
+    D --> CC & DL
+    D --> CLI & TUI & UI
+    APP --> DT & TR & D
 ```
 
 It's Rust all the way down. The daemon, CLI, TUI, tray applet, and HAL drivers are
