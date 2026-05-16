@@ -2,6 +2,10 @@
 
 > From soundwave to photon. Every struct, every constant, every clock edge.
 
+**Status:** Implemented
+**Crate:** `hypercolor-core`
+**Module path:** `hypercolor_core::input`
+
 ---
 
 ## 1. AudioData Struct -- The Contract

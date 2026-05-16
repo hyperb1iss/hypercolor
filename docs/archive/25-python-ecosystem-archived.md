@@ -1,8 +1,13 @@
 # Spec 25 -- Python Ecosystem & Home Assistant Integration
 
+> **Archived (2026-05-16):** This spec describes `hypercolor-python`,
+> `hypercolor-homeassistant`, and `hypercolor-card`. None of these projects exist in
+> the codebase and none are on the v0.1 launch path. This file is retained for
+> historical reference only. Do not implement against it.
+
 > Three-project stack: async Python client, Home Assistant integration, and Lovelace card — all built on modern 2026 tooling.
 
-**Status:** Draft
+**Status:** Draft (archived — not shipping in v0.1)
 **Date:** 2026-03-08
 **Projects:** `hypercolor-python`, `hypercolor-homeassistant`, `hypercolor-card`
 **Reference:** Prior stack (`signalrgb-python`, `signalrgb-homeassistant`, `hyper-light-card`)

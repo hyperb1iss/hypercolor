@@ -4,7 +4,16 @@
 
 **Status:** Implementation-ready
 **Crate:** `hypercolor-core`
-**Module path:** `hypercolor_core::{canvas, render, effect, frame, input, timer}`
+**Module path:** `hypercolor_core::{effect, engine, input, scene, spatial, bus}`
+
+> **Note (2026-05-16):** Several names in this spec were written before the shipped
+> module layout was finalized. Section 3 used `EffectEngine` — the shipping trait is
+> `EffectRenderer` (in `hypercolor_core::effect::traits`). Section 2.3 used
+> Gaming/Economy/Standby/Suspended tier names — the shipping variants are
+> Minimal/Low/Medium/High/Full (see corrected enum below). `Canvas` lives in
+> `hypercolor_types::canvas`, not in `hypercolor-core`. The frame timer is exposed as
+> `FpsController` in `hypercolor_core::engine::fps`, not a standalone `FrameTimer`
+> module. The overall design intent remains accurate.
 
 ---
 
@@ -12,7 +21,7 @@
 
 1. [Canvas](#1-canvas)
 2. [RenderLoop](#2-renderloop)
-3. [EffectEngine Trait](#3-effectengine-trait)
+3. [EffectRenderer Trait](#3-effectrenderer-trait)
 4. [FrameData](#4-framedata)
 5. [InputData](#5-inputdata)
 6. [FrameTimer](#6-frametimer)
@@ -295,10 +304,16 @@ The render loop is the frame pipeline. It sequences five stages within a 16.6ms 
 ### 2.1 Pipeline Stages
 
 ```
-Sample Inputs --> Render Effect --> Sample Canvas --> Push Devices --> Publish Bus
-   (1.0ms)         (8.0ms)          (0.5ms)          (2.0ms)         (0.1ms)
-                                                                    [5.0ms slack]
+Sample Inputs --> Compose (SparkleFlinger) --> Sample Canvas --> Push Devices --> Publish Bus
+   (1.0ms)              (8.0ms)                  (0.5ms)           (2.0ms)         (0.1ms)
+                                                                              [5.0ms slack]
 ```
+
+The composition stage is handled by `hypercolor-daemon::render_thread::sparkleflinger`.
+SparkleFlinger blends multiple producer surfaces (`CompositionPlan`) into a single
+canonical canvas before the spatial sampler maps pixels to LED positions. The five-stage
+high-level shape above is still accurate; the "Render Effect" label in the spec predates
+the multi-layer compositor and should be read as the full compose step.
 
 ### 2.2 Core Type
 
@@ -316,7 +331,7 @@ use tokio::sync::{broadcast, watch, mpsc};
 /// via bounded mpsc channels and transmit asynchronously.
 pub struct RenderLoop {
     /// The active effect renderer (wgpu or Servo).
-    effect_engine: Box<dyn EffectEngine>,
+    effect_engine: Box<dyn EffectRenderer>,
 
     /// Spatial layout describing all device zones and LED positions.
     layout: SpatialLayout,
@@ -380,50 +395,51 @@ pub enum RenderLoopState {
 ```rust
 /// Performance tiers that control target frame rate.
 ///
-/// The system automatically shifts between tiers based on system load,
-/// GameMode signals, battery state, and consecutive frame budget misses.
+/// The system automatically shifts between tiers based on actual frame
+/// render times. Downshift is fast (2 consecutive budget misses).
+/// Upshift is slow (sustained headroom over a configurable window)
+/// to prevent oscillation.
 ///
-/// Downshift is fast (2 consecutive misses). Upshift is slow (5-10 seconds
-/// of sustained headroom) to prevent oscillation.
+/// Located in `hypercolor_core::engine::fps`. Managed by `FpsController`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum FpsTier {
-    /// 60 fps, 16.6ms budget. Desktop idle, light applications.
-    Full = 0,
+    /// 10 fps, 100ms budget. Absolute minimum — idle/standby.
+    Minimal = 0,
 
-    /// 30 fps, 33.3ms budget. Game detected, moderate GPU/CPU load.
-    Gaming = 1,
+    /// 20 fps, 50ms budget. Low-power or heavy system load.
+    Low = 1,
 
-    /// 15 fps, 66.6ms budget. Heavy system load, laptop on battery.
-    Economy = 2,
+    /// 30 fps, ~33.3ms budget. Balanced performance.
+    Medium = 2,
 
-    /// 5 fps, 200ms budget. Screen off, idle breathing effect.
-    Standby = 3,
+    /// 45 fps, ~22.2ms budget. High quality with moderate headroom.
+    High = 3,
 
-    /// 0 fps. System sleep, no connected devices, daemon backgrounded.
-    Suspended = 4,
+    /// 60 fps, ~16.6ms budget. Full fidelity, desktop idle.
+    Full = 4,
 }
 
 impl FpsTier {
     /// Target frame interval for this tier.
     pub fn frame_interval(&self) -> Duration {
         match self {
-            FpsTier::Full => Duration::from_micros(16_666),
-            FpsTier::Gaming => Duration::from_micros(33_333),
-            FpsTier::Economy => Duration::from_micros(66_666),
-            FpsTier::Standby => Duration::from_millis(200),
-            FpsTier::Suspended => Duration::MAX,
+            FpsTier::Minimal => Duration::from_millis(100),
+            FpsTier::Low => Duration::from_millis(50),
+            FpsTier::Medium => Duration::from_nanos(33_333_333),
+            FpsTier::High => Duration::from_nanos(22_222_222),
+            FpsTier::Full => Duration::from_nanos(16_666_666),
         }
     }
 
     /// Target FPS as a human-readable integer.
     pub fn fps(&self) -> u32 {
         match self {
+            FpsTier::Minimal => 10,
+            FpsTier::Low => 20,
+            FpsTier::Medium => 30,
+            FpsTier::High => 45,
             FpsTier::Full => 60,
-            FpsTier::Gaming => 30,
-            FpsTier::Economy => 15,
-            FpsTier::Standby => 5,
-            FpsTier::Suspended => 0,
         }
     }
 }
@@ -431,20 +447,18 @@ impl FpsTier {
 /// Tier transition thresholds and hysteresis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TierTransitionConfig {
-    /// Consecutive frame misses to trigger immediate downshift.
+    /// Consecutive frame budget misses before downshifting.
     pub downshift_miss_threshold: u32,            // default: 2
 
-    /// Seconds of sustained headroom before upshifting.
-    pub upshift_sustain_seconds: f64,             // default: 5.0
+    /// Seconds of sustained headroom required before upshifting.
+    pub upshift_sustain_secs: f64,                // default: 5.0
 
-    /// GPU usage percent above which Gaming tier is recommended.
-    pub gpu_gaming_threshold: f32,                // default: 70.0
+    /// EWMA headroom ratio below which upshift becomes eligible.
+    /// A value of 0.7 means smoothed frame time must be under 70% of budget.
+    pub upshift_headroom_ratio: f64,              // default: 0.7
 
-    /// CPU usage percent above which Gaming tier is recommended.
-    pub cpu_gaming_threshold: f32,                // default: 80.0
-
-    /// Seconds after GameMode deactivates before upshifting from Gaming.
-    pub gamemode_cooldown_seconds: f64,           // default: 10.0
+    /// EWMA smoothing factor (alpha). Lower values dampen spikes more.
+    pub ewma_alpha: f64,                          // default: 0.05
 }
 ```
 
@@ -485,7 +499,7 @@ impl RenderLoop {
         let input_data = self.input_sources.sample();
         self.timer.end_stage(PipelineStage::InputSampling);
 
-        // Stage 2: Effect rendering
+        // Stage 2: Effect rendering (via EffectRenderer)
         self.timer.begin_stage(PipelineStage::EffectRendering);
         self.effect_engine.render(&input_data, &mut self.canvas).await;
         self.timer.end_stage(PipelineStage::EffectRendering);
@@ -538,9 +552,9 @@ pub enum SkipDecision {
 
 ---
 
-## 3. EffectEngine Trait
+## 3. EffectRenderer Trait
 
-The trait that both render paths implement. One interface, two worlds: wgpu shaders running in microseconds, Servo pages running in milliseconds. The `RenderLoop` is polymorphic over this trait.
+The trait that both render paths implement. One interface, two worlds: wgpu shaders running in microseconds, Servo pages running in milliseconds. The daemon's render thread is polymorphic over this trait.
 
 ### 3.1 Trait Definition
 
@@ -549,9 +563,11 @@ use std::fmt;
 
 /// The interface every render backend must implement.
 ///
-/// An `EffectEngine` receives aggregated input data and writes RGBA pixels
+/// An `EffectRenderer` receives per-frame input data and writes RGBA pixels
 /// into a `Canvas`. The render loop calls `render()` once per frame and
 /// expects the canvas to be fully updated when the call returns.
+///
+/// Located in `hypercolor_core::effect::traits`.
 ///
 /// # Implementors
 ///
@@ -567,7 +583,7 @@ use std::fmt;
 /// Implementations are `Send` but *not* required to be `Sync`. The render loop
 /// owns the engine exclusively -- no concurrent access.
 #[async_trait::async_trait]
-pub trait EffectEngine: Send {
+pub trait EffectRenderer: Send {
     /// Human-readable name of this renderer for logging and metrics.
     fn name(&self) -> &str;
 
@@ -1270,7 +1286,7 @@ impl FrameTimer {
             }
             Some(since) => {
                 now.duration_since(since).as_secs_f64()
-                    >= config.upshift_sustain_seconds
+                    >= config.upshift_sustain_secs
             }
         }
     }
@@ -1626,7 +1642,7 @@ These hold true on every platform:
 ## Appendix A: Type Dependency Graph
 
 ```
-EffectEngine (trait)
+EffectRenderer (trait)
     |
     +-- reads InputData
     |       +-- TimeData

@@ -8,7 +8,7 @@
 **Author:** Nova
 **Date:** 2026-03-04
 **Supersedes:** Spec 04 (USB HID Backend — now deprecated)
-**Companion:** Spec 49 (Nollie Protocol Driver)
+**Companion:** `45-nollie-protocol-driver.md` (Nollie Protocol Driver; note: file is numbered 45 but its header reads "Spec 49" — a known numbering collision)
 
 ---
 

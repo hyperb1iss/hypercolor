@@ -6,7 +6,7 @@
 > events, and transitions between states with the same energy the daemon
 > renders to physical LEDs.
 
-**Status:** Draft
+**Status:** Substantially implemented — `MotionKey`, `MotionSystem`, and tachyonfx integration are live in `hypercolor-tui`; title-shimmer effect running
 **Author:** Nova
 **Date:** 2026-04-09
 **Crates:** `hypercolor-tui`

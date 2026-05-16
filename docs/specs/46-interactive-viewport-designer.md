@@ -8,7 +8,7 @@
 > inline `ViewportPicker` remains for quick adjustments; the modal is
 > where precise work happens.
 
-**Status:** Draft (v1)
+**Status:** Implemented — `ViewportDesigner` Leptos component shipped in `hypercolor-ui`
 **Author:** Nova
 **Date:** 2026-04-17
 **Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`

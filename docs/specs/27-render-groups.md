@@ -6,6 +6,7 @@
 **Crate:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
 **Depends on:** Spatial Layout Engine (06), Effect System (07), Scenes & Automation (13)
 **Evolves:** Scene struct (13 §1), ZoneAssignment (13 §2), render thread pipeline
+**See also:** Spec 48 (Canonical Render Pipeline) for the current render loop contract
 
 ---
 

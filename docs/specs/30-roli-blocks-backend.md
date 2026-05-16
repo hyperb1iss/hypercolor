@@ -5,7 +5,6 @@
 **Status:** Draft
 **Crate:** `hypercolor-core`
 **Module path:** `hypercolor_core::device::blocks`
-**Feature flag:** `blocks` (default-enabled)
 **Author:** Nova
 **Date:** 2026-03-13
 

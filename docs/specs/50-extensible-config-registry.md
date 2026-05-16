@@ -8,7 +8,7 @@
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-daemon`
-**Related:** `docs/specs/12-configuration.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/35-network-driver-architecture.md`, `docs/specs/33-network-device-backends.md`
+**Related:** `docs/specs/12-configuration.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/35-network-driver-architecture.md`, `docs/archive/33-network-device-backends.md`
 
 ---
 

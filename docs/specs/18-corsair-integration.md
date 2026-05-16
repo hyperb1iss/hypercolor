@@ -1,12 +1,22 @@
 # 18 -- Corsair Integration
 
-> Two-phase Corsair strategy: bridge first for instant iCUE LINK support, native hub-and-spoke driver later for per-LED 60fps control.
+> Native Corsair driver: iCUE LINK hub-and-spoke, Lighting Node, and peripheral families.
 
-**Status:** Draft
+**Status:** Implemented (native driver; bridge approach not shipped)
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::corsair`
 **Author:** Nova
 **Date:** 2026-03-04
+
+> **Note (2026-05-16):** This spec was written around a two-phase strategy where Phase 1
+> was an OpenLinkHub REST bridge. That bridge was never shipped. The driver at
+> `crates/hypercolor-hal/src/drivers/corsair/` is fully native — modules `link/`,
+> `lighting_node/`, `peripheral/`, `lcd/`, `framing.rs`, and `types.rs` — with no
+> OpenLinkHub dependency. Sections 3, 4, 7.1, and 8.1 describe the bridge backend
+> (`CorsairBridgeBackend`) as "Phase 1"; that code does not exist in the codebase.
+> An implementer should read those sections as rejected design history, not current
+> architecture. The native iCUE LINK protocol details in Section 6 are accurate and
+> reflect the shipping implementation.
 
 ---
 

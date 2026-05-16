@@ -1632,7 +1632,14 @@ let mut frames = bus.subscribe_frames();
 
 ## 8. Client Protocol for TUI/CLI
 
-The shipping v0.1 clients use the daemon's REST and WebSocket endpoints on `:9420`. Older platform-native IPC sketches in this section are retained as design background, not as the current CLI transport contract.
+> **Historical Design — Not Implemented (2026-05-16):** The Unix socket / platform-native
+> IPC approach described in this section was designed but not shipped. The v0.1 CLI
+> communicates via HTTP REST to `127.0.0.1:9420`; the TUI connects via WebSocket at
+> `ws://127.0.0.1:9420/api/v1/ws`. See Section 9 for the current transport contract.
+> The content below is retained as design-background reference only — do not implement
+> against it.
+
+The shipping v0.1 clients use the daemon's REST and WebSocket endpoints on `:9420`. The platform-native IPC sketches below are retained as design background, not as the current CLI transport contract.
 
 ### 8.1 Transport Selection
 

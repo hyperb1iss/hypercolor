@@ -7,7 +7,7 @@
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-hal`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
-**Related:** `docs/specs/35-network-driver-architecture.md`, `docs/specs/50-extensible-config-registry.md`, `docs/specs/49-nollie-protocol-driver.md`, `docs/specs/02-device-backend.md`, `docs/specs/34-device-fingerprints.md`
+**Related:** `docs/specs/35-network-driver-architecture.md`, `docs/specs/50-extensible-config-registry.md`, `docs/specs/45-nollie-protocol-driver.md`, `docs/specs/02-device-backend.md`, `docs/specs/34-device-fingerprints.md`
 
 ---
 

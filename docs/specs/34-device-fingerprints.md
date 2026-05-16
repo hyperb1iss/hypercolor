@@ -2,6 +2,8 @@
 
 > Stable identity across reboots, cable swaps, and IP changes. A fingerprint is a promise that the same physical hardware maps to the same `DeviceId` forever.
 
+**Status:** Implemented
+
 _Source: [`hypercolor-types/src/device.rs`](../../crates/hypercolor-types/src/device.rs) (`DeviceIdentifier`, `DeviceFingerprint`, `stable_device_id`). Per-driver construction in the USB, SMBus, WLED, Hue, Nanoleaf, and ROLI Blocks scanner/backend modules._
 
 ---

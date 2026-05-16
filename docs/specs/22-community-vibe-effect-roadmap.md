@@ -1,4 +1,7 @@
-# Community Vibe Effect Roadmap
+# 22 — Community Vibe Effect Roadmap
+
+**Status:** Reference / Ongoing
+**Scope:** Effect curation and design guidelines for SDK effects
 
 ## Goal
 

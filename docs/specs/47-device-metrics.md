@@ -1,5 +1,7 @@
 # 47. Device Metrics
 
+**Status:** Implemented
+
 ## Summary
 
 Hypercolor exposes per-device output telemetry through `GET /api/v1/devices/metrics`.

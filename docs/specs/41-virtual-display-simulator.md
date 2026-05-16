@@ -5,7 +5,7 @@
 > inspected visually in browser and TUI without requiring physical LCD
 > hardware.
 
-**Status:** In Progress
+**Status:** Implemented — `SimulatedDisplayStore`, `SimulatedDisplayConfig`, and virtual display backend shipped in `hypercolor-daemon`; all delivery waves through Wave 4 landed
 **Author:** Nova
 **Date:** 2026-04-11
 **Crates:** `hypercolor-types`, `hypercolor-daemon`, `hypercolor-tui`

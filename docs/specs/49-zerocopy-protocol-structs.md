@@ -1,6 +1,6 @@
 # Typed Protocol Messages via `zerocopy` in `hypercolor-hal`
 
-**Status:** Planned (blocked by in-flight HID + Razer stack work)
+**Status:** Implemented; Razer Wave 1 and 2 complete, pattern adopted across all major HAL driver families (razer, asus, corsair, lianli, nollie, prismrgb, push2, qmk). `CommandBuffer::push_struct` provides a first-class zerocopy integration point for future drivers.
 **Scope:** `hypercolor-hal` crate only
 **Success criteria:** All Razer wire-format packets use `#[derive(FromBytes, IntoBytes)]` structs instead of manual offset indexing. Corsair Lighting Node Direct packets migrated as stretch. `just verify` passes. Zero `unsafe`. No behavioral changes.
 
@@ -249,17 +249,15 @@ uchroma uses u64-width XOR accumulation with horizontal fold — faster for the 
 
 ## Summary
 
-| Wave | Tasks   | Parallelism   | Theme                              |
-| ---- | ------- | ------------- | ---------------------------------- |
-| 1    | 1, 2, 3 | Sequential    | Foundation: dep + struct + CRC     |
-| 2    | 4, 5, 6 | 4 ∥ 5, then 6 | Core: build + parse migration      |
-| 3    | 7, 8, 9 | All parallel  | Frame encoders (verification pass) |
-| 4    | 10      | Single task   | Corsair Lighting Node (stretch)    |
-| 5    | 11, 12  | Parallel      | Optimization polish                |
+| Wave | Tasks   | Parallelism   | Theme                              | Status    |
+| ---- | ------- | ------------- | ---------------------------------- | --------- |
+| 1    | 1, 2, 3 | Sequential    | Foundation: dep + struct + CRC     | Shipped   |
+| 2    | 4, 5, 6 | 4 ∥ 5, then 6 | Core: build + parse migration      | Shipped   |
+| 3    | 7, 8, 9 | All parallel  | Frame encoders (verification pass) | Shipped   |
+| 4    | 10      | Single task   | Corsair Lighting Node (stretch)    | Shipped   |
+| 5    | 11, 12  | Parallel      | Optimization polish                | Shipped   |
 
-**Core value:** Waves 1–3 (6 tasks, ~1 session)
-**Stretch:** Wave 4 (Lighting Node only — LINK/LCD out of scope)
-**Polish:** Wave 5 (opportunistic)
+Waves 1–4 and all stretch/polish tasks shipped. The pattern has been adopted beyond the original Razer scope: asus, lianli, nollie, prismrgb, push2, and qmk HAL drivers all use typed zerocopy structs. `CommandBuffer::push_struct` landed as the first-class integration point for new drivers.
 
 ## Compatibility Notes
 

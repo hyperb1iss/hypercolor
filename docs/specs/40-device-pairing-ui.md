@@ -1,14 +1,14 @@
-# Spec 34 — Device Pairing UI and Generic Pairing Surface
+# Spec 40 — Device Pairing UI and Generic Pairing Surface
 
 > Implementation-ready specification for a user-facing pairing flow for
 > authenticated network devices, starting with Philips Hue and Nanoleaf and
 > extending cleanly to secured WLED deployments.
 
-**Status:** Draft
+**Status:** Implemented — `DevicePairingModal` and `ForgetCredentialsModal` shipped in `hypercolor-ui`
 **Author:** Nova
 **Date:** 2026-03-15
 **Crates:** `hypercolor-ui`, `hypercolor-daemon`, `hypercolor-core`, `hypercolor-types`
-**Related:** `docs/specs/33-network-device-backends.md`
+**Related:** `docs/archive/33-network-device-backends.md`
 
 ---
 

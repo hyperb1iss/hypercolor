@@ -5,6 +5,7 @@
 **Status:** Draft
 **Design Doc:** [07-scenes-automation.md](../design/07-scenes-automation.md)
 **Depends on:** Effect Engine, Spatial Layout Engine, Audio Pipeline, Event Bus (`HypercolorBus`)
+**See also:** Spec 27 (Render Groups) which evolved the Scene struct defined here
 
 ---
 

@@ -4,11 +4,11 @@
 > backends behind a modular driver architecture with clear host capabilities,
 > minimal `#[cfg]` spread, and a future path to external plugins.
 
-**Status:** Draft
+**Status:** Implemented — `DriverModuleRegistry`, `hypercolor-driver-api`, and `hypercolor-network` are live
 **Author:** Nova
 **Date:** 2026-03-15
 **Crates:** `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-daemon`, `hypercolor-cli`
-**Related:** `docs/specs/33-network-device-backends.md`, `docs/specs/34-device-pairing-ui.md`
+**Related:** `docs/archive/33-network-device-backends.md`, `docs/specs/40-device-pairing-ui.md`
 
 ---
 

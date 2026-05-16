@@ -8,7 +8,7 @@
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`, `hypercolor-tui`, `hypercolor-cli`
-**Related:** `docs/specs/50-extensible-config-registry.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/34-device-pairing-ui.md`, `docs/specs/47-device-metrics.md`
+**Related:** `docs/specs/50-extensible-config-registry.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/40-device-pairing-ui.md`, `docs/specs/47-device-metrics.md`
 
 ---
 

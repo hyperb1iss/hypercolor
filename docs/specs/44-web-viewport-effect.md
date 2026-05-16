@@ -5,7 +5,7 @@
 > extends cleanly to future viewport-style effects. Reuses the existing
 > Servo rendering path and the existing region-picker UI patterns.
 
-**Status:** Draft (v1)
+**Status:** Implemented — `WebViewportRenderer` fully implemented in `hypercolor-core`
 **Author:** Nova
 **Date:** 2026-04-12
 **Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-ui`, `@hypercolor/sdk`

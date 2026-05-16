@@ -1,3 +1,8 @@
+> **Archived 2026-05-16.** This specification shipped and is superseded by the
+> per-driver crates (`hypercolor-driver-hue`, `hypercolor-driver-nanoleaf`,
+> `hypercolor-driver-wled`) and the `hypercolor-network` registry. Retained for
+> historical reference.
+
 # Spec 33 — Network Device Backends (Hue, Nanoleaf, Shared Infrastructure)
 
 > Implementation-ready specification for Philips Hue, Nanoleaf, and shared network
