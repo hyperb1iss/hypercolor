@@ -9,7 +9,7 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::midi::{
     midi_usb_path_from_sound_card_sysfs_for_testing,
-    rawmidi_name_from_sound_card_and_seq_port_for_testing,
+    rawmidi_name_from_sound_card_and_seq_port_for_testing, rawmidi_open_retry_for_testing,
 };
 
 #[test]
@@ -117,4 +117,15 @@ fn rawmidi_name_maps_alsa_seq_port_to_user_subdevice() {
         rawmidi_name_from_sound_card_and_seq_port_for_testing(3, -1),
         None
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_open_retry_waits_for_hotplug_device_node() {
+    let (attempts, elapsed) =
+        rawmidi_open_retry_for_testing(2, Duration::from_secs(1), Duration::from_millis(50))
+            .expect("rawmidi retry should eventually succeed");
+
+    assert_eq!(attempts, 3);
+    assert_eq!(elapsed, Duration::from_millis(100));
 }

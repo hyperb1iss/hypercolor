@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use alsa::{Direction, Rawmidi, seq::Seq};
@@ -24,6 +24,10 @@ use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const PUSH2_MIDI_SHORT_PACKET_SPACING: Duration = Duration::from_micros(500);
 const PUSH2_MIDI_SYSEX_PACKET_SPACING: Duration = Duration::from_millis(1);
+#[cfg(target_os = "linux")]
+const PUSH2_RAWMIDI_OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "linux")]
+const PUSH2_RAWMIDI_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const SYSEX_QUEUE_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -475,12 +479,14 @@ fn open_push2_midi_output(
 ) -> Result<Push2MidiOutput, TransportError> {
     let output_port_id = output_port.push2_port_id();
     if let Some(rawmidi_name) = rawmidi_name_from_seq_port_id(&output_port_id) {
-        match Rawmidi::new(&rawmidi_name, Direction::Playback, false) {
-            Ok(rawmidi) => {
+        match open_push2_rawmidi_with_retry(&rawmidi_name) {
+            Ok((rawmidi, attempts, elapsed)) => {
                 debug!(
                     midi_output = output_name,
                     midi_port_id = output_port_id,
-                    rawmidi = rawmidi_name,
+                    rawmidi = %rawmidi_name,
+                    attempts,
+                    wait_ms = elapsed.as_millis(),
                     "opened Push 2 raw MIDI output"
                 );
                 return Ok(Push2MidiOutput::Raw(rawmidi));
@@ -489,9 +495,10 @@ fn open_push2_midi_output(
                 warn!(
                     midi_output = output_name,
                     midi_port_id = output_port_id,
-                    rawmidi = rawmidi_name,
+                    rawmidi = %rawmidi_name,
                     error = %error,
-                    "failed to open Push 2 raw MIDI output; falling back to sequencer output"
+                    retry_timeout_ms = PUSH2_RAWMIDI_OPEN_RETRY_TIMEOUT.as_millis(),
+                    "failed to open Push 2 raw MIDI output after retry; falling back to sequencer output"
                 );
             }
         }
@@ -501,6 +508,46 @@ fn open_push2_midi_output(
         .connect(output_port, "hypercolor-push2-output")
         .map(Push2MidiOutput::Midir)
         .map_err(|error| map_midi_connect_error(&error, "output"))
+}
+
+#[cfg(target_os = "linux")]
+fn open_push2_rawmidi_with_retry(
+    rawmidi_name: &str,
+) -> Result<(Rawmidi, u32, Duration), alsa::Error> {
+    retry_rawmidi_open(
+        || Rawmidi::new(rawmidi_name, Direction::Playback, false),
+        std::thread::sleep,
+        {
+            let started_at = Instant::now();
+            move || started_at.elapsed()
+        },
+        PUSH2_RAWMIDI_OPEN_RETRY_TIMEOUT,
+        PUSH2_RAWMIDI_OPEN_RETRY_INTERVAL,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn retry_rawmidi_open<T, E>(
+    mut open: impl FnMut() -> Result<T, E>,
+    mut sleep: impl FnMut(Duration),
+    mut elapsed: impl FnMut() -> Duration,
+    timeout: Duration,
+    retry_interval: Duration,
+) -> Result<(T, u32, Duration), E> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match open() {
+            Ok(rawmidi) => return Ok((rawmidi, attempts, elapsed())),
+            Err(error) => {
+                let waited = elapsed();
+                if waited >= timeout {
+                    return Err(error);
+                }
+                sleep(retry_interval.min(timeout.saturating_sub(waited)));
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -755,6 +802,35 @@ pub fn rawmidi_name_from_sound_card_and_seq_port_for_testing(
     seq_port: i32,
 ) -> Option<String> {
     rawmidi_name_from_sound_card_and_seq_port(card, seq_port)
+}
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn rawmidi_open_retry_for_testing(
+    failures_before_success: usize,
+    timeout: Duration,
+    retry_interval: Duration,
+) -> Result<(u32, Duration), String> {
+    use std::cell::Cell;
+
+    let attempts = Cell::new(0_u32);
+    let elapsed = Cell::new(Duration::ZERO);
+    retry_rawmidi_open(
+        || {
+            let next_attempt = attempts.get().saturating_add(1);
+            attempts.set(next_attempt);
+            if usize::try_from(next_attempt).unwrap_or(usize::MAX) > failures_before_success {
+                Ok(())
+            } else {
+                Err("rawmidi not ready".to_owned())
+            }
+        },
+        |delay| elapsed.set(elapsed.get().saturating_add(delay)),
+        || elapsed.get(),
+        timeout,
+        retry_interval,
+    )
+    .map(|((), attempts, elapsed)| (attempts, elapsed))
 }
 
 #[doc(hidden)]
