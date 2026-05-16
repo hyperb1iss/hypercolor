@@ -11,9 +11,13 @@ use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState};
-use super::render_groups::{GroupCanvasFrame, RenderGroupEffectError, RenderGroupResult};
+use super::render_groups::{
+    GroupCanvasFrame, PendingGroupCanvasFrame, RenderGroupEffectError, RenderGroupResult,
+};
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
+#[cfg(feature = "servo-gpu-import")]
+use super::sparkleflinger::{CompositionLayer, CompositionPlan};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::preview_runtime::PreviewDemandSummary;
 
@@ -253,6 +257,8 @@ impl ComposeContext<'_> {
                 self.publish_effect_recovered();
                 let scene_frame = render_group_result.scene_frame.clone();
                 let composition_start = Instant::now();
+                let group_canvases =
+                    self.materialize_group_canvases(render_group_result.group_canvases);
                 let compiled_plan = self.compose.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
@@ -297,7 +303,7 @@ impl ComposeContext<'_> {
                     composed_frame: composed,
                     preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
-                    group_canvases: render_group_result.group_canvases,
+                    group_canvases,
                     active_group_canvas_ids: render_group_result.active_group_canvas_ids,
                     led_sampling_strategy: render_group_result.led_sampling_strategy,
                     producer_render_us: render_group_result.render_us,
@@ -438,6 +444,65 @@ impl ComposeContext<'_> {
             self.state.preview_runtime.screen_canvas_receiver_count(),
             self.state.preview_runtime.screen_canvas_demand(),
         )
+    }
+
+    fn materialize_group_canvases(
+        &mut self,
+        group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
+    ) -> Vec<(RenderGroupId, GroupCanvasFrame)> {
+        group_canvases
+            .into_iter()
+            .filter_map(|(group_id, frame)| {
+                self.materialize_group_canvas(frame)
+                    .map(|frame| (group_id, frame))
+            })
+            .collect()
+    }
+
+    #[cfg_attr(
+        not(feature = "servo-gpu-import"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "the return type stays feature-stable because GPU readback can skip a frame"
+        )
+    )]
+    fn materialize_group_canvas(
+        &mut self,
+        group_canvas: PendingGroupCanvasFrame,
+    ) -> Option<GroupCanvasFrame> {
+        let PendingGroupCanvasFrame {
+            frame,
+            display_target,
+        } = group_canvas;
+        let surface = match frame {
+            ProducerFrame::Canvas(canvas) => PublishedSurface::from_owned_canvas(canvas, 0, 0),
+            ProducerFrame::Surface(surface) => surface,
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(frame) => {
+                let width = frame.width;
+                let height = frame.height;
+                let plan = CompositionPlan::single(
+                    width,
+                    height,
+                    CompositionLayer::replace_opaque(ProducerFrame::Gpu(frame)),
+                )
+                .with_cpu_replay_cacheable(false);
+                let composed = self
+                    .compose
+                    .display_sparkleflinger
+                    .compose_for_outputs(plan, true, None);
+                composed.sampling_surface.or_else(|| {
+                    composed
+                        .sampling_canvas
+                        .map(|canvas| PublishedSurface::from_owned_canvas(canvas, 0, 0))
+                })?
+            }
+        };
+
+        Some(GroupCanvasFrame {
+            surface,
+            display_target,
+        })
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {

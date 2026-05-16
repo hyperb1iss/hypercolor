@@ -633,6 +633,8 @@ pub(crate) struct RenderCaches {
     pub(crate) screen_queue: ProducerQueue,
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
+    #[cfg(feature = "servo-gpu-import")]
+    pub(crate) display_sparkleflinger: SparkleFlinger,
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
     pub(crate) render_group_runtime: RenderGroupRuntime,
@@ -644,6 +646,8 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) screen_queue: &'a mut ProducerQueue,
     pub(crate) composition_planner: &'a mut CompositionPlanner,
     pub(crate) sparkleflinger: &'a mut SparkleFlinger,
+    #[cfg(feature = "servo-gpu-import")]
+    pub(crate) display_sparkleflinger: &'a mut SparkleFlinger,
     pub(crate) render_group_runtime: &'a mut RenderGroupRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
 }
@@ -910,6 +914,8 @@ impl RenderCaches {
             screen_queue: &mut self.screen_queue,
             composition_planner: &mut self.composition_planner,
             sparkleflinger: &mut self.sparkleflinger,
+            #[cfg(feature = "servo-gpu-import")]
+            display_sparkleflinger: &mut self.display_sparkleflinger,
             render_group_runtime: &mut self.render_group_runtime,
             output_artifacts: &mut self.output_artifacts,
         }
@@ -1058,6 +1064,12 @@ impl PipelineRuntime {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger: SparkleFlinger::new_with_gpu_device(
+                    render_acceleration_mode,
+                    #[cfg(feature = "wgpu")]
+                    render_gpu_device.clone(),
+                )?,
+                #[cfg(feature = "servo-gpu-import")]
+                display_sparkleflinger: SparkleFlinger::new_with_gpu_device(
                     render_acceleration_mode,
                     #[cfg(feature = "wgpu")]
                     render_gpu_device,

@@ -39,6 +39,24 @@ const DIRECT_SURFACE_POOL_INITIAL_SLOTS: usize = 6;
 const DIRECT_SURFACE_POOL_MAX_SLOTS: usize = 32;
 
 #[derive(Clone)]
+pub(crate) struct PendingGroupCanvasFrame {
+    pub frame: ProducerFrame,
+    pub display_target: DisplayFaceTarget,
+}
+
+#[cfg(test)]
+impl PendingGroupCanvasFrame {
+    fn surface_for_test(&self) -> &PublishedSurface {
+        match &self.frame {
+            ProducerFrame::Surface(surface) => surface,
+            ProducerFrame::Canvas(_) => panic!("direct group test expected a published surface"),
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(_) => panic!("direct group test expected a CPU surface"),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct GroupCanvasFrame {
     pub surface: PublishedSurface,
     pub display_target: DisplayFaceTarget,
@@ -46,7 +64,7 @@ pub(crate) struct GroupCanvasFrame {
 
 pub(crate) struct RenderGroupResult {
     pub scene_frame: ProducerFrame,
-    pub group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
+    pub group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
     pub active_group_canvas_ids: Vec<RenderGroupId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub render_us: u32,
@@ -76,7 +94,7 @@ struct RetainedRenderGroupFrame {
 
 #[derive(Clone)]
 struct RetainedDirectGroupFrame {
-    frame: GroupCanvasFrame,
+    frame: PendingGroupCanvasFrame,
     rendered_at_ms: u32,
     dependency_key: SceneDependencyKey,
 }
@@ -351,35 +369,21 @@ impl RenderGroupRuntime {
                     group_canvases.push((group.id, retained));
                     continue;
                 }
-                let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
-                    continue;
-                };
-                let Some(mut lease) = surface_pool.dequeue() else {
-                    continue;
-                };
                 let render_start = Instant::now();
-                self.effect_pool
-                    .render_group_into(
-                        group,
-                        delta_secs,
-                        audio,
-                        interaction,
-                        screen,
-                        sensors,
-                        lease.canvas_mut(),
-                    )
-                    .map_err(|error| {
-                        anyhow::Error::new(render_group_effect_error(group, registry, error))
-                    })?;
+                let Some(frame) = self.render_direct_group_frame(
+                    group,
+                    registry,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                )?
+                else {
+                    continue;
+                };
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
                 active_group_canvas_ids.push(group.id);
-                let frame = GroupCanvasFrame {
-                    surface: lease.submit(0, 0),
-                    display_target: group
-                        .display_target
-                        .clone()
-                        .expect("direct display group should carry a display target"),
-                };
                 self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
                 group_canvases.push((group.id, frame));
                 continue;
@@ -641,35 +645,21 @@ impl RenderGroupRuntime {
                 continue;
             }
 
-            let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
-                continue;
-            };
-            let Some(mut group_lease) = surface_pool.dequeue() else {
-                continue;
-            };
             let render_start = Instant::now();
-            self.effect_pool
-                .render_group_into(
-                    group,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                    group_lease.canvas_mut(),
-                )
-                .map_err(|error| {
-                    anyhow::Error::new(render_group_effect_error(group, registry, error))
-                })?;
+            let Some(frame) = self.render_direct_group_frame(
+                group,
+                registry,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+            )?
+            else {
+                continue;
+            };
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
             active_group_canvas_ids.push(group.id);
-            let frame = GroupCanvasFrame {
-                surface: group_lease.submit(0, 0),
-                display_target: group
-                    .display_target
-                    .clone()
-                    .expect("direct display group should carry a display target"),
-            };
             self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
             group_canvases.push((group.id, frame));
         }
@@ -747,7 +737,7 @@ impl RenderGroupRuntime {
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
         dependency_key: SceneDependencyKey,
-    ) -> Option<GroupCanvasFrame> {
+    ) -> Option<PendingGroupCanvasFrame> {
         if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
             return None;
         }
@@ -767,7 +757,7 @@ impl RenderGroupRuntime {
         group_id: RenderGroupId,
         elapsed_ms: u32,
         dependency_key: SceneDependencyKey,
-        frame: &GroupCanvasFrame,
+        frame: &PendingGroupCanvasFrame,
     ) {
         self.retained_direct_group_frames.insert(
             group_id,
@@ -777,6 +767,76 @@ impl RenderGroupRuntime {
                 dependency_key,
             },
         );
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "direct display rendering uses the same per-frame inputs as scene rendering"
+    )]
+    fn render_direct_group_frame(
+        &mut self,
+        group: &RenderGroup,
+        registry: &EffectRegistry,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<Option<PendingGroupCanvasFrame>> {
+        let display_target = group
+            .display_target
+            .clone()
+            .expect("direct display group should carry a display target");
+
+        #[cfg(feature = "servo-gpu-import")]
+        let frame = match self
+            .effect_pool
+            .render_group_output(group, delta_secs, audio, interaction, screen, sensors)
+            .map_err(|error| {
+                anyhow::Error::new(render_group_effect_error(group, registry, error))
+            })? {
+            EffectRenderOutput::Cpu(canvas) => {
+                let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
+                    return Ok(None);
+                };
+                let Some(mut lease) = surface_pool.dequeue() else {
+                    return Ok(None);
+                };
+                *lease.canvas_mut() = canvas;
+                ProducerFrame::Surface(lease.submit(0, 0))
+            }
+            EffectRenderOutput::Gpu(frame) => ProducerFrame::Gpu(frame),
+        };
+
+        #[cfg(not(feature = "servo-gpu-import"))]
+        let frame = {
+            let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
+                return Ok(None);
+            };
+            let Some(mut lease) = surface_pool.dequeue() else {
+                return Ok(None);
+            };
+            self.effect_pool
+                .render_group_into(
+                    group,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                    lease.canvas_mut(),
+                )
+                .map_err(|error| {
+                    anyhow::Error::new(render_group_effect_error(group, registry, error))
+                })?;
+            ProducerFrame::Surface(lease.submit(0, 0))
+        };
+
+        record_producer_frame(&frame);
+        Ok(Some(PendingGroupCanvasFrame {
+            frame,
+            display_target,
+        }))
     }
 
     fn compose_scene_frame(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
@@ -1930,7 +1990,7 @@ mod tests {
         assert_eq!(result.logical_layer_count, 0);
         assert_eq!(scene_surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
         assert_eq!(
-            group_canvas_frame.surface.get_pixel(0, 0),
+            group_canvas_frame.surface_for_test().get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
         );
         assert!(zones.is_empty());
@@ -1992,7 +2052,7 @@ mod tests {
 
         assert_eq!(scene_surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
         assert_eq!(
-            group_canvas_frame.surface.get_pixel(0, 0),
+            group_canvas_frame.surface_for_test().get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
         );
         assert_eq!(result.sample_us, 0);
@@ -2149,7 +2209,7 @@ mod tests {
 
         assert_eq!(result.logical_layer_count, 2);
         assert_eq!(
-            group_canvas_frame.surface.get_pixel(0, 0),
+            group_canvas_frame.surface_for_test().get_pixel(0, 0),
             Rgba::new(0, 0, 255, 255)
         );
         assert!(zones.is_empty());
@@ -2205,12 +2265,9 @@ mod tests {
 
         assert!(runtime.target_canvases.is_empty());
         assert_eq!(result.group_canvases.len(), 2);
-        assert!(
-            result
-                .group_canvases
-                .iter()
-                .all(|(_, frame)| frame.surface.width() > 0 && frame.surface.height() > 0)
-        );
+        assert!(result.group_canvases.iter().all(|(_, frame)| {
+            frame.surface_for_test().width() > 0 && frame.surface_for_test().height() > 0
+        }));
         assert!(zones.is_empty());
         let reused = runtime
             .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
@@ -2369,13 +2426,15 @@ mod tests {
         };
 
         assert_ne!(
-            second_frame.surface.get_pixel(0, 0),
-            first_frame.surface.get_pixel(0, 0),
+            second_frame.surface_for_test().get_pixel(0, 0),
+            first_frame.surface_for_test().get_pixel(0, 0),
             "direct canvases should rerender immediately when the active registry entry changes"
         );
         assert!(
-            second_frame.surface.storage_identity() != first_frame.surface.storage_identity()
-                || second_frame.surface.generation() != first_frame.surface.generation(),
+            second_frame.surface_for_test().storage_identity()
+                != first_frame.surface_for_test().storage_identity()
+                || second_frame.surface_for_test().generation()
+                    != first_frame.surface_for_test().generation(),
             "the retained direct surface should not be reused across registry generations"
         );
     }
@@ -2421,8 +2480,10 @@ mod tests {
         };
 
         assert!(
-            second_frame.surface.storage_identity() != first_frame.surface.storage_identity()
-                || second_frame.surface.generation() != first_frame.surface.generation(),
+            second_frame.surface_for_test().storage_identity()
+                != first_frame.surface_for_test().storage_identity()
+                || second_frame.surface_for_test().generation()
+                    != first_frame.surface_for_test().generation(),
             "the retained direct surface should not be reused across group revisions"
         );
     }
@@ -2482,24 +2543,26 @@ mod tests {
         };
 
         assert_eq!(
-            first_frame.surface.storage_identity(),
-            second_frame.surface.storage_identity()
+            first_frame.surface_for_test().storage_identity(),
+            second_frame.surface_for_test().storage_identity()
         );
         assert_eq!(
-            first_frame.surface.generation(),
-            second_frame.surface.generation()
+            first_frame.surface_for_test().generation(),
+            second_frame.surface_for_test().generation()
         );
         assert_eq!(
-            first_frame.surface.get_pixel(0, 0),
+            first_frame.surface_for_test().get_pixel(0, 0),
             Rgba::new(0, 255, 0, 255)
         );
         assert_eq!(
-            third_frame.surface.get_pixel(0, 0),
+            third_frame.surface_for_test().get_pixel(0, 0),
             Rgba::new(0, 255, 0, 255)
         );
         assert!(
-            third_frame.surface.storage_identity() != second_frame.surface.storage_identity()
-                || third_frame.surface.generation() != second_frame.surface.generation()
+            third_frame.surface_for_test().storage_identity()
+                != second_frame.surface_for_test().storage_identity()
+                || third_frame.surface_for_test().generation()
+                    != second_frame.surface_for_test().generation()
         );
     }
 }
