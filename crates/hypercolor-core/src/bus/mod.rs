@@ -28,6 +28,7 @@ use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::device::DeviceId;
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
 use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
+use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -206,6 +207,25 @@ pub struct DisplayGroupTarget {
     pub opacity: f32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayGroupOutputRoute {
+    pub device_id: DeviceId,
+    pub width: u32,
+    pub height: u32,
+    pub circular: bool,
+    pub brightness: f32,
+    pub viewport: DisplayGroupViewport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisplayGroupViewport {
+    pub position: NormalizedPosition,
+    pub size: NormalizedPosition,
+    pub rotation: f32,
+    pub scale: f32,
+    pub edge_behavior: EdgeBehavior,
+}
+
 impl From<DisplayFaceTarget> for DisplayGroupTarget {
     fn from(value: DisplayFaceTarget) -> Self {
         Self {
@@ -230,6 +250,12 @@ impl From<&DisplayFaceTarget> for DisplayGroupTarget {
 struct DisplayGroupTargetRegistry {
     revision: u64,
     targets: HashMap<RenderGroupId, DisplayGroupTarget>,
+}
+
+#[derive(Debug, Default)]
+struct DisplayGroupOutputRouteRegistry {
+    revision: u64,
+    routes: HashMap<RenderGroupId, DisplayGroupOutputRoute>,
 }
 
 // ── HypercolorBus ────────────────────────────────────────────────────────
@@ -269,6 +295,9 @@ pub struct HypercolorBus {
     /// Render-thread-authored display-face routing metadata keyed by group id.
     display_group_targets: Arc<Mutex<DisplayGroupTargetRegistry>>,
 
+    /// Display-output-authored final display surface metadata keyed by group id.
+    display_group_output_routes: Arc<Mutex<DisplayGroupOutputRouteRegistry>>,
+
     /// Monotonic clock base for `mono_ms` timestamps.
     start_instant: Instant,
 }
@@ -295,6 +324,9 @@ impl HypercolorBus {
             web_viewport_canvas,
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
             display_group_targets: Arc::new(Mutex::new(DisplayGroupTargetRegistry::default())),
+            display_group_output_routes: Arc::new(Mutex::new(
+                DisplayGroupOutputRouteRegistry::default(),
+            )),
             start_instant: Instant::now(),
         }
     }
@@ -549,6 +581,8 @@ impl HypercolorBus {
         if changed {
             display_group_targets.revision = display_group_targets.revision.saturating_add(1);
         }
+        drop(display_group_targets);
+        self.retain_display_group_output_routes(active_ids);
     }
 
     /// Snapshot the active render-thread-authored display-face routes.
@@ -576,6 +610,72 @@ impl HypercolorBus {
             .len()
     }
 
+    /// Insert or update display-output-authored final display surface metadata.
+    pub fn upsert_display_group_output_route(
+        &self,
+        id: RenderGroupId,
+        route: DisplayGroupOutputRoute,
+    ) {
+        let mut routes = self
+            .display_group_output_routes
+            .lock()
+            .expect("display group output route registry should not be poisoned");
+        let changed = routes.routes.get(&id) != Some(&route);
+        if changed {
+            routes.routes.insert(id, route);
+            routes.revision = routes.revision.saturating_add(1);
+        }
+    }
+
+    /// Drop display-output-authored routes that no longer have active display groups.
+    pub fn retain_display_group_output_routes(&self, active_ids: &[RenderGroupId]) {
+        let mut routes = self
+            .display_group_output_routes
+            .lock()
+            .expect("display group output route registry should not be poisoned");
+        let changed = if active_ids.is_empty() {
+            let changed = !routes.routes.is_empty();
+            routes.routes.clear();
+            changed
+        } else {
+            let active_ids = active_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            let original_len = routes.routes.len();
+            routes
+                .routes
+                .retain(|group_id, _| active_ids.contains(group_id));
+            original_len != routes.routes.len()
+        };
+        if changed {
+            routes.revision = routes.revision.saturating_add(1);
+        }
+    }
+
+    /// Snapshot the active display-output-authored final display surface routes.
+    #[must_use]
+    pub fn display_group_output_routes_snapshot(
+        &self,
+    ) -> (u64, HashMap<RenderGroupId, DisplayGroupOutputRoute>) {
+        let routes = self
+            .display_group_output_routes
+            .lock()
+            .expect("display group output route registry should not be poisoned");
+        (routes.revision, routes.routes.clone())
+    }
+
+    /// Remove one display-output-authored final display surface route.
+    pub fn remove_display_group_output_route(&self, id: RenderGroupId) {
+        let mut routes = self
+            .display_group_output_routes
+            .lock()
+            .expect("display group output route registry should not be poisoned");
+        if routes.routes.remove(&id).is_some() {
+            routes.revision = routes.revision.saturating_add(1);
+        }
+    }
+
     /// Remove the render-thread-authored display-face route for a render group.
     pub fn remove_display_group_target(&self, id: RenderGroupId) {
         let mut display_group_targets = self
@@ -585,6 +685,8 @@ impl HypercolorBus {
         if display_group_targets.targets.remove(&id).is_some() {
             display_group_targets.revision = display_group_targets.revision.saturating_add(1);
         }
+        drop(display_group_targets);
+        self.remove_display_group_output_route(id);
     }
 
     /// Drop any per-group canvas streams not present in the active set.

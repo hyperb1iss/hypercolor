@@ -17,7 +17,9 @@ use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tracing::{debug, info, warn};
 
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::{
+    CanvasFrame, DisplayGroupOutputRoute, DisplayGroupViewport, HypercolorBus,
+};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::{SpatialEngine, is_display_zone};
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
@@ -762,6 +764,7 @@ async fn display_targets(
             .cmp(&right.backend_id)
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
+    publish_display_group_output_routes(event_bus, &targets);
     cache.version = cache.version.saturating_add(1);
     cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);
@@ -769,6 +772,34 @@ async fn display_targets(
         version: cache.version,
         targets: Arc::clone(&cache.targets),
     }
+}
+
+fn publish_display_group_output_routes(event_bus: &HypercolorBus, targets: &[Arc<DisplayTarget>]) {
+    let mut active_group_ids = Vec::new();
+    for target in targets {
+        let DisplayCanvasSource::GroupDirect { group_id } = target.canvas_source else {
+            continue;
+        };
+        active_group_ids.push(group_id);
+        event_bus.upsert_display_group_output_route(
+            group_id,
+            DisplayGroupOutputRoute {
+                device_id: target.device_id,
+                width: target.geometry.width,
+                height: target.geometry.height,
+                circular: target.geometry.circular,
+                brightness: target.brightness,
+                viewport: DisplayGroupViewport {
+                    position: target.viewport.position,
+                    size: target.viewport.size,
+                    rotation: target.viewport.rotation,
+                    scale: target.viewport.scale,
+                    edge_behavior: target.viewport.edge_behavior,
+                },
+            },
+        );
+    }
+    event_bus.retain_display_group_output_routes(&active_group_ids);
 }
 
 fn display_target_geometry_for_device(
