@@ -1,3 +1,9 @@
+//! Proc-macro companion to `hypercolor-leptos-ext`.
+//!
+//! Provides `#[derive(BinaryFrame)]`, which generates a `BinaryFrameSchema`
+//! implementation from `#[frame(tag = N, schema = N)]` attributes. Automatically
+//! available to consumers of `hypercolor-leptos-ext`.
+
 #![forbid(unsafe_code)]
 
 use proc_macro::TokenStream;

@@ -1,4 +1,10 @@
-//! Govee network driver.
+//! Govee network driver for Hypercolor.
+//!
+//! Targets Govee LED strips, panels, and bulbs over two transports: local-area UDP
+//! (Govee LAN protocol on port 4003, with optional Razer-streaming for compatible SKUs)
+//! and the Govee Developer API v1 for cloud inventory enrichment and fallback. A
+//! per-SKU capability database maps model numbers to LED counts, topology, and protocol
+//! flags. Pairing stores a Govee account API key validated against the cloud.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;

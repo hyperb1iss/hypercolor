@@ -1,5 +1,7 @@
+//! Hypercolor daemon — render loop, device orchestration, HTTP/WebSocket API,
+//! MCP server, and system integration.
+
 pub mod api;
-/// Hypercolor daemon — HTTP API, WebSocket server, MCP server, and system orchestration.
 pub mod attachment_profiles;
 #[cfg(feature = "cloud")]
 pub mod cloud_connection;

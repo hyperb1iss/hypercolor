@@ -1,3 +1,10 @@
+//! Nanoleaf network driver for Hypercolor.
+//!
+//! Discovers Nanoleaf panel controllers via mDNS and known-IP probing, pairs using
+//! the Open API token flow, and streams per-panel color data over UDP External Control.
+//! Panel topology is fetched on connect and cached; the `refresh_topology` action
+//! triggers a reconnect to reload the layout on demand.
+
 pub mod backend;
 mod scanner;
 mod streaming;

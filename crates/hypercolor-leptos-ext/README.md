@@ -18,11 +18,16 @@ available for real load testing.
 - `axum`: server-side Axum WebSocket transport.
 - `events`, `canvas`, `raf`, `prelude`: browser helper modules, gated to
   `wasm32`.
+- `webgpu`: extends `canvas` with a `wgpu` surface for GPU canvas access.
 - `leptos`: Leptos-specific adapters.
 - `devtools`: reserved for diagnostics.
 
 Default features are empty. Consumers opt into exactly the runtime surface they
 need.
+
+The `#[derive(BinaryFrame)]` proc macro is provided by the companion crate
+`hypercolor-leptos-ext-macros`, which is automatically pulled in as a
+dependency. Users do not need to add it separately.
 
 ## Current Extraction Target
 
@@ -39,7 +44,8 @@ public crate shape is:
 
 The visual preview media path is intentionally not locked into a new protocol
 yet. Hypercolor's current raw/JPEG WebSocket preview remains the Year 1 V1 codec
-while WebCodecs/WebRTC are evaluated for the long-term preview plane.
+while WebCodecs/WebRTC are evaluated for the long-term preview plane. Extraction
+progress is tracked in the project issue tracker.
 
 ## Verification
 

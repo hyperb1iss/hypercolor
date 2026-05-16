@@ -1,3 +1,10 @@
+//! WLED network driver for Hypercolor.
+//!
+//! Discovers WLED controllers (ESP8266/ESP32) via mDNS and known-IP probing and
+//! streams real-time pixel data using DDP (default) or E1.31/sACN. No authentication
+//! is required. Both RGB and RGBW formats are supported; per-device protocol selection
+//! overrides the driver-level default.
+
 pub mod backend;
 mod ddp;
 mod e131;

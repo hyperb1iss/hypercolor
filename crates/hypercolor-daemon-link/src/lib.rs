@@ -1,3 +1,10 @@
+//! Multiplexed WebSocket tunnel protocol and ed25519 identity layer for Hypercolor Cloud.
+//!
+//! Defines daemon identity keypairs, the signed HTTP upgrade handshake, binary
+//! frame wire format, channel naming, and connection admission. Sits between
+//! `hypercolor-cloud-api` (REST types) and `hypercolor-cloud-client` (high-level
+//! daemon client). Protocol: `hypercolor-daemon.v1`, version `1`.
+
 #![forbid(unsafe_code)]
 
 pub mod admission;

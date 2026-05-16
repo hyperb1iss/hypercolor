@@ -1,3 +1,11 @@
+//! Daemon-side client for Hypercolor Cloud.
+//!
+//! Provides OAuth Device Code authorization, platform-native keyring secret storage,
+//! ed25519 daemon identity management, device registration, entitlement fetching,
+//! and sync cursor management. Builds on `hypercolor-cloud-api` (contract types)
+//! and `hypercolor-daemon-link` (tunnel protocol). Used by `hypercolor-daemon`
+//! under the `cloud` feature flag.
+
 #![forbid(unsafe_code)]
 
 pub mod auth;

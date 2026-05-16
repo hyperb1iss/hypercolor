@@ -1,3 +1,9 @@
+//! Philips Hue network driver for Hypercolor.
+//!
+//! Discovers Hue Bridge v2 via mDNS and Nupnp, pairs through the link-button
+//! flow, and streams RGBA color data over the Hue Entertainment API using DTLS 1.2.
+//! CIE xy color-space conversion is applied by default for accurate gamut output.
+
 pub mod backend;
 mod bridge;
 mod color;

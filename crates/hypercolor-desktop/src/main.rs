@@ -1,8 +1,9 @@
-// Hypercolor Desktop — native window shell
-//
-// Connects to a running hypercolor-daemon and renders the Leptos
-// web UI inside a system webview. The daemon owns the hardware;
-// this app is just the control surface.
+//! Hypercolor Desktop — thin Tauri 2 webview shell.
+//!
+//! Connects to a running hypercolor-daemon and renders the Leptos web UI
+//! inside a native system webview. The daemon owns the hardware; this binary
+//! is purely a control surface. See hypercolor-app for the production shell
+//! that also supervises the daemon.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

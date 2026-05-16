@@ -1,3 +1,9 @@
+//! Shared Hypercolor Cloud API contract types.
+//!
+//! Pure-data library: serde-derived request/response types for OAuth Device Code
+//! auth, device registration, entitlements, sync, and update manifests. No I/O
+//! or logic. Consumed by `hypercolor-daemon-link` and `hypercolor-cloud-client`.
+
 #![forbid(unsafe_code)]
 
 pub mod auth;

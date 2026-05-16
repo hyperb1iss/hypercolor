@@ -1,6 +1,7 @@
-// Hypercolor App — unified native desktop front door.
-//
-// Owns the Tauri window, tray, daemon supervision, and bundle resource wiring.
+//! Hypercolor App — unified native desktop front door.
+//!
+//! Owns the Tauri window, tray, daemon supervision, single-instance guard,
+//! autostart registration, and bundle resource wiring.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
