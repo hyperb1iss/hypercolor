@@ -156,6 +156,68 @@ impl SharedPayloadRecordingBackend {
     }
 }
 
+struct FailingDisconnectBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for FailingDisconnectBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "fail_disconnect".to_owned(),
+            name: "Failing Disconnect Backend".to_owned(),
+            description: "Fails disconnect after accepting queued writes".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Failing Disconnect Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::named("Test"),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        bail!("simulated disconnect failure")
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("write while disconnected");
+        }
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for SharedPayloadRecordingBackend {
     fn info(&self) -> BackendInfo {
@@ -1495,6 +1557,49 @@ async fn disconnect_device_disconnects_and_unmaps_layout_device() {
         zone_id: "zone_0".into(),
         colors: vec![[200, 200, 200]; 5],
     }];
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 0);
+    assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
+    let device_id = DeviceId::new();
+    let backend = FailingDisconnectBackend {
+        expected_device_id: device_id,
+        connected: false,
+    };
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .connect_device("fail_disconnect", device_id, "fail_disconnect:zombie")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_disconnect:zombie", 4)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[80, 40, 20]; 4],
+    }];
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(manager.debug_snapshot().queue_count, 1);
+
+    let error = manager
+        .disconnect_device("fail_disconnect", device_id, "fail_disconnect:zombie")
+        .await
+        .expect_err("backend disconnect failure should still surface");
+    let error_chain = format_error_chain(&error);
+    assert!(
+        error_chain.contains("simulated disconnect failure"),
+        "unexpected error chain: {error_chain}"
+    );
+
+    assert_eq!(manager.mapped_device_count(), 0);
+    assert_eq!(manager.debug_snapshot().queue_count, 0);
+
     let stats = manager.write_frame(&zone_colors, &layout).await;
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());

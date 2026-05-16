@@ -1469,10 +1469,10 @@ impl BackendManager {
         let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-        io.disconnect(device_id).await?;
 
+        let disconnect_result = io.disconnect(device_id).await;
         let _ = self.remove_device_mappings_for_physical(backend_id, device_id);
-        Ok(())
+        disconnect_result
     }
 
     /// Write one immediate color payload to a specific physical device.
