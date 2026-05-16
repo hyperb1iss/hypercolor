@@ -22,7 +22,10 @@ LightScript-compatible HTML effects require the Servo renderer feature:
 ```
 
 This uses `./scripts/servo-cache-build.sh` under the hood so Servo/mozjs
-artifacts are reused across runs.
+artifacts are reused across runs. Use this script when you want the preview
+surface with its hard-coded test environment variables; use `just daemon-servo`
+when you need the full general-purpose Servo daemon (the recipe is also what
+`SERVO_BUILD_CACHING.md` documents for CI and service-mode use).
 
 If you need a custom bind address:
 

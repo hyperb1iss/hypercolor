@@ -55,9 +55,9 @@ graph TD
     Manager --> Usb
     Manager --> Net
     Manager --> Sim
-    Bus <--> Web
-    Bus <--> Cli
-    Bus <--> Tui
+    Bus <-->|WebSocket| Web
+    Bus <-->|HTTP| Cli
+    Bus <-->|WebSocket| Tui
     Bus <--> Mcp
 ```
 
@@ -83,28 +83,88 @@ retuned live.
 
 ```mermaid
 graph TD
-    T[hypercolor-types] --> HAL[hypercolor-hal]
-    T --> CORE[hypercolor-core]
+    subgraph Foundation
+        T[hypercolor-types]
+        CORE[hypercolor-core]
+        HAL[hypercolor-hal]
+    end
+
+    subgraph Platform
+        LGPU[hypercolor-linux-gpu-interop]
+        WPAW[hypercolor-windows-pawnio]
+    end
+
+    subgraph Drivers
+        DAPI[hypercolor-driver-api]
+        DBI[hypercolor-driver-builtin]
+        HUE[hypercolor-driver-hue]
+        NL[hypercolor-driver-nanoleaf]
+        WLED[hypercolor-driver-wled]
+        GOV[hypercolor-driver-govee]
+        NET[hypercolor-network]
+    end
+
+    subgraph Cloud
+        CAPI[hypercolor-cloud-api]
+        DLINK[hypercolor-daemon-link]
+        CCLI[hypercolor-cloud-client]
+    end
+
+    subgraph UITooling["UI Tooling"]
+        LEXT[hypercolor-leptos-ext]
+        LMAC[hypercolor-leptos-ext-macros]
+    end
+
+    subgraph Binaries
+        D[hypercolor-daemon]
+        CLI[hypercolor-cli]
+        TUI[hypercolor-tui]
+        TRAY[hypercolor-tray]
+        APP[hypercolor-app]
+        DT[hypercolor-desktop<br><i>excluded from default CI</i>]
+        UI[hypercolor-ui<br><i>excluded from workspace</i>]
+    end
+
+    T --> HAL
+    T --> CORE
     HAL --> CORE
-    T & CORE --> DAPI[hypercolor-driver-api]
-    DAPI --> HUE[hypercolor-driver-hue]
-    DAPI --> NL[hypercolor-driver-nanoleaf]
-    DAPI --> WLED[hypercolor-driver-wled]
-    DAPI --> NET[hypercolor-network]
-    CORE & HAL & DAPI & HUE & NL & WLED & NET --> D[hypercolor-daemon]
-    CORE --> CLI[hypercolor-cli]
-    T --> TUI[hypercolor-tui]
-    CORE & T --> TRAY[hypercolor-tray]
-    T --> UI[hypercolor-ui]
+    T & CORE --> DAPI
+    DAPI --> HUE
+    DAPI --> NL
+    DAPI --> WLED
+    DAPI --> GOV
+    DAPI & CORE --> DBI
+    DAPI --> NET
+    CAPI --> DLINK
+    DLINK --> CCLI
+    LMAC --> LEXT
+    CORE & HAL & DAPI & NET --> D
+    LEXT --> D
+    CCLI -.->|optional| D
+    DBI -.->|optional| D
+    CORE --> CLI
+    T --> TUI
+    CORE & T --> TRAY
+    CORE & T --> APP
+    T & LEXT --> UI
 ```
 
 Key rules:
 
-- `hypercolor-types` is pure shared vocabulary.
+- `hypercolor-types` is pure shared vocabulary; it has no other internal deps.
 - `hypercolor-hal` depends on `hypercolor-types`, not on `hypercolor-core`.
-- Network drivers depend on `hypercolor-driver-api`.
+- Network and hardware drivers depend on `hypercolor-driver-api`.
+- `hypercolor-driver-builtin` aggregates the optional driver crates behind
+  feature flags.
+- `hypercolor-cloud-api` → `hypercolor-daemon-link` → `hypercolor-cloud-client`
+  is the cloud type chain; cloud-client is an optional daemon dependency.
+- `hypercolor-leptos-ext-macros` is a proc-macro crate with no hypercolor deps;
+  `hypercolor-leptos-ext` depends on it and on no other internal crate.
+- `hypercolor-linux-gpu-interop` and `hypercolor-windows-pawnio` are unsafe
+  opt-out crates with no hypercolor deps; they isolate platform calls.
 - `hypercolor-ui` is excluded from the Cargo workspace and builds separately
   through Trunk.
+- `hypercolor-desktop` is in the workspace but excluded from default CI.
 - Cross-crate circular dependencies are forbidden.
 
 ## Interfaces
