@@ -216,7 +216,11 @@ impl DeviceLifecycleManager {
                 return actions;
             }
 
-            if *managed.state_machine.state() == DeviceState::Known && !connect_already_in_flight {
+            if matches!(
+                managed.state_machine.state(),
+                DeviceState::Known | DeviceState::Reconnecting
+            ) && !connect_already_in_flight
+            {
                 actions.push(Self::connect_action(device_id, managed));
                 mark_connect_in_flight = true;
             }

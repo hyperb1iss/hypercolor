@@ -497,6 +497,59 @@ fn repeated_reconnect_attempt_suppresses_duplicate_connect_while_in_flight() {
 }
 
 #[test]
+fn rediscovered_reconnecting_device_connects_without_waiting_for_retry_timer() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Push 2");
+    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+
+    lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    lifecycle
+        .on_connected(device_id)
+        .expect("connect transition should succeed");
+
+    let reconnect_actions = lifecycle
+        .on_comm_error(device_id)
+        .expect("comm error should enter reconnecting");
+    assert!(
+        reconnect_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. })),
+        "comm error should schedule a retry timer"
+    );
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+
+    let rediscovery_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+
+    assert!(
+        rediscovery_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::CancelReconnect { .. })),
+        "rediscovery should retire the stale timer before connecting"
+    );
+    assert!(
+        rediscovery_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "rediscovery should reconnect an auto-connect device immediately"
+    );
+    assert!(
+        lifecycle.on_reconnect_attempt(device_id).is_none(),
+        "the canceled timer should not queue a duplicate reconnect"
+    );
+}
+
+#[test]
 fn deferred_discovery_disconnects_connected_device() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
