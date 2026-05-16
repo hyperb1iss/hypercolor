@@ -17,7 +17,7 @@ use hypercolor_core::device::manager::{
 };
 use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::daemon::{
-    DaemonRunOptions, effective_bind_target, validate_network_bind_auth,
+    DaemonRunOptions, effective_bind_target, effective_bind_targets, validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
@@ -412,6 +412,17 @@ fn effective_bind_target_keeps_localhost_default() {
 }
 
 #[test]
+fn effective_bind_targets_include_ipv6_loopback_default() {
+    let config = default_config();
+    let options = DaemonRunOptions::default();
+
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["127.0.0.1:9420", "[::1]:9420"]
+    );
+}
+
+#[test]
 fn effective_bind_target_accepts_all_interface_aliases() {
     let mut config = default_config();
     config.daemon.listen_address = "all".to_owned();
@@ -419,6 +430,10 @@ fn effective_bind_target_accepts_all_interface_aliases() {
     let options = DaemonRunOptions::default();
 
     assert_eq!(effective_bind_target(&options, &config), "0.0.0.0:9431");
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["0.0.0.0:9431", "[::]:9431"]
+    );
 }
 
 #[test]
@@ -431,12 +446,31 @@ fn effective_bind_target_supports_cli_listen_shortcuts() {
         ..DaemonRunOptions::default()
     };
     assert_eq!(effective_bind_target(&all, &config), "0.0.0.0:9432");
+    assert_eq!(
+        effective_bind_targets(&all, &config),
+        vec!["0.0.0.0:9432", "[::]:9432"]
+    );
 
     let custom = DaemonRunOptions {
         listen_address: Some("192.168.1.42".to_owned()),
         ..DaemonRunOptions::default()
     };
     assert_eq!(effective_bind_target(&custom, &config), "192.168.1.42:9432");
+
+    let ipv6_loopback = DaemonRunOptions {
+        listen_address: Some("::1".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+    assert_eq!(effective_bind_target(&ipv6_loopback, &config), "[::1]:9432");
+
+    let bracketed_ipv6_loopback = DaemonRunOptions {
+        listen_address: Some("[::1]".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+    assert_eq!(
+        effective_bind_target(&bracketed_ipv6_loopback, &config),
+        "[::1]:9432"
+    );
 }
 
 #[test]
@@ -448,6 +482,49 @@ fn effective_bind_target_normalizes_bind_alias_with_port() {
     };
 
     assert_eq!(effective_bind_target(&options, &config), "0.0.0.0:9444");
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["0.0.0.0:9444", "[::]:9444"]
+    );
+}
+
+#[test]
+fn effective_bind_targets_expand_ipv4_loopback_bind_with_port() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        bind: Some("127.0.0.1:9444".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["127.0.0.1:9444", "[::1]:9444"]
+    );
+}
+
+#[test]
+fn effective_bind_targets_expand_localhost_bind_with_port() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        bind: Some("localhost:9444".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["127.0.0.1:9444", "[::1]:9444"]
+    );
+}
+
+#[test]
+fn effective_bind_target_brackets_ipv6_bind_with_port() {
+    let config = default_config();
+    let options = DaemonRunOptions {
+        bind: Some("[::1]:9444".to_owned()),
+        ..DaemonRunOptions::default()
+    };
+
+    assert_eq!(effective_bind_target(&options, &config), "[::1]:9444");
 }
 
 #[test]
@@ -459,6 +536,15 @@ fn network_bind_auth_allows_localhost_without_control_key() {
         .expect("default bind target should parse as a socket address");
 
     validate_network_bind_auth(bind, false).expect("localhost should not require API key");
+}
+
+#[test]
+fn network_bind_auth_allows_ipv6_loopback_without_control_key() {
+    let bind = "[::1]:9420"
+        .parse::<SocketAddr>()
+        .expect("IPv6 loopback bind target should parse as a socket address");
+
+    validate_network_bind_auth(bind, false).expect("IPv6 localhost should not require API key");
 }
 
 #[test]
@@ -476,6 +562,19 @@ fn network_bind_auth_rejects_listen_all_without_control_key() {
         validate_network_bind_auth(bind, false).expect_err("listen-all should require auth");
     let message = error.to_string();
     assert!(message.contains("0.0.0.0:9420"));
+    assert!(message.contains("HYPERCOLOR_API_KEY"));
+}
+
+#[test]
+fn network_bind_auth_rejects_ipv6_all_without_control_key() {
+    let bind = "[::]:9420"
+        .parse::<SocketAddr>()
+        .expect("IPv6 all-interface bind target should parse as a socket address");
+
+    let error = validate_network_bind_auth(bind, false)
+        .expect_err("IPv6 all-interface bind should require auth");
+    let message = error.to_string();
+    assert!(message.contains("[::]:9420"));
     assert!(message.contains("HYPERCOLOR_API_KEY"));
 }
 

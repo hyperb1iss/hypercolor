@@ -40,6 +40,7 @@ anyhow = { workspace = true }
 futures-util = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 single-instance = "0.3.3"
+socket2 = "0.6.3"
 tokio = { workspace = true }
 async-trait = { workspace = true }
 spin_sleep = { workspace = true }

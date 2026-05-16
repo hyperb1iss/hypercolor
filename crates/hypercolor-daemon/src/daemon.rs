@@ -5,10 +5,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use axum::Router;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, RenderAccelerationMode, ServoGpuImportMode,
 };
+use socket2::{Domain, Protocol, Socket, Type};
+use tokio::net::TcpListener;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +23,7 @@ use crate::startup::{DaemonState, load_config};
 const MAIN_RUNTIME_WORKERS: usize = 4;
 const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
 const MAIN_RUNTIME_THREAD_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(2);
+const API_LISTEN_BACKLOG: i32 = 1024;
 
 /// Runtime options for one daemon process.
 #[derive(Clone, Debug, Default)]
@@ -29,7 +34,7 @@ pub struct DaemonRunOptions {
     pub bind: Option<String>,
     /// Host/interface to bind using the configured daemon port.
     pub listen_address: Option<String>,
-    /// Bind the API server to every IPv4 interface.
+    /// Bind the API server to every network interface.
     pub listen_all: bool,
     /// Log level override.
     pub log_level: Option<String>,
@@ -62,7 +67,7 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 /// # Errors
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
-pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
+pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
     // Load configuration before tracing so we can honor config-driven log
     // levels when the CLI flag is omitted.
     let (mut config, config_path) = load_config(options.config.as_deref()).await?;
@@ -81,7 +86,8 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
 
     crate::startup::logging::install(env_filter);
 
-    let listen_addr = effective_bind_target(&options, &config);
+    let listen_targets = effective_bind_targets(&options, &config);
+    let listen_addr = listen_targets.join(", ");
     crate::startup::banner::print(
         env!("CARGO_PKG_VERSION"),
         (config.daemon.canvas_width, config.daemon.canvas_height),
@@ -101,8 +107,11 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
         "Configuration ready"
     );
 
-    let bind = resolve_bind_address(&options, &config).await?;
-    validate_network_bind_auth(bind, api::security::control_api_key_configured_from_env())?;
+    let binds = resolve_bind_addresses(&options, &config).await?;
+    let control_api_key_configured = api::security::control_api_key_configured_from_env();
+    for bind in &binds {
+        validate_network_bind_auth(*bind, control_api_key_configured)?;
+    }
 
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
     daemon_state.start().await?;
@@ -111,37 +120,29 @@ pub async fn run(options: DaemonRunOptions, mut shutdown_rx: watch::Receiver<boo
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
     let router = api::build_router(app_state, ui_dir.as_deref());
 
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .with_context(|| format!("failed to bind API server to {bind}"))?;
+    let listeners = bind_api_listeners(&binds)?;
+    let advertised_bind = listeners
+        .first()
+        .context("no API listeners were bound")?
+        .local_addr()
+        .context("failed to read API listener address")?;
 
     let mdns_publisher = MdnsPublisher::new(
         &daemon_state.server_identity,
-        bind,
+        advertised_bind,
         config.network.mdns_publish,
         api::security::api_auth_required_from_env(),
     )?;
 
     if ui_dir.is_some() {
-        info!(url = %format!("http://{bind}/"), "Web UI available");
+        info!(url = %format!("http://{advertised_bind}/"), "Web UI available");
     }
-    info!(bind = %bind, "API server listening");
+    info!(binds = %listen_addr, "API server listening");
 
     notify_ready();
     spawn_watchdog();
 
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        if !*shutdown_rx.borrow() {
-            let _ = shutdown_rx.changed().await;
-        }
-        info!("Shutdown signal received, stopping API server");
-    })
-    .await
-    .context("API server error")?;
+    serve_api_listeners(listeners, router, shutdown_rx).await?;
 
     if let Some(publisher) = mdns_publisher {
         publisher.shutdown().await;
@@ -269,11 +270,102 @@ const fn config_log_level_name(level: &LogLevel) -> &'static str {
     }
 }
 
-async fn resolve_bind_address(
+async fn resolve_bind_addresses(
     options: &DaemonRunOptions,
     config: &HypercolorConfig,
-) -> Result<SocketAddr> {
-    resolve_socket_addr(&effective_bind_target(options, config)).await
+) -> Result<Vec<SocketAddr>> {
+    let mut resolved = Vec::new();
+
+    for target in effective_bind_targets(options, config) {
+        let bind = resolve_socket_addr(&target).await?;
+        if !resolved.contains(&bind) {
+            resolved.push(bind);
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn bind_api_listeners(binds: &[SocketAddr]) -> Result<Vec<TcpListener>> {
+    let mut listeners = Vec::with_capacity(binds.len());
+
+    for bind in binds {
+        let listener = bind_api_listener(*bind)
+            .with_context(|| format!("failed to bind API server to {bind}"))?;
+        listeners.push(listener);
+    }
+
+    Ok(listeners)
+}
+
+fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
+    let socket = Socket::new(
+        if bind.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        },
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )?;
+
+    if bind.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+
+    socket.bind(&bind.into())?;
+    socket.listen(API_LISTEN_BACKLOG)?;
+
+    let listener: std::net::TcpListener = socket.into();
+    listener.set_nonblocking(true)?;
+    TcpListener::from_std(listener).context("failed to create async TCP listener")
+}
+
+async fn serve_api_listeners(
+    listeners: Vec<TcpListener>,
+    router: Router,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<()> {
+    let mut servers = JoinSet::new();
+
+    for listener in listeners {
+        let bind = listener
+            .local_addr()
+            .context("failed to read API listener address")?;
+        let router = router.clone();
+        let mut shutdown_rx = shutdown_rx.clone();
+
+        servers.spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                if !*shutdown_rx.borrow() {
+                    let _ = shutdown_rx.changed().await;
+                }
+                info!(bind = %bind, "Shutdown signal received, stopping API server");
+            })
+            .await
+            .with_context(|| format!("API server error on {bind}"))
+        });
+    }
+
+    while let Some(result) = servers.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                servers.abort_all();
+                return Err(error);
+            }
+            Err(error) => {
+                servers.abort_all();
+                return Err(error).context("API server task failed");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Validate that network-reachable binds require control-tier authentication.
@@ -291,27 +383,41 @@ pub fn validate_network_bind_auth(
 
     bail!(
         "refusing to bind Hypercolor control API to {bind} without HYPERCOLOR_API_KEY; \
-         set HYPERCOLOR_API_KEY or bind to 127.0.0.1"
+         set HYPERCOLOR_API_KEY or bind to a loopback address"
     );
 }
 
 #[must_use]
 pub fn effective_bind_target(options: &DaemonRunOptions, config: &HypercolorConfig) -> String {
+    effective_bind_targets(options, config)
+        .into_iter()
+        .next()
+        .expect("effective bind targets should never be empty")
+}
+
+#[must_use]
+pub fn effective_bind_targets(
+    options: &DaemonRunOptions,
+    config: &HypercolorConfig,
+) -> Vec<String> {
     if let Some(bind) = options.bind.as_deref() {
-        return normalize_bind_target(bind);
+        return expand_bind_target(bind);
     }
 
-    let host = if options.listen_all {
-        all_interfaces_host().to_owned()
+    let hosts = if options.listen_all {
+        all_interface_hosts()
     } else if let Some(host) = options.listen_address.as_deref() {
-        normalize_listen_host(host)
+        expand_listen_host(host)
     } else if config.network.remote_access && is_loopback_host(&config.daemon.listen_address) {
-        all_interfaces_host().to_owned()
+        all_interface_hosts()
     } else {
-        normalize_listen_host(&config.daemon.listen_address)
+        expand_listen_host(&config.daemon.listen_address)
     };
 
-    format!("{host}:{}", config.daemon.port)
+    hosts
+        .into_iter()
+        .map(|host| format_bind_target(&host, config.daemon.port))
+        .collect()
 }
 
 async fn resolve_socket_addr(bind: &str) -> Result<SocketAddr> {
@@ -351,19 +457,87 @@ fn normalize_bind_target(bind: &str) -> String {
     normalize_listen_host(trimmed)
 }
 
+fn expand_bind_target(bind: &str) -> Vec<String> {
+    let normalized = normalize_bind_target(bind);
+    let Some((host, port)) = split_bind_host_port(&normalized) else {
+        return vec![normalized];
+    };
+
+    let host = unbracket_host(host);
+    if host.eq_ignore_ascii_case("localhost") {
+        return vec![format!("127.0.0.1:{port}"), format!("[::1]:{port}")];
+    }
+
+    let additional_target = if host == "127.0.0.1" {
+        Some(format!("[::1]:{port}"))
+    } else if host == all_interfaces_host() {
+        Some(format!("[::]:{port}"))
+    } else {
+        None
+    };
+
+    if let Some(target) = additional_target {
+        vec![normalized, target]
+    } else {
+        vec![normalized]
+    }
+}
+
+fn split_bind_host_port(bind: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = bind.strip_prefix('[') {
+        let (host, suffix) = rest.split_once(']')?;
+        let port = suffix.strip_prefix(':')?;
+        return Some((host, port));
+    }
+
+    bind.rsplit_once(':')
+}
+
 fn normalize_listen_host(host: &str) -> String {
-    let trimmed = host.trim();
+    let trimmed = unbracket_host(host.trim());
     let lower = trimmed.to_ascii_lowercase();
 
     match lower.as_str() {
         "all" | "any" | "*" => all_interfaces_host().to_owned(),
         "local" | "loopback" => "127.0.0.1".to_owned(),
+        "all6" | "any6" | "ipv6" => "::".to_owned(),
+        "local6" | "loopback6" | "ipv6-loopback" => "::1".to_owned(),
         _ => trimmed.to_owned(),
     }
 }
 
 const fn all_interfaces_host() -> &'static str {
     "0.0.0.0"
+}
+
+fn all_interface_hosts() -> Vec<String> {
+    vec![all_interfaces_host().to_owned(), "::".to_owned()]
+}
+
+fn expand_listen_host(host: &str) -> Vec<String> {
+    let normalized = normalize_listen_host(host);
+    if normalized.eq_ignore_ascii_case("localhost") || normalized == "127.0.0.1" {
+        return vec!["127.0.0.1".to_owned(), "::1".to_owned()];
+    }
+
+    vec![normalized]
+}
+
+fn format_bind_target(host: &str, port: u16) -> String {
+    if host
+        .parse::<IpAddr>()
+        .is_ok_and(|address| address.is_ipv6())
+    {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn unbracket_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 #[cfg(test)]

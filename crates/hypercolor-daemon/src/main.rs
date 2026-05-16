@@ -25,7 +25,7 @@ struct DaemonArgs {
     #[arg(long, alias = "listen-host", alias = "host", conflicts_with = "bind")]
     listen: Option<String>,
 
-    /// Listen on every IPv4 network interface.
+    /// Listen on every IPv4 and IPv6 network interface.
     #[arg(long, alias = "lan", alias = "all-interfaces", conflicts_with_all = ["bind", "listen"])]
     listen_all: bool,
 

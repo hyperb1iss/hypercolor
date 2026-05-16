@@ -4781,6 +4781,7 @@ dependencies = [
  "serde",
  "serde_json",
  "single-instance",
+ "socket2 0.6.3",
  "spin_sleep",
  "tempfile",
  "thiserror 2.0.18",
