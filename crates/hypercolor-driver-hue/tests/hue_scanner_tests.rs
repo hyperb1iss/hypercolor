@@ -15,14 +15,12 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     let api_port = listener.local_addr()?.port();
     let config_id = "12345678-1234-1234-1234-123456789abc";
     let server_task = tokio::spawn(async move {
-        for _ in 0..4 {
+        for _ in 0..3 {
             let (mut stream, _) = listener.accept().await.expect("accept request");
             let request = read_http_request(&mut stream)
                 .await
                 .expect("read HTTP request");
-            let response = if request.starts_with("GET /nupnp HTTP/1.1") {
-                json_response("[]")
-            } else if request.starts_with("GET /api/config HTTP/1.1") {
+            let response = if request.starts_with("GET /api/config HTTP/1.1") {
                 json_response(
                     r#"{"bridgeid":"test-bridge","name":"Studio Bridge","modelid":"BSB002","swversion":"1968096020"}"#,
                 )
@@ -99,6 +97,34 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
         Some("Studio Bridge")
     );
 
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn scanner_uses_nupnp_only_when_no_local_candidates_exist() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let api_port = listener.local_addr()?.port();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        let request = read_http_request(&mut stream)
+            .await
+            .expect("read HTTP request");
+        assert!(request.starts_with("GET /nupnp HTTP/1.1"));
+        stream
+            .write_all(json_response("[]").as_slice())
+            .await
+            .expect("write HTTP response");
+    });
+
+    let tempdir = tempfile::tempdir()?;
+    let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
+    let mut scanner =
+        HueScanner::with_options(Vec::new(), store, Duration::from_secs(1), false, None)
+            .with_nupnp_url(format!("http://127.0.0.1:{api_port}/nupnp"));
+    let bridges = scanner.scan_bridges().await?;
+
+    assert!(bridges.is_empty());
     server_task.await?;
     Ok(())
 }

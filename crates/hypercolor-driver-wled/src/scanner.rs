@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use hypercolor_driver_api::MdnsBrowser;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
@@ -319,7 +319,7 @@ impl WledScanner {
             .context("failed to browse WLED mDNS services")?;
         let mut candidates = HashMap::new();
         for service in services {
-            info!(
+            debug!(
                 ip = %service.host,
                 hostname = %service.name,
                 "Found WLED device via mDNS"
@@ -434,7 +434,7 @@ impl TransportScanner for WledScanner {
             );
         }
 
-        info!(count = discovered.len(), "WLED mDNS scan complete");
+        debug!(count = discovered.len(), "WLED mDNS scan complete");
         Ok(discovered)
     }
 }

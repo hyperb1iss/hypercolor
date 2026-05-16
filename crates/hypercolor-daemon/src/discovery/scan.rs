@@ -593,7 +593,8 @@ async fn process_discovered_device(
     let tracked_after = runtime.device_registry.get(&device_id).await?;
     let device_ref = device_ref_for_tracked(&tracked_after.info);
 
-    let should_publish_reappeared = !was_renderable || had_actions;
+    let should_publish_reappeared =
+        had_actions || (!was_renderable && connect_behavior.should_auto_connect());
     let should_publish = match kind {
         DiscoverySeenKind::New => true,
         DiscoverySeenKind::Reappeared => should_publish_reappeared,

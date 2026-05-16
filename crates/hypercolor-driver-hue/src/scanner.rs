@@ -155,25 +155,27 @@ impl HueScanner {
             }
         }
 
-        match HueBridgeClient::discover_bridges_with_url(&self.nupnp_url).await {
-            Ok(bridges) => {
-                for bridge in bridges {
-                    let discovered = HueKnownBridge {
-                        bridge_id: bridge.bridge_id,
-                        ip: bridge.ip,
-                        api_port: DEFAULT_HUE_API_PORT,
-                        name: String::new(),
-                        model_id: String::new(),
-                        sw_version: String::new(),
-                    };
-                    candidates
-                        .entry(discovered.ip)
-                        .and_modify(|existing| existing.merge_from(&discovered))
-                        .or_insert(discovered);
+        if candidates.is_empty() {
+            match HueBridgeClient::discover_bridges_with_url(&self.nupnp_url).await {
+                Ok(bridges) => {
+                    for bridge in bridges {
+                        let discovered = HueKnownBridge {
+                            bridge_id: bridge.bridge_id,
+                            ip: bridge.ip,
+                            api_port: DEFAULT_HUE_API_PORT,
+                            name: String::new(),
+                            model_id: String::new(),
+                            sw_version: String::new(),
+                        };
+                        candidates
+                            .entry(discovered.ip)
+                            .and_modify(|existing| existing.merge_from(&discovered))
+                            .or_insert(discovered);
+                    }
                 }
-            }
-            Err(error) => {
-                warn!(error = %error, "Hue N-UPnP discovery failed");
+                Err(error) => {
+                    warn!(error = %error, "Hue N-UPnP discovery failed");
+                }
             }
         }
 
