@@ -45,6 +45,46 @@ fn mock_device_info(name: &str) -> DeviceInfo {
     }
 }
 
+fn asus_dram_device_info(address: u16) -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: format!("ASUS Aura DRAM (SMBus 0x{address:02X})"),
+        vendor: "ASUS".to_owned(),
+        family: DeviceFamily::new_static("asus", "ASUS"),
+        model: Some("asus_aura_smbus_dram".to_owned()),
+        connection_type: ConnectionType::SmBus,
+        origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
+            .with_protocol_id("asus/aura-smbus"),
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 8,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: Some("AUDA0-E6K5-0101".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 8,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    }
+}
+
+fn asus_dram_metadata(address: u16) -> HashMap<String, String> {
+    HashMap::from([
+        ("bus_path".to_owned(), "/dev/i2c-9".to_owned()),
+        ("smbus_address".to_owned(), format!("0x{address:02X}")),
+        ("controller_kind".to_owned(), "dram".to_owned()),
+        ("firmware_name".to_owned(), "AUDA0-E6K5-0101".to_owned()),
+    ])
+}
+
 // ── Mock Backend ─────────────────────────────────────────────────────────
 
 /// A mock device backend that tracks calls for test assertions.
@@ -439,6 +479,70 @@ async fn registry_add_with_fingerprint_reuses_existing_device() {
         .await
         .expect("device should still exist");
     assert_eq!(tracked.info.name, "Desk Strip Updated");
+}
+
+#[tokio::test]
+async fn registry_reuses_renderable_asus_dram_when_smbus_address_changes() {
+    let registry = DeviceRegistry::new();
+    let first = asus_dram_device_info(0x71);
+    let first_fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:71".to_owned());
+    let first_id = registry
+        .add_with_fingerprint_and_metadata(first, first_fingerprint, asus_dram_metadata(0x71))
+        .await;
+    assert!(registry.set_state(&first_id, DeviceState::Connected).await);
+
+    let second = asus_dram_device_info(0x73);
+    let second_fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:73".to_owned());
+    let second_id = registry
+        .add_with_fingerprint_and_metadata(
+            second,
+            second_fingerprint.clone(),
+            asus_dram_metadata(0x73),
+        )
+        .await;
+
+    assert_eq!(second_id, first_id);
+    assert_eq!(registry.list().await.len(), 1);
+    assert_eq!(
+        registry.fingerprint_for_id(&first_id).await,
+        Some(second_fingerprint)
+    );
+    let tracked = registry.get(&first_id).await.expect("device should exist");
+    assert_eq!(tracked.info.name, "ASUS Aura DRAM (SMBus 0x73)");
+    assert_eq!(tracked.state, DeviceState::Connected);
+}
+
+#[tokio::test]
+async fn registry_keeps_asus_dram_address_change_separate_when_ambiguous() {
+    let registry = DeviceRegistry::new();
+    let mut existing_ids = Vec::new();
+    for address in [0x71, 0x72] {
+        let info = asus_dram_device_info(address);
+        let id = registry
+            .add_with_fingerprint_and_metadata(
+                info,
+                DeviceFingerprint(format!("smbus:/dev/i2c-9:{address:02x}")),
+                asus_dram_metadata(address),
+            )
+            .await;
+        existing_ids.push(id);
+    }
+    for id in existing_ids {
+        assert!(registry.set_state(&id, DeviceState::Connected).await);
+    }
+
+    let discovered = asus_dram_device_info(0x73);
+    let discovered_id = discovered.id;
+    let returned_id = registry
+        .add_with_fingerprint_and_metadata(
+            discovered,
+            DeviceFingerprint("smbus:/dev/i2c-9:73".to_owned()),
+            asus_dram_metadata(0x73),
+        )
+        .await;
+
+    assert_eq!(returned_id, discovered_id);
+    assert_eq!(registry.list().await.len(), 3);
 }
 
 #[tokio::test]

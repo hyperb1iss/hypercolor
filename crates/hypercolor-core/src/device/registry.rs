@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::types::device::{
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
+    ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
 };
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
@@ -168,6 +168,40 @@ impl DeviceRegistry {
             inner.fingerprints.remove(&fingerprint);
         }
 
+        if let Some(existing_id) = find_single_renderable_smbus_dram_match(&inner, &info, &metadata)
+        {
+            if let Some(previous_fingerprint) = inner
+                .id_to_fingerprint
+                .insert(existing_id, fingerprint.clone())
+            {
+                inner.fingerprints.remove(&previous_fingerprint);
+            }
+            inner.fingerprints.insert(fingerprint.clone(), existing_id);
+
+            if let Some(entry) = inner.devices.get_mut(&existing_id) {
+                let mut updated_info = info;
+                updated_info.id = existing_id;
+                preserve_renderable_device_shape(&mut updated_info, &entry.info, &entry.state);
+                apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
+                debug!(
+                    device_id = %existing_id,
+                    name = %updated_info.name,
+                    "Updating existing SMBus DRAM device after remap address change"
+                );
+                entry.info = updated_info;
+                entry.connect_behavior = connect_behavior;
+                bump_device_revision(entry);
+                if !metadata.is_empty() {
+                    inner.metadata_by_id.insert(existing_id, metadata);
+                }
+                self.bump_generation();
+                return existing_id;
+            }
+
+            inner.fingerprints.remove(&fingerprint);
+            inner.id_to_fingerprint.remove(&existing_id);
+        }
+
         // New device
         let mut tracked_info = info;
         let mut id = tracked_info.id;
@@ -220,6 +254,7 @@ impl DeviceRegistry {
                 let fallback = DeviceFingerprint(id.as_uuid().to_string());
                 inner.fingerprints.remove(&fallback);
             }
+            inner.fingerprints.retain(|_, mapped_id| mapped_id != id);
             inner.metadata_by_id.remove(id);
             self.bump_generation();
             info!(device_id = %id, "Device removed from registry");
@@ -438,6 +473,58 @@ fn apply_user_settings_to_info(info: &mut DeviceInfo, settings: &DeviceUserSetti
 
 fn bump_device_revision(entry: &mut TrackedDevice) {
     entry.revision = entry.revision.saturating_add(1);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SmBusDramIdentity {
+    bus_path: String,
+    controller_kind: String,
+    firmware_name: String,
+    led_count: u32,
+}
+
+fn find_single_renderable_smbus_dram_match(
+    inner: &RegistryInner,
+    info: &DeviceInfo,
+    metadata: &HashMap<String, String>,
+) -> Option<DeviceId> {
+    let target = smbus_dram_identity(info, metadata)?;
+    let mut matches = inner.devices.iter().filter_map(|(id, tracked)| {
+        if !(tracked.state.is_renderable() || tracked.state == DeviceState::Reconnecting) {
+            return None;
+        }
+        let metadata = inner.metadata_by_id.get(id)?;
+        (smbus_dram_identity(&tracked.info, metadata).as_ref() == Some(&target)).then_some(*id)
+    });
+
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn smbus_dram_identity(
+    info: &DeviceInfo,
+    metadata: &HashMap<String, String>,
+) -> Option<SmBusDramIdentity> {
+    if info.connection_type != ConnectionType::SmBus
+        || info.model.as_deref() != Some("asus_aura_smbus_dram")
+    {
+        return None;
+    }
+
+    let controller_kind = metadata.get("controller_kind")?;
+    if controller_kind != "dram" {
+        return None;
+    }
+
+    Some(SmBusDramIdentity {
+        bus_path: metadata.get("bus_path")?.clone(),
+        controller_kind: controller_kind.clone(),
+        firmware_name: metadata
+            .get("firmware_name")
+            .cloned()
+            .or_else(|| info.firmware_version.clone())?,
+        led_count: info.total_led_count(),
+    })
 }
 
 fn preserve_renderable_device_shape(
