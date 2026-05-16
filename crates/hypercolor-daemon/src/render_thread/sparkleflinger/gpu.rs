@@ -4,19 +4,23 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, Canvas, PublishedSurface, PublishedSurfaceStorageIdentity, RenderSurfacePool,
     SurfaceDescriptor,
 };
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::spatial::EdgeBehavior;
 
 use super::{
-    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, DisplayFinalizeParams,
+    PreviewSurfaceRequest,
 };
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::gpu_device::{GpuRenderDevice, backend_name, texture_format_name};
-use crate::render_thread::producer_queue::ProducerFrame;
+use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
 use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSpatialSampler,
     PendingGpuSampleReadback,
@@ -26,6 +30,7 @@ const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba
 const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
 const COMPOSE_WORKGROUP_HEIGHT: u32 = 8;
 const COMPOSE_PARAM_BYTES: usize = 48;
+const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
@@ -37,7 +42,6 @@ pub(crate) fn gpu_source_upload_skipped_total() -> u64 {
     GPU_SOURCE_UPLOAD_SKIPPED_TOTAL.load(Ordering::Relaxed)
 }
 
-#[cfg(feature = "servo-gpu-import")]
 fn record_gpu_source_upload_skipped() {
     let _ = GPU_SOURCE_UPLOAD_SKIPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -61,6 +65,7 @@ pub(crate) struct GpuSparkleFlinger {
     pipeline: GpuCompositorPipeline,
     spatial_sampler: GpuSpatialSampler,
     surfaces: Option<GpuCompositorSurfaceSet>,
+    display_finalize_surfaces: Option<GpuDisplayFinalizeSurfaceSet>,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
@@ -85,6 +90,10 @@ struct GpuCompositorPipeline {
     compose_bind_group_layout: wgpu::BindGroupLayout,
     compose_pipeline: wgpu::ComputePipeline,
     params_buffer: wgpu::Buffer,
+    display_finalize_bind_group_layout: wgpu::BindGroupLayout,
+    display_finalize_pipeline: wgpu::ComputePipeline,
+    display_finalize_yuv_pipeline: wgpu::ComputePipeline,
+    display_finalize_params_buffer: wgpu::Buffer,
     preview_scale_bind_group_layout: wgpu::BindGroupLayout,
     preview_scale_pipeline: wgpu::ComputePipeline,
     preview_scale_params_buffer: wgpu::Buffer,
@@ -114,6 +123,45 @@ struct GpuCompositorSurfaceSet {
     compose_param_write_count: usize,
     #[cfg(test)]
     last_readback_bytes: u64,
+}
+
+struct GpuDisplayFinalizeSurfaceSet {
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+    yuv_layout: DisplayYuv420Layout,
+    output: GpuCompositorTexture,
+    yuv_output: wgpu::Buffer,
+    readback: wgpu::Buffer,
+    yuv_readback: wgpu::Buffer,
+    readback_surfaces: RenderSurfacePool,
+    scene_source: Option<GpuDisplaySourceTexture>,
+    face_source: Option<GpuDisplaySourceTexture>,
+    #[cfg(test)]
+    scene_upload_count: usize,
+    #[cfg(test)]
+    face_upload_count: usize,
+    #[cfg(test)]
+    last_readback_bytes: u64,
+    #[cfg(test)]
+    last_yuv_readback_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayYuv420Layout {
+    y_stride: u32,
+    uv_stride: u32,
+    y_plane_len: u32,
+    u_plane_len: u32,
+    total_len: u32,
+    word_len: u32,
+}
+
+struct GpuDisplaySourceTexture {
+    width: u32,
+    height: u32,
+    texture: GpuCompositorTexture,
+    cached_upload: Option<CachedSourceUpload>,
 }
 
 struct GpuPreviewSurfaceSet {
@@ -297,6 +345,7 @@ impl GpuSparkleFlinger {
             pipeline,
             spatial_sampler,
             surfaces: None,
+            display_finalize_surfaces: None,
             preview_surfaces: None,
             current_output: None,
             cached_composition_key: None,
@@ -350,6 +399,330 @@ impl GpuSparkleFlinger {
                 pending_output_submission,
             )?
             .sampling_surface)
+    }
+
+    pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
+        self.flush_pending_output_submission()?;
+        let Some(current_output) = self.current_output else {
+            return Ok(None);
+        };
+        let Some(surfaces) = self.surfaces.as_ref() else {
+            return Ok(None);
+        };
+        let texture = match current_output {
+            GpuCompositorOutputSurface::Front => &surfaces.front,
+            GpuCompositorOutputSurface::Back => &surfaces.back,
+        };
+        Ok(Some(GpuTextureFrame {
+            width: surfaces.width,
+            height: surfaces.height,
+            storage_id: self.output_generation,
+            texture: texture.texture.clone(),
+            view: texture.view.clone(),
+        }))
+    }
+
+    fn flush_pending_output_submission(&mut self) -> Result<()> {
+        if self.pending_preview_readback.is_some() {
+            return self.submit_pending_preview_work();
+        }
+        if let Some(encoder) = self.pending_output_submission.take() {
+            self.queue.submit(Some(encoder.finish()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finalize_display_face(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<PublishedSurface>> {
+        if params.width == 0
+            || params.height == 0
+            || scene.width() == 0
+            || scene.height() == 0
+            || face.width() == 0
+            || face.height() == 0
+        {
+            return Ok(None);
+        }
+
+        self.flush_pending_output_submission()?;
+        self.ensure_display_finalize_surface_size(params.width, params.height);
+        let surfaces = self
+            .display_finalize_surfaces
+            .as_mut()
+            .expect("display finalize surfaces should exist after allocation");
+
+        let scene_gpu = gpu_source_frame(scene);
+        if scene_gpu.is_none() {
+            surfaces.ensure_scene_source(&self.device, scene.width(), scene.height());
+            let source = surfaces
+                .scene_source
+                .as_mut()
+                .expect("scene source texture should exist before upload");
+            upload_frame_into_cached_texture(
+                &self.queue,
+                &source.texture.texture,
+                &mut source.cached_upload,
+                scene,
+                #[cfg(test)]
+                &mut surfaces.scene_upload_count,
+            );
+        }
+        let face_gpu = gpu_source_frame(face);
+        if face_gpu.is_none() {
+            surfaces.ensure_face_source(&self.device, face.width(), face.height());
+            let source = surfaces
+                .face_source
+                .as_mut()
+                .expect("face source texture should exist before upload");
+            upload_frame_into_cached_texture(
+                &self.queue,
+                &source.texture.texture,
+                &mut source.cached_upload,
+                face,
+                #[cfg(test)]
+                &mut surfaces.face_upload_count,
+            );
+        }
+
+        let scene_view = scene_gpu
+            .as_ref()
+            .map(GpuSourceFrame::view)
+            .unwrap_or_else(|| {
+                &surfaces
+                    .scene_source
+                    .as_ref()
+                    .expect("uploaded scene source should exist")
+                    .texture
+                    .view
+            });
+        let face_view = face_gpu
+            .as_ref()
+            .map(GpuSourceFrame::view)
+            .unwrap_or_else(|| {
+                &surfaces
+                    .face_source
+                    .as_ref()
+                    .expect("uploaded face source should exist")
+                    .texture
+                    .view
+            });
+        let bind_group = create_display_finalize_bind_group(
+            &self.device,
+            &self.pipeline,
+            scene_view,
+            face_view,
+            &surfaces.output.view,
+            &surfaces.yuv_output,
+        );
+        self.queue.write_buffer(
+            &self.pipeline.display_finalize_params_buffer,
+            0,
+            &encode_display_finalize_params(&params, scene, face),
+        );
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SparkleFlinger GPU display finalize"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("SparkleFlinger GPU display finalize pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline.display_finalize_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(
+                params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                1,
+            );
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surfaces.output.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &surfaces.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(surfaces.padded_bytes_per_row),
+                    rows_per_image: Some(params.height),
+                },
+            },
+            texture_extent(params.width, params.height),
+        );
+
+        try_read_back_texture_into_surface(
+            &self.device,
+            &surfaces.readback,
+            u64::from(surfaces.padded_bytes_per_row) * u64::from(params.height),
+            params.width,
+            params.height,
+            surfaces.padded_bytes_per_row,
+            self.queue.submit(Some(encoder.finish())),
+            &mut surfaces.readback_surfaces,
+            #[cfg(test)]
+            &mut surfaces.last_readback_bytes,
+        )
+    }
+
+    pub(crate) fn finalize_display_face_yuv420(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<DisplayYuv420Frame>> {
+        if params.width == 0
+            || params.height == 0
+            || scene.width() == 0
+            || scene.height() == 0
+            || face.width() == 0
+            || face.height() == 0
+        {
+            return Ok(None);
+        }
+
+        self.flush_pending_output_submission()?;
+        self.ensure_display_finalize_surface_size(params.width, params.height);
+        let surfaces = self
+            .display_finalize_surfaces
+            .as_mut()
+            .expect("display finalize surfaces should exist after allocation");
+
+        let scene_gpu = gpu_source_frame(scene);
+        if scene_gpu.is_none() {
+            surfaces.ensure_scene_source(&self.device, scene.width(), scene.height());
+            let source = surfaces
+                .scene_source
+                .as_mut()
+                .expect("scene source texture should exist before upload");
+            upload_frame_into_cached_texture(
+                &self.queue,
+                &source.texture.texture,
+                &mut source.cached_upload,
+                scene,
+                #[cfg(test)]
+                &mut surfaces.scene_upload_count,
+            );
+        }
+        let face_gpu = gpu_source_frame(face);
+        if face_gpu.is_none() {
+            surfaces.ensure_face_source(&self.device, face.width(), face.height());
+            let source = surfaces
+                .face_source
+                .as_mut()
+                .expect("face source texture should exist before upload");
+            upload_frame_into_cached_texture(
+                &self.queue,
+                &source.texture.texture,
+                &mut source.cached_upload,
+                face,
+                #[cfg(test)]
+                &mut surfaces.face_upload_count,
+            );
+        }
+
+        let scene_view = scene_gpu
+            .as_ref()
+            .map(GpuSourceFrame::view)
+            .unwrap_or_else(|| {
+                &surfaces
+                    .scene_source
+                    .as_ref()
+                    .expect("uploaded scene source should exist")
+                    .texture
+                    .view
+            });
+        let face_view = face_gpu
+            .as_ref()
+            .map(GpuSourceFrame::view)
+            .unwrap_or_else(|| {
+                &surfaces
+                    .face_source
+                    .as_ref()
+                    .expect("uploaded face source should exist")
+                    .texture
+                    .view
+            });
+        let bind_group = create_display_finalize_bind_group(
+            &self.device,
+            &self.pipeline,
+            scene_view,
+            face_view,
+            &surfaces.output.view,
+            &surfaces.yuv_output,
+        );
+        self.queue.write_buffer(
+            &self.pipeline.display_finalize_params_buffer,
+            0,
+            &encode_display_finalize_params(&params, scene, face),
+        );
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SparkleFlinger GPU display finalize YUV420"),
+            });
+        encoder.clear_buffer(&surfaces.yuv_output, 0, None);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("SparkleFlinger GPU display finalize YUV420 pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline.display_finalize_yuv_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(
+                params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                1,
+            );
+        }
+        encoder.copy_buffer_to_buffer(
+            &surfaces.yuv_output,
+            0,
+            &surfaces.yuv_readback,
+            0,
+            u64::from(surfaces.yuv_layout.word_len),
+        );
+
+        try_read_back_yuv420_buffer(
+            &self.device,
+            &surfaces.yuv_readback,
+            u64::from(surfaces.yuv_layout.total_len),
+            params.width,
+            params.height,
+            surfaces.yuv_layout,
+            self.queue.submit(Some(encoder.finish())),
+            #[cfg(test)]
+            &mut surfaces.last_yuv_readback_bytes,
+        )
+    }
+
+    fn ensure_display_finalize_surface_size(&mut self, width: u32, height: u32) {
+        if matches!(
+            self.display_finalize_surfaces,
+            Some(GpuDisplayFinalizeSurfaceSet {
+                width: current_width,
+                height: current_height,
+                ..
+            }) if current_width == width && current_height == height
+        ) {
+            return;
+        }
+
+        self.display_finalize_surfaces = Some(GpuDisplayFinalizeSurfaceSet::new(
+            &self.device,
+            width,
+            height,
+        ));
     }
 
     fn cached_preview_surface(&self, key: &CachedPreviewSurfaceKey) -> Option<PublishedSurface> {
@@ -1020,6 +1393,7 @@ impl GpuSparkleFlinger {
             ProducerFrame::Surface(_) => false,
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => false,
+            ProducerFrame::GpuTexture(_) => false,
         };
         let same_output = readback_key.as_ref().is_some_and(|key| {
             self.current_output == Some(GpuCompositorOutputSurface::Front)
@@ -1091,6 +1465,9 @@ impl GpuSparkleFlinger {
             ),
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => {
+                unreachable!("GPU producer frames are composed instead of bypassed")
+            }
+            ProducerFrame::GpuTexture(_) => {
                 unreachable!("GPU producer frames are composed instead of bypassed")
             }
         };
@@ -1182,7 +1559,7 @@ impl GpuSparkleFlinger {
             &mut surfaces.last_readback_bytes,
         )?
         else {
-            tracing::debug!(
+            tracing::trace!(
                 width,
                 height,
                 "GPU output readback was not ready without blocking"
@@ -1483,6 +1860,100 @@ impl GpuCompositorPipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let display_finalize_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("SparkleFlinger GPU display finalize bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: COMPOSITOR_TEXTURE_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                wgpu::BufferSize::new(DISPLAY_FINALIZE_PARAM_BYTES as u64).expect(
+                                    "display finalize uniform buffer size should be non-zero",
+                                ),
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let display_finalize_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("SparkleFlinger GPU display finalize pipeline layout"),
+                bind_group_layouts: &[Some(&display_finalize_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let display_finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SparkleFlinger GPU display finalize shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("display_finalize.wgsl").into()),
+        });
+        let display_finalize_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("SparkleFlinger GPU display finalize pipeline"),
+                layout: Some(&display_finalize_pipeline_layout),
+                module: &display_finalize_shader,
+                entry_point: Some("finalize_display"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let display_finalize_yuv_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("SparkleFlinger GPU display finalize YUV pipeline"),
+                layout: Some(&display_finalize_pipeline_layout),
+                module: &display_finalize_shader,
+                entry_point: Some("finalize_display_yuv420"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let display_finalize_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU display finalize params"),
+            size: DISPLAY_FINALIZE_PARAM_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let preview_scale_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("SparkleFlinger GPU preview scale bind group layout"),
@@ -1552,6 +2023,10 @@ impl GpuCompositorPipeline {
             compose_bind_group_layout,
             compose_pipeline,
             params_buffer,
+            display_finalize_bind_group_layout,
+            display_finalize_pipeline,
+            display_finalize_yuv_pipeline,
+            display_finalize_params_buffer,
             preview_scale_bind_group_layout,
             preview_scale_pipeline,
             preview_scale_params_buffer,
@@ -1610,6 +2085,127 @@ impl GpuCompositorSurfaceSet {
             width: self.width,
             height: self.height,
             texture_format: texture_format_name(COMPOSITOR_TEXTURE_FORMAT),
+        }
+    }
+}
+
+impl DisplayYuv420Layout {
+    fn new(width: u32, height: u32) -> Self {
+        let y_stride = width;
+        let uv_stride = width.div_ceil(2);
+        let uv_height = height.div_ceil(2);
+        let y_plane_len = y_stride
+            .checked_mul(height)
+            .expect("display Y plane size should fit in u32");
+        let u_plane_len = uv_stride
+            .checked_mul(uv_height)
+            .expect("display U/V plane size should fit in u32");
+        let total_len = y_plane_len
+            .checked_add(
+                u_plane_len
+                    .checked_mul(2)
+                    .expect("display chroma plane size should fit in u32"),
+            )
+            .expect("display YUV buffer size should fit in u32");
+        let word_len = total_len
+            .div_ceil(4)
+            .checked_mul(4)
+            .expect("display YUV word-aligned buffer size should fit in u32");
+
+        Self {
+            y_stride,
+            uv_stride,
+            y_plane_len,
+            u_plane_len,
+            total_len,
+            word_len,
+        }
+    }
+}
+
+impl GpuDisplayFinalizeSurfaceSet {
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let padded_bytes_per_row = padded_bytes_per_row(width);
+        let yuv_layout = DisplayYuv420Layout::new(width, height);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU display finalize readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let yuv_output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU display finalize YUV output"),
+            size: u64::from(yuv_layout.word_len),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let yuv_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU display finalize YUV readback"),
+            size: u64::from(yuv_layout.word_len),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        Self {
+            width,
+            height,
+            padded_bytes_per_row,
+            yuv_layout,
+            output: GpuCompositorTexture::new(
+                device,
+                width,
+                height,
+                "SparkleFlinger Display Finalize Output",
+            ),
+            yuv_output,
+            readback,
+            yuv_readback,
+            readback_surfaces: RenderSurfacePool::with_slot_count(
+                SurfaceDescriptor::rgba8888(width, height),
+                3,
+            ),
+            scene_source: None,
+            face_source: None,
+            #[cfg(test)]
+            scene_upload_count: 0,
+            #[cfg(test)]
+            face_upload_count: 0,
+            #[cfg(test)]
+            last_readback_bytes: 0,
+            #[cfg(test)]
+            last_yuv_readback_bytes: 0,
+        }
+    }
+
+    fn ensure_scene_source(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        ensure_display_source_texture(
+            device,
+            &mut self.scene_source,
+            width,
+            height,
+            "SparkleFlinger Display Finalize Scene Source",
+        );
+    }
+
+    fn ensure_face_source(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        ensure_display_source_texture(
+            device,
+            &mut self.face_source,
+            width,
+            height,
+            "SparkleFlinger Display Finalize Face Source",
+        );
+    }
+}
+
+impl GpuDisplaySourceTexture {
+    fn new(device: &wgpu::Device, width: u32, height: u32, label: &'static str) -> Self {
+        Self {
+            width,
+            height,
+            texture: GpuCompositorTexture::new(device, width, height, label),
+            cached_upload: None,
         }
     }
 }
@@ -1831,6 +2427,22 @@ impl GpuPreviewScaleBindGroups {
     }
 }
 
+fn ensure_display_source_texture(
+    device: &wgpu::Device,
+    source: &mut Option<GpuDisplaySourceTexture>,
+    width: u32,
+    height: u32,
+    label: &'static str,
+) {
+    if source
+        .as_ref()
+        .is_some_and(|texture| texture.width == width && texture.height == height)
+    {
+        return;
+    }
+    *source = Some(GpuDisplaySourceTexture::new(device, width, height, label));
+}
+
 fn compose_layer_into_gpu(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1858,8 +2470,7 @@ fn compose_layer_into_gpu(
         GpuCompositorOutputSurface::Front
     };
 
-    #[cfg(feature = "servo-gpu-import")]
-    if let ProducerFrame::Gpu(frame) = &layer.frame
+    if let Some(frame) = gpu_source_frame(&layer.frame)
         && shader_mode == ComposeShaderMode::Replace
     {
         record_gpu_source_upload_skipped();
@@ -1868,18 +2479,12 @@ fn compose_layer_into_gpu(
         } else {
             &surfaces.front.texture
         };
-        copy_imported_frame_into_texture(encoder, frame, output_texture);
+        copy_gpu_source_frame_into_texture(encoder, &frame, output_texture);
         set_texture_contents(surfaces, output_surface, None);
         return;
     }
 
-    #[cfg(feature = "servo-gpu-import")]
-    let gpu_frame = match &layer.frame {
-        ProducerFrame::Gpu(frame) => Some(frame),
-        _ => None,
-    };
-    #[cfg(not(feature = "servo-gpu-import"))]
-    let gpu_frame: Option<()> = None;
+    let gpu_frame = gpu_source_frame(&layer.frame);
 
     if gpu_frame.is_none() {
         upload_frame_into_source_texture(queue, surfaces, &layer.frame);
@@ -1923,7 +2528,6 @@ fn compose_layer_into_gpu(
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
     }
-    #[cfg(feature = "servo-gpu-import")]
     if let Some(frame) = gpu_frame {
         record_gpu_source_upload_skipped();
         let bind_group = {
@@ -1936,7 +2540,7 @@ fn compose_layer_into_gpu(
                 device,
                 pipeline,
                 current_view,
-                frame.view.as_ref(),
+                frame.view(),
                 output_view,
                 "SparkleFlinger GPU imported producer bind group",
             )
@@ -2002,6 +2606,55 @@ fn upload_frame_into_source_texture(
     );
 }
 
+enum GpuSourceFrame<'a> {
+    #[cfg(feature = "servo-gpu-import")]
+    Imported(&'a hypercolor_core::effect::ImportedEffectFrame),
+    Texture(&'a GpuTextureFrame),
+}
+
+impl GpuSourceFrame<'_> {
+    const fn width(&self) -> u32 {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(frame) => frame.width,
+            Self::Texture(frame) => frame.width,
+        }
+    }
+
+    const fn height(&self) -> u32 {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(frame) => frame.height,
+            Self::Texture(frame) => frame.height,
+        }
+    }
+
+    fn texture(&self) -> &wgpu::Texture {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(frame) => frame.texture.as_ref(),
+            Self::Texture(frame) => &frame.texture,
+        }
+    }
+
+    fn view(&self) -> &wgpu::TextureView {
+        match self {
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(frame) => frame.view.as_ref(),
+            Self::Texture(frame) => &frame.view,
+        }
+    }
+}
+
+fn gpu_source_frame(frame: &ProducerFrame) -> Option<GpuSourceFrame<'_>> {
+    match frame {
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(frame) => Some(GpuSourceFrame::Imported(frame)),
+        ProducerFrame::GpuTexture(frame) => Some(GpuSourceFrame::Texture(frame)),
+        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => None,
+    }
+}
+
 fn copy_frame_into_output_texture(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -2010,13 +2663,9 @@ fn copy_frame_into_output_texture(
     frame: &ProducerFrame,
     #[cfg(test)] upload_count: &mut usize,
 ) {
-    #[cfg(not(feature = "servo-gpu-import"))]
-    let _ = encoder;
-
-    #[cfg(feature = "servo-gpu-import")]
-    if let ProducerFrame::Gpu(frame) = frame {
+    if let Some(frame) = gpu_source_frame(frame) {
         record_gpu_source_upload_skipped();
-        copy_imported_frame_into_texture(encoder, frame, texture);
+        copy_gpu_source_frame_into_texture(encoder, &frame, texture);
         *cached_upload = None;
         return;
     }
@@ -2031,15 +2680,14 @@ fn copy_frame_into_output_texture(
     );
 }
 
-#[cfg(feature = "servo-gpu-import")]
-fn copy_imported_frame_into_texture(
+fn copy_gpu_source_frame_into_texture(
     encoder: &mut wgpu::CommandEncoder,
-    frame: &hypercolor_core::effect::ImportedEffectFrame,
+    frame: &GpuSourceFrame<'_>,
     output: &wgpu::Texture,
 ) {
     encoder.copy_texture_to_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: frame.texture.as_ref(),
+            texture: frame.texture(),
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -2050,7 +2698,7 @@ fn copy_imported_frame_into_texture(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        texture_extent(frame.width, frame.height),
+        texture_extent(frame.width(), frame.height()),
     );
 }
 
@@ -2113,6 +2761,7 @@ fn cached_source_upload(frame: &ProducerFrame) -> Option<CachedSourceUpload> {
         ProducerFrame::Canvas(_) => None,
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
+        ProducerFrame::GpuTexture(_) => None,
     }
 }
 
@@ -2248,6 +2897,7 @@ fn bypass_preview_surface(frame: &ProducerFrame) -> Option<PublishedSurface> {
         ProducerFrame::Canvas(_) => None,
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
+        ProducerFrame::GpuTexture(_) => None,
     }
 }
 
@@ -2330,6 +2980,73 @@ fn try_read_back_texture_into_surface(
     .map(Some)
 }
 
+fn try_read_back_yuv420_buffer(
+    device: &wgpu::Device,
+    buffer: &wgpu::Buffer,
+    used_bytes: u64,
+    width: u32,
+    height: u32,
+    layout: DisplayYuv420Layout,
+    submission_index: wgpu::SubmissionIndex,
+    #[cfg(test)] last_readback_bytes: &mut u64,
+) -> Result<Option<DisplayYuv420Frame>> {
+    #[cfg(test)]
+    {
+        *last_readback_bytes = used_bytes;
+    }
+    match device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission_index.clone()),
+        timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
+    }) {
+        Ok(_) => {}
+        Err(wgpu::PollError::Timeout) => return Ok(None),
+        Err(error) => return Err(error).context("GPU YUV readback readiness poll failed"),
+    }
+
+    let mapped_bytes = u64::from(layout.word_len);
+    let slice = buffer.slice(..mapped_bytes);
+    let (sender, receiver) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission_index),
+            timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
+        })
+        .context("GPU YUV readback map poll failed")?;
+    match receiver.try_recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error).context("GPU YUV readback buffer mapping failed"),
+        Err(TryRecvError::Disconnected) => {
+            anyhow::bail!("GPU YUV readback channel closed before map completion");
+        }
+        Err(TryRecvError::Empty) => {
+            buffer.unmap();
+            return Ok(None);
+        }
+    }
+
+    let mapped = slice.get_mapped_range();
+    let used_len = usize::try_from(used_bytes).expect("YUV readback should fit usize");
+    let mut data = Vec::with_capacity(used_len);
+    data.extend_from_slice(&mapped[..used_len]);
+    drop(mapped);
+    buffer.unmap();
+
+    Ok(Some(DisplayYuv420Frame::from_vec(
+        data,
+        width,
+        height,
+        layout.y_stride,
+        layout.uv_stride,
+        usize::try_from(layout.y_plane_len).expect("Y plane length should fit usize"),
+        usize::try_from(layout.u_plane_len).expect("U plane length should fit usize"),
+        0,
+        0,
+    )))
+}
+
 fn copy_mapped_readback_buffer_into_surface(
     buffer: &wgpu::Buffer,
     used_bytes: u64,
@@ -2409,6 +3126,42 @@ fn create_compose_bind_group(
     })
 }
 
+fn create_display_finalize_bind_group(
+    device: &wgpu::Device,
+    pipeline: &GpuCompositorPipeline,
+    scene: &wgpu::TextureView,
+    face: &wgpu::TextureView,
+    output: &wgpu::TextureView,
+    output_yuv: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("SparkleFlinger GPU display finalize bind group"),
+        layout: &pipeline.display_finalize_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(scene),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(face),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(output),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: pipeline.display_finalize_params_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: output_yuv.as_entire_binding(),
+            },
+        ],
+    })
+}
+
 fn create_preview_scale_bind_group(
     device: &wgpu::Device,
     pipeline: &GpuCompositorPipeline,
@@ -2464,6 +3217,42 @@ fn encode_compose_params(
     bytes
 }
 
+fn encode_display_finalize_params(
+    params: &DisplayFinalizeParams,
+    scene: &ProducerFrame,
+    face: &ProducerFrame,
+) -> [u8; DISPLAY_FINALIZE_PARAM_BYTES] {
+    let mut bytes = [0u8; DISPLAY_FINALIZE_PARAM_BYTES];
+    let circular = u32::from(params.circular);
+    let yuv_layout = DisplayYuv420Layout::new(params.width, params.height);
+    bytes[0..4].copy_from_slice(&params.width.to_le_bytes());
+    bytes[4..8].copy_from_slice(&params.height.to_le_bytes());
+    bytes[8..12].copy_from_slice(&circular.to_le_bytes());
+    bytes[12..16].copy_from_slice(&(display_finalize_mode(params.blend_mode) as u32).to_le_bytes());
+    bytes[16..20].copy_from_slice(&scene.width().to_le_bytes());
+    bytes[20..24].copy_from_slice(&scene.height().to_le_bytes());
+    bytes[24..28].copy_from_slice(&face.width().to_le_bytes());
+    bytes[28..32].copy_from_slice(&face.height().to_le_bytes());
+    bytes[32..36].copy_from_slice(&display_brightness_factor(params.brightness).to_le_bytes());
+    bytes[36..40]
+        .copy_from_slice(&display_edge_behavior(params.viewport_edge_behavior).to_le_bytes());
+    bytes[48..52].copy_from_slice(&params.viewport_position.x.to_le_bytes());
+    bytes[52..56].copy_from_slice(&params.viewport_position.y.to_le_bytes());
+    bytes[56..60].copy_from_slice(&params.viewport_size.x.to_le_bytes());
+    bytes[60..64].copy_from_slice(&params.viewport_size.y.to_le_bytes());
+    bytes[64..68].copy_from_slice(&params.viewport_rotation.cos().to_le_bytes());
+    bytes[68..72].copy_from_slice(&params.viewport_rotation.sin().to_le_bytes());
+    bytes[72..76].copy_from_slice(&params.viewport_scale.to_le_bytes());
+    bytes[76..80].copy_from_slice(&params.opacity.clamp(0.0, 1.0).to_le_bytes());
+    bytes[80..84].copy_from_slice(&yuv_layout.y_stride.to_le_bytes());
+    bytes[84..88].copy_from_slice(&yuv_layout.uv_stride.to_le_bytes());
+    bytes[88..92].copy_from_slice(&yuv_layout.y_plane_len.to_le_bytes());
+    bytes[92..96].copy_from_slice(&yuv_layout.u_plane_len.to_le_bytes());
+    bytes[40..44]
+        .copy_from_slice(&display_fade_falloff(params.viewport_edge_behavior).to_le_bytes());
+    bytes
+}
+
 fn encode_preview_scale_params(
     source_width: u32,
     source_height: u32,
@@ -2480,6 +3269,22 @@ fn encode_preview_scale_params(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
+enum DisplayFinalizeShaderMode {
+    Replace = 0,
+    Alpha = 1,
+    Tint = 2,
+    LumaReveal = 3,
+    Add = 4,
+    Screen = 5,
+    Multiply = 6,
+    Overlay = 7,
+    SoftLight = 8,
+    ColorDodge = 9,
+    Difference = 10,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 enum ComposeShaderMode {
     Replace = 0,
     Alpha = 1,
@@ -2487,16 +3292,67 @@ enum ComposeShaderMode {
     Screen = 3,
 }
 
+fn display_finalize_mode(mode: DisplayFaceBlendMode) -> DisplayFinalizeShaderMode {
+    match mode {
+        DisplayFaceBlendMode::Replace => DisplayFinalizeShaderMode::Replace,
+        DisplayFaceBlendMode::Alpha => DisplayFinalizeShaderMode::Alpha,
+        DisplayFaceBlendMode::Tint => DisplayFinalizeShaderMode::Tint,
+        DisplayFaceBlendMode::LumaReveal => DisplayFinalizeShaderMode::LumaReveal,
+        DisplayFaceBlendMode::Add => DisplayFinalizeShaderMode::Add,
+        DisplayFaceBlendMode::Screen => DisplayFinalizeShaderMode::Screen,
+        DisplayFaceBlendMode::Multiply => DisplayFinalizeShaderMode::Multiply,
+        DisplayFaceBlendMode::Overlay => DisplayFinalizeShaderMode::Overlay,
+        DisplayFaceBlendMode::SoftLight => DisplayFinalizeShaderMode::SoftLight,
+        DisplayFaceBlendMode::ColorDodge => DisplayFinalizeShaderMode::ColorDodge,
+        DisplayFaceBlendMode::Difference => DisplayFinalizeShaderMode::Difference,
+    }
+}
+
+fn display_edge_behavior(edge_behavior: EdgeBehavior) -> u32 {
+    match edge_behavior {
+        EdgeBehavior::Clamp => 0,
+        EdgeBehavior::Wrap => 1,
+        EdgeBehavior::Mirror => 2,
+        EdgeBehavior::FadeToBlack { .. } => 3,
+    }
+}
+
+fn display_fade_falloff(edge_behavior: EdgeBehavior) -> f32 {
+    match edge_behavior {
+        EdgeBehavior::FadeToBlack { falloff } => falloff,
+        EdgeBehavior::Clamp | EdgeBehavior::Wrap | EdgeBehavior::Mirror => 0.0,
+    }
+}
+
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the helper mirrors display byte brightness policy before encoding GPU uniforms"
+)]
+fn display_brightness_factor(brightness: f32) -> u32 {
+    let value = brightness.clamp(0.0, 1.0);
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    if value >= 1.0 {
+        return u32::from(u8::MAX);
+    }
+    (value.mul_add(f32::from(u8::MAX), 0.5)) as u32
+}
+
 #[cfg(test)]
 #[allow(clippy::manual_let_else)]
 mod tests {
     use std::sync::mpsc;
 
+    use hypercolor_core::blend_math::encode_srgb_channel;
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{
         Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
     };
     use hypercolor_types::event::ZoneColors;
+    use hypercolor_types::scene::DisplayFaceBlendMode;
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
         StripDirection,
@@ -2508,7 +3364,8 @@ mod tests {
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
     use crate::render_thread::sparkleflinger::{
-        CompositionLayer, CompositionPlan, PreviewSurfaceRequest, cpu::CpuSparkleFlinger,
+        CompositionLayer, CompositionPlan, DisplayFinalizeParams, PreviewSurfaceRequest,
+        cpu::CpuSparkleFlinger,
     };
 
     fn solid_canvas(color: Rgba) -> Canvas {
@@ -2521,6 +3378,26 @@ mod tests {
         let mut canvas = Canvas::new(width, height);
         canvas.fill(color);
         canvas
+    }
+
+    fn display_finalize_params(
+        width: u32,
+        height: u32,
+        blend_mode: DisplayFaceBlendMode,
+    ) -> DisplayFinalizeParams {
+        DisplayFinalizeParams {
+            width,
+            height,
+            circular: false,
+            brightness: 1.0,
+            viewport_position: NormalizedPosition::new(0.5, 0.5),
+            viewport_size: NormalizedPosition::new(1.0, 1.0),
+            viewport_rotation: 0.0,
+            viewport_scale: 1.0,
+            viewport_edge_behavior: EdgeBehavior::Clamp,
+            blend_mode,
+            opacity: 1.0,
+        }
     }
 
     fn patterned_canvas(seed: u8) -> Canvas {
@@ -2737,6 +3614,77 @@ mod tests {
 
         assert!(!probe.adapter_name.is_empty());
         assert!(!probe.texture_format.is_empty());
+    }
+
+    #[test]
+    fn gpu_display_finalize_applies_replace_brightness_and_circular_mask() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let scene = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 0, 255, 255)));
+        let face = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(255, 0, 0, 255)));
+        let mut params = display_finalize_params(4, 4, DisplayFaceBlendMode::Replace);
+        params.circular = true;
+        params.brightness = 0.5;
+
+        let surface = compositor
+            .finalize_display_face(&scene, &face, params)
+            .expect("display finalize should not fail")
+            .expect("display finalize should produce a surface");
+        let rgba = surface.rgba_bytes();
+
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
+        assert_eq!(
+            &rgba[((2 * 4 + 2) * 4)..((2 * 4 + 2) * 4 + 4)],
+            &[128, 0, 0, 255]
+        );
+    }
+
+    #[test]
+    fn gpu_display_finalize_alpha_blends_in_linear_light() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+        let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+        let mut params = display_finalize_params(2, 2, DisplayFaceBlendMode::Alpha);
+        params.opacity = 0.5;
+
+        let surface = compositor
+            .finalize_display_face(&scene, &face, params)
+            .expect("display finalize should not fail")
+            .expect("display finalize should produce a surface");
+
+        assert_eq!(
+            &surface.rgba_bytes()[0..4],
+            &[encode_srgb_channel(0.5), 0, 0, 255],
+        );
+    }
+
+    #[test]
+    fn gpu_display_finalize_yuv420_reads_back_luma_and_chroma_planes() {
+        let mut compositor = match GpuSparkleFlinger::new() {
+            Ok(compositor) => compositor,
+            Err(_) => return,
+        };
+        let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+        let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+        let params = display_finalize_params(2, 2, DisplayFaceBlendMode::Replace);
+
+        let frame = compositor
+            .finalize_display_face_yuv420(&scene, &face, params)
+            .expect("display yuv finalize should not fail")
+            .expect("display yuv finalize should produce a frame");
+
+        assert_eq!(frame.width, 2);
+        assert_eq!(frame.height, 2);
+        assert_eq!(frame.y_stride, 2);
+        assert_eq!(frame.uv_stride, 1);
+        assert_eq!(frame.y_plane(), &[76, 76, 76, 76]);
+        assert_eq!(frame.u_plane(), &[85]);
+        assert_eq!(frame.v_plane(), &[255]);
     }
 
     #[test]

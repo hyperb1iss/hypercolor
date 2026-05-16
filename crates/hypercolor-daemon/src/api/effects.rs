@@ -420,12 +420,13 @@ async fn publish_black_output_snapshot(state: &AppState) {
     }
 
     let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
+    let group_frame = hypercolor_core::bus::DisplayGroupFrame::Canvas(canvas_frame.clone());
     let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();
     for group_id in display_group_targets.keys().copied() {
         state
             .event_bus
             .group_canvas_sender(group_id)
-            .send_replace(canvas_frame.clone());
+            .send_replace(group_frame.clone());
     }
     state
         .event_bus

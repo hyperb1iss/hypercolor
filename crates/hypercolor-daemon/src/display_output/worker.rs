@@ -10,13 +10,14 @@ use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
-use hypercolor_core::bus::CanvasFrame;
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
 use hypercolor_core::device::{BackendIo, DeviceDisplaySink};
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePayload};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::encode::{
     DisplayEncodeState, display_brightness_factor, encode_canvas_frame, encode_face_scene_blend,
+    encode_finalized_canvas_frame, encode_finalized_yuv420_frame,
 };
 use super::render::display_viewport_signature;
 use super::{
@@ -156,6 +157,7 @@ struct CapturedDisplaySource {
 #[derive(Clone)]
 enum CapturedDisplayFrameSource {
     Scene(CapturedDisplaySource),
+    Direct(CapturedDisplaySource),
     Face {
         scene_source: Option<CapturedDisplaySource>,
         face_source: CapturedDisplaySource,
@@ -177,6 +179,9 @@ impl CapturedDisplayFrameSource {
         match (self, source) {
             (Self::Scene(captured), DisplayWorkerFrameSource::Scene(frame)) => {
                 display_source_matches(Some(captured), Some(frame))
+            }
+            (Self::Direct(captured), DisplayWorkerFrameSource::Direct(frame)) => {
+                display_group_source_matches(Some(captured), Some(frame))
             }
             (
                 Self::Face {
@@ -206,6 +211,10 @@ impl CapturedDisplayFrameSource {
             DisplayWorkerFrameSource::Scene(frame) => Self::Scene(
                 capture_display_source(Some(frame))
                     .expect("display worker should only capture a valid scene frame"),
+            ),
+            DisplayWorkerFrameSource::Direct(frame) => Self::Direct(
+                capture_display_group_source(Some(frame))
+                    .expect("display worker should only capture a valid direct frame"),
             ),
             DisplayWorkerFrameSource::Face {
                 scene_frame,
@@ -255,6 +264,21 @@ fn display_source_matches(
     }
 }
 
+fn display_group_source_matches(
+    captured: Option<&CapturedDisplaySource>,
+    source: Option<&Arc<DisplayGroupFrame>>,
+) -> bool {
+    match (captured, source) {
+        (None, None) => true,
+        (Some(captured), Some(source)) => {
+            let source_identity = display_group_source_identity(source.as_ref());
+            captured.identity == source_identity
+                || display_group_source_content_matches(captured, source.as_ref())
+        }
+        _ => false,
+    }
+}
+
 fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedDisplaySource> {
     source.map(|source| {
         let identity = display_source_identity(source.as_ref());
@@ -266,12 +290,36 @@ fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedD
     })
 }
 
+fn capture_display_group_source(
+    source: Option<&Arc<DisplayGroupFrame>>,
+) -> Option<CapturedDisplaySource> {
+    source.map(|source| {
+        let identity = display_group_source_identity(source.as_ref());
+        CapturedDisplaySource {
+            identity,
+            content_hash: should_hash_display_source_identity(identity)
+                .then(|| display_group_source_content_hash(source.as_ref())),
+        }
+    })
+}
+
 fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
-    DisplaySourceIdentity {
+    DisplaySourceIdentity::Rgba {
         generation: source.surface().generation(),
         storage: source.surface().storage_identity(),
         width: source.width,
         height: source.height,
+    }
+}
+
+fn display_group_source_identity(source: &DisplayGroupFrame) -> DisplaySourceIdentity {
+    match source {
+        DisplayGroupFrame::Canvas(source) => display_source_identity(source),
+        DisplayGroupFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
+            storage: source.storage_identity(),
+            width: source.width,
+            height: source.height,
+        },
     }
 }
 
@@ -284,14 +332,30 @@ fn display_source_content_matches(captured: &CapturedDisplaySource, source: &Can
         return false;
     };
     let source_identity = display_source_identity(source);
-    captured.identity.width == source_identity.width
-        && captured.identity.height == source_identity.height
+    display_source_identity_size(captured.identity) == display_source_identity_size(source_identity)
         && should_hash_display_source_identity(source_identity)
         && captured_hash == display_source_content_hash(source)
 }
 
+fn display_group_source_content_matches(
+    captured: &CapturedDisplaySource,
+    source: &DisplayGroupFrame,
+) -> bool {
+    match source {
+        DisplayGroupFrame::Canvas(source) => display_source_content_matches(captured, source),
+        DisplayGroupFrame::Yuv420(_) => false,
+    }
+}
+
+const fn display_source_identity_size(identity: DisplaySourceIdentity) -> (u32, u32) {
+    match identity {
+        DisplaySourceIdentity::Rgba { width, height, .. }
+        | DisplaySourceIdentity::Yuv420 { width, height, .. } => (width, height),
+    }
+}
+
 fn should_hash_display_source_identity(identity: DisplaySourceIdentity) -> bool {
-    identity.generation == 0
+    matches!(identity, DisplaySourceIdentity::Rgba { generation: 0, .. })
 }
 
 fn display_source_content_hash(source: &CanvasFrame) -> u64 {
@@ -300,6 +364,13 @@ fn display_source_content_hash(source: &CanvasFrame) -> u64 {
     source.height.hash(&mut hasher);
     source.rgba_bytes().hash(&mut hasher);
     hasher.finish()
+}
+
+fn display_group_source_content_hash(source: &DisplayGroupFrame) -> u64 {
+    match source {
+        DisplayGroupFrame::Canvas(source) => display_source_content_hash(source),
+        DisplayGroupFrame::Yuv420(source) => source.storage_identity().id,
+    }
 }
 
 impl DisplayWorkerHandle {
@@ -616,6 +687,21 @@ async fn run_display_worker(
                     include_preview_jpeg,
                     &mut encode_state,
                 ),
+                DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
+                    DisplayGroupFrame::Canvas(frame) => encode_finalized_canvas_frame(
+                        frame,
+                        &geometry,
+                        frame_format,
+                        include_preview_jpeg,
+                        &mut encode_state,
+                    ),
+                    DisplayGroupFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
+                        frame,
+                        frame_format,
+                        include_preview_jpeg,
+                        &mut encode_state,
+                    ),
+                },
                 DisplayWorkerFrameSource::Face {
                     scene_frame,
                     face_frame,

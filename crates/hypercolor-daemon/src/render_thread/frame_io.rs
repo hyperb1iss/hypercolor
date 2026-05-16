@@ -167,19 +167,19 @@ pub(crate) fn publish_frame_updates(
     for (group_id, group_canvas) in group_canvases {
         state
             .event_bus
-            .upsert_display_group_target(*group_id, (&group_canvas.display_target).into());
+            .upsert_display_group_target(*group_id, group_canvas.display_target.clone());
         let Some(sender) = group_canvas_senders.get(group_id) else {
             continue;
         };
-        let surface = group_canvas
-            .surface
+        let frame = group_canvas
+            .frame
             .with_frame_metadata(frame_number, elapsed_ms);
         let publish_group_canvas = {
             let current = sender.borrow();
-            should_publish_surface_frame(&current, &surface)
+            should_publish_display_group_frame(&current, &frame)
         };
         if publish_group_canvas {
-            sender.send_replace(CanvasFrame::from_surface(surface));
+            sender.send_replace(frame);
         }
     }
     let group_canvas_us = micros_u32(group_canvas_start.elapsed());
@@ -389,6 +389,25 @@ fn should_publish_canvas_frame(current: &CanvasFrame, next: &CanvasFrame) -> boo
 
 fn should_publish_surface_frame(current: &CanvasFrame, next: &PublishedSurface) -> bool {
     canvas_frame_publication_identity(current) != published_surface_publication_identity(next)
+}
+
+fn should_publish_display_group_frame(
+    current: &hypercolor_core::bus::DisplayGroupFrame,
+    next: &hypercolor_core::bus::DisplayGroupFrame,
+) -> bool {
+    use hypercolor_core::bus::DisplayGroupFrame;
+
+    match (current, next) {
+        (DisplayGroupFrame::Canvas(current), DisplayGroupFrame::Canvas(next)) => {
+            should_publish_canvas_frame(current, next)
+        }
+        (DisplayGroupFrame::Yuv420(current), DisplayGroupFrame::Yuv420(next)) => {
+            current.storage_identity() != next.storage_identity()
+                || current.width != next.width
+                || current.height != next.height
+        }
+        _ => true,
+    }
 }
 
 fn should_publish_canvas_storage(current: &CanvasFrame, next: &Canvas) -> bool {

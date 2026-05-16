@@ -1,7 +1,8 @@
 //! Comprehensive tests for the event bus.
 
 use hypercolor_core::bus::{
-    CanvasFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus, TimestampedEvent,
+    CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus,
+    TimestampedEvent,
 };
 use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{
@@ -245,13 +246,17 @@ async fn group_canvas_receiver_roundtrip() {
 
     let _ = bus
         .group_canvas_sender(group_id)
-        .send(CanvasFrame::from_canvas(&canvas, 7, 123));
+        .send(DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(
+            &canvas, 7, 123,
+        )));
 
     timeout(Duration::from_secs(1), rx.changed())
         .await
         .expect("group canvas change should arrive")
         .expect("group canvas sender should stay connected");
-    let frame = rx.borrow().clone();
+    let DisplayGroupFrame::Canvas(frame) = rx.borrow().clone() else {
+        panic!("group canvas should publish canvas frames");
+    };
     assert_eq!(frame.frame_number, 7);
     assert_eq!(frame.timestamp_ms, 123);
     assert_eq!(frame.width, 2);
@@ -267,14 +272,16 @@ async fn removing_group_canvas_resets_new_subscribers_to_empty() {
     canvas.fill(Rgba::new(12, 34, 56, 255));
     let _ = bus
         .group_canvas_sender(group_id)
-        .send(CanvasFrame::from_canvas(&canvas, 1, 1));
+        .send(DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(
+            &canvas, 1, 1,
+        )));
 
     bus.remove_group_canvas(group_id);
 
     let rx = bus.group_canvas_receiver(group_id);
     let frame = rx.borrow().clone();
-    assert_eq!(frame.width, 0);
-    assert_eq!(frame.height, 0);
+    assert_eq!(frame.width(), 0);
+    assert_eq!(frame.height(), 0);
 }
 
 #[test]
@@ -292,6 +299,7 @@ fn retain_group_canvases_prunes_stale_streams() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Alpha,
             opacity: 0.5,
+            finalized: false,
         },
     );
     bus.upsert_display_group_target(
@@ -300,6 +308,7 @@ fn retain_group_canvases_prunes_stale_streams() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Replace,
             opacity: 1.0,
+            finalized: false,
         },
     );
     assert_eq!(bus.group_canvas_stream_count(), 2);
@@ -311,8 +320,8 @@ fn retain_group_canvases_prunes_stale_streams() {
     assert_eq!(bus.display_group_target_count(), 1);
     let stale = bus.group_canvas_receiver(stale_id);
     let frame = stale.borrow().clone();
-    assert_eq!(frame.width, 0);
-    assert_eq!(frame.height, 0);
+    assert_eq!(frame.width(), 0);
+    assert_eq!(frame.height(), 0);
 }
 
 #[test]
@@ -330,6 +339,7 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Alpha,
             opacity: 0.5,
+            finalized: false,
         },
     );
     bus.upsert_display_group_target(
@@ -338,6 +348,7 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Replace,
             opacity: 1.0,
+            finalized: false,
         },
     );
 
@@ -347,7 +358,7 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
     assert_eq!(bus.display_group_target_count(), 1);
     assert_eq!(senders.len(), 1);
     assert_eq!(senders[0].0, keep_id);
-    assert_eq!(senders[0].1.borrow().width, 0);
+    assert_eq!(senders[0].1.borrow().width(), 0);
     assert!(senders[0].1.same_channel(&keep_sender));
 }
 
@@ -367,6 +378,7 @@ fn display_group_targets_roundtrip_and_revision() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Screen,
             opacity: 0.6,
+            finalized: false,
         },
     );
 
@@ -379,6 +391,7 @@ fn display_group_targets_roundtrip_and_revision() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Screen,
             opacity: 0.6,
+            finalized: false,
         })
     );
 }
@@ -396,6 +409,7 @@ fn retain_display_group_targets_prunes_stale_routes() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Alpha,
             opacity: 0.5,
+            finalized: false,
         },
     );
     bus.upsert_display_group_target(
@@ -404,6 +418,7 @@ fn retain_display_group_targets_prunes_stale_routes() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Replace,
             opacity: 1.0,
+            finalized: false,
         },
     );
     assert_eq!(bus.display_group_target_count(), 2);

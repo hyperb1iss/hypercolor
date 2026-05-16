@@ -6,6 +6,7 @@ pub(crate) mod gpu;
 mod gpu_sampling;
 
 use anyhow::{Result, bail};
+use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_core::types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
@@ -13,7 +14,10 @@ use hypercolor_core::types::canvas::{
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
+#[cfg(feature = "wgpu")]
+use super::producer_queue::GpuTextureFrame;
 use crate::performance::CompositorBackendKind;
 #[cfg(feature = "wgpu")]
 use crate::render_thread::gpu_device::GpuRenderDevice;
@@ -126,6 +130,10 @@ impl CompositionLayer {
         if matches!(self.frame, ProducerFrame::Gpu(_)) {
             return false;
         }
+        #[cfg(feature = "wgpu")]
+        if matches!(self.frame, ProducerFrame::GpuTexture(_)) {
+            return false;
+        }
 
         self.mode == CompositionMode::Replace && self.opacity >= 1.0
     }
@@ -168,21 +176,40 @@ impl CompositionPlan {
         not(feature = "wgpu"),
         allow(dead_code, reason = "only used by the optional wgpu compositor lane")
     )]
-    #[cfg(feature = "servo-gpu-import")]
+    #[cfg(feature = "wgpu")]
     fn contains_gpu_frames(&self) -> bool {
-        self.layers
-            .iter()
-            .any(|layer| matches!(layer.frame, ProducerFrame::Gpu(_)))
+        self.layers.iter().any(|layer| match &layer.frame {
+            #[cfg(feature = "servo-gpu-import")]
+            ProducerFrame::Gpu(_) => true,
+            #[cfg(feature = "wgpu")]
+            ProducerFrame::GpuTexture(_) => true,
+            _ => false,
+        })
     }
 
     #[cfg_attr(
         not(feature = "wgpu"),
         allow(dead_code, reason = "only used by the optional wgpu compositor lane")
     )]
-    #[cfg(not(feature = "servo-gpu-import"))]
+    #[cfg(not(feature = "wgpu"))]
     const fn contains_gpu_frames(&self) -> bool {
         false
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DisplayFinalizeParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) circular: bool,
+    pub(crate) brightness: f32,
+    pub(crate) viewport_position: NormalizedPosition,
+    pub(crate) viewport_size: NormalizedPosition,
+    pub(crate) viewport_rotation: f32,
+    pub(crate) viewport_scale: f32,
+    pub(crate) viewport_edge_behavior: EdgeBehavior,
+    pub(crate) blend_mode: DisplayFaceBlendMode,
+    pub(crate) opacity: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -361,6 +388,36 @@ impl SparkleFlinger {
         opacity: f32,
     ) {
         face_overlay::blend_face_overlay_rgba(scene_rgba, face_rgba, blend_mode, opacity);
+    }
+
+    pub(crate) fn finalize_display_face(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<PublishedSurface>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.finalize_display_face(scene, face, params)
+            }
+        }
+    }
+
+    pub(crate) fn finalize_display_face_yuv420(
+        &mut self,
+        scene: &ProducerFrame,
+        face: &ProducerFrame,
+        params: DisplayFinalizeParams,
+    ) -> Result<Option<DisplayYuv420Frame>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.finalize_display_face_yuv420(scene, face, params)
+            }
+        }
     }
 
     pub(crate) fn preview_only_frame(
@@ -557,6 +614,14 @@ impl SparkleFlinger {
         }
     }
 
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.current_output_frame(),
+        }
+    }
+
     pub fn submit_pending_preview_work(&mut self) -> Result<()> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(()),
@@ -687,6 +752,8 @@ fn preview_surface_for_frame(
         }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => None,
     }
 }
 

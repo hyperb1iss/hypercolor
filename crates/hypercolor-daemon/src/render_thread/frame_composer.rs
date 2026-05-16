@@ -1,11 +1,13 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::warn;
+use tracing::{debug, warn};
 
+use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
 use hypercolor_core::types::canvas::PublishedSurface;
+use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
-use hypercolor_types::scene::RenderGroupId;
+use hypercolor_types::scene::{DisplayFaceTarget, RenderGroupId};
 
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
@@ -16,8 +18,8 @@ use super::render_groups::{
 };
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
-#[cfg(feature = "servo-gpu-import")]
-use super::sparkleflinger::{CompositionLayer, CompositionPlan};
+#[cfg(feature = "wgpu")]
+use super::sparkleflinger::{CompositionLayer, CompositionPlan, DisplayFinalizeParams};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::preview_runtime::PreviewDemandSummary;
 
@@ -257,13 +259,11 @@ impl ComposeContext<'_> {
                 self.publish_effect_recovered();
                 let scene_frame = render_group_result.scene_frame.clone();
                 let composition_start = Instant::now();
-                let group_canvases =
-                    self.materialize_group_canvases(render_group_result.group_canvases);
                 let compiled_plan = self.compose.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
                     self.state.canvas_dims.height(),
                     &self.scene_snapshot.scene_runtime,
-                    scene_frame,
+                    scene_frame.clone(),
                     true,
                 );
                 let preview_request = self.preview_surface_request();
@@ -292,8 +292,14 @@ impl ComposeContext<'_> {
                 } else {
                     self.compose
                         .sparkleflinger
-                        .preview_only_frame(render_group_result.scene_frame, preview_request)
+                        .preview_only_frame(scene_frame.clone(), preview_request)
                 };
+                let scene_display_frame =
+                    self.scene_display_frame_for_groups(&scene_frame, requires_full_composition);
+                let group_canvases = self.materialize_group_canvases(
+                    render_group_result.group_canvases,
+                    &scene_display_frame,
+                );
                 let composition_bypassed = composed.bypassed;
                 let composition_done_at = Instant::now();
                 let composition_us = micros_between(composition_start, composition_done_at);
@@ -449,18 +455,20 @@ impl ComposeContext<'_> {
     fn materialize_group_canvases(
         &mut self,
         group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
+        scene_frame: &ProducerFrame,
     ) -> Vec<(RenderGroupId, GroupCanvasFrame)> {
+        let (_, display_routes) = self.state.event_bus.display_group_output_routes_snapshot();
         group_canvases
             .into_iter()
             .filter_map(|(group_id, frame)| {
-                self.materialize_group_canvas(frame)
+                self.materialize_group_canvas(frame, scene_frame, display_routes.get(&group_id))
                     .map(|frame| (group_id, frame))
             })
             .collect()
     }
 
     #[cfg_attr(
-        not(feature = "servo-gpu-import"),
+        not(feature = "wgpu"),
         expect(
             clippy::unnecessary_wraps,
             reason = "the return type stays feature-stable because GPU readback can skip a frame"
@@ -469,39 +477,164 @@ impl ComposeContext<'_> {
     fn materialize_group_canvas(
         &mut self,
         group_canvas: PendingGroupCanvasFrame,
+        scene_frame: &ProducerFrame,
+        display_route: Option<&DisplayGroupOutputRoute>,
     ) -> Option<GroupCanvasFrame> {
         let PendingGroupCanvasFrame {
             frame,
             display_target,
         } = group_canvas;
+        if let Some(frame) =
+            self.finalize_display_group_canvas(scene_frame, &frame, &display_target, display_route)
+        {
+            return Some(GroupCanvasFrame {
+                frame,
+                display_target: DisplayGroupTarget {
+                    device_id: display_target.device_id,
+                    blend_mode: display_target.blend_mode,
+                    opacity: display_target.opacity,
+                    finalized: true,
+                },
+            });
+        }
+
         let surface = match frame {
             ProducerFrame::Canvas(canvas) => PublishedSurface::from_owned_canvas(canvas, 0, 0),
             ProducerFrame::Surface(surface) => surface,
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(frame) => {
-                let width = frame.width;
-                let height = frame.height;
-                let plan = CompositionPlan::single(
-                    width,
-                    height,
-                    CompositionLayer::replace_opaque(ProducerFrame::Gpu(frame)),
-                )
-                .with_cpu_replay_cacheable(false);
-                let composed = self
-                    .compose
-                    .display_sparkleflinger
-                    .compose_for_outputs(plan, true, None);
-                composed.sampling_surface.or_else(|| {
-                    composed
-                        .sampling_canvas
-                        .map(|canvas| PublishedSurface::from_owned_canvas(canvas, 0, 0))
-                })?
+                self.materialize_gpu_group_canvas(ProducerFrame::Gpu(frame))?
+            }
+            #[cfg(feature = "wgpu")]
+            ProducerFrame::GpuTexture(frame) => {
+                self.materialize_gpu_group_canvas(ProducerFrame::GpuTexture(frame))?
             }
         };
 
         Some(GroupCanvasFrame {
-            surface,
+            frame: DisplayGroupFrame::from_surface(surface),
+            display_target: (&display_target).into(),
+        })
+    }
+
+    fn scene_display_frame_for_groups(
+        &mut self,
+        fallback: &ProducerFrame,
+        requires_full_composition: bool,
+    ) -> ProducerFrame {
+        #[cfg(feature = "wgpu")]
+        if requires_full_composition {
+            match self.compose.sparkleflinger.current_output_frame() {
+                Ok(Some(frame)) => return ProducerFrame::GpuTexture(frame),
+                Ok(None) => {}
+                Err(error) => {
+                    debug!(%error, "failed to export GPU scene frame for display finalization");
+                }
+            }
+        }
+
+        fallback.clone()
+    }
+
+    fn finalize_display_group_canvas(
+        &mut self,
+        scene_frame: &ProducerFrame,
+        face_frame: &ProducerFrame,
+        display_target: &DisplayFaceTarget,
+        display_route: Option<&DisplayGroupOutputRoute>,
+    ) -> Option<DisplayGroupFrame> {
+        let Some(display_route) =
+            display_route.filter(|route| route.device_id == display_target.device_id)
+        else {
+            return None;
+        };
+
+        self.finalize_display_group_canvas_with_route(
+            scene_frame,
+            face_frame,
             display_target,
+            display_route,
+        )
+    }
+
+    #[cfg(not(feature = "wgpu"))]
+    fn finalize_display_group_canvas_with_route(
+        &mut self,
+        scene_frame: &ProducerFrame,
+        face_frame: &ProducerFrame,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+    ) -> Option<DisplayGroupFrame> {
+        let _ = scene_frame;
+        let _ = face_frame;
+        let _ = display_target;
+        let _ = display_route;
+        None
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn finalize_display_group_canvas_with_route(
+        &mut self,
+        scene_frame: &ProducerFrame,
+        face_frame: &ProducerFrame,
+        display_target: &DisplayFaceTarget,
+        display_route: &DisplayGroupOutputRoute,
+    ) -> Option<DisplayGroupFrame> {
+        let params = DisplayFinalizeParams {
+            width: display_route.width,
+            height: display_route.height,
+            circular: display_route.circular,
+            brightness: display_route.brightness,
+            viewport_position: display_route.viewport.position,
+            viewport_size: display_route.viewport.size,
+            viewport_rotation: display_route.viewport.rotation,
+            viewport_scale: display_route.viewport.scale,
+            viewport_edge_behavior: display_route.viewport.edge_behavior,
+            blend_mode: display_target.blend_mode,
+            opacity: display_target.opacity,
+        };
+
+        if display_route.frame_format == DisplayFrameFormat::Jpeg {
+            return match self
+                .compose
+                .display_sparkleflinger
+                .finalize_display_face_yuv420(scene_frame, face_frame, params)
+            {
+                Ok(frame) => frame.map(DisplayGroupFrame::Yuv420),
+                Err(error) => {
+                    debug!(%error, "GPU display-face YUV finalization fell back to worker blend");
+                    None
+                }
+            };
+        }
+
+        match self.compose.display_sparkleflinger.finalize_display_face(
+            scene_frame,
+            face_frame,
+            params,
+        ) {
+            Ok(surface) => surface.map(DisplayGroupFrame::from_surface),
+            Err(error) => {
+                debug!(%error, "GPU display-face finalization fell back to worker blend");
+                None
+            }
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn materialize_gpu_group_canvas(&mut self, frame: ProducerFrame) -> Option<PublishedSurface> {
+        let width = frame.width();
+        let height = frame.height();
+        let plan = CompositionPlan::single(width, height, CompositionLayer::replace_opaque(frame))
+            .with_cpu_replay_cacheable(false);
+        let composed = self
+            .compose
+            .display_sparkleflinger
+            .compose_for_outputs(plan, true, None);
+        composed.sampling_surface.or_else(|| {
+            composed
+                .sampling_canvas
+                .map(|canvas| PublishedSurface::from_owned_canvas(canvas, 0, 0))
         })
     }
 

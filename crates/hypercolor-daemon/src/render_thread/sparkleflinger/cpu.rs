@@ -209,6 +209,8 @@ fn cached_layer_storage(frame: &ProducerFrame) -> Option<PublishedSurfaceStorage
         ProducerFrame::Canvas(_) => None,
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => None,
     }
 }
 

@@ -29,7 +29,7 @@ use tokio::sync::Semaphore;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupTarget};
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_daemon::api::{self, AppState};
@@ -84,6 +84,17 @@ fn assert_canvas_frame_black(frame: &CanvasFrame) {
             .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255),
         "canvas frame should be opaque black"
     );
+}
+
+fn assert_display_group_frame_black(frame: &DisplayGroupFrame) {
+    let DisplayGroupFrame::Canvas(frame) = frame else {
+        panic!("test display group frame should be a canvas");
+    };
+    assert_canvas_frame_black(frame);
+}
+
+fn display_group_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> DisplayGroupFrame {
+    DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
 }
 
 fn isolated_state() -> AppState {
@@ -4458,12 +4469,13 @@ async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
             device_id: display_device_id,
             blend_mode: DisplayFaceBlendMode::Alpha,
             opacity: 1.0,
+            finalized: false,
         },
     );
     let group_sender = state.event_bus.group_canvas_sender(group_id);
     let mut red_canvas = Canvas::new(2, 2);
     red_canvas.fill(Rgba::new(255, 0, 0, 255));
-    group_sender.send_replace(CanvasFrame::from_canvas(&red_canvas, 7, 7));
+    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
     let group_receiver = group_sender.subscribe();
 
     let app = test_app_with_state(Arc::clone(&state));
@@ -4508,7 +4520,7 @@ async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
     let scene_canvas_frame = scene_canvas_receiver.borrow().clone();
     assert_canvas_frame_black(&scene_canvas_frame);
     let group_frame = group_receiver.borrow().clone();
-    assert_canvas_frame_black(&group_frame);
+    assert_display_group_frame_black(&group_frame);
 
     let resume_response = app
         .oneshot(

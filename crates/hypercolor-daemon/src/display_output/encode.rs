@@ -5,11 +5,11 @@ use fast_image_resize as fr;
 use tracing::debug;
 use turbojpeg::{
     Compressor as TurboJpegCompressor, Image as TurboJpegImage,
-    PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp,
+    PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp, YuvPlanesImage,
     compressed_buf_len as turbojpeg_compressed_buf_len,
 };
 
-use hypercolor_core::bus::CanvasFrame;
+use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame};
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::scene::DisplayFaceBlendMode;
 
@@ -181,6 +181,36 @@ pub(super) fn encode_face_scene_blend(
         include_preview_jpeg,
         encode_state,
     )
+}
+
+pub(super) fn encode_finalized_canvas_frame(
+    source: &CanvasFrame,
+    geometry: &DisplayGeometry,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    render_direct_canvas_frame_rgba(source, geometry, encode_state, false)?;
+    finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
+}
+
+pub(super) fn encode_finalized_yuv420_frame(
+    source: &DisplayYuv420Frame,
+    frame_format: DisplayFrameFormat,
+    include_preview_jpeg: bool,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<EncodedDisplayFrame> {
+    let _ = include_preview_jpeg;
+    anyhow::ensure!(
+        frame_format == DisplayFrameFormat::Jpeg,
+        "YUV display frames require JPEG output"
+    );
+
+    Ok(EncodedDisplayFrame {
+        format: DisplayFrameFormat::Jpeg,
+        data: encode_yuv420_to_jpeg(source, encode_state)?,
+        preview_jpeg: None,
+    })
 }
 
 fn render_canvas_frame_rgba(
@@ -476,6 +506,52 @@ fn encode_rgba_to_jpeg(
     Ok(jpeg_buffer)
 }
 
+fn encode_yuv420_to_jpeg(
+    source: &DisplayYuv420Frame,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    let width = usize::try_from(source.width).context("display width does not fit usize")?;
+    let height = usize::try_from(source.height).context("display height does not fit usize")?;
+    let y_stride =
+        usize::try_from(source.y_stride).context("display Y stride does not fit usize")?;
+    let uv_stride =
+        usize::try_from(source.uv_stride).context("display UV stride does not fit usize")?;
+    let required_len = turbojpeg_compressed_buf_len(width, height, JPEG_SUBSAMP)
+        .context("failed to size TurboJPEG display buffer")?;
+
+    let mut jpeg_buffer = std::mem::take(&mut encode_state.jpeg_buffer);
+    if jpeg_buffer.len() < required_len {
+        jpeg_buffer.resize(required_len, 0);
+    } else {
+        jpeg_buffer.truncate(required_len);
+    }
+
+    let image = YuvPlanesImage {
+        y_plane: source.y_plane(),
+        u_plane: source.u_plane(),
+        v_plane: source.v_plane(),
+        width,
+        height,
+        y_stride,
+        u_stride: uv_stride,
+        v_stride: uv_stride,
+        subsamp: JPEG_SUBSAMP,
+    };
+    let jpeg_len = match encode_state
+        .jpeg_compressor
+        .compress_yuv_planes_to_slice(&image, jpeg_buffer.as_mut_slice())
+    {
+        Ok(len) => len,
+        Err(error) => {
+            encode_state.jpeg_buffer = jpeg_buffer;
+            return Err(error).context("failed to TurboJPEG-encode YUV display frame");
+        }
+    };
+
+    jpeg_buffer.truncate(jpeg_len);
+    Ok(jpeg_buffer)
+}
+
 fn try_render_canvas_frame_rgba_fast(
     source: &CanvasFrame,
     viewport: &DisplayViewport,
@@ -638,7 +714,7 @@ fn round_unit_to_u16(value: f32) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame};
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
     use turbojpeg::Decompressor as TurboJpegDecompressor;
@@ -709,6 +785,45 @@ mod tests {
             rgb_corner_pixels(&decoded, TEST_WIDTH, TEST_HEIGHT),
             [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
             36,
+        );
+    }
+
+    #[test]
+    fn finalized_yuv420_frame_encodes_directly_to_jpeg() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let width = TEST_WIDTH;
+        let height = TEST_HEIGHT;
+        let y_stride = width;
+        let uv_stride = width / 2;
+        let y_plane_len = usize::try_from(y_stride * height).expect("Y plane should fit usize");
+        let u_plane_len =
+            usize::try_from(uv_stride * (height / 2)).expect("U plane should fit usize");
+        let mut data = Vec::with_capacity(y_plane_len + (u_plane_len * 2));
+        data.extend(std::iter::repeat_n(76, y_plane_len));
+        data.extend(std::iter::repeat_n(85, u_plane_len));
+        data.extend(std::iter::repeat_n(255, u_plane_len));
+        let frame = DisplayYuv420Frame::from_vec(
+            data,
+            width,
+            height,
+            y_stride,
+            uv_stride,
+            y_plane_len,
+            u_plane_len,
+            1,
+            16,
+        );
+
+        let encoded =
+            encode_finalized_yuv420_frame(&frame, DisplayFrameFormat::Jpeg, false, &mut state)
+                .expect("YUV frame should encode");
+        let decoded = decode_jpeg_rgb(&encoded.data, width, height);
+
+        assert_eq!(encoded.format, DisplayFrameFormat::Jpeg);
+        assert_rgb_corners_close(
+            rgb_corner_pixels(&decoded, width, height),
+            [RED_RGB, RED_RGB, RED_RGB, RED_RGB],
+            48,
         );
     }
 

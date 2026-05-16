@@ -3,6 +3,16 @@ use hypercolor_core::effect::ImportedEffectFrame;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone)]
+pub(crate) struct GpuTextureFrame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) storage_id: u64,
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+}
+
 static PRODUCER_CPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static PRODUCER_GPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -18,6 +28,8 @@ pub(crate) enum ProducerFrame {
     Surface(PublishedSurface),
     #[cfg(feature = "servo-gpu-import")]
     Gpu(ImportedEffectFrame),
+    #[cfg(feature = "wgpu")]
+    GpuTexture(GpuTextureFrame),
 }
 
 impl ProducerFrame {
@@ -35,6 +47,8 @@ impl ProducerFrame {
             Self::Surface(surface) => Some(surface.rgba_bytes()),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(_) => None,
+            #[cfg(feature = "wgpu")]
+            Self::GpuTexture(_) => None,
         }
     }
 
@@ -45,6 +59,8 @@ impl ProducerFrame {
             Self::Surface(surface) => surface.width(),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => frame.width,
+            #[cfg(feature = "wgpu")]
+            Self::GpuTexture(frame) => frame.width,
         }
     }
 
@@ -55,6 +71,8 @@ impl ProducerFrame {
             Self::Surface(surface) => surface.height(),
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => frame.height,
+            #[cfg(feature = "wgpu")]
+            Self::GpuTexture(frame) => frame.height,
         }
     }
 
@@ -73,6 +91,8 @@ impl ProducerFrame {
             }
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(_) => None,
+            #[cfg(feature = "wgpu")]
+            Self::GpuTexture(_) => None,
         }
     }
 
@@ -91,6 +111,12 @@ impl ProducerFrame {
             }
             #[cfg(feature = "servo-gpu-import")]
             (Self::Gpu(left), Self::Gpu(right)) => {
+                left.width == right.width
+                    && left.height == right.height
+                    && left.storage_id == right.storage_id
+            }
+            #[cfg(feature = "wgpu")]
+            (Self::GpuTexture(left), Self::GpuTexture(right)) => {
                 left.width == right.width
                     && left.height == right.height
                     && left.storage_id == right.storage_id
@@ -114,6 +140,10 @@ pub(crate) fn record_producer_frame(frame: &ProducerFrame) {
         }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
+            let _ = PRODUCER_GPU_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
+        }
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => {
             let _ = PRODUCER_GPU_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
     }

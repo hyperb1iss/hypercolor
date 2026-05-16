@@ -4,13 +4,16 @@ use std::time::Instant;
 
 use anyhow::Result;
 
+use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget};
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::spatial::{SpatialEngine, sample_led};
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+#[cfg(test)]
+use hypercolor_types::canvas::PublishedSurface;
+use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -52,14 +55,16 @@ impl PendingGroupCanvasFrame {
             ProducerFrame::Canvas(_) => panic!("direct group test expected a published surface"),
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => panic!("direct group test expected a CPU surface"),
+            #[cfg(feature = "wgpu")]
+            ProducerFrame::GpuTexture(_) => panic!("direct group test expected a CPU surface"),
         }
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct GroupCanvasFrame {
-    pub surface: PublishedSurface,
-    pub display_target: DisplayFaceTarget,
+    pub frame: DisplayGroupFrame,
+    pub display_target: DisplayGroupTarget,
 }
 
 pub(crate) struct RenderGroupResult {
@@ -1476,6 +1481,10 @@ mod tests {
             }
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => {
+                panic!("GPU scene frames are sampled by SparkleFlinger before CPU materialization")
+            }
+            #[cfg(feature = "wgpu")]
+            ProducerFrame::GpuTexture(_) => {
                 panic!("GPU scene frames are sampled by SparkleFlinger before CPU materialization")
             }
         }

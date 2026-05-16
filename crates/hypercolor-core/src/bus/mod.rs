@@ -18,6 +18,7 @@ pub use filter::{EventFilter, FilteredEventReceiver};
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
@@ -25,7 +26,7 @@ use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
 use crate::types::canvas::{Canvas, PublishedSurface};
-use crate::types::device::DeviceId;
+use crate::types::device::{DeviceId, DisplayFrameFormat};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
 use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
 use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
@@ -39,6 +40,8 @@ use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
 /// ~128 KB. At steady-state (~10-30 events/sec), this provides
 /// ~8-25 seconds of runway for a stalled subscriber.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+static NEXT_DISPLAY_YUV420_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 // ── TimestampedEvent ─────────────────────────────────────────────────────
 
@@ -200,11 +203,156 @@ impl CanvasFrame {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DisplayYuv420StorageIdentity {
+    pub id: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DisplayYuv420Frame {
+    pub frame_number: u32,
+    pub timestamp_ms: u32,
+    pub width: u32,
+    pub height: u32,
+    pub y_stride: u32,
+    pub uv_stride: u32,
+    pub y_plane_len: usize,
+    pub u_plane_len: usize,
+    storage: DisplayYuv420StorageIdentity,
+    data: Arc<Vec<u8>>,
+}
+
+impl DisplayYuv420Frame {
+    #[must_use]
+    pub fn from_vec(
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        y_plane_len: usize,
+        u_plane_len: usize,
+        frame_number: u32,
+        timestamp_ms: u32,
+    ) -> Self {
+        Self {
+            frame_number,
+            timestamp_ms,
+            width,
+            height,
+            y_stride,
+            uv_stride,
+            y_plane_len,
+            u_plane_len,
+            storage: DisplayYuv420StorageIdentity {
+                id: NEXT_DISPLAY_YUV420_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            },
+            data: Arc::new(data),
+        }
+    }
+
+    #[must_use]
+    pub fn y_plane(&self) -> &[u8] {
+        &self.data[..self.y_plane_len]
+    }
+
+    #[must_use]
+    pub fn u_plane(&self) -> &[u8] {
+        let start = self.y_plane_len;
+        let end = start.saturating_add(self.u_plane_len);
+        &self.data[start..end]
+    }
+
+    #[must_use]
+    pub fn v_plane(&self) -> &[u8] {
+        let start = self.y_plane_len.saturating_add(self.u_plane_len);
+        &self.data[start..]
+    }
+
+    #[must_use]
+    pub const fn storage_identity(&self) -> DisplayYuv420StorageIdentity {
+        self.storage
+    }
+
+    #[must_use]
+    pub fn with_frame_metadata(&self, frame_number: u32, timestamp_ms: u32) -> Self {
+        Self {
+            frame_number,
+            timestamp_ms,
+            width: self.width,
+            height: self.height,
+            y_stride: self.y_stride,
+            uv_stride: self.uv_stride,
+            y_plane_len: self.y_plane_len,
+            u_plane_len: self.u_plane_len,
+            storage: self.storage,
+            data: Arc::clone(&self.data),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum DisplayGroupFrame {
+    Canvas(CanvasFrame),
+    Yuv420(DisplayYuv420Frame),
+}
+
+impl DisplayGroupFrame {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::Canvas(CanvasFrame::empty())
+    }
+
+    #[must_use]
+    pub fn from_surface(surface: PublishedSurface) -> Self {
+        Self::Canvas(CanvasFrame::from_surface(surface))
+    }
+
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        match self {
+            Self::Canvas(frame) => frame.width,
+            Self::Yuv420(frame) => frame.width,
+        }
+    }
+
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        match self {
+            Self::Canvas(frame) => frame.height,
+            Self::Yuv420(frame) => frame.height,
+        }
+    }
+
+    #[must_use]
+    pub fn rgba_bytes(&self) -> &[u8] {
+        match self {
+            Self::Canvas(frame) => frame.rgba_bytes(),
+            Self::Yuv420(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn with_frame_metadata(&self, frame_number: u32, timestamp_ms: u32) -> Self {
+        match self {
+            Self::Canvas(frame) => Self::Canvas(CanvasFrame::from_surface(
+                frame
+                    .surface()
+                    .with_frame_metadata(frame_number, timestamp_ms),
+            )),
+            Self::Yuv420(frame) => {
+                Self::Yuv420(frame.with_frame_metadata(frame_number, timestamp_ms))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayGroupTarget {
     pub device_id: DeviceId,
     pub blend_mode: DisplayFaceBlendMode,
     pub opacity: f32,
+    pub finalized: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +362,7 @@ pub struct DisplayGroupOutputRoute {
     pub height: u32,
     pub circular: bool,
     pub brightness: f32,
+    pub frame_format: DisplayFrameFormat,
     pub viewport: DisplayGroupViewport,
 }
 
@@ -232,6 +381,7 @@ impl From<DisplayFaceTarget> for DisplayGroupTarget {
             device_id: value.device_id,
             blend_mode: value.blend_mode,
             opacity: value.opacity,
+            finalized: false,
         }
     }
 }
@@ -242,6 +392,7 @@ impl From<&DisplayFaceTarget> for DisplayGroupTarget {
             device_id: value.device_id,
             blend_mode: value.blend_mode,
             opacity: value.opacity,
+            finalized: false,
         }
     }
 }
@@ -290,7 +441,7 @@ pub struct HypercolorBus {
     web_viewport_canvas: watch::Sender<CanvasFrame>,
 
     /// Latest per-render-group canvases for direct display consumption.
-    group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<CanvasFrame>>>>,
+    group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<DisplayGroupFrame>>>>,
 
     /// Render-thread-authored display-face routing metadata keyed by group id.
     display_group_targets: Arc<Mutex<DisplayGroupTargetRegistry>>,
@@ -473,7 +624,7 @@ impl HypercolorBus {
 
     /// Access or create the per-group canvas sender for a render group.
     #[must_use]
-    pub fn group_canvas_sender(&self, id: RenderGroupId) -> watch::Sender<CanvasFrame> {
+    pub fn group_canvas_sender(&self, id: RenderGroupId) -> watch::Sender<DisplayGroupFrame> {
         let mut group_canvases = self
             .group_canvases
             .lock()
@@ -481,7 +632,7 @@ impl HypercolorBus {
         group_canvases
             .entry(id)
             .or_insert_with(|| {
-                let (sender, _) = watch::channel(CanvasFrame::empty());
+                let (sender, _) = watch::channel(DisplayGroupFrame::empty());
                 sender
             })
             .clone()
@@ -492,7 +643,7 @@ impl HypercolorBus {
     pub fn retain_group_canvases_and_collect_senders(
         &self,
         active_ids: &[RenderGroupId],
-    ) -> Vec<(RenderGroupId, watch::Sender<CanvasFrame>)> {
+    ) -> Vec<(RenderGroupId, watch::Sender<DisplayGroupFrame>)> {
         let mut group_canvases = self
             .group_canvases
             .lock()
@@ -517,7 +668,7 @@ impl HypercolorBus {
                 let sender = group_canvases
                     .entry(group_id)
                     .or_insert_with(|| {
-                        let (sender, _) = watch::channel(CanvasFrame::empty());
+                        let (sender, _) = watch::channel(DisplayGroupFrame::empty());
                         sender
                     })
                     .clone();
@@ -531,7 +682,7 @@ impl HypercolorBus {
 
     /// Subscribe to a render group's canvas updates.
     #[must_use]
-    pub fn group_canvas_receiver(&self, id: RenderGroupId) -> watch::Receiver<CanvasFrame> {
+    pub fn group_canvas_receiver(&self, id: RenderGroupId) -> watch::Receiver<DisplayGroupFrame> {
         self.group_canvas_sender(id).subscribe()
     }
 

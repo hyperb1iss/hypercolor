@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::attachment::AttachmentRegistry;
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
@@ -124,6 +124,20 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
         attachment: None,
         brightness: None,
     }
+}
+
+fn assert_canvas_group_frame(
+    frame: &DisplayGroupFrame,
+    width: u32,
+    height: u32,
+    first_pixel: [u8; 4],
+) {
+    let DisplayGroupFrame::Canvas(frame) = frame else {
+        panic!("test display group frame should be a canvas");
+    };
+    assert_eq!(frame.width, width);
+    assert_eq!(frame.height, height);
+    assert_eq!(&frame.rgba_bytes()[0..4], first_pixel.as_slice());
 }
 
 fn builtin_effect_registry() -> EffectRegistry {
@@ -1648,9 +1662,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         .expect("display face canvas stream should stay open");
     let group_rx = group_canvas_sender.subscribe();
     let frame = group_rx.borrow().clone();
-    assert_eq!(frame.width, 320);
-    assert_eq!(frame.height, 200);
-    assert_eq!(&frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
+    assert_canvas_group_frame(&frame, 320, 200, [0, 0, 255, 255]);
     let (_, published_targets) = state.event_bus.display_group_targets_snapshot();
     let published_target = published_targets
         .get(&group_id)
@@ -1749,9 +1761,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
-    assert_eq!(face_frame.width, 320);
-    assert_eq!(face_frame.height, 200);
-    assert_eq!(&face_frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
+    assert_canvas_group_frame(&face_frame, 320, 200, [0, 0, 255, 255]);
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1840,8 +1850,8 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 
     let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
     let stale_frame = stale_rx.borrow().clone();
-    assert_eq!(stale_frame.width, 0);
-    assert_eq!(stale_frame.height, 0);
+    assert_eq!(stale_frame.width(), 0);
+    assert_eq!(stale_frame.height(), 0);
 
     {
         let mut rl = state.render_loop.write().await;

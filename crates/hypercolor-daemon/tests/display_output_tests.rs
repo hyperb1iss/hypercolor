@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, watch};
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupTarget, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceDisplaySink};
@@ -41,6 +41,10 @@ fn display_output_test_lock() -> &'static Mutex<()> {
 
 async fn display_output_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
     display_output_test_lock().lock().await
+}
+
+fn display_group_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> CanvasFrame {
+    CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms)
 }
 
 async fn insert_default_logical_device(
@@ -694,6 +698,7 @@ fn publish_display_face_route(
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
+            finalized: false,
         },
     );
 }
@@ -2302,11 +2307,11 @@ async fn display_group_canvas_routes_to_device_worker() {
 
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
-        ));
+        )));
     event_bus
         .scene_canvas_sender()
         .send_replace(CanvasFrame::from_canvas(
@@ -2378,11 +2383,11 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
 
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
-        ));
+        )));
     let first_writes = wait_for_display_write_count(&display_writes, 1).await;
     let first_image = decode_jpeg(&first_writes[0]);
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -2390,11 +2395,11 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
 
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 255, 0, 255)),
             2,
             32,
-        ));
+        )));
     let writes = wait_for_display_write_count(&display_writes, 2).await;
     let second_image = decode_jpeg(&writes[1]);
     let second_pixel = second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
@@ -2477,11 +2482,11 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     display_writes.lock().await.clear();
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
-        ));
+        )));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2556,11 +2561,11 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
 
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
-        ));
+        )));
     let first_writes = wait_for_display_writes(&display_writes).await;
     let first_image = decode_jpeg(&first_writes[0]);
     let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
@@ -2643,6 +2648,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
             device_id,
             blend_mode: DisplayFaceBlendMode::Replace,
             opacity: 1.0,
+            finalized: false,
         },
     );
 
@@ -2657,11 +2663,11 @@ async fn display_output_uses_render_published_face_route_metadata() {
     display_writes.lock().await.clear();
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
-        ));
+        )));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2735,7 +2741,11 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     display_writes.lock().await.clear();
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(&transparent_white_canvas(), 2, 32));
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+            &transparent_white_canvas(),
+            2,
+            32,
+        )));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -2807,11 +2817,11 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
 
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
-        ));
+        )));
     event_bus
         .scene_canvas_sender()
         .send_replace(CanvasFrame::from_canvas(
@@ -2923,11 +2933,11 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
     display_writes.lock().await.clear();
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
-        ));
+        )));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -3011,11 +3021,11 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
     display_writes.lock().await.clear();
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
-        ));
+        )));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -3099,11 +3109,11 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
     display_writes.lock().await.clear();
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
             &solid_canvas(Rgba::new(255, 255, 255, 255)),
             2,
             32,
-        ));
+        )));
 
     let writes = wait_for_display_writes(&display_writes).await;
     let image = decode_jpeg(&writes[0]);
@@ -4051,7 +4061,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
     event_bus
         .group_canvas_sender(group_id)
-        .send_replace(CanvasFrame::from_canvas(&blue, 2, 32));
+        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(&blue, 2, 32)));
     event_bus
         .scene_canvas_sender()
         .send_replace(CanvasFrame::from_canvas(&red, 3, 48));
