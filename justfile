@@ -533,14 +533,14 @@ tui-dev *args='':
 prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
-# Run Servo daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
+# Run Servo daemon + UI dev server together (daemon bind from config, UI on :9430)
 [unix]
 dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'kill 0' EXIT
     just prepare-dev-assets
-    daemon_args=(--log-level debug --bind '{{ daemon_bind }}')
+    daemon_args=(--log-level debug)
     if [[ -n "${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-}" ]]; then
       daemon_args+=(--compositor-acceleration-mode "${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE}")
       echo "[dev] compositor acceleration mode: ${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE}"
