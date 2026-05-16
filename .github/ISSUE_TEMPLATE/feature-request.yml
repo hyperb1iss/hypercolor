@@ -1,0 +1,79 @@
+name: Feature request
+description: Propose a new capability, UX improvement, or integration for Hypercolor.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For brainstorming and open-ended ideas, use [Discussions](https://github.com/hyperb1iss/hypercolor/discussions) instead.
+        This form is for a concrete feature you'd like to see added. The more specific the better.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What do you want
+      description: Describe the capability. What would it do and how would you use it?
+      placeholder: |
+        A CLI flag (`hypercolor effects apply --on-audio-peak`) that reapplies a one-shot
+        effect every time a beat is detected, without leaving the reactive engine running.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem it solves
+      description: What's broken or missing today? A concrete use case is more useful than a general pain statement.
+      placeholder: |
+        Right now there's no way to trigger a single-shot flash effect on beat without
+        writing a custom audio-reactive effect. The scene engine handles sustained effects
+        but not transient one-shots.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      options:
+        - Hardware / device driver
+        - Effect engine / render pipeline
+        - Effect SDK
+        - Web UI
+        - Terminal UI (TUI)
+        - CLI
+        - REST API / WebSocket
+        - MCP integration
+        - Audio / input pipeline
+        - Scene / automation engine
+        - Platform (Linux / macOS / Windows)
+        - Home Assistant / Python client
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art or references
+      description: Does another tool do something similar? Link to it. Not required, but helps.
+
+  - type: dropdown
+    id: willing-to-implement
+    attributes:
+      label: Are you willing to implement this?
+      options:
+        - "Yes, I'll open a PR"
+        - "Maybe, if someone points me at the right crates"
+        - "No, just requesting"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions and this isn't a duplicate
+          required: true
