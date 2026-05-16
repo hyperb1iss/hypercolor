@@ -21,7 +21,7 @@ use hypercolor_daemon::discovery::{
     DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
     sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
-use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_api::CredentialStore;
@@ -32,6 +32,7 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     ZoneInfo,
 };
+use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -68,6 +69,13 @@ struct CachePrimingBackend {
     connect_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+#[derive(Clone)]
+struct FailingDisconnectBackend {
+    expected_device_id: DeviceId,
+    connect_count: Arc<std::sync::atomic::AtomicUsize>,
+    disconnect_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for CountingBackend {
     fn info(&self) -> BackendInfo {
@@ -98,6 +106,44 @@ impl DeviceBackend for CountingBackend {
         self.disconnect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let _ = (id, colors);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for FailingDisconnectBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".to_owned(),
+            name: "Failing Disconnect Backend".to_owned(),
+            description: "Fails disconnect after accepting routed writes".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.connect_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.disconnect_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        bail!("simulated disconnect failure")
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
@@ -901,6 +947,106 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
         lifecycle_manager.lock().await.state(device_id),
         Some(DeviceState::Known)
     );
+}
+
+#[tokio::test]
+async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_fails() {
+    let device_registry = DeviceRegistry::new();
+    let info = mock_device_info();
+    let fingerprint = DeviceFingerprint("mock:segmented-device".to_owned());
+    let device_id = device_registry
+        .add_with_fingerprint(info.clone(), fingerprint.clone())
+        .await;
+    assert_eq!(device_id, info.id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.register_backend(Box::new(FailingDisconnectBackend {
+            expected_device_id: device_id,
+            connect_count: Arc::clone(&connect_count),
+            disconnect_count: Arc::clone(&disconnect_count),
+        }));
+    }
+
+    let physical_layout_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let segment_layout_id = format!("{physical_layout_id}:segment");
+    {
+        let mut logical_devices = runtime.logical_devices.write().await;
+        logical_devices.insert(
+            segment_layout_id.clone(),
+            LogicalDevice {
+                id: segment_layout_id.clone(),
+                physical_device_id: device_id,
+                name: "Segment".to_owned(),
+                led_start: 0,
+                led_count: info.total_led_count(),
+                enabled: true,
+                kind: LogicalDeviceKind::Segment,
+            },
+        );
+    }
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(layout_with_device(&segment_layout_id));
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+
+    assert_eq!(
+        connect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "active logical segment should connect the physical device"
+    );
+
+    {
+        let layout = {
+            let spatial = runtime.spatial_engine.read().await;
+            spatial.layout().as_ref().clone()
+        };
+        let zone_colors = vec![ZoneColors {
+            zone_id: "zone_main".to_owned(),
+            colors: vec![[12, 34, 56]; usize::try_from(info.total_led_count()).unwrap_or_default()],
+        }];
+        let mut manager = runtime.backend_manager.lock().await;
+        let stats = manager.write_frame(&zone_colors, &layout).await;
+        assert_eq!(stats.devices_written, 1);
+        assert_eq!(manager.mapped_device_count(), 1);
+        assert_eq!(manager.debug_snapshot().queue_count, 1);
+    }
+
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(empty_layout());
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+
+    assert_eq!(
+        disconnect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "removing the logical segment from the active layout should disconnect the device"
+    );
+    assert_eq!(
+        lifecycle_manager.lock().await.state(device_id),
+        Some(DeviceState::Known)
+    );
+    {
+        let manager = runtime.backend_manager.lock().await;
+        assert_eq!(manager.mapped_device_count(), 0);
+        assert_eq!(manager.debug_snapshot().queue_count, 0);
+    }
 }
 
 #[tokio::test]

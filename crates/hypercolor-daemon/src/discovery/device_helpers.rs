@@ -192,17 +192,17 @@ pub(super) async fn disconnect_backend_device(
     backend_id: &str,
     device_id: DeviceId,
 ) -> anyhow::Result<()> {
-    backend_io(runtime, backend_id)
+    let disconnect_result = backend_io(runtime, backend_id)
         .await?
         .disconnect(device_id)
-        .await?;
+        .await;
 
     {
         let mut manager = runtime.backend_manager.lock().await;
         let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
     }
     runtime.usb_protocol_configs.remove_device(device_id).await;
-    Ok(())
+    disconnect_result
 }
 
 pub(super) async fn ensure_default_logical_for_device(
