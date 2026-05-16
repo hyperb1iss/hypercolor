@@ -286,6 +286,10 @@ impl Transport for Push2Transport {
         "USB MIDI + Bulk"
     }
 
+    fn supports_parallel_transfer_lanes(&self) -> bool {
+        true
+    }
+
     async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
         self.send_with_type(data, TransferType::Primary).await
     }

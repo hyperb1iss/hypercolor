@@ -38,6 +38,11 @@ pub trait Transport: Send + Sync {
     /// Human-readable transport name.
     fn name(&self) -> &'static str;
 
+    /// Whether independent transfer paths can be driven concurrently.
+    fn supports_parallel_transfer_lanes(&self) -> bool {
+        false
+    }
+
     /// Send raw bytes.
     ///
     /// # Errors

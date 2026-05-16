@@ -703,17 +703,31 @@ impl UsbBackend {
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let transport_name = transport.name();
+            let parallel_transfer_lanes = transport.supports_parallel_transfer_lanes();
 
-            let actor_result = Self::run_device_actor(
-                device_id,
-                device_name,
-                protocol.clone(),
-                transport.clone(),
-                frame_rx,
-                display_rx,
-                command_rx,
-            )
-            .await;
+            let actor_result = if parallel_transfer_lanes {
+                Self::run_parallel_device_actor(
+                    device_id,
+                    device_name,
+                    protocol.clone(),
+                    transport.clone(),
+                    frame_rx,
+                    display_rx,
+                    command_rx,
+                )
+                .await
+            } else {
+                Self::run_device_actor(
+                    device_id,
+                    device_name,
+                    protocol.clone(),
+                    transport.clone(),
+                    frame_rx,
+                    display_rx,
+                    command_rx,
+                )
+                .await
+            };
 
             if let Err(error) = actor_result {
                 Self::store_actor_error(&last_async_error, error.to_string());
@@ -722,6 +736,7 @@ impl UsbBackend {
                     device = device_name,
                     protocol = protocol.name(),
                     transport = transport_name,
+                    parallel_transfer_lanes,
                     error = %error,
                     error_chain = %format_error_chain(&error),
                     "USB device actor failed"
@@ -740,6 +755,236 @@ impl UsbBackend {
                 );
             }
         })
+    }
+
+    async fn run_parallel_device_actor(
+        device_id: DeviceId,
+        device_name: &'static str,
+        protocol: Arc<dyn Protocol>,
+        transport: Arc<dyn Transport>,
+        frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
+        command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
+    ) -> Result<()> {
+        let mut control_task = tokio::spawn(Self::run_device_control_actor(
+            device_id,
+            device_name,
+            Arc::clone(&protocol),
+            Arc::clone(&transport),
+            frame_rx,
+            command_rx,
+        ));
+        let mut display_task = tokio::spawn(Self::run_device_display_actor(
+            device_id, protocol, transport, display_rx,
+        ));
+
+        tokio::select! {
+            result = &mut control_task => {
+                display_task.abort();
+                let _ = display_task.await;
+                Self::flatten_actor_result(result, "USB control actor")
+            }
+            result = &mut display_task => {
+                control_task.abort();
+                let _ = control_task.await;
+                Self::flatten_actor_result(result, "USB display actor")
+            }
+        }
+    }
+
+    fn flatten_actor_result(
+        result: std::result::Result<Result<()>, tokio::task::JoinError>,
+        lane_name: &'static str,
+    ) -> Result<()> {
+        result.unwrap_or_else(|error| Err(anyhow!("{lane_name} task failed: {error}")))
+    }
+
+    async fn run_device_control_actor(
+        device_id: DeviceId,
+        device_name: &'static str,
+        protocol: Arc<dyn Protocol>,
+        transport: Arc<dyn Transport>,
+        mut frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        mut command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
+    ) -> Result<()> {
+        let mut keepalive_interval = protocol.keepalive().map(|keepalive| {
+            let mut interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + keepalive.interval,
+                keepalive.interval,
+            );
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval
+        });
+        let mut frame_commands = Vec::new();
+
+        loop {
+            tokio::select! {
+                biased;
+                Some(command) = command_rx.recv() => {
+                    match command {
+                        UsbDeviceCommand::SetBrightness {
+                            brightness,
+                            response_tx,
+                        } => {
+                            let result = Self::run_brightness_command(
+                                device_id,
+                                device_name,
+                                protocol.as_ref(),
+                                transport.as_ref(),
+                                brightness,
+                            )
+                            .await;
+
+                            let response =
+                                result.as_ref().map_err(ToString::to_string).copied();
+                            let _ = response_tx.send(response);
+                            result?;
+                        }
+                        UsbDeviceCommand::Shutdown {
+                            led_count,
+                            response_tx,
+                        } => {
+                            let result = Self::run_shutdown_sequence(
+                                device_id,
+                                device_name,
+                                led_count,
+                                protocol.as_ref(),
+                                transport.as_ref(),
+                            )
+                            .await;
+                            let response =
+                                result.as_ref().map_err(ToString::to_string).copied();
+                            let _ = response_tx.send(response);
+                            return result;
+                        }
+                    }
+                }
+                () = async {
+                    if let Some(interval) = keepalive_interval.as_mut() {
+                        interval.tick().await;
+                    }
+                }, if keepalive_interval.is_some() => {
+                    Self::run_keepalive_commands(
+                        device_id,
+                        device_name,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                    )
+                    .await?;
+                }
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+
+                    let Some(frame) = frame_rx.borrow_and_update().clone() else {
+                        continue;
+                    };
+
+                    Self::run_device_frame(
+                        device_id,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        &frame,
+                        &mut frame_commands,
+                    )
+                    .await?;
+                }
+                else => break,
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_device_display_actor(
+        device_id: DeviceId,
+        protocol: Arc<dyn Protocol>,
+        transport: Arc<dyn Transport>,
+        mut display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
+    ) -> Result<()> {
+        let mut display_commands = Vec::new();
+
+        loop {
+            let changed = display_rx.changed().await;
+            if changed.is_err() {
+                break;
+            }
+
+            let Some(frame) = display_rx.borrow_and_update().clone() else {
+                continue;
+            };
+
+            record_usb_display_lane(Duration::ZERO, false);
+            Self::run_device_display_frame(
+                device_id,
+                protocol.as_ref(),
+                transport.as_ref(),
+                &frame,
+                &mut display_commands,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn run_brightness_command(
+        device_id: DeviceId,
+        device_name: &'static str,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        brightness: u8,
+    ) -> Result<()> {
+        if let Some(commands) = protocol.encode_brightness(brightness) {
+            let first_packet = commands.first().map_or_else(
+                || "<none>".to_owned(),
+                |command| describe_packet(&command.data),
+            );
+            debug!(
+                device_id = %device_id,
+                device = device_name,
+                protocol = protocol.name(),
+                transport = transport.name(),
+                brightness,
+                command_count = commands.len(),
+                first_packet = %first_packet,
+                "usb brightness write requested"
+            );
+
+            Self::run_commands(protocol, transport, commands.as_slice())
+                .await
+                .with_context(|| format!("USB brightness write failed for device {device_id}"))
+        } else {
+            Err(anyhow!(
+                "USB protocol does not support brightness for device {device_id}"
+            ))
+        }
+    }
+
+    async fn run_keepalive_commands(
+        device_id: DeviceId,
+        device_name: &'static str,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+    ) -> Result<()> {
+        let commands = protocol.keepalive_commands();
+        if commands.is_empty() {
+            return Ok(());
+        }
+
+        trace!(
+            device_id = %device_id,
+            device = device_name,
+            protocol = protocol.name(),
+            transport = transport.name(),
+            command_count = commands.len(),
+            "usb keepalive tick"
+        );
+
+        Self::run_commands(protocol, transport, commands.as_slice())
+            .await
+            .with_context(|| format!("USB keepalive failed for device {device_id}"))
     }
 
     #[expect(
@@ -2054,6 +2299,70 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn parallel_transfer_lanes_do_not_wait_for_pending_led_frame_before_display() {
+        let _metrics_guard = USB_ACTOR_METRICS_TEST_LOCK.lock().await;
+        let before = usb_actor_metrics_snapshot();
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+        let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+            colors: Arc::new(vec![[0x11, 0x22, 0x33]]),
+        })));
+        display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
+            payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
+        })));
+
+        let transport = Arc::new(
+            RecordingTransport::default()
+                .with_parallel_transfer_lanes()
+                .with_primary_send_delay(Duration::from_millis(200)),
+        );
+        let actor_protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+        let actor_transport: Arc<dyn Transport> = transport.clone();
+
+        let actor = tokio::spawn(UsbBackend::run_parallel_device_actor(
+            DeviceId::new(),
+            "parallel-fairness-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ));
+
+        let writes = wait_for_writes(&transport, 1).await;
+        assert_eq!(writes, vec![vec![0xD1]]);
+
+        let writes = wait_for_writes(&transport, 2).await;
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(UsbDeviceCommand::Shutdown {
+                led_count: 0,
+                response_tx,
+            })
+            .expect("actor command channel should still be open");
+
+        response_rx
+            .await
+            .expect("shutdown response should be delivered")
+            .expect("shutdown should succeed");
+        actor
+            .await
+            .expect("actor task should join")
+            .expect("actor should exit cleanly");
+
+        assert_eq!(writes, vec![vec![0xD1], vec![0x11]]);
+
+        let after = usb_actor_metrics_snapshot();
+        assert!(after.display_frames_total > before.display_frames_total);
+        assert_eq!(
+            after.display_frames_delayed_for_led_total,
+            before.display_frames_delayed_for_led_total
+        );
+    }
+
     async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Vec<u8>> {
         timeout(Duration::from_secs(1), async {
             loop {
@@ -2121,15 +2430,84 @@ mod tests {
         }
     }
 
+    struct ParallelFairnessProtocol;
+
+    impl Protocol for ParallelFairnessProtocol {
+        fn name(&self) -> &'static str {
+            "parallel-fairness-test"
+        }
+
+        fn init_sequence(&self) -> Vec<ProtocolCommand> {
+            Vec::new()
+        }
+
+        fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+            Vec::new()
+        }
+
+        fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+            vec![test_command_with_transfer(
+                colors.first().map_or(0x11, |color| color[0]),
+                TransferType::Primary,
+            )]
+        }
+
+        fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
+            Some(vec![test_command_with_transfer(
+                jpeg_data.first().copied().unwrap_or(0xD1),
+                TransferType::Bulk,
+            )])
+        }
+
+        fn parse_response(
+            &self,
+            _data: &[u8],
+        ) -> std::result::Result<ProtocolResponse, ProtocolError> {
+            Ok(ProtocolResponse {
+                status: ResponseStatus::Ok,
+                data: Vec::new(),
+            })
+        }
+
+        fn zones(&self) -> Vec<ProtocolZone> {
+            Vec::new()
+        }
+
+        fn capabilities(&self) -> DeviceCapabilities {
+            DeviceCapabilities::default()
+        }
+
+        fn total_leds(&self) -> u32 {
+            1
+        }
+
+        fn frame_interval(&self) -> Duration {
+            Duration::from_millis(16)
+        }
+    }
+
     #[derive(Default)]
     struct RecordingTransport {
         writes: Mutex<Vec<Vec<u8>>>,
         send_delay: Duration,
+        primary_send_delay: Option<Duration>,
+        bulk_send_delay: Option<Duration>,
+        parallel_transfer_lanes: bool,
     }
 
     impl RecordingTransport {
         fn with_send_delay(mut self, send_delay: Duration) -> Self {
             self.send_delay = send_delay;
+            self
+        }
+
+        fn with_primary_send_delay(mut self, send_delay: Duration) -> Self {
+            self.primary_send_delay = Some(send_delay);
+            self
+        }
+
+        fn with_parallel_transfer_lanes(mut self) -> Self {
+            self.parallel_transfer_lanes = true;
             self
         }
 
@@ -2139,6 +2517,24 @@ mod tests {
                 .expect("recording transport mutex should not be poisoned")
                 .clone()
         }
+
+        async fn record_send(&self, data: &[u8], send_delay: Duration) {
+            if !send_delay.is_zero() {
+                tokio::time::sleep(send_delay).await;
+            }
+            self.writes
+                .lock()
+                .expect("recording transport mutex should not be poisoned")
+                .push(data.to_vec());
+        }
+
+        fn send_delay_for(&self, transfer_type: TransferType) -> Duration {
+            match transfer_type {
+                TransferType::Primary => self.primary_send_delay.unwrap_or(self.send_delay),
+                TransferType::Bulk => self.bulk_send_delay.unwrap_or(self.send_delay),
+                TransferType::HidReport => self.send_delay,
+            }
+        }
     }
 
     #[async_trait]
@@ -2147,14 +2543,22 @@ mod tests {
             "recording-test"
         }
 
+        fn supports_parallel_transfer_lanes(&self) -> bool {
+            self.parallel_transfer_lanes
+        }
+
         async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
-            if !self.send_delay.is_zero() {
-                tokio::time::sleep(self.send_delay).await;
-            }
-            self.writes
-                .lock()
-                .expect("recording transport mutex should not be poisoned")
-                .push(data.to_vec());
+            self.record_send(data, self.send_delay).await;
+            Ok(())
+        }
+
+        async fn send_with_type(
+            &self,
+            data: &[u8],
+            transfer_type: TransferType,
+        ) -> std::result::Result<(), TransportError> {
+            self.record_send(data, self.send_delay_for(transfer_type))
+                .await;
             Ok(())
         }
 
@@ -2171,12 +2575,16 @@ mod tests {
     }
 
     fn test_command(byte: u8) -> ProtocolCommand {
+        test_command_with_transfer(byte, TransferType::Primary)
+    }
+
+    fn test_command_with_transfer(byte: u8, transfer_type: TransferType) -> ProtocolCommand {
         ProtocolCommand {
             data: vec![byte],
             expects_response: false,
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
-            transfer_type: TransferType::Primary,
+            transfer_type,
         }
     }
 }
