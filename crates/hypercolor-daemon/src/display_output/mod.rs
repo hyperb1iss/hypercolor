@@ -564,7 +564,7 @@ async fn reconcile_display_workers(
 
     for key in stale_keys {
         if let Some(worker) = workers.remove(&key) {
-            worker.shutdown().await;
+            retire_display_worker(worker);
         }
     }
 
@@ -574,7 +574,7 @@ async fn reconcile_display_workers(
             .get(&key)
             .is_some_and(|worker| worker.config_signature != target.worker_config_signature());
         if needs_restart && let Some(worker) = workers.remove(&key) {
-            worker.shutdown().await;
+            retire_display_worker(worker);
         }
 
         if workers.contains_key(&key) {
@@ -611,6 +611,12 @@ async fn reconcile_display_workers(
             }
         }
     }
+}
+
+fn retire_display_worker(worker: DisplayWorkerHandle) {
+    std::mem::drop(tokio::spawn(async move {
+        worker.shutdown().await;
+    }));
 }
 
 async fn display_targets(

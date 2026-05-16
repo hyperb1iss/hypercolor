@@ -29,6 +29,7 @@ use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::session::OutputPowerState;
 
 const DISPLAY_SINK_LOOKUP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+const DISPLAY_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 
 async fn publish_display_frame_snapshot(
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
@@ -343,7 +344,19 @@ impl DisplayWorkerHandle {
 
     pub async fn shutdown(self) {
         drop(self.tx);
-        let _ = self.join_handle.await;
+        let mut join_handle = self.join_handle;
+        tokio::select! {
+            result = &mut join_handle => {
+                if let Err(error) = result {
+                    warn!(error = %error, "display worker task failed during shutdown");
+                }
+            }
+            () = tokio::time::sleep(DISPLAY_WORKER_SHUTDOWN_TIMEOUT) => {
+                join_handle.abort();
+                let _ = join_handle.await;
+                warn!("aborted display worker after shutdown timeout");
+            }
+        }
     }
 }
 
