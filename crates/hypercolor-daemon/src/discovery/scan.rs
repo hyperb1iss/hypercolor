@@ -559,6 +559,24 @@ async fn process_discovered_device(
             }
         }
     }
+    if actions.is_empty()
+        && matches!(kind, DiscoverySeenKind::Reappeared)
+        && !was_renderable
+        && connect_behavior.should_auto_connect()
+    {
+        let action = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.retry_stale_known_connect(device_id)
+        };
+        if let Some(action) = action {
+            debug!(
+                device = %tracked_before.info.name,
+                device_id = %device_id,
+                "retrying rediscovered device after stale connect guard"
+            );
+            actions.push(action);
+        }
+    }
     let had_actions = !actions.is_empty();
     if should_run_lifecycle_actions_in_background(&tracked_before.info, &actions) {
         debug!(

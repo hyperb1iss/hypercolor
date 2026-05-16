@@ -411,6 +411,57 @@ fn repeated_auto_discovery_suppresses_duplicate_connect_while_in_flight() {
 }
 
 #[test]
+fn rediscovered_known_device_can_retry_stale_in_flight_connect() {
+    let mut lifecycle =
+        DeviceLifecycleManager::new().with_connect_in_flight_stale_after(Duration::ZERO);
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Push 2");
+    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+
+    let first_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        first_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "initial discovery should queue the connect"
+    );
+
+    let duplicate_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        !duplicate_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "normal discovery should still suppress duplicate connects"
+    );
+
+    assert!(
+        matches!(
+            lifecycle.retry_stale_known_connect(device_id),
+            Some(LifecycleAction::Connect { .. })
+        ),
+        "reappeared recovery should be able to retry a stale guard"
+    );
+
+    lifecycle
+        .on_connect_abandoned(device_id)
+        .expect("abandoned connect should clear the in-flight guard");
+    assert!(
+        lifecycle.retry_stale_known_connect(device_id).is_none(),
+        "recovery should not retry without an in-flight connect guard"
+    );
+}
+
+#[test]
 fn repeated_reconnect_attempt_suppresses_duplicate_connect_while_in_flight() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();

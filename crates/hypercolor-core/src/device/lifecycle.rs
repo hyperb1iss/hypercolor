@@ -4,7 +4,7 @@
 //! high-level actions for async runtime code (daemon/API) to execute.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::types::device::{
     DeviceError, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
@@ -15,6 +15,7 @@ use super::DiscoveryConnectBehavior;
 use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;
+const CONNECT_IN_FLIGHT_STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// Action emitted by [`DeviceLifecycleManager`] for runtime execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,9 +67,10 @@ struct ManagedDevice {
 /// async executors. This keeps the manager deterministic and easy to unit test.
 pub struct DeviceLifecycleManager {
     devices: HashMap<DeviceId, ManagedDevice>,
-    connect_in_flight: HashSet<DeviceId>,
+    connect_in_flight: HashMap<DeviceId, Instant>,
     reconnect_scheduled: HashSet<DeviceId>,
     reconnect_policy: ReconnectPolicy,
+    connect_in_flight_stale_after: Duration,
 }
 
 impl Default for DeviceLifecycleManager {
@@ -79,9 +81,10 @@ impl Default for DeviceLifecycleManager {
         };
         Self {
             devices: HashMap::new(),
-            connect_in_flight: HashSet::new(),
+            connect_in_flight: HashMap::new(),
             reconnect_scheduled: HashSet::new(),
             reconnect_policy,
+            connect_in_flight_stale_after: CONNECT_IN_FLIGHT_STALE_AFTER,
         }
     }
 }
@@ -98,10 +101,18 @@ impl DeviceLifecycleManager {
     pub fn with_reconnect_policy(reconnect_policy: ReconnectPolicy) -> Self {
         Self {
             devices: HashMap::new(),
-            connect_in_flight: HashSet::new(),
+            connect_in_flight: HashMap::new(),
             reconnect_scheduled: HashSet::new(),
             reconnect_policy,
+            connect_in_flight_stale_after: CONNECT_IN_FLIGHT_STALE_AFTER,
         }
+    }
+
+    /// Override the stale in-flight connect age.
+    #[must_use]
+    pub fn with_connect_in_flight_stale_after(mut self, stale_after: Duration) -> Self {
+        self.connect_in_flight_stale_after = stale_after;
+        self
     }
 
     /// Number of tracked devices.
@@ -160,7 +171,7 @@ impl DeviceLifecycleManager {
     ) -> Vec<LifecycleAction> {
         let backend_id = device_info.output_backend_id().to_ascii_lowercase();
         let layout_device_id = Self::layout_device_id_with_fingerprint(device_info, fingerprint);
-        let connect_already_in_flight = self.connect_in_flight.contains(&device_id);
+        let connect_already_in_flight = self.connect_in_flight.contains_key(&device_id);
         let mut mark_connect_in_flight = false;
 
         let actions = {
@@ -214,10 +225,43 @@ impl DeviceLifecycleManager {
         };
 
         if mark_connect_in_flight {
-            self.connect_in_flight.insert(device_id);
+            self.mark_connect_in_flight(device_id);
         }
 
         actions
+    }
+
+    /// Build a recovery connect action for a Known device whose previous
+    /// connect guard survived beyond the async task that owned it.
+    #[must_use]
+    pub fn retry_stale_known_connect(&mut self, device_id: DeviceId) -> Option<LifecycleAction> {
+        let action = {
+            let started_at = self.connect_in_flight.get(&device_id)?;
+            if started_at.elapsed() < self.connect_in_flight_stale_after {
+                return None;
+            }
+
+            let managed = self.devices.get(&device_id)?;
+            if *managed.state_machine.state() != DeviceState::Known
+                || !managed.connect_behavior.should_auto_connect()
+            {
+                return None;
+            }
+
+            Self::connect_action(device_id, managed)
+        };
+
+        self.mark_connect_in_flight(device_id);
+        Some(action)
+    }
+
+    fn mark_connect_in_flight(&mut self, device_id: DeviceId) {
+        self.connect_in_flight.insert(device_id, Instant::now());
+    }
+
+    #[must_use]
+    fn connect_in_flight(&self, device_id: DeviceId) -> bool {
+        self.connect_in_flight.contains_key(&device_id)
     }
 
     /// Transition a device to connected after a successful backend connect.
@@ -310,7 +354,7 @@ impl DeviceLifecycleManager {
     /// Build a reconnect connect action after retry delay elapses.
     #[must_use]
     pub fn on_reconnect_attempt(&mut self, device_id: DeviceId) -> Option<LifecycleAction> {
-        if self.connect_in_flight.contains(&device_id) {
+        if self.connect_in_flight(device_id) {
             return None;
         }
 
@@ -322,7 +366,7 @@ impl DeviceLifecycleManager {
             Self::connect_action(device_id, managed)
         };
 
-        self.connect_in_flight.insert(device_id);
+        self.mark_connect_in_flight(device_id);
         Some(action)
     }
 
@@ -406,7 +450,7 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
-        let connect_already_in_flight = self.connect_in_flight.contains(&device_id);
+        let connect_already_in_flight = self.connect_in_flight(device_id);
         let mut mark_connect_in_flight = false;
         let action = {
             let managed = self.managed_mut(device_id)?;
@@ -426,7 +470,7 @@ impl DeviceLifecycleManager {
         };
 
         if mark_connect_in_flight {
-            self.connect_in_flight.insert(device_id);
+            self.mark_connect_in_flight(device_id);
         }
         Ok(action.into_iter().collect())
     }
