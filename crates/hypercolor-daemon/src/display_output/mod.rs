@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
@@ -491,16 +491,8 @@ fn build_display_worker_frame_set(
             let face_frame = face_frame?;
             let face_identity = stable_display_source_identity(face_frame.as_ref())?;
             let scene = if target.blends_with_effect() {
-                let Some((scene_identity, scene_frame)) = scene_frame else {
-                    trace!(
-                        backend_id = %target.backend_id,
-                        device_id = %target.device_id,
-                        group_canvas = true,
-                        "skipping blended display face until a matching scene frame is available"
-                    );
-                    return None;
-                };
-                Some((*scene_identity, Arc::clone(scene_frame)))
+                scene_frame
+                    .map(|(scene_identity, scene_frame)| (*scene_identity, Arc::clone(scene_frame)))
             } else {
                 None
             };
@@ -1074,10 +1066,38 @@ mod tests {
     }
 
     #[test]
-    fn blended_display_face_waits_for_scene_frame() {
+    fn blended_display_face_composes_against_black_without_scene_frame() {
         let target = display_target(DisplayFaceBlendMode::Alpha);
         let face_frame = canvas_frame(1);
 
-        assert!(build_display_worker_frame_set(&target, None, Some(&face_frame)).is_none());
+        let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
+            .expect("blended face should not wait for a scene frame");
+
+        let DisplayWorkerFrameSource::Face {
+            scene_frame,
+            face_frame: published_face,
+            blend_mode,
+            opacity,
+        } = frames.source
+        else {
+            panic!("blended display face should use the unified face frame source");
+        };
+        let StableDisplayFrameSourceIdentity::Face {
+            scene_frame: identity_scene,
+            blend_mode: identity_blend_mode,
+            opacity_bits,
+            ..
+        } = identity.source
+        else {
+            panic!("blended display face identity should use the unified face identity");
+        };
+
+        assert!(scene_frame.is_none());
+        assert!(identity_scene.is_none());
+        assert!(Arc::ptr_eq(&published_face, &face_frame));
+        assert_eq!(blend_mode, DisplayFaceBlendMode::Alpha);
+        assert_eq!(identity_blend_mode, DisplayFaceBlendMode::Alpha);
+        assert_eq!(opacity, 0.5);
+        assert_eq!(opacity_bits, 0.5_f32.to_bits());
     }
 }

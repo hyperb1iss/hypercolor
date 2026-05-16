@@ -1176,7 +1176,7 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     let fast_device_id = DeviceId::new();
     let slow_logical_id = insert_default_logical_device(&logical_devices, slow_device_id).await;
     let fast_logical_id = insert_default_logical_device(&logical_devices, fast_device_id).await;
-    let slow_sink = Arc::new(RecordingDisplaySink::new(Duration::from_secs(60)));
+    let slow_sink = Arc::new(RecordingDisplaySink::new(Duration::from_mins(1)));
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
@@ -2500,7 +2500,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
 }
 
 #[tokio::test]
-async fn display_group_alpha_waits_for_effect_frame_before_blending() {
+async fn display_group_alpha_composes_against_black_before_effect_frame() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -2561,10 +2561,17 @@ async fn display_group_alpha_waits_for_effect_frame_before_blending() {
             1,
             16,
         ));
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    let first_writes = wait_for_display_writes(&display_writes).await;
+    let first_image = decode_jpeg(&first_writes[0]);
+    let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
+
     assert!(
-        display_writes.lock().await.is_empty(),
-        "expected blended display faces to wait for an effect frame before publishing"
+        first_pixel[2] > 70,
+        "expected blended display face to publish over black before effect frame, got {first_pixel:?}"
+    );
+    assert!(
+        first_pixel[0] < 60 && first_pixel[1] < 60,
+        "expected black fallback to avoid stale effect color, got {first_pixel:?}"
     );
 
     event_bus
@@ -2574,8 +2581,8 @@ async fn display_group_alpha_waits_for_effect_frame_before_blending() {
             2,
             32,
         ));
-    let writes = wait_for_display_writes(&display_writes).await;
-    let image = decode_jpeg(&writes[0]);
+    let writes = wait_for_display_write_count(&display_writes, 2).await;
+    let image = decode_jpeg(&writes[1]);
     let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
 
     assert!(
