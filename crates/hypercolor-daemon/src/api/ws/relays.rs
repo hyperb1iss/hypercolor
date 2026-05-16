@@ -23,8 +23,9 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BYTES_PER_PIXEL_RGBA, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CLIENT_COUNT, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
-    WS_WEB_VIEWPORT_CANVAS_HEADER, cached_frame_payload, cached_spectrum_payload,
-    try_encode_cached_canvas_binary_with_header_scaled, try_encode_cached_canvas_preview_binary,
+    WS_WEB_VIEWPORT_CANVAS_HEADER, cached_display_preview_payload, cached_frame_payload,
+    cached_spectrum_payload, try_encode_cached_canvas_binary_with_header_scaled,
+    try_encode_cached_canvas_preview_binary,
 };
 use super::protocol::{
     ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
@@ -785,7 +786,7 @@ pub(super) async fn relay_display_preview(
                     continue;
                 }
 
-                let payload = encode_display_preview_frame(&snapshot);
+                let payload = cached_display_preview_payload(&snapshot);
                 if binary_tx.try_send(payload).is_err() {
                     backpressure.record_drop(&json_tx, "display_preview", target.fps);
                     // Advance last_sent_at so the next retry waits out a
@@ -804,50 +805,6 @@ pub(super) async fn relay_display_preview(
             }
         }
     }
-}
-
-/// Serialize a display-preview snapshot into its WebSocket binary payload.
-///
-/// Layout (little-endian where noted):
-/// `[0x07: u8][frame_number: u32][timestamp_ms: u32][width: u16][height: u16][format: u8 = 2 (JPEG)][jpeg_payload...]`
-fn encode_display_preview_frame(snapshot: &crate::display_frames::DisplayFrameSnapshot) -> Bytes {
-    const JPEG_FORMAT: u8 = 2;
-    const HEADER_LEN: usize = 1 + 4 + 4 + 2 + 2 + 1;
-
-    let jpeg = snapshot.jpeg_data.as_ref().as_slice();
-    let mut buf = Vec::with_capacity(HEADER_LEN + jpeg.len());
-    buf.push(super::cache::WS_DISPLAY_PREVIEW_HEADER);
-
-    // Frame number truncates cleanly for the common case (< 2^32 frames);
-    // on overflow it wraps, which is fine since consumers only use it for
-    // change detection, not absolute positioning.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "u64 → u32 truncation is intentional; frame number wraps for change detection only"
-    )]
-    let frame_u32 = snapshot.frame_number as u32;
-    buf.extend_from_slice(&frame_u32.to_le_bytes());
-
-    let timestamp_ms = snapshot
-        .captured_at
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "timestamp truncates to u32 millis; consumers use it as a monotonic hint, not wall clock"
-    )]
-    let timestamp_u32 = timestamp_ms as u32;
-    buf.extend_from_slice(&timestamp_u32.to_le_bytes());
-
-    let width_u16 = u16::try_from(snapshot.width).unwrap_or(u16::MAX);
-    let height_u16 = u16::try_from(snapshot.height).unwrap_or(u16::MAX);
-    buf.extend_from_slice(&width_u16.to_le_bytes());
-    buf.extend_from_slice(&height_u16.to_le_bytes());
-    buf.push(JPEG_FORMAT);
-    buf.extend_from_slice(jpeg);
-
-    Bytes::from(buf)
 }
 
 fn preview_stream_demand(config: &CanvasConfig) -> PreviewStreamDemand {

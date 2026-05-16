@@ -22,11 +22,13 @@ use super::cache::{
     WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_DISPLAY_PREVIEW_HEADER, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE, WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER,
     WS_SPECTRUM_PAYLOAD_BUILD_COUNT, WS_SPECTRUM_PAYLOAD_CACHE,
-    WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, WS_WEB_VIEWPORT_CANVAS_HEADER, cached_frame_payload,
-    cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
+    WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, WS_WEB_VIEWPORT_CANVAS_HEADER,
+    cached_display_preview_payload, cached_frame_payload, cached_spectrum_payload,
+    encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
     encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
     encode_spectrum_binary, reset_canvas_jpeg_body_cache_for_tests,
-    reset_canvas_raw_body_cache_for_tests, reset_preview_jpeg_encoders_for_tests,
+    reset_canvas_raw_body_cache_for_tests, reset_display_preview_payload_cache_for_tests,
+    reset_preview_jpeg_encoders_for_tests,
 };
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
@@ -180,6 +182,7 @@ fn reset_ws_payload_caches() {
     }
     reset_canvas_raw_body_cache_for_tests();
     reset_canvas_jpeg_body_cache_for_tests();
+    reset_display_preview_payload_cache_for_tests();
     reset_preview_jpeg_encoders_for_tests();
 }
 
@@ -842,6 +845,26 @@ fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
             .try_into()
             .expect("display preview frame number should be four bytes"),
     )
+}
+
+#[test]
+fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
+    reset_ws_payload_caches();
+    let snapshot = DisplayFrameSnapshot {
+        jpeg_data: Arc::new(vec![0xff, 0xd8, 0x42, 0xff, 0xd9]),
+        width: 32,
+        height: 32,
+        circular: false,
+        frame_number: 17,
+        captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(99),
+    };
+
+    let first = cached_display_preview_payload(&snapshot);
+    let second = cached_display_preview_payload(&snapshot);
+
+    assert_eq!(display_preview_payload_frame_number(&first), 17);
+    assert_eq!(first, second);
+    assert_eq!(first.as_ptr(), second.as_ptr());
 }
 
 #[tokio::test]

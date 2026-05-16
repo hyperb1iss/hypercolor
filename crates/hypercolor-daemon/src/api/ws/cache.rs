@@ -23,6 +23,7 @@ use super::preview_encode::{
 };
 use super::protocol::{ActiveFramesConfig, CanvasFormat, FrameFormat, FrameZoneSelection};
 use crate::api::AppState;
+use crate::display_frames::DisplayFrameSnapshot;
 
 /// Maximum number of events that can be buffered per WebSocket client.
 pub(super) const WS_BUFFER_SIZE: usize = 64;
@@ -35,6 +36,7 @@ pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = 0x06;
 /// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.
 pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = 0x07;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
+const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY: usize = 64;
 const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
 const WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY: usize = 32;
 const WS_CACHE_SHARD_COUNT: usize = 8;
@@ -55,6 +57,7 @@ pub(super) static WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::ne
 type CanvasBinaryCacheShard = StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>;
 type CanvasRawBodyCacheShard = StdMutex<VecDeque<(CanvasRawBodyCacheKey, Bytes)>>;
 type CanvasJpegBodyCacheShard = StdMutex<VecDeque<(CanvasJpegBodyCacheKey, Bytes)>>;
+type DisplayPreviewPayloadCacheShard = StdMutex<VecDeque<(DisplayPreviewPayloadCacheKey, Bytes)>>;
 type FramePayloadCacheShard = StdMutex<VecDeque<(FramePayloadCacheKey, FrameRelayMessage)>>;
 type SpectrumPayloadCacheShard = StdMutex<VecDeque<(SpectrumPayloadCacheKey, Bytes)>>;
 type PreviewJpegEncoderShard = StdMutex<PreviewJpegEncoderState>;
@@ -89,6 +92,16 @@ static WS_CANVAS_JPEG_BODY_CACHE: LazyLock<Vec<CanvasJpegBodyCacheShard>> = Lazy
         })
         .collect()
 });
+static WS_DISPLAY_PREVIEW_PAYLOAD_CACHE: LazyLock<Vec<DisplayPreviewPayloadCacheShard>> =
+    LazyLock::new(|| {
+        (0..WS_CACHE_SHARD_COUNT)
+            .map(|_| {
+                StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                    WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY,
+                )))
+            })
+            .collect()
+    });
 pub(super) static WS_FRAME_PAYLOAD_CACHE: LazyLock<Vec<FramePayloadCacheShard>> =
     LazyLock::new(|| {
         (0..WS_CACHE_SHARD_COUNT)
@@ -185,6 +198,16 @@ struct CanvasRawBodyCacheKey {
     output_height: u32,
     format_tag: u8,
     brightness_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct DisplayPreviewPayloadCacheKey {
+    jpeg_storage: usize,
+    jpeg_len: usize,
+    frame_number: u32,
+    timestamp_ms: u32,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -970,6 +993,24 @@ pub(super) fn reset_canvas_raw_body_cache_for_tests() {
     }
 }
 
+#[cfg(test)]
+pub(super) fn reset_display_preview_payload_cache_for_tests() {
+    for shard in WS_DISPLAY_PREVIEW_PAYLOAD_CACHE.iter() {
+        shard.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+}
+
+pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) -> Bytes {
+    let key = display_preview_payload_key(snapshot);
+    if let Some(cached) = display_preview_payload_cache_get(key) {
+        return cached;
+    }
+
+    let payload = build_display_preview_payload(snapshot, key);
+    display_preview_payload_cache_put(key, payload.clone());
+    payload
+}
+
 fn cached_canvas_binary<F>(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
@@ -1099,6 +1140,30 @@ fn canvas_jpeg_body_cache_put(key: CanvasJpegBodyCacheKey, payload: Bytes) {
     }
 }
 
+fn display_preview_payload_cache_get(key: DisplayPreviewPayloadCacheKey) -> Option<Bytes> {
+    let mut cache = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE[cache_shard_index(&key)]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
+    let (candidate, payload) = cache.remove(index)?;
+    let cached = payload.clone();
+    cache.push_front((candidate, payload));
+    Some(cached)
+}
+
+fn display_preview_payload_cache_put(key: DisplayPreviewPayloadCacheKey, payload: Bytes) {
+    let mut cache = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE[cache_shard_index(&key)]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((key, payload));
+    while cache.len() > per_shard_capacity(WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY) {
+        let _ = cache.pop_back();
+    }
+}
+
 fn spectrum_payload_cache_get(key: SpectrumPayloadCacheKey) -> Option<Bytes> {
     let mut cache = WS_SPECTRUM_PAYLOAD_CACHE[cache_shard_index(&key)]
         .lock()
@@ -1146,6 +1211,57 @@ const fn canvas_format_tag(format: CanvasFormat) -> u8 {
         CanvasFormat::Rgba => 1,
         CanvasFormat::Jpeg => 2,
     }
+}
+
+fn display_preview_payload_key(snapshot: &DisplayFrameSnapshot) -> DisplayPreviewPayloadCacheKey {
+    DisplayPreviewPayloadCacheKey {
+        jpeg_storage: Arc::as_ptr(&snapshot.jpeg_data).addr(),
+        jpeg_len: snapshot.jpeg_data.len(),
+        frame_number: display_preview_frame_number(snapshot.frame_number),
+        timestamp_ms: display_preview_timestamp_ms(snapshot.captured_at),
+        width: snapshot.width,
+        height: snapshot.height,
+    }
+}
+
+fn build_display_preview_payload(
+    snapshot: &DisplayFrameSnapshot,
+    key: DisplayPreviewPayloadCacheKey,
+) -> Bytes {
+    const JPEG_FORMAT: u8 = 2;
+    const HEADER_LEN: usize = 1 + 4 + 4 + 2 + 2 + 1;
+
+    let jpeg = snapshot.jpeg_data.as_ref().as_slice();
+    let mut buf = Vec::with_capacity(HEADER_LEN + jpeg.len());
+    buf.push(WS_DISPLAY_PREVIEW_HEADER);
+    buf.extend_from_slice(&key.frame_number.to_le_bytes());
+    buf.extend_from_slice(&key.timestamp_ms.to_le_bytes());
+    let width_u16 = u16::try_from(snapshot.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(snapshot.height).unwrap_or(u16::MAX);
+    buf.extend_from_slice(&width_u16.to_le_bytes());
+    buf.extend_from_slice(&height_u16.to_le_bytes());
+    buf.push(JPEG_FORMAT);
+    buf.extend_from_slice(jpeg);
+    Bytes::from(buf)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "display-preview frame number wraps on the wire for change detection"
+)]
+const fn display_preview_frame_number(frame_number: u64) -> u32 {
+    frame_number as u32
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "display-preview timestamp truncates to the existing u32 wire field"
+)]
+fn display_preview_timestamp_ms(captured_at: std::time::SystemTime) -> u32 {
+    captured_at
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0) as u32
 }
 
 fn should_cache_canvas_raw_body(
