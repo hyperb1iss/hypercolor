@@ -172,16 +172,21 @@ For everyday use you'll want the daemon to start automatically on login rather t
 
 ### Linux (systemd user service)
 
-Install the systemd user service and enable it for autostart on login:
+First install the daemon binaries and the systemd user unit file:
 
 ```bash
-hypercolor service enable
+just install
 ```
 
-This installs the service unit and calls `systemctl --user enable hypercolor`. To start it immediately in the same step:
+This copies the `hypercolor.service` unit from `packaging/systemd/user/` to
+`~/.config/systemd/user/`, then enables and starts the service automatically.
+If you need the unit installed but not yet started, pass `--no-start-service`.
+
+Once the unit is installed, you can manage it with the CLI:
 
 ```bash
-hypercolor service start
+hypercolor service enable    # calls systemctl --user enable hypercolor
+hypercolor service start     # start immediately
 ```
 
 Check service status at any time:

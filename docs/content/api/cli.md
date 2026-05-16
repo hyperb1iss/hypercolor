@@ -67,7 +67,7 @@ Browse and control effects.
 hypercolor effects list              # List all available effects
 hypercolor effects activate <id>     # Activate an effect
 hypercolor effects stop              # Stop the current effect
-hypercolor effects info              # Show the active effect and its controls
+hypercolor effects info <id>         # Show detailed info about a specific effect
 ```
 
 Apply with custom controls:
@@ -85,10 +85,10 @@ hypercolor effects patch --param speed=3 --param intensity=90
 Other `effects` subcommands:
 
 ```bash
-hypercolor effects reset              # Reset controls to defaults
-hypercolor effects layout show        # Show current effect-layout association
-hypercolor effects layout set <id>    # Associate active effect with a layout
-hypercolor effects layout clear       # Clear the association
+hypercolor effects reset                         # Reset controls to defaults
+hypercolor effects layout show <effect>          # Show layout association for an effect
+hypercolor effects layout set <effect> <layout>  # Associate an effect with a layout
+hypercolor effects layout clear <effect>         # Clear the association
 ```
 
 ### `hypercolor brightness`
@@ -155,11 +155,11 @@ hypercolor audio devices             # List available audio capture devices
 Dynamic control surface inspection and mutation for devices and drivers.
 
 ```bash
-hypercolor controls list --device <id>     # List control surfaces for a device
-hypercolor controls list --driver <id>     # List control surfaces for a driver
-hypercolor controls show --device <id>     # Show one device-level control surface
-hypercolor controls set --device <id>      # Apply values to a device control surface
-hypercolor controls action --device <id>   # Invoke a control surface action
+hypercolor controls list --device <id>                    # List control surfaces for a device
+hypercolor controls list --driver <id>                    # List control surfaces for a driver
+hypercolor controls show --device <id>                    # Show one device-level control surface
+hypercolor controls set <surface-id> --value field=value  # Apply values to a control surface
+hypercolor controls action <surface-id> <action-id>       # Invoke a control surface action
 ```
 
 ### `hypercolor drivers`
@@ -167,10 +167,10 @@ hypercolor controls action --device <id>   # Invoke a control surface action
 Driver module inventory and controls.
 
 ```bash
-hypercolor drivers list                     # List registered driver modules
-hypercolor drivers controls <driver>        # Show one driver-level control surface
+hypercolor drivers list                               # List registered driver modules
+hypercolor drivers controls <driver>                  # Show one driver-level control surface
 hypercolor drivers set-control <driver> <field> <value>  # Set a driver control value
-hypercolor drivers action <driver>          # Invoke a driver-level action
+hypercolor drivers action <driver> <action>           # Invoke a driver-level action
 ```
 
 ### `hypercolor config`

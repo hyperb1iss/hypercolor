@@ -12,10 +12,12 @@ without pulling in any runtime cost.
 **Depends on:** `serde`, `serde_json`, `thiserror`, `uuid`, `strum`,
 `utoipa` — no workspace crates.
 
-**Depended on by:** every other crate in the workspace — `hypercolor-core`,
-`hypercolor-hal`, `hypercolor-driver-api`, all network drivers,
-`hypercolor-daemon`, `hypercolor-cli`, `hypercolor-tui`, `hypercolor-tray`,
-`hypercolor-ui`, and more.
+**Depended on by:** most workspace crates — `hypercolor-core`,
+`hypercolor-hal`, `hypercolor-driver-api`, all network driver crates,
+`hypercolor-daemon`, `hypercolor-tui`, `hypercolor-tray`, `hypercolor-ui`,
+and others. Crates that operate purely at a higher abstraction layer (e.g.
+`hypercolor-cli`, infrastructure adapters, proc-macro crates) may not depend
+on it directly.
 
 ## Key types
 

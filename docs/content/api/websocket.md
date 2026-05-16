@@ -39,7 +39,7 @@ All messages are JSON with a `type` tag:
 { "type": "message_type", ... }
 ```
 
-Binary messages are data payloads for the `frames`, `canvas`, `screen_canvas`, `web_viewport_canvas`, and `display_preview` channels. They are never JSON.
+Binary messages are data payloads for the `frames`, `spectrum`, `canvas`, `screen_canvas`, `web_viewport_canvas`, and `display_preview` channels. They are never JSON.
 
 ## Connect Handshake
 
@@ -84,7 +84,7 @@ The `subscriptions` field lists which channels are already active. Only `events`
 | `events`             | JSON      | Discrete HypercolorEvent relay — active by default  |
 | `frame_events`       | JSON      | High-rate per-frame render timing diagnostics       |
 | `frames`             | Binary    | LED color frames per zone                           |
-| `spectrum`           | JSON      | Audio spectrum data                                 |
+| `spectrum`           | Binary    | Audio spectrum data                                 |
 | `canvas`             | Binary    | Rendered RGBA canvas stream                         |
 | `screen_canvas`      | Binary    | Screen-capture canvas stream                        |
 | `web_viewport_canvas`| Binary    | Web viewport canvas stream                          |
@@ -262,7 +262,23 @@ Each channel has configurable parameters that control throughput and format. Sen
 | `format` | string          | `"binary"` | `"binary"` or `"json"`          |
 | `zones`  | array of string | `["all"]`  | zone IDs or `["all"]`           |
 
-Binary frame format is a flat array of RGB bytes ordered by zone then by LED index. JSON format wraps the same data as a structured object. Binary is strongly preferred for performance.
+Binary frame payload layout (little-endian throughout):
+
+```
+Byte(s)  Field
+0        type = 0x01
+1–4      frame_number (u32 LE)
+5–8      timestamp_ms (u32 LE)
+9        zone_count (u8, max 255)
+
+For each zone (repeated zone_count times):
+  0–1    zone_id length (u16 LE)
+  N      zone_id UTF-8 bytes (N = zone_id length)
+  0–1    led_count (u16 LE)
+  3×M    RGB bytes (M = led_count; R, G, B per LED)
+```
+
+JSON format wraps the same data as a structured object. Binary is strongly preferred for performance.
 
 ### `spectrum` config
 
@@ -270,6 +286,24 @@ Binary frame format is a flat array of RGB bytes ordered by zone then by LED ind
 | ------ | ------- | ------- | ---------------------------- |
 | `fps`  | integer | `30`    | 1..=60                       |
 | `bins` | integer | `64`    | one of: 8, 16, 32, 64, 128  |
+
+Spectrum payloads are **binary**, not JSON. Binary payload layout (little-endian throughout):
+
+```
+Byte(s)  Field
+0        type = 0x02
+1–4      timestamp_ms (u32 LE)
+5        bin_count (u8, actual bins encoded)
+6–9      level (f32 LE, overall audio level 0.0–1.0)
+10–13    bass (f32 LE, 0.0–1.0)
+14–17    mid (f32 LE, 0.0–1.0)
+18–21    treble (f32 LE, 0.0–1.0)
+22       beat (u8, 0 or 1)
+23–26    beat_confidence (f32 LE, 0.0–1.0)
+
+For each bin (repeated bin_count times):
+  4      magnitude (f32 LE)
+```
 
 ### `canvas` / `screen_canvas` / `web_viewport_canvas` config
 
@@ -304,8 +338,11 @@ const ws = new WebSocket("ws://localhost:9420/api/v1/ws");
 
 ws.onmessage = (event) => {
   if (event.data instanceof ArrayBuffer) {
-    // Binary frame payload: flat RGB bytes
-    renderFrame(new Uint8Array(event.data));
+    // Binary payload — type byte at offset 0 identifies the channel:
+    // 0x01 = frames, 0x02 = spectrum, 0x03/0x05/0x06/0x07 = canvas variants
+    const view = new DataView(event.data);
+    const type = view.getUint8(0);
+    if (type === 0x01) parseFramePayload(view);
     return;
   }
 

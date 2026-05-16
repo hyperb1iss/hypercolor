@@ -1,4 +1,4 @@
-# 49 -- Nollie Protocol Driver
+# 45 -- Nollie Protocol Driver
 
 > Native USB HID/CDC driver for the Nollie ARGB controller family. Coverage now follows the official `nolliecontroller` source tree, including current NOS2 devices, CDC serial variants, discontinued legacy HID boards, and exact component LED maps.
 

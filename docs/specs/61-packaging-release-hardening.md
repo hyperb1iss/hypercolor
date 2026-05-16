@@ -252,7 +252,7 @@ cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 `release.yml` (workflow_dispatch) bumps version → commits → tags → pushes. The tag arriving triggers `ci.yml`'s tag-push paths (`web-assets`, `build-release`, `create-release`, `update-homebrew`). This split is fine but undocumented; when the next release happens in 6 months it will need to be re-derived.
 
-**Fix:** Add `docs/specs/54-release-process.md` (next spec after this one) with the operator's runbook: how to dispatch `release.yml`, what triggers what, where artifacts land, how to roll back.
+**Fix:** Add a dedicated release-process spec with the operator's runbook: how to dispatch `release.yml`, what triggers what, where artifacts land, how to roll back.
 
 ---
 

@@ -185,7 +185,7 @@ curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
 Changes apply on the next rendered frame. To see what parameters the active effect exposes:
 
 ```bash
-curl http://localhost:9420/api/v1/effects/current | jq '.data.controls'
+curl http://localhost:9420/api/v1/effects/active | jq '.data.controls'
 ```
 
 The web UI's controls panel lets you adjust these with sliders, which is easier for exploration. The REST PATCH is the right path for scripting or keyboard macros.

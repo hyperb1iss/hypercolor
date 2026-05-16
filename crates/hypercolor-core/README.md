@@ -20,7 +20,7 @@ optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 
 **Depended on by:** `hypercolor-daemon`, `hypercolor-cli`, `hypercolor-tray`,
 `hypercolor-tui`, all network driver crates (`hue`, `nanoleaf`, `wled`,
-`govee`), `hypercolor-driver-builtin`, `hypercolor-app`, `hypercolor-network`.
+`govee`), `hypercolor-driver-builtin`, `hypercolor-app`.
 
 ## Key types and traits
 
