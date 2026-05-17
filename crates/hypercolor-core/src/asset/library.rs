@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -50,6 +51,7 @@ impl Default for AssetLibraryLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetTypeHint {
     Lottie,
+    Stream,
 }
 
 /// Upload options for adding a media asset.
@@ -751,6 +753,9 @@ fn sniff_mime(bytes: &[u8], type_hint: Option<AssetTypeHint>) -> Option<String> 
     if type_hint == Some(AssetTypeHint::Lottie) && is_json(bytes) {
         return Some("application/json".to_owned());
     }
+    if type_hint == Some(AssetTypeHint::Stream) && stream_url_from_bytes(bytes).is_some() {
+        return Some("application/vnd.hypercolor.stream-url".to_owned());
+    }
     if is_png(bytes) {
         return Some(if is_apng(bytes) {
             "image/apng".to_owned()
@@ -784,6 +789,55 @@ fn is_thumbnail_source(mime_type: &str) -> bool {
         mime_type,
         "image/png" | "image/apng" | "image/jpeg" | "image/webp" | "image/gif"
     )
+}
+
+pub(crate) fn stream_url_from_bytes(bytes: &[u8]) -> Option<String> {
+    let raw = std::str::from_utf8(bytes).ok()?;
+    let url = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    is_allowed_stream_url(url).then(|| url.to_owned())
+}
+
+fn is_allowed_stream_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https" | "rtmp" | "rtsp") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if is_local_hostname(host) {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return is_public_ip(ip);
+    }
+    true
+}
+
+fn is_local_hostname(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified())
+        }
+        IpAddr::V6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local())
+        }
+    }
 }
 
 fn is_sha256_hex(value: &str) -> bool {

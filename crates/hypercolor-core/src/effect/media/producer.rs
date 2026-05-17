@@ -17,6 +17,8 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, ImageError};
 use thiserror::Error;
 
+#[cfg(feature = "media-video")]
+use crate::asset::library::stream_url_from_bytes;
 use crate::spatial::sample_viewport;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
@@ -27,6 +29,10 @@ const DEFAULT_FRAME_DURATION_US: u64 = 100_000;
 const DEFAULT_LOTTIE_CACHE_KEY: &str = "hypercolor-inline-lottie";
 #[cfg(feature = "media-video")]
 const GST_FRAME_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(5);
+#[cfg(feature = "media-video")]
+const STREAM_PREROLL_FRAME_LIMIT: usize = 300;
+#[cfg(feature = "media-video")]
+const STREAM_URL_MIME: &str = "application/vnd.hypercolor.stream-url";
 
 #[derive(Debug, Error)]
 pub enum MediaProducerError {
@@ -54,6 +60,9 @@ pub enum MediaProducerError {
     #[cfg(feature = "media-video")]
     #[error("failed to decode video: {0}")]
     VideoDecode(String),
+    #[cfg(feature = "media-video")]
+    #[error("invalid stream URL asset")]
+    InvalidStreamUrl,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +130,8 @@ impl MediaProducer {
             video_mime @ ("video/mp4" | "video/webm") => Err(MediaProducerError::UnsupportedMime(
                 format!("{video_mime} video decoding requires a file-backed asset"),
             )),
+            #[cfg(feature = "media-video")]
+            STREAM_URL_MIME => Self::from_stream_url_bytes(bytes),
             other => Err(MediaProducerError::UnsupportedMime(other.to_owned())),
         }
     }
@@ -298,7 +309,15 @@ impl MediaProducer {
         ensure_gstreamer()?;
         let uri = gst::glib::filename_to_uri(path, None)
             .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
-        let frames = decode_video_uri(uri.as_str())?;
+        let frames = decode_video_uri(uri.as_str(), None)?;
+        Ok(Self::from_decoded_frames(frames))
+    }
+
+    #[cfg(feature = "media-video")]
+    fn from_stream_url_bytes(bytes: &[u8]) -> Result<Self, MediaProducerError> {
+        ensure_gstreamer()?;
+        let url = stream_url_from_bytes(bytes).ok_or(MediaProducerError::InvalidStreamUrl)?;
+        let frames = decode_video_uri(&url, Some(STREAM_PREROLL_FRAME_LIMIT))?;
         Ok(Self::from_decoded_frames(frames))
     }
 
@@ -420,7 +439,10 @@ fn ensure_gstreamer() -> Result<(), MediaProducerError> {
 }
 
 #[cfg(feature = "media-video")]
-fn decode_video_uri(uri: &str) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
+fn decode_video_uri(
+    uri: &str,
+    frame_limit: Option<usize>,
+) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
     let caps = gst::Caps::builder("video/x-raw")
         .field("format", "RGBA")
         .build();
@@ -449,7 +471,7 @@ fn decode_video_uri(uri: &str) -> Result<Vec<DecodedMediaFrame>, MediaProducerEr
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|error| MediaProducerError::VideoDecode(format!("{error:?}")))?;
-    let result = pull_video_frames(&pipeline, &sink);
+    let result = pull_video_frames(&pipeline, &sink, frame_limit);
     let _ = pipeline.set_state(gst::State::Null);
     result
 }
@@ -491,11 +513,15 @@ fn link_uridecodebin_to_convert(
 fn pull_video_frames(
     pipeline: &gst::Pipeline,
     sink: &gst_app::AppSink,
+    frame_limit: Option<usize>,
 ) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
     let mut frames = Vec::new();
     loop {
         if let Some(sample) = sink.try_pull_sample(GST_FRAME_TIMEOUT) {
             frames.push(decoded_frame_from_sample(&sample)?);
+            if frame_limit.is_some_and(|limit| frames.len() >= limit) {
+                break;
+            }
             continue;
         }
         if sink.is_eos() {

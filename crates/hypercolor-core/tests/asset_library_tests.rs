@@ -1,7 +1,8 @@
 use std::io::Cursor;
 
 use hypercolor_core::asset::{
-    AssetEvent, AssetLibrary, AssetLibraryLimits, AssetScanStatus, AssetUploadOptions,
+    AssetEvent, AssetLibrary, AssetLibraryLimits, AssetScanStatus, AssetTypeHint,
+    AssetUploadOptions,
 };
 use image::{ImageBuffer, ImageFormat, Rgba};
 use serde_json::json;
@@ -155,4 +156,49 @@ fn size_policy_enforces_hard_cap_and_flags_soft_caps() {
         .add_bytes(&bytes, AssetUploadOptions::new("soft.png"))
         .expect("soft cap accepts");
     assert_eq!(added.record.warnings.len(), 2);
+}
+
+#[test]
+fn stream_url_hint_accepts_public_http_sources() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(tempdir.path().join("assets")).expect("open library");
+    let mut options = AssetUploadOptions::new("camera.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+
+    let added = library
+        .add_bytes(b"https://media.example.test/live.m3u8\n", options)
+        .expect("stream URL asset should upload");
+
+    assert_eq!(
+        added.record.mime_type,
+        "application/vnd.hypercolor.stream-url"
+    );
+}
+
+#[test]
+fn stream_url_hint_rejects_private_network_sources() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(tempdir.path().join("assets")).expect("open library");
+    let mut options = AssetUploadOptions::new("local.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+
+    let error = library
+        .add_bytes(b"http://192.168.1.10/live.m3u8\n", options)
+        .expect_err("private stream URL should reject");
+
+    assert!(format!("{error}").contains("unsupported"));
+}
+
+#[test]
+fn stream_url_hint_rejects_localhost_sources() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(tempdir.path().join("assets")).expect("open library");
+    let mut options = AssetUploadOptions::new("localhost.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+
+    let error = library
+        .add_bytes(b"http://localhost:8080/live.m3u8\n", options)
+        .expect_err("localhost stream URL should reject");
+
+    assert!(format!("{error}").contains("unsupported"));
 }

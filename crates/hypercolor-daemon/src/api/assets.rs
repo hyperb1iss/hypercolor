@@ -250,6 +250,9 @@ fn parse_type_hint(raw: Option<&str>) -> Result<Option<AssetTypeHint>, String> {
     if raw.eq_ignore_ascii_case("lottie") {
         return Ok(Some(AssetTypeHint::Lottie));
     }
+    if raw.eq_ignore_ascii_case("stream") || raw.eq_ignore_ascii_case("livestream") {
+        return Ok(Some(AssetTypeHint::Stream));
+    }
     Err(format!("Unsupported asset type hint: {raw}"))
 }
 
