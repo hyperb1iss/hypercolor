@@ -14,6 +14,7 @@ workspace = true
 [features]
 nvidia = ["dep:nvml-wrapper"]
 default = []
+media-lottie = []
 media-video = []
 servo = [
     "dep:base",

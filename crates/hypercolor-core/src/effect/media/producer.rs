@@ -75,6 +75,15 @@ impl MediaProducer {
                 }
             }
             "image/png" | "image/jpeg" => Self::from_static_bytes(bytes),
+            #[cfg(not(feature = "media-lottie"))]
+            "application/json" => Err(MediaProducerError::UnsupportedMime(
+                "application/json (enable the media-lottie feature to decode Lottie assets)"
+                    .to_owned(),
+            )),
+            #[cfg(feature = "media-lottie")]
+            "application/json" => Err(MediaProducerError::UnsupportedMime(
+                "application/json Lottie decoding is not available in this build".to_owned(),
+            )),
             #[cfg(not(feature = "media-video"))]
             video_mime @ ("video/mp4" | "video/webm") => Err(MediaProducerError::UnsupportedMime(
                 format!("{video_mime} (enable the media-video feature to decode video assets)"),

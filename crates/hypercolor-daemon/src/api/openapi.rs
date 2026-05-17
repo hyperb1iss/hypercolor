@@ -52,6 +52,10 @@ use crate::api::{
             devices::IdentifyRequest,
             devices::DiscoverRequest,
             effects::UpdateCurrentControlsRequest,
+            layers::BroadcastMediaLayerRequest,
+            layers::BroadcastMediaLayerTarget,
+            layers::BroadcastMediaLayerGroupResponse,
+            layers::BroadcastMediaLayerResponse,
             layers::CreateLayerRequest,
             layers::UpdateLayerRequest,
             layers::LayerOrderRequest,
@@ -695,6 +699,13 @@ pub const ROUTES: &[RouteSpec] = &[
         "scenes",
         "Activate scene",
     ),
+    RouteSpec::post(
+        "/api/v1/scenes/{id}/layers/broadcast-media",
+        "broadcast_media_layer",
+        "scenes",
+        "Broadcast one media layer across render groups",
+    )
+    .with_request_body("BroadcastMediaLayerRequest", true),
     RouteSpec::get(
         "/api/v1/scenes/{id}/groups/{group_id}/layers",
         "list_layers",

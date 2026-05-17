@@ -4,10 +4,12 @@ use std::time::SystemTime;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
+use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::scene::make_scene;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState,
@@ -16,7 +18,9 @@ use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
-use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
+use hypercolor_types::scene::{
+    DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
+};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -223,6 +227,72 @@ async fn install_scene(
     (scene_id, group_id)
 }
 
+async fn install_scene_with_two_groups(
+    state: &Arc<AppState>,
+    effect_id: EffectId,
+) -> (SceneId, RenderGroupId, RenderGroupId) {
+    let mut scene = make_scene("Broadcast Scene");
+    let primary = RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Primary".to_owned(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: sample_layout("desk:main"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: RenderGroupRole::Primary,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    let display = RenderGroup {
+        id: RenderGroupId::new(),
+        name: "AIO Display".to_owned(),
+        description: None,
+        effect_id: Some(effect_id),
+        controls: HashMap::from([("speed".into(), ControlValue::Float(0.25))]),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: sample_layout("display:aio"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(DeviceId::new())),
+        role: RenderGroupRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    };
+    let scene_id = scene.id;
+    let primary_id = primary.id;
+    let display_id = display.id;
+    scene.groups = vec![primary, display];
+
+    let mut manager = state.scene_manager.write().await;
+    manager.create(scene).expect("scene should create");
+    manager
+        .activate(&scene_id, None)
+        .expect("scene should activate");
+    (scene_id, primary_id, display_id)
+}
+
+async fn insert_lottie_asset(state: &Arc<AppState>) -> hypercolor_types::asset::AssetId {
+    let mut options = AssetUploadOptions::new("sparkle.json");
+    options.type_hint = Some(AssetTypeHint::Lottie);
+    let upsert = state
+        .asset_library
+        .write()
+        .await
+        .add_bytes(br#"{"v":"5.7.4","layers":[]}"#, options)
+        .expect("lottie asset should upload");
+    upsert.record.id
+}
+
 #[tokio::test]
 async fn layer_crud_returns_etags_and_stale_versions() {
     let (state, _tmp) = isolated_state_with_tempdir();
@@ -290,6 +360,108 @@ async fn layer_crud_returns_etags_and_stale_versions() {
     assert_eq!(response_etag(&stale_response), "\"1\"");
     let stale_json = body_json(stale_response).await;
     assert_eq!(stale_json["current"], 1);
+}
+
+#[tokio::test]
+async fn scene_wide_media_broadcast_creates_layers_per_group() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let effect = insert_effect(&state, "broadcast").await;
+    let asset_id = insert_lottie_asset(&state).await;
+    let (scene_id, primary_id, display_id) = install_scene_with_two_groups(&state, effect.id).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            uri.clone(),
+            serde_json::json!({
+                "name": "Sparkle",
+                "asset_id": asset_id,
+                "blend": "screen",
+                "opacity": 0.6,
+                "targets": [
+                    {
+                        "group_id": primary_id,
+                        "expected_layers_version": 0,
+                        "transform": {
+                            "anchor": { "x": 0.25, "y": 0.5 },
+                            "scale": [1.0, 1.0],
+                            "rotation": 0.0,
+                            "fit": "contain"
+                        }
+                    },
+                    {
+                        "group_id": display_id,
+                        "expected_layers_version": 0,
+                        "transform": {
+                            "anchor": { "x": 0.75, "y": 0.5 },
+                            "scale": [0.8, 0.8],
+                            "rotation": 0.0,
+                            "fit": "cover"
+                        }
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    let groups = json["data"]["groups"].as_array().expect("groups");
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0]["group_id"], primary_id.to_string());
+    assert_eq!(groups[0]["layers_version"], 1);
+    assert_eq!(groups[0]["items"].as_array().expect("items").len(), 2);
+    assert_eq!(groups[0]["items"][1]["source"]["type"], "media");
+    assert_eq!(
+        groups[0]["items"][1]["source"]["asset_id"],
+        asset_id.to_string()
+    );
+    assert_eq!(groups[0]["items"][1]["transform"]["anchor"]["x"], 0.25);
+    assert_eq!(groups[1]["group_id"], display_id.to_string());
+    assert_eq!(groups[1]["layers_version"], 1);
+    assert_eq!(groups[1]["items"][1]["transform"]["anchor"]["x"], 0.75);
+
+    let mut changed_groups = Vec::new();
+    while changed_groups.len() < 2 {
+        let event = events.recv().await.expect("layer event");
+        if let HypercolorEvent::LayerStackChanged {
+            scene_id: event_scene_id,
+            group_id,
+            layers_version: 1,
+            kind: LayerStackChangeKind::Created,
+        } = event.event
+        {
+            assert_eq!(event_scene_id, scene_id);
+            changed_groups.push(group_id);
+        }
+    }
+    assert!(changed_groups.contains(&primary_id));
+    assert!(changed_groups.contains(&display_id));
+
+    let stale = send(
+        &app,
+        json_request(
+            "POST",
+            uri,
+            serde_json::json!({
+                "name": "Stale Sparkle",
+                "asset_id": asset_id,
+                "targets": [
+                    {
+                        "group_id": primary_id,
+                        "expected_layers_version": 0
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    assert_eq!(response_etag(&stale), "\"1\"");
 }
 
 #[tokio::test]

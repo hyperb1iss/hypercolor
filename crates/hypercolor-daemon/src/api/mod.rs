@@ -1170,6 +1170,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(scenes::activate_scene),
         )
         .route(
+            "/scenes/{id}/layers/broadcast-media",
+            axum::routing::post(layers::broadcast_media_layer),
+        )
+        .route(
             "/scenes/{id}/groups/{group_id}/layers",
             axum::routing::get(layers::list_layers).post(layers::create_layer),
         )

@@ -77,6 +77,19 @@ pub enum LayerMutationError {
     InvalidOrder,
 }
 
+/// One precondition-checked layer insertion in a multi-group scene mutation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneGroupLayerInsert {
+    /// Target render group.
+    pub group_id: RenderGroupId,
+    /// Layer to insert into the target group's authored stack.
+    pub layer: SceneLayer,
+    /// Optional bottom-to-top insertion index. `None` appends on top.
+    pub index: Option<usize>,
+    /// Optional expected `layers_version` for optimistic concurrency.
+    pub expected_version: Option<u64>,
+}
+
 // ── SceneManager ────────────────────────────────────────────────────────
 
 /// Central scene lifecycle manager.
@@ -607,6 +620,112 @@ impl SceneManager {
             }
             Ok(())
         })
+    }
+
+    pub fn insert_scene_group_layers_batch(
+        &mut self,
+        scene_id: SceneId,
+        inserts: Vec<SceneGroupLayerInsert>,
+    ) -> Result<Vec<RenderGroup>, LayerMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(&scene_id)
+            .ok_or(LayerMutationError::SceneMissing)?;
+        let mut seen_targets = HashSet::with_capacity(inserts.len());
+        let mut target_order = Vec::with_capacity(inserts.len());
+        let mut normalized_inserts = Vec::with_capacity(inserts.len());
+
+        for insert in inserts {
+            if !seen_targets.insert(insert.group_id) {
+                return Err(LayerMutationError::InvalidLayer {
+                    errors: vec![format!(
+                        "target group {} appears more than once",
+                        insert.group_id
+                    )],
+                });
+            }
+            target_order.push(insert.group_id);
+            let group = scene
+                .groups
+                .iter()
+                .find(|group| group.id == insert.group_id)
+                .ok_or(LayerMutationError::GroupMissing)?;
+            if let Some(expected) = insert.expected_version
+                && expected != group.layers_version
+            {
+                return Err(LayerMutationError::Stale {
+                    current: group.layers_version,
+                });
+            }
+            if group
+                .layers
+                .iter()
+                .any(|existing| existing.id == insert.layer.id)
+            {
+                return Err(LayerMutationError::DuplicateLayer {
+                    layer_id: insert.layer.id,
+                });
+            }
+            let layer = insert.layer.normalized();
+            if let Err(errors) = layer.validate() {
+                return Err(LayerMutationError::InvalidLayer { errors });
+            }
+            let effective_len = if group.layers.is_empty() && group.effect_id.is_some() {
+                1
+            } else {
+                group.layers.len()
+            };
+            if let Some(index) = insert.index
+                && index > effective_len
+            {
+                return Err(LayerMutationError::InvalidIndex {
+                    index,
+                    len: effective_len,
+                });
+            }
+            normalized_inserts.push(SceneGroupLayerInsert {
+                group_id: insert.group_id,
+                layer,
+                index: insert.index,
+                expected_version: None,
+            });
+        }
+
+        for insert in normalized_inserts {
+            let group = scene
+                .groups
+                .iter_mut()
+                .find(|group| group.id == insert.group_id)
+                .ok_or(LayerMutationError::GroupMissing)?;
+            materialize_legacy_effect_layer(group);
+            if let Some(index) = insert.index {
+                group.layers.insert(index, insert.layer);
+            } else {
+                group.layers.push(insert.layer);
+            }
+            sync_legacy_effect_fields(group);
+            group.layers_version = group.layers_version.saturating_add(1);
+        }
+
+        if active_scene_id == Some(scene_id) {
+            self.refresh_active_render_groups();
+        }
+        let scene = self
+            .scenes
+            .get(&scene_id)
+            .ok_or(LayerMutationError::SceneMissing)?;
+        target_order
+            .into_iter()
+            .map(|group_id| {
+                scene
+                    .groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+                    .cloned()
+                    .ok_or(LayerMutationError::GroupMissing)
+            })
+            .collect()
     }
 
     pub fn update_group_layer(

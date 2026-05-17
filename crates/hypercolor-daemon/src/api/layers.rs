@@ -11,12 +11,13 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use hypercolor_core::scene::{LayerMutationError, SceneManager};
+use hypercolor_core::scene::{LayerMutationError, SceneGroupLayerInsert, SceneManager};
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, RenderGroupChangeKind};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    SceneLayerId,
+    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback,
+    SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, SceneId};
 
@@ -93,11 +94,62 @@ pub struct CreateLayerQuery {
     pub index: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BroadcastMediaLayerTarget {
+    #[schema(value_type = String)]
+    pub group_id: RenderGroupId,
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub transform: LayerTransform,
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub adjust: LayerAdjust,
+    pub index: Option<usize>,
+    pub expected_layers_version: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BroadcastMediaLayerRequest {
+    pub name: Option<String>,
+    #[schema(value_type = String)]
+    pub asset_id: AssetId,
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub playback: MediaPlayback,
+    #[serde(default)]
+    #[schema(value_type = String)]
+    pub blend: LayerBlendMode,
+    #[serde(default = "default_layer_opacity")]
+    pub opacity: f32,
+    #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
+    pub bindings: Vec<LayerBinding>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    #[schema(value_type = Vec<Object>)]
+    pub targets: Vec<BroadcastMediaLayerTarget>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LayerStackResponse {
     #[schema(value_type = Vec<Object>)]
     pub items: Vec<SceneLayer>,
     pub layers_version: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BroadcastMediaLayerGroupResponse {
+    #[schema(value_type = String)]
+    pub group_id: RenderGroupId,
+    #[schema(value_type = Vec<Object>)]
+    pub items: Vec<SceneLayer>,
+    pub layers_version: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BroadcastMediaLayerResponse {
+    pub groups: Vec<BroadcastMediaLayerGroupResponse>,
 }
 
 pub async fn list_layers(
@@ -154,6 +206,40 @@ pub async fn create_layer(
         return response;
     }
     layer_stack_response(&group, StatusKind::Created)
+}
+
+pub async fn broadcast_media_layer(
+    State(state): State<Arc<AppState>>,
+    Path(scene_id_raw): Path<String>,
+    Json(body): Json<BroadcastMediaLayerRequest>,
+) -> Response {
+    if body.targets.is_empty() {
+        return ApiError::bad_request("targets must include at least one render group");
+    }
+    {
+        let library = state.asset_library.read().await;
+        if !library.contains(body.asset_id) {
+            return ApiError::not_found(format!("Asset not found: {}", body.asset_id));
+        }
+    }
+
+    let inserts = body.into_layer_inserts();
+    let (scene_id, groups) = {
+        let mut manager = state.scene_manager.write().await;
+        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
+            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        };
+        match manager.insert_scene_group_layers_batch(scene_id, inserts) {
+            Ok(groups) => (scene_id, groups),
+            Err(error) => return layer_mutation_error(error),
+        }
+    };
+    if let Err(response) =
+        finalize_layer_mutations(&state, scene_id, &groups, LayerStackChangeKind::Created).await
+    {
+        return response;
+    }
+    broadcast_media_layer_response(&groups)
 }
 
 pub async fn update_layer(
@@ -379,6 +465,34 @@ impl UpdateLayerRequest {
     }
 }
 
+impl BroadcastMediaLayerRequest {
+    fn into_layer_inserts(self) -> Vec<SceneGroupLayerInsert> {
+        let source = LayerSource::Media {
+            asset_id: self.asset_id,
+            playback: self.playback,
+        };
+        self.targets
+            .into_iter()
+            .map(|target| SceneGroupLayerInsert {
+                group_id: target.group_id,
+                layer: SceneLayer {
+                    id: SceneLayerId::new(),
+                    name: self.name.clone(),
+                    source: source.clone(),
+                    blend: self.blend,
+                    opacity: self.opacity,
+                    transform: target.transform,
+                    adjust: target.adjust,
+                    bindings: self.bindings.clone(),
+                    enabled: self.enabled,
+                },
+                index: target.index,
+                expected_version: target.expected_layers_version,
+            })
+            .collect()
+    }
+}
+
 enum StatusKind {
     Ok,
     Created,
@@ -394,6 +508,19 @@ fn layer_stack_response(group: &RenderGroup, status: StatusKind) -> Response {
         StatusKind::Created => ApiResponse::created(body),
     };
     attach_layers_version_headers(response, group.layers_version)
+}
+
+fn broadcast_media_layer_response(groups: &[RenderGroup]) -> Response {
+    ApiResponse::created(BroadcastMediaLayerResponse {
+        groups: groups
+            .iter()
+            .map(|group| BroadcastMediaLayerGroupResponse {
+                group_id: group.id,
+                items: group.effective_layers(),
+                layers_version: group.layers_version,
+            })
+            .collect(),
+    })
 }
 
 fn find_group(
@@ -432,6 +559,35 @@ async fn finalize_layer_mutation(
         layers_version: group.layers_version,
         kind,
     });
+    Ok(())
+}
+
+async fn finalize_layer_mutations(
+    state: &Arc<AppState>,
+    scene_id: SceneId,
+    groups: &[RenderGroup],
+    kind: LayerStackChangeKind,
+) -> Result<(), Response> {
+    if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
+        return Err(ApiError::internal(format!(
+            "Failed to persist layer stack: {error}"
+        )));
+    }
+    persist_runtime_session(state).await;
+    for group in groups {
+        publish_render_group_changed(
+            state.as_ref(),
+            scene_id,
+            group,
+            render_group_change_kind_for_layer_stack(kind),
+        );
+        state.event_bus.publish(HypercolorEvent::LayerStackChanged {
+            scene_id,
+            group_id: group.id,
+            layers_version: group.layers_version,
+            kind,
+        });
+    }
     Ok(())
 }
 
