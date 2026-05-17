@@ -13,6 +13,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -24,6 +25,7 @@ const MAIN_RUNTIME_WORKERS: usize = 4;
 const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
 const MAIN_RUNTIME_THREAD_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(2);
 const API_LISTEN_BACKLOG: i32 = 1024;
+const API_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Runtime options for one daemon process.
 #[derive(Clone, Debug, Default)]
@@ -129,6 +131,12 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
             config.network.allow_unauthenticated_remote_access,
         )?;
     }
+    let listeners = bind_api_listeners(&binds)?;
+    let advertised_bind = listeners
+        .first()
+        .context("no API listeners were bound")?
+        .local_addr()
+        .context("failed to read API listener address")?;
 
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
     daemon_state.start().await?;
@@ -136,13 +144,6 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
     let ui_dir = resolve_ui_dir(options.ui_dir);
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
     let router = api::build_router(app_state, ui_dir.as_deref());
-
-    let listeners = bind_api_listeners(&binds)?;
-    let advertised_bind = listeners
-        .first()
-        .context("no API listeners were bound")?
-        .local_addr()
-        .context("failed to read API listener address")?;
 
     let mdns_publisher = MdnsPublisher::new(
         &daemon_state.server_identity,
@@ -312,7 +313,14 @@ fn bind_api_listeners(binds: &[SocketAddr]) -> Result<Vec<TcpListener>> {
     Ok(listeners)
 }
 
-fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
+/// Construct one API TCP listener with the daemon's socket options.
+///
+/// # Errors
+///
+/// Returns an error when the socket cannot be created, configured, bound,
+/// listened on, or converted into a Tokio listener.
+#[doc(hidden)]
+pub fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
     let socket = Socket::new(
         if bind.is_ipv4() {
             Domain::IPV4
@@ -326,6 +334,7 @@ fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
     if bind.is_ipv6() {
         socket.set_only_v6(true)?;
     }
+    socket.set_reuse_address(true)?;
 
     socket.bind(&bind.into())?;
     socket.listen(API_LISTEN_BACKLOG)?;
@@ -340,6 +349,27 @@ async fn serve_api_listeners(
     router: Router,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
+    serve_api_listeners_with_shutdown_timeout(
+        listeners,
+        router,
+        shutdown_rx,
+        API_GRACEFUL_SHUTDOWN_TIMEOUT,
+    )
+    .await
+}
+
+/// Serve pre-bound API listeners with a configurable shutdown drain timeout.
+///
+/// # Errors
+///
+/// Returns an error if any listener task fails before shutdown completes.
+#[doc(hidden)]
+pub async fn serve_api_listeners_with_shutdown_timeout(
+    listeners: Vec<TcpListener>,
+    router: Router,
+    shutdown_rx: watch::Receiver<bool>,
+    shutdown_timeout: Duration,
+) -> Result<()> {
     let mut servers = JoinSet::new();
 
     for listener in listeners {
@@ -347,21 +377,31 @@ async fn serve_api_listeners(
             .local_addr()
             .context("failed to read API listener address")?;
         let router = router.clone();
-        let mut shutdown_rx = shutdown_rx.clone();
+        let shutdown_wait_rx = shutdown_rx.clone();
+        let shutdown_deadline_rx = shutdown_rx.clone();
 
         servers.spawn(async move {
-            axum::serve(
+            let server = axum::serve(
                 listener,
                 router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
-            .with_graceful_shutdown(async move {
-                if !*shutdown_rx.borrow() {
-                    let _ = shutdown_rx.changed().await;
+            .with_graceful_shutdown(wait_for_api_shutdown_signal(bind, shutdown_wait_rx))
+            .into_future();
+
+            tokio::pin!(server);
+            tokio::select! {
+                result = &mut server => {
+                    result.with_context(|| format!("API server error on {bind}"))
                 }
-                info!(bind = %bind, "Shutdown signal received, stopping API server");
-            })
-            .await
-            .with_context(|| format!("API server error on {bind}"))
+                () = api_shutdown_deadline(bind, shutdown_deadline_rx, shutdown_timeout) => {
+                    warn!(
+                        bind = %bind,
+                        timeout_ms = shutdown_timeout.as_millis(),
+                        "API graceful shutdown timed out; forcing listener close"
+                    );
+                    Ok(())
+                }
+            }
         });
     }
 
@@ -380,6 +420,25 @@ async fn serve_api_listeners(
     }
 
     Ok(())
+}
+
+async fn wait_for_api_shutdown_signal(bind: SocketAddr, mut shutdown_rx: watch::Receiver<bool>) {
+    if !*shutdown_rx.borrow() {
+        let _ = shutdown_rx.changed().await;
+    }
+    info!(bind = %bind, "Shutdown signal received, stopping API server");
+}
+
+async fn api_shutdown_deadline(
+    bind: SocketAddr,
+    mut shutdown_rx: watch::Receiver<bool>,
+    shutdown_timeout: Duration,
+) {
+    if !*shutdown_rx.borrow() {
+        let _ = shutdown_rx.changed().await;
+    }
+    sleep(shutdown_timeout).await;
+    info!(bind = %bind, "API shutdown drain deadline reached");
 }
 
 /// Validate that network-reachable binds require control-tier authentication.
@@ -575,6 +634,9 @@ fn expand_listen_host(host: &str) -> Vec<String> {
     let normalized = normalize_listen_host(host);
     if normalized.eq_ignore_ascii_case("localhost") || normalized == "127.0.0.1" {
         return vec!["127.0.0.1".to_owned(), "::1".to_owned()];
+    }
+    if normalized == all_interfaces_host() {
+        return all_interface_hosts();
     }
 
     vec![normalized]

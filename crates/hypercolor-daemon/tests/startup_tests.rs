@@ -9,16 +9,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use axum::body::to_bytes;
 use axum::extract::State;
+use axum::{Router, body::to_bytes, routing::get};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
 use hypercolor_daemon::api::{AppState, system::get_status};
 use hypercolor_daemon::daemon::{
-    DaemonRunOptions, effective_bind_target, effective_bind_targets,
-    effective_startup_bind_targets, validate_network_bind_auth,
+    DaemonRunOptions, bind_api_listener, effective_bind_target, effective_bind_targets,
+    effective_startup_bind_targets, serve_api_listeners_with_shutdown_timeout,
+    validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
@@ -52,6 +53,11 @@ const MINIMAL_TOML: &str = "schema_version = 3\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[derive(Clone)]
+struct StuckHandlerState {
+    entered: Arc<tokio::sync::Notify>,
+}
 
 struct ShutdownCleanupBackend {
     expected_device_id: DeviceId,
@@ -177,6 +183,11 @@ fn temp_config_file() -> NamedTempFile {
         .expect("failed to write temp config");
     f.flush().expect("failed to flush temp config");
     f
+}
+
+async fn stuck_handler(State(state): State<StuckHandlerState>) -> &'static str {
+    state.entered.notify_one();
+    std::future::pending::<&'static str>().await
 }
 
 fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
@@ -668,6 +679,68 @@ fn startup_bind_targets_keep_explicit_listen_all_for_auth_validation() {
 
     assert!(!fell_back);
     assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
+}
+
+#[tokio::test]
+async fn api_listener_drop_releases_bound_port() {
+    let first = bind_api_listener(
+        "127.0.0.1:0"
+            .parse()
+            .expect("ephemeral loopback address should parse"),
+    )
+    .expect("first listener should bind");
+    let bound = first.local_addr().expect("listener address should resolve");
+
+    bind_api_listener(bound).expect_err("port should reject a second live listener");
+
+    drop(first);
+    let reopened = bind_api_listener(bound).expect("port should reopen after listener drop");
+    drop(reopened);
+}
+
+#[tokio::test]
+async fn api_shutdown_timeout_forces_stuck_connections_to_close() {
+    let listener = bind_api_listener(
+        "127.0.0.1:0"
+            .parse()
+            .expect("ephemeral loopback address should parse"),
+    )
+    .expect("listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("listener address should resolve");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let router = Router::new()
+        .route("/stuck", get(stuck_handler))
+        .with_state(StuckHandlerState {
+            entered: Arc::clone(&entered),
+        });
+
+    let server = tokio::spawn(serve_api_listeners_with_shutdown_timeout(
+        vec![listener],
+        router,
+        shutdown_rx,
+        Duration::from_millis(25),
+    ));
+    let client = tokio::spawn(async move {
+        let _ = reqwest::get(format!("http://{addr}/stuck")).await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+        .await
+        .expect("stuck request should enter handler");
+    shutdown_tx
+        .send(true)
+        .expect("shutdown signal should send to server");
+
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .expect("server should stop before test timeout")
+        .expect("server task should join")
+        .expect("server shutdown should succeed");
+
+    client.abort();
 }
 
 // ── DaemonState Initialization ──────────────────────────────────────────────
