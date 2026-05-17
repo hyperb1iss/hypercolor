@@ -50,6 +50,8 @@ pub enum ControlsVersionMismatch {
     /// match. `current` is the server-side version the client should
     /// rebase against if they choose to retry.
     Stale { current: u64 },
+    /// More than one effect layer could receive the patch.
+    AmbiguousLayerStack,
 }
 
 /// Error variants for precondition-checked layer mutations.
@@ -57,6 +59,8 @@ pub enum ControlsVersionMismatch {
 pub enum LayerMutationError {
     /// No scene is currently active.
     NoActiveScene,
+    /// No scene exists with the requested id.
+    SceneMissing,
     /// The active scene exists but no group with the given id.
     GroupMissing,
     /// The group exists but no layer with the given id.
@@ -67,6 +71,8 @@ pub enum LayerMutationError {
     Stale { current: u64 },
     /// The supplied layer payload violates layer-stack invariants.
     InvalidLayer { errors: Vec<String> },
+    /// The requested insertion index is outside the current layer stack.
+    InvalidIndex { index: usize, len: usize },
     /// The supplied order is not an exact permutation of current layer ids.
     InvalidOrder,
 }
@@ -548,7 +554,32 @@ impl SceneManager {
         layer: SceneLayer,
         expected_version: Option<u64>,
     ) -> Result<(&RenderGroup, u64), LayerMutationError> {
-        self.mutate_group_layers(group_id, expected_version, |group| {
+        let scene_id = self
+            .active_scene_id()
+            .copied()
+            .ok_or(LayerMutationError::NoActiveScene)?;
+        self.add_scene_group_layer(scene_id, group_id, layer, expected_version)
+    }
+
+    pub fn add_scene_group_layer(
+        &mut self,
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer: SceneLayer,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.insert_scene_group_layer(scene_id, group_id, layer, None, expected_version)
+    }
+
+    pub fn insert_scene_group_layer(
+        &mut self,
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer: SceneLayer,
+        index: Option<usize>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
             if group.layers.iter().any(|existing| existing.id == layer.id) {
                 return Err(LayerMutationError::DuplicateLayer { layer_id: layer.id });
             }
@@ -556,7 +587,17 @@ impl SceneManager {
             if let Err(errors) = layer.validate() {
                 return Err(LayerMutationError::InvalidLayer { errors });
             }
-            group.layers.push(layer);
+            if let Some(index) = index {
+                if index > group.layers.len() {
+                    return Err(LayerMutationError::InvalidIndex {
+                        index,
+                        len: group.layers.len(),
+                    });
+                }
+                group.layers.insert(index, layer);
+            } else {
+                group.layers.push(layer);
+            }
             Ok(())
         })
     }
@@ -568,7 +609,22 @@ impl SceneManager {
         layer: SceneLayer,
         expected_version: Option<u64>,
     ) -> Result<(&RenderGroup, u64), LayerMutationError> {
-        self.mutate_group_layers(group_id, expected_version, |group| {
+        let scene_id = self
+            .active_scene_id()
+            .copied()
+            .ok_or(LayerMutationError::NoActiveScene)?;
+        self.update_scene_group_layer(scene_id, group_id, layer_id, layer, expected_version)
+    }
+
+    pub fn update_scene_group_layer(
+        &mut self,
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        layer: SceneLayer,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
             if layer.id != layer_id {
                 return Err(LayerMutationError::InvalidLayer {
                     errors: vec![format!(
@@ -595,7 +651,21 @@ impl SceneManager {
         layer_id: SceneLayerId,
         expected_version: Option<u64>,
     ) -> Result<(&RenderGroup, u64), LayerMutationError> {
-        self.mutate_group_layers(group_id, expected_version, |group| {
+        let scene_id = self
+            .active_scene_id()
+            .copied()
+            .ok_or(LayerMutationError::NoActiveScene)?;
+        self.remove_scene_group_layer(scene_id, group_id, layer_id, expected_version)
+    }
+
+    pub fn remove_scene_group_layer(
+        &mut self,
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
             let Some(index) = group.layers.iter().position(|layer| layer.id == layer_id) else {
                 return Err(LayerMutationError::LayerMissing { layer_id });
             };
@@ -610,7 +680,21 @@ impl SceneManager {
         layer_ids: Vec<SceneLayerId>,
         expected_version: Option<u64>,
     ) -> Result<(&RenderGroup, u64), LayerMutationError> {
-        self.mutate_group_layers(group_id, expected_version, |group| {
+        let scene_id = self
+            .active_scene_id()
+            .copied()
+            .ok_or(LayerMutationError::NoActiveScene)?;
+        self.reorder_scene_group_layers(scene_id, group_id, layer_ids, expected_version)
+    }
+
+    pub fn reorder_scene_group_layers(
+        &mut self,
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer_ids: Vec<SceneLayerId>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
             let current_ids = group
                 .layers
                 .iter()
@@ -648,7 +732,28 @@ impl SceneManager {
         updates: HashMap<String, ControlValue>,
         expected_version: Option<u64>,
     ) -> Result<(&RenderGroup, u64), LayerMutationError> {
-        self.mutate_group_layers(group_id, expected_version, |group| {
+        let scene_id = self
+            .active_scene_id()
+            .copied()
+            .ok_or(LayerMutationError::NoActiveScene)?;
+        self.patch_scene_layer_effect_controls(
+            scene_id,
+            group_id,
+            layer_id,
+            updates,
+            expected_version,
+        )
+    }
+
+    pub fn patch_scene_layer_effect_controls(
+        &mut self,
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        updates: HashMap<String, ControlValue>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
             let Some(layer) = group.layers.iter_mut().find(|layer| layer.id == layer_id) else {
                 return Err(LayerMutationError::LayerMissing { layer_id });
             };
@@ -774,8 +879,50 @@ impl SceneManager {
                 current: group.controls_version,
             });
         }
-        group.controls.extend(updates);
-        group.preset_id = None;
+        if group.layers.is_empty() {
+            group.controls.extend(updates);
+            group.preset_id = None;
+        } else {
+            let effect_layer_count = group
+                .layers
+                .iter()
+                .filter(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+                .count();
+            if effect_layer_count > 1 {
+                return Err(ControlsVersionMismatch::AmbiguousLayerStack);
+            }
+            let matching_indices = group
+                .layers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, layer)| match &layer.source {
+                    LayerSource::Effect { effect_id, .. }
+                        if expected_effect_id.is_none_or(|expected| expected == *effect_id) =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let [index] = matching_indices.as_slice() else {
+                return if matching_indices.is_empty() {
+                    Err(ControlsVersionMismatch::GroupMissing)
+                } else {
+                    Err(ControlsVersionMismatch::AmbiguousLayerStack)
+                };
+            };
+            let LayerSource::Effect {
+                controls,
+                preset_id,
+                ..
+            } = &mut group.layers[*index].source
+            else {
+                unreachable!("matching layer index must point to an effect layer");
+            };
+            controls.extend(updates);
+            *preset_id = None;
+            sync_legacy_effect_fields(group);
+        }
         group.controls_version = group.controls_version.saturating_add(1);
         let new_version = group.controls_version;
         self.refresh_active_render_groups();
@@ -890,8 +1037,9 @@ impl SceneManager {
         self.scenes.get_mut(&scene_id)
     }
 
-    fn mutate_group_layers<F>(
+    fn mutate_scene_group_layers<F>(
         &mut self,
+        scene_id: SceneId,
         group_id: RenderGroupId,
         expected_version: Option<u64>,
         mutate: F,
@@ -899,9 +1047,11 @@ impl SceneManager {
     where
         F: FnOnce(&mut RenderGroup) -> Result<(), LayerMutationError>,
     {
+        let active_scene_id = self.active_scene_id().copied();
         let scene = self
-            .active_scene_mut()
-            .ok_or(LayerMutationError::NoActiveScene)?;
+            .scenes
+            .get_mut(&scene_id)
+            .ok_or(LayerMutationError::SceneMissing)?;
         let group = scene
             .groups
             .iter_mut()
@@ -921,10 +1071,13 @@ impl SceneManager {
         group.layers_version = group.layers_version.saturating_add(1);
         let new_version = group.layers_version;
 
-        self.refresh_active_render_groups();
+        if active_scene_id == Some(scene_id) {
+            self.refresh_active_render_groups();
+        }
         let current = self
-            .active_scene()
-            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+            .scenes
+            .get(&scene_id)
+            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
             .ok_or(LayerMutationError::GroupMissing)?;
         Ok((current, new_version))
     }

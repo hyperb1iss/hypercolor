@@ -363,7 +363,7 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
     }))
 }
 
-fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
+pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
     if id_or_name.eq_ignore_ascii_case("default") {
         return Some(SceneId::DEFAULT);
     }

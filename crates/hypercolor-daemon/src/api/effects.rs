@@ -977,11 +977,24 @@ pub async fn update_current_controls(
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("updating active effect controls"),
         };
-        let Some(updated_group) = scene_manager
-            .patch_group_controls(group.id, normalized)
-            .cloned()
-        else {
-            return ApiError::not_found("No effect is currently active");
+        let updated_group = match scene_manager.patch_effect_controls_with_precondition(
+            group.id,
+            Some(active_meta.id),
+            normalized,
+            None,
+        ) {
+            Ok((updated, _version)) => updated.clone(),
+            Err(ControlsVersionMismatch::NoActiveScene | ControlsVersionMismatch::GroupMissing) => {
+                return ApiError::not_found("No effect is currently active");
+            }
+            Err(ControlsVersionMismatch::Stale { .. }) => {
+                return ApiError::conflict("active effect controls changed concurrently");
+            }
+            Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
+                return ApiError::validation(
+                    "active group has multiple effect layers; use the layer controls endpoint",
+                );
+            }
         };
         (scene_id, updated_group)
     };
@@ -1092,6 +1105,11 @@ pub async fn update_effect_controls(
             }
             Err(ControlsVersionMismatch::Stale { current }) => {
                 return controls_version_mismatch_response(current);
+            }
+            Err(ControlsVersionMismatch::AmbiguousLayerStack) => {
+                return ApiError::validation(
+                    "render group has multiple matching effect layers; use the layer controls endpoint",
+                );
             }
         }
     };

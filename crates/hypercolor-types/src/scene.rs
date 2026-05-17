@@ -193,7 +193,7 @@ impl Serialize for RenderGroup {
     where
         S: Serializer,
     {
-        let layers = self.layers_for_serialization();
+        let layers = self.effective_layers();
         let legacy = legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields);
 
         RenderGroupSerialize {
@@ -427,7 +427,8 @@ impl RenderGroup {
         SceneLayerId::from_uuid(self.id.0)
     }
 
-    fn layers_for_serialization(&self) -> Vec<SceneLayer> {
+    #[must_use]
+    pub fn effective_layers(&self) -> Vec<SceneLayer> {
         if !self.layers.is_empty() {
             return self.layers.clone();
         }

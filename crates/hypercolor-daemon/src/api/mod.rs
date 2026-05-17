@@ -17,6 +17,7 @@ pub mod displays;
 pub mod drivers;
 pub mod effects;
 pub mod envelope;
+pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod openapi;
@@ -1139,6 +1140,22 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/scenes/{id}/activate",
             axum::routing::post(scenes::activate_scene),
+        )
+        .route(
+            "/scenes/{id}/groups/{group_id}/layers",
+            axum::routing::get(layers::list_layers).post(layers::create_layer),
+        )
+        .route(
+            "/scenes/{id}/groups/{group_id}/layers/order",
+            axum::routing::patch(layers::reorder_layers),
+        )
+        .route(
+            "/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+            axum::routing::put(layers::update_layer).delete(layers::delete_layer),
+        )
+        .route(
+            "/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+            axum::routing::patch(layers::patch_layer_controls),
         )
         // ── Profiles ─────────────────────────────────────────────────
         .route(

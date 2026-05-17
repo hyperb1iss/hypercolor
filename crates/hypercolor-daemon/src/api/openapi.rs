@@ -10,7 +10,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::{
-    config, controls, devices, drivers, effects, envelope, profiles, settings, system,
+    config, controls, devices, drivers, effects, envelope, layers, profiles, settings, system,
 };
 
 #[derive(OpenApi)]
@@ -52,6 +52,11 @@ use crate::api::{
             devices::IdentifyRequest,
             devices::DiscoverRequest,
             effects::UpdateCurrentControlsRequest,
+            layers::CreateLayerRequest,
+            layers::UpdateLayerRequest,
+            layers::LayerOrderRequest,
+            layers::PatchLayerControlsRequest,
+            layers::LayerStackResponse,
             profiles::ApplyProfileRequest,
             settings::SetBrightnessRequest,
             config::SetConfigRequest,
@@ -690,6 +695,46 @@ pub const ROUTES: &[RouteSpec] = &[
         "scenes",
         "Activate scene",
     ),
+    RouteSpec::get(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers",
+        "list_layers",
+        "scenes",
+        "List render group layers",
+    ),
+    RouteSpec::post(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers",
+        "create_layer",
+        "scenes",
+        "Create render group layer",
+    )
+    .with_request_body("CreateLayerRequest", true),
+    RouteSpec::patch(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers/order",
+        "reorder_layers",
+        "scenes",
+        "Reorder render group layers",
+    )
+    .with_request_body("LayerOrderRequest", true),
+    RouteSpec::put(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+        "update_layer",
+        "scenes",
+        "Update render group layer",
+    )
+    .with_request_body("UpdateLayerRequest", true),
+    RouteSpec::delete(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}",
+        "delete_layer",
+        "scenes",
+        "Delete render group layer",
+    ),
+    RouteSpec::patch(
+        "/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls",
+        "patch_layer_controls",
+        "scenes",
+        "Patch render group layer controls",
+    )
+    .with_request_body("PatchLayerControlsRequest", true),
     RouteSpec::get(
         "/api/v1/profiles",
         "list_profiles",
