@@ -38,8 +38,9 @@ explicit `stream`/`livestream` upload hint and start a rolling latest-frame
 gstreamer worker with reconnect/backoff. The stream SSRF policy is
 configurable through `media.stream_private_network_allowlist`, and scene
 activation enforces the configured video/livestream producer hard caps.
-Stream producers currently publish CPU canvases; GPU upload/readback and
-UI-visible stream health remain follow-up work.
+Stream producers currently publish CPU canvases; direct GPU media textures,
+worker error surfacing, and repeated-fallback downgrade remain follow-up
+work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1726,9 +1727,10 @@ flag (tier 3). `LayerBinding` evaluator and SDK exposure.
 
 Animated WebP, file-backed MP4/WebM decoding, and the binding/runtime
 plumbing are now in tree. The current video backend emits CPU canvases;
-the GPU upload path and GPU readback fallback remain part of the video
-hardening follow-up. Scene activation now enforces video/livestream
-producer hard caps.
+the direct GPU media texture path remains part of the video hardening
+follow-up. SparkleFlinger already reads GPU producer frames back for CPU
+fallback when the GPU lane cannot compose a mixed plan. Scene activation
+now enforces video/livestream producer hard caps.
 
 ### Wave 7 — Tier 4/5 Decoders + Multi-Face Routing
 
@@ -1740,8 +1742,8 @@ Lottie decoding and scene-wide broadcast routing are now in tree. Stream
 URL assets are accepted and run through a rolling latest-frame gstreamer
 worker with reconnect/backoff. Configurable private-network stream
 allowlists and video/livestream producer hard caps are in tree. The stream
-path still emits CPU canvases; GPU upload/readback and UI-visible stream
-health remain part of GPU media hardening.
+path still emits CPU canvases; direct GPU media textures and UI-visible
+stream worker error surfacing remain part of GPU media hardening.
 
 ---
 
@@ -1810,40 +1812,33 @@ canvas type.
 
 ### 17.8 GPU Compose Fallback for GPU Producer Frames
 
-`SparkleFlinger.compose_for_outputs()` in
-`sparkleflinger/mod.rs:304-316` currently skips the CPU fallback when
-the plan contains `ProducerFrame::Gpu` and the GPU lane fails or
-declines to support the plan. In that case the function returns
-`gpu_frame_without_cpu_fallback()` — a composed-frame set with no
-sampling canvas and no preview surface.
+`SparkleFlinger.compose_for_outputs()` now detects plans containing GPU
+producer frames and, when the GPU lane cannot compose the plan, explicitly
+reads those frames back into CPU `Surface` frames before replaying the CPU
+lane. Coverage lives in
+`sparkleflinger_reads_back_gpu_frames_for_cpu_fallback`.
 
-Target GPU video and livestream producers feed `ProducerFrame::Gpu`, so
-the final Wave 6+ GPU lane will exercise this path constantly. The
-current file-backed `media-video` backend decodes into CPU canvases and
-does not yet exercise this policy. Once GPU media frames land, the
-current "no fallback" behavior would mean a single GPU compose failure
-produces a blank frame for an entire render cycle.
+Target GPU video and livestream producers will feed `ProducerFrame::Gpu`
+or `ProducerFrame::GpuTexture`, so the final GPU media lane will exercise
+this constantly. The current file-backed `media-video` and stream
+backends still emit CPU canvases, so the remaining work is direct GPU
+media texture production and hardening the failure policy around readback
+errors.
 
-**Required policy (GPU media follow-up):**
+**Remaining policy (GPU media follow-up):**
 
-1. On GPU compose failure with GPU frames present, `SparkleFlinger`
-   performs an explicit read-back of every `ProducerFrame::Gpu` in the
-   plan into a `Canvas`, then runs the CPU lane with the read-back
-   surfaces. The read-back path is heavier (one GPU → CPU copy per
-   frame) but produces correct pixels.
-2. Read-back failures (rare; OOM or device loss) escalate to a hard
+1. Read-back failures (rare; OOM or device loss) escalate to a hard
    error event on the bus and the frame composes as black. The
    `LayerHealth` of affected layers transitions to `Failed` with reason
    `gpu_readback_failed`.
-3. Two consecutive read-back fallbacks downshift the compositor
+2. Two consecutive read-back fallbacks downshift the compositor
    acceleration mode for the rest of the session (returning to GPU on
    the next session start). Surface this as a one-time toast in the UI
    so users know they have left the fast path.
 
-The GPU media follow-up must also add a synthetic-failure test
-(`gpu_compose_fallback_tests.rs`) that injects a GPU compose failure
-on a video plan and asserts the read-back path produces the expected
-pixels.
+The GPU media follow-up must also add synthetic failure coverage that
+injects a GPU readback failure on a video plan and asserts the hard-error
+path is surfaced instead of silently producing an empty frame.
 
 ---
 
