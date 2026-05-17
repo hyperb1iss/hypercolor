@@ -34,6 +34,10 @@ use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, RenderGroupChangeKind, SceneChangeReason,
 };
 use hypercolor_types::scene::SceneId;
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -206,6 +210,67 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
     let mut registry = state.effect_registry.write().await;
     let _ = registry.register(entry);
     metadata
+}
+
+fn test_device_zone(id: &str) -> DeviceZone {
+    DeviceZone {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: format!("mock:{id}"),
+        zone_name: None,
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(0.2, 0.2),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 1,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+fn test_layout(id: &str, zones: Vec<DeviceZone>) -> SpatialLayout {
+    SpatialLayout {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones,
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+async fn seed_multi_zone_primary_assignment(
+    state: &Arc<AppState>,
+    metadata: &EffectMetadata,
+) -> SpatialLayout {
+    let primary_layout = test_layout("primary-layout", vec![test_device_zone("primary-zone")]);
+    let custom_zone = test_device_zone("custom-zone");
+    let mut manager = state.scene_manager.write().await;
+    manager
+        .upsert_primary_group(metadata, HashMap::new(), None, primary_layout.clone())
+        .expect("primary group should be seeded");
+    let custom_id = manager
+        .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None)
+        .expect("custom group should be created");
+    manager
+        .assign_device_zone(&SceneId::DEFAULT, custom_id, custom_zone)
+        .expect("custom group should claim a zone");
+    primary_layout
 }
 
 async fn insert_test_profile(
@@ -979,6 +1044,39 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
 }
 
 #[tokio::test]
+async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exist() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let existing = insert_test_effect(&state, "Current").await;
+    let next = insert_test_effect(&state, "Aurora").await;
+    let expected_layout = seed_multi_zone_primary_assignment(&state, &existing).await;
+
+    execute_tool_with_state(
+        "set_effect",
+        &json!({
+            "query": "aurora",
+            "controls": {
+                "speed": 7.5
+            }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("set_effect should succeed");
+
+    let active_group = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .cloned()
+            .expect("primary group should exist after MCP set_effect")
+    };
+    assert_eq!(active_group.effect_id, Some(next.id));
+    assert_eq!(active_group.layout, expected_layout);
+}
+
+#[tokio::test]
 async fn stateful_set_color_syncs_scene_runtime_state() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
@@ -1018,6 +1116,37 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
 }
 
 #[tokio::test]
+async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let existing = insert_test_effect(&state, "Current").await;
+    let solid_effect = insert_test_effect(&state, "Solid Color").await;
+    let expected_layout = seed_multi_zone_primary_assignment(&state, &existing).await;
+
+    execute_tool_with_state(
+        "set_color",
+        &json!({
+            "color": "#ff6ac1",
+            "brightness": 50
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("set_color should succeed");
+
+    let active_group = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .cloned()
+            .expect("primary group should exist after MCP set_color")
+    };
+    assert_eq!(active_group.effect_id, Some(solid_effect.id));
+    assert_eq!(active_group.layout, expected_layout);
+}
+
+#[tokio::test]
 async fn stateful_set_profile_persists_runtime_snapshot() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
@@ -1045,6 +1174,58 @@ async fn stateful_set_profile_persists_runtime_snapshot() {
         snapshot.default_scene_groups[0].controls.get("speed"),
         Some(&ControlValue::Float(12.0))
     );
+}
+
+#[tokio::test]
+async fn stateful_set_profile_preserves_primary_assignment_when_custom_zones_exist() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let existing = insert_test_effect(&state, "Current").await;
+    let effect = insert_test_effect(&state, "Movie Night").await;
+    let expected_layout = seed_multi_zone_primary_assignment(&state, &existing).await;
+    let profile_layout = test_layout(
+        "profile-layout",
+        vec![
+            test_device_zone("primary-zone"),
+            test_device_zone("custom-zone"),
+        ],
+    );
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(profile_layout.id.clone(), profile_layout.clone());
+    }
+    {
+        let mut profiles = state.profiles.write().await;
+        let mut profile = Profile::named("movie-profile", "Movie Profile");
+        profile.primary = Some(ProfilePrimary {
+            effect_id: effect.id,
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(12.0))]),
+            active_preset_id: None,
+        });
+        profile.layout_id = Some(profile_layout.id);
+        profiles.insert(profile);
+    }
+
+    execute_tool_with_state(
+        "set_profile",
+        &json!({
+            "query": "movie profile"
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("set_profile should succeed");
+
+    let active_group = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_group())
+            .cloned()
+            .expect("primary group should exist after MCP set_profile")
+    };
+    assert_eq!(active_group.effect_id, Some(effect.id));
+    assert_eq!(active_group.layout, expected_layout);
 }
 
 #[test]

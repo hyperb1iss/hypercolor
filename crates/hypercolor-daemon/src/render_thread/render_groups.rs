@@ -2414,6 +2414,39 @@ mod tests {
         )
     }
 
+    fn render_overlapping_groups_for_test(
+        groups: &[RenderGroup],
+        registry: &EffectRegistry,
+    ) -> Vec<ZoneColors> {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let mut zones = Vec::new();
+        let result = render_scene_for_test(
+            &mut runtime,
+            groups,
+            1,
+            0,
+            &HashMap::new(),
+            registry,
+            &mut zones,
+        )
+        .expect("overlapping multi-zone scene should render");
+
+        let LedSamplingStrategy::PreSampled(layout) = result.led_sampling_strategy else {
+            panic!("overlapping multi-zone scene should be pre-sampled");
+        };
+        assert_eq!(layout.zones.len(), groups.len());
+        assert_eq!(zones.len(), groups.len());
+        zones
+    }
+
+    fn color_by_zone(zones: &[ZoneColors], zone_id: &str) -> [u8; 3] {
+        zones
+            .iter()
+            .find(|zone| zone.zone_id == zone_id)
+            .and_then(|zone| zone.colors.first().copied())
+            .expect("zone color should be sampled")
+    }
+
     fn render_scene_for_test_with_screen(
         runtime: &mut RenderGroupRuntime,
         groups: &[RenderGroup],
@@ -3786,6 +3819,51 @@ mod tests {
         assert_eq!(zones[0].colors.first().copied(), Some([255, 0, 0]));
         assert_eq!(zones[1].zone_id, "zone_blue");
         assert_eq!(zones[1].colors.first().copied(), Some([0, 0, 255]));
+    }
+
+    #[test]
+    fn overlapping_custom_groups_are_order_independent_for_their_own_zones() {
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let mut red = sample_group(4, 4);
+        red.name = "Red".into();
+        red.effect_id = Some(solid_id);
+        red.controls = HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]);
+        red.layout.zones = vec![point_zone("zone_red")];
+        let mut green = sample_group(4, 4);
+        green.name = "Green".into();
+        green.effect_id = Some(solid_id);
+        green.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 1.0, 0.0, 1.0]))]);
+        green.layout.zones = vec![point_zone("zone_green")];
+        let mut blue = sample_group(4, 4);
+        blue.name = "Blue".into();
+        blue.effect_id = Some(solid_id);
+        blue.controls =
+            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]);
+        blue.layout.zones = vec![point_zone("zone_blue")];
+
+        let forward = render_overlapping_groups_for_test(
+            &[red.clone(), green.clone(), blue.clone()],
+            &registry,
+        );
+        let reversed = render_overlapping_groups_for_test(&[blue, green, red], &registry);
+
+        assert_eq!(
+            color_by_zone(&forward, "zone_red"),
+            color_by_zone(&reversed, "zone_red")
+        );
+        assert_eq!(
+            color_by_zone(&forward, "zone_green"),
+            color_by_zone(&reversed, "zone_green")
+        );
+        assert_eq!(
+            color_by_zone(&forward, "zone_blue"),
+            color_by_zone(&reversed, "zone_blue")
+        );
+        assert_eq!(color_by_zone(&forward, "zone_red"), [255, 0, 0]);
+        assert_eq!(color_by_zone(&forward, "zone_green"), [0, 255, 0]);
+        assert_eq!(color_by_zone(&forward, "zone_blue"), [0, 0, 255]);
     }
 
     #[test]
