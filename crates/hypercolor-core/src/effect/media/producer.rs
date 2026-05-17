@@ -1,6 +1,16 @@
 use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "media-video")]
+use std::sync::OnceLock;
 
+#[cfg(feature = "media-video")]
+use gst::prelude::*;
+#[cfg(feature = "media-video")]
+use gstreamer as gst;
+#[cfg(feature = "media-video")]
+use gstreamer_app as gst_app;
+#[cfg(feature = "media-video")]
+use gstreamer_video as gst_video;
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
@@ -15,6 +25,8 @@ use hypercolor_types::viewport::{FitMode, ViewportRect};
 const DEFAULT_FRAME_DURATION_US: u64 = 100_000;
 #[cfg(feature = "media-lottie")]
 const DEFAULT_LOTTIE_CACHE_KEY: &str = "hypercolor-inline-lottie";
+#[cfg(feature = "media-video")]
+const GST_FRAME_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(5);
 
 #[derive(Debug, Error)]
 pub enum MediaProducerError {
@@ -39,6 +51,9 @@ pub enum MediaProducerError {
     #[cfg(feature = "media-lottie")]
     #[error("Lottie animation has invalid dimensions {width}x{height}")]
     InvalidLottieSize { width: usize, height: usize },
+    #[cfg(feature = "media-video")]
+    #[error("failed to decode video: {0}")]
+    VideoDecode(String),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +72,11 @@ impl MediaProducer {
     pub fn from_path(path: &Path, mime_type: &str) -> Result<Self, MediaProducerError> {
         if path.is_dir() {
             return Self::from_png_sequence_dir(path, DEFAULT_FRAME_DURATION_US);
+        }
+
+        #[cfg(feature = "media-video")]
+        if is_video_mime(mime_type) {
+            return Self::from_video_path(path);
         }
 
         let bytes = std::fs::read(path).map_err(|source| MediaProducerError::Read {
@@ -99,7 +119,7 @@ impl MediaProducer {
             )),
             #[cfg(feature = "media-video")]
             video_mime @ ("video/mp4" | "video/webm") => Err(MediaProducerError::UnsupportedMime(
-                format!("{video_mime} video decoding is not available in this build"),
+                format!("{video_mime} video decoding requires a file-backed asset"),
             )),
             other => Err(MediaProducerError::UnsupportedMime(other.to_owned())),
         }
@@ -273,6 +293,15 @@ impl MediaProducer {
         Ok(Self::from_decoded_frames(frames))
     }
 
+    #[cfg(feature = "media-video")]
+    fn from_video_path(path: &Path) -> Result<Self, MediaProducerError> {
+        ensure_gstreamer()?;
+        let uri = gst::glib::filename_to_uri(path, None)
+            .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+        let frames = decode_video_uri(uri.as_str())?;
+        Ok(Self::from_decoded_frames(frames))
+    }
+
     fn from_animation_frames(frames: Vec<Frame>) -> Result<Self, MediaProducerError> {
         if frames.is_empty() {
             return Err(MediaProducerError::EmptySequence);
@@ -374,6 +403,193 @@ fn canvas_from_lottie_surface(surface: &rlottie::Surface) -> Canvas {
         rgba.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
     }
     Canvas::from_vec(rgba, surface.width() as u32, surface.height() as u32)
+}
+
+#[cfg(feature = "media-video")]
+fn is_video_mime(mime_type: &str) -> bool {
+    matches!(mime_type, "video/mp4" | "video/webm")
+}
+
+#[cfg(feature = "media-video")]
+fn ensure_gstreamer() -> Result<(), MediaProducerError> {
+    static GST_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    GST_INIT
+        .get_or_init(|| gst::init().map_err(|error| error.to_string()))
+        .clone()
+        .map_err(MediaProducerError::VideoDecode)
+}
+
+#[cfg(feature = "media-video")]
+fn decode_video_uri(uri: &str) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
+    let caps = gst::Caps::builder("video/x-raw")
+        .field("format", "RGBA")
+        .build();
+    let pipeline = gst::Pipeline::new();
+    let source = make_gst_element("uridecodebin")?;
+    source.set_property("uri", uri);
+    let convert = make_gst_element("videoconvert")?;
+    let capsfilter = make_gst_element("capsfilter")?;
+    capsfilter.set_property("caps", &caps);
+    let sink = gst_app::AppSink::builder()
+        .caps(&caps)
+        .sync(false)
+        .async_(false)
+        .enable_last_sample(false)
+        .wait_on_eos(false)
+        .build();
+    let sink_element = sink.upcast_ref::<gst::Element>();
+
+    pipeline
+        .add_many([&source, &convert, &capsfilter, sink_element])
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    gst::Element::link_many([&convert, &capsfilter, sink_element])
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    link_uridecodebin_to_convert(&source, &convert)?;
+
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|error| MediaProducerError::VideoDecode(format!("{error:?}")))?;
+    let result = pull_video_frames(&pipeline, &sink);
+    let _ = pipeline.set_state(gst::State::Null);
+    result
+}
+
+#[cfg(feature = "media-video")]
+fn make_gst_element(factory_name: &str) -> Result<gst::Element, MediaProducerError> {
+    gst::ElementFactory::make(factory_name)
+        .build()
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))
+}
+
+#[cfg(feature = "media-video")]
+fn link_uridecodebin_to_convert(
+    source: &gst::Element,
+    convert: &gst::Element,
+) -> Result<(), MediaProducerError> {
+    let convert_sink_pad = convert
+        .static_pad("sink")
+        .ok_or_else(|| MediaProducerError::VideoDecode("videoconvert has no sink pad".into()))?;
+    source.connect_pad_added(move |_source, src_pad| {
+        if convert_sink_pad.is_linked() {
+            return;
+        }
+        let Some(caps) = src_pad.current_caps() else {
+            return;
+        };
+        let Some(structure) = caps.structure(0) else {
+            return;
+        };
+        if !structure.name().starts_with("video/") {
+            return;
+        }
+        let _ = src_pad.link(&convert_sink_pad);
+    });
+    Ok(())
+}
+
+#[cfg(feature = "media-video")]
+fn pull_video_frames(
+    pipeline: &gst::Pipeline,
+    sink: &gst_app::AppSink,
+) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
+    let mut frames = Vec::new();
+    loop {
+        if let Some(sample) = sink.try_pull_sample(GST_FRAME_TIMEOUT) {
+            frames.push(decoded_frame_from_sample(&sample)?);
+            continue;
+        }
+        if sink.is_eos() {
+            break;
+        }
+        if let Some(error) = pipeline_error(pipeline) {
+            return Err(MediaProducerError::VideoDecode(error));
+        }
+        return Err(MediaProducerError::VideoDecode(
+            "timed out waiting for a decoded frame".to_owned(),
+        ));
+    }
+
+    if frames.is_empty() {
+        return Err(MediaProducerError::EmptySequence);
+    }
+    Ok(frames)
+}
+
+#[cfg(feature = "media-video")]
+fn pipeline_error(pipeline: &gst::Pipeline) -> Option<String> {
+    let bus = pipeline.bus()?;
+    while let Some(message) = bus.timed_pop(gst::ClockTime::ZERO) {
+        if let gst::MessageView::Error(error) = message.view() {
+            return Some(error.error().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(feature = "media-video")]
+fn decoded_frame_from_sample(
+    sample: &gst::Sample,
+) -> Result<DecodedMediaFrame, MediaProducerError> {
+    let caps = sample
+        .caps()
+        .ok_or_else(|| MediaProducerError::VideoDecode("decoded sample has no caps".into()))?;
+    let info = gst_video::VideoInfo::from_caps(caps)
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    let buffer = sample
+        .buffer()
+        .ok_or_else(|| MediaProducerError::VideoDecode("decoded sample has no buffer".into()))?;
+    let map = buffer
+        .map_readable()
+        .map_err(|error| MediaProducerError::VideoDecode(format!("{error:?}")))?;
+
+    let canvas = canvas_from_rgba_sample(map.as_slice(), &info)?;
+    let duration_us = buffer
+        .duration()
+        .map(clock_time_to_us)
+        .unwrap_or(DEFAULT_FRAME_DURATION_US);
+    Ok(DecodedMediaFrame {
+        canvas,
+        duration_us,
+    })
+}
+
+#[cfg(feature = "media-video")]
+fn canvas_from_rgba_sample(
+    sample: &[u8],
+    info: &gst_video::VideoInfo,
+) -> Result<Canvas, MediaProducerError> {
+    let width = usize::try_from(info.width())
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    let height = usize::try_from(info.height())
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    let stride =
+        info.stride().first().copied().ok_or_else(|| {
+            MediaProducerError::VideoDecode("decoded sample has no stride".into())
+        })?;
+    let stride = usize::try_from(stride)
+        .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    let row_len = width
+        .checked_mul(4)
+        .ok_or_else(|| MediaProducerError::VideoDecode("decoded frame row is too wide".into()))?;
+    let required_len = stride.checked_mul(height).ok_or_else(|| {
+        MediaProducerError::VideoDecode("decoded frame buffer is too large".into())
+    })?;
+    if sample.len() < required_len {
+        return Err(MediaProducerError::VideoDecode(
+            "decoded frame buffer is shorter than its caps".to_owned(),
+        ));
+    }
+
+    let mut rgba = Vec::with_capacity(row_len * height);
+    for row in sample.chunks(stride).take(height) {
+        rgba.extend_from_slice(&row[..row_len]);
+    }
+    Ok(Canvas::from_vec(rgba, info.width(), info.height()))
+}
+
+#[cfg(feature = "media-video")]
+fn clock_time_to_us(time: gst::ClockTime) -> u64 {
+    time.nseconds().saturating_div(1_000).max(1)
 }
 
 fn delay_us(delay: image::Delay) -> u64 {

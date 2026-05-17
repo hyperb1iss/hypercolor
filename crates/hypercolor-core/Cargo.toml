@@ -15,7 +15,7 @@ workspace = true
 nvidia = ["dep:nvml-wrapper"]
 default = []
 media-lottie = ["dep:rlottie"]
-media-video = []
+media-video = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 servo = [
     "dep:base",
     "dep:servo",
@@ -65,6 +65,9 @@ zerocopy = { workspace = true }
 image = { workspace = true }
 fast_image_resize = { workspace = true }
 rlottie = { workspace = true, optional = true }
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+gstreamer-video = { workspace = true, optional = true }
 base = { package = "servo-base", version = "0.1.0", optional = true }
 profile_traits = { package = "servo-profile-traits", version = "0.1.0", optional = true }
 wgpu = { workspace = true, optional = true }

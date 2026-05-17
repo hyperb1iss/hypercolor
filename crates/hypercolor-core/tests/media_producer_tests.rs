@@ -1,4 +1,6 @@
 use std::path::Path;
+#[cfg(feature = "media-video")]
+use std::process::Command;
 
 use gif::{Encoder, Frame, Repeat};
 use hypercolor_core::effect::EffectRegistry;
@@ -86,6 +88,30 @@ fn empty_lottie_bytes() -> &'static [u8] {
         "assets": [],
         "layers": []
     }"#
+}
+
+#[cfg(feature = "media-video")]
+fn write_test_webm(path: &Path) -> bool {
+    Command::new("gst-launch-1.0")
+        .args([
+            "-q",
+            "videotestsrc",
+            "num-buffers=2",
+            "pattern=white",
+            "!",
+            "video/x-raw,width=16,height=16,framerate=1/1",
+            "!",
+            "videoconvert",
+            "!",
+            "vp8enc",
+            "!",
+            "webmmux",
+            "!",
+            "filesink",
+            &format!("location={}", path.display()),
+        ])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn encoded_still_webp(rgba: [u8; 4]) -> Vec<u8> {
@@ -246,6 +272,27 @@ fn lottie_frames_decode_when_feature_is_enabled() {
     assert_eq!(producer.total_duration_us(), 66_666);
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 0));
     assert_eq!(pixel_at(&producer, &playback, 34), Rgba::new(0, 0, 0, 0));
+}
+
+#[cfg(feature = "media-video")]
+#[test]
+fn webm_video_frames_decode_when_feature_is_enabled() {
+    let tempdir = tempfile::tempdir().expect("test tempdir should be created");
+    let path = tempdir.path().join("sample.webm");
+    if !write_test_webm(&path) {
+        eprintln!("skipping media-video test because GStreamer VP8 plugins are unavailable");
+        return;
+    }
+
+    let producer = MediaProducer::from_path(&path, "video/webm")
+        .expect("test WebM should decode through GStreamer");
+    let playback = MediaPlayback::default();
+
+    assert_eq!(producer.frame_count(), 2);
+    assert_eq!(producer.total_duration_us(), 2_000_000);
+    assert_eq!(producer.render_frame(&playback, 0, 16, 16).width(), 16,);
+    let pixel = pixel_at(&producer, &playback, 0);
+    assert!(pixel.r >= 250 && pixel.g >= 250 && pixel.b >= 250 && pixel.a == 255);
 }
 
 #[test]
