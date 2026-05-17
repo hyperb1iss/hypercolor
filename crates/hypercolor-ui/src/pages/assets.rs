@@ -544,7 +544,7 @@ fn LayerPanel(
         };
 
         leptos::task::spawn_local(async move {
-            match api::create_layer(&scene.id, &group_id, &request).await {
+            match api::create_layer(&scene.id, &group_id, &request, None).await {
                 Ok(_) => {
                     on_layers_mutated.run(());
                     toasts::toast_success("Media layer added");
@@ -973,7 +973,7 @@ fn update_layer(
     let layer_id = layer.id.to_string();
     let request = api::UpdateLayerRequest::from(&layer);
     leptos::task::spawn_local(async move {
-        match api::update_layer(&scene_id, &group_id, &layer_id, &request).await {
+        match api::update_layer(&scene_id, &group_id, &layer_id, &request, None).await {
             Ok(_) => on_layers_mutated.run(()),
             Err(error) => toasts::toast_error(&format!("Layer update failed: {error}")),
         }
@@ -987,7 +987,7 @@ fn delete_layer(
     on_layers_mutated: Callback<()>,
 ) {
     leptos::task::spawn_local(async move {
-        match api::delete_layer(&scene_id, &group_id, &layer_id).await {
+        match api::delete_layer(&scene_id, &group_id, &layer_id, None).await {
             Ok(_) => {
                 on_layers_mutated.run(());
                 toasts::toast_success("Layer removed");
@@ -1015,7 +1015,7 @@ fn reorder_layer(
     let mut layer_ids = stack.iter().map(|layer| layer.id).collect::<Vec<_>>();
     layer_ids.swap(index, target);
     leptos::task::spawn_local(async move {
-        match api::reorder_layers(&scene_id, &group_id, layer_ids).await {
+        match api::reorder_layers(&scene_id, &group_id, layer_ids, None).await {
             Ok(_) => on_layers_mutated.run(()),
             Err(error) => toasts::toast_error(&format!("Layer reorder failed: {error}")),
         }

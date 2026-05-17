@@ -1,5 +1,6 @@
 //! Scene layer-stack API client.
 
+use gloo_net::http::{Request, RequestBuilder};
 use serde::{Deserialize, Serialize};
 
 use hypercolor_types::layer::{
@@ -7,7 +8,7 @@ use hypercolor_types::layer::{
     SceneLayerId,
 };
 
-use super::client;
+use super::{ApiEnvelope, client};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LayerStackResponse {
@@ -61,6 +62,23 @@ impl From<&SceneLayer> for UpdateLayerRequest {
     }
 }
 
+/// Outcome of a layer mutation guarded by an `If-Match` precondition.
+///
+/// The daemon honors `If-Match: "<layers_version>"` on every layer route
+/// (see `hypercolor-daemon/src/api/layers.rs`): it applies the mutation
+/// only when the version still matches, otherwise replies `412` with the
+/// authoritative `current` version. Modeled as a real type — not an HTTP
+/// string match — so callers can drive a clean refetch path off `Stale`,
+/// mirroring `effects::UpdateControlsOutcome`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayerStackOutcome {
+    /// The mutation applied; carries the fresh stack and its new version.
+    Applied(LayerStackResponse),
+    /// The `If-Match` precondition failed. `current` is the daemon's
+    /// authoritative `layers_version` to rebase on before retrying.
+    Stale { current: u64 },
+}
+
 pub async fn list_layers(scene_id: &str, group_id: &str) -> Result<LayerStackResponse, String> {
     client::fetch_json(&format!(
         "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
@@ -73,13 +91,17 @@ pub async fn create_layer(
     scene_id: &str,
     group_id: &str,
     request: &CreateLayerRequest,
-) -> Result<LayerStackResponse, String> {
-    client::post_json(
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers"),
-        request,
+    expected_version: Option<u64>,
+) -> Result<LayerStackOutcome, String> {
+    let body = serde_json::to_string(request).map_err(|error| error.to_string())?;
+    send_layer_mutation(
+        Request::post(&format!(
+            "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+        )),
+        Some(body),
+        expected_version,
     )
     .await
-    .map_err(Into::into)
 }
 
 pub async fn update_layer(
@@ -87,36 +109,96 @@ pub async fn update_layer(
     group_id: &str,
     layer_id: &str,
     request: &UpdateLayerRequest,
-) -> Result<LayerStackResponse, String> {
-    client::put_json(
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}"),
-        request,
+    expected_version: Option<u64>,
+) -> Result<LayerStackOutcome, String> {
+    let body = serde_json::to_string(request).map_err(|error| error.to_string())?;
+    send_layer_mutation(
+        Request::put(&format!(
+            "/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}"
+        )),
+        Some(body),
+        expected_version,
     )
     .await
-    .map_err(Into::into)
 }
 
 pub async fn delete_layer(
     scene_id: &str,
     group_id: &str,
     layer_id: &str,
-) -> Result<LayerStackResponse, String> {
-    client::delete_json(&format!(
-        "/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}"
-    ))
+    expected_version: Option<u64>,
+) -> Result<LayerStackOutcome, String> {
+    send_layer_mutation(
+        Request::delete(&format!(
+            "/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}"
+        )),
+        None,
+        expected_version,
+    )
     .await
-    .map_err(Into::into)
 }
 
 pub async fn reorder_layers(
     scene_id: &str,
     group_id: &str,
     layer_ids: Vec<SceneLayerId>,
-) -> Result<LayerStackResponse, String> {
-    client::patch_json(
-        &format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers/order"),
-        &LayerOrderRequest { layer_ids },
+    expected_version: Option<u64>,
+) -> Result<LayerStackOutcome, String> {
+    let body = serde_json::to_string(&LayerOrderRequest { layer_ids })
+        .map_err(|error| error.to_string())?;
+    send_layer_mutation(
+        Request::patch(&format!(
+            "/api/v1/scenes/{scene_id}/groups/{group_id}/layers/order"
+        )),
+        Some(body),
+        expected_version,
     )
     .await
-    .map_err(Into::into)
+}
+
+/// Issue one layer mutation, attaching the `If-Match` precondition when a
+/// version is supplied and classifying a `412` reply as [`LayerStackOutcome::Stale`].
+///
+/// Hand-rolls the request rather than using `client::post_json` and friends
+/// because those have no header hook; `client::with_auth` is still applied so
+/// the daemon's network API key requirement is honored.
+async fn send_layer_mutation(
+    builder: RequestBuilder,
+    body: Option<String>,
+    expected_version: Option<u64>,
+) -> Result<LayerStackOutcome, String> {
+    let mut builder = client::with_auth(builder);
+    if let Some(version) = expected_version {
+        builder = builder.header("If-Match", &version.to_string());
+    }
+
+    let response = match body {
+        Some(body) => builder
+            .header("Content-Type", "application/json")
+            .body(body)
+            .map_err(|error| error.to_string())?
+            .send()
+            .await
+            .map_err(|error| error.to_string())?,
+        None => builder.send().await.map_err(|error| error.to_string())?,
+    };
+
+    match response.status() {
+        200..=299 => {
+            let envelope: ApiEnvelope<LayerStackResponse> = response
+                .json()
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(LayerStackOutcome::Applied(envelope.data))
+        }
+        412 => {
+            let body: serde_json::Value =
+                response.json().await.map_err(|error| error.to_string())?;
+            let current = body["current"]
+                .as_u64()
+                .ok_or_else(|| "412 response missing `current` layers_version".to_owned())?;
+            Ok(LayerStackOutcome::Stale { current })
+        }
+        status => Err(format!("HTTP {status}")),
+    }
 }
