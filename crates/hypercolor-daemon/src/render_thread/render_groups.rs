@@ -12,7 +12,7 @@ use hypercolor_core::effect::EffectRenderOutput;
 use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
-use hypercolor_core::spatial::{SpatialEngine, sample_led};
+use hypercolor_core::spatial::{SpatialEngine, sample_led, sample_viewport};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
@@ -992,7 +992,29 @@ impl RenderGroupRuntime {
                         }
                     }
                 }
-                LayerSource::ScreenRegion { .. } | LayerSource::WebViewport { .. } => {
+                LayerSource::ScreenRegion { viewport } => {
+                    if let Some(frame) = screen_region_layer_frame(screen, *viewport) {
+                        self.layer_runtime.note_health(
+                            active_scene_id,
+                            group.id,
+                            layer_runtime.id,
+                            LayerHealth::Active,
+                        );
+                        frame
+                    } else {
+                        self.layer_runtime.note_health(
+                            active_scene_id,
+                            group.id,
+                            layer_runtime.id,
+                            LayerHealth::Loading,
+                        );
+                        transparent_black_frame(
+                            group.layout.canvas_width,
+                            group.layout.canvas_height,
+                        )
+                    }
+                }
+                LayerSource::WebViewport { .. } => {
                     self.layer_runtime.note_health(
                         active_scene_id,
                         group.id,
@@ -1660,6 +1682,31 @@ fn color_fill_frame(width: u32, height: u32, rgba: [f32; 4]) -> ProducerFrame {
     ProducerFrame::Canvas(canvas)
 }
 
+fn screen_region_layer_frame(
+    screen: Option<&ScreenData>,
+    viewport: hypercolor_types::viewport::ViewportRect,
+) -> Option<ProducerFrame> {
+    let source_surface = screen?.canvas_downscale.as_ref()?;
+    let source = Canvas::from_published_surface(source_surface);
+    if source.width() == 0 || source.height() == 0 {
+        return None;
+    }
+    let viewport = viewport.clamp();
+    let rect = viewport.to_pixel_rect(source.width(), source.height());
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+    let mut target = Canvas::new(rect.width, rect.height);
+    sample_viewport(
+        &mut target,
+        &source,
+        viewport,
+        hypercolor_types::viewport::FitMode::Stretch,
+        1.0,
+    );
+    Some(ProducerFrame::Canvas(target))
+}
+
 fn transparent_black_frame(width: u32, height: u32) -> ProducerFrame {
     let mut canvas = Canvas::new(width, height);
     canvas.fill(Rgba::TRANSPARENT);
@@ -1952,6 +1999,28 @@ mod tests {
         registry: &EffectRegistry,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
+        render_scene_for_test_with_screen(
+            runtime,
+            groups,
+            groups_revision,
+            elapsed_ms,
+            display_group_target_fps,
+            registry,
+            zones,
+            None,
+        )
+    }
+
+    fn render_scene_for_test_with_screen(
+        runtime: &mut RenderGroupRuntime,
+        groups: &[RenderGroup],
+        groups_revision: u64,
+        elapsed_ms: u32,
+        display_group_target_fps: &HashMap<RenderGroupId, u32>,
+        registry: &EffectRegistry,
+        zones: &mut Vec<ZoneColors>,
+        screen: Option<&ScreenData>,
+    ) -> Result<RenderGroupResult> {
         let mut sparkleflinger = SparkleFlinger::cpu();
         runtime.render_scene(
             groups,
@@ -1963,7 +2032,7 @@ mod tests {
             1.0 / 60.0,
             &AudioData::silence(),
             &InteractionData::default(),
-            None,
+            screen,
             &SystemSnapshot::empty(),
             &mut sparkleflinger,
             zones,
@@ -2153,6 +2222,65 @@ mod tests {
                 health: LayerHealth::AssetMissing,
                 ..
             }] if *group_id == group.id && *event_layer_id == layer_id
+        ));
+    }
+
+    #[test]
+    fn screen_region_layer_uses_latest_capture_canvas() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = EffectRegistry::new(Vec::new());
+        let mut group = sample_display_group(2, 1);
+        group.effect_id = None;
+        group.controls.clear();
+        group.layers = vec![SceneLayer {
+            id: hypercolor_types::layer::SceneLayerId::new(),
+            name: Some("Screen".into()),
+            source: LayerSource::ScreenRegion {
+                viewport: hypercolor_types::viewport::ViewportRect::full(),
+            },
+            blend: LayerBlendMode::Replace,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        }];
+        let source = Canvas::from_vec(vec![255, 0, 0, 255, 0, 255, 0, 255], 2, 1);
+        let screen = ScreenData {
+            zone_colors: Vec::new(),
+            grid_width: 0,
+            grid_height: 0,
+            canvas_downscale: Some(PublishedSurface::from_canvas(&source, 7, 11)),
+            source_width: 2,
+            source_height: 1,
+        };
+        let mut zones = Vec::new();
+
+        let result = render_scene_for_test_with_screen(
+            &mut runtime,
+            &[group.clone()],
+            1,
+            0,
+            &HashMap::from([(group.id, 60)]),
+            &registry,
+            &mut zones,
+            Some(&screen),
+        )
+        .expect("screen region display group should render");
+        let (_, frame) = result
+            .group_canvases
+            .first()
+            .expect("display group should publish a direct frame");
+        let surface = frame.surface_for_test();
+
+        assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert_eq!(surface.get_pixel(1, 0), Rgba::new(0, 255, 0, 255));
+        assert!(matches!(
+            runtime.drain_layer_runtime_events().as_slice(),
+            [HypercolorEvent::LayerHealthChanged {
+                health: LayerHealth::Active,
+                ..
+            }]
         ));
     }
 

@@ -336,17 +336,24 @@ async fn current_effect_scene_snapshot(
         }
 
         for layer in group.effective_layers() {
-            let LayerSource::Effect { effect_id, .. } = layer.source else {
-                continue;
-            };
             if !layer.enabled {
                 continue;
             }
 
-            effect_running = true;
-            if let Some(entry) = registry.get(&effect_id) {
-                audio_capture_active |= entry.metadata.audio_reactive;
-                screen_capture_active |= entry.metadata.screen_reactive;
+            match layer.source {
+                LayerSource::Effect { effect_id, .. } => {
+                    effect_running = true;
+                    if let Some(entry) = registry.get(&effect_id) {
+                        audio_capture_active |= entry.metadata.audio_reactive;
+                        screen_capture_active |= entry.metadata.screen_reactive;
+                    }
+                }
+                LayerSource::ScreenRegion { .. } => {
+                    screen_capture_active |= screen_capture_configured;
+                }
+                LayerSource::Media { .. }
+                | LayerSource::WebViewport { .. }
+                | LayerSource::ColorFill { .. } => {}
             }
         }
     }
@@ -406,9 +413,13 @@ mod tests {
     use hypercolor_types::effect::{
         EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
     };
+    use hypercolor_types::layer::{
+        LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    };
     use hypercolor_types::scene::RenderGroupId;
     use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+    use hypercolor_types::viewport::ViewportRect;
 
     use crate::device_settings::DeviceSettingsStore;
     use crate::performance::PerformanceTracker;
@@ -652,6 +663,44 @@ mod tests {
             second.dependency_key.dependency_generation
                 > first.dependency_key.dependency_generation
         );
+    }
+
+    #[tokio::test]
+    async fn screen_region_layers_request_screen_capture_when_configured() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let state = minimal_render_thread_state(EffectRegistry::default());
+        let mut group = sample_group(effect_id);
+        group.effect_id = None;
+        group.layers = vec![SceneLayer {
+            id: SceneLayerId::new(),
+            name: Some("Screen".into()),
+            source: LayerSource::ScreenRegion {
+                viewport: ViewportRect::full(),
+            },
+            blend: LayerBlendMode::Replace,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        }];
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_transition: None,
+            active_render_groups: vec![group].into(),
+            active_render_groups_revision: 7,
+            active_render_group_count: 1,
+            active_display_group_target_fps: HashMap::new(),
+        };
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+
+        let snapshot =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, true)
+                .await;
+
+        assert!(!snapshot.demand.effect_running);
+        assert!(!snapshot.demand.audio_capture_active);
+        assert!(snapshot.demand.screen_capture_active);
     }
 
     #[tokio::test]
