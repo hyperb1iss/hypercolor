@@ -73,6 +73,8 @@ pub struct ActiveSceneResponse {
     pub kind: SceneKind,
     pub mutation_mode: SceneMutationMode,
     pub groups: Vec<RenderGroup>,
+    pub groups_revision: u64,
+    pub unassigned_behavior: UnassignedBehavior,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -144,6 +146,8 @@ pub async fn get_active_scene(State(state): State<Arc<AppState>>) -> Response {
         kind: scene.kind,
         mutation_mode: scene.mutation_mode,
         groups: scene.groups.clone(),
+        groups_revision: scene.groups_revision,
+        unassigned_behavior: scene.unassigned_behavior.clone(),
     })
 }
 
@@ -161,6 +165,7 @@ pub async fn create_scene(
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
         groups: Vec::new(),
+        groups_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -217,6 +222,7 @@ pub async fn update_scene(
         scope: existing.scope,
         zone_assignments: existing.zone_assignments,
         groups: existing.groups,
+        groups_revision: existing.groups_revision,
         transition: existing.transition,
         priority: existing.priority,
         enabled: body.enabled.unwrap_or(existing.enabled),

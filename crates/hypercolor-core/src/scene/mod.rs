@@ -31,9 +31,9 @@ use crate::types::library::PresetId;
 use crate::types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, RenderGroup,
     RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority,
-    TransitionSpec,
+    TransitionSpec, UnassignedBehavior,
 };
-use crate::types::spatial::SpatialLayout;
+use crate::types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout};
 
 /// Error variants for precondition-checked control patches.
 ///
@@ -77,6 +77,21 @@ pub enum LayerMutationError {
     InvalidOrder,
 }
 
+/// Error variants for structural render-group mutations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZoneMutationError {
+    /// No scene exists with the requested id.
+    SceneMissing,
+    /// No render group exists with the requested id.
+    GroupMissing,
+    /// No device zone exists with the requested id.
+    DeviceZoneMissing,
+    /// The scene is snapshot-locked and cannot be structurally edited.
+    SnapshotLocked,
+    /// The requested mutation is invalid for the group's role.
+    InvalidRole { role: RenderGroupRole },
+}
+
 /// One precondition-checked layer insertion in a multi-group scene mutation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneGroupLayerInsert {
@@ -88,6 +103,18 @@ pub struct SceneGroupLayerInsert {
     pub index: Option<usize>,
     /// Optional expected `layers_version` for optimistic concurrency.
     pub expected_version: Option<u64>,
+}
+
+/// Presentation fields that can be patched without touching effects,
+/// layers, or device assignment.
+#[derive(Debug, Clone, Default)]
+pub struct RenderGroupMetaPatch {
+    pub name: Option<String>,
+    pub description: Option<Option<String>>,
+    pub color: Option<Option<String>>,
+    pub brightness: Option<f32>,
+    pub enabled: Option<bool>,
+    pub make_primary: Option<bool>,
 }
 
 // ── SceneManager ────────────────────────────────────────────────────────
@@ -152,6 +179,7 @@ impl SceneManager {
             scope: crate::types::scene::SceneScope::Full,
             zone_assignments: Vec::new(),
             groups: Vec::new(),
+            groups_revision: 0,
             transition: TransitionSpec {
                 duration_ms: 1_000,
                 easing: EasingFunction::Linear,
@@ -416,7 +444,17 @@ impl SceneManager {
         let scene = self
             .active_scene_mut()
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
+        let custom_zones_present = scene_has_custom_led_groups(scene);
+        let next_primary_layout = if custom_zones_present {
+            scene
+                .primary_group()
+                .map(|group| group.layout.clone())
+                .unwrap_or_else(|| unclaimed_primary_layout(scene, full_scope_layout))
+        } else {
+            full_scope_layout
+        };
 
+        let mut structural_changed = false;
         if let Some(group) = scene.primary_group_mut() {
             let effect_changed = group.effect_id != Some(effect.id);
             let control_bindings = if effect_changed {
@@ -431,7 +469,10 @@ impl SceneManager {
                 control_bindings,
                 active_preset_id,
             );
-            group.layout = full_scope_layout;
+            if group.layout != next_primary_layout {
+                group.layout = next_primary_layout;
+                structural_changed = true;
+            }
             group.enabled = true;
             group.display_target = None;
             group.role = RenderGroupRole::Primary;
@@ -452,7 +493,7 @@ impl SceneManager {
                 control_bindings: HashMap::new(),
                 preset_id: active_preset_id,
                 layers: Vec::new(),
-                layout: full_scope_layout,
+                layout: next_primary_layout,
                 brightness: 1.0,
                 enabled: true,
                 color: None,
@@ -461,6 +502,11 @@ impl SceneManager {
                 controls_version: 0,
                 layers_version: 0,
             });
+            structural_changed = true;
+        }
+
+        if structural_changed {
+            bump_groups_revision(scene);
         }
 
         self.refresh_active_render_groups();
@@ -542,6 +588,242 @@ impl SceneManager {
             self.refresh_active_render_groups();
         }
         Ok(removed)
+    }
+
+    pub fn create_render_group(
+        &mut self,
+        scene_id: &SceneId,
+        name: String,
+        color: Option<String>,
+    ) -> Result<RenderGroupId, ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+
+        let id = RenderGroupId::new();
+        scene.groups.push(RenderGroup {
+            id,
+            name,
+            description: None,
+            effect_id: None,
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layers: Vec::new(),
+            layout: empty_scene_group_layout(id),
+            brightness: 1.0,
+            enabled: true,
+            color,
+            display_target: None,
+            role: RenderGroupRole::Custom,
+            controls_version: 0,
+            layers_version: 0,
+        });
+        bump_groups_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(id)
+    }
+
+    pub fn delete_render_group(
+        &mut self,
+        scene_id: &SceneId,
+        group_id: RenderGroupId,
+    ) -> Result<(), ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        let Some(index) = scene.groups.iter().position(|group| group.id == group_id) else {
+            return Err(ZoneMutationError::GroupMissing);
+        };
+        let role = scene.groups[index].role;
+        if role != RenderGroupRole::Custom {
+            return Err(ZoneMutationError::InvalidRole { role });
+        }
+
+        scene.groups.remove(index);
+        bump_groups_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(())
+    }
+
+    pub fn update_render_group_meta(
+        &mut self,
+        scene_id: &SceneId,
+        group_id: RenderGroupId,
+        patch: RenderGroupMetaPatch,
+    ) -> Result<RenderGroup, ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        let role_change = patch.make_primary == Some(true);
+        if role_change && scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        let Some(index) = scene.groups.iter().position(|group| group.id == group_id) else {
+            return Err(ZoneMutationError::GroupMissing);
+        };
+
+        if role_change {
+            for group in &mut scene.groups {
+                if group.role == RenderGroupRole::Primary {
+                    group.role = RenderGroupRole::Custom;
+                }
+            }
+            let group = &mut scene.groups[index];
+            group.role = RenderGroupRole::Primary;
+            group.display_target = None;
+            bump_groups_revision(scene);
+        }
+
+        let group = &mut scene.groups[index];
+        if let Some(name) = patch.name {
+            group.name = name;
+        }
+        if let Some(description) = patch.description {
+            group.description = description;
+        }
+        if let Some(color) = patch.color {
+            group.color = color;
+        }
+        if let Some(brightness) = patch.brightness {
+            group.brightness = brightness.clamp(0.0, 1.0);
+        }
+        if let Some(enabled) = patch.enabled {
+            group.enabled = enabled;
+        }
+        let group = group.clone();
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(group)
+    }
+
+    pub fn assign_device_zone(
+        &mut self,
+        scene_id: &SceneId,
+        group_id: RenderGroupId,
+        device_zone: DeviceZone,
+    ) -> Result<(), ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        let target_index = scene
+            .groups
+            .iter()
+            .position(|group| group.id == group_id)
+            .ok_or(ZoneMutationError::GroupMissing)?;
+
+        let current_owner = scene.groups.iter().position(|group| {
+            group
+                .layout
+                .zones
+                .iter()
+                .any(|zone| zone.id == device_zone.id)
+        });
+
+        if current_owner == Some(target_index) {
+            if let Some(zone) = scene.groups[target_index]
+                .layout
+                .zones
+                .iter_mut()
+                .find(|zone| zone.id == device_zone.id)
+            {
+                *zone = device_zone;
+            }
+        } else {
+            for group in &mut scene.groups {
+                group.layout.zones.retain(|zone| zone.id != device_zone.id);
+            }
+            let mut moved = device_zone;
+            reset_device_zone_placement(&mut moved);
+            scene.groups[target_index].layout.zones.push(moved);
+        }
+
+        bump_groups_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(())
+    }
+
+    pub fn unassign_device_zone(
+        &mut self,
+        scene_id: &SceneId,
+        device_zone_id: &str,
+    ) -> Result<(), ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        let mut removed = false;
+        for group in &mut scene.groups {
+            let previous_len = group.layout.zones.len();
+            group.layout.zones.retain(|zone| zone.id != device_zone_id);
+            removed |= group.layout.zones.len() != previous_len;
+        }
+        if !removed {
+            return Err(ZoneMutationError::DeviceZoneMissing);
+        }
+        bump_groups_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(())
+    }
+
+    pub fn set_unassigned_behavior(
+        &mut self,
+        scene_id: &SceneId,
+        behavior: UnassignedBehavior,
+    ) -> Result<UnassignedBehavior, ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        if let UnassignedBehavior::Fallback(group_id) = behavior
+            && !scene
+                .groups
+                .iter()
+                .any(|group| group.id == group_id && group.display_target.is_none())
+        {
+            return Err(ZoneMutationError::GroupMissing);
+        }
+        scene.unassigned_behavior = behavior;
+        bump_groups_revision(scene);
+        let behavior = scene.unassigned_behavior.clone();
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(behavior)
     }
 
     pub fn patch_display_group_target(
@@ -1180,6 +1462,9 @@ impl SceneManager {
         let Some(scene) = self.active_scene_mut() else {
             return false;
         };
+        if scene_has_custom_led_groups(scene) {
+            return false;
+        }
         let mut changed = false;
         for group in &mut scene.groups {
             if group.role != RenderGroupRole::Primary || group.display_target.is_some() {
@@ -1191,6 +1476,7 @@ impl SceneManager {
             }
         }
         if changed {
+            bump_groups_revision(scene);
             self.refresh_active_render_groups();
         }
         changed
@@ -1273,6 +1559,52 @@ fn materialize_legacy_effect_layer(group: &mut RenderGroup) {
         group.control_bindings.clone(),
         group.preset_id,
     ));
+}
+
+fn bump_groups_revision(scene: &mut Scene) {
+    scene.groups_revision = scene.groups_revision.saturating_add(1);
+}
+
+fn scene_has_custom_led_groups(scene: &Scene) -> bool {
+    scene
+        .groups
+        .iter()
+        .any(|group| group.role == RenderGroupRole::Custom && group.display_target.is_none())
+}
+
+fn unclaimed_primary_layout(scene: &Scene, mut full_scope_layout: SpatialLayout) -> SpatialLayout {
+    let claimed = scene
+        .groups
+        .iter()
+        .filter(|group| group.role == RenderGroupRole::Custom && group.display_target.is_none())
+        .flat_map(|group| group.layout.zones.iter().map(|zone| zone.id.as_str()))
+        .collect::<HashSet<_>>();
+    full_scope_layout
+        .zones
+        .retain(|zone| !claimed.contains(zone.id.as_str()));
+    full_scope_layout
+}
+
+fn empty_scene_group_layout(group_id: RenderGroupId) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("zone-{group_id}"),
+        name: "Zone Layout".to_owned(),
+        description: None,
+        canvas_width: 640,
+        canvas_height: 480,
+        zones: Vec::new(),
+        default_sampling_mode: crate::types::spatial::SamplingMode::Bilinear,
+        default_edge_behavior: crate::types::spatial::EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn reset_device_zone_placement(zone: &mut DeviceZone) {
+    zone.position = NormalizedPosition::new(0.5, 0.5);
+    zone.rotation = 0.0;
+    zone.scale = 1.0;
+    zone.display_order = 0;
 }
 
 fn replace_legacy_effect_layer_stack(
@@ -1358,6 +1690,7 @@ pub fn make_scene(name: &str) -> Scene {
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
         groups: Vec::new(),
+        groups_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,

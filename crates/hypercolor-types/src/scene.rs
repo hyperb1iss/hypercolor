@@ -567,6 +567,10 @@ pub struct Scene {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<RenderGroup>,
 
+    /// Monotonic version counter for render-group structure.
+    #[serde(default)]
+    pub groups_revision: u64,
+
     /// Default transition used when activating this scene.
     pub transition: TransitionSpec,
 
