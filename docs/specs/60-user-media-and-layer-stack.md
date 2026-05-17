@@ -9,7 +9,7 @@
 > Wave 1 display-face overlay fix so LED and display-face groups can use
 > one composition contract.
 
-**Status:** Layer substrate, file-backed tier-1/2/3/4 media, and media admission caps implemented; true livestream, GPU media hardening, and legacy purge pending
+**Status:** Layer substrate, file-backed tier-1/2/3/4 media, rolling stream URL producer, and media admission caps implemented; GPU media hardening and legacy purge pending
 **Author:** Nova
 **Date:** 2026-05-15
 **Updated:** 2026-05-17
@@ -34,12 +34,12 @@ Native animated WebP, Lottie, and file-backed MP4/WebM decoding are in
 tree. Lottie is gated behind `media-lottie` and uses `rlottie`; video is
 gated behind `media-video` and uses gstreamer to predecode file-backed
 assets to RGBA canvases. Stream URL assets are accepted through the
-explicit `stream`/`livestream` upload hint and can preroll a bounded frame
-window through the gstreamer path. The stream SSRF policy is configurable
-through `media.stream_private_network_allowlist`, and scene activation
-enforces the configured video/livestream producer hard caps. The true
-rolling livestream producer with reconnect policy plus GPU upload/readback
-is still follow-up work.
+explicit `stream`/`livestream` upload hint and start a rolling latest-frame
+gstreamer worker with reconnect/backoff. The stream SSRF policy is
+configurable through `media.stream_private_network_allowlist`, and scene
+activation enforces the configured video/livestream producer hard caps.
+Stream producers currently publish CPU canvases; GPU upload/readback and
+UI-visible stream health remain follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1737,11 +1737,11 @@ that broadcasts one media asset across multiple render groups with
 per-group transforms.
 
 Lottie decoding and scene-wide broadcast routing are now in tree. Stream
-URL assets are accepted and can preroll a bounded frame window through
-the gstreamer backend, but this is not the final livestream producer:
-rolling latest-frame latching and reconnect/backoff remain open.
-Configurable private-network stream allowlists and video/livestream
-producer hard caps are in tree.
+URL assets are accepted and run through a rolling latest-frame gstreamer
+worker with reconnect/backoff. Configurable private-network stream
+allowlists and video/livestream producer hard caps are in tree. The stream
+path still emits CPU canvases; GPU upload/readback and UI-visible stream
+health remain part of GPU media hardening.
 
 ---
 
@@ -2071,9 +2071,9 @@ closed the alpha/black-fallback defects, and added no new user-facing
 surface area beyond what already existed in `DisplayFaceBlendMode`.
 
 **The implementation substrate is now in place.** Tier-1/2 media,
-Lottie, and file-backed MP4/WebM decoding are implemented. The remaining
-work is the true livestream producer, GPU media hardening, and the later
-compatibility purge of legacy render-group mirrors.
+Lottie, file-backed MP4/WebM decoding, stream URL rolling producers, and
+hard media admission caps are implemented. The remaining work is GPU media
+hardening and the later compatibility purge of legacy render-group mirrors.
 
 **Treat the livestream and legacy-purge follow-ups as separate shipping
 decisions.** Lottie and file-backed video are already useful without

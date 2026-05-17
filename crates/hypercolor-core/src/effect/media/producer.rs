@@ -1,7 +1,14 @@
 use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "media-video")]
-use std::sync::OnceLock;
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+#[cfg(feature = "media-video")]
+use std::thread::{self, JoinHandle};
+#[cfg(feature = "media-video")]
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "media-video")]
 use gst::prelude::*;
@@ -31,7 +38,13 @@ const DEFAULT_LOTTIE_CACHE_KEY: &str = "hypercolor-inline-lottie";
 #[cfg(feature = "media-video")]
 const GST_FRAME_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(5);
 #[cfg(feature = "media-video")]
-const STREAM_PREROLL_FRAME_LIMIT: usize = 300;
+const LIVE_STREAM_FRAME_TIMEOUT: gst::ClockTime = gst::ClockTime::from_mseconds(250);
+#[cfg(feature = "media-video")]
+const LIVE_STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(feature = "media-video")]
+const LIVE_STREAM_SHUTDOWN_POLL: Duration = Duration::from_millis(100);
+#[cfg(feature = "media-video")]
+const LIVE_STREAM_RECONNECT_BACKOFF_MS: [u64; 5] = [1_000, 2_000, 5_000, 10_000, 30_000];
 #[cfg(feature = "media-video")]
 const STREAM_URL_MIME: &str = "application/vnd.hypercolor.stream-url";
 
@@ -70,12 +83,35 @@ pub enum MediaProducerError {
 pub struct MediaProducer {
     frames: Vec<DecodedMediaFrame>,
     total_duration_us: u64,
+    #[cfg(feature = "media-video")]
+    live_stream: Option<LiveStreamProducer>,
 }
 
 #[derive(Debug, Clone)]
 struct DecodedMediaFrame {
     canvas: Canvas,
     duration_us: u64,
+}
+
+#[cfg(feature = "media-video")]
+#[derive(Debug, Clone)]
+struct LiveStreamProducer {
+    inner: Arc<LiveStreamInner>,
+}
+
+#[cfg(feature = "media-video")]
+#[derive(Debug)]
+struct LiveStreamInner {
+    state: Arc<Mutex<LiveStreamState>>,
+    shutdown: Arc<AtomicBool>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[cfg(feature = "media-video")]
+#[derive(Debug, Default)]
+struct LiveStreamState {
+    latest_frame: Option<DecodedMediaFrame>,
+    frames_seen: usize,
 }
 
 impl MediaProducer {
@@ -199,6 +235,11 @@ impl MediaProducer {
 
     #[must_use]
     pub fn frame_count(&self) -> usize {
+        #[cfg(feature = "media-video")]
+        if let Some(live_stream) = &self.live_stream {
+            return live_stream.frame_count();
+        }
+
         self.frames.len()
     }
 
@@ -252,6 +293,13 @@ impl MediaProducer {
 
     #[must_use]
     pub fn intrinsic_frame(&self, playback: &MediaPlayback, elapsed_ms: u32) -> Canvas {
+        #[cfg(feature = "media-video")]
+        if let Some(live_stream) = &self.live_stream {
+            return live_stream
+                .latest_frame()
+                .unwrap_or_else(|| Canvas::new(1, 1));
+        }
+
         self.frames[self.frame_index_at(playback, elapsed_ms)]
             .canvas
             .clone()
@@ -339,8 +387,11 @@ impl MediaProducer {
         ensure_gstreamer()?;
         let url = stream_url_from_bytes_with_policy(bytes, stream_url_policy)
             .ok_or(MediaProducerError::InvalidStreamUrl)?;
-        let frames = decode_video_uri(&url, Some(STREAM_PREROLL_FRAME_LIMIT))?;
-        Ok(Self::from_decoded_frames(frames))
+        Ok(Self {
+            frames: Vec::new(),
+            total_duration_us: DEFAULT_FRAME_DURATION_US,
+            live_stream: Some(LiveStreamProducer::spawn(url)?),
+        })
     }
 
     fn from_animation_frames(frames: Vec<Frame>) -> Result<Self, MediaProducerError> {
@@ -370,6 +421,8 @@ impl MediaProducer {
         Self {
             frames,
             total_duration_us,
+            #[cfg(feature = "media-video")]
+            live_stream: None,
         }
     }
 
@@ -382,6 +435,53 @@ impl MediaProducer {
             }
         }
         self.frames.len().saturating_sub(1)
+    }
+}
+
+#[cfg(feature = "media-video")]
+impl LiveStreamProducer {
+    fn spawn(uri: String) -> Result<Self, MediaProducerError> {
+        let state = Arc::new(Mutex::new(LiveStreamState::default()));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_state = Arc::clone(&state);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker = thread::Builder::new()
+            .name("hypercolor-media-stream".to_owned())
+            .spawn(move || run_live_stream_worker(uri, worker_state, worker_shutdown))
+            .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+
+        Ok(Self {
+            inner: Arc::new(LiveStreamInner {
+                state,
+                shutdown,
+                worker: Mutex::new(Some(worker)),
+            }),
+        })
+    }
+
+    fn latest_frame(&self) -> Option<Canvas> {
+        self.inner.state.lock().ok().and_then(|state| {
+            state
+                .latest_frame
+                .as_ref()
+                .map(|frame| frame.canvas.clone())
+        })
+    }
+
+    fn frame_count(&self) -> usize {
+        self.inner.state.lock().map_or(0, |state| state.frames_seen)
+    }
+}
+
+#[cfg(feature = "media-video")]
+impl Drop for LiveStreamInner {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Ok(mut worker) = self.worker.lock()
+            && let Some(worker) = worker.take()
+        {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -465,6 +565,24 @@ fn decode_video_uri(
     uri: &str,
     frame_limit: Option<usize>,
 ) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
+    let video = build_rgba_video_pipeline(uri)?;
+    video
+        .pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|error| MediaProducerError::VideoDecode(format!("{error:?}")))?;
+    let result = pull_video_frames(&video.pipeline, &video.sink, frame_limit);
+    let _ = video.pipeline.set_state(gst::State::Null);
+    result
+}
+
+#[cfg(feature = "media-video")]
+struct RgbaVideoPipeline {
+    pipeline: gst::Pipeline,
+    sink: gst_app::AppSink,
+}
+
+#[cfg(feature = "media-video")]
+fn build_rgba_video_pipeline(uri: &str) -> Result<RgbaVideoPipeline, MediaProducerError> {
     let caps = gst::Caps::builder("video/x-raw")
         .field("format", "RGBA")
         .build();
@@ -490,12 +608,7 @@ fn decode_video_uri(
         .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
     link_uridecodebin_to_convert(&source, &convert)?;
 
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|error| MediaProducerError::VideoDecode(format!("{error:?}")))?;
-    let result = pull_video_frames(&pipeline, &sink, frame_limit);
-    let _ = pipeline.set_state(gst::State::Null);
-    result
+    Ok(RgbaVideoPipeline { pipeline, sink })
 }
 
 #[cfg(feature = "media-video")]
@@ -561,6 +674,143 @@ fn pull_video_frames(
         return Err(MediaProducerError::EmptySequence);
     }
     Ok(frames)
+}
+
+#[cfg(feature = "media-video")]
+fn run_live_stream_worker(
+    uri: String,
+    state: Arc<Mutex<LiveStreamState>>,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut backoff = LiveStreamBackoff::default();
+    while !shutdown.load(Ordering::Relaxed) {
+        let frames_before = live_stream_frames_seen(&state);
+        match pump_live_stream_once(&uri, &state, &shutdown) {
+            Ok(LiveStreamPumpExit::Shutdown) => break,
+            Ok(LiveStreamPumpExit::Retry) => {
+                backoff.reset_if_frames_advanced(frames_before, &state);
+                if sleep_live_stream_backoff(backoff.next_delay(), &shutdown) {
+                    break;
+                }
+            }
+            Err(error) => {
+                backoff.reset_if_frames_advanced(frames_before, &state);
+                tracing::warn!(%uri, %error, "live media stream reconnecting");
+                if sleep_live_stream_backoff(backoff.next_delay(), &shutdown) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "media-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveStreamPumpExit {
+    Shutdown,
+    Retry,
+}
+
+#[cfg(feature = "media-video")]
+fn pump_live_stream_once(
+    uri: &str,
+    state: &Arc<Mutex<LiveStreamState>>,
+    shutdown: &AtomicBool,
+) -> Result<LiveStreamPumpExit, MediaProducerError> {
+    let video = build_rgba_video_pipeline(uri)?;
+    video
+        .pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|error| MediaProducerError::VideoDecode(format!("{error:?}")))?;
+    let result = pump_live_stream_samples(&video.pipeline, &video.sink, state, shutdown);
+    let _ = video.pipeline.set_state(gst::State::Null);
+    result
+}
+
+#[cfg(feature = "media-video")]
+fn pump_live_stream_samples(
+    pipeline: &gst::Pipeline,
+    sink: &gst_app::AppSink,
+    state: &Arc<Mutex<LiveStreamState>>,
+    shutdown: &AtomicBool,
+) -> Result<LiveStreamPumpExit, MediaProducerError> {
+    let mut last_sample_at = Instant::now();
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            return Ok(LiveStreamPumpExit::Shutdown);
+        }
+        if let Some(sample) = sink.try_pull_sample(LIVE_STREAM_FRAME_TIMEOUT) {
+            record_live_stream_frame(state, decoded_frame_from_sample(&sample)?);
+            last_sample_at = Instant::now();
+            continue;
+        }
+        if sink.is_eos() {
+            return Ok(LiveStreamPumpExit::Retry);
+        }
+        if let Some(error) = pipeline_error(pipeline) {
+            return Err(MediaProducerError::VideoDecode(error));
+        }
+        if last_sample_at.elapsed() >= LIVE_STREAM_STALL_TIMEOUT {
+            return Err(MediaProducerError::VideoDecode(
+                "timed out waiting for a live stream frame".to_owned(),
+            ));
+        }
+    }
+}
+
+#[cfg(feature = "media-video")]
+fn record_live_stream_frame(state: &Arc<Mutex<LiveStreamState>>, frame: DecodedMediaFrame) {
+    if let Ok(mut state) = state.lock() {
+        state.latest_frame = Some(frame);
+        state.frames_seen = state.frames_seen.saturating_add(1);
+    }
+}
+
+#[cfg(feature = "media-video")]
+fn live_stream_frames_seen(state: &Arc<Mutex<LiveStreamState>>) -> usize {
+    state.lock().map_or(0, |state| state.frames_seen)
+}
+
+#[cfg(feature = "media-video")]
+fn sleep_live_stream_backoff(delay: Duration, shutdown: &AtomicBool) -> bool {
+    let deadline = Instant::now() + delay;
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep((deadline - now).min(LIVE_STREAM_SHUTDOWN_POLL));
+    }
+}
+
+#[cfg(feature = "media-video")]
+#[derive(Debug, Default)]
+struct LiveStreamBackoff {
+    failures: usize,
+}
+
+#[cfg(feature = "media-video")]
+impl LiveStreamBackoff {
+    fn reset_if_frames_advanced(
+        &mut self,
+        frames_before: usize,
+        state: &Arc<Mutex<LiveStreamState>>,
+    ) {
+        if live_stream_frames_seen(state) > frames_before {
+            self.failures = 0;
+        }
+    }
+
+    fn next_delay(&mut self) -> Duration {
+        let index = self
+            .failures
+            .min(LIVE_STREAM_RECONNECT_BACKOFF_MS.len().saturating_sub(1));
+        self.failures = self.failures.saturating_add(1);
+        Duration::from_millis(LIVE_STREAM_RECONNECT_BACKOFF_MS[index])
+    }
 }
 
 #[cfg(feature = "media-video")]

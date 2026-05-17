@@ -1,8 +1,12 @@
 use std::path::Path;
 #[cfg(feature = "media-video")]
 use std::process::Command;
+#[cfg(feature = "media-video")]
+use std::time::{Duration, Instant};
 
 use gif::{Encoder, Frame, Repeat};
+#[cfg(feature = "media-video")]
+use hypercolor_core::asset::StreamUrlPolicy;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::media::MediaProducer;
@@ -293,6 +297,26 @@ fn webm_video_frames_decode_when_feature_is_enabled() {
     assert_eq!(producer.render_frame(&playback, 0, 16, 16).width(), 16,);
     let pixel = pixel_at(&producer, &playback, 0);
     assert!(pixel.r >= 250 && pixel.g >= 250 && pixel.b >= 250 && pixel.a == 255);
+}
+
+#[cfg(feature = "media-video")]
+#[test]
+fn stream_url_producer_returns_before_first_live_frame() {
+    let started = Instant::now();
+    let producer = MediaProducer::from_bytes_with_stream_policy(
+        b"http://1.1.1.1/hypercolor-missing-live.m3u8\n",
+        "application/vnd.hypercolor.stream-url",
+        &StreamUrlPolicy::default(),
+    )
+    .expect("stream URL producer should start");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "stream URL producer should not preroll frames before returning"
+    );
+    assert_eq!(producer.frame_count(), 0);
+    let playback = MediaPlayback::default();
+    assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 255));
 }
 
 #[test]
