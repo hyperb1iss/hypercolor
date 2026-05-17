@@ -15,6 +15,10 @@ fn home_and_effect_routes_use_live_palette_mode() {
         NowPlayingCanvasMode::Palette
     );
     assert_eq!(
+        now_playing_canvas_mode("/assets"),
+        NowPlayingCanvasMode::Palette
+    );
+    assert_eq!(
         now_playing_canvas_mode("/layout"),
         NowPlayingCanvasMode::Palette
     );

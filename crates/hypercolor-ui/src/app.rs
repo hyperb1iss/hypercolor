@@ -18,6 +18,7 @@ use crate::components::shell::Shell;
 use crate::config_state::ConfigContext;
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
+use crate::pages::assets::AssetsPage;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::display_preview::DisplayPreviewPage;
@@ -867,8 +868,8 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
             on_unlock.run(key);
         }
     });
-    let submit_key = submit.clone();
-    let submit_click = submit.clone();
+    let submit_key = submit;
+    let submit_click = submit;
 
     view! {
         <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
@@ -927,6 +928,7 @@ fn AppRoutes() -> impl IntoView {
                         <Route path=path!("/") view=DashboardPage />
                         <Route path=path!("/effects") view=EffectsPage />
                         <Route path=path!("/effects/:id") view=EffectsPage />
+                        <Route path=path!("/assets") view=AssetsPage />
                         <Route path=path!("/layout") view=LayoutPage />
                         <Route path=path!("/devices") view=DevicesPage />
                         <Route path=path!("/displays") view=DisplaysPage />

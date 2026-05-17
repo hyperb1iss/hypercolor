@@ -6,7 +6,11 @@ pub enum NowPlayingCanvasMode {
 }
 
 pub fn now_playing_canvas_mode(path: &str) -> NowPlayingCanvasMode {
-    if path == "/" || path.starts_with("/effects") || path.starts_with("/layout") {
+    if path == "/"
+        || path.starts_with("/effects")
+        || path.starts_with("/assets")
+        || path.starts_with("/layout")
+    {
         NowPlayingCanvasMode::Palette
     } else if path.starts_with("/displays") {
         NowPlayingCanvasMode::Disabled

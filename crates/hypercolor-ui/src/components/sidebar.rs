@@ -52,6 +52,12 @@ pub fn Sidebar() -> impl IntoView {
             divider_before: false,
         },
         NavItem {
+            path: "/assets",
+            label: "Assets",
+            icon: LuFolder,
+            divider_before: false,
+        },
+        NavItem {
             path: "/layout",
             label: "Layout",
             icon: LuLayoutTemplate,

@@ -77,7 +77,7 @@ pub fn save_api_key(api_key: &str) {
     save_api_key_impl(api_key);
 }
 
-fn with_auth(request: RequestBuilder) -> RequestBuilder {
+pub(crate) fn with_auth(request: RequestBuilder) -> RequestBuilder {
     if let Some(api_key) = stored_api_key() {
         request.header("Authorization", &format!("Bearer {api_key}"))
     } else {
@@ -303,4 +303,21 @@ pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
         .map_err(|e| ApiError::Network(e.to_string()))?;
     ensure_success(&resp)?;
     Ok(())
+}
+
+/// DELETE `url`, unwrap the response envelope, return the inner data.
+pub async fn delete_json<T>(url: &str) -> Result<T, ApiError>
+where
+    T: DeserializeOwned,
+{
+    let resp = with_auth(Request::delete(url))
+        .send()
+        .await
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+    ensure_success(&resp)?;
+    let envelope: ApiEnvelope<T> = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::Parse(e.to_string()))?;
+    Ok(envelope.data)
 }

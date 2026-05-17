@@ -600,5 +600,7 @@ fn fit_mode_label(fit: FitMode) -> &'static str {
         FitMode::Cover => "Cover",
         FitMode::Contain => "Contain",
         FitMode::Stretch => "Stretch",
+        FitMode::Tile => "Tile",
+        FitMode::Mirror => "Mirror",
     }
 }

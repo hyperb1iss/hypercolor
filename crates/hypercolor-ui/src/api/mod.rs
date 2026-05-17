@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 
+pub mod assets;
 pub mod client;
 pub mod config;
 pub mod controls;
@@ -14,6 +15,7 @@ pub mod devices;
 pub mod displays;
 pub mod drivers;
 pub mod effects;
+pub mod layers;
 pub mod layouts;
 pub mod library;
 pub mod scenes;
@@ -31,6 +33,7 @@ pub struct ApiEnvelope<T> {
 // ── Re-exports ──────────────────────────────────────────────────────────────
 // Flat re-exports so existing `crate::api::FooBar` imports keep working.
 
+pub use assets::*;
 pub use config::*;
 #[allow(unused_imports)]
 pub use controls::*;
@@ -39,6 +42,7 @@ pub use devices::*;
 pub use displays::*;
 pub use drivers::*;
 pub use effects::*;
+pub use layers::*;
 pub use layouts::*;
 pub use library::*;
 pub use scenes::*;
