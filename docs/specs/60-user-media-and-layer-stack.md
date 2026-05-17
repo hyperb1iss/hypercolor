@@ -9,7 +9,7 @@
 > Wave 1 display-face overlay fix so LED and display-face groups can use
 > one composition contract.
 
-**Status:** Substrate implemented; native tier-3/4/5 decoders deferred
+**Status:** Layer substrate and file-backed tier-1/2/3/4 media implemented; true livestream and legacy purge pending
 **Author:** Nova
 **Date:** 2026-05-15
 **Updated:** 2026-05-17
@@ -30,12 +30,18 @@ screen, web, and color producer-pump routing, SparkleFlinger transform and
 adjust, asset library + browser, SDK asset controls, animated WebP, runtime
 bindings, and scene-wide media broadcast routing are all in tree.
 
-Native video, Lottie, and livestream decoding are intentionally still behind
-feature posture. The asset library accepts MP4/WebM/Lottie records and the
-producer returns explicit unsupported-decoder errors under `media-video` and
-`media-lottie` until the gstreamer/rlottie integration work lands. Legacy
-`RenderGroup.effect_id`/`controls` mirrors remain for compatibility and are
-tracked as a follow-up purge once old-client compatibility can be dropped.
+Native animated WebP, Lottie, and file-backed MP4/WebM decoding are in
+tree. Lottie is gated behind `media-lottie` and uses `rlottie`; video is
+gated behind `media-video` and uses gstreamer to predecode file-backed
+assets to RGBA canvases. Stream URL assets are accepted through the
+explicit `stream`/`livestream` upload hint and can preroll a bounded frame
+window through the gstreamer path, but the true rolling livestream
+producer with reconnect policy, admission control, and GPU upload/readback
+is still follow-up work.
+
+Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
+compatibility. They are explicitly tracked as a later purge once
+old-client compatibility can be dropped.
 
 ## Table of Contents
 
@@ -1713,16 +1719,22 @@ of composed stack.
 Animated WebP (tier 2). Video via gstreamer behind `media-video` feature
 flag (tier 3). `LayerBinding` evaluator and SDK exposure.
 
+Animated WebP, file-backed MP4/WebM decoding, and the binding/runtime
+plumbing are now in tree. The current video backend emits CPU canvases;
+the GPU upload path, GPU readback fallback, and admission-control caps
+remain part of the video hardening follow-up.
+
 ### Wave 7 — Tier 4/5 Decoders + Multi-Face Routing
 
 Lottie (tier 4). HTTP livestream (tier 5). "Scene-wide" layer authoring
 that broadcasts one media asset across multiple render groups with
 per-group transforms.
 
-Current code lands the scene-wide broadcast route plus `media-lottie` and
-`media-video` feature-gated decoder posture. The native rlottie/gstreamer
-backends remain follow-up implementation work because they add external
-runtime dependencies and codec policy surface.
+Lottie decoding and scene-wide broadcast routing are now in tree. Stream
+URL assets are accepted and can preroll a bounded frame window through
+the gstreamer backend, but this is not the final livestream producer:
+rolling latest-frame latching, reconnect/backoff, admission control, and
+configurable private-network allowlists remain open.
 
 ---
 
@@ -1798,12 +1810,14 @@ declines to support the plan. In that case the function returns
 `gpu_frame_without_cpu_fallback()` — a composed-frame set with no
 sampling canvas and no preview surface.
 
-Video and livestream producers feed `ProducerFrame::Gpu`, so Wave 6+
-will exercise this path constantly. The current "no fallback" behavior
-means a single GPU compose failure produces a blank frame for an entire
-render cycle.
+Target GPU video and livestream producers feed `ProducerFrame::Gpu`, so
+the final Wave 6+ GPU lane will exercise this path constantly. The
+current file-backed `media-video` backend decodes into CPU canvases and
+does not yet exercise this policy. Once GPU media frames land, the
+current "no fallback" behavior would mean a single GPU compose failure
+produces a blank frame for an entire render cycle.
 
-**Required policy (Wave 6):**
+**Required policy (GPU media follow-up):**
 
 1. On GPU compose failure with GPU frames present, `SparkleFlinger`
    performs an explicit read-back of every `ProducerFrame::Gpu` in the
@@ -1819,7 +1833,7 @@ render cycle.
    the next session start). Surface this as a one-time toast in the UI
    so users know they have left the fast path.
 
-Wave 6 must also add a synthetic-failure test
+The GPU media follow-up must also add a synthetic-failure test
 (`gpu_compose_fallback_tests.rs`) that injects a GPU compose failure
 on a video plan and asserts the read-back path produces the expected
 pixels.
@@ -2049,14 +2063,16 @@ reporting completion.
 closed the alpha/black-fallback defects, and added no new user-facing
 surface area beyond what already existed in `DisplayFaceBlendMode`.
 
-**The implementation substrate is now in place.** The remaining work is
-native decoder integration for video/Lottie/livestream and the later
+**The implementation substrate is now in place.** Tier-1/2 media,
+Lottie, and file-backed MP4/WebM decoding are implemented. The remaining
+work is the true livestream producer, GPU media hardening, admission
+control, private-network stream allowlist config, and the later
 compatibility purge of legacy render-group mirrors.
 
-**Treat Wave 6 (video) and Wave 7 (Lottie + livestream) as marketing
-ammunition.** They are the differentiators against iCUE Murals and the
-SignalRGB / Razer / NZXT incumbents. Each ships independently once the
-substrate is in place.
+**Treat the livestream and legacy-purge follow-ups as separate shipping
+decisions.** Lottie and file-backed video are already useful without
+waiting for HLS/RTSP reliability work, and legacy mirror removal should
+happen only when old-client compatibility is intentionally dropped.
 
 The architectural payoff is one composition contract instead of two,
 one layer-source abstraction across LED and display-face groups, and a
