@@ -330,6 +330,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: sample_layout("named-display"),
             brightness: 1.0,
             enabled: true,
@@ -337,6 +338,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
             controls_version: 0,
+            layers_version: 0,
         },
         RenderGroup {
             id: RenderGroupId::new(),
@@ -346,6 +348,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: sample_layout("other-display"),
             brightness: 1.0,
             enabled: true,
@@ -353,6 +356,7 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             display_target: Some(DisplayFaceTarget::new(other_device_id)),
             role: RenderGroupRole::Display,
             controls_version: 0,
+            layers_version: 0,
         },
     ];
     let named_scene_id = named_scene.id;

@@ -7,9 +7,10 @@ use std::time::Duration;
 use hypercolor_core::scene::automation::AutomationEngine;
 use hypercolor_core::scene::priority::PriorityStack;
 use hypercolor_core::scene::transition::TransitionState;
-use hypercolor_core::scene::{SceneManager, make_scene};
+use hypercolor_core::scene::{LayerMutationError, SceneManager, make_scene};
 use hypercolor_types::canvas::RgbaF32;
 use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::layer::{LayerBlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
     RenderGroupRole, SceneId, ScenePriority, TransitionSpec, TriggerSource, UnassignedBehavior,
@@ -108,6 +109,7 @@ fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_t
         controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout: sample_layout(zone_id),
         brightness: 0.8,
         enabled: true,
@@ -115,9 +117,34 @@ fn grouped_scene(name: &str, zone_id: &str, effect_id: EffectId) -> hypercolor_t
         display_target: None,
         role: RenderGroupRole::Custom,
         controls_version: 0,
+        layers_version: 0,
     }];
     scene.unassigned_behavior = UnassignedBehavior::Off;
     scene
+}
+
+fn color_layer(rgba: [f32; 4]) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::ColorFill { rgba },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: Default::default(),
+        adjust: Default::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
+}
+
+fn effect_layer(effect_id: EffectId, speed: f32) -> SceneLayer {
+    SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::from([("speed".into(), ControlValue::Float(speed))]),
+        HashMap::new(),
+        None,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -160,6 +187,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: sample_layout("shared:zone"),
             brightness: 1.0,
             enabled: true,
@@ -167,6 +195,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             display_target: None,
             role: RenderGroupRole::Custom,
             controls_version: 0,
+            layers_version: 0,
         },
         RenderGroup {
             id: RenderGroupId::new(),
@@ -176,6 +205,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: sample_layout("shared:zone"),
             brightness: 1.0,
             enabled: true,
@@ -183,6 +213,7 @@ fn scene_manager_create_rejects_overlapping_render_groups() {
             display_target: None,
             role: RenderGroupRole::Custom,
             controls_version: 0,
+            layers_version: 0,
         },
     ];
 
@@ -303,6 +334,167 @@ fn scene_manager_refreshes_active_render_group_cache_on_update() {
         "desk:updated"
     );
     assert!(mgr.active_render_groups_revision() > initial_revision);
+}
+
+#[test]
+fn scene_manager_add_layer_materializes_legacy_effect_and_refreshes_cache() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let scene = grouped_scene("Layered", "desk:main", effect_id);
+    let scene_id = scene.id;
+    let group_id = scene.groups[0].id;
+
+    mgr.create(scene).expect("create grouped scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate grouped scene");
+    let initial_revision = mgr.active_render_groups_revision();
+
+    let overlay = color_layer([1.0, 0.0, 0.5, 1.0]);
+    let overlay_id = overlay.id;
+    let (updated, version) = mgr
+        .add_group_layer(group_id, overlay, Some(0))
+        .expect("add layer");
+    let updated = updated.clone();
+
+    assert_eq!(version, 1);
+    assert_eq!(updated.layers_version, 1);
+    assert_eq!(updated.layers.len(), 2);
+    assert_eq!(updated.layers[0].id, updated.legacy_layer_id());
+    assert_eq!(updated.layers[1].id, overlay_id);
+    assert_eq!(updated.effect_id, Some(effect_id));
+    assert!(mgr.active_render_groups_revision() > initial_revision);
+    assert_eq!(mgr.active_render_groups()[0].layers[1].id, overlay_id);
+}
+
+#[test]
+fn scene_manager_update_and_remove_layers_bump_versions() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Mutable", "desk:main", effect_id);
+    let scene_id = scene.id;
+    let group_id = scene.groups[0].id;
+    let base = effect_layer(effect_id, 0.5);
+    let mut overlay = color_layer([0.0, 0.25, 1.0, 1.0]);
+    let overlay_id = overlay.id;
+    overlay.opacity = 0.75;
+    scene.groups[0].layers = vec![base, overlay.clone()];
+
+    mgr.create(scene).expect("create grouped scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate grouped scene");
+
+    overlay.opacity = 0.25;
+    let (updated, update_version) = mgr
+        .update_group_layer(group_id, overlay_id, overlay, Some(0))
+        .expect("update layer");
+    assert_eq!(update_version, 1);
+    assert_eq!(updated.layers[1].opacity, 0.25);
+
+    let (updated, remove_version) = mgr
+        .remove_group_layer(group_id, overlay_id, Some(1))
+        .expect("remove layer");
+    assert_eq!(remove_version, 2);
+    assert_eq!(updated.layers.len(), 1);
+
+    let missing = mgr
+        .remove_group_layer(group_id, overlay_id, Some(2))
+        .expect_err("removed layer should be missing");
+    assert_eq!(
+        missing,
+        LayerMutationError::LayerMissing {
+            layer_id: overlay_id
+        }
+    );
+}
+
+#[test]
+fn scene_manager_reorder_layers_requires_exact_permutation() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Ordered", "desk:main", effect_id);
+    let scene_id = scene.id;
+    let group_id = scene.groups[0].id;
+    let base = color_layer([0.0, 0.0, 0.0, 1.0]);
+    let top = effect_layer(effect_id, 0.5);
+    let base_id = base.id;
+    let top_id = top.id;
+    scene.groups[0].layers = vec![base, top];
+
+    mgr.create(scene).expect("create grouped scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate grouped scene");
+
+    let invalid = mgr
+        .reorder_group_layers(group_id, vec![top_id], Some(0))
+        .expect_err("missing layer id should reject");
+    assert_eq!(invalid, LayerMutationError::InvalidOrder);
+
+    let (updated, version) = mgr
+        .reorder_group_layers(group_id, vec![top_id, base_id], Some(0))
+        .expect("reorder layers");
+    let updated = updated.clone();
+    assert_eq!(version, 1);
+    assert_eq!(updated.layers[0].id, top_id);
+    assert_eq!(updated.layers[1].id, base_id);
+
+    let stale = mgr
+        .reorder_group_layers(group_id, vec![base_id, top_id], Some(0))
+        .expect_err("stale reorder should fail");
+    assert_eq!(stale, LayerMutationError::Stale { current: 1 });
+}
+
+#[test]
+fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Controls", "desk:main", effect_id);
+    let scene_id = scene.id;
+    let group_id = scene.groups[0].id;
+    let base = color_layer([0.0, 0.0, 0.0, 1.0]);
+    let effect = effect_layer(effect_id, 0.5);
+    let layer_id = effect.id;
+    scene.groups[0].layers = vec![base, effect];
+
+    mgr.create(scene).expect("create grouped scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate grouped scene");
+
+    let (updated, version) = mgr
+        .patch_layer_effect_controls(
+            group_id,
+            layer_id,
+            HashMap::from([("speed".into(), ControlValue::Float(1.25))]),
+            Some(0),
+        )
+        .expect("patch layer controls");
+    let updated = updated.clone();
+
+    assert_eq!(version, 1);
+    assert_eq!(updated.layers_version, 1);
+    assert_eq!(updated.controls_version, 0);
+    assert_eq!(
+        updated.controls.get("speed"),
+        Some(&ControlValue::Float(1.25))
+    );
+    let layer = updated
+        .layers
+        .iter()
+        .find(|layer| layer.id == layer_id)
+        .expect("effect layer should remain");
+    let LayerSource::Effect { controls, .. } = &layer.source else {
+        panic!("target layer should remain an effect layer");
+    };
+    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(1.25)));
+
+    let stale = mgr
+        .patch_layer_effect_controls(
+            group_id,
+            layer_id,
+            HashMap::from([("speed".into(), ControlValue::Float(2.0))]),
+            Some(0),
+        )
+        .expect_err("stale control patch should fail");
+    assert_eq!(stale, LayerMutationError::Stale { current: 1 });
 }
 
 #[test]

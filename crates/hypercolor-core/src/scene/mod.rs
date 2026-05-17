@@ -19,13 +19,14 @@ pub use automation::AutomationEngine;
 pub use priority::{PriorityStack, StackEntry};
 pub use transition::{TransitionState, interpolate_color, interpolate_oklab, interpolate_srgb};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
 use crate::types::device::DeviceId;
 use crate::types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
+use crate::types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use crate::types::library::PresetId;
 use crate::types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, RenderGroup,
@@ -49,6 +50,25 @@ pub enum ControlsVersionMismatch {
     /// match. `current` is the server-side version the client should
     /// rebase against if they choose to retry.
     Stale { current: u64 },
+}
+
+/// Error variants for precondition-checked layer mutations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerMutationError {
+    /// No scene is currently active.
+    NoActiveScene,
+    /// The active scene exists but no group with the given id.
+    GroupMissing,
+    /// The group exists but no layer with the given id.
+    LayerMissing { layer_id: SceneLayerId },
+    /// The requested layer id already exists in the group.
+    DuplicateLayer { layer_id: SceneLayerId },
+    /// The supplied `layers_version` precondition is stale.
+    Stale { current: u64 },
+    /// The supplied layer payload violates layer-stack invariants.
+    InvalidLayer { errors: Vec<String> },
+    /// The supplied order is not an exact permutation of current layer ids.
+    InvalidOrder,
 }
 
 // ── SceneManager ────────────────────────────────────────────────────────
@@ -522,6 +542,132 @@ impl SceneManager {
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
     }
 
+    pub fn add_group_layer(
+        &mut self,
+        group_id: RenderGroupId,
+        layer: SceneLayer,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_group_layers(group_id, expected_version, |group| {
+            if group.layers.iter().any(|existing| existing.id == layer.id) {
+                return Err(LayerMutationError::DuplicateLayer { layer_id: layer.id });
+            }
+            let layer = layer.normalized();
+            if let Err(errors) = layer.validate() {
+                return Err(LayerMutationError::InvalidLayer { errors });
+            }
+            group.layers.push(layer);
+            Ok(())
+        })
+    }
+
+    pub fn update_group_layer(
+        &mut self,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        layer: SceneLayer,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_group_layers(group_id, expected_version, |group| {
+            if layer.id != layer_id {
+                return Err(LayerMutationError::InvalidLayer {
+                    errors: vec![format!(
+                        "layer id {} does not match target {}",
+                        layer.id, layer_id
+                    )],
+                });
+            }
+            let Some(index) = group.layers.iter().position(|layer| layer.id == layer_id) else {
+                return Err(LayerMutationError::LayerMissing { layer_id });
+            };
+            let layer = layer.normalized();
+            if let Err(errors) = layer.validate() {
+                return Err(LayerMutationError::InvalidLayer { errors });
+            }
+            group.layers[index] = layer;
+            Ok(())
+        })
+    }
+
+    pub fn remove_group_layer(
+        &mut self,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_group_layers(group_id, expected_version, |group| {
+            let Some(index) = group.layers.iter().position(|layer| layer.id == layer_id) else {
+                return Err(LayerMutationError::LayerMissing { layer_id });
+            };
+            group.layers.remove(index);
+            Ok(())
+        })
+    }
+
+    pub fn reorder_group_layers(
+        &mut self,
+        group_id: RenderGroupId,
+        layer_ids: Vec<SceneLayerId>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_group_layers(group_id, expected_version, |group| {
+            let current_ids = group
+                .layers
+                .iter()
+                .map(|layer| layer.id)
+                .collect::<HashSet<_>>();
+            let requested_ids = layer_ids.iter().copied().collect::<HashSet<_>>();
+            if current_ids.len() != group.layers.len()
+                || requested_ids.len() != layer_ids.len()
+                || current_ids != requested_ids
+            {
+                return Err(LayerMutationError::InvalidOrder);
+            }
+
+            let mut layers_by_id = group
+                .layers
+                .drain(..)
+                .map(|layer| (layer.id, layer))
+                .collect::<HashMap<_, _>>();
+            group.layers = layer_ids
+                .into_iter()
+                .map(|layer_id| {
+                    layers_by_id
+                        .remove(&layer_id)
+                        .expect("layer order was validated as an exact permutation")
+                })
+                .collect();
+            Ok(())
+        })
+    }
+
+    pub fn patch_layer_effect_controls(
+        &mut self,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        updates: HashMap<String, ControlValue>,
+        expected_version: Option<u64>,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError> {
+        self.mutate_group_layers(group_id, expected_version, |group| {
+            let Some(layer) = group.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+                return Err(LayerMutationError::LayerMissing { layer_id });
+            };
+            let LayerSource::Effect {
+                controls,
+                preset_id,
+                ..
+            } = &mut layer.source
+            else {
+                return Err(LayerMutationError::InvalidLayer {
+                    errors: vec![format!("layer {layer_id} is not an effect layer")],
+                });
+            };
+            controls.extend(updates);
+            *preset_id = None;
+            Ok(())
+        })
+    }
+
     #[must_use]
     pub fn remove_display_groups_for_device(
         &mut self,
@@ -744,6 +890,45 @@ impl SceneManager {
         self.scenes.get_mut(&scene_id)
     }
 
+    fn mutate_group_layers<F>(
+        &mut self,
+        group_id: RenderGroupId,
+        expected_version: Option<u64>,
+        mutate: F,
+    ) -> Result<(&RenderGroup, u64), LayerMutationError>
+    where
+        F: FnOnce(&mut RenderGroup) -> Result<(), LayerMutationError>,
+    {
+        let scene = self
+            .active_scene_mut()
+            .ok_or(LayerMutationError::NoActiveScene)?;
+        let group = scene
+            .groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .ok_or(LayerMutationError::GroupMissing)?;
+        if let Some(expected) = expected_version
+            && expected != group.layers_version
+        {
+            return Err(LayerMutationError::Stale {
+                current: group.layers_version,
+            });
+        }
+
+        materialize_legacy_effect_layer(group);
+        mutate(group)?;
+        sync_legacy_effect_fields(group);
+        group.layers_version = group.layers_version.saturating_add(1);
+        let new_version = group.layers_version;
+
+        self.refresh_active_render_groups();
+        let current = self
+            .active_scene()
+            .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
+            .ok_or(LayerMutationError::GroupMissing)?;
+        Ok((current, new_version))
+    }
+
     fn refresh_active_render_groups(&mut self) {
         let next_groups = self
             .active_scene()
@@ -754,6 +939,54 @@ impl SceneManager {
                 self.active_render_groups_revision.saturating_add(1);
         }
         self.active_render_groups = next_groups;
+    }
+}
+
+fn materialize_legacy_effect_layer(group: &mut RenderGroup) {
+    if !group.layers.is_empty() {
+        return;
+    }
+    let Some(effect_id) = group.effect_id else {
+        return;
+    };
+    group.layers.push(SceneLayer::from_effect(
+        group.legacy_layer_id(),
+        effect_id,
+        group.controls.clone(),
+        group.control_bindings.clone(),
+        group.preset_id,
+    ));
+}
+
+fn sync_legacy_effect_fields(group: &mut RenderGroup) {
+    let legacy = group.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect {
+            effect_id,
+            controls,
+            control_bindings,
+            preset_id,
+        } => Some((
+            Some(*effect_id),
+            controls.clone(),
+            control_bindings.clone(),
+            *preset_id,
+        )),
+        _ => None,
+    });
+
+    match legacy {
+        Some((effect_id, controls, control_bindings, preset_id)) => {
+            group.effect_id = effect_id;
+            group.controls = controls;
+            group.control_bindings = control_bindings;
+            group.preset_id = preset_id;
+        }
+        None => {
+            group.effect_id = None;
+            group.controls.clear();
+            group.control_bindings.clear();
+            group.preset_id = None;
+        }
     }
 }
 

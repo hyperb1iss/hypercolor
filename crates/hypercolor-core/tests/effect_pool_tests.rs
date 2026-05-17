@@ -76,6 +76,7 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         controls: HashMap::new(),
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
@@ -83,6 +84,7 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         display_target: None,
         role: RenderGroupRole::Custom,
         controls_version: 0,
+        layers_version: 0,
     }
 }
 

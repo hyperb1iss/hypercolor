@@ -313,6 +313,7 @@ fn render_group(
         controls: HashMap::from([("color".to_owned(), ControlValue::Color(color))]),
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout: layout_with_zone(bench_routing_zone(zone_id, device_id, led_count, None)),
         brightness: 1.0,
         enabled: true,
@@ -320,6 +321,7 @@ fn render_group(
         display_target: None,
         role: RenderGroupRole::Custom,
         controls_version: 0,
+        layers_version: 0,
     }
 }
 
