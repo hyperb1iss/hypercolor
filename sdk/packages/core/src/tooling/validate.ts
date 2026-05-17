@@ -16,7 +16,10 @@ const VALID_CONTROL_TYPES = new Set([
     'sensor',
     'area',
     'rect',
+    'asset',
 ])
+
+const VALID_MEDIA_KINDS = new Set(['any', 'image', 'video', 'lottie'])
 
 function warning(check: string, code: string, message: string): ValidationMessage {
     return { check, code, message }
@@ -89,6 +92,15 @@ export function validateHtmlArtifact(html: string, filePath: string): Validation
                     'control_values',
                     'MISSING_COMBOBOX_VALUES',
                     `Control "${control.property}" is a combobox without values`,
+                ),
+            )
+        }
+        if (control.type === 'asset' && control.mediaKind && !VALID_MEDIA_KINDS.has(control.mediaKind)) {
+            errors.push(
+                error(
+                    'control_media_kind',
+                    'INVALID_MEDIA_KIND',
+                    `Control "${control.property}" uses unknown media kind "${control.mediaKind}"`,
                 ),
             )
         }

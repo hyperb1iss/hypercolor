@@ -1,4 +1,5 @@
 export type {
+    AssetControlDefinition,
     BaseControls,
     BooleanControlDefinition,
     ColorControlDefinition,
@@ -24,9 +25,11 @@ export type { ControlMap, ControlMapValue, ControlShorthand } from './infer'
 export { inferControl } from './infer'
 export { deriveLabel, deriveUniformName } from './names'
 export type {
+    AssetOptions,
     ControlSpec,
     ControlTypeName,
     FontOptions,
+    MediaKind,
     NormalizeHint,
     PaletteControlOptions,
     RectOptions,
@@ -35,6 +38,7 @@ export type {
 } from './specs'
 // ── Declarative control API ──────────────────────────────────────────
 export {
+    asset,
     color,
     combo,
     font,

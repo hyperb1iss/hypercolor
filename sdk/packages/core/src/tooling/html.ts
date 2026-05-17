@@ -45,6 +45,7 @@ function parseControl(attrs: Map<string, string>): HtmlControlMetadata | undefin
         group: attr(attrs, 'group'),
         label: attr(attrs, 'label') ?? property,
         max: parseNumber(attr(attrs, 'max')),
+        mediaKind: attr(attrs, 'media-kind'),
         min: parseNumber(attr(attrs, 'min')),
         property,
         step: parseNumber(attr(attrs, 'step')),

@@ -49,6 +49,7 @@ export interface BuildControlDef {
     step?: number
     aspectLock?: number
     preview?: 'screen' | 'web' | 'canvas'
+    mediaKind?: string
 }
 
 export interface ExtractedArtifactMetadata {
@@ -93,6 +94,7 @@ export interface HtmlControlMetadata {
     values: string[]
     tooltip?: string
     group?: string
+    mediaKind?: string
 }
 
 export interface HtmlPresetMetadata {

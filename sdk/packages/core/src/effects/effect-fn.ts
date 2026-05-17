@@ -156,6 +156,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
 
     protected createUniforms(): void {
         for (const ctrl of this.resolvedControls) {
+            if (ctrl.spec.__type === 'asset') continue
             const initial = this.resolveInitialUniformValue(ctrl)
             this.registerUniform(ctrl.uniformName, initial)
         }
@@ -177,6 +178,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
 
     protected updateUniforms(controls: Record<string, unknown>): void {
         for (const ctrl of this.resolvedControls) {
+            if (ctrl.spec.__type === 'asset') continue
             const raw = controls[ctrl.key]
             if (raw !== undefined) {
                 this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw, true))

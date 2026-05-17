@@ -49,6 +49,7 @@ function controlToMeta(control: BuildControlDef): string {
     if (control.group) attrs.push(`group="${escapeAttr(control.group)}"`)
     if (control.aspectLock != null) attrs.push(`aspectLock="${control.aspectLock}"`)
     if (control.preview) attrs.push(`preview="${control.preview}"`)
+    if (control.mediaKind) attrs.push(`media-kind="${escapeAttr(control.mediaKind)}"`)
 
     return `  <meta ${attrs.join(' ')} />`
 }

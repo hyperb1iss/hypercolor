@@ -55,6 +55,13 @@ export interface TextFieldControlDefinition extends ControlDefinition {
     default: string
 }
 
+/** User media asset picker. */
+export interface AssetControlDefinition extends ControlDefinition {
+    type: 'asset'
+    default: string
+    mediaKind?: string
+}
+
 /** Normalized viewport rectangle control. */
 export interface RectControlDefinition extends ControlDefinition {
     type: 'rect'
@@ -75,6 +82,7 @@ export type ControlDefinitionType =
     | ComboboxControlDefinition
     | HueControlDefinition
     | ColorControlDefinition
+    | AssetControlDefinition
     | RectControlDefinition
     | TextFieldControlDefinition
 

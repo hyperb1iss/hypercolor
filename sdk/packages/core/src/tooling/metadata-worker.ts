@@ -22,6 +22,7 @@ function toBuildControls(def: RegisteredArtifactDef): BuildControlDef[] {
         if (ctrl.spec.meta.values) buildControl.values = ctrl.spec.meta.values as string[]
         if (ctrl.spec.meta.aspectLock != null) buildControl.aspectLock = ctrl.spec.meta.aspectLock as number
         if (ctrl.spec.meta.preview) buildControl.preview = ctrl.spec.meta.preview as 'screen' | 'web' | 'canvas'
+        if (ctrl.spec.meta.mediaKind) buildControl.mediaKind = String(ctrl.spec.meta.mediaKind)
 
         return buildControl
     })
@@ -45,9 +46,9 @@ function validateShaderBindings(entryPath: string, def: RegisteredArtifactDef): 
     if (shaderUniforms.size === 0) return
 
     const controlUniforms = new Set(
-        def.resolvedControls.map(
-            (ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`,
-        ),
+        def.resolvedControls
+            .filter((ctrl) => ctrl.spec.__type !== 'asset')
+            .map((ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`),
     )
 
     const missing = Array.from(controlUniforms).filter((name) => !shaderUniforms.has(name))

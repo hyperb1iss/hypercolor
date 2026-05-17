@@ -116,6 +116,48 @@ describe('tooling build', () => {
         }
     })
 
+    test('emits asset control media kind metadata', async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-asset-control-'))
+        const entryDir = join(tempRoot, 'media-mask')
+        const entryPath = join(entryDir, 'main.ts')
+        const outDir = join(tempRoot, 'dist')
+
+        mkdirSync(entryDir, { recursive: true })
+        writeFileSync(
+            entryPath,
+            `
+import { asset, effect } from ${JSON.stringify(SDK_ALIAS)}
+
+const shader = \`#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+    fragColor = vec4(1.0);
+}
+\`
+
+export default effect('Media Mask', shader, {
+    mask: asset('Mask', 'image'),
+})
+`,
+        )
+
+        try {
+            const [result] = await buildArtifacts({
+                entryPaths: [entryPath],
+                outDir,
+                sdkAliasPath: SDK_ALIAS,
+            })
+
+            expect(result.metadata.controls[0]?.type).toBe('asset')
+            expect(result.metadata.controls[0]?.mediaKind).toBe('image')
+            expect(result.html).toContain('type="asset"')
+            expect(result.html).toContain('media-kind="image"')
+        } finally {
+            rmSync(tempRoot, { force: true, recursive: true })
+        }
+    })
+
     test('fails fast when an effect uses audio helpers without audio: true', async () => {
         const tempRoot = mkdtempSync(join(tmpdir(), 'hypercolor-audio-optin-'))
         const entryDir = join(tempRoot, 'missing-audio-optin')

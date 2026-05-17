@@ -6,7 +6,16 @@
  */
 
 /** Discriminated union tag for control types. */
-export type ControlTypeName = 'number' | 'combobox' | 'boolean' | 'color' | 'hue' | 'textfield' | 'sensor' | 'rect'
+export type ControlTypeName =
+    | 'number'
+    | 'combobox'
+    | 'boolean'
+    | 'color'
+    | 'hue'
+    | 'textfield'
+    | 'sensor'
+    | 'rect'
+    | 'asset'
 
 export interface RectValue {
     x: number
@@ -188,6 +197,19 @@ export interface TextOptions {
 /** Text field control. */
 export function text(label: string, defaultValue: string, opts?: TextOptions): ControlSpec<'textfield'> {
     return spec('textfield', label, defaultValue, {}, opts)
+}
+
+export type MediaKind = 'any' | 'image' | 'video' | 'lottie'
+
+export interface AssetOptions {
+    default?: string
+    tooltip?: string
+    group?: string
+}
+
+/** User media asset picker. */
+export function asset(label: string, mediaKind: MediaKind = 'any', opts?: AssetOptions): ControlSpec<'asset'> {
+    return spec('asset', label, opts?.default ?? '', { mediaKind }, opts)
 }
 
 export interface SensorOptions {

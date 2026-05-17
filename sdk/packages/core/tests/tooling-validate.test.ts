@@ -59,4 +59,33 @@ describe('tooling validate', () => {
         expect(result.warnings.some((entry) => entry.code === 'MISSING_VERSION')).toBeTrue()
         expect(result.warnings.some((entry) => entry.code === 'UNKNOWN_PRESET_CONTROL')).toBeTrue()
     })
+
+    test('accepts asset controls with media kind metadata', () => {
+        const html = VALID_EFFECT.replace(
+            '</head>',
+            `
+    <meta property="mask" label="Mask" type="asset" media-kind="image" />
+  </head>`,
+        )
+
+        const result = validateHtmlArtifact(html, '/tmp/asset.html')
+
+        expect(result.valid).toBeTrue()
+        expect(result.errors).toHaveLength(0)
+        expect(result.metadata.controls).toBe(3)
+    })
+
+    test('flags invalid asset media kinds', () => {
+        const html = VALID_EFFECT.replace(
+            '</head>',
+            `
+    <meta property="mask" label="Mask" type="asset" media-kind="model" />
+  </head>`,
+        )
+
+        const result = validateHtmlArtifact(html, '/tmp/asset.html')
+
+        expect(result.valid).toBeFalse()
+        expect(result.errors.some((entry) => entry.code === 'INVALID_MEDIA_KIND')).toBeTrue()
+    })
 })

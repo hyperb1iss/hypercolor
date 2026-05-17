@@ -25,7 +25,7 @@ import './runtime'
 export { getAudioData as audio } from './audio'
 export type { ControlMap, ControlShorthand, ControlSpec } from './controls'
 // Control factories (effects + faces)
-export { color, combo, font, hue, num, paletteControl, rect, sensor, text, toggle } from './controls'
+export { asset, color, combo, font, hue, num, paletteControl, rect, sensor, text, toggle } from './controls'
 export type { CanvasFnOptions, DrawFn, EffectFnOptions, FactoryFn, ShaderContext } from './effects'
 // Effect functions
 export { canvas, effect } from './effects'
@@ -36,6 +36,8 @@ export { createPaletteFn, getPalette, paletteNames, samplePalette, samplePalette
 // ── Control helpers ─────────────────────────────────────────────────────
 
 export type {
+    AssetControlDefinition,
+    AssetOptions,
     BaseControls,
     BooleanControlDefinition,
     ColorControlDefinition,
@@ -45,6 +47,7 @@ export type {
     ControlValues,
     FontOptions,
     HueControlDefinition,
+    MediaKind,
     NumberControlDefinition,
     PaletteControlOptions,
     RectControlDefinition,
