@@ -4,6 +4,7 @@
 //! spatial sampler, event bus, and configuration management.
 pub use hypercolor_types as types;
 
+pub mod asset;
 pub mod attachment;
 pub mod blend_math;
 pub mod bus;
