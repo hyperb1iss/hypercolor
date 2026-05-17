@@ -66,10 +66,20 @@ async fn openapi_json_is_served_with_expected_paths() {
         body["paths"]["/api/v1/effects/{id}/apply"]["post"]["requestBody"]["required"],
         true
     );
+    assert_eq!(
+        body["paths"]["/api/v1/scenes/{id}/zones"]["post"]["requestBody"]["required"],
+        true
+    );
+    assert!(
+        body["paths"]["/api/v1/scenes/{id}/unassigned-behavior"]["patch"]["responses"]["412"]
+            .is_object()
+    );
     assert!(body["paths"]["/api/v1/control-surfaces"].is_object());
     assert!(body["components"]["schemas"]["ControlSurfaceDocument"].is_object());
     assert!(body["components"]["schemas"]["ApplyControlChangesRequest"].is_object());
     assert!(body["components"]["schemas"]["ControlFieldDescriptor"].is_object());
+    assert!(body["components"]["schemas"]["CreateZoneRequest"].is_object());
+    assert!(body["components"]["schemas"]["AssignDevicesRequest"].is_object());
 
     for route in ROUTES {
         let operation = &body["paths"][route.path][route.method];

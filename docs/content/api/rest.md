@@ -548,6 +548,85 @@ Delete a scene.
 Get the currently active scene and its configuration.
 {% end %}
 
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
+List the zones in a scene. Responses include `groups_revision` and an `ETag`
+header with the same revision for optimistic concurrency.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
+Create a custom zone in a scene. Structural mutations accept `If-Match` with
+the last seen `groups_revision`; stale revisions return `412 Precondition Failed`.
+
+**Request body:**
+
+```json
+{
+  "name": "Desk",
+  "color": "#80ffea"
+}
+```
+
+{% end %}
+
+{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
+Get one scene zone by ID.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
+Update zone metadata. Set `make_primary` to promote a zone to the primary
+output group; that structural edit should include `If-Match`.
+
+**Request body:**
+
+```json
+{
+  "name": "Desk halo",
+  "description": "Ambient strips behind the monitor",
+  "brightness": 0.8,
+  "enabled": true
+}
+```
+
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
+Delete a custom zone. Primary and display zones cannot be deleted through this route.
+{% end %}
+
+{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/devices") %}
+Assign device zones to a scene zone. Each item may reference an existing
+device-zone ID or provide a full `DeviceZone` payload.
+
+**Request body:**
+
+```json
+{
+  "device_zones": [
+    { "id": "keyboard-left" }
+  ]
+}
+```
+
+{% end %}
+
+{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}") %}
+Unassign one device zone from a scene zone.
+{% end %}
+
+{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/unassigned-behavior") %}
+Set how outputs not claimed by any zone should render.
+
+**Request body:**
+
+```json
+{
+  "unassigned_behavior": "off"
+}
+```
+
+Values are `"off"`, `"hold"`, or `{ "fallback": "<zone_uuid>" }`.
+{% end %}
+
 {% api_endpoint(method="POST", path="/api/v1/scenes/{id}/activate") %}
 Activate a scene, applying its effect and controls with the configured transition.
 {% end %}

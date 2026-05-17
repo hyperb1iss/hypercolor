@@ -7,6 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use hypercolor_core::scene::{RenderGroupMetaPatch, SceneManager, ZoneMutationError};
 use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneSettingsChangeKind};
@@ -21,13 +22,13 @@ use crate::api::{
     scenes,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateZoneRequest {
     pub name: String,
     pub color: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateZoneRequest {
     pub name: Option<String>,
     pub description: Option<Option<String>>,
@@ -37,13 +38,15 @@ pub struct UpdateZoneRequest {
     pub make_primary: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AssignDevicesRequest {
+    #[schema(value_type = Vec<Object>)]
     pub device_zones: Vec<DeviceZoneAssignment>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateUnassignedBehaviorRequest {
+    #[schema(value_type = String)]
     pub unassigned_behavior: UnassignedBehavior,
 }
 
@@ -54,26 +57,30 @@ pub enum DeviceZoneAssignment {
     New(DeviceZone),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneListResponse {
+    #[schema(value_type = Vec<Object>)]
     pub items: Vec<RenderGroup>,
     pub groups_revision: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneResponse {
+    #[schema(value_type = Object)]
     pub zone: RenderGroup,
     pub groups_revision: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ZoneMutationResponse {
+    #[schema(value_type = Vec<Object>)]
     pub items: Vec<RenderGroup>,
     pub groups_revision: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UnassignedBehaviorResponse {
+    #[schema(value_type = String)]
     pub unassigned_behavior: UnassignedBehavior,
     pub groups_revision: u64,
 }

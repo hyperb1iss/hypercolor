@@ -8,7 +8,7 @@
 > backend contract), and the engine hardening (unassigned-device behavior)
 > needed to ship it.
 
-**Status:** Draft
+**Status:** Implemented
 **Author:** Nova
 **Date:** 2026-05-17
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -839,22 +839,24 @@ present, a layout apply must target an explicit zone or preserve the existing
 ### 10.1 Per-Zone Preview Frames
 
 The render thread holds each zone's rendered output. Spec 64 publishes each
-as an addressable preview. A new WebSocket message:
+as an addressable preview on the `zone_preview` WebSocket channel. Each
+changed active zone emits one binary `0x08` payload per preview tick:
 
 ```
 ZonePreviewFrame {
     scene_id: SceneId,
     zone_id: RenderGroupId,
-    width: u32,
-    height: u32,
-    encoding: PreviewEncoding,   // existing JPEG/raw encoding enum
+    frame_number: u32,
+    timestamp_ms: u32,
+    width: u16,
+    height: u16,
+    format: PreviewPixelFormat,  // RGB, RGBA, or JPEG
     payload: Bytes,
 }
 ```
 
-Published on the existing preview channel, one message per active zone per
-preview tick. The composited authoritative-canvas preview stays as is for the
-single-canvas dashboard view.
+The composited authoritative-canvas preview stays as is for the single-canvas
+dashboard view.
 
 ### 10.2 Frame Source
 
@@ -1126,6 +1128,7 @@ canvas the layer stack composited.
 ## 15. Delivery Waves
 
 Ordered by dependency. Each wave is independently shippable and verifiable.
+As of 2026-05-17, Waves 1 through 4 are implemented in the backend.
 
 | Wave | Scope                                                                | Crates           |
 | ---- | -------------------------------------------------------------------- | ---------------- |

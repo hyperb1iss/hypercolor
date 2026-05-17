@@ -10,7 +10,8 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::{
-    config, controls, devices, drivers, effects, envelope, layers, profiles, settings, system,
+    config, controls, devices, drivers, effects, envelope, layers, profiles, scenes_zones,
+    settings, system,
 };
 
 #[derive(OpenApi)]
@@ -62,6 +63,14 @@ use crate::api::{
             layers::PatchLayerControlsRequest,
             layers::LayerStackResponse,
             profiles::ApplyProfileRequest,
+            scenes_zones::CreateZoneRequest,
+            scenes_zones::UpdateZoneRequest,
+            scenes_zones::AssignDevicesRequest,
+            scenes_zones::UpdateUnassignedBehaviorRequest,
+            scenes_zones::ZoneListResponse,
+            scenes_zones::ZoneResponse,
+            scenes_zones::ZoneMutationResponse,
+            scenes_zones::UnassignedBehaviorResponse,
             settings::SetBrightnessRequest,
             config::SetConfigRequest,
             system::SystemStatus,
@@ -699,6 +708,58 @@ pub const ROUTES: &[RouteSpec] = &[
         "scenes",
         "Activate scene",
     ),
+    RouteSpec::get(
+        "/api/v1/scenes/{id}/zones",
+        "list_scene_zones",
+        "scenes",
+        "List scene zones",
+    ),
+    RouteSpec::post(
+        "/api/v1/scenes/{id}/zones",
+        "create_scene_zone",
+        "scenes",
+        "Create scene zone",
+    )
+    .with_request_body("CreateZoneRequest", true),
+    RouteSpec::get(
+        "/api/v1/scenes/{id}/zones/{zone_id}",
+        "get_scene_zone",
+        "scenes",
+        "Get scene zone",
+    ),
+    RouteSpec::patch(
+        "/api/v1/scenes/{id}/zones/{zone_id}",
+        "update_scene_zone",
+        "scenes",
+        "Update scene zone",
+    )
+    .with_request_body("UpdateZoneRequest", true),
+    RouteSpec::delete(
+        "/api/v1/scenes/{id}/zones/{zone_id}",
+        "delete_scene_zone",
+        "scenes",
+        "Delete scene zone",
+    ),
+    RouteSpec::post(
+        "/api/v1/scenes/{id}/zones/{zone_id}/devices",
+        "assign_scene_zone_devices",
+        "scenes",
+        "Assign device zones",
+    )
+    .with_request_body("AssignDevicesRequest", true),
+    RouteSpec::delete(
+        "/api/v1/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}",
+        "unassign_scene_zone_device",
+        "scenes",
+        "Unassign device zone",
+    ),
+    RouteSpec::patch(
+        "/api/v1/scenes/{id}/unassigned-behavior",
+        "update_scene_unassigned_behavior",
+        "scenes",
+        "Update unassigned behavior",
+    )
+    .with_request_body("UpdateUnassignedBehaviorRequest", true),
     RouteSpec::post(
         "/api/v1/scenes/{id}/layers/broadcast-media",
         "broadcast_media_layer",
@@ -1082,6 +1143,7 @@ fn operation(route: &RouteSpec) -> utoipa::openapi::path::Operation {
         .response("400", Response::new("Bad request"))
         .response("404", Response::new("Resource not found"))
         .response("409", Response::new("State conflict"))
+        .response("412", Response::new("Precondition failed"))
         .response("422", Response::new("Validation error"))
         .response("500", Response::new("Internal daemon error"));
 

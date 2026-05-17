@@ -39,7 +39,7 @@ All messages are JSON with a `type` tag:
 { "type": "message_type", ... }
 ```
 
-Binary messages are data payloads for the `frames`, `spectrum`, `canvas`, `screen_canvas`, `web_viewport_canvas`, and `display_preview` channels. They are never JSON.
+Binary messages are data payloads for the `frames`, `spectrum`, `canvas`, `screen_canvas`, `web_viewport_canvas`, `zone_preview`, and `display_preview` channels. They are never JSON.
 
 ## Connect Handshake
 
@@ -69,7 +69,7 @@ On connection the server sends exactly one `hello` message, then begins relaying
     "total_leds": 432
   },
   "capabilities": ["frames", "spectrum", "events", "frame_events", "canvas", "screen_canvas",
-                   "web_viewport_canvas", "metrics", "device_metrics",
+                   "web_viewport_canvas", "zone_preview", "metrics", "device_metrics",
                    "display_preview", "commands", "canvas_format_jpeg"],
   "subscriptions": ["events"]
 }
@@ -88,6 +88,7 @@ The `subscriptions` field lists which channels are already active. Only `events`
 | `canvas`             | Binary    | Rendered RGBA canvas stream                         |
 | `screen_canvas`      | Binary    | Screen-capture canvas stream                        |
 | `web_viewport_canvas`| Binary    | Web viewport canvas stream                          |
+| `zone_preview`       | Binary    | Per-zone preview frames                             |
 | `metrics`            | JSON      | Render performance metrics (periodic snapshot)      |
 | `device_metrics`     | JSON      | Per-device output telemetry (periodic snapshot)     |
 | `display_preview`    | Binary    | Per-display JPEG preview frames                     |
@@ -305,7 +306,7 @@ For each bin (repeated bin_count times):
   4      magnitude (f32 LE)
 ```
 
-### `canvas` / `screen_canvas` / `web_viewport_canvas` config
+### `canvas` / `screen_canvas` / `web_viewport_canvas` / `zone_preview` config
 
 | Field    | Type    | Default | Range / Values                                |
 | -------- | ------- | ------- | --------------------------------------------- |
@@ -313,6 +314,37 @@ For each bin (repeated bin_count times):
 | `format` | string  | `"rgb"` | `"rgb"`, `"rgba"`, `"jpeg"`                   |
 | `width`  | integer | `0`     | 0..=4096 (0 = use daemon canvas width)        |
 | `height` | integer | `0`     | 0..=4096 (0 = use daemon canvas height)       |
+
+Canvas-style payloads are binary. `canvas` uses type `0x03`,
+`screen_canvas` uses `0x05`, and `web_viewport_canvas` uses `0x06`.
+Their payload header is:
+
+```
+Byte(s)  Field
+0        type
+1-4      frame_number (u32 LE)
+5-8      timestamp_ms (u32 LE)
+9-10     width (u16 LE)
+11-12    height (u16 LE)
+13       format: 0 = RGB, 1 = RGBA, 2 = JPEG
+14..     payload bytes
+```
+
+`zone_preview` uses the same config fields and payload formats, but each
+frame is addressed to a scene and zone:
+
+```
+Byte(s)  Field
+0        type = 0x08
+1-4      frame_number (u32 LE)
+5-8      timestamp_ms (u32 LE)
+9-24     scene_id UUID bytes
+25-40    zone_id UUID bytes
+41-42    width (u16 LE)
+43-44    height (u16 LE)
+45       format: 0 = RGB, 1 = RGBA, 2 = JPEG
+46..     payload bytes
+```
 
 ### `metrics` / `device_metrics` config
 
@@ -339,7 +371,7 @@ const ws = new WebSocket("ws://localhost:9420/api/v1/ws");
 ws.onmessage = (event) => {
   if (event.data instanceof ArrayBuffer) {
     // Binary payload — type byte at offset 0 identifies the channel:
-    // 0x01 = frames, 0x02 = spectrum, 0x03/0x05/0x06/0x07 = canvas variants
+    // 0x01 = frames, 0x02 = spectrum, 0x03/0x05/0x06/0x07/0x08 = previews
     const view = new DataView(event.data);
     const type = view.getUint8(0);
     if (type === 0x01) parseFramePayload(view);
