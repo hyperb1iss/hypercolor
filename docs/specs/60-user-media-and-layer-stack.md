@@ -9,10 +9,10 @@
 > Wave 1 display-face overlay fix so LED and display-face groups can use
 > one composition contract.
 
-**Status:** Implementation-ready (v2; Wave 1 landed, Waves 0/2/3 next)
+**Status:** Substrate implemented; native tier-3/4/5 decoders deferred
 **Author:** Nova
 **Date:** 2026-05-15
-**Updated:** 2026-05-16
+**Updated:** 2026-05-17
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
 **SDK:** `@hypercolor/sdk` (additive)
 **Depends on:** Display Faces (42), Face SDK (43), Web Viewport Effect (44),
@@ -21,6 +21,21 @@ Canonical Render Pipeline (48), Screen Capture (14)
 landed "display-face composition refactor slice" (Sibyl procedure)
 
 ---
+
+## Implementation Status - 2026-05-17
+
+The layer-stack substrate is implemented: shared layer types and serde
+migration, `layers_version` mutations, REST layer endpoints, effect, media,
+screen, web, and color producer-pump routing, SparkleFlinger transform and
+adjust, asset library + browser, SDK asset controls, animated WebP, runtime
+bindings, and scene-wide media broadcast routing are all in tree.
+
+Native video, Lottie, and livestream decoding are intentionally still behind
+feature posture. The asset library accepts MP4/WebM/Lottie records and the
+producer returns explicit unsupported-decoder errors under `media-video` and
+`media-lottie` until the gstreamer/rlottie integration work lands. Legacy
+`RenderGroup.effect_id`/`controls` mirrors remain for compatibility and are
+tracked as a follow-up purge once old-client compatibility can be dropped.
 
 ## Table of Contents
 
@@ -1270,6 +1285,7 @@ Status codes:
 ```
 GET    /api/v1/scenes/{id}/groups/{group_id}/layers
 POST   /api/v1/scenes/{id}/groups/{group_id}/layers
+POST   /api/v1/scenes/{id}/layers/broadcast-media
 PUT    /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}
 DELETE /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}
 PATCH  /api/v1/scenes/{id}/groups/{group_id}/layers/order
@@ -1703,6 +1719,11 @@ Lottie (tier 4). HTTP livestream (tier 5). "Scene-wide" layer authoring
 that broadcasts one media asset across multiple render groups with
 per-group transforms.
 
+Current code lands the scene-wide broadcast route plus `media-lottie` and
+`media-video` feature-gated decoder posture. The native rlottie/gstreamer
+backends remain follow-up implementation work because they add external
+runtime dependencies and codec policy surface.
+
 ---
 
 ## 17. Known Constraints
@@ -2028,10 +2049,9 @@ reporting completion.
 closed the alpha/black-fallback defects, and added no new user-facing
 surface area beyond what already existed in `DisplayFaceBlendMode`.
 
-**Start implementation with Wave 0A.** The schema and serde helper are
-the next load-bearing pieces. Land them before producer-pump work so
-every later wave can depend on stable `SceneLayer` IDs, ordering, and
-`layers_version` semantics.
+**The implementation substrate is now in place.** The remaining work is
+native decoder integration for video/Lottie/livestream and the later
+compatibility purge of legacy render-group mirrors.
 
 **Treat Wave 6 (video) and Wave 7 (Lottie + livestream) as marketing
 ammunition.** They are the differentiators against iCUE Murals and the
@@ -2045,8 +2065,9 @@ compositor. The user-facing payoff is a layer stack that competitors do
 not have, a vector media format (Lottie) that nobody else supports, and
 a livestream source that nobody else has even tried.
 
-Start with Wave 0A, then Wave 0B/0C, then Wave 2A. The media library
-should wait until effect-layer stacks are rendering end to end.
+Do not start new work by reshaping the layer model. Build on the landed
+`SceneLayer`/producer-pump/asset-library contract unless a future spec
+explicitly replaces it.
 
 ---
 
