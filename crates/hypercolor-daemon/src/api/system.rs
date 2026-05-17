@@ -25,6 +25,12 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_types::server::ServerIdentity;
 
 const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
+const MULTI_ZONE_CAPABILITIES: &[&str] = &[
+    "multi-zone-sampling",
+    "zone-crud",
+    "zone-device-assignment",
+    "scene-unassigned-behavior-write",
+];
 
 // ── Response Types ───────────────────────────────────────────────────────
 
@@ -52,6 +58,7 @@ pub struct SystemStatus {
     pub effect_health: EffectHealthStatus,
     pub preview_runtime: PreviewRuntimeStatus,
     pub event_bus_subscribers: usize,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -390,6 +397,10 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         effect_health,
         preview_runtime,
         event_bus_subscribers: subscribers,
+        capabilities: MULTI_ZONE_CAPABILITIES
+            .iter()
+            .map(|capability| (*capability).to_owned())
+            .collect(),
     })
 }
 

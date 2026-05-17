@@ -25,6 +25,7 @@ pub mod openapi;
 pub mod preview;
 pub mod profiles;
 pub mod scenes;
+pub mod scenes_zones;
 pub mod security;
 pub mod settings;
 pub mod simulators;
@@ -1190,6 +1191,28 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route(
             "/scenes/{id}/activate",
             axum::routing::post(scenes::activate_scene),
+        )
+        .route(
+            "/scenes/{id}/zones",
+            axum::routing::get(scenes_zones::list_zones).post(scenes_zones::create_zone),
+        )
+        .route(
+            "/scenes/{id}/zones/{zone_id}",
+            axum::routing::get(scenes_zones::get_zone)
+                .patch(scenes_zones::update_zone)
+                .delete(scenes_zones::delete_zone),
+        )
+        .route(
+            "/scenes/{id}/zones/{zone_id}/devices",
+            axum::routing::post(scenes_zones::assign_devices),
+        )
+        .route(
+            "/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}",
+            axum::routing::delete(scenes_zones::unassign_device),
+        )
+        .route(
+            "/scenes/{id}/unassigned-behavior",
+            axum::routing::patch(scenes_zones::update_unassigned_behavior),
         )
         .route(
             "/scenes/{id}/layers/broadcast-media",

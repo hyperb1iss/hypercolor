@@ -120,6 +120,13 @@ pub enum RenderGroupChangeKind {
     ControlsPatched,
 }
 
+/// How scene-level settings changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneSettingsChangeKind {
+    UnassignedBehavior,
+}
+
 /// How an asset library record changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -609,6 +616,13 @@ pub enum HypercolorEvent {
         health: LayerHealth,
     },
 
+    /// Scene-level settings changed without activating a different scene.
+    SceneSettingsChanged {
+        scene_id: SceneId,
+        groups_revision: u64,
+        kind: SceneSettingsChangeKind,
+    },
+
     /// The active scene changed.
     ActiveSceneChanged {
         previous: Option<SceneId>,
@@ -888,6 +902,7 @@ impl HypercolorEvent {
             | Self::RenderGroupChanged { .. }
             | Self::LayerStackChanged { .. }
             | Self::LayerHealthChanged { .. }
+            | Self::SceneSettingsChanged { .. }
             | Self::ActiveSceneChanged { .. } => EventCategory::Scene,
 
             Self::AudioSourceChanged { .. }
