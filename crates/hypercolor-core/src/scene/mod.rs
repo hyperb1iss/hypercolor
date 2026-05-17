@@ -406,12 +406,18 @@ impl SceneManager {
 
         if let Some(group) = scene.primary_group_mut() {
             let effect_changed = group.effect_id != Some(effect.id);
-            group.effect_id = Some(effect.id);
-            group.controls = controls;
-            if effect_changed {
-                group.control_bindings.clear();
-            }
-            group.preset_id = active_preset_id;
+            let control_bindings = if effect_changed {
+                HashMap::new()
+            } else {
+                group.control_bindings.clone()
+            };
+            replace_legacy_effect_layer_stack(
+                group,
+                effect.id,
+                controls,
+                control_bindings,
+                active_preset_id,
+            );
             group.layout = full_scope_layout;
             group.enabled = true;
             group.display_target = None;
@@ -465,11 +471,12 @@ impl SceneManager {
 
         if let Some(group) = scene.display_group_for_mut(device_id) {
             let effect_changed = group.effect_id != Some(effect.id);
-            group.effect_id = Some(effect.id);
-            group.controls = controls;
-            if effect_changed {
-                group.control_bindings.clear();
-            }
+            let control_bindings = if effect_changed {
+                HashMap::new()
+            } else {
+                group.control_bindings.clone()
+            };
+            replace_legacy_effect_layer_stack(group, effect.id, controls, control_bindings, None);
             group.layout = layout;
             group.display_target = Some(DisplayFaceTarget::new(device_id));
             group.enabled = true;
@@ -940,8 +947,20 @@ impl SceneManager {
     ) -> Option<&RenderGroup> {
         let scene = self.active_scene_mut()?;
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
-        group.controls = defaults;
-        group.preset_id = None;
+        if let Some(LayerSource::Effect {
+            controls,
+            preset_id,
+            ..
+        }) = legacy_effect_layer_source_mut(group)
+        {
+            *controls = defaults;
+            *preset_id = None;
+            sync_legacy_effect_fields(group);
+            group.layers_version = group.layers_version.saturating_add(1);
+        } else {
+            group.controls = defaults;
+            group.preset_id = None;
+        }
         // Reset is a controls mutation from a concurrency standpoint
         // — any modal that opened before this call is holding a
         // stale snapshot, so its next `If-Match` PATCH must fail.
@@ -959,6 +978,10 @@ impl SceneManager {
         group.controls.clear();
         group.control_bindings.clear();
         group.preset_id = None;
+        if !group.layers.is_empty() {
+            group.layers.clear();
+            group.layers_version = group.layers_version.saturating_add(1);
+        }
         // Clearing the effect zeros every control; that is by far the
         // most dramatic controls mutation and must invalidate every
         // outstanding modal draft.
@@ -976,8 +999,20 @@ impl SceneManager {
     ) -> Option<&RenderGroup> {
         let scene = self.active_scene_mut()?;
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
-        group.control_bindings.insert(control_id, binding);
-        group.preset_id = None;
+        if let Some(LayerSource::Effect {
+            control_bindings,
+            preset_id,
+            ..
+        }) = legacy_effect_layer_source_mut(group)
+        {
+            control_bindings.insert(control_id, binding);
+            *preset_id = None;
+            sync_legacy_effect_fields(group);
+            group.layers_version = group.layers_version.saturating_add(1);
+        } else {
+            group.control_bindings.insert(control_id, binding);
+            group.preset_id = None;
+        }
         // Bindings surface as control values at render time, so a
         // new binding changes what the user would see if they opened
         // the modal — version must advance alongside raw control
@@ -995,7 +1030,17 @@ impl SceneManager {
     ) -> Option<&RenderGroup> {
         let scene = self.active_scene_mut()?;
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;
-        group.preset_id = preset_id;
+        if let Some(LayerSource::Effect {
+            preset_id: layer_preset_id,
+            ..
+        }) = legacy_effect_layer_source_mut(group)
+        {
+            *layer_preset_id = preset_id;
+            sync_legacy_effect_fields(group);
+            group.layers_version = group.layers_version.saturating_add(1);
+        } else {
+            group.preset_id = preset_id;
+        }
         self.refresh_active_render_groups();
         self.active_scene()
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
@@ -1111,6 +1156,37 @@ fn materialize_legacy_effect_layer(group: &mut RenderGroup) {
     ));
 }
 
+fn replace_legacy_effect_layer_stack(
+    group: &mut RenderGroup,
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    control_bindings: HashMap<String, ControlBinding>,
+    preset_id: Option<PresetId>,
+) {
+    group.effect_id = Some(effect_id);
+    group.controls.clone_from(&controls);
+    group.control_bindings.clone_from(&control_bindings);
+    group.preset_id = preset_id;
+    group.layers = vec![SceneLayer::from_effect(
+        group.legacy_layer_id(),
+        effect_id,
+        controls,
+        control_bindings,
+        preset_id,
+    )];
+    group.layers_version = group.layers_version.saturating_add(1);
+}
+
+fn legacy_effect_layer_source_mut(group: &mut RenderGroup) -> Option<&mut LayerSource> {
+    group
+        .layers
+        .iter_mut()
+        .find_map(|layer| match &mut layer.source {
+            source @ LayerSource::Effect { .. } => Some(source),
+            _ => None,
+        })
+}
+
 fn sync_legacy_effect_fields(group: &mut RenderGroup) {
     let legacy = group.layers.iter().find_map(|layer| match &layer.source {
         LayerSource::Effect {
@@ -1127,19 +1203,16 @@ fn sync_legacy_effect_fields(group: &mut RenderGroup) {
         _ => None,
     });
 
-    match legacy {
-        Some((effect_id, controls, control_bindings, preset_id)) => {
-            group.effect_id = effect_id;
-            group.controls = controls;
-            group.control_bindings = control_bindings;
-            group.preset_id = preset_id;
-        }
-        None => {
-            group.effect_id = None;
-            group.controls.clear();
-            group.control_bindings.clear();
-            group.preset_id = None;
-        }
+    if let Some((effect_id, controls, control_bindings, preset_id)) = legacy {
+        group.effect_id = effect_id;
+        group.controls = controls;
+        group.control_bindings = control_bindings;
+        group.preset_id = preset_id;
+    } else {
+        group.effect_id = None;
+        group.controls.clear();
+        group.control_bindings.clear();
+        group.preset_id = None;
     }
 }
 

@@ -268,23 +268,18 @@ impl<'de> Deserialize<'de> for RenderGroup {
     }
 }
 
-fn empty_effect_fields() -> (
+type LegacyEffectFields = (
     Option<EffectId>,
     HashMap<String, ControlValue>,
     HashMap<String, ControlBinding>,
     Option<PresetId>,
-) {
+);
+
+fn empty_effect_fields() -> LegacyEffectFields {
     (None, HashMap::new(), HashMap::new(), None)
 }
 
-fn legacy_effect_fields_from_layers(
-    layers: &[SceneLayer],
-) -> Option<(
-    Option<EffectId>,
-    HashMap<String, ControlValue>,
-    HashMap<String, ControlBinding>,
-    Option<PresetId>,
-)> {
+fn legacy_effect_fields_from_layers(layers: &[SceneLayer]) -> Option<LegacyEffectFields> {
     layers.iter().find_map(|layer| match &layer.source {
         LayerSource::Effect {
             effect_id,

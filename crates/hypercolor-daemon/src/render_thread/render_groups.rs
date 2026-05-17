@@ -15,7 +15,9 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::canvas::{Canvas, RenderSurfacePool, RgbaF32, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::layer::{LayerBlendMode, LayerSource, SceneLayer};
+use hypercolor_types::layer::{
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
+};
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -593,7 +595,7 @@ impl RenderGroupRuntime {
         };
 
         let render_start = Instant::now();
-        let Some(scene_frame) = self.render_group_frame(
+        let scene_frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
             scene_group,
             registry,
             delta_secs,
@@ -601,12 +603,25 @@ impl RenderGroupRuntime {
             interaction,
             screen,
             sensors,
-            sparkleflinger,
-            true,
-            true,
-        )?
-        else {
-            return Ok(None);
+        )? {
+            frame
+        } else {
+            let Some(frame) = self.render_group_frame(
+                scene_group,
+                registry,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+                sparkleflinger,
+                true,
+                true,
+            )?
+            else {
+                return Ok(None);
+            };
+            frame
         };
         let Some(scene_frame) = self.surface_backed_scene_frame(scene_frame) else {
             return Ok(None);
@@ -784,7 +799,7 @@ impl RenderGroupRuntime {
             .clone()
             .expect("direct display group should carry a display target");
 
-        let Some(frame) = self.render_group_frame(
+        let frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
             group,
             registry,
             delta_secs,
@@ -792,12 +807,25 @@ impl RenderGroupRuntime {
             interaction,
             screen,
             sensors,
-            sparkleflinger,
-            true,
-            true,
-        )?
-        else {
-            return Ok(None);
+        )? {
+            frame
+        } else {
+            let Some(frame) = self.render_group_frame(
+                group,
+                registry,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+                sparkleflinger,
+                true,
+                true,
+            )?
+            else {
+                return Ok(None);
+            };
+            frame
         };
         let Some(frame) = self.surface_backed_direct_frame(group.id, frame) else {
             return Ok(None);
@@ -879,6 +907,37 @@ impl RenderGroupRuntime {
             }),
         );
         Ok(composed_frame_to_producer_frame(composed))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "effect layer rendering uses the full frame input"
+    )]
+    fn render_passthrough_effect_layer_frame(
+        &mut self,
+        group: &RenderGroup,
+        registry: &EffectRegistry,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<Option<ProducerFrame>> {
+        let Some(layer) = passthrough_effect_layer(group) else {
+            return Ok(None);
+        };
+
+        self.render_effect_layer_frame(
+            group,
+            &layer,
+            registry,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+        )
+        .map(Some)
     }
 
     #[expect(
@@ -1310,6 +1369,41 @@ fn group_publishes_direct_canvas(group: &RenderGroup) -> bool {
     group_is_active(group) && group.display_target.is_some()
 }
 
+fn passthrough_effect_layer(group: &RenderGroup) -> Option<SceneLayer> {
+    if !group.enabled {
+        return None;
+    }
+
+    let mut layers = group
+        .effective_layers()
+        .into_iter()
+        .filter(|layer| layer.enabled);
+    let layer = layers.next()?;
+    if layers.next().is_some() {
+        return None;
+    }
+    if !matches!(&layer.source, LayerSource::Effect { .. }) {
+        return None;
+    }
+    if layer.blend != LayerBlendMode::Replace {
+        return None;
+    }
+    if (layer.opacity - 1.0).abs() > f32::EPSILON {
+        return None;
+    }
+    if layer.transform != LayerTransform::default() {
+        return None;
+    }
+    if layer.adjust != LayerAdjust::default() {
+        return None;
+    }
+    if !layer.bindings.is_empty() {
+        return None;
+    }
+
+    Some(layer)
+}
+
 fn enabled_effect_layer_count(group: &RenderGroup) -> u32 {
     if !group.enabled {
         return 0;
@@ -1706,6 +1800,80 @@ mod tests {
                 panic!("GPU scene frames are sampled by SparkleFlinger before CPU materialization")
             }
         }
+    }
+
+    #[test]
+    fn legacy_single_effect_group_can_passthrough_layer_compositor() {
+        let group = sample_group(4, 4);
+
+        let layer = passthrough_effect_layer(&group)
+            .expect("legacy single-effect group should bypass layer composition");
+
+        assert_eq!(layer.id, group.legacy_layer_id());
+    }
+
+    #[test]
+    fn materialized_single_effect_layer_can_passthrough_layer_compositor() {
+        let mut group = sample_group(4, 4);
+        let effect_id = group.effect_id.expect("sample group should have an effect");
+        group.layers = vec![SceneLayer::from_effect(
+            group.legacy_layer_id(),
+            effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )];
+
+        let layer = passthrough_effect_layer(&group)
+            .expect("neutral materialized effect layer should bypass layer composition");
+
+        assert_eq!(layer.id, group.legacy_layer_id());
+    }
+
+    #[test]
+    fn stacked_layers_use_layer_compositor() {
+        let mut group = sample_group(4, 4);
+        let effect_id = group.effect_id.expect("sample group should have an effect");
+        let effect_layer = SceneLayer::from_effect(
+            group.legacy_layer_id(),
+            effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        let overlay = SceneLayer {
+            id: hypercolor_types::layer::SceneLayerId::new(),
+            name: None,
+            source: LayerSource::ColorFill {
+                rgba: [1.0, 0.0, 0.0, 1.0],
+            },
+            blend: LayerBlendMode::Alpha,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        };
+        group.layers = vec![effect_layer, overlay];
+
+        assert!(passthrough_effect_layer(&group).is_none());
+    }
+
+    #[test]
+    fn adjusted_effect_layer_uses_layer_compositor() {
+        let mut group = sample_group(4, 4);
+        let effect_id = group.effect_id.expect("sample group should have an effect");
+        let mut layer = SceneLayer::from_effect(
+            group.legacy_layer_id(),
+            effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        layer.opacity = 0.5;
+        group.layers = vec![layer];
+
+        assert!(passthrough_effect_layer(&group).is_none());
     }
 
     #[test]

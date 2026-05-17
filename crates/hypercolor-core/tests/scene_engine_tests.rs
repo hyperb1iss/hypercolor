@@ -1,6 +1,7 @@
 //! Tests for the scene engine: manager, transitions, priority stack, and automation.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -9,8 +10,12 @@ use hypercolor_core::scene::priority::PriorityStack;
 use hypercolor_core::scene::transition::TransitionState;
 use hypercolor_core::scene::{LayerMutationError, SceneManager, make_scene};
 use hypercolor_types::canvas::RgbaF32;
-use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::layer::{LayerBlendMode, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::effect::{
+    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+};
+use hypercolor_types::layer::{
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId,
     RenderGroupRole, SceneId, ScenePriority, TransitionSpec, TriggerSource, UnassignedBehavior,
@@ -130,8 +135,8 @@ fn color_layer(rgba: [f32; 4]) -> SceneLayer {
         source: LayerSource::ColorFill { rgba },
         blend: LayerBlendMode::Alpha,
         opacity: 1.0,
-        transform: Default::default(),
-        adjust: Default::default(),
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
     }
@@ -145,6 +150,26 @@ fn effect_layer(effect_id: EffectId, speed: f32) -> SceneLayer {
         HashMap::new(),
         None,
     )
+}
+
+fn effect_metadata(id: EffectId, name: &str) -> EffectMetadata {
+    EffectMetadata {
+        id,
+        name: name.into(),
+        author: "Hypercolor".into(),
+        version: "1.0.0".into(),
+        description: format!("{name} test effect"),
+        category: EffectCategory::Ambient,
+        tags: Vec::new(),
+        controls: Vec::new(),
+        presets: Vec::new(),
+        audio_reactive: false,
+        screen_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from(format!("native/{name}.rs")),
+        },
+        license: None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -334,6 +359,131 @@ fn scene_manager_refreshes_active_render_group_cache_on_update() {
         "desk:updated"
     );
     assert!(mgr.active_render_groups_revision() > initial_revision);
+}
+
+#[test]
+fn scene_manager_upsert_primary_group_replaces_materialized_layer_stack() {
+    let mut mgr = SceneManager::new();
+    let old_id = EffectId::from(Uuid::now_v7());
+    let new_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Primary", "desk:main", old_id);
+    let scene_id = scene.id;
+    scene.groups[0].role = RenderGroupRole::Primary;
+    scene.groups[0].layers = vec![effect_layer(old_id, 0.25)];
+    scene.groups[0].layers_version = 4;
+
+    mgr.create(scene).expect("create primary scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate primary scene");
+    let initial_revision = mgr.active_render_groups_revision();
+
+    let updated = mgr
+        .upsert_primary_group(
+            &effect_metadata(new_id, "plasma"),
+            HashMap::from([("speed".into(), ControlValue::Float(1.0))]),
+            None,
+            sample_layout("desk:updated"),
+        )
+        .expect("upsert primary group")
+        .clone();
+
+    assert_eq!(updated.effect_id, Some(new_id));
+    assert_eq!(updated.layers_version, 5);
+    assert_eq!(updated.controls_version, 1);
+    let [layer] = updated.layers.as_slice() else {
+        panic!("legacy apply should replace the stack with one effect layer");
+    };
+    assert_eq!(layer.id, updated.legacy_layer_id());
+    let LayerSource::Effect {
+        effect_id,
+        controls,
+        control_bindings,
+        preset_id,
+    } = &layer.source
+    else {
+        panic!("replacement layer should be an effect layer");
+    };
+    assert_eq!(*effect_id, new_id);
+    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(1.0)));
+    assert!(control_bindings.is_empty());
+    assert_eq!(*preset_id, None);
+
+    let active_layers = mgr.active_render_groups()[0].effective_layers();
+    let LayerSource::Effect { effect_id, .. } = active_layers[0].source else {
+        panic!("active render group should expose the replacement effect layer");
+    };
+    assert_eq!(effect_id, new_id);
+    assert!(mgr.active_render_groups_revision() > initial_revision);
+}
+
+#[test]
+fn scene_manager_clear_group_effect_clears_materialized_layers() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Clearable", "desk:main", effect_id);
+    let scene_id = scene.id;
+    let group_id = scene.groups[0].id;
+    scene.groups[0].layers = vec![effect_layer(effect_id, 0.5)];
+    scene.groups[0].layers_version = 2;
+
+    mgr.create(scene).expect("create grouped scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate grouped scene");
+
+    let updated = mgr
+        .clear_group_effect(group_id)
+        .expect("clear group effect")
+        .clone();
+
+    assert_eq!(updated.effect_id, None);
+    assert!(updated.controls.is_empty());
+    assert!(updated.layers.is_empty());
+    assert!(updated.effective_layers().is_empty());
+    assert_eq!(updated.layers_version, 3);
+    assert!(mgr.active_render_groups()[0].effective_layers().is_empty());
+}
+
+#[test]
+fn scene_manager_reset_group_controls_updates_materialized_layer() {
+    let mut mgr = SceneManager::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let mut scene = grouped_scene("Reset", "desk:main", effect_id);
+    let scene_id = scene.id;
+    let group_id = scene.groups[0].id;
+    scene.groups[0].layers = vec![
+        color_layer([0.0, 0.0, 0.0, 1.0]),
+        effect_layer(effect_id, 0.5),
+    ];
+    scene.groups[0].layers_version = 7;
+
+    mgr.create(scene).expect("create grouped scene");
+    mgr.activate(&scene_id, None)
+        .expect("activate grouped scene");
+
+    let updated = mgr
+        .reset_group_controls(
+            group_id,
+            HashMap::from([("speed".into(), ControlValue::Float(1.75))]),
+        )
+        .expect("reset group controls")
+        .clone();
+
+    assert_eq!(
+        updated.controls.get("speed"),
+        Some(&ControlValue::Float(1.75))
+    );
+    assert_eq!(updated.controls_version, 1);
+    assert_eq!(updated.layers_version, 8);
+
+    let layer = updated
+        .layers
+        .iter()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+        .expect("effect layer should remain");
+    let LayerSource::Effect { controls, .. } = &layer.source else {
+        panic!("target layer should remain an effect layer");
+    };
+    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(1.75)));
 }
 
 #[test]

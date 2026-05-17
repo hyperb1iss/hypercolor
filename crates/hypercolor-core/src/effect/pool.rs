@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
+    ControlBinding, ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
@@ -27,6 +27,12 @@ pub struct EffectSlotKey {
     pub group_id: RenderGroupId,
     pub layer_id: SceneLayerId,
 }
+
+type LayerEffectSource<'a> = (
+    EffectId,
+    &'a HashMap<String, ControlValue>,
+    &'a HashMap<String, ControlBinding>,
+);
 
 impl EffectSlotKey {
     #[must_use]
@@ -439,13 +445,7 @@ fn single_enabled_effect_layer(group: &RenderGroup) -> Result<Option<SceneLayer>
     Ok(Some(layer))
 }
 
-fn layer_effect_source(
-    layer: &SceneLayer,
-) -> Option<(
-    EffectId,
-    &HashMap<String, ControlValue>,
-    &HashMap<String, hypercolor_types::effect::ControlBinding>,
-)> {
+fn layer_effect_source(layer: &SceneLayer) -> Option<LayerEffectSource<'_>> {
     let LayerSource::Effect {
         effect_id,
         controls,

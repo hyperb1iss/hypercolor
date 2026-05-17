@@ -496,7 +496,7 @@ impl BindingSource {
     fn validate(&self, errors: &mut Vec<String>) {
         match self {
             Self::Time { rate_hz, .. } => {
-                validate_finite(*rate_hz, "binding.source.rate_hz", errors)
+                validate_finite(*rate_hz, "binding.source.rate_hz", errors);
             }
             Self::Constant { value } => validate_finite(*value, "binding.source.value", errors),
             Self::AudioBand { .. } | Self::Sensor { .. } => {}

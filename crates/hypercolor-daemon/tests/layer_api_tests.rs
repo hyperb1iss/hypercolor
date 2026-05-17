@@ -12,7 +12,9 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState,
 };
-use hypercolor_types::layer::{LayerBlendMode, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -286,8 +288,8 @@ async fn layer_reorder_rejects_bad_membership_and_returns_next_version() {
         },
         blend: LayerBlendMode::Alpha,
         opacity: 1.0,
-        transform: Default::default(),
-        adjust: Default::default(),
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
     };
