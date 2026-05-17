@@ -36,7 +36,7 @@ impl GpuRenderDevice {
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some(label),
-            required_features: wgpu::Features::empty(),
+            required_features: wgpu::Features::CLEAR_TEXTURE,
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,

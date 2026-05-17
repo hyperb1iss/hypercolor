@@ -77,6 +77,7 @@ pub(crate) struct GpuSparkleFlinger {
     pending_preview_map: Option<PendingPreviewMap>,
     ready_preview_surface: Option<PublishedSurface>,
     output_generation: u64,
+    producer_texture_generation: u64,
     cached_sample_result: Option<CachedSampleResult>,
     #[cfg(test)]
     preview_surface_allocation_count: usize,
@@ -379,6 +380,7 @@ impl GpuSparkleFlinger {
             pending_preview_map: None,
             ready_preview_surface: None,
             output_generation: 0,
+            producer_texture_generation: 0,
             cached_sample_result: None,
             #[cfg(test)]
             preview_surface_allocation_count: 0,
@@ -448,6 +450,30 @@ impl GpuSparkleFlinger {
             texture: texture.texture.clone(),
             view: texture.view.clone(),
         }))
+    }
+
+    pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> GpuTextureFrame {
+        let texture = GpuCompositorTexture::new(
+            &self.device,
+            canvas.width(),
+            canvas.height(),
+            "SparkleFlinger GPU media producer texture",
+        );
+        write_rgba_texture(
+            &self.queue,
+            &texture.texture,
+            canvas.width(),
+            canvas.height(),
+            canvas.as_rgba_bytes(),
+        );
+        self.producer_texture_generation = self.producer_texture_generation.saturating_add(1);
+        GpuTextureFrame {
+            width: canvas.width(),
+            height: canvas.height(),
+            storage_id: self.producer_texture_generation,
+            texture: texture.texture,
+            view: texture.view,
+        }
     }
 
     pub(crate) fn read_back_frame_for_cpu_fallback(
@@ -2804,7 +2830,17 @@ fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame
     let Some(rgba_bytes) = frame.cpu_rgba_bytes() else {
         return;
     };
-    let bytes_per_row = frame.width() * BYTES_PER_PIXEL as u32;
+    write_rgba_texture(queue, texture, frame.width(), frame.height(), rgba_bytes);
+}
+
+fn write_rgba_texture(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    rgba_bytes: &[u8],
+) {
+    let bytes_per_row = width * BYTES_PER_PIXEL as u32;
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -2816,9 +2852,9 @@ fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(bytes_per_row),
-            rows_per_image: Some(frame.height()),
+            rows_per_image: Some(height),
         },
-        texture_extent(frame.width(), frame.height()),
+        texture_extent(width, height),
     );
 }
 

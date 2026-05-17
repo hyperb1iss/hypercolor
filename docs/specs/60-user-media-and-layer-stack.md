@@ -9,7 +9,7 @@
 > Wave 1 display-face overlay fix so LED and display-face groups can use
 > one composition contract.
 
-**Status:** Layer substrate, file-backed tier-1/2/3/4 media, rolling stream URL producer, and media admission caps implemented; GPU media hardening and legacy purge pending
+**Status:** Layer substrate, file-backed tier-1/2/3/4 media, rolling stream URL producer, media admission caps, and GPU media hardening implemented; legacy purge pending
 **Author:** Nova
 **Date:** 2026-05-15
 **Updated:** 2026-05-17
@@ -40,11 +40,12 @@ configurable through `media.stream_private_network_allowlist`, and scene
 activation enforces the configured video/livestream producer hard caps.
 Heavy producers advertise cost hints and scene activation preemptively
 downshifts the render loop when the estimated media cost exceeds the
-60 ms soft cap. Stream producers currently publish CPU canvases and
-surface worker errors through layer health. GPU producer readback
-failures now compose black and mark affected layer health as
-`gpu_readback_failed`; repeated read-back fallbacks downshift for the
-rest of the session. Direct GPU media textures remain follow-up work.
+60 ms soft cap. Video and stream producers decode to RGBA canvases in
+core, and the daemon uploads those frames to `ProducerFrame::GpuTexture`
+when the wgpu compositor is active. Stream producers surface worker
+errors through layer health. GPU producer readback failures now compose
+black and mark affected layer health as `gpu_readback_failed`; repeated
+read-back fallbacks downshift for the rest of the session.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -148,9 +149,9 @@ its own encode-time path instead of the canonical `SparkleFlinger` blend
 helpers. Wave 1 has now factored the face-over-scene math into
 `render_thread/sparkleflinger/face_overlay.rs`, preserved the display
 worker's device-local transforms, and replaced the wait-for-scene gate
-with compose-against-black semantics. The remaining implementation work
-is the authored layer-stack schema, producer pump, asset library, and UI
-surface.
+with compose-against-black semantics. The authored layer-stack schema,
+producer pump, asset library, and UI surface have since landed on top of
+that boundary.
 
 ### 2.3 User Media Has No Home
 
@@ -740,10 +741,12 @@ gate behind a feature flag (`media-video`) for platforms that lack it.
   on load. If `decoded_size > MEDIA_PREDECODE_BUDGET` (default 64 MB per
   asset), the decoder falls back to on-demand decode with a small ring
   buffer (8 frames lookahead). Configurable via daemon config.
-- **GPU upload.** Tier-3/5 video frames decode to NV12 in CPU memory and
-  upload to a `wgpu::Texture` per frame. The GPU compositor lane consumes
-  these as `ProducerFrame::Gpu`. CPU fallback path re-reads back to a
-  `Canvas`.
+- **GPU upload.** Tier-3/5 video frames currently decode to RGBA canvases
+  in core and upload to a `wgpu::Texture` per frame in the daemon when
+  the wgpu compositor is active. The GPU compositor lane consumes these
+  as `ProducerFrame::GpuTexture`. CPU fallback path re-reads back to a
+  `Canvas`. A future NV12 path can avoid the intermediate RGBA canvas,
+  but it is an optimization rather than the correctness boundary.
 - **Target size resampling.** Decoders pre-scale to the layer's target
   canvas dimensions to avoid re-blits in the compositor. The compositor
   also enforces a hard cap of 1920×1080 per producer frame.
@@ -1730,11 +1733,12 @@ Animated WebP (tier 2). Video via gstreamer behind `media-video` feature
 flag (tier 3). `LayerBinding` evaluator and SDK exposure.
 
 Animated WebP, file-backed MP4/WebM decoding, and the binding/runtime
-plumbing are now in tree. The current video backend emits CPU canvases;
-the direct GPU media texture path remains part of the video hardening
-follow-up. SparkleFlinger already reads GPU producer frames back for CPU
-fallback when the GPU lane cannot compose a mixed plan. Scene activation
-now enforces video/livestream producer hard caps.
+plumbing are now in tree. The current video backend decodes to RGBA
+canvases, and the daemon uploads video media frames to
+`ProducerFrame::GpuTexture` when the wgpu compositor is active.
+SparkleFlinger reads GPU producer frames back for CPU fallback when the
+GPU lane cannot compose a mixed plan. Scene activation now enforces
+video/livestream producer hard caps.
 
 ### Wave 7 — Tier 4/5 Decoders + Multi-Face Routing
 
@@ -1746,8 +1750,9 @@ Lottie decoding and scene-wide broadcast routing are now in tree. Stream
 URL assets are accepted and run through a rolling latest-frame gstreamer
 worker with reconnect/backoff. Configurable private-network stream
 allowlists and video/livestream producer hard caps are in tree. The stream
-path still emits CPU canvases while surfacing worker errors through layer
-health; direct GPU media textures remain part of GPU media hardening.
+path decodes to RGBA canvases, uploads stream frames to
+`ProducerFrame::GpuTexture` when wgpu is active, and surfaces worker
+errors through layer health.
 
 ---
 
@@ -1825,8 +1830,8 @@ lane. Coverage lives in
 Target GPU video and livestream producers will feed `ProducerFrame::Gpu`
 or `ProducerFrame::GpuTexture`, so the final GPU media lane will exercise
 this constantly. The current file-backed `media-video` and stream
-backends still emit CPU canvases, so the remaining work is direct GPU
-media texture production.
+backends decode to RGBA canvases in core, then the daemon uploads those
+video/stream frames to `ProducerFrame::GpuTexture` when wgpu is active.
 
 **GPU media policy status:**
 
@@ -2069,8 +2074,8 @@ surface area beyond what already existed in `DisplayFaceBlendMode`.
 **The implementation substrate is now in place.** Tier-1/2 media,
 Lottie, file-backed MP4/WebM decoding, stream URL rolling producers, hard
 media admission caps, and media-cost preemptive downshift are implemented.
-The remaining work is GPU media hardening and the later compatibility
-purge of legacy render-group mirrors.
+The remaining work is the later compatibility purge of legacy
+render-group mirrors.
 
 **Treat the livestream and legacy-purge follow-ups as separate shipping
 decisions.** Lottie and file-backed video are already useful without

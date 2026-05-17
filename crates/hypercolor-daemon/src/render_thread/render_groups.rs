@@ -959,7 +959,12 @@ impl RenderGroupRuntime {
                     color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
                 }
                 LayerSource::Media { asset_id, playback } => {
-                    match self.render_media_layer_frame(*asset_id, playback, elapsed_ms) {
+                    match self.render_media_layer_frame(
+                        *asset_id,
+                        playback,
+                        elapsed_ms,
+                        sparkleflinger,
+                    ) {
                         MediaLayerFrame::Ready { frame, health } => {
                             self.layer_runtime.note_health(
                                 active_scene_id,
@@ -1105,6 +1110,7 @@ impl RenderGroupRuntime {
         asset_id: AssetId,
         playback: &hypercolor_types::layer::MediaPlayback,
         elapsed_ms: u32,
+        sparkleflinger: &mut SparkleFlinger,
     ) -> MediaLayerFrame {
         let Some(asset_library) = &self.asset_library else {
             return MediaLayerFrame::Missing;
@@ -1153,7 +1159,11 @@ impl RenderGroupRuntime {
                 return MediaLayerFrame::Failed(reason);
             }
             return MediaLayerFrame::Ready {
-                frame: ProducerFrame::Canvas(cached.producer.intrinsic_frame(playback, elapsed_ms)),
+                frame: media_layer_producer_frame(
+                    cached.producer.intrinsic_frame(playback, elapsed_ms),
+                    &record.mime_type,
+                    sparkleflinger,
+                ),
                 health: LayerHealth::Failed { reason },
             };
         }
@@ -1161,7 +1171,11 @@ impl RenderGroupRuntime {
             return MediaLayerFrame::Loading;
         }
         MediaLayerFrame::Ready {
-            frame: ProducerFrame::Canvas(cached.producer.intrinsic_frame(playback, elapsed_ms)),
+            frame: media_layer_producer_frame(
+                cached.producer.intrinsic_frame(playback, elapsed_ms),
+                &record.mime_type,
+                sparkleflinger,
+            ),
             health: LayerHealth::Active,
         }
     }
@@ -1762,6 +1776,32 @@ fn transparent_black_frame(width: u32, height: u32) -> ProducerFrame {
     ProducerFrame::Canvas(canvas)
 }
 
+fn media_layer_producer_frame(
+    canvas: Canvas,
+    mime_type: &str,
+    sparkleflinger: &mut SparkleFlinger,
+) -> ProducerFrame {
+    #[cfg(feature = "wgpu")]
+    if media_mime_prefers_gpu_texture(mime_type)
+        && let Some(frame) = sparkleflinger.upload_canvas_frame(&canvas)
+    {
+        return ProducerFrame::GpuTexture(frame);
+    }
+
+    #[cfg(not(feature = "wgpu"))]
+    let _ = sparkleflinger;
+
+    ProducerFrame::Canvas(canvas)
+}
+
+#[cfg(feature = "wgpu")]
+fn media_mime_prefers_gpu_texture(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "video/mp4" | "video/webm" | "application/vnd.hypercolor.stream-url"
+    )
+}
+
 fn composed_frame_to_producer_frame(composed: ComposedFrameSet) -> Option<ProducerFrame> {
     composed
         .sampling_surface
@@ -1940,6 +1980,18 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn media_mime_prefers_gpu_texture_for_video_and_streams() {
+        assert!(media_mime_prefers_gpu_texture("video/mp4"));
+        assert!(media_mime_prefers_gpu_texture("video/webm"));
+        assert!(media_mime_prefers_gpu_texture(
+            "application/vnd.hypercolor.stream-url"
+        ));
+        assert!(!media_mime_prefers_gpu_texture("image/png"));
+        assert!(!media_mime_prefers_gpu_texture("application/json"));
+    }
 
     fn sample_group(width: u32, height: u32) -> RenderGroup {
         RenderGroup {

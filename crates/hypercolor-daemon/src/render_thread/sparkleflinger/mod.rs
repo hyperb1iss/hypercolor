@@ -872,6 +872,14 @@ impl SparkleFlinger {
         }
     }
 
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> Option<GpuTextureFrame> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.upload_canvas_frame(canvas)),
+        }
+    }
+
     pub fn submit_pending_preview_work(&mut self) -> Result<()> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(()),
@@ -1608,6 +1616,35 @@ mod tests {
 
         assert!(!policy.record_readback_fallback());
         assert!(!policy.is_fallback_only());
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn sparkleflinger_uploads_canvas_as_gpu_texture_frame() {
+        let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+            return;
+        };
+        let source = solid_canvas(Rgba::new(32, 96, 160, 255));
+        let Some(frame) = sparkleflinger.upload_canvas_frame(&source) else {
+            panic!("GPU canvas upload should return a texture frame");
+        };
+
+        assert_eq!(frame.width, source.width());
+        assert_eq!(frame.height, source.height());
+
+        let composed = sparkleflinger.compose(CompositionPlan::single(
+            source.width(),
+            source.height(),
+            CompositionLayer::replace(ProducerFrame::GpuTexture(frame)),
+        ));
+
+        assert_eq!(
+            composed
+                .sampling_canvas
+                .expect("GPU texture frame should compose into a sampling canvas")
+                .as_rgba_bytes(),
+            source.as_rgba_bytes(),
+        );
     }
 
     #[cfg(feature = "wgpu")]
