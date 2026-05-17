@@ -402,6 +402,8 @@ mod tests {
                 active_render_groups_revision: 3,
                 active_render_group_count: 2,
                 active_display_group_target_fps: HashMap::new(),
+                unassigned_behavior: Default::default(),
+                device_registry_generation: 0,
             },
             spatial_engine: SpatialEngine::new(SpatialLayout {
                 id: "layout".to_owned(),

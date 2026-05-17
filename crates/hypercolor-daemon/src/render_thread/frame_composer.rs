@@ -34,6 +34,7 @@ pub(crate) struct RenderStageStats {
     pub(crate) web_viewport_preview: Option<PublishedSurface>,
     pub(crate) producer_full_frame_copy: FullFrameCopyMetrics,
     pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
+    pub(crate) zone_canvases: Vec<(RenderGroupId, ProducerFrame)>,
     pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
     pub(crate) producer_render_us: u32,
@@ -231,6 +232,7 @@ impl ComposeContext<'_> {
             web_viewport_preview: None,
             producer_full_frame_copy: FullFrameCopyMetrics::default(),
             group_canvases: Vec::new(),
+            zone_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                 self.scene_snapshot.spatial_engine.clone(),
@@ -324,6 +326,7 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     producer_full_frame_copy: render_group_result.producer_full_frame_copy,
                     group_canvases,
+                    zone_canvases: render_group_result.zone_canvases,
                     active_group_canvas_ids: render_group_result.active_group_canvas_ids,
                     led_sampling_strategy: render_group_result.led_sampling_strategy,
                     producer_render_us: render_group_result.render_us,
@@ -388,6 +391,7 @@ impl ComposeContext<'_> {
                     web_viewport_preview: None,
                     producer_full_frame_copy: FullFrameCopyMetrics::default(),
                     group_canvases: Vec::new(),
+                    zone_canvases: Vec::new(),
                     active_group_canvas_ids: Vec::new(),
                     led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                         self.scene_snapshot.spatial_engine.clone(),

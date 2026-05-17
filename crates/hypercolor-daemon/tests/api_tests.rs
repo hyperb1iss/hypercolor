@@ -1888,6 +1888,7 @@ async fn activate_empty_test_scene_with_mode(
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
         groups: Vec::new(),
+        groups_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -1952,6 +1953,7 @@ async fn activate_display_face_test_scene(
             controls_version: 0,
             layers_version: 0,
         }],
+        groups_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,

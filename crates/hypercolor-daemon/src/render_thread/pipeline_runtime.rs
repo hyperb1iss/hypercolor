@@ -543,6 +543,7 @@ pub(crate) struct OutputReuseKey {
     pub(crate) device_output_brightness_generation: u64,
     pub(crate) routing_signature: u64,
     pub(crate) zone_shape_signature: u64,
+    pub(crate) unassigned_behavior_generation: u64,
 }
 
 impl OutputReuseKey {
@@ -551,12 +552,14 @@ impl OutputReuseKey {
         device_output_brightness_generation: u64,
         routing_signature: u64,
         zone_shape_signature: u64,
+        unassigned_behavior_generation: u64,
     ) -> Self {
         Self {
             output_brightness_bits,
             device_output_brightness_generation,
             routing_signature,
             zone_shape_signature,
+            unassigned_behavior_generation,
         }
     }
 }
@@ -1183,7 +1186,7 @@ mod tests {
     #[test]
     fn output_frame_source_reuses_routed_outputs_when_dependencies_match() {
         let mut reuse = OutputReuseState::default();
-        let key = OutputReuseKey::new(1, 7, 11, 13);
+        let key = OutputReuseKey::new(1, 7, 11, 13, 17);
         reuse.record(key);
 
         let source = reuse.decide_frame_source(true, key, || true).source();
@@ -1194,7 +1197,7 @@ mod tests {
     #[test]
     fn output_frame_source_falls_back_to_published_frame_when_route_reuse_is_unavailable() {
         let mut reuse = OutputReuseState::default();
-        let key = OutputReuseKey::new(1, 7, 11, 13);
+        let key = OutputReuseKey::new(1, 7, 11, 13, 17);
         reuse.record(key);
 
         let source = reuse.decide_frame_source(true, key, || false).source();
@@ -1206,7 +1209,7 @@ mod tests {
     fn output_frame_source_skips_route_reuse_probe_without_published_frame_reuse() {
         let reuse = OutputReuseState::default();
         let route_probe_calls = Cell::new(0_u32);
-        let key = OutputReuseKey::new(1, 7, 11, 13);
+        let key = OutputReuseKey::new(1, 7, 11, 13, 17);
 
         let source = reuse
             .decide_frame_source(false, key, || {
@@ -1222,11 +1225,11 @@ mod tests {
     #[test]
     fn output_frame_source_skips_route_reuse_probe_when_reuse_metadata_mismatches() {
         let mut reuse = OutputReuseState::default();
-        reuse.record(OutputReuseKey::new(1, 7, 11, 13));
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13, 17));
         let route_probe_calls = Cell::new(0_u32);
 
         let source = reuse
-            .decide_frame_source(true, OutputReuseKey::new(1, 8, 11, 13), || {
+            .decide_frame_source(true, OutputReuseKey::new(1, 8, 11, 13, 17), || {
                 route_probe_calls.set(route_probe_calls.get() + 1);
                 true
             })
@@ -1239,11 +1242,11 @@ mod tests {
     #[test]
     fn output_frame_source_uses_published_frame_when_routing_signature_changes() {
         let mut reuse = OutputReuseState::default();
-        reuse.record(OutputReuseKey::new(1, 7, 11, 13));
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13, 17));
         let route_probe_calls = Cell::new(0_u32);
 
         let source = reuse
-            .decide_frame_source(true, OutputReuseKey::new(1, 7, 12, 13), || {
+            .decide_frame_source(true, OutputReuseKey::new(1, 7, 12, 13, 17), || {
                 route_probe_calls.set(route_probe_calls.get() + 1);
                 true
             })
@@ -1256,11 +1259,28 @@ mod tests {
     #[test]
     fn output_frame_source_uses_published_frame_when_zone_shape_changes() {
         let mut reuse = OutputReuseState::default();
-        reuse.record(OutputReuseKey::new(1, 7, 11, 13));
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13, 17));
         let route_probe_calls = Cell::new(0_u32);
 
         let source = reuse
-            .decide_frame_source(true, OutputReuseKey::new(1, 7, 11, 14), || {
+            .decide_frame_source(true, OutputReuseKey::new(1, 7, 11, 14, 17), || {
+                route_probe_calls.set(route_probe_calls.get() + 1);
+                true
+            })
+            .source();
+
+        assert_eq!(source, OutputFrameSource::PublishedFrame);
+        assert_eq!(route_probe_calls.get(), 0);
+    }
+
+    #[test]
+    fn output_frame_source_uses_published_frame_when_unassigned_behavior_changes() {
+        let mut reuse = OutputReuseState::default();
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13, 17));
+        let route_probe_calls = Cell::new(0_u32);
+
+        let source = reuse
+            .decide_frame_source(true, OutputReuseKey::new(1, 7, 11, 13, 18), || {
                 route_probe_calls.set(route_probe_calls.get() + 1);
                 true
             })
@@ -1273,7 +1293,7 @@ mod tests {
     #[test]
     fn output_frame_source_records_reuse_metadata_after_decision() {
         let mut reuse = OutputReuseState::default();
-        let key = OutputReuseKey::new(1, 7, 11, 13);
+        let key = OutputReuseKey::new(1, 7, 11, 13, 17);
 
         let decision = reuse.decide_frame_source(false, key, || true);
         reuse.record_decision(decision);

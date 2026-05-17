@@ -822,6 +822,7 @@ impl SceneManager {
         let behavior = scene.unassigned_behavior.clone();
         if active_scene_id == Some(*scene_id) {
             self.refresh_active_render_groups();
+            self.invalidate_active_render_groups();
         }
         Ok(behavior)
     }

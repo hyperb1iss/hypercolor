@@ -2551,6 +2551,54 @@ fn connected_devices_without_layout_targets_treats_any_alias_as_active() {
     assert!(inactive.is_empty());
 }
 
+#[test]
+fn unassigned_output_zones_reports_whole_mapped_outputs_missing_from_layout() {
+    let assigned_id = DeviceId::new();
+    let unassigned_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.map_device_with_segment(
+        "usb:assigned",
+        "usb",
+        assigned_id,
+        Some(SegmentRange::new(0, 2)),
+    );
+    manager.map_device_with_segment(
+        "usb:unassigned",
+        "usb",
+        unassigned_id,
+        Some(SegmentRange::new(0, 3)),
+    );
+
+    let layout = make_layout(vec![make_zone("assigned", "usb:assigned", 2)]);
+    let unassigned = manager.unassigned_output_zones(&layout);
+
+    assert_eq!(unassigned.len(), 1);
+    assert_eq!(unassigned[0].device_id, "usb:unassigned");
+    assert_eq!(unassigned[0].zone_name, None);
+    assert_eq!(unassigned[0].topology.led_count(), 3);
+}
+
+#[test]
+fn unassigned_output_zones_reports_missing_segments_for_partially_assigned_device() {
+    let device_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.map_device("usb:dygma-defy", "usb", device_id);
+    assert!(manager.set_device_zone_segments(
+        "usb:dygma-defy",
+        &make_multi_zone_device_info(device_id, 2, 3)
+    ));
+
+    let mut left_zone = make_zone("left", "usb:dygma-defy", 2);
+    left_zone.zone_name = Some("Left Keys".to_owned());
+    let layout = make_layout(vec![left_zone]);
+    let unassigned = manager.unassigned_output_zones(&layout);
+
+    assert_eq!(unassigned.len(), 1);
+    assert_eq!(unassigned[0].device_id, "usb:dygma-defy");
+    assert_eq!(unassigned[0].zone_name.as_deref(), Some("Right Keys"));
+    assert_eq!(unassigned[0].topology.led_count(), 3);
+}
+
 #[tokio::test]
 async fn write_frame_unmapped_zones_are_silently_skipped() {
     let mut manager = BackendManager::new();

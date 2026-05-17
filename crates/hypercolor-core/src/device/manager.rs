@@ -25,7 +25,9 @@ use tracing::{debug, trace, warn};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneAttachment};
+use hypercolor_types::spatial::{
+    DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneAttachment,
+};
 
 use crate::spatial::is_led_sampled_zone;
 
@@ -1758,6 +1760,13 @@ impl BackendManager {
         self.unmapped_layout_warning_count
     }
 
+    /// Monotonic generation for routing-relevant device mappings.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn routing_mapping_generation(&self) -> u64 {
+        self.routing_mapping_generation
+    }
+
     /// Enable warnings for layout targets that still lack a connected device mapping.
     pub fn enable_unmapped_layout_warnings(&mut self) {
         self.unmapped_layout_warnings_enabled = true;
@@ -1816,6 +1825,74 @@ impl BackendManager {
                 .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
         });
         inactive
+    }
+
+    /// Build transient layout zones for connected outputs absent from `layout`.
+    ///
+    /// These zones are never persisted. The render thread uses them to route
+    /// `UnassignedBehavior::Off` and `Fallback` through the same segmented
+    /// backend path as normal scene-owned zones.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn unassigned_output_zones(&self, layout: &SpatialLayout) -> Vec<DeviceZone> {
+        let coverage = layout_output_coverage(layout);
+        let mut layout_ids = self.device_map.keys().cloned().collect::<Vec<_>>();
+        layout_ids.sort_unstable();
+
+        let mut zones = Vec::new();
+        for layout_device_id in layout_ids {
+            let Some(mapping) = self.device_map.get(layout_device_id.as_str()) else {
+                continue;
+            };
+            let coverage = coverage.get(layout_device_id.as_str());
+
+            if !mapping.zone_segments.is_empty() {
+                if coverage.is_some_and(LayoutOutputCoverage::covers_whole_device) {
+                    continue;
+                }
+
+                let assigned_zone_names = coverage.map(|coverage| &coverage.zone_names);
+                let mut segment_names = mapping.zone_segments.keys().cloned().collect::<Vec<_>>();
+                segment_names.sort_unstable();
+                for zone_name in segment_names {
+                    if assigned_zone_names.is_some_and(|names| names.contains(&zone_name)) {
+                        continue;
+                    }
+                    let Some(segment) = mapping.zone_segments.get(&zone_name).copied() else {
+                        continue;
+                    };
+                    if segment.length == 0 {
+                        continue;
+                    }
+                    zones.push(unassigned_output_zone(
+                        layout_device_id.as_str(),
+                        Some(zone_name.as_str()),
+                        segment.length,
+                    ));
+                }
+                continue;
+            }
+
+            if coverage.is_some() {
+                continue;
+            }
+
+            let led_count = mapping
+                .segment
+                .map_or(mapping.physical_led_count.unwrap_or_default(), |segment| {
+                    segment.length
+                });
+            if led_count == 0 {
+                continue;
+            }
+            zones.push(unassigned_output_zone(
+                layout_device_id.as_str(),
+                None,
+                led_count,
+            ));
+        }
+
+        zones
     }
 
     fn routing_plan(&mut self, layout: &SpatialLayout) -> Arc<RoutingPlan> {
@@ -2504,6 +2581,75 @@ fn prepare_output_for_led_ranges(
         }
         prepare_output_for_leds(&mut colors[start..end], brightness, full_brightness);
     }
+}
+
+#[derive(Debug, Default)]
+struct LayoutOutputCoverage {
+    covers_whole_device: bool,
+    zone_names: HashSet<String>,
+}
+
+impl LayoutOutputCoverage {
+    const fn covers_whole_device(&self) -> bool {
+        self.covers_whole_device
+    }
+}
+
+fn layout_output_coverage(layout: &SpatialLayout) -> HashMap<&str, LayoutOutputCoverage> {
+    let mut coverage = HashMap::new();
+    for zone in layout.zones.iter().filter(|zone| is_led_sampled_zone(zone)) {
+        let entry = coverage
+            .entry(zone.device_id.as_str())
+            .or_insert_with(LayoutOutputCoverage::default);
+        if let Some(zone_name) = zone.zone_name.as_ref() {
+            entry.zone_names.insert(zone_name.clone());
+        } else {
+            entry.covers_whole_device = true;
+        }
+    }
+    coverage
+}
+
+fn unassigned_output_zone(
+    layout_device_id: &str,
+    zone_name: Option<&str>,
+    led_count: usize,
+) -> DeviceZone {
+    let led_count = u32::try_from(led_count).unwrap_or(u32::MAX);
+    DeviceZone {
+        id: unassigned_output_zone_id(layout_device_id, zone_name),
+        name: zone_name.map_or_else(
+            || format!("{layout_device_id} unassigned"),
+            |zone_name| format!("{layout_device_id} {zone_name} unassigned"),
+        ),
+        device_id: layout_device_id.to_owned(),
+        zone_name: zone_name.map(str::to_owned),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(1.0, 1.0),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: i32::MAX,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: led_count,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+fn unassigned_output_zone_id(layout_device_id: &str, zone_name: Option<&str>) -> String {
+    zone_name.map_or_else(
+        || format!("__unassigned:{layout_device_id}"),
+        |zone_name| format!("__unassigned:{layout_device_id}:{zone_name}"),
+    )
 }
 
 fn prepare_output_for_leds(colors: &mut [[u8; 3]], brightness: f32, full_brightness: bool) {

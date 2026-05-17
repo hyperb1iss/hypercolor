@@ -84,6 +84,7 @@ pub(crate) struct GroupCanvasFrame {
 pub(crate) struct RenderGroupResult {
     pub scene_frame: ProducerFrame,
     pub group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
+    pub zone_canvases: Vec<(RenderGroupId, ProducerFrame)>,
     pub active_group_canvas_ids: Vec<RenderGroupId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub producer_full_frame_copy: FullFrameCopyMetrics,
@@ -108,6 +109,7 @@ struct RetainedRenderGroupFrame {
     dependency_key: SceneDependencyKey,
     scene_frame: ProducerFrame,
     active_group_canvas_ids: Vec<RenderGroupId>,
+    zone_canvases: Vec<(RenderGroupId, ProducerFrame)>,
     led_sampling_strategy: RetainedLedSamplingStrategy,
     logical_layer_count: u32,
 }
@@ -350,6 +352,7 @@ impl RenderGroupRuntime {
         Some(RenderGroupResult {
             scene_frame: retained.scene_frame.clone(),
             group_canvases: Vec::new(),
+            zone_canvases: retained.zone_canvases.clone(),
             active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
             led_sampling_strategy: LedSamplingStrategy::from_retained(
                 &retained.led_sampling_strategy,
@@ -418,6 +421,7 @@ impl RenderGroupRuntime {
         let mut render_us = 0_u32;
         let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
         let mut group_canvases = Vec::new();
+        let mut zone_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
             && groups_support_projection_composition(groups, &self.scene_projection_cache);
@@ -435,6 +439,7 @@ impl RenderGroupRuntime {
                     dependency_key,
                 ) {
                     active_group_canvas_ids.push(group.id);
+                    zone_canvases.push((group.id, retained.frame.clone()));
                     group_canvases.push((group.id, retained));
                     continue;
                 }
@@ -458,6 +463,7 @@ impl RenderGroupRuntime {
                 render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
                 active_group_canvas_ids.push(group.id);
                 self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+                zone_canvases.push((group.id, frame.frame.clone()));
                 group_canvases.push((group.id, frame));
                 continue;
             }
@@ -518,6 +524,7 @@ impl RenderGroupRuntime {
                 target.clear();
                 continue;
             }
+            zone_canvases.push((group.id, ProducerFrame::Canvas(target.clone())));
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
         }
         zones.clear();
@@ -548,6 +555,7 @@ impl RenderGroupRuntime {
         let result = RenderGroupResult {
             scene_frame,
             group_canvases,
+            zone_canvases,
             active_group_canvas_ids,
             producer_full_frame_copy,
             led_sampling_strategy,
@@ -752,6 +760,7 @@ impl RenderGroupRuntime {
             zones.clear();
         }
         let mut group_canvases = Vec::new();
+        let mut zone_canvases = vec![(scene_group.id, scene_frame.clone())];
         let mut active_group_canvas_ids = Vec::new();
         for group in groups {
             if !group.enabled || group.id == scene_group.id {
@@ -768,6 +777,7 @@ impl RenderGroupRuntime {
                 dependency_key,
             ) {
                 active_group_canvas_ids.push(group.id);
+                zone_canvases.push((group.id, retained.frame.clone()));
                 group_canvases.push((group.id, retained));
                 continue;
             }
@@ -792,6 +802,7 @@ impl RenderGroupRuntime {
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
             active_group_canvas_ids.push(group.id);
             self.retain_direct_group_frame(group.id, elapsed_ms, dependency_key, &frame);
+            zone_canvases.push((group.id, frame.frame.clone()));
             group_canvases.push((group.id, frame));
         }
         zones.clear();
@@ -799,6 +810,7 @@ impl RenderGroupRuntime {
         Ok(Some(RenderGroupResult {
             scene_frame,
             group_canvases,
+            zone_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
             producer_full_frame_copy,
@@ -862,6 +874,7 @@ impl RenderGroupRuntime {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
             active_group_canvas_ids: result.active_group_canvas_ids.clone(),
+            zone_canvases: result.zone_canvases.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones),
             logical_layer_count: result.logical_layer_count,
         });

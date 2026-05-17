@@ -5,7 +5,9 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::layer::LayerSource;
-use hypercolor_types::scene::{ColorInterpolation, RenderGroup, RenderGroupId, SceneId};
+use hypercolor_types::scene::{
+    ColorInterpolation, RenderGroup, RenderGroupId, SceneId, UnassignedBehavior,
+};
 
 use crate::session::OutputPowerState;
 
@@ -47,6 +49,8 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_render_groups_revision: u64,
     pub active_render_group_count: u32,
     pub active_display_group_target_fps: HashMap<RenderGroupId, u32>,
+    pub unassigned_behavior: UnassignedBehavior,
+    pub device_registry_generation: u64,
 }
 
 impl SceneRuntimeSnapshot {
@@ -54,8 +58,15 @@ impl SceneRuntimeSnapshot {
         self.active_render_group_count
     }
 
-    pub(crate) const fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
-        SceneDependencyKey::new(self.active_render_groups_revision, dependency_generation)
+    pub(crate) fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
+        SceneDependencyKey::new(
+            self.active_render_groups_revision,
+            combine_scene_dependency_generation(
+                dependency_generation,
+                self.device_registry_generation,
+                &self.unassigned_behavior,
+            ),
+        )
     }
 }
 
@@ -241,6 +252,11 @@ async fn snapshot_scene_runtime(
 ) -> SceneRuntimeSnapshot {
     let active_render_groups = manager.active_render_groups();
     let active_render_groups_revision = manager.active_render_groups_revision();
+    let unassigned_behavior = manager
+        .active_scene()
+        .map(|scene| scene.unassigned_behavior.clone())
+        .unwrap_or_default();
+    let device_registry_generation = state.device_registry.generation();
     let active_display_group_target_fps = snapshot_display_group_target_fps(
         &state.device_registry,
         scene_snapshot_cache,
@@ -270,6 +286,29 @@ async fn snapshot_scene_runtime(
         active_render_groups_revision,
         active_render_group_count,
         active_display_group_target_fps,
+        unassigned_behavior,
+        device_registry_generation,
+    }
+}
+
+fn combine_scene_dependency_generation(
+    dependency_generation: u64,
+    device_registry_generation: u64,
+    unassigned_behavior: &UnassignedBehavior,
+) -> u64 {
+    dependency_generation
+        ^ device_registry_generation.rotate_left(21)
+        ^ unassigned_behavior_generation(unassigned_behavior).rotate_left(42)
+}
+
+fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u64 {
+    match unassigned_behavior {
+        UnassignedBehavior::Off => 0,
+        UnassignedBehavior::Hold => 1,
+        UnassignedBehavior::Fallback(group_id) => {
+            let raw = group_id.0.as_u128();
+            2 ^ ((raw >> 64) as u64) ^ (raw as u64)
+        }
     }
 }
 
@@ -640,6 +679,8 @@ mod tests {
             active_render_groups_revision: 7,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
+            unassigned_behavior: Default::default(),
+            device_registry_generation: 0,
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
 
@@ -691,6 +732,8 @@ mod tests {
             active_render_groups_revision: 7,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
+            unassigned_behavior: Default::default(),
+            device_registry_generation: 0,
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
 
@@ -716,6 +759,8 @@ mod tests {
             active_render_groups_revision: 7,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
+            unassigned_behavior: Default::default(),
+            device_registry_generation: 0,
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
         let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), false);

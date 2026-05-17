@@ -1,11 +1,17 @@
 use std::future::{Future, poll_fn};
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Instant;
 
 use tracing::info;
 
+use hypercolor_core::device::BackendManager;
+use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_core::types::canvas::Canvas;
 use hypercolor_core::types::event::FrameTiming;
-use hypercolor_types::event::{HypercolorEvent, Severity};
+use hypercolor_types::event::{HypercolorEvent, Severity, ZoneColors};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, UnassignedBehavior};
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 use super::frame_composer::{ComposeRequest, RenderStageStats, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -17,6 +23,7 @@ use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
 use super::pipeline_runtime::{
     OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
 };
+use super::producer_queue::ProducerFrame;
 use super::scene_snapshot::{build_frame_scene_snapshot, refresh_effect_scene_snapshot};
 use super::sparkleflinger::ComposedFrameSet;
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
@@ -225,37 +232,49 @@ pub(crate) async fn execute_frame(
         } else {
             state.backend_manager.lock().await
         };
+        let unassigned_output_plan = UnassignedOutputPlan::build(
+            &mut manager,
+            Arc::clone(&layout),
+            &scene_snapshot.scene_runtime.unassigned_behavior,
+            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            &render_stage.zone_canvases,
+        );
         let device_brightness_generation = manager.output_brightness_generation();
-        let routing_signature = manager.routed_output_signature(layout.as_ref());
+        let routing_signature = manager.routed_output_signature(unassigned_output_plan.layout.as_ref());
         let output_reuse_key = OutputReuseKey::new(
             global_brightness_bits,
             device_brightness_generation,
             routing_signature,
             zone_shape_signature,
+            unassigned_behavior_generation(&scene_snapshot.scene_runtime.unassigned_behavior),
         );
         let output_reuse_decision = frame_loop.output_reuse.decide_frame_source(
             reuses_published_frame,
             output_reuse_key,
-            || manager.can_reuse_routed_frame_outputs(layout.as_ref()),
+            || manager.can_reuse_routed_frame_outputs(unassigned_output_plan.layout.as_ref()),
         );
         let write_stats = match output_reuse_decision.source() {
-            OutputFrameSource::RoutedReuse => manager.reuse_routed_frame_outputs(layout.as_ref()),
+            OutputFrameSource::RoutedReuse => {
+                manager.reuse_routed_frame_outputs(unassigned_output_plan.layout.as_ref())
+            }
             OutputFrameSource::PublishedFrame => {
                 let published_frame = state.event_bus.frame_sender().borrow();
+                let zones = unassigned_output_plan.zones_for(&published_frame.zones);
                 manager
                     .write_frame_with_brightness(
-                        &published_frame.zones,
-                        layout.as_ref(),
+                        &zones,
+                        unassigned_output_plan.layout.as_ref(),
                         global_brightness,
                         None,
                     )
                     .await
             }
             OutputFrameSource::CurrentFrame => {
+                let zones = unassigned_output_plan.zones_for(render.output_artifacts.zones());
                 manager
                     .write_frame_with_brightness(
-                        render.output_artifacts.zones(),
-                        layout.as_ref(),
+                        &zones,
+                        unassigned_output_plan.layout.as_ref(),
                         global_brightness,
                         None,
                     )
@@ -464,12 +483,140 @@ fn measured_sampling_us(
     measured_us.max(render_stage.sampled_us)
 }
 
+struct UnassignedOutputPlan {
+    layout: Arc<SpatialLayout>,
+    appended_zones: Vec<ZoneColors>,
+}
+
+impl UnassignedOutputPlan {
+    fn build(
+        manager: &mut BackendManager,
+        layout: Arc<SpatialLayout>,
+        behavior: &UnassignedBehavior,
+        groups: &[RenderGroup],
+        zone_canvases: &[(RenderGroupId, ProducerFrame)],
+    ) -> Self {
+        if matches!(behavior, UnassignedBehavior::Hold) {
+            return Self {
+                layout,
+                appended_zones: Vec::new(),
+            };
+        }
+
+        let unassigned_zones = manager.unassigned_output_zones(layout.as_ref());
+        if unassigned_zones.is_empty() {
+            return Self {
+                layout,
+                appended_zones: Vec::new(),
+            };
+        }
+
+        let appended_zones = match behavior {
+            UnassignedBehavior::Off => black_zone_colors(&unassigned_zones),
+            UnassignedBehavior::Hold => Vec::new(),
+            UnassignedBehavior::Fallback(group_id) => {
+                fallback_zone_colors(*group_id, groups, zone_canvases, &unassigned_zones)
+                    .unwrap_or_else(|| black_zone_colors(&unassigned_zones))
+            }
+        };
+
+        Self {
+            layout: Arc::new(layout_with_unassigned_zones(
+                layout.as_ref(),
+                &unassigned_zones,
+            )),
+            appended_zones,
+        }
+    }
+
+    fn zones_for(&self, base: &[ZoneColors]) -> Vec<ZoneColors> {
+        if self.appended_zones.is_empty() {
+            return base.to_vec();
+        }
+
+        let mut zones = Vec::with_capacity(base.len().saturating_add(self.appended_zones.len()));
+        zones.extend_from_slice(base);
+        zones.extend_from_slice(&self.appended_zones);
+        zones
+    }
+}
+
+fn layout_with_unassigned_zones(
+    layout: &SpatialLayout,
+    unassigned_zones: &[DeviceZone],
+) -> SpatialLayout {
+    let mut output_layout = layout.clone();
+    output_layout.zones.extend_from_slice(unassigned_zones);
+    output_layout
+}
+
+fn black_zone_colors(zones: &[DeviceZone]) -> Vec<ZoneColors> {
+    zones
+        .iter()
+        .map(|zone| ZoneColors {
+            zone_id: zone.id.clone(),
+            colors: vec![[0, 0, 0]; usize::try_from(zone.topology.led_count()).unwrap_or_default()],
+        })
+        .collect()
+}
+
+fn fallback_zone_colors(
+    fallback_group_id: RenderGroupId,
+    groups: &[RenderGroup],
+    zone_canvases: &[(RenderGroupId, ProducerFrame)],
+    unassigned_zones: &[DeviceZone],
+) -> Option<Vec<ZoneColors>> {
+    let fallback_group = groups
+        .iter()
+        .find(|group| group.id == fallback_group_id && group.display_target.is_none())?;
+    let fallback_canvas = zone_canvases
+        .iter()
+        .find(|(group_id, _)| *group_id == fallback_group_id)
+        .and_then(|(_, frame)| producer_frame_canvas(frame))?;
+    let mut fallback_layout = fallback_group.layout.clone();
+    fallback_layout.zones = unassigned_zones.to_vec();
+    fallback_layout.canvas_width = fallback_canvas.width();
+    fallback_layout.canvas_height = fallback_canvas.height();
+
+    Some(SpatialEngine::new(fallback_layout).sample(&fallback_canvas))
+}
+
+fn producer_frame_canvas(frame: &ProducerFrame) -> Option<Canvas> {
+    match frame {
+        ProducerFrame::Canvas(canvas) => Some(canvas.clone()),
+        ProducerFrame::Surface(surface) => Some(Canvas::from_published_surface(surface)),
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => None,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => None,
+    }
+}
+
+fn unassigned_behavior_generation(behavior: &UnassignedBehavior) -> u64 {
+    match behavior {
+        UnassignedBehavior::Off => 0,
+        UnassignedBehavior::Hold => 1,
+        UnassignedBehavior::Fallback(group_id) => {
+            let raw = group_id.0.as_u128();
+            2 ^ ((raw >> 64) as u64) ^ (raw as u64)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use hypercolor_core::device::{BackendManager, SegmentRange};
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_core::types::event::{FrameData, ZoneColors};
-    use hypercolor_types::scene::{ColorInterpolation, SceneId};
+    use hypercolor_types::device::DeviceId;
+    use hypercolor_types::scene::{
+        ColorInterpolation, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
+        UnassignedBehavior,
+    };
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     };
@@ -484,6 +631,7 @@ mod tests {
     };
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
     use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
+    use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
 
     fn render_stage(
@@ -510,6 +658,7 @@ mod tests {
             web_viewport_preview: None,
             producer_full_frame_copy: crate::performance::FullFrameCopyMetrics::default(),
             group_canvases: Vec::new(),
+            zone_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(
                 sample_layout(&[]),
@@ -628,6 +777,81 @@ mod tests {
             1,
             1,
         )
+    }
+
+    fn render_group(id: RenderGroupId, layout: SpatialLayout) -> RenderGroup {
+        RenderGroup {
+            id,
+            name: "fallback".to_owned(),
+            description: None,
+            effect_id: None,
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layers: Vec::new(),
+            layout,
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: None,
+            role: RenderGroupRole::Custom,
+            controls_version: 0,
+            layers_version: 0,
+        }
+    }
+
+    #[test]
+    fn unassigned_output_plan_appends_black_zones_for_off_behavior() {
+        let mut manager = BackendManager::new();
+        let device_id = DeviceId::new();
+        manager.map_device_with_segment(
+            "usb:unassigned",
+            "mock",
+            device_id,
+            Some(SegmentRange::new(0, 2)),
+        );
+
+        let plan = super::UnassignedOutputPlan::build(
+            &mut manager,
+            Arc::new(sample_layout(&[])),
+            &UnassignedBehavior::Off,
+            &[],
+            &[],
+        );
+        let zones = plan.zones_for(&[]);
+
+        assert_eq!(plan.layout.zones.len(), 1);
+        assert_eq!(plan.layout.zones[0].device_id, "usb:unassigned");
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].colors, vec![[0, 0, 0]; 2]);
+    }
+
+    #[test]
+    fn unassigned_output_plan_samples_fallback_group_canvas() {
+        let mut manager = BackendManager::new();
+        let device_id = DeviceId::new();
+        manager.map_device_with_segment(
+            "usb:unassigned",
+            "mock",
+            device_id,
+            Some(SegmentRange::new(0, 2)),
+        );
+
+        let group_id = RenderGroupId::new();
+        let fallback_canvas = Canvas::from_rgba(&[255, 0, 0, 255], 1, 1);
+        let groups = vec![render_group(group_id, sample_layout(&[]))];
+        let zone_canvases = vec![(group_id, ProducerFrame::Canvas(fallback_canvas))];
+        let plan = super::UnassignedOutputPlan::build(
+            &mut manager,
+            Arc::new(sample_layout(&[])),
+            &UnassignedBehavior::Fallback(group_id),
+            &groups,
+            &zone_canvases,
+        );
+        let zones = plan.zones_for(&[]);
+
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].colors, vec![[255, 0, 0]; 2]);
     }
 
     fn layout_with_display_zone() -> SpatialLayout {
