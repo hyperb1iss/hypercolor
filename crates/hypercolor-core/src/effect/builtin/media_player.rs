@@ -7,6 +7,7 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
 };
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
+use hypercolor_types::viewport::FitMode;
 
 use super::common::{
     asset_control, builtin_effect_id, color_control, dropdown_control, slider_control,
@@ -18,6 +19,7 @@ pub struct MediaPlayerRenderer {
     asset: String,
     producer: Option<MediaProducer>,
     playback: MediaPlayback,
+    fit_mode: FitMode,
     brightness: f32,
     tint: [f32; 4],
     tint_strength: f32,
@@ -31,6 +33,7 @@ impl MediaPlayerRenderer {
             asset: String::new(),
             producer: None,
             playback: MediaPlayback::default(),
+            fit_mode: FitMode::Cover,
             brightness: 1.0,
             tint: [1.0, 1.0, 1.0, 1.0],
             tint_strength: 0.0,
@@ -65,11 +68,12 @@ impl EffectRenderer for MediaPlayerRenderer {
             return Ok(());
         };
 
-        let rendered = producer.render_frame(
+        let rendered = producer.render_frame_with_fit(
             &self.playback,
             time_secs_to_elapsed_ms(input.time_secs),
             input.canvas_width,
             input.canvas_height,
+            self.fit_mode,
         );
         *canvas = rendered;
         apply_output_adjustments(
@@ -91,6 +95,11 @@ impl EffectRenderer for MediaPlayerRenderer {
             "loop_mode" => {
                 if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
                     self.playback.loop_mode = loop_mode_from_control(value);
+                }
+            }
+            "fit" => {
+                if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
+                    self.fit_mode = fit_mode_from_control(value);
                 }
             }
             "speed" => {
@@ -150,6 +159,16 @@ fn loop_mode_from_control(value: &str) -> LoopMode {
         "none" | "None" => LoopMode::None,
         "ping_pong" | "PingPong" | "ping-pong" => LoopMode::PingPong,
         _ => LoopMode::Loop,
+    }
+}
+
+fn fit_mode_from_control(value: &str) -> FitMode {
+    match value {
+        "contain" | "Contain" => FitMode::Contain,
+        "stretch" | "Stretch" => FitMode::Stretch,
+        "tile" | "Tile" => FitMode::Tile,
+        "mirror" | "Mirror" => FitMode::Mirror,
+        _ => FitMode::Cover,
     }
 }
 

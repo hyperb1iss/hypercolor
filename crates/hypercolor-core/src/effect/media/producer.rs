@@ -6,8 +6,10 @@ use image::codecs::png::PngDecoder;
 use image::{AnimationDecoder, Frame, ImageError};
 use thiserror::Error;
 
+use crate::spatial::sample_viewport;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
+use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 const DEFAULT_FRAME_DURATION_US: u64 = 100_000;
 
@@ -165,6 +167,13 @@ impl MediaProducer {
     }
 
     #[must_use]
+    pub fn intrinsic_frame(&self, playback: &MediaPlayback, elapsed_ms: u32) -> Canvas {
+        self.frames[self.frame_index_at(playback, elapsed_ms)]
+            .canvas
+            .clone()
+    }
+
+    #[must_use]
     pub fn render_frame(
         &self,
         playback: &MediaPlayback,
@@ -172,8 +181,26 @@ impl MediaProducer {
         width: u32,
         height: u32,
     ) -> Canvas {
-        let frame = &self.frames[self.frame_index_at(playback, elapsed_ms)];
-        scale_canvas_to(frame.canvas.clone(), width, height)
+        self.render_frame_with_fit(playback, elapsed_ms, width, height, FitMode::Stretch)
+    }
+
+    #[must_use]
+    pub fn render_frame_with_fit(
+        &self,
+        playback: &MediaPlayback,
+        elapsed_ms: u32,
+        width: u32,
+        height: u32,
+        fit_mode: FitMode,
+    ) -> Canvas {
+        let source = self.intrinsic_frame(playback, elapsed_ms);
+        if source.width() == width && source.height() == height {
+            return source;
+        }
+
+        let mut target = Canvas::new(width, height);
+        sample_viewport(&mut target, &source, ViewportRect::full(), fit_mode, 1.0);
+        target
     }
 
     fn from_static_bytes(bytes: &[u8]) -> Result<Self, MediaProducerError> {
@@ -277,30 +304,4 @@ fn seconds_to_us(seconds: f32) -> u64 {
 )]
 fn millis_to_scaled_us(elapsed_ms: u32, speed: f32) -> u64 {
     (elapsed_ms as f32 * speed * 1_000.0).round().max(0.0) as u64
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::as_conversions,
-    reason = "media resampling maps bounded integer pixel coordinates to normalized floats"
-)]
-fn scale_canvas_to(source: Canvas, width: u32, height: u32) -> Canvas {
-    if source.width() == width && source.height() == height {
-        return source;
-    }
-    if width == 0 || height == 0 || source.width() == 0 || source.height() == 0 {
-        return Canvas::new(width, height);
-    }
-
-    let mut target = Canvas::new(width, height);
-    let max_x = width.saturating_sub(1).max(1);
-    let max_y = height.saturating_sub(1).max(1);
-    for y in 0..height {
-        let ny = y as f32 / max_y as f32;
-        for x in 0..width {
-            let nx = x as f32 / max_x as f32;
-            target.set_pixel(x, y, source.sample_bilinear(nx, ny));
-        }
-    }
-    target
 }

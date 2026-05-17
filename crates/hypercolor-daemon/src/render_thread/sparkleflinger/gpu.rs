@@ -29,7 +29,7 @@ use crate::render_thread::sparkleflinger::gpu_sampling::{
 const COMPOSITOR_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const COMPOSE_WORKGROUP_WIDTH: u32 = 8;
 const COMPOSE_WORKGROUP_HEIGHT: u32 = 8;
-const COMPOSE_PARAM_BYTES: usize = 48;
+const COMPOSE_PARAM_BYTES: usize = 96;
 const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
@@ -222,6 +222,28 @@ struct CachedReadbackLayer {
     source: CachedSourceUpload,
     mode: CompositionMode,
     opacity_bits: u32,
+    transform: Option<CachedReadbackTransform>,
+    adjust: Option<CachedReadbackAdjust>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedReadbackTransform {
+    anchor_x_bits: u32,
+    anchor_y_bits: u32,
+    scale_x_bits: u32,
+    scale_y_bits: u32,
+    rotation_bits: u32,
+    fit: hypercolor_types::viewport::FitMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedReadbackAdjust {
+    brightness: u32,
+    saturation: u32,
+    hue_shift: u32,
+    tint: [u32; 4],
+    tint_strength: u32,
+    contrast: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -368,7 +390,13 @@ impl GpuSparkleFlinger {
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {
-        plan.width > 0 && plan.height > 0 && !plan.layers.is_empty()
+        plan.width > 0
+            && plan.height > 0
+            && !plan.layers.is_empty()
+            && plan.layers.iter().all(|layer| {
+                gpu_source_frame(&layer.frame).is_some()
+                    || layer.frame_matches_size(plan.width, plan.height)
+            })
     }
 
     pub(crate) fn can_sample_zone_plan(&self, prepared_zones: &[PreparedZonePlan]) -> bool {
@@ -866,7 +894,7 @@ impl GpuSparkleFlinger {
             .next()
             .context("GPU composition requires at least one layer")?;
 
-        if first_layer.mode == CompositionMode::Replace && first_layer.opacity >= 1.0 {
+        if first_layer.can_bypass_for_size(plan.width, plan.height) {
             copy_frame_into_output_texture(
                 &self.queue,
                 &surfaces.front.texture,
@@ -2462,6 +2490,11 @@ fn compose_layer_into_gpu(
             CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
             CompositionMode::Add => ComposeShaderMode::Add,
             CompositionMode::Screen => ComposeShaderMode::Screen,
+            CompositionMode::Multiply => ComposeShaderMode::Multiply,
+            CompositionMode::Overlay => ComposeShaderMode::Overlay,
+            CompositionMode::SoftLight => ComposeShaderMode::SoftLight,
+            CompositionMode::ColorDodge => ComposeShaderMode::ColorDodge,
+            CompositionMode::Difference => ComposeShaderMode::Difference,
         }
     };
     let output_surface = if use_front_as_current {
@@ -2472,6 +2505,7 @@ fn compose_layer_into_gpu(
 
     if let Some(frame) = gpu_source_frame(&layer.frame)
         && shader_mode == ComposeShaderMode::Replace
+        && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
     {
         record_gpu_source_upload_skipped();
         let output_texture = if use_front_as_current {
@@ -2488,7 +2522,9 @@ fn compose_layer_into_gpu(
 
     if gpu_frame.is_none() {
         upload_frame_into_source_texture(queue, surfaces, &layer.frame);
-        if shader_mode == ComposeShaderMode::Replace {
+        if shader_mode == ComposeShaderMode::Replace
+            && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
+        {
             let output_texture = if use_front_as_current {
                 &surfaces.back.texture
             } else {
@@ -2514,7 +2550,7 @@ fn compose_layer_into_gpu(
         }
     }
 
-    let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer.opacity);
+    let params = encode_compose_params(surfaces.width, surfaces.height, shader_mode, layer);
     if surfaces.cached_compose_params != Some(params) {
         queue.write_buffer(&pipeline.params_buffer, 0, &params);
         surfaces.cached_compose_params = Some(params);
@@ -2772,6 +2808,8 @@ fn cached_readback_key(plan: &CompositionPlan) -> Option<CachedReadbackKey> {
             source: cached_source_upload(&layer.frame)?,
             mode: layer.mode,
             opacity_bits: layer.opacity.to_bits(),
+            transform: layer.transform.map(cached_transform),
+            adjust: layer.adjust.map(cached_adjust),
         });
     }
     Some(CachedReadbackKey {
@@ -2779,6 +2817,28 @@ fn cached_readback_key(plan: &CompositionPlan) -> Option<CachedReadbackKey> {
         height: plan.height,
         layers,
     })
+}
+
+fn cached_transform(transform: super::CompositionTransform) -> CachedReadbackTransform {
+    CachedReadbackTransform {
+        anchor_x_bits: transform.anchor.x.to_bits(),
+        anchor_y_bits: transform.anchor.y.to_bits(),
+        scale_x_bits: transform.scale[0].to_bits(),
+        scale_y_bits: transform.scale[1].to_bits(),
+        rotation_bits: transform.rotation.to_bits(),
+        fit: transform.fit,
+    }
+}
+
+fn cached_adjust(adjust: super::CompositionAdjust) -> CachedReadbackAdjust {
+    CachedReadbackAdjust {
+        brightness: adjust.brightness.to_bits(),
+        saturation: adjust.saturation.to_bits(),
+        hue_shift: adjust.hue_shift.to_bits(),
+        tint: adjust.tint.map(f32::to_bits),
+        tint_strength: adjust.tint_strength.to_bits(),
+        contrast: adjust.contrast.to_bits(),
+    }
 }
 
 fn gpu_composed_without_surfaces() -> ComposedFrameSet {
@@ -3207,13 +3267,39 @@ fn encode_compose_params(
     width: u32,
     height: u32,
     mode: ComposeShaderMode,
-    opacity: f32,
+    layer: &CompositionLayer,
 ) -> [u8; COMPOSE_PARAM_BYTES] {
     let mut bytes = [0u8; COMPOSE_PARAM_BYTES];
+    let transform = layer.transform.unwrap_or_default();
+    let adjust = layer.adjust.unwrap_or_default();
     bytes[0..4].copy_from_slice(&width.to_le_bytes());
     bytes[4..8].copy_from_slice(&height.to_le_bytes());
     bytes[8..12].copy_from_slice(&(mode as u32).to_le_bytes());
-    bytes[16..20].copy_from_slice(&opacity.to_le_bytes());
+    bytes[12..16].copy_from_slice(&(fit_mode(transform.fit) as u32).to_le_bytes());
+    bytes[16..20].copy_from_slice(&layer.frame.width().to_le_bytes());
+    bytes[20..24].copy_from_slice(&layer.frame.height().to_le_bytes());
+    let processing = if layer.needs_processing_for_size(width, height) {
+        1_u32
+    } else {
+        0_u32
+    };
+    bytes[24..28].copy_from_slice(&processing.to_le_bytes());
+    bytes[32..36].copy_from_slice(&layer.opacity.to_le_bytes());
+    bytes[36..40].copy_from_slice(&transform.anchor.x.to_le_bytes());
+    bytes[40..44].copy_from_slice(&transform.anchor.y.to_le_bytes());
+    bytes[44..48].copy_from_slice(&transform.scale[0].to_le_bytes());
+    bytes[48..52].copy_from_slice(&transform.scale[1].to_le_bytes());
+    bytes[52..56].copy_from_slice(&transform.rotation.cos().to_le_bytes());
+    bytes[56..60].copy_from_slice(&transform.rotation.sin().to_le_bytes());
+    bytes[64..68].copy_from_slice(&adjust.brightness.to_le_bytes());
+    bytes[68..72].copy_from_slice(&adjust.saturation.to_le_bytes());
+    bytes[72..76].copy_from_slice(&adjust.hue_shift.to_le_bytes());
+    let tint_strength = (adjust.tint_strength * adjust.tint[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    bytes[76..80].copy_from_slice(&tint_strength.to_le_bytes());
+    bytes[80..84].copy_from_slice(&adjust.tint[0].to_le_bytes());
+    bytes[84..88].copy_from_slice(&adjust.tint[1].to_le_bytes());
+    bytes[88..92].copy_from_slice(&adjust.tint[2].to_le_bytes());
+    bytes[92..96].copy_from_slice(&adjust.contrast.to_le_bytes());
     bytes
 }
 
@@ -3290,6 +3376,31 @@ enum ComposeShaderMode {
     Alpha = 1,
     Add = 2,
     Screen = 3,
+    Multiply = 4,
+    Overlay = 5,
+    SoftLight = 6,
+    ColorDodge = 7,
+    Difference = 8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum ComposeFitMode {
+    Contain = 0,
+    Cover = 1,
+    Stretch = 2,
+    Tile = 3,
+    Mirror = 4,
+}
+
+fn fit_mode(mode: hypercolor_types::viewport::FitMode) -> ComposeFitMode {
+    match mode {
+        hypercolor_types::viewport::FitMode::Contain => ComposeFitMode::Contain,
+        hypercolor_types::viewport::FitMode::Cover => ComposeFitMode::Cover,
+        hypercolor_types::viewport::FitMode::Stretch => ComposeFitMode::Stretch,
+        hypercolor_types::viewport::FitMode::Tile => ComposeFitMode::Tile,
+        hypercolor_types::viewport::FitMode::Mirror => ComposeFitMode::Mirror,
+    }
 }
 
 fn display_finalize_mode(mode: DisplayFaceBlendMode) -> DisplayFinalizeShaderMode {

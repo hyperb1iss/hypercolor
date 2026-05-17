@@ -4,6 +4,7 @@ mod face_overlay;
 pub(crate) mod gpu;
 #[cfg(feature = "wgpu")]
 mod gpu_sampling;
+mod transform;
 
 use anyhow::{Result, bail};
 use hypercolor_core::bus::DisplayYuv420Frame;
@@ -13,8 +14,10 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::layer::{LayerAdjust, LayerTransform};
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
+use hypercolor_types::viewport::FitMode;
 
 #[cfg(feature = "wgpu")]
 use super::producer_queue::GpuTextureFrame;
@@ -32,6 +35,102 @@ pub(crate) enum CompositionMode {
     Alpha,
     Add,
     Screen,
+    Multiply,
+    Overlay,
+    SoftLight,
+    ColorDodge,
+    Difference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CompositionTransform {
+    pub(crate) anchor: NormalizedPosition,
+    pub(crate) scale: [f32; 2],
+    pub(crate) rotation: f32,
+    pub(crate) fit: FitMode,
+}
+
+impl CompositionTransform {
+    fn is_identity(self) -> bool {
+        self == Self::default()
+    }
+}
+
+impl Default for CompositionTransform {
+    fn default() -> Self {
+        Self {
+            anchor: NormalizedPosition::new(0.5, 0.5),
+            scale: [1.0, 1.0],
+            rotation: 0.0,
+            fit: FitMode::Cover,
+        }
+    }
+}
+
+impl From<LayerTransform> for CompositionTransform {
+    fn from(value: LayerTransform) -> Self {
+        let value = value.normalized();
+        Self {
+            anchor: value.anchor,
+            scale: value.scale,
+            rotation: value.rotation,
+            fit: value.fit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CompositionAdjust {
+    pub(crate) brightness: f32,
+    pub(crate) saturation: f32,
+    pub(crate) hue_shift: f32,
+    pub(crate) tint: [f32; 4],
+    pub(crate) tint_strength: f32,
+    pub(crate) contrast: f32,
+}
+
+impl CompositionAdjust {
+    fn is_identity(self) -> bool {
+        self == Self::default()
+    }
+
+    pub(crate) const fn to_layer_adjust(self) -> LayerAdjust {
+        LayerAdjust {
+            brightness: self.brightness,
+            saturation: self.saturation,
+            hue_shift: self.hue_shift,
+            tint: self.tint,
+            tint_strength: self.tint_strength,
+            contrast: self.contrast,
+        }
+    }
+}
+
+impl Default for CompositionAdjust {
+    fn default() -> Self {
+        Self {
+            brightness: 1.0,
+            saturation: 1.0,
+            hue_shift: 0.0,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            tint_strength: 0.0,
+            contrast: 0.0,
+        }
+    }
+}
+
+impl From<LayerAdjust> for CompositionAdjust {
+    fn from(value: LayerAdjust) -> Self {
+        let value = value.normalized();
+        Self {
+            brightness: value.brightness,
+            saturation: value.saturation,
+            hue_shift: value.hue_shift,
+            tint: value.tint,
+            tint_strength: value.tint_strength,
+            contrast: value.contrast,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +139,8 @@ pub struct CompositionLayer {
     mode: CompositionMode,
     opacity: f32,
     opaque_hint: bool,
+    transform: Option<CompositionTransform>,
+    adjust: Option<CompositionAdjust>,
 }
 
 impl CompositionLayer {
@@ -86,7 +187,23 @@ impl CompositionLayer {
             mode,
             opacity,
             opaque_hint,
+            transform: None,
+            adjust: None,
         }
+    }
+
+    pub(crate) fn with_transform(mut self, transform: CompositionTransform) -> Self {
+        if !transform.is_identity() {
+            self.transform = Some(transform);
+        }
+        self
+    }
+
+    pub(crate) fn with_adjust(mut self, adjust: CompositionAdjust) -> Self {
+        if !adjust.is_identity() {
+            self.adjust = Some(adjust);
+        }
+        self
     }
 
     #[allow(
@@ -135,7 +252,22 @@ impl CompositionLayer {
             return false;
         }
 
-        self.mode == CompositionMode::Replace && self.opacity >= 1.0
+        self.mode == CompositionMode::Replace
+            && self.opacity >= 1.0
+            && self.transform.is_none()
+            && self.adjust.is_none()
+    }
+
+    fn frame_matches_size(&self, width: u32, height: u32) -> bool {
+        self.frame.width() == width && self.frame.height() == height
+    }
+
+    fn can_bypass_for_size(&self, width: u32, height: u32) -> bool {
+        self.is_bypass_candidate() && self.frame_matches_size(width, height)
+    }
+
+    fn needs_processing_for_size(&self, width: u32, height: u32) -> bool {
+        self.transform.is_some() || self.adjust.is_some() || !self.frame_matches_size(width, height)
     }
 }
 
@@ -834,14 +966,50 @@ mod tests {
     use hypercolor_core::types::canvas::{BlendMode, Canvas, PublishedSurface, Rgba, RgbaF32};
     use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::scene::DisplayFaceBlendMode;
+    use hypercolor_types::spatial::NormalizedPosition;
+    use hypercolor_types::viewport::FitMode;
 
-    use super::{CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger};
+    use super::{
+        CompositionAdjust, CompositionLayer, CompositionMode, CompositionPlan,
+        CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
+    };
     use crate::render_thread::producer_queue::ProducerFrame;
 
     fn solid_canvas(color: Rgba) -> Canvas {
         let mut canvas = Canvas::new(2, 2);
         canvas.fill(color);
         canvas
+    }
+
+    fn row_canvas(colors: &[Rgba]) -> Canvas {
+        let mut rgba = Vec::with_capacity(colors.len() * 4);
+        for color in colors {
+            rgba.extend_from_slice(&[color.r, color.g, color.b, color.a]);
+        }
+        Canvas::from_vec(
+            rgba,
+            u32::try_from(colors.len()).expect("test row width should fit u32"),
+            1,
+        )
+    }
+
+    fn compose_transformed_source(source: Canvas, width: u32, height: u32, fit: FitMode) -> Canvas {
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        sparkleflinger
+            .compose(CompositionPlan::single(
+                width,
+                height,
+                CompositionLayer::replace(ProducerFrame::Canvas(source)).with_transform(
+                    CompositionTransform {
+                        anchor: NormalizedPosition::new(0.5, 0.5),
+                        scale: [1.0, 1.0],
+                        rotation: 0.0,
+                        fit,
+                    },
+                ),
+            ))
+            .sampling_canvas
+            .expect("transformed layer should materialize a canvas")
     }
 
     fn expected_blend(dst: Rgba, src: Rgba, mode: BlendMode, opacity: f32) -> Rgba {
@@ -1461,6 +1629,90 @@ mod tests {
                 .expect("CPU screen compose should materialize a canvas")
                 .get_pixel(0, 0),
             expected_blend(base, overlay, BlendMode::Screen, 1.0)
+        );
+    }
+
+    #[test]
+    fn sparkleflinger_extended_blend_modes_use_linear_blend_math() {
+        let base = Rgba::new(96, 128, 192, 255);
+        let overlay = Rgba::new(128, 96, 64, 255);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let composed = sparkleflinger.compose(CompositionPlan::with_layers(
+            2,
+            2,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(base))),
+                CompositionLayer::from_parts(
+                    ProducerFrame::Canvas(solid_canvas(overlay)),
+                    CompositionMode::Multiply,
+                    1.0,
+                    false,
+                ),
+            ],
+        ));
+
+        assert_eq!(
+            composed
+                .sampling_canvas
+                .as_ref()
+                .expect("CPU multiply compose should materialize a canvas")
+                .get_pixel(0, 0),
+            expected_blend(base, overlay, BlendMode::Multiply, 1.0)
+        );
+    }
+
+    #[test]
+    fn sparkleflinger_transform_fit_modes_sample_expected_pixels() {
+        let red = Rgba::new(255, 0, 0, 255);
+        let green = Rgba::new(0, 255, 0, 255);
+        let source = row_canvas(&[red, green]);
+
+        let stretch = compose_transformed_source(source.clone(), 4, 1, FitMode::Stretch);
+        assert_eq!(stretch.get_pixel(0, 0), red);
+        assert_eq!(stretch.get_pixel(1, 0), red);
+        assert_eq!(stretch.get_pixel(2, 0), green);
+        assert_eq!(stretch.get_pixel(3, 0), green);
+
+        let tile = compose_transformed_source(source.clone(), 4, 1, FitMode::Tile);
+        assert_eq!(tile.get_pixel(0, 0), red);
+        assert_eq!(tile.get_pixel(1, 0), green);
+        assert_eq!(tile.get_pixel(2, 0), red);
+        assert_eq!(tile.get_pixel(3, 0), green);
+
+        let mirror = compose_transformed_source(source.clone(), 4, 1, FitMode::Mirror);
+        assert_eq!(mirror.get_pixel(0, 0), red);
+        assert_eq!(mirror.get_pixel(1, 0), green);
+        assert_eq!(mirror.get_pixel(2, 0), green);
+        assert_eq!(mirror.get_pixel(3, 0), red);
+
+        let contain = compose_transformed_source(source, 4, 4, FitMode::Contain);
+        assert_eq!(contain.get_pixel(0, 0), Rgba::TRANSPARENT);
+        assert_eq!(contain.get_pixel(0, 1), red);
+        assert_eq!(contain.get_pixel(3, 2), green);
+        assert_eq!(contain.get_pixel(0, 3), Rgba::TRANSPARENT);
+    }
+
+    #[test]
+    fn sparkleflinger_layer_adjust_applies_before_blending() {
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let adjusted = sparkleflinger.compose(CompositionPlan::single(
+            2,
+            2,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::WHITE)))
+                .with_adjust(CompositionAdjust {
+                    tint: [0.0, 0.0, 1.0, 1.0],
+                    tint_strength: 1.0,
+                    ..CompositionAdjust::default()
+                }),
+        ));
+
+        assert_eq!(
+            adjusted
+                .sampling_canvas
+                .as_ref()
+                .expect("adjusted layer should materialize a canvas")
+                .get_pixel(0, 0),
+            Rgba::new(0, 0, 255, 255)
         );
     }
 

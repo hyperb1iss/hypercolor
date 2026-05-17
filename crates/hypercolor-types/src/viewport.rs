@@ -130,4 +130,6 @@ pub enum FitMode {
     Contain,
     Cover,
     Stretch,
+    Tile,
+    Mirror,
 }

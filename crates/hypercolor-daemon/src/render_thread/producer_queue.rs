@@ -52,7 +52,6 @@ impl ProducerFrame {
         }
     }
 
-    #[cfg(feature = "wgpu")]
     pub(crate) const fn width(&self) -> u32 {
         match self {
             Self::Canvas(canvas) => canvas.width(),
@@ -64,7 +63,6 @@ impl ProducerFrame {
         }
     }
 
-    #[cfg(feature = "wgpu")]
     pub(crate) const fn height(&self) -> u32 {
         match self {
             Self::Canvas(canvas) => canvas.height(),

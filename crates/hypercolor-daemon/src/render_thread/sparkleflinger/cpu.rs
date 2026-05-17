@@ -6,6 +6,7 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
+use super::transform::process_layer_canvas;
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
     publish_composed_frame, scaled_preview_surface_from_rgba,
@@ -37,6 +38,28 @@ struct CachedCpuCompositionLayer {
     mode: CompositionMode,
     opacity_bits: u32,
     opaque_hint: bool,
+    transform: Option<CachedCpuCompositionTransform>,
+    adjust: Option<CachedCpuCompositionAdjust>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedCpuCompositionTransform {
+    anchor_x_bits: u32,
+    anchor_y_bits: u32,
+    scale_x_bits: u32,
+    scale_y_bits: u32,
+    rotation_bits: u32,
+    fit: hypercolor_types::viewport::FitMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedCpuCompositionAdjust {
+    brightness: u32,
+    saturation: u32,
+    hue_shift: u32,
+    tint: [u32; 4],
+    tint_strength: u32,
+    contrast: u32,
 }
 
 impl CpuSparkleFlinger {
@@ -91,9 +114,11 @@ impl CpuSparkleFlinger {
             preview_surface_request.is_some() && requires_full_size_preview;
 
         if layers.len() == 1
-            && let Some(layer) = layers.pop()
-            && layer.is_bypass_candidate()
+            && layers
+                .first()
+                .is_some_and(|layer| layer.can_bypass_for_size(width, height))
         {
+            let layer = layers.pop().expect("single layer should still be present");
             let Some((canvas, surface)) = layer.frame.into_cpu_render_frame() else {
                 return cpu_frame_without_surfaces();
             };
@@ -137,17 +162,18 @@ impl CpuSparkleFlinger {
             );
         }
 
-        let (sampling_canvas, sampling_surface) = if can_reuse_first_replace_canvas(&layers) {
-            let sampling_canvas = compose_layers_into_owned_canvas(width, height, layers);
-            (sampling_canvas, None)
-        } else {
-            let sampling_surface =
-                compose_layers_into_surface(width, height, layers, composition_surface_pool);
-            (
-                Canvas::from_published_surface(&sampling_surface),
-                Some(sampling_surface),
-            )
-        };
+        let (sampling_canvas, sampling_surface) =
+            if can_reuse_first_replace_canvas(&layers, width, height) {
+                let sampling_canvas = compose_layers_into_owned_canvas(width, height, layers);
+                (sampling_canvas, None)
+            } else {
+                let sampling_surface =
+                    compose_layers_into_surface(width, height, layers, composition_surface_pool);
+                (
+                    Canvas::from_published_surface(&sampling_surface),
+                    Some(sampling_surface),
+                )
+            };
         let preview_surface = preview_surface_request.and_then(|request| {
             let (rgba, width, height) = sampling_surface.as_ref().map_or_else(
                 || {
@@ -192,6 +218,8 @@ fn cached_composition_key(
             mode: layer.mode,
             opacity_bits: layer.opacity.to_bits(),
             opaque_hint: layer.opaque_hint,
+            transform: layer.transform.map(cached_transform),
+            adjust: layer.adjust.map(cached_adjust),
         });
     }
 
@@ -253,9 +281,9 @@ fn preview_request_matches_plan(
     request.is_some_and(|request| request.width == width && request.height == height)
 }
 
-fn can_reuse_first_replace_canvas(layers: &[CompositionLayer]) -> bool {
+fn can_reuse_first_replace_canvas(layers: &[CompositionLayer], width: u32, height: u32) -> bool {
     layers.first().is_some_and(|layer| {
-        layer.is_bypass_candidate()
+        layer.can_bypass_for_size(width, height)
             && matches!(&layer.frame, ProducerFrame::Canvas(canvas) if !canvas.is_shared())
     })
 }
@@ -288,7 +316,7 @@ fn cpu_frame_without_surfaces() -> ComposedFrameSet {
 }
 
 fn take_base_canvas(layer: CompositionLayer, width: u32, height: u32) -> (Canvas, bool) {
-    if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
+    if layer.can_bypass_for_size(width, height) {
         let Some((canvas, _)) = layer.frame.into_cpu_render_frame() else {
             return (Canvas::new(width, height), true);
         };
@@ -330,19 +358,27 @@ fn compose_layers_into_canvas(target: &mut Canvas, layers: Vec<CompositionLayer>
 }
 
 fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLayer) -> bool {
+    let layer_opaque_hint =
+        layer.opaque_hint && !layer.needs_processing_for_size(target.width(), target.height());
+    let transform = layer.transform;
+    let adjust = layer.adjust;
     let Some((source_canvas, _)) = layer.frame.into_cpu_render_frame() else {
         return target_opaque;
     };
-    if target.width() != source_canvas.width() || target.height() != source_canvas.height() {
-        *target = Canvas::new(source_canvas.width(), source_canvas.height());
-    }
+    let source_canvas = process_layer_canvas(
+        source_canvas,
+        target.width(),
+        target.height(),
+        transform,
+        adjust,
+    );
 
     let opacity = layer.opacity.clamp(0.0, 1.0);
     if layer.mode == CompositionMode::Replace && opacity >= 1.0 {
         target
             .as_rgba_bytes_mut()
             .copy_from_slice(source_canvas.as_rgba_bytes());
-        return layer.opaque_hint;
+        return layer_opaque_hint;
     }
 
     if opacity <= 0.0 {
@@ -353,8 +389,13 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         CompositionMode::Replace | CompositionMode::Alpha => RgbaBlendMode::Normal,
         CompositionMode::Add => RgbaBlendMode::Add,
         CompositionMode::Screen => RgbaBlendMode::Screen,
+        CompositionMode::Multiply => RgbaBlendMode::Multiply,
+        CompositionMode::Overlay => RgbaBlendMode::Overlay,
+        CompositionMode::SoftLight => RgbaBlendMode::SoftLight,
+        CompositionMode::ColorDodge => RgbaBlendMode::ColorDodge,
+        CompositionMode::Difference => RgbaBlendMode::Difference,
     };
-    let result_opaque = target_opaque && layer.opaque_hint;
+    let result_opaque = target_opaque && layer_opaque_hint;
     if blend_mode == RgbaBlendMode::Normal && result_opaque {
         blend_opaque_normal_rgba_pixels_in_place(
             target.as_rgba_bytes_mut(),
@@ -370,4 +411,26 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         opacity,
     );
     result_opaque
+}
+
+fn cached_transform(transform: super::CompositionTransform) -> CachedCpuCompositionTransform {
+    CachedCpuCompositionTransform {
+        anchor_x_bits: transform.anchor.x.to_bits(),
+        anchor_y_bits: transform.anchor.y.to_bits(),
+        scale_x_bits: transform.scale[0].to_bits(),
+        scale_y_bits: transform.scale[1].to_bits(),
+        rotation_bits: transform.rotation.to_bits(),
+        fit: transform.fit,
+    }
+}
+
+fn cached_adjust(adjust: super::CompositionAdjust) -> CachedCpuCompositionAdjust {
+    CachedCpuCompositionAdjust {
+        brightness: adjust.brightness.to_bits(),
+        saturation: adjust.saturation.to_bits(),
+        hue_shift: adjust.hue_shift.to_bits(),
+        tint: adjust.tint.map(f32::to_bits),
+        tint_strength: adjust.tint_strength.to_bits(),
+        contrast: adjust.contrast.to_bits(),
+    }
 }

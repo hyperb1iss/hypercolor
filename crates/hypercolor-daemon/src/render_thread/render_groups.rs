@@ -35,8 +35,8 @@ use super::micros_u32;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
 use super::sparkleflinger::{
-    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
-    SparkleFlinger,
+    ComposedFrameSet, CompositionAdjust, CompositionLayer, CompositionMode, CompositionPlan,
+    CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
 };
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
@@ -944,13 +944,7 @@ impl RenderGroupRuntime {
                     color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
                 }
                 LayerSource::Media { asset_id, playback } => {
-                    match self.render_media_layer_frame(
-                        *asset_id,
-                        playback,
-                        elapsed_ms,
-                        group.layout.canvas_width,
-                        group.layout.canvas_height,
-                    ) {
+                    match self.render_media_layer_frame(*asset_id, playback, elapsed_ms) {
                         MediaLayerFrame::Ready(frame) => {
                             self.layer_runtime.note_health(
                                 active_scene_id,
@@ -1058,8 +1052,6 @@ impl RenderGroupRuntime {
         asset_id: AssetId,
         playback: &hypercolor_types::layer::MediaPlayback,
         elapsed_ms: u32,
-        width: u32,
-        height: u32,
     ) -> MediaLayerFrame {
         let Some(asset_library) = &self.asset_library else {
             return MediaLayerFrame::Missing;
@@ -1099,9 +1091,7 @@ impl RenderGroupRuntime {
             return MediaLayerFrame::Loading;
         };
         MediaLayerFrame::Ready(ProducerFrame::Canvas(
-            cached
-                .producer
-                .render_frame(playback, elapsed_ms, width, height),
+            cached.producer.intrinsic_frame(playback, elapsed_ms),
         ))
     }
 
@@ -1644,21 +1634,23 @@ fn composition_layer_for_scene_layer(layer: &SceneLayer, frame: ProducerFrame) -
         layer.opacity,
         false,
     )
+    .with_transform(CompositionTransform::from(layer.transform))
+    .with_adjust(CompositionAdjust::from(layer.adjust))
 }
 
 fn composition_mode_for_layer(blend: LayerBlendMode) -> CompositionMode {
     match blend {
         LayerBlendMode::Replace => CompositionMode::Replace,
-        LayerBlendMode::Alpha
-        | LayerBlendMode::Multiply
-        | LayerBlendMode::Overlay
-        | LayerBlendMode::SoftLight
-        | LayerBlendMode::ColorDodge
-        | LayerBlendMode::Difference
-        | LayerBlendMode::Tint
-        | LayerBlendMode::LumaReveal => CompositionMode::Alpha,
+        LayerBlendMode::Alpha | LayerBlendMode::Tint | LayerBlendMode::LumaReveal => {
+            CompositionMode::Alpha
+        }
         LayerBlendMode::Add => CompositionMode::Add,
         LayerBlendMode::Screen => CompositionMode::Screen,
+        LayerBlendMode::Multiply => CompositionMode::Multiply,
+        LayerBlendMode::Overlay => CompositionMode::Overlay,
+        LayerBlendMode::SoftLight => CompositionMode::SoftLight,
+        LayerBlendMode::ColorDodge => CompositionMode::ColorDodge,
+        LayerBlendMode::Difference => CompositionMode::Difference,
     }
 }
 

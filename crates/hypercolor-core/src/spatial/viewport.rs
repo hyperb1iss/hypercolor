@@ -42,6 +42,8 @@ pub fn sample_viewport(
         FitMode::Stretch => blit_stretch(target, source, crop, brightness),
         FitMode::Contain => blit_contain(target, source, crop, brightness),
         FitMode::Cover => blit_cover(target, source, crop, brightness),
+        FitMode::Tile => blit_repeated(target, source, crop, brightness, false),
+        FitMode::Mirror => blit_repeated(target, source, crop, brightness, true),
     }
 }
 
@@ -277,6 +279,74 @@ fn blit_cover(target: &mut Canvas, source: &Canvas, crop: PixelRect, brightness:
     }
 
     blit_stretch(target, source, fitted, brightness);
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn blit_repeated(
+    target: &mut Canvas,
+    source: &Canvas,
+    crop: PixelRect,
+    brightness: f32,
+    mirror: bool,
+) {
+    let source_width = source.width();
+    let source_height = source.height();
+    let target_width = target.width();
+    let target_height = target.height();
+    if source_width == 0
+        || source_height == 0
+        || target_width == 0
+        || target_height == 0
+        || crop.width == 0
+        || crop.height == 0
+    {
+        return;
+    }
+
+    let source_stride = (source_width as usize) * BYTES_PER_PIXEL;
+    let target_stride = (target_width as usize) * BYTES_PER_PIXEL;
+    let source_bytes = source.as_rgba_bytes();
+    let target_bytes = target.as_rgba_bytes_mut();
+    for y in 0..target_height {
+        let source_y = repeated_axis(y, crop.y, crop.height, mirror);
+        for x in 0..target_width {
+            let source_x = repeated_axis(x, crop.x, crop.width, mirror);
+            let src_start = (source_y as usize)
+                .saturating_mul(source_stride)
+                .saturating_add((source_x as usize).saturating_mul(BYTES_PER_PIXEL));
+            let dst_start = (y as usize)
+                .saturating_mul(target_stride)
+                .saturating_add((x as usize).saturating_mul(BYTES_PER_PIXEL));
+            target_bytes[dst_start..dst_start + BYTES_PER_PIXEL]
+                .copy_from_slice(&source_bytes[src_start..src_start + BYTES_PER_PIXEL]);
+        }
+    }
+
+    if brightness_needs_lut(brightness) {
+        let lut = build_brightness_lut(brightness);
+        apply_brightness_lut_rgb(target.as_rgba_bytes_mut(), &lut);
+    }
+}
+
+fn repeated_axis(offset: u32, crop_origin: u32, crop_extent: u32, mirror: bool) -> u32 {
+    let extent = crop_extent.max(1);
+    if !mirror || extent == 1 {
+        return crop_origin.saturating_add(offset % extent);
+    }
+
+    let period = extent.saturating_mul(2);
+    let phase = offset % period;
+    let mirrored = if phase < extent {
+        phase
+    } else {
+        period.saturating_sub(1).saturating_sub(phase)
+    };
+    crop_origin.saturating_add(mirrored)
 }
 
 /// True when `brightness` meaningfully differs from 1.0 (outside one LSB

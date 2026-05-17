@@ -2,6 +2,7 @@ use std::array;
 use std::sync::LazyLock;
 
 use crate::types::canvas::{BlendMode, linear_to_srgb_u8, srgb_u8_to_linear};
+use crate::types::layer::LayerAdjust;
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
 const CHANNEL_PAIR_LUT_SIZE: usize = 256 * 256;
@@ -337,6 +338,64 @@ pub fn blend_opaque_normal_rgba_pixels_in_place(
     }
 }
 
+pub fn apply_layer_adjust_rgba_pixels_in_place(pixels: &mut [u8], adjust: &LayerAdjust) {
+    let adjust = adjust.normalized();
+    if layer_adjust_is_identity(&adjust) {
+        return;
+    }
+
+    let hue_shift = adjust.hue_shift / std::f32::consts::TAU;
+    let tint_strength = (adjust.tint_strength * adjust.tint[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    let contrast_factor = 1.0 + adjust.contrast;
+    for pixel in pixels.chunks_exact_mut(4) {
+        if pixel[3] == 0 {
+            continue;
+        }
+
+        let mut red = decode_srgb_channel(pixel[0]) * adjust.brightness;
+        let mut green = decode_srgb_channel(pixel[1]) * adjust.brightness;
+        let mut blue = decode_srgb_channel(pixel[2]) * adjust.brightness;
+
+        if (adjust.saturation - 1.0).abs() > f32::EPSILON || hue_shift.abs() > f32::EPSILON {
+            let (mut hue, saturation, lightness) = rgb_to_hsl(red, green, blue);
+            hue = (hue + hue_shift).rem_euclid(1.0);
+            let (shifted_red, shifted_green, shifted_blue) = hsl_to_rgb(
+                hue,
+                (saturation * adjust.saturation).clamp(0.0, 1.0),
+                lightness,
+            );
+            red = shifted_red;
+            green = shifted_green;
+            blue = shifted_blue;
+        }
+
+        if adjust.contrast.abs() > f32::EPSILON {
+            red = apply_contrast(red, contrast_factor);
+            green = apply_contrast(green, contrast_factor);
+            blue = apply_contrast(blue, contrast_factor);
+        }
+
+        if tint_strength > 0.0 {
+            red = red.mul_add(
+                1.0 - tint_strength,
+                adjust.tint[0].clamp(0.0, 1.0) * tint_strength,
+            );
+            green = green.mul_add(
+                1.0 - tint_strength,
+                adjust.tint[1].clamp(0.0, 1.0) * tint_strength,
+            );
+            blue = blue.mul_add(
+                1.0 - tint_strength,
+                adjust.tint[2].clamp(0.0, 1.0) * tint_strength,
+            );
+        }
+
+        pixel[0] = encode_srgb_channel(red);
+        pixel[1] = encode_srgb_channel(green);
+        pixel[2] = encode_srgb_channel(blue);
+    }
+}
+
 #[must_use]
 pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: RgbaBlendMode, opacity: f32) -> [u8; 4] {
     let source_alpha_channel = src[3];
@@ -439,4 +498,72 @@ pub fn encode_alpha_channel(alpha: f32) -> u8 {
 #[must_use]
 pub fn screen_blend(dst: f32, src: f32) -> f32 {
     1.0 - (1.0 - dst) * (1.0 - src)
+}
+
+fn layer_adjust_is_identity(adjust: &LayerAdjust) -> bool {
+    (adjust.brightness - 1.0).abs() <= f32::EPSILON
+        && (adjust.saturation - 1.0).abs() <= f32::EPSILON
+        && adjust.hue_shift.abs() <= f32::EPSILON
+        && adjust.tint_strength.abs() <= f32::EPSILON
+        && adjust.contrast.abs() <= f32::EPSILON
+}
+
+fn apply_contrast(channel: f32, factor: f32) -> f32 {
+    (channel - 0.5).mul_add(factor, 0.5)
+}
+
+fn rgb_to_hsl(red: f32, green: f32, blue: f32) -> (f32, f32, f32) {
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
+    let lightness = (max + min) * 0.5;
+    let delta = max - min;
+    if delta <= f32::EPSILON {
+        return (0.0, 0.0, lightness);
+    }
+
+    let saturation = if lightness > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
+    let hue = if (max - red).abs() <= f32::EPSILON {
+        ((green - blue) / delta).rem_euclid(6.0)
+    } else if (max - green).abs() <= f32::EPSILON {
+        ((blue - red) / delta) + 2.0
+    } else {
+        ((red - green) / delta) + 4.0
+    } / 6.0;
+
+    (hue, saturation, lightness)
+}
+
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (f32, f32, f32) {
+    if saturation <= f32::EPSILON {
+        return (lightness, lightness, lightness);
+    }
+
+    let q = if lightness < 0.5 {
+        lightness * (1.0 + saturation)
+    } else {
+        lightness + saturation - lightness * saturation
+    };
+    let p = 2.0 * lightness - q;
+    (
+        hue_to_rgb(p, q, hue + (1.0 / 3.0)),
+        hue_to_rgb(p, q, hue),
+        hue_to_rgb(p, q, hue - (1.0 / 3.0)),
+    )
+}
+
+fn hue_to_rgb(p: f32, q: f32, hue: f32) -> f32 {
+    let hue = hue.rem_euclid(1.0);
+    if hue < 1.0 / 6.0 {
+        p + (q - p) * 6.0 * hue
+    } else if hue < 0.5 {
+        q
+    } else if hue < 2.0 / 3.0 {
+        p + (q - p) * (2.0 / 3.0 - hue) * 6.0
+    } else {
+        p
+    }
 }
