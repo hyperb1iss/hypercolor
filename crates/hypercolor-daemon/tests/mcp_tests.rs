@@ -265,7 +265,7 @@ async fn seed_multi_zone_primary_assignment(
         .upsert_primary_group(metadata, HashMap::new(), None, primary_layout.clone())
         .expect("primary group should be seeded");
     let custom_id = manager
-        .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None)
+        .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
         .expect("custom group should be created");
     manager
         .assign_device_zone(&SceneId::DEFAULT, custom_id, custom_zone)

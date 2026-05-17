@@ -113,6 +113,12 @@ pub async fn create_zone(
         Err(message) => return ApiError::bad_request(message),
     };
 
+    let fallback_canvas = {
+        let spatial = state.spatial_engine.read().await;
+        let layout = spatial.layout();
+        (layout.canvas_width, layout.canvas_height)
+    };
+
     let (scene_id, zone, groups_revision) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
@@ -121,10 +127,11 @@ pub async fn create_zone(
         if let Some(response) = check_groups_revision(&manager, scene_id, expected_revision) {
             return response;
         }
-        let group_id = match manager.create_render_group(&scene_id, body.name, body.color) {
-            Ok(group_id) => group_id,
-            Err(error) => return zone_mutation_error(error),
-        };
+        let group_id =
+            match manager.create_render_group(&scene_id, body.name, body.color, fallback_canvas) {
+                Ok(group_id) => group_id,
+                Err(error) => return zone_mutation_error(error),
+            };
         let Some(scene) = manager.get(&scene_id) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };

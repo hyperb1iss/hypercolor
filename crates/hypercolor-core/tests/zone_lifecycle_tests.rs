@@ -85,7 +85,12 @@ fn create_and_delete_custom_zone_refreshes_active_group_cache() {
     let cache_revision = manager.active_render_groups_revision();
 
     let group_id = manager
-        .create_render_group(&scene_id, "Desk".to_owned(), Some("#80ffea".to_owned()))
+        .create_render_group(
+            &scene_id,
+            "Desk".to_owned(),
+            Some("#80ffea".to_owned()),
+            (320, 200),
+        )
         .expect("custom zone should be created");
 
     let scene = manager
@@ -132,7 +137,7 @@ fn structural_zone_mutations_reject_snapshot_scenes() {
         .expect("snapshot scene should register");
 
     let error = manager
-        .create_render_group(&scene_id, "Nope".to_owned(), None)
+        .create_render_group(&scene_id, "Nope".to_owned(), None, (320, 200))
         .expect_err("snapshot scene should reject structural zone creation");
 
     assert_eq!(error, ZoneMutationError::SnapshotLocked);
@@ -151,7 +156,7 @@ fn metadata_patch_can_promote_primary_atomically() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Ambient".to_owned(), None)
+        .create_render_group(&scene_id, "Ambient".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let before = manager
         .active_scene()
@@ -201,7 +206,7 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None)
+        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let mut zone = sample_zone("device-zone");
     zone.position = NormalizedPosition::new(0.9, 0.8);
@@ -223,6 +228,7 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
         .expect("custom group should own moved zone");
     assert_eq!(custom_zone.id, "device-zone");
     assert_eq!(custom_zone.position, NormalizedPosition::new(0.5, 0.5));
+    assert_eq!(custom_zone.size, NormalizedPosition::new(1.0, 1.0));
     assert_eq!(custom_zone.rotation, 0.0);
     assert_eq!(custom_zone.scale, 1.0);
     assert_eq!(custom_zone.led_mapping, Some(vec![2, 1, 0]));
@@ -301,7 +307,7 @@ fn unassigned_behavior_validates_fallback_group() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     let custom_id = manager
-        .create_render_group(&scene_id, "Fallback".to_owned(), None)
+        .create_render_group(&scene_id, "Fallback".to_owned(), None, (320, 200))
         .expect("custom fallback zone should be created");
     let revision = manager
         .active_scene()
@@ -368,7 +374,7 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None)
+        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     manager
         .assign_device_zone(&scene_id, custom_id, sample_zone("custom-zone"))
@@ -405,7 +411,7 @@ fn effect_apply_seeds_new_primary_with_unclaimed_zones_only() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None)
+        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     manager
         .assign_device_zone(&scene_id, custom_id, sample_zone("custom-zone"))
@@ -440,7 +446,7 @@ fn layout_sync_preserves_primary_assignment_when_custom_zones_exist() {
         )
         .expect("primary should be created");
     manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None)
+        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let before = manager
         .active_scene()

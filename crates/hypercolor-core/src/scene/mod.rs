@@ -590,11 +590,17 @@ impl SceneManager {
         Ok(removed)
     }
 
+    /// Create an empty `Custom` LED zone in the target scene.
+    ///
+    /// The zone inherits its canvas from an existing LED group so it stays
+    /// consistent with its siblings; `fallback_canvas` is used only when the
+    /// scene has no LED group to inherit from.
     pub fn create_render_group(
         &mut self,
         scene_id: &SceneId,
         name: String,
         color: Option<String>,
+        fallback_canvas: (u32, u32),
     ) -> Result<RenderGroupId, ZoneMutationError> {
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
@@ -605,6 +611,13 @@ impl SceneManager {
             return Err(ZoneMutationError::SnapshotLocked);
         }
 
+        let (canvas_width, canvas_height) = scene
+            .groups
+            .iter()
+            .find(|group| group.display_target.is_none())
+            .map_or(fallback_canvas, |group| {
+                (group.layout.canvas_width, group.layout.canvas_height)
+            });
         let id = RenderGroupId::new();
         scene.groups.push(RenderGroup {
             id,
@@ -615,7 +628,7 @@ impl SceneManager {
             control_bindings: HashMap::new(),
             preset_id: None,
             layers: Vec::new(),
-            layout: empty_scene_group_layout(id),
+            layout: empty_scene_group_layout(id, canvas_width, canvas_height),
             brightness: 1.0,
             enabled: true,
             color,
@@ -1586,13 +1599,17 @@ fn unclaimed_primary_layout(scene: &Scene, mut full_scope_layout: SpatialLayout)
     full_scope_layout
 }
 
-fn empty_scene_group_layout(group_id: RenderGroupId) -> SpatialLayout {
+fn empty_scene_group_layout(
+    group_id: RenderGroupId,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> SpatialLayout {
     SpatialLayout {
         id: format!("zone-{group_id}"),
         name: "Zone Layout".to_owned(),
         description: None,
-        canvas_width: 640,
-        canvas_height: 480,
+        canvas_width,
+        canvas_height,
         zones: Vec::new(),
         default_sampling_mode: crate::types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: crate::types::spatial::EdgeBehavior::Clamp,
@@ -1603,6 +1620,7 @@ fn empty_scene_group_layout(group_id: RenderGroupId) -> SpatialLayout {
 
 fn reset_device_zone_placement(zone: &mut DeviceZone) {
     zone.position = NormalizedPosition::new(0.5, 0.5);
+    zone.size = NormalizedPosition::new(1.0, 1.0);
     zone.rotation = 0.0;
     zone.scale = 1.0;
     zone.display_order = 0;
