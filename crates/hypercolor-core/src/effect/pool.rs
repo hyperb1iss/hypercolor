@@ -12,6 +12,8 @@ use hypercolor_types::effect::{
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
+#[cfg(feature = "servo")]
+use hypercolor_types::viewport::FitMode;
 
 use super::factory::create_renderer_for_metadata;
 use super::registry::{EffectEntry, EffectRegistry};
@@ -28,11 +30,12 @@ pub struct EffectSlotKey {
     pub layer_id: SceneLayerId,
 }
 
-type LayerEffectSource<'a> = (
-    EffectId,
-    &'a HashMap<String, ControlValue>,
-    &'a HashMap<String, ControlBinding>,
-);
+#[derive(Debug, Clone, PartialEq)]
+struct LayerEffectSource {
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    control_bindings: HashMap<String, ControlBinding>,
+}
 
 impl EffectSlotKey {
     #[must_use]
@@ -62,13 +65,15 @@ impl EffectPool {
         self.slots.retain(|key, _| desired_keys.contains(key));
 
         for (group, layer) in desired_effect_layers(groups) {
-            let Some((effect_id, _, _)) = layer_effect_source(&layer) else {
+            let Some(source) = layer_effect_source(&layer) else {
                 continue;
             };
             let key = EffectSlotKey::new(group.id, layer.id);
 
-            let entry = lookup_effect_entry(registry, effect_id)?;
-            let resolved_effect_id = registry.resolve_id(&effect_id).unwrap_or(effect_id);
+            let entry = lookup_effect_entry(registry, source.effect_id)?;
+            let resolved_effect_id = registry
+                .resolve_id(&source.effect_id)
+                .unwrap_or(source.effect_id);
 
             let needs_rebuild = self
                 .slots
@@ -139,8 +144,7 @@ impl EffectPool {
             group.layout.canvas_height,
         );
 
-        if !group.enabled || !layer.enabled || !matches!(&layer.source, LayerSource::Effect { .. })
-        {
+        if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
             target.clear();
             return Ok(());
         }
@@ -205,8 +209,7 @@ impl EffectPool {
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
     ) -> Result<EffectRenderOutput> {
-        if !group.enabled || !layer.enabled || !matches!(&layer.source, LayerSource::Effect { .. })
-        {
+        if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
             return Ok(EffectRenderOutput::Cpu(Canvas::new(
                 group.layout.canvas_width,
                 group.layout.canvas_height,
@@ -286,26 +289,30 @@ impl EffectSlot {
 
     fn sync_layer_state(&mut self, layer: &SceneLayer) {
         let mut desired = HashMap::new();
-        let Some((_, controls, control_bindings)) = layer_effect_source(layer) else {
+        let Some(source) = layer_effect_source(layer) else {
             self.controls.clear();
             self.binding_state.clear();
             return;
         };
 
         for definition in &mut self.metadata.controls {
-            let next_binding = control_bindings.get(definition.control_id()).cloned();
+            let next_binding = source
+                .control_bindings
+                .get(definition.control_id())
+                .cloned();
             if definition.binding != next_binding {
                 definition.binding = next_binding;
                 self.binding_state.remove(definition.control_id());
             }
-            let value = controls
+            let value = source
+                .controls
                 .get(definition.control_id())
                 .cloned()
                 .unwrap_or_else(|| definition.default_value.clone());
             desired.insert(definition.control_id().to_owned(), value);
         }
 
-        for (name, value) in controls {
+        for (name, value) in &source.controls {
             desired.entry(name.clone()).or_insert_with(|| value.clone());
         }
 
@@ -416,9 +423,7 @@ fn desired_effect_layers(groups: &[RenderGroup]) -> Vec<(&RenderGroup, SceneLaye
             group
                 .effective_layers()
                 .into_iter()
-                .filter(|layer| {
-                    layer.enabled && matches!(&layer.source, LayerSource::Effect { .. })
-                })
+                .filter(|layer| layer.enabled && layer_effect_source(layer).is_some())
                 .map(move |layer| (group, layer))
         })
         .collect()
@@ -432,7 +437,7 @@ fn single_enabled_effect_layer(group: &RenderGroup) -> Result<Option<SceneLayer>
     let mut layers = group
         .effective_layers()
         .into_iter()
-        .filter(|layer| layer.enabled && matches!(&layer.source, LayerSource::Effect { .. }));
+        .filter(|layer| layer.enabled && layer_effect_source(layer).is_some());
     let Some(layer) = layers.next() else {
         return Ok(None);
     };
@@ -445,17 +450,67 @@ fn single_enabled_effect_layer(group: &RenderGroup) -> Result<Option<SceneLayer>
     Ok(Some(layer))
 }
 
-fn layer_effect_source(layer: &SceneLayer) -> Option<LayerEffectSource<'_>> {
-    let LayerSource::Effect {
-        effect_id,
-        controls,
-        control_bindings,
-        ..
-    } = &layer.source
-    else {
-        return None;
-    };
-    Some((*effect_id, controls, control_bindings))
+fn layer_effect_source(layer: &SceneLayer) -> Option<LayerEffectSource> {
+    match &layer.source {
+        LayerSource::Effect {
+            effect_id,
+            controls,
+            control_bindings,
+            ..
+        } => Some(LayerEffectSource {
+            effect_id: *effect_id,
+            controls: controls.clone(),
+            control_bindings: control_bindings.clone(),
+        }),
+        #[cfg(feature = "servo")]
+        LayerSource::WebViewport {
+            url,
+            viewport,
+            render,
+        } => Some(LayerEffectSource {
+            effect_id: crate::effect::builtin::builtin_effect_stable_id("web_viewport"),
+            controls: web_viewport_controls(url, *viewport, *render),
+            control_bindings: HashMap::new(),
+        }),
+        LayerSource::Media { .. }
+        | LayerSource::ScreenRegion { .. }
+        | LayerSource::ColorFill { .. } => None,
+        #[cfg(not(feature = "servo"))]
+        LayerSource::WebViewport { .. } => None,
+    }
+}
+
+#[cfg(feature = "servo")]
+fn web_viewport_controls(
+    url: &str,
+    viewport: hypercolor_types::viewport::ViewportRect,
+    render: hypercolor_types::layer::WebViewportRender,
+) -> HashMap<String, ControlValue> {
+    HashMap::from([
+        ("url".to_owned(), ControlValue::Text(url.to_owned())),
+        ("viewport".to_owned(), ControlValue::Rect(viewport)),
+        (
+            "fit_mode".to_owned(),
+            ControlValue::Enum(fit_mode_control_value(FitMode::Cover).to_owned()),
+        ),
+        (
+            "refresh_interval".to_owned(),
+            ControlValue::Float(match render {
+                hypercolor_types::layer::WebViewportRender::Live => 0.0,
+                hypercolor_types::layer::WebViewportRender::Snapshot => 300.0,
+            }),
+        ),
+    ])
+}
+
+#[cfg(feature = "servo")]
+const fn fit_mode_control_value(fit: FitMode) -> &'static str {
+    match fit {
+        FitMode::Contain => "Contain",
+        FitMode::Cover => "Cover",
+        FitMode::Stretch => "Stretch",
+        FitMode::Tile | FitMode::Mirror => "Cover",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -581,6 +636,8 @@ mod tests {
 
     use anyhow::Result;
 
+    #[cfg(feature = "servo")]
+    use super::layer_effect_source;
     use super::{EffectPool, EffectSlot, EffectSlotKey};
     use crate::effect::builtin::register_builtin_effects;
     use crate::effect::registry::EffectRegistry;
@@ -588,6 +645,10 @@ mod tests {
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
     use hypercolor_types::layer::SceneLayerId;
+    #[cfg(feature = "servo")]
+    use hypercolor_types::layer::{
+        LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
+    };
     use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -795,5 +856,42 @@ mod tests {
 
         assert!(destroyed.load(Ordering::SeqCst));
         assert_eq!(pool.slots.len(), 1);
+    }
+
+    #[cfg(feature = "servo")]
+    #[test]
+    fn web_viewport_layer_maps_to_builtin_effect_controls() {
+        let layer = SceneLayer {
+            id: SceneLayerId::new(),
+            name: Some("Web".into()),
+            source: LayerSource::WebViewport {
+                url: "localhost:9430".into(),
+                viewport: hypercolor_types::viewport::ViewportRect::new(0.1, 0.2, 0.3, 0.4),
+                render: hypercolor_types::layer::WebViewportRender::Snapshot,
+            },
+            blend: LayerBlendMode::Replace,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        };
+
+        let source = layer_effect_source(&layer).expect("web viewport should map to effect");
+
+        assert_eq!(
+            source.effect_id,
+            crate::effect::builtin::builtin_effect_stable_id("web_viewport")
+        );
+        assert_eq!(
+            source.controls.get("url"),
+            Some(&hypercolor_types::effect::ControlValue::Text(
+                "localhost:9430".into()
+            ))
+        );
+        assert_eq!(
+            source.controls.get("refresh_interval"),
+            Some(&hypercolor_types::effect::ControlValue::Float(300.0))
+        );
     }
 }

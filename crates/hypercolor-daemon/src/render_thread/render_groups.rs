@@ -940,6 +940,17 @@ impl RenderGroupRuntime {
                     screen,
                     sensors,
                 )?,
+                #[cfg(feature = "servo")]
+                LayerSource::WebViewport { .. } => self.render_effect_layer_frame(
+                    group,
+                    &layer_runtime,
+                    registry,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                )?,
                 LayerSource::ColorFill { rgba } => {
                     color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
                 }
@@ -1014,13 +1025,14 @@ impl RenderGroupRuntime {
                         )
                     }
                 }
+                #[cfg(not(feature = "servo"))]
                 LayerSource::WebViewport { .. } => {
                     self.layer_runtime.note_health(
                         active_scene_id,
                         group.id,
                         layer_runtime.id,
                         LayerHealth::Failed {
-                            reason: "layer source is not wired into the producer pump yet".into(),
+                            reason: "web viewport layer source requires the servo feature".into(),
                         },
                     );
                     transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
@@ -1782,6 +1794,7 @@ fn render_layer_effect_error(
 ) -> RenderGroupEffectError {
     let effect_id = match &layer.source {
         LayerSource::Effect { effect_id, .. } => effect_id.to_string(),
+        LayerSource::WebViewport { url, .. } => format!("web_viewport:{url}"),
         _ => "unknown".to_owned(),
     };
     let effect_name = group

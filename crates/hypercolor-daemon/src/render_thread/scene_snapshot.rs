@@ -339,10 +339,10 @@ async fn current_effect_scene_snapshot(
             if !layer.enabled {
                 continue;
             }
+            effect_running = true;
 
             match layer.source {
                 LayerSource::Effect { effect_id, .. } => {
-                    effect_running = true;
                     if let Some(entry) = registry.get(&effect_id) {
                         audio_capture_active |= entry.metadata.audio_reactive;
                         screen_capture_active |= entry.metadata.screen_reactive;
@@ -698,7 +698,7 @@ mod tests {
             current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, true)
                 .await;
 
-        assert!(!snapshot.demand.effect_running);
+        assert!(snapshot.demand.effect_running);
         assert!(!snapshot.demand.audio_capture_active);
         assert!(snapshot.demand.screen_capture_active);
     }
