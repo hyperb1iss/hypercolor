@@ -43,8 +43,8 @@ downshifts the render loop when the estimated media cost exceeds the
 60 ms soft cap. Stream producers currently publish CPU canvases and
 surface worker errors through layer health. GPU producer readback
 failures now compose black and mark affected layer health as
-`gpu_readback_failed`; direct GPU media textures and repeated-fallback
-downgrade remain follow-up work.
+`gpu_readback_failed`; repeated read-back fallbacks downshift for the
+rest of the session. Direct GPU media textures remain follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1826,7 +1826,7 @@ Target GPU video and livestream producers will feed `ProducerFrame::Gpu`
 or `ProducerFrame::GpuTexture`, so the final GPU media lane will exercise
 this constantly. The current file-backed `media-video` and stream
 backends still emit CPU canvases, so the remaining work is direct GPU
-media texture production and the repeated-fallback acceleration downgrade.
+media texture production.
 
 **GPU media policy status:**
 
@@ -1835,10 +1835,11 @@ media texture production and the repeated-fallback acceleration downgrade.
    reason `gpu_readback_failed`, which publishes the existing
    `LayerHealthChanged` bus event. Synthetic fallback-frame coverage
    lives in `sparkleflinger_gpu_readback_failure_composes_black`.
-2. Remaining: two consecutive read-back fallbacks downshift the compositor
+2. Two consecutive read-back fallbacks downshift the compositor
    acceleration mode for the rest of the session (returning to GPU on
-   the next session start). Surface this as a one-time toast in the UI
-   so users know they have left the fast path.
+   the next session start). The daemon emits one
+   `compositor_acceleration_downgraded` warning event on the transition
+   so UI clients can surface the fast-path downgrade.
 
 ---
 

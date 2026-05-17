@@ -314,6 +314,7 @@ fn cpu_frame_without_surfaces() -> ComposedFrameSet {
         bypassed: false,
         backend: CompositorBackendKind::Cpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 

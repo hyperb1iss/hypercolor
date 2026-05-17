@@ -5,6 +5,7 @@ use std::time::Instant;
 use tracing::info;
 
 use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::event::{HypercolorEvent, Severity};
 
 use super::frame_composer::{ComposeRequest, RenderStageStats, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -296,7 +297,16 @@ pub(crate) async fn execute_frame(
         bypassed: _,
         backend: compositor_backend,
         gpu_readback_failed: _,
+        compositor_acceleration_downgraded,
     } = render_stage.composed_frame;
+    if compositor_acceleration_downgraded {
+        state.event_bus.publish(HypercolorEvent::Error {
+            code: "compositor_acceleration_downgraded".to_owned(),
+            message: "GPU producer readback fallback repeated; using CPU fallback compositor"
+                .to_owned(),
+            severity: Severity::Warning,
+        });
+    }
     let publish_stats = publish_frame_updates(
         state,
         &mut frame_loop.publication_cadence,
@@ -479,6 +489,7 @@ mod tests {
             bypassed: false,
             backend,
             gpu_readback_failed: false,
+            compositor_acceleration_downgraded: false,
         };
         if preview_surface_present {
             composed_frame.preview_surface =

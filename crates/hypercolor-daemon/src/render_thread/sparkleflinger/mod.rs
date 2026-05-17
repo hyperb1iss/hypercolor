@@ -354,6 +354,7 @@ pub struct ComposedFrameSet {
     pub bypassed: bool,
     pub(crate) backend: CompositorBackendKind,
     pub(crate) gpu_readback_failed: bool,
+    pub(crate) compositor_acceleration_downgraded: bool,
 }
 
 pub(crate) type RenderFrame = (Canvas, Option<PublishedSurface>);
@@ -371,7 +372,50 @@ enum SparkleFlingerBackend {
     Gpu {
         gpu: gpu::GpuSparkleFlinger,
         cpu_fallback: cpu::CpuSparkleFlinger,
+        producer_fallback_policy: GpuProducerFallbackPolicy,
     },
+}
+
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Default)]
+struct GpuProducerFallbackPolicy {
+    consecutive_readback_fallbacks: u8,
+    fallback_only: bool,
+}
+
+#[cfg(feature = "wgpu")]
+impl GpuProducerFallbackPolicy {
+    const DOWNGRADE_THRESHOLD: u8 = 2;
+
+    const fn is_fallback_only(&self) -> bool {
+        self.fallback_only
+    }
+
+    fn record_gpu_compose(&mut self) {
+        if !self.fallback_only {
+            self.consecutive_readback_fallbacks = 0;
+        }
+    }
+
+    fn record_cpu_fallback_without_readback(&mut self) {
+        if !self.fallback_only {
+            self.consecutive_readback_fallbacks = 0;
+        }
+    }
+
+    fn record_readback_fallback(&mut self) -> bool {
+        if self.fallback_only {
+            return false;
+        }
+
+        self.consecutive_readback_fallbacks = self.consecutive_readback_fallbacks.saturating_add(1);
+        if self.consecutive_readback_fallbacks < Self::DOWNGRADE_THRESHOLD {
+            return false;
+        }
+
+        self.fallback_only = true;
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -460,16 +504,34 @@ impl SparkleFlinger {
                 &mut self.composition_surface_pool,
             ),
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
+            SparkleFlingerBackend::Gpu {
+                gpu,
+                cpu_fallback,
+                producer_fallback_policy,
+            } => {
                 let failure_width = plan.width;
                 let failure_height = plan.height;
+                if producer_fallback_policy.is_fallback_only() {
+                    return compose_gpu_producer_session_fallback(
+                        gpu,
+                        cpu_fallback,
+                        plan,
+                        requires_cpu_sampling_canvas,
+                        preview_surface_request,
+                        &mut self.preview_surface_pool,
+                        &mut self.composition_surface_pool,
+                    );
+                }
                 let gpu_compose_result = if gpu.supports_plan(&plan) {
                     Some(gpu.compose(&plan, requires_cpu_sampling_canvas, preview_surface_request))
                 } else {
                     None
                 };
                 match gpu_compose_result {
-                    Some(Ok(composed)) => return composed,
+                    Some(Ok(composed)) => {
+                        producer_fallback_policy.record_gpu_compose();
+                        return composed;
+                    }
                     Some(Err(error)) if plan.contains_gpu_frames() => {
                         match compose_gpu_frame_cpu_fallback(
                             gpu,
@@ -480,7 +542,11 @@ impl SparkleFlinger {
                             &mut self.preview_surface_pool,
                             &mut self.composition_surface_pool,
                         ) {
-                            Ok(composed) => return composed,
+                            Ok(mut composed) => {
+                                composed.compositor_acceleration_downgraded =
+                                    producer_fallback_policy.record_readback_fallback();
+                                return composed;
+                            }
                             Err(readback_error) => {
                                 tracing::warn!(
                                     %error,
@@ -507,7 +573,11 @@ impl SparkleFlinger {
                             &mut self.preview_surface_pool,
                             &mut self.composition_surface_pool,
                         ) {
-                            Ok(composed) => return composed,
+                            Ok(mut composed) => {
+                                composed.compositor_acceleration_downgraded =
+                                    producer_fallback_policy.record_readback_fallback();
+                                return composed;
+                            }
                             Err(readback_error) => {
                                 tracing::warn!(
                                     %readback_error,
@@ -525,6 +595,7 @@ impl SparkleFlinger {
                     }
                     Some(Err(_)) | None => {}
                 }
+                producer_fallback_policy.record_cpu_fallback_without_readback();
                 let mut composed = cpu_fallback.compose_with_surface_pools(
                     plan,
                     requires_cpu_sampling_canvas,
@@ -620,6 +691,7 @@ impl SparkleFlinger {
             bypassed: true,
             backend,
             gpu_readback_failed: false,
+            compositor_acceleration_downgraded: false,
         }
     }
 
@@ -856,6 +928,7 @@ fn gpu_frame_without_cpu_fallback(
     composed.preview_surface = preview_surface;
     composed.backend = CompositorBackendKind::GpuFallback;
     composed.gpu_readback_failed = true;
+    composed.compositor_acceleration_downgraded = false;
     composed
 }
 
@@ -879,6 +952,56 @@ fn compose_gpu_frame_cpu_fallback(
     );
     composed.backend = CompositorBackendKind::GpuFallback;
     Ok(composed)
+}
+
+#[cfg(feature = "wgpu")]
+fn compose_gpu_producer_session_fallback(
+    gpu: &mut gpu::GpuSparkleFlinger,
+    cpu_fallback: &mut cpu::CpuSparkleFlinger,
+    plan: CompositionPlan,
+    requires_cpu_sampling_canvas: bool,
+    preview_surface_request: Option<PreviewSurfaceRequest>,
+    preview_surface_pool: &mut RenderSurfacePool,
+    composition_surface_pool: &mut RenderSurfacePool,
+) -> ComposedFrameSet {
+    if plan.contains_gpu_frames() {
+        let failure_width = plan.width;
+        let failure_height = plan.height;
+        return match compose_gpu_frame_cpu_fallback(
+            gpu,
+            cpu_fallback,
+            plan,
+            requires_cpu_sampling_canvas,
+            preview_surface_request,
+            preview_surface_pool,
+            composition_surface_pool,
+        ) {
+            Ok(composed) => composed,
+            Err(readback_error) => {
+                tracing::warn!(
+                    %readback_error,
+                    "Session GPU producer readback fallback failed"
+                );
+                gpu_frame_without_cpu_fallback(
+                    failure_width,
+                    failure_height,
+                    requires_cpu_sampling_canvas,
+                    preview_surface_request,
+                    preview_surface_pool,
+                )
+            }
+        };
+    }
+
+    let mut composed = cpu_fallback.compose_with_surface_pools(
+        plan,
+        requires_cpu_sampling_canvas,
+        preview_surface_request,
+        preview_surface_pool,
+        composition_surface_pool,
+    );
+    composed.backend = CompositorBackendKind::GpuFallback;
+    composed
 }
 
 #[cfg(feature = "wgpu")]
@@ -929,6 +1052,7 @@ fn new_gpu_backend(render_device: Option<GpuRenderDevice>) -> Result<SparkleFlin
     Ok(SparkleFlingerBackend::Gpu {
         gpu,
         cpu_fallback: cpu::CpuSparkleFlinger::new(),
+        producer_fallback_policy: GpuProducerFallbackPolicy::default(),
     })
 }
 
@@ -956,6 +1080,7 @@ pub(super) fn publish_composed_frame(
             bypassed,
             backend: CompositorBackendKind::Cpu,
             gpu_readback_failed: false,
+            compositor_acceleration_downgraded: false,
         };
     }
 
@@ -967,6 +1092,7 @@ pub(super) fn publish_composed_frame(
             bypassed,
             backend: CompositorBackendKind::Cpu,
             gpu_readback_failed: false,
+            compositor_acceleration_downgraded: false,
         };
     }
 
@@ -980,6 +1106,7 @@ pub(super) fn publish_composed_frame(
         bypassed,
         backend: CompositorBackendKind::Cpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
@@ -1106,7 +1233,9 @@ mod tests {
         CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
     };
     #[cfg(feature = "wgpu")]
-    use super::{gpu_frame_without_cpu_fallback, new_preview_surface_pool};
+    use super::{
+        GpuProducerFallbackPolicy, gpu_frame_without_cpu_fallback, new_preview_surface_pool,
+    };
     #[cfg(feature = "wgpu")]
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::producer_queue::ProducerFrame;
@@ -1452,6 +1581,33 @@ mod tests {
                 "general layer composition mismatch for {composition_mode:?}",
             );
         }
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_producer_fallback_policy_downshifts_after_two_readback_fallbacks() {
+        let mut policy = GpuProducerFallbackPolicy::default();
+
+        assert!(!policy.record_readback_fallback());
+        assert!(!policy.is_fallback_only());
+        assert!(policy.record_readback_fallback());
+        assert!(policy.is_fallback_only());
+        assert!(!policy.record_readback_fallback());
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_producer_fallback_policy_requires_consecutive_readback_fallbacks() {
+        let mut policy = GpuProducerFallbackPolicy::default();
+
+        assert!(!policy.record_readback_fallback());
+        policy.record_gpu_compose();
+
+        assert!(!policy.record_readback_fallback());
+        policy.record_cpu_fallback_without_readback();
+
+        assert!(!policy.record_readback_fallback());
+        assert!(!policy.is_fallback_only());
     }
 
     #[cfg(feature = "wgpu")]

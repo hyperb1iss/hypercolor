@@ -2911,6 +2911,7 @@ fn gpu_composed_without_surfaces() -> ComposedFrameSet {
         bypassed: false,
         backend: CompositorBackendKind::Gpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
@@ -2922,6 +2923,7 @@ fn gpu_composed_with_preview_surface(preview_surface: PublishedSurface) -> Compo
         bypassed: false,
         backend: CompositorBackendKind::Gpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
@@ -2933,6 +2935,7 @@ fn gpu_bypassed_without_surfaces() -> ComposedFrameSet {
         bypassed: true,
         backend: CompositorBackendKind::Gpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
@@ -2949,6 +2952,7 @@ fn gpu_composed_from_surface(
             bypassed: false,
             backend: CompositorBackendKind::Gpu,
             gpu_readback_failed: false,
+            compositor_acceleration_downgraded: false,
         };
     }
 
@@ -2959,6 +2963,7 @@ fn gpu_composed_from_surface(
         bypassed: false,
         backend: CompositorBackendKind::Gpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
@@ -2984,6 +2989,7 @@ fn gpu_bypassed_surface_frame(
         bypassed: true,
         backend: CompositorBackendKind::Gpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
@@ -3017,6 +3023,7 @@ fn gpu_bypassed_canvas_frame(
         bypassed: true,
         backend: CompositorBackendKind::Gpu,
         gpu_readback_failed: false,
+        compositor_acceleration_downgraded: false,
     }
 }
 
