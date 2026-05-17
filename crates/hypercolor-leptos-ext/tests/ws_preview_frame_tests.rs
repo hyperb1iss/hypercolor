@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
     PREVIEW_FRAME_HEADER_LEN, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
-    PreviewPixelFormat,
+    PreviewPixelFormat, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 
 #[test]
@@ -37,6 +37,26 @@ fn preview_frame_keeps_jpeg_payload_variable_length() {
     };
 
     assert_eq!(PreviewFrame::decode(&frame.encode()), Ok(frame));
+}
+
+#[test]
+fn zone_preview_frame_roundtrips_addressed_rgb_payload() {
+    let frame = ZonePreviewFrame {
+        scene_id: [0x11; 16],
+        zone_id: [0x22; 16],
+        frame_number: 42,
+        timestamp_ms: 9001,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6]),
+    };
+
+    let encoded = frame.encode();
+
+    assert_eq!(encoded[0], ZONE_PREVIEW_FRAME_TAG);
+    assert_eq!(encoded.len(), ZONE_PREVIEW_FRAME_HEADER_LEN + 6);
+    assert_eq!(ZonePreviewFrame::decode(&encoded), Ok(frame));
 }
 
 #[test]

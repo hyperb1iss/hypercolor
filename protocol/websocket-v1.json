@@ -46,6 +46,12 @@
       "description": "Browser viewport effect preview canvas."
     },
     {
+      "name": "zone_preview",
+      "kind": "binary",
+      "default_fps": 15,
+      "description": "Per-zone preview frame stream."
+    },
+    {
       "name": "metrics",
       "kind": "json",
       "default_interval_ms": 1000,
@@ -72,6 +78,7 @@
     "canvas",
     "screen_canvas",
     "web_viewport_canvas",
+    "zone_preview",
     "metrics",
     "device_metrics",
     "display_preview",
@@ -141,6 +148,12 @@
       "layout": "preview_frame"
     },
     {
+      "name": "zone_preview",
+      "tag": 8,
+      "channel": "zone_preview",
+      "layout": "zone_preview_frame"
+    },
+    {
       "name": "display_preview",
       "tag": 7,
       "channel": "display_preview",
@@ -153,6 +166,25 @@
       ["u8", "tag"],
       ["u32_le", "frame_number"],
       ["u32_le", "timestamp_ms"],
+      ["u16_le", "width"],
+      ["u16_le", "height"],
+      ["u8", "format"],
+      ["bytes", "payload"]
+    ],
+    "formats": {
+      "rgb": 0,
+      "rgba": 1,
+      "jpeg": 2
+    }
+  },
+  "zone_preview_frame": {
+    "header_len": 46,
+    "layout": [
+      ["u8", "tag"],
+      ["u32_le", "frame_number"],
+      ["u32_le", "timestamp_ms"],
+      ["uuid", "scene_id"],
+      ["uuid", "zone_id"],
       ["u16_le", "width"],
       ["u16_le", "height"],
       ["u8", "format"],
@@ -187,6 +219,12 @@
       "height": { "min": 0, "max": 4096, "default": 0 }
     },
     "web_viewport_canvas": {
+      "fps": { "min": 1, "max": 60, "default": 15 },
+      "format": { "values": ["rgb", "rgba", "jpeg"], "default": "rgb" },
+      "width": { "min": 0, "max": 4096, "default": 0 },
+      "height": { "min": 0, "max": 4096, "default": 0 }
+    },
+    "zone_preview": {
       "fps": { "min": 1, "max": 60, "default": 15 },
       "format": { "values": ["rgb", "rgba", "jpeg"], "default": "rgb" },
       "width": { "min": 0, "max": 4096, "default": 0 },

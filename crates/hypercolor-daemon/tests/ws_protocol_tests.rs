@@ -308,6 +308,7 @@ async fn hello_handshake_returns_expected_capability_set() {
         "events",
         "canvas",
         "screen_canvas",
+        "zone_preview",
         "metrics",
         "device_metrics",
         "commands",

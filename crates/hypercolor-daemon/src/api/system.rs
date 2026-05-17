@@ -29,6 +29,7 @@ const MULTI_ZONE_CAPABILITIES: &[&str] = &[
     "multi-zone-sampling",
     "zone-crud",
     "zone-device-assignment",
+    "zone-preview-frames",
     "scene-unassigned-behavior-write",
 ];
 
@@ -205,15 +206,19 @@ pub struct PreviewRuntimeStatus {
     pub canvas_receivers: u32,
     pub scene_canvas_receivers: u32,
     pub screen_canvas_receivers: u32,
+    pub zone_preview_receivers: u32,
     pub canvas_frames_published: u64,
     pub scene_canvas_frames_published: u64,
     pub screen_canvas_frames_published: u64,
+    pub zone_preview_frames_published: u64,
     pub latest_canvas_frame_number: u32,
     pub latest_scene_canvas_frame_number: u32,
     pub latest_screen_canvas_frame_number: u32,
+    pub latest_zone_preview_frame_number: u32,
     pub canvas_demand: PreviewDemandStatus,
     pub scene_canvas_demand: PreviewDemandStatus,
     pub screen_canvas_demand: PreviewDemandStatus,
+    pub zone_preview_demand: PreviewDemandStatus,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -852,15 +857,19 @@ fn preview_runtime_status(runtime: &PreviewRuntime) -> PreviewRuntimeStatus {
         canvas_receivers: snapshot.canvas_receivers,
         scene_canvas_receivers: snapshot.scene_canvas_receivers,
         screen_canvas_receivers: snapshot.screen_canvas_receivers,
+        zone_preview_receivers: snapshot.zone_preview_receivers,
         canvas_frames_published: snapshot.canvas_frames_published,
         scene_canvas_frames_published: snapshot.scene_canvas_frames_published,
         screen_canvas_frames_published: snapshot.screen_canvas_frames_published,
+        zone_preview_frames_published: snapshot.zone_preview_frames_published,
         latest_canvas_frame_number: snapshot.latest_canvas_frame_number,
         latest_scene_canvas_frame_number: snapshot.latest_scene_canvas_frame_number,
         latest_screen_canvas_frame_number: snapshot.latest_screen_canvas_frame_number,
+        latest_zone_preview_frame_number: snapshot.latest_zone_preview_frame_number,
         canvas_demand: preview_demand_status(runtime.canvas_demand()),
         scene_canvas_demand: preview_demand_status(runtime.scene_canvas_demand()),
         screen_canvas_demand: preview_demand_status(runtime.screen_canvas_demand()),
+        zone_preview_demand: preview_demand_status(runtime.zone_preview_demand()),
     }
 }
 

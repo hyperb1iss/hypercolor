@@ -420,6 +420,6 @@ async fn status_advertises_multi_zone_backend_capabilities() {
     assert!(capabilities.contains(&"multi-zone-sampling"));
     assert!(capabilities.contains(&"zone-crud"));
     assert!(capabilities.contains(&"zone-device-assignment"));
+    assert!(capabilities.contains(&"zone-preview-frames"));
     assert!(capabilities.contains(&"scene-unassigned-behavior-write"));
-    assert!(!capabilities.contains(&"zone-preview-frames"));
 }

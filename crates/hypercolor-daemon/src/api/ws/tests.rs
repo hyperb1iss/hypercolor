@@ -6,7 +6,7 @@ use axum::extract::ws::Utf8Bytes;
 use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
@@ -23,13 +23,13 @@ use super::cache::{
     WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE, WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER,
     WS_SPECTRUM_PAYLOAD_BUILD_COUNT, WS_SPECTRUM_PAYLOAD_CACHE,
-    WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, WS_WEB_VIEWPORT_CANVAS_HEADER,
-    cached_display_preview_payload, cached_frame_payload, cached_spectrum_payload,
-    encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
+    WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, WS_WEB_VIEWPORT_CANVAS_HEADER, WS_ZONE_PREVIEW_HEADER,
+    WS_ZONE_PREVIEW_HEADER_LEN, cached_display_preview_payload, cached_frame_payload,
+    cached_spectrum_payload, encode_cached_canvas_preview_binary, encode_canvas_binary_with_header,
     encode_canvas_preview_binary, encode_frame_binary, encode_frame_binary_selected,
     encode_spectrum_binary, reset_canvas_jpeg_body_cache_for_tests,
     reset_canvas_raw_body_cache_for_tests, reset_display_preview_payload_cache_for_tests,
-    reset_preview_jpeg_encoders_for_tests,
+    reset_preview_jpeg_encoders_for_tests, try_encode_cached_zone_preview_binary_scaled,
 };
 use super::command::{
     command_response_from_http, dispatch_command, normalize_command_path, parse_command_method,
@@ -1500,6 +1500,7 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"spectrum".to_owned()));
     assert!(capabilities.contains(&"canvas".to_owned()));
     assert!(capabilities.contains(&"screen_canvas".to_owned()));
+    assert!(capabilities.contains(&"zone_preview".to_owned()));
     assert!(capabilities.contains(&"metrics".to_owned()));
     assert!(capabilities.contains(&"device_metrics".to_owned()));
     assert!(capabilities.contains(&"display_preview".to_owned()));
@@ -1569,6 +1570,7 @@ fn websocket_manifest_matches_protocol_constants() {
         WS_WEB_VIEWPORT_CANVAS_HEADER
     );
     assert_eq!(binary_tags["display_preview"], WS_DISPLAY_PREVIEW_HEADER);
+    assert_eq!(binary_tags["zone_preview"], WS_ZONE_PREVIEW_HEADER);
 }
 
 #[test]
@@ -2200,6 +2202,42 @@ fn canvas_binary_encoder_writes_spec_header_and_rgb_payload() {
     assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 1);
     assert_eq!(encoded[13], 0);
     assert_eq!(&encoded[14..20], &[10, 20, 30, 40, 50, 60]);
+}
+
+#[test]
+fn zone_preview_binary_encoder_writes_addressed_header_and_rgb_payload() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+    canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+    let scene_id = SceneId::new();
+    let zone_id = RenderGroupId::new();
+    let frame = ZonePreviewFrame {
+        scene_id,
+        zone_id,
+        frame: CanvasFrame::from_canvas(&canvas, 7, 99),
+    };
+
+    let encoded = try_encode_cached_zone_preview_binary_scaled(&frame, CanvasFormat::Rgb, 0, 0)
+        .expect("zone preview payload should encode");
+
+    assert_eq!(encoded[0], WS_ZONE_PREVIEW_HEADER);
+    assert_eq!(
+        u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+        7
+    );
+    assert_eq!(
+        u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+        99
+    );
+    assert_eq!(&encoded[9..25], scene_id.0.as_bytes());
+    assert_eq!(&encoded[25..41], zone_id.0.as_bytes());
+    assert_eq!(u16::from_le_bytes([encoded[41], encoded[42]]), 2);
+    assert_eq!(u16::from_le_bytes([encoded[43], encoded[44]]), 1);
+    assert_eq!(encoded[45], 0);
+    assert_eq!(
+        &encoded[WS_ZONE_PREVIEW_HEADER_LEN..WS_ZONE_PREVIEW_HEADER_LEN + 6],
+        &[10, 20, 30, 40, 50, 60]
+    );
 }
 
 #[test]

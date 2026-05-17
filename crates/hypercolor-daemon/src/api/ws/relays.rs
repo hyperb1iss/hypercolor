@@ -6,6 +6,7 @@
 //! mpsc channels and `try_send` backpressure — drop under load rather than
 //! queue unboundedly.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
@@ -25,7 +26,7 @@ use super::cache::{
     WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER, WS_TOTAL_BYTES_SENT,
     WS_WEB_VIEWPORT_CANVAS_HEADER, cached_display_preview_payload, cached_frame_payload,
     cached_spectrum_payload, try_encode_cached_canvas_binary_with_header_scaled,
-    try_encode_cached_canvas_preview_binary,
+    try_encode_cached_canvas_preview_binary, try_encode_cached_zone_preview_binary_scaled,
 };
 use super::protocol::{
     ActiveFramesConfig, CanvasConfig, MetricsCopies, MetricsDevices, MetricsDisplayLane,
@@ -648,10 +649,138 @@ pub(super) async fn relay_web_viewport_canvas(
     }
 }
 
+pub(super) async fn relay_zone_preview(
+    preview_runtime: Arc<crate::preview_runtime::PreviewRuntime>,
+    json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
+    binary_tx: tokio::sync::mpsc::Sender<Bytes>,
+    mut subscriptions: watch::Receiver<SubscriptionState>,
+) {
+    let mut preview_rx = None::<crate::preview_runtime::ZonePreviewFrameReceiver>;
+    let mut active_canvas_config = None::<CanvasConfig>;
+    let mut receiver_initialized = false;
+    let mut last_sent_surfaces =
+        HashMap::<hypercolor_types::scene::RenderGroupId, PreviewSurfaceIdentity>::new();
+    let mut pending_send = false;
+    let mut active_fps = 15_u32;
+    let mut last_sent_at = preview_initial_last_sent();
+    let mut backpressure = BackpressureReporter::default();
+
+    loop {
+        if active_canvas_config.is_none() {
+            active_canvas_config = {
+                let subs = subscriptions.borrow();
+                if subs.channels.contains(WsChannel::ZonePreview) {
+                    Some(subs.config.zone_preview.clone())
+                } else {
+                    None
+                }
+            };
+        }
+        sync_zone_preview_receiver(&mut preview_rx, active_canvas_config.is_some(), || {
+            preview_runtime.zone_preview_receiver()
+        });
+
+        let Some(canvas_config) = active_canvas_config.as_ref() else {
+            last_sent_surfaces.clear();
+            receiver_initialized = false;
+            pending_send = false;
+            last_sent_at = preview_initial_last_sent();
+            if subscriptions.changed().await.is_err() {
+                break;
+            }
+            let _ = subscriptions.borrow_and_update();
+            active_canvas_config = None;
+            continue;
+        };
+        let preview_rx = preview_rx
+            .as_mut()
+            .expect("zone preview receiver should exist while subscribed");
+        preview_rx.update_demand(preview_stream_demand(canvas_config));
+
+        if canvas_config.fps != active_fps {
+            active_fps = canvas_config.fps.max(1);
+        }
+        if !receiver_initialized {
+            let _ = preview_rx.borrow_and_update();
+            receiver_initialized = true;
+            pending_send = true;
+        }
+
+        tokio::select! {
+            changed = preview_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = preview_rx.borrow_and_update();
+                pending_send = true;
+            }
+            changed = subscriptions.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = subscriptions.borrow_and_update();
+                active_canvas_config = None;
+            }
+            () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
+                let zone_previews = {
+                    let latest = preview_rx.borrow();
+                    latest.clone()
+                };
+                let mut active_zone_ids = HashSet::new();
+                let mut sent_any = false;
+                let mut hit_backpressure = false;
+                for zone_preview in &zone_previews {
+                    active_zone_ids.insert(zone_preview.zone_id);
+                    let surface_identity = preview_surface_identity(&zone_preview.frame);
+                    if last_sent_surfaces.get(&zone_preview.zone_id) == Some(&surface_identity) {
+                        continue;
+                    }
+                    let payload = try_encode_cached_zone_preview_binary_scaled(
+                        zone_preview,
+                        canvas_config.format,
+                        canvas_config.width,
+                        canvas_config.height,
+                    );
+                    let Some(payload) = payload else {
+                        continue;
+                    };
+                    if binary_tx.try_send(payload).is_err() {
+                        backpressure.record_drop(&json_tx, "zone_preview", canvas_config.fps);
+                        hit_backpressure = true;
+                        break;
+                    }
+                    last_sent_surfaces.insert(zone_preview.zone_id, surface_identity);
+                    sent_any = true;
+                }
+                last_sent_surfaces.retain(|zone_id, _| active_zone_ids.contains(zone_id));
+                last_sent_at = Instant::now();
+                pending_send = hit_backpressure && !sent_any;
+                if !hit_backpressure {
+                    pending_send = false;
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn sync_preview_receiver(
     receiver: &mut Option<crate::preview_runtime::PreviewFrameReceiver>,
     subscribed: bool,
     subscribe: impl FnOnce() -> crate::preview_runtime::PreviewFrameReceiver,
+) {
+    if subscribed {
+        if receiver.is_none() {
+            *receiver = Some(subscribe());
+        }
+    } else {
+        let _ = receiver.take();
+    }
+}
+
+fn sync_zone_preview_receiver(
+    receiver: &mut Option<crate::preview_runtime::ZonePreviewFrameReceiver>,
+    subscribed: bool,
+    subscribe: impl FnOnce() -> crate::preview_runtime::ZonePreviewFrameReceiver,
 ) {
     if subscribed {
         if receiver.is_none() {
@@ -1125,6 +1254,7 @@ pub(super) async fn build_metrics_message(
     let scene_canvas_demand = state.preview_runtime.scene_canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
+    let zone_preview_demand = state.preview_runtime.zone_preview_demand();
     let display_output = state.display_frames.read().await.metrics_snapshot();
     let servo_health = servo_effect_health_counts();
     let pipeline_health = render_pipeline_health_counts();
@@ -1341,21 +1471,25 @@ pub(super) async fn build_metrics_message(
                 scene_canvas_receivers: preview_runtime.scene_canvas_receivers,
                 screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
                 web_viewport_canvas_receivers: preview_runtime.web_viewport_canvas_receivers,
+                zone_preview_receivers: preview_runtime.zone_preview_receivers,
                 canvas_frames_published: preview_runtime.canvas_frames_published,
                 scene_canvas_frames_published: preview_runtime.scene_canvas_frames_published,
                 screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
                 web_viewport_canvas_frames_published: preview_runtime
                     .web_viewport_canvas_frames_published,
+                zone_preview_frames_published: preview_runtime.zone_preview_frames_published,
                 latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
                 latest_scene_canvas_frame_number: preview_runtime.latest_scene_canvas_frame_number,
                 latest_screen_canvas_frame_number: preview_runtime
                     .latest_screen_canvas_frame_number,
                 latest_web_viewport_canvas_frame_number: preview_runtime
                     .latest_web_viewport_canvas_frame_number,
+                latest_zone_preview_frame_number: preview_runtime.latest_zone_preview_frame_number,
                 canvas_demand: metrics_preview_demand(canvas_demand),
                 scene_canvas_demand: metrics_preview_demand(scene_canvas_demand),
                 screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),
                 web_viewport_canvas_demand: metrics_preview_demand(web_viewport_canvas_demand),
+                zone_preview_demand: metrics_preview_demand(zone_preview_demand),
             },
             display_output: MetricsDisplayOutput {
                 captured_devices: display_output.captured_devices,

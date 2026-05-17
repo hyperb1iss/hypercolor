@@ -20,9 +20,11 @@ pub use frame::{
 pub use hypercolor_leptos_ext_macros::BinaryFrame;
 #[cfg(feature = "ws-client-wasm")]
 pub use preview::PreviewFrameView;
+#[cfg(feature = "ws-client-wasm")]
+pub use preview::ZonePreviewFrameView;
 pub use preview::{
     PREVIEW_FRAME_HEADER_LEN, PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError,
-    PreviewPixelFormat,
+    PreviewPixelFormat, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 pub use reconnect::{
     Connector, ExponentialBackoff, Jitter, ReconnectError, ReconnectOutcome, ReconnectPolicy,

@@ -17,6 +17,7 @@ use serde::ser::SerializeSeq;
 use tracing::{trace, warn};
 
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+use hypercolor_types::scene::{RenderGroupId, SceneId};
 
 use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
@@ -35,6 +36,8 @@ pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = 0x06;
 /// the `display_preview` channel. Body layout matches the canvas frame:
 /// `[frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8=2 (JPEG)][jpeg_payload]`.
 pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = 0x07;
+pub(super) const WS_ZONE_PREVIEW_HEADER: u8 = 0x08;
+pub(super) const WS_ZONE_PREVIEW_HEADER_LEN: usize = 46;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY: usize = 64;
 /// Display-preview payloads larger than this skip the shared cache and are
@@ -60,6 +63,7 @@ pub(super) static WS_SPECTRUM_PAYLOAD_BUILD_COUNT: AtomicU64 = AtomicU64::new(0)
 pub(super) static WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 type CanvasBinaryCacheShard = StdMutex<VecDeque<(CanvasBinaryCacheKey, Bytes)>>;
+type ZonePreviewBinaryCacheShard = StdMutex<VecDeque<(ZonePreviewBinaryCacheKey, Bytes)>>;
 type CanvasRawBodyCacheShard = StdMutex<VecDeque<(CanvasRawBodyCacheKey, Bytes)>>;
 type CanvasJpegBodyCacheShard = StdMutex<VecDeque<(CanvasJpegBodyCacheKey, Bytes)>>;
 type DisplayPreviewPayloadCacheShard = StdMutex<VecDeque<(DisplayPreviewPayloadCacheKey, Bytes)>>;
@@ -70,6 +74,16 @@ type PreviewRawEncoderShard = StdMutex<PreviewRawEncoder>;
 type CommandRouterCache = StdMutex<Option<(usize, axum::Router)>>;
 
 pub(super) static WS_CANVAS_BINARY_CACHE: LazyLock<Vec<CanvasBinaryCacheShard>> =
+    LazyLock::new(|| {
+        (0..WS_CACHE_SHARD_COUNT)
+            .map(|_| {
+                StdMutex::new(VecDeque::with_capacity(per_shard_capacity(
+                    WS_CANVAS_BINARY_CACHE_CAPACITY,
+                )))
+            })
+            .collect()
+    });
+static WS_ZONE_PREVIEW_BINARY_CACHE: LazyLock<Vec<ZonePreviewBinaryCacheShard>> =
     LazyLock::new(|| {
         (0..WS_CACHE_SHARD_COUNT)
             .map(|_| {
@@ -180,6 +194,18 @@ pub(super) struct CanvasBinaryCacheKey {
     pub(super) header: u8,
     pub(super) format_tag: u8,
     pub(super) brightness_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ZonePreviewBinaryCacheKey {
+    pub(super) scene_id: SceneId,
+    pub(super) zone_id: RenderGroupId,
+    pub(super) generation: u64,
+    pub(super) frame_number: u32,
+    pub(super) timestamp_ms: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) format_tag: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -659,6 +685,59 @@ pub(super) fn try_encode_cached_canvas_binary_with_header_scaled(
     .into()
 }
 
+pub(super) fn try_encode_cached_zone_preview_binary_scaled(
+    zone_preview: &hypercolor_core::bus::ZonePreviewFrame,
+    format: CanvasFormat,
+    requested_width: u32,
+    requested_height: u32,
+) -> Option<Bytes> {
+    let canvas = &zone_preview.frame;
+    let output_size = resolve_canvas_output_size(
+        canvas.width,
+        canvas.height,
+        requested_width,
+        requested_height,
+    );
+    let key = ZonePreviewBinaryCacheKey {
+        scene_id: zone_preview.scene_id,
+        zone_id: zone_preview.zone_id,
+        generation: canvas.surface().generation(),
+        frame_number: canvas.frame_number,
+        timestamp_ms: canvas.timestamp_ms,
+        width: output_size.width,
+        height: output_size.height,
+        format_tag: canvas_format_tag(format),
+    };
+    if let Some(cached) = zone_preview_binary_cache_get(key) {
+        WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+        return Some(cached);
+    }
+
+    let body = match format {
+        CanvasFormat::Jpeg => cached_canvas_jpeg_body(canvas, 1.0, output_size)?,
+        CanvasFormat::Rgb | CanvasFormat::Rgba => {
+            cached_canvas_raw_body(canvas, format, 1.0, output_size).unwrap_or_else(|| {
+                Bytes::from(PreviewRawEncoder::new().encode_scaled_body(
+                    canvas,
+                    format,
+                    1.0,
+                    output_size.width,
+                    output_size.height,
+                ))
+            })
+        }
+    };
+    let payload = Bytes::from(build_zone_preview_binary_payload(
+        zone_preview,
+        format,
+        body.as_ref(),
+        output_size,
+    ));
+    WS_CANVAS_PAYLOAD_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+    zone_preview_binary_cache_put(key, payload.clone());
+    Some(payload)
+}
+
 fn encode_canvas_binary_with_header_and_brightness(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
@@ -699,6 +778,44 @@ fn encode_canvas_binary_with_header_and_brightness(
         output_size.height,
     );
     build_canvas_binary_payload(canvas, header, format, &body, output_size)
+}
+
+fn build_zone_preview_binary_payload(
+    zone_preview: &hypercolor_core::bus::ZonePreviewFrame,
+    format: CanvasFormat,
+    body: &[u8],
+    output_size: CanvasOutputSize,
+) -> Vec<u8> {
+    let width_u16 = u16::try_from(output_size.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(output_size.height).unwrap_or(u16::MAX);
+    let mut payload = vec![0; WS_ZONE_PREVIEW_HEADER_LEN.saturating_add(body.len())];
+    write_zone_preview_payload_header(
+        &mut payload[..WS_ZONE_PREVIEW_HEADER_LEN],
+        zone_preview,
+        width_u16,
+        height_u16,
+        canvas_format_tag(format),
+    );
+    payload[WS_ZONE_PREVIEW_HEADER_LEN..].copy_from_slice(body);
+    payload
+}
+
+fn write_zone_preview_payload_header(
+    header_bytes: &mut [u8],
+    zone_preview: &hypercolor_core::bus::ZonePreviewFrame,
+    width_u16: u16,
+    height_u16: u16,
+    format_tag: u8,
+) {
+    debug_assert_eq!(header_bytes.len(), WS_ZONE_PREVIEW_HEADER_LEN);
+    header_bytes[0] = WS_ZONE_PREVIEW_HEADER;
+    header_bytes[1..5].copy_from_slice(&zone_preview.frame.frame_number.to_le_bytes());
+    header_bytes[5..9].copy_from_slice(&zone_preview.frame.timestamp_ms.to_le_bytes());
+    header_bytes[9..25].copy_from_slice(zone_preview.scene_id.0.as_bytes());
+    header_bytes[25..41].copy_from_slice(zone_preview.zone_id.0.as_bytes());
+    header_bytes[41..43].copy_from_slice(&width_u16.to_le_bytes());
+    header_bytes[43..45].copy_from_slice(&height_u16.to_le_bytes());
+    header_bytes[45] = format_tag;
 }
 
 fn build_canvas_binary_payload(
@@ -1094,6 +1211,30 @@ fn canvas_binary_cache_get(key: CanvasBinaryCacheKey) -> Option<Bytes> {
 
 fn canvas_binary_cache_put(key: CanvasBinaryCacheKey, payload: Bytes) {
     let mut cache = WS_CANVAS_BINARY_CACHE[cache_shard_index(&key)]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {
+        let _ = cache.remove(index);
+    }
+    cache.push_front((key, payload));
+    while cache.len() > per_shard_capacity(WS_CANVAS_BINARY_CACHE_CAPACITY) {
+        let _ = cache.pop_back();
+    }
+}
+
+fn zone_preview_binary_cache_get(key: ZonePreviewBinaryCacheKey) -> Option<Bytes> {
+    let mut cache = WS_ZONE_PREVIEW_BINARY_CACHE[cache_shard_index(&key)]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let index = cache.iter().position(|(candidate, _)| *candidate == key)?;
+    let (candidate, payload) = cache.remove(index)?;
+    let cached = payload.clone();
+    cache.push_front((candidate, payload));
+    Some(cached)
+}
+
+fn zone_preview_binary_cache_put(key: ZonePreviewBinaryCacheKey, payload: Bytes) {
+    let mut cache = WS_ZONE_PREVIEW_BINARY_CACHE[cache_shard_index(&key)]
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     if let Some(index) = cache.iter().position(|(candidate, _)| *candidate == key) {

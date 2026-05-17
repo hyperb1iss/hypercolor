@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -12,10 +12,12 @@ pub struct PreviewRuntimeSnapshot {
     pub scene_canvas_receivers: u32,
     pub screen_canvas_receivers: u32,
     pub web_viewport_canvas_receivers: u32,
+    pub zone_preview_receivers: u32,
     pub canvas_frames_published: u64,
     pub scene_canvas_frames_published: u64,
     pub screen_canvas_frames_published: u64,
     pub web_viewport_canvas_frames_published: u64,
+    pub zone_preview_frames_published: u64,
     pub latest_canvas_frame_number: u32,
     pub latest_canvas_timestamp_ms: u32,
     pub latest_scene_canvas_frame_number: u32,
@@ -24,6 +26,8 @@ pub struct PreviewRuntimeSnapshot {
     pub latest_screen_canvas_timestamp_ms: u32,
     pub latest_web_viewport_canvas_frame_number: u32,
     pub latest_web_viewport_canvas_timestamp_ms: u32,
+    pub latest_zone_preview_frame_number: u32,
+    pub latest_zone_preview_timestamp_ms: u32,
 }
 
 #[derive(Debug, Default)]
@@ -33,10 +37,12 @@ struct PreviewRuntimeTelemetry {
     scene_canvas_receivers: Arc<AtomicU32>,
     screen_canvas_receivers: Arc<AtomicU32>,
     web_viewport_canvas_receivers: Arc<AtomicU32>,
+    zone_preview_receivers: Arc<AtomicU32>,
     canvas_frames_published: AtomicU64,
     scene_canvas_frames_published: AtomicU64,
     screen_canvas_frames_published: AtomicU64,
     web_viewport_canvas_frames_published: AtomicU64,
+    zone_preview_frames_published: AtomicU64,
     latest_canvas_frame_number: AtomicU32,
     latest_canvas_timestamp_ms: AtomicU32,
     latest_scene_canvas_frame_number: AtomicU32,
@@ -45,6 +51,8 @@ struct PreviewRuntimeTelemetry {
     latest_screen_canvas_timestamp_ms: AtomicU32,
     latest_web_viewport_canvas_frame_number: AtomicU32,
     latest_web_viewport_canvas_timestamp_ms: AtomicU32,
+    latest_zone_preview_frame_number: AtomicU32,
+    latest_zone_preview_timestamp_ms: AtomicU32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,11 +115,13 @@ struct PreviewRuntimeDemandState {
     scene_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     screen_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     web_viewport_canvas: Mutex<Vec<(u64, PreviewStreamDemand)>>,
+    zone_preview: Mutex<Vec<(u64, PreviewStreamDemand)>>,
     canvas_summary: PreviewDemandSummaryState,
     internal_canvas_summary: PreviewDemandSummaryState,
     scene_canvas_summary: PreviewDemandSummaryState,
     screen_canvas_summary: PreviewDemandSummaryState,
     web_viewport_canvas_summary: PreviewDemandSummaryState,
+    zone_preview_summary: PreviewDemandSummaryState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +131,7 @@ enum PreviewStreamKind {
     SceneCanvas,
     ScreenCanvas,
     WebViewportCanvas,
+    ZonePreview,
 }
 
 #[derive(Debug)]
@@ -134,6 +145,13 @@ struct PreviewDemandRegistration {
 #[derive(Debug)]
 pub struct PreviewFrameReceiver {
     receiver: watch::Receiver<CanvasFrame>,
+    counter: Arc<AtomicU32>,
+    demand_registration: PreviewDemandRegistration,
+}
+
+#[derive(Debug)]
+pub struct ZonePreviewFrameReceiver {
+    receiver: watch::Receiver<Vec<ZonePreviewFrame>>,
     counter: Arc<AtomicU32>,
     demand_registration: PreviewDemandRegistration,
 }
@@ -173,6 +191,43 @@ impl PreviewFrameReceiver {
     }
 }
 
+impl ZonePreviewFrameReceiver {
+    fn new(
+        receiver: watch::Receiver<Vec<ZonePreviewFrame>>,
+        counter: Arc<AtomicU32>,
+        demand_registration: PreviewDemandRegistration,
+    ) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self {
+            receiver,
+            counter,
+            demand_registration,
+        }
+    }
+
+    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
+        self.receiver.changed().await
+    }
+
+    pub fn borrow(&self) -> watch::Ref<'_, Vec<ZonePreviewFrame>> {
+        self.receiver.borrow()
+    }
+
+    pub fn borrow_and_update(&mut self) -> watch::Ref<'_, Vec<ZonePreviewFrame>> {
+        self.receiver.borrow_and_update()
+    }
+
+    pub fn update_demand(&mut self, demand: PreviewStreamDemand) {
+        self.demand_registration.update(demand);
+    }
+}
+
+impl Drop for ZonePreviewFrameReceiver {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl Drop for PreviewFrameReceiver {
     fn drop(&mut self) {
         self.counter.fetch_sub(1, Ordering::Relaxed);
@@ -197,6 +252,7 @@ impl PreviewRuntime {
                 scene_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 screen_canvas_receivers: Arc::new(AtomicU32::new(0)),
                 web_viewport_canvas_receivers: Arc::new(AtomicU32::new(0)),
+                zone_preview_receivers: Arc::new(AtomicU32::new(0)),
                 ..PreviewRuntimeTelemetry::default()
             }),
             demand_state: Arc::new(PreviewRuntimeDemandState::default()),
@@ -381,6 +437,51 @@ impl PreviewRuntime {
         .unwrap_or(usize::MAX)
     }
 
+    pub fn note_zone_preview_frame(&self, frame_number: u32, timestamp_ms: u32) {
+        self.telemetry
+            .latest_zone_preview_frame_number
+            .store(frame_number, Ordering::Relaxed);
+        self.telemetry
+            .latest_zone_preview_timestamp_ms
+            .store(timestamp_ms, Ordering::Relaxed);
+    }
+
+    pub fn record_zone_preview_publication(
+        &self,
+        frame_number: u32,
+        timestamp_ms: u32,
+        zone_count: usize,
+    ) {
+        self.telemetry.zone_preview_frames_published.fetch_add(
+            u64::try_from(zone_count).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        self.note_zone_preview_frame(frame_number, timestamp_ms);
+    }
+
+    #[must_use]
+    pub fn zone_preview_receiver(&self) -> ZonePreviewFrameReceiver {
+        ZonePreviewFrameReceiver::new(
+            self.event_bus.zone_preview_receiver(),
+            Arc::clone(&self.telemetry.zone_preview_receivers),
+            PreviewDemandRegistration::new(
+                Arc::clone(&self.demand_state),
+                PreviewStreamKind::ZonePreview,
+                PreviewStreamDemand::default(),
+            ),
+        )
+    }
+
+    #[must_use]
+    pub fn zone_preview_receiver_count(&self) -> usize {
+        usize::try_from(
+            self.telemetry
+                .zone_preview_receivers
+                .load(Ordering::Relaxed),
+        )
+        .unwrap_or(usize::MAX)
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> PreviewRuntimeSnapshot {
         PreviewRuntimeSnapshot {
@@ -397,6 +498,10 @@ impl PreviewRuntime {
                 .telemetry
                 .web_viewport_canvas_receivers
                 .load(Ordering::Relaxed),
+            zone_preview_receivers: self
+                .telemetry
+                .zone_preview_receivers
+                .load(Ordering::Relaxed),
             canvas_frames_published: self
                 .telemetry
                 .canvas_frames_published
@@ -412,6 +517,10 @@ impl PreviewRuntime {
             web_viewport_canvas_frames_published: self
                 .telemetry
                 .web_viewport_canvas_frames_published
+                .load(Ordering::Relaxed),
+            zone_preview_frames_published: self
+                .telemetry
+                .zone_preview_frames_published
                 .load(Ordering::Relaxed),
             latest_canvas_frame_number: self
                 .telemetry
@@ -445,6 +554,14 @@ impl PreviewRuntime {
                 .telemetry
                 .latest_web_viewport_canvas_timestamp_ms
                 .load(Ordering::Relaxed),
+            latest_zone_preview_frame_number: self
+                .telemetry
+                .latest_zone_preview_frame_number
+                .load(Ordering::Relaxed),
+            latest_zone_preview_timestamp_ms: self
+                .telemetry
+                .latest_zone_preview_timestamp_ms
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -476,6 +593,11 @@ impl PreviewRuntime {
         self.demand_state
             .summary(PreviewStreamKind::WebViewportCanvas)
     }
+
+    #[must_use]
+    pub fn zone_preview_demand(&self) -> PreviewDemandSummary {
+        self.demand_state.summary(PreviewStreamKind::ZonePreview)
+    }
 }
 
 impl Default for PreviewRuntime {
@@ -492,6 +614,7 @@ impl PreviewRuntimeDemandState {
             PreviewStreamKind::SceneCanvas => &self.scene_canvas,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas,
             PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas,
+            PreviewStreamKind::ZonePreview => &self.zone_preview,
         }
     }
 
@@ -502,6 +625,7 @@ impl PreviewRuntimeDemandState {
             PreviewStreamKind::SceneCanvas => &self.scene_canvas_summary,
             PreviewStreamKind::ScreenCanvas => &self.screen_canvas_summary,
             PreviewStreamKind::WebViewportCanvas => &self.web_viewport_canvas_summary,
+            PreviewStreamKind::ZonePreview => &self.zone_preview_summary,
         }
     }
 

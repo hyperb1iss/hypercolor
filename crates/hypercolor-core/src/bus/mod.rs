@@ -28,7 +28,7 @@ use tokio::sync::{broadcast, watch};
 use crate::types::canvas::{Canvas, PublishedSurface};
 use crate::types::device::{DeviceId, DisplayFrameFormat};
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
-use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId};
+use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, RenderGroupId, SceneId};
 use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -201,6 +201,13 @@ impl CanvasFrame {
     pub fn rgba_bytes(&self) -> &[u8] {
         self.surface.rgba_bytes()
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ZonePreviewFrame {
+    pub scene_id: SceneId,
+    pub zone_id: RenderGroupId,
+    pub frame: CanvasFrame,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -440,6 +447,9 @@ pub struct HypercolorBus {
     /// Latest high-resolution web viewport source canvas snapshot.
     web_viewport_canvas: watch::Sender<CanvasFrame>,
 
+    /// Latest per-zone preview frames for Studio.
+    zone_preview: watch::Sender<Vec<ZonePreviewFrame>>,
+
     /// Latest per-render-group canvases for direct display consumption.
     group_canvases: Arc<Mutex<HashMap<RenderGroupId, watch::Sender<DisplayGroupFrame>>>>,
 
@@ -464,6 +474,7 @@ impl HypercolorBus {
         let (scene_canvas, _) = watch::channel(CanvasFrame::empty());
         let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
         let (web_viewport_canvas, _) = watch::channel(CanvasFrame::empty());
+        let (zone_preview, _) = watch::channel(Vec::new());
 
         Self {
             events,
@@ -473,6 +484,7 @@ impl HypercolorBus {
             scene_canvas,
             screen_canvas,
             web_viewport_canvas,
+            zone_preview,
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
             display_group_targets: Arc::new(Mutex::new(DisplayGroupTargetRegistry::default())),
             display_group_output_routes: Arc::new(Mutex::new(
@@ -620,6 +632,24 @@ impl HypercolorBus {
     #[must_use]
     pub fn web_viewport_canvas_receiver_count(&self) -> usize {
         self.web_viewport_canvas.receiver_count()
+    }
+
+    /// Access the zone-preview watch sender.
+    #[must_use]
+    pub fn zone_preview_sender(&self) -> &watch::Sender<Vec<ZonePreviewFrame>> {
+        &self.zone_preview
+    }
+
+    /// Subscribe to per-zone preview frame batches.
+    #[must_use]
+    pub fn zone_preview_receiver(&self) -> watch::Receiver<Vec<ZonePreviewFrame>> {
+        self.zone_preview.subscribe()
+    }
+
+    /// Number of active zone-preview receivers.
+    #[must_use]
+    pub fn zone_preview_receiver_count(&self) -> usize {
+        self.zone_preview.receiver_count()
     }
 
     /// Access or create the per-group canvas sender for a render group.

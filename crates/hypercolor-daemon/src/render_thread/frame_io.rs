@@ -1,15 +1,17 @@
+use std::collections::HashSet;
 use std::time::Instant;
 
-use hypercolor_core::bus::CanvasFrame;
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, ZonePreviewFrame};
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
-use hypercolor_types::scene::RenderGroupId;
+use hypercolor_types::scene::{RenderGroupId, SceneId};
 use tokio::sync::watch;
 
 use crate::performance::FullFrameCopyMetrics;
 
 use super::pipeline_runtime::PublicationCadenceState;
+use super::producer_queue::ProducerFrame;
 use super::render_groups::GroupCanvasFrame;
 use super::{RenderThreadState, micros_u32, usize_to_u32};
 
@@ -68,7 +70,9 @@ pub(crate) struct FramePublicationRequest<'a> {
     pub(crate) recycled_frame: &'a mut FrameData,
     pub(crate) audio: &'a AudioData,
     pub(crate) surfaces: FramePublicationSurfaces,
+    pub(crate) scene_id: Option<SceneId>,
     pub(crate) group_canvases: &'a [(RenderGroupId, GroupCanvasFrame)],
+    pub(crate) zone_canvases: &'a [(RenderGroupId, ProducerFrame)],
     pub(crate) active_group_canvas_ids: &'a [RenderGroupId],
     pub(crate) frame_number: u32,
     pub(crate) elapsed_ms: u32,
@@ -115,7 +119,9 @@ pub(crate) fn publish_frame_updates(
         recycled_frame,
         audio,
         mut surfaces,
+        scene_id,
         group_canvases,
+        zone_canvases,
         active_group_canvas_ids,
         frame_number,
         elapsed_ms,
@@ -187,6 +193,18 @@ pub(crate) fn publish_frame_updates(
     state
         .preview_runtime
         .note_scene_canvas_frame(frame_number, elapsed_ms);
+    state
+        .preview_runtime
+        .note_zone_preview_frame(frame_number, elapsed_ms);
+    publish_zone_previews(
+        state,
+        publication_cadence,
+        scene_id,
+        group_canvases,
+        zone_canvases,
+        frame_number,
+        elapsed_ms,
+    );
     let scene_canvas_receivers = state.scene_canvas_receiver_count();
     if scene_canvas_receivers > 0 {
         let tracked_scene_canvas_receivers = state.preview_runtime.scene_canvas_receiver_count();
@@ -369,6 +387,150 @@ pub(crate) fn publish_frame_updates(
         preview_us,
         events_us,
     }
+}
+
+fn publish_zone_previews(
+    state: &RenderThreadState,
+    publication_cadence: &mut PublicationCadenceState,
+    scene_id: Option<SceneId>,
+    group_canvases: &[(RenderGroupId, GroupCanvasFrame)],
+    zone_canvases: &[(RenderGroupId, ProducerFrame)],
+    frame_number: u32,
+    elapsed_ms: u32,
+) {
+    let Some(scene_id) = scene_id else {
+        return;
+    };
+    let zone_preview_receivers = state.event_bus.zone_preview_receiver_count();
+    if zone_preview_receivers == 0 {
+        return;
+    }
+    if !publication_cadence.zone_preview_due(
+        elapsed_ms,
+        zone_preview_receivers,
+        state.preview_runtime.zone_preview_receiver_count(),
+        state.preview_runtime.zone_preview_demand().max_fps,
+    ) {
+        return;
+    }
+
+    let zone_previews = collect_zone_previews(
+        scene_id,
+        group_canvases,
+        zone_canvases,
+        frame_number,
+        elapsed_ms,
+    );
+    if zone_previews.is_empty() {
+        return;
+    }
+
+    let should_publish = {
+        let current = state.event_bus.zone_preview_sender().borrow();
+        should_publish_zone_preview_frames(&current, &zone_previews)
+    };
+    if !should_publish {
+        return;
+    }
+
+    publication_cadence.record_zone_preview_publication(elapsed_ms);
+    state.preview_runtime.record_zone_preview_publication(
+        frame_number,
+        elapsed_ms,
+        zone_previews.len(),
+    );
+    let _ = state.event_bus.zone_preview_sender().send(zone_previews);
+}
+
+fn collect_zone_previews(
+    scene_id: SceneId,
+    group_canvases: &[(RenderGroupId, GroupCanvasFrame)],
+    zone_canvases: &[(RenderGroupId, ProducerFrame)],
+    frame_number: u32,
+    elapsed_ms: u32,
+) -> Vec<ZonePreviewFrame> {
+    let display_group_ids = group_canvases
+        .iter()
+        .map(|(group_id, _)| *group_id)
+        .collect::<HashSet<_>>();
+    let mut previews = Vec::new();
+    for (group_id, frame) in zone_canvases {
+        if display_group_ids.contains(group_id) {
+            continue;
+        }
+        if let Some(frame) = zone_preview_frame_from_producer(frame, frame_number, elapsed_ms) {
+            previews.push(ZonePreviewFrame {
+                scene_id,
+                zone_id: *group_id,
+                frame,
+            });
+        }
+    }
+    for (group_id, group_canvas) in group_canvases {
+        if let Some(frame) =
+            zone_preview_frame_from_display(&group_canvas.frame, frame_number, elapsed_ms)
+        {
+            previews.push(ZonePreviewFrame {
+                scene_id,
+                zone_id: *group_id,
+                frame,
+            });
+        }
+    }
+    previews
+}
+
+fn zone_preview_frame_from_producer(
+    frame: &ProducerFrame,
+    frame_number: u32,
+    elapsed_ms: u32,
+) -> Option<CanvasFrame> {
+    match frame {
+        ProducerFrame::Canvas(canvas) => {
+            Some(CanvasFrame::from_canvas(canvas, frame_number, elapsed_ms))
+        }
+        ProducerFrame::Surface(surface) => Some(CanvasFrame::from_surface(
+            surface
+                .clone()
+                .with_frame_metadata(frame_number, elapsed_ms),
+        )),
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => None,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => None,
+    }
+}
+
+fn zone_preview_frame_from_display(
+    frame: &DisplayGroupFrame,
+    frame_number: u32,
+    elapsed_ms: u32,
+) -> Option<CanvasFrame> {
+    match frame {
+        DisplayGroupFrame::Canvas(frame) => Some(CanvasFrame::from_surface(
+            frame
+                .surface()
+                .clone()
+                .with_frame_metadata(frame_number, elapsed_ms),
+        )),
+        DisplayGroupFrame::Yuv420(_) => None,
+    }
+}
+
+fn should_publish_zone_preview_frames(
+    current: &[ZonePreviewFrame],
+    next: &[ZonePreviewFrame],
+) -> bool {
+    if current.len() != next.len() {
+        return true;
+    }
+
+    current.iter().zip(next).any(|(current, next)| {
+        current.scene_id != next.scene_id
+            || current.zone_id != next.zone_id
+            || canvas_frame_publication_identity(&current.frame)
+                != canvas_frame_publication_identity(&next.frame)
+    })
 }
 
 fn update_published_frame(
@@ -567,6 +729,7 @@ mod tests {
     use hypercolor_core::types::event::{FrameData, FrameTiming, ZoneColors};
     use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
     use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::scene::{RenderGroupId, SceneId};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use tokio::sync::{Mutex, RwLock, watch};
 
@@ -579,6 +742,7 @@ mod tests {
     use crate::device_settings::DeviceSettingsStore;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
+    use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
     use crate::session::OutputPowerState;
@@ -763,6 +927,53 @@ mod tests {
     }
 
     #[test]
+    fn publish_frame_updates_streams_zone_preview_frames() {
+        let state = minimal_render_thread_state();
+        let mut zone_rx = state.preview_runtime.zone_preview_receiver();
+        let scene_id = SceneId::new();
+        let zone_id = RenderGroupId::new();
+        let zone_canvas = Canvas::from_rgba(&[10, 20, 30, 255], 1, 1);
+        let zone_canvases = vec![(zone_id, ProducerFrame::Canvas(zone_canvas))];
+        let mut recycled_frame = FrameData::empty();
+        let mut cadence = PublicationCadenceState::default();
+
+        publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: None,
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                scene_id: Some(scene_id),
+                group_canvases: &[],
+                zone_canvases: &zone_canvases,
+                active_group_canvas_ids: &[],
+                frame_number: 7,
+                elapsed_ms: 42,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+
+        let previews = zone_rx.borrow_and_update().clone();
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].scene_id, scene_id);
+        assert_eq!(previews[0].zone_id, zone_id);
+        assert_eq!(previews[0].frame.frame_number, 7);
+        assert_eq!(previews[0].frame.timestamp_ms, 42);
+        assert_eq!(previews[0].frame.rgba_bytes(), &[10, 20, 30, 255]);
+    }
+
+    #[test]
     fn surface_backed_preview_publication_reports_zero_full_frame_copies() {
         let state = minimal_render_thread_state();
         let mut canvas_rx = state.event_bus.canvas_receiver();
@@ -786,7 +997,9 @@ mod tests {
                     effect_running: true,
                     screen_capture_active: false,
                 },
+                scene_id: None,
                 group_canvases: &[],
+                zone_canvases: &[],
                 active_group_canvas_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
@@ -831,7 +1044,9 @@ mod tests {
                     effect_running: true,
                     screen_capture_active: false,
                 },
+                scene_id: None,
                 group_canvases: &[],
+                zone_canvases: &[],
                 active_group_canvas_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
@@ -857,7 +1072,9 @@ mod tests {
                     effect_running: true,
                     screen_capture_active: false,
                 },
+                scene_id: None,
                 group_canvases: &[],
+                zone_canvases: &[],
                 active_group_canvas_ids: &[],
                 frame_number: 8,
                 elapsed_ms: 50,
@@ -902,7 +1119,9 @@ mod tests {
                     effect_running: true,
                     screen_capture_active: false,
                 },
+                scene_id: None,
                 group_canvases: &[],
+                zone_canvases: &[],
                 active_group_canvas_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
@@ -928,7 +1147,9 @@ mod tests {
                     effect_running: true,
                     screen_capture_active: false,
                 },
+                scene_id: None,
                 group_canvases: &[],
+                zone_canvases: &[],
                 active_group_canvas_ids: &[],
                 frame_number: 8,
                 elapsed_ms: 50,
