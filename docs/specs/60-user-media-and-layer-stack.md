@@ -5,19 +5,20 @@
 > color adjustments. Generalizes the existing `DisplayFaceTarget`
 > face-over-effect compositing into a per-group `Vec<SceneLayer>`, adds
 > media sources (image, GIF, APNG, animated WebP, video, Lottie, HTTP
-> stream) as a sibling of `EffectRenderer`, and closes the in-flight
-> display-face composition refactor's alpha gap by routing both LED and
-> display-face groups through one composition contract.
+> stream) as a sibling of `EffectRenderer`, and builds on the landed
+> Wave 1 display-face overlay fix so LED and display-face groups can use
+> one composition contract.
 
-**Status:** Draft (v1)
+**Status:** Implementation-ready (v2; Wave 1 landed, Waves 0/2/3 next)
 **Author:** Nova
 **Date:** 2026-05-15
+**Updated:** 2026-05-16
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
 **SDK:** `@hypercolor/sdk` (additive)
 **Depends on:** Display Faces (42), Face SDK (43), Web Viewport Effect (44),
 Canonical Render Pipeline (48), Screen Capture (14)
 **Related:** SparkleFlinger (design/30), Render Pipeline Modernization (design/28),
-in-flight "display-face composition refactor slice" (Sibyl procedure)
+landed "display-face composition refactor slice" (Sibyl procedure)
 
 ---
 
@@ -41,10 +42,11 @@ in-flight "display-face composition refactor slice" (Sibyl procedure)
 16. [Delivery Waves](#16-delivery-waves)
 17. [Known Constraints](#17-known-constraints)
 18. [Verification Strategy](#18-verification-strategy)
-19. [Recommendation](#19-recommendation)
-20. [Appendix A — File Inventory](#appendix-a--file-inventory)
-21. [Appendix B — Migration Examples](#appendix-b--migration-examples)
-22. [Appendix C — Competitor Feature Matrix](#appendix-c--competitor-feature-matrix)
+19. [Implementation Plan](#19-implementation-plan)
+20. [Recommendation](#20-recommendation)
+21. [Appendix A — File Inventory](#appendix-a--file-inventory)
+22. [Appendix B — Migration Examples](#appendix-b--migration-examples)
+23. [Appendix C — Competitor Feature Matrix](#appendix-c--competitor-feature-matrix)
 
 ---
 
@@ -68,7 +70,9 @@ adjustment. The compositor (`SparkleFlinger`) already supports per-layer
 blend modes through `CompositionLayer`; this spec promotes that capability
 from a transient compositor concept to a first-class authored construct
 that both LED groups and display-face groups consume through the same
-contract.
+contract. Wave 1 already moved the display face-over-scene overlay math
+into SparkleFlinger; this spec now prepares the authored layer-stack
+surface that sits above that compositor foundation.
 
 The first new layer-source primitive is **media** — user-chosen image, GIF,
 APNG, animated WebP, video, Lottie, or HTTP stream files, decoded by a
@@ -79,8 +83,8 @@ UI plumbing are all introduced here.
 The architectural through-line is that *content source* (effect, media,
 screen, web) is independent of *consumer* (LED via spatial sampling, or
 display-face via direct canvas routing). One layer-stack contract serves
-both, and the in-flight composition refactor's alpha gap closes naturally
-because LED and display-face composition share the same path.
+both, and the landed Wave 1 overlay fix supplies the shared display-face
+blend boundary that the rest of this spec builds on.
 
 ---
 
@@ -95,25 +99,30 @@ with a fallback color fill — has to be hand-written as a bespoke effect,
 not composed declaratively. The compositor already supports the
 arithmetic; the type system does not let users author it.
 
-### 2.2 Display-Face Compositing Is Half-Built
+### 2.2 Display-Face Compositing Was Half-Built
 
 `DisplayFaceTarget { blend_mode, opacity }` was added so a face could blend
-over the underlying scene canvas with one of eleven blend modes. The
-in-flight "display-face composition refactor slice" (per the Sibyl
-procedure of the same name) is moving display-face composition semantics
-between `render_thread/render_groups` and `display_output/worker` encode
-paths. The current state has two known defects:
+over the underlying scene canvas with one of eleven blend modes. Before
+the Wave 1 implementation, the "display-face composition refactor slice"
+(per the Sibyl procedure of the same name) had display-face
+composition semantics split between `render_thread/render_groups` and
+`display_output/worker` encode paths. That split produced two known
+defects:
 
-1. **Alpha tests fail** for the Alpha effect-face composition because the
-   effect-layer contribution arrives missing or black.
-2. **Blended group faces wait for a matching global effect frame** instead
-   of composing against black when no effect frame is available, so frames
-   stall instead of degrading gracefully.
+1. **Alpha tests failed** for the Alpha effect-face composition because
+   the effect-layer contribution arrived missing or black.
+2. **Blended group faces waited for a matching global effect frame**
+   instead of composing against black when no effect frame was available,
+   so frames stalled instead of degrading gracefully.
 
-Both come from the same root cause: display-face composition runs through
-its own encode-time path instead of the canonical
-`CompositionPlanner` → `SparkleFlinger` pipeline. Unifying the two closes
-the gap and gives display faces the full layer-stack capability for free.
+Both came from the same root cause: display-face composition ran through
+its own encode-time path instead of the canonical `SparkleFlinger` blend
+helpers. Wave 1 has now factored the face-over-scene math into
+`render_thread/sparkleflinger/face_overlay.rs`, preserved the display
+worker's device-local transforms, and replaced the wait-for-scene gate
+with compose-against-black semantics. The remaining implementation work
+is the authored layer-stack schema, producer pump, asset library, and UI
+surface.
 
 ### 2.3 User Media Has No Home
 
@@ -170,9 +179,9 @@ lets users compose all of it.
   tint strength. Cheap GPU shader path; CPU fallback works in linear-sRGB.
 - **Display-face composition unification.** Display-face groups and LED
   groups go through one `CompositionPlanner` → `SparkleFlinger` pipeline.
-  Display workers receive an already-composed `PublishedSurface` and own
-  only transport-side encoding. Closes the in-flight refactor's alpha
-  gaps.
+  Display workers receive an already-composed `PublishedSurface` and keep
+  ownership of device-specific viewport, mask, brightness, encode, and
+  transport work. Builds on the landed Wave 1 alpha/black fallback fix.
 - **Asset library.** Daemon-managed user assets at
   `~/.config/hypercolor/assets/`, content-hashed, with thumbnails, REST
   CRUD, and hot-reload.
@@ -455,17 +464,32 @@ pub enum LayerBlendMode {
 `LumaReveal` and `Tint` are carried over from `DisplayFaceBlendMode` so
 faces keep their existing visual modes.
 
+### 5.3.0 Serialized Layer Order
+
+`RenderGroup.layers` is serialized in **bottom-to-top compositing order**:
+index 0 is the base layer, and later entries are composited on top of
+earlier entries. This matches `CompositionPlan::with_layers()` and the
+examples in Appendix B.
+
+The UI may display the stack in reverse order so the visually top layer
+appears at the top of the panel, but all API reorder payloads use the
+serialized bottom-to-top order. This removes the common "dragged upward
+but rendered downward" ambiguity before implementation starts.
+
 #### 5.3.1 Compositor Support Per Wave
 
-The compositor today (`sparkleflinger/mod.rs:24`) only implements
-`CompositionMode::{Replace, Alpha, Add, Screen}`. The remaining
-`LayerBlendMode` variants need new compositor math. Schedule:
+The general `CompositionPlan` lane today (`sparkleflinger/mod.rs:24`)
+implements `CompositionMode::{Replace, Alpha, Add, Screen}`. The Wave 1
+face-overlay helper supports every `DisplayFaceBlendMode` at the
+face-vs-scene boundary via `sparkleflinger/face_overlay.rs`, but those
+extra modes are not yet available as arbitrary authored layer modes.
+Schedule:
 
-| Mode                                            | Where it works today           | Wave that lands it in SparkleFlinger |
-| ----------------------------------------------- | ------------------------------ | ------------------------------------ |
-| Replace, Alpha, Add, Screen                     | `SparkleFlinger` CPU + GPU     | Wave 0 (already shipped)             |
-| Multiply, Overlay, SoftLight, ColorDodge, Difference | `canvas::BlendMode::blend()` only (per-pixel utility, not in compositor lane) | Wave 4 (CPU + GPU compositor support) |
-| Tint, LumaReveal                                | `display_output/encode.rs:583` (face-vs-scene boundary only) | Wave 6 (promote into SparkleFlinger as general layer ops) |
+| Mode                                            | Where it works today           | Wave that lands it for authored layers |
+| ----------------------------------------------- | ------------------------------ | -------------------------------------- |
+| Replace, Alpha, Add, Screen                     | General `SparkleFlinger` CPU + GPU lane | Already shipped                         |
+| Multiply, Overlay, SoftLight, ColorDodge, Difference | `canvas::BlendMode::blend()` utility + Wave 1 face overlay | Wave 4 (CPU + GPU compositor support) |
+| Tint, LumaReveal                                | Wave 1 face overlay only       | Wave 6 (general layer ops)             |
 
 Scene activation validates that every layer's `blend` is supported by
 the current build. Unsupported modes fall back to `Alpha` with a
@@ -811,19 +835,19 @@ as non-premultiplied sRGB; we encode that as the texture format).
 
 ## 8. Display-Face Composition Unification
 
-### 8.1 The Bug We're Closing
+### 8.1 The Bug Wave 1 Closed
 
 The Sibyl procedure "Map display-face composition refactor slice" notes:
 
-- Display-face composition semantics are split between
+- Display-face composition semantics were split between
   `render_thread/render_groups` and `display_output/worker` encode paths.
-- Alpha tests fail because the effect-layer contribution arrives missing
+- Alpha tests failed because the effect-layer contribution arrived missing
   or black at the face-vs-scene blend site
   (`display_output/encode.rs:583`).
-- Blended group faces *intentionally* wait for a matching global effect
-  frame today (`display_output/mod.rs:492`) instead of composing against
-  black. The wait was a workaround; it produces correct visuals but
-  stalls under demand changes and obscures the alpha-blend bug.
+- Blended group faces *intentionally* waited for a matching global effect
+  frame (`display_output/mod.rs`) instead of composing against
+  black. The wait was a workaround; it produced correct visuals but
+  stalled under demand changes and obscured the alpha-blend bug.
 
 ### 8.2 The Invariant We Are Preserving
 
@@ -857,9 +881,9 @@ the overlay with `blend_mode + opacity` from `DisplayFaceTarget`) and
 runs it through the *same* `SparkleFlinger` lane. The output of stage B
 is what feeds the device-specific worker transforms.
 
-Both stages use one composition contract. The face-vs-scene blend math
-that today lives in `display_output/encode.rs` moves into the
-`SparkleFlinger` lane. The display worker stops compositing.
+Both stages use one composition contract. Wave 1 already moved the
+face-vs-scene blend math into `sparkleflinger/face_overlay.rs`; Wave 2
+extends that same composition contract to authored intra-group layers.
 
 ### 8.4 What the Display Worker Still Owns
 
@@ -883,10 +907,10 @@ What the worker stops owning:
 
 ### 8.5 Semantic Break: Compose Against Black
 
-Today, `display_output/mod.rs:492` keeps a blended-face worker idle
-until a matching scene frame arrives. This spec replaces that behavior:
+Before Wave 1, `display_output/mod.rs` kept a blended-face worker idle
+until a matching scene frame arrived. Wave 1 replaced that behavior:
 when the face canvas is ready and the scene canvas is not, stage B uses
-the most-recent scene canvas if available, else `PublishedSurface::black(...)`
+the most-recent scene canvas if available, else composes against black
 at the display's resolution. The face still renders on schedule.
 
 This is a deliberate behavior change. Users on a slow first-paint may
@@ -896,41 +920,31 @@ it fixes the alpha-blend bug, removes the cross-thread coupling that
 made the wait fragile, and matches the canvas-degrades-gracefully
 posture of every other lane.
 
-### 8.6 Wave 1 Scope (the bug-fix wave)
+### 8.6 Wave 1 Status (landed)
 
-Wave 1 lands stage B only, and only the minimum surface needed to fix
-the alpha bug without introducing layer stacks. Concretely:
+Wave 1 is complete. The landed shape:
 
-1. Lift the face-vs-scene blend math from `display_output/encode.rs:583`
-   into a new `SparkleFlinger::compose_face_overlay(scene, face,
-   blend_mode, opacity) -> PublishedSurface` entry point. The math
-   itself does **not** change — every `DisplayFaceBlendMode` variant
-   that today renders correctly through the encode path (including
-   `Tint`, `LumaReveal`, `Multiply`, `Overlay`, `SoftLight`,
-   `ColorDodge`, `Difference`) must produce bit-identical output after
-   the lift. Where this overlaps modes not yet in
-   `CompositionMode::{Replace, Alpha, Add, Screen}`, `compose_face_overlay()`
-   calls into the existing per-pixel `canvas::BlendMode::blend()`
-   helpers (or the encode-path code factored into a shared module),
-   not into the generic `CompositionPlan` lane. Wave 4 / Wave 6 promote
-   those modes into the general compositor lane per §5.3.1.
-2. Update `display_output/worker.rs` to call `compose_face_overlay()`
-   before the existing viewport/mask/brightness/encode steps.
-3. Replace the wait-for-scene gate at `display_output/mod.rs:492` with
-   the black-fallback policy from §8.5.
-4. Rewrite the wait-for-scene tests at `display_output/mod.rs:1061` to
-   assert the new degradation behavior. List them in the Wave 1 PR.
-5. Land the existing alpha-blend test cases as passing
-   (`display_face_composition_tests.rs`).
-6. Add regression coverage for **every** `DisplayFaceBlendMode` variant
-   so the lift cannot silently change visual output. The tests compare
-   the new `compose_face_overlay()` output against frozen golden frames
-   produced by the existing encode-time math.
+1. `SparkleFlinger::compose_face_overlay()` and
+   `SparkleFlinger::blend_face_overlay_rgba()` live in
+   `render_thread/sparkleflinger/face_overlay.rs`. The helper preserves
+   every existing `DisplayFaceBlendMode`, including `Tint`,
+   `LumaReveal`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, and
+   `Difference`, without requiring those modes in the general
+   `CompositionPlan` lane yet.
+2. `display_output/encode.rs` stages scene/face RGBA in
+   `DisplayEncodeState`, then calls the shared in-place blend helper
+   before viewport sampling, circular masks, brightness, JPEG encoding,
+   and transport packetization.
+3. The wait-for-scene gate was replaced with compose-against-black
+   behavior. `display_output/mod.rs` now carries
+   `blended_display_face_composes_against_black_without_scene_frame()`.
+4. `sparkleflinger/mod.rs` has coverage that the shared face-overlay
+   helper matches legacy math for every mode and uses black when source
+   dimensions do not match.
 
-Stage A (intra-group face layer stack) ships in Wave 2 on top of the
-producer-pump rework. Wave 1 deliberately does **not** require the
-`Vec<SceneLayer>` schema change — it only touches the compositor entry
-point and the display worker.
+Stage A (intra-group face layer stack) still ships in Wave 2 on top of
+the producer-pump rework. Wave 1 deliberately did **not** require the
+`Vec<SceneLayer>` schema change.
 
 ### 8.7 Preview Topology
 
@@ -960,6 +974,18 @@ Content addressing dedupes identical uploads. The index is the source of
 truth for `(AssetId, name, hash, mime_type, intrinsic_size, duration_us)`.
 The directory is owned by the daemon process; mode 0700.
 
+The content hash is lowercase SHA-256 hex. SHA-256 is already used in
+the update/link surfaces and keeps the asset directory inspectable with
+standard tools. The object path stores the full hash split as
+`objects/<first-two-hex>/<remaining-62-hex>`.
+
+`index.json` is updated atomically: write `index.json.tmp`, fsync the
+file, rename over `index.json`, then fsync the assets directory when the
+platform supports it. On daemon startup, if the index is missing or
+invalid, the library rebuilds a conservative index from the objects
+directory and marks records as `Unscanned` until metadata extraction
+finishes. A corrupt index must never delete object blobs.
+
 ### 9.2 `AssetId`
 
 ```rust
@@ -969,11 +995,57 @@ pub struct AssetId(pub Uuid);
 
 UUID v7. Persisted in scenes/layers. Stable across rebuilds.
 
+### 9.2.1 Asset Record
+
+```rust
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaAssetRecord {
+    pub id: AssetId,
+    pub name: String,
+    pub hash_sha256: String,
+    pub mime_type: String,
+    pub byte_len: u64,
+    pub intrinsic_width: Option<u32>,
+    pub intrinsic_height: Option<u32>,
+    pub duration_us: Option<u64>,
+    pub frame_count: Option<u32>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub modified_at: DateTime<Utc>,
+    #[serde(default)]
+    pub scan_status: AssetScanStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetScanStatus {
+    #[default]
+    Pending,
+    Ready,
+    Unsupported { reason: String },
+    Failed { reason: String },
+    Unscanned,
+}
+```
+
+The asset ID is generated on first successful upload. Duplicate uploads
+of the same hash return the existing record and may update `name` only
+when the request explicitly passes `?rename_duplicate=true`; default
+dedupe is non-mutating.
+
 ### 9.3 Hot Reload
 
 A `notify`-based watcher emits `AssetEvent::Added/Modified/Removed`. The
 UI subscribes to these via WebSocket. Active scenes referencing a
 modified asset rebuild their `MediaProducer`s on the next render tick.
+
+Hot reload watches both `index.json` and object files. The watcher
+debounces events for 250 ms and coalesces by `AssetId`. If an object file
+changes without a matching index edit, the library recomputes SHA-256
+and treats the result as a new asset record rather than mutating the old
+record's hash. This preserves the invariant that `AssetId → hash` is
+stable once published.
 
 ### 9.4 Size Policy
 
@@ -1000,12 +1072,14 @@ hint is provided.
 
 ### 10.1 Backwards-Compatible Reads
 
-`RenderGroup` gains `layers: Vec<SceneLayer>` with
-`#[serde(default = "default_layers_from_effect")]`. The deserializer
-runs a small migration when `layers` is absent: if `effect_id.is_some()`,
-synthesize a one-layer stack containing an `Effect` source with the
-existing controls, control bindings, and preset. If `effect_id.is_none()`,
-synthesize an empty stack.
+`RenderGroup` gains `layers: Vec<SceneLayer>`. This requires a custom
+`Deserialize` implementation for `RenderGroup` or an internal
+`RenderGroupSerde` helper; a field-level `#[serde(default = "...")]`
+cannot synthesize layers from sibling legacy fields like `effect_id`.
+The deserializer runs a small migration when `layers` is absent: if
+`effect_id.is_some()`, synthesize a one-layer stack containing an
+`Effect` source with the existing controls, control bindings, and
+preset. If `effect_id.is_none()`, synthesize an empty stack.
 
 The legacy `effect_id`, `controls`, `control_bindings`, and `preset_id`
 fields stay on `RenderGroup` for one release with
@@ -1013,6 +1087,13 @@ fields stay on `RenderGroup` for one release with
 the first effect layer's values when reading, and the writer reflects the
 first effect layer into them for forward compatibility with old clients.
 A future spec removes them entirely.
+
+New layers get UUID v7 IDs during migration. The migration is stable
+within a single read/write cycle because the generated ID is persisted
+on save. Old scenes that are read repeatedly without being written may
+receive different synthetic layer IDs each process run; that is
+acceptable until first save because no external layer-scoped API has
+observed those IDs yet.
 
 ### 10.2 Backwards-Compatible Writes
 
@@ -1095,6 +1176,32 @@ daemon returns HTTP 422 with a body pointing the caller at the
 per-layer endpoint, so old clients fail loud instead of silently
 patching the wrong layer.
 
+### 10.5 Validation and Normalization
+
+`Scene::validate()` grows layer-stack checks:
+
+- `RenderGroup.layers` order is bottom-to-top and layer IDs must be
+  unique within the group.
+- `opacity` clamps to `[0.0, 1.0]`; invalid floats (`NaN`, `inf`) reject
+  with HTTP 422 on API input and scene-load validation errors on disk.
+- `LayerTransform.scale` components must be finite and in `[0.01, 16.0]`.
+  `rotation` must be finite. `anchor` is clamped to `[0.0, 1.0]`.
+- `LayerAdjust.brightness` and `saturation` are finite and in
+  `[0.0, 4.0]`; `contrast` is in `[-1.0, 1.0]`; `tint_strength` is
+  `[0.0, 1.0]`; `tint` components are clamped to `[0.0, 1.0]`.
+- `LayerSource::Media` must reference an `AssetId` that exists for
+  activation to mark the layer `Loading`; missing assets do not reject
+  scene load, they produce `LayerHealth::AssetMissing`.
+- `LayerSource::Effect` must reference an effect that exists at
+  activation time. Missing effects follow the existing missing-effect
+  policy: the layer fails health, the group keeps rendering other
+  layers, and the UI surfaces the missing source.
+
+Normalization happens at API boundaries and before persistence, not
+inside the render loop. The render loop assumes validated scenes and
+only performs cheap clamp guards where corrupted external state could
+otherwise crash a frame.
+
 ---
 
 ## 11. API Surface
@@ -1115,6 +1222,49 @@ Upload responses include `AssetId`, intrinsic dimensions, duration (for
 animated formats), and the inferred MIME type. Duplicate uploads (same
 hash) return the existing `AssetId` and HTTP 200.
 
+Request/response contract:
+
+```http
+POST /api/v1/assets
+Content-Type: multipart/form-data
+
+fields:
+  file: bytes
+  name: optional string
+  tags: optional JSON array or comma-separated string
+  type: optional lottie
+```
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "loop-cat.gif",
+    "hash_sha256": "64 lowercase hex",
+    "mime_type": "image/gif",
+    "byte_len": 1280342,
+    "intrinsic_width": 480,
+    "intrinsic_height": 480,
+    "duration_us": 2400000,
+    "frame_count": 48,
+    "scan_status": "ready",
+    "duplicate": false
+  },
+  "meta": { "api_version": "v1", "request_id": "...", "timestamp": "..." }
+}
+```
+
+Status codes:
+
+- `200 OK` duplicate upload, existing record returned.
+- `201 Created` new asset accepted and scanned synchronously.
+- `202 Accepted` upload stored but thumbnail/metadata scan is pending.
+- `400 Bad Request` malformed multipart or invalid `type` hint.
+- `413 Payload Too Large` hard cap exceeded.
+- `415 Unsupported Media Type` unsupported or unverifiable MIME.
+- `422 Unprocessable Entity` scan succeeded but asset is semantically
+  invalid for a supported type.
+
 ### 11.2 Layer Endpoints (New)
 
 ```
@@ -1130,6 +1280,44 @@ the stack atomically. Concurrent edits use the existing
 `controls_version`-style optimistic concurrency token, but at the
 `RenderGroup.layers_version` granularity (new field).
 
+Layer create/update request bodies carry a full `SceneLayer` except for
+`id` on create:
+
+```json
+{
+  "name": "Logo Overlay",
+  "source": { "type": "media", "asset_id": "uuid" },
+  "blend": "screen",
+  "opacity": 0.65,
+  "transform": {
+    "anchor": { "x": 0.5, "y": 0.5 },
+    "scale": [1.0, 1.0],
+    "rotation": 0.0,
+    "fit": "cover"
+  },
+  "adjust": {
+    "brightness": 1.0,
+    "saturation": 1.0,
+    "hue_shift": 0.0,
+    "tint": [1.0, 1.0, 1.0, 1.0],
+    "tint_strength": 0.0,
+    "contrast": 0.0
+  },
+  "bindings": [],
+  "enabled": true
+}
+```
+
+`POST` inserts at the top of the stack by default (append to serialized
+bottom-to-top order). Callers can pass `?index=N` to insert at a
+specific serialized index. Out-of-range indexes return HTTP 422.
+
+Layer mutation responses return the updated group layer list and the
+new `layers_version`, with `ETag: "<layers_version>"`. All mutating
+layer endpoints accept `If-Match`; if omitted, the server applies the
+mutation without concurrency protection, matching the existing controls
+endpoint posture.
+
 ### 11.3 Live Control Patching
 
 The existing `PATCH /api/v1/effects/current/controls` continues to work
@@ -1140,6 +1328,41 @@ layer-scoped endpoint:
 ```
 PATCH /api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls
 ```
+
+The request body is:
+
+```json
+{ "controls": { "speed": 1.25, "color": "#80ffea" } }
+```
+
+Only `LayerSource::Effect` accepts this endpoint. Non-effect layers
+return HTTP 422 with `"layer source has no controls"`.
+
+### 11.3.1 WebSocket Events
+
+Add WebSocket event payloads:
+
+```rust
+pub enum HypercolorEvent {
+    AssetChanged { asset_id: AssetId, kind: AssetChangeKind },
+    LayerStackChanged {
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layers_version: u64,
+        kind: LayerStackChangeKind,
+    },
+    LayerHealthChanged {
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        health: LayerHealth,
+    },
+}
+```
+
+`LayerStackChanged` is broadcast for authored changes. `LayerHealthChanged`
+is runtime state and must be rate-limited/coalesced so a flapping decoder
+does not spam the UI.
 
 ### 11.4 MCP Tools
 
@@ -1418,41 +1641,31 @@ RGBA). See §17.4 for the GPU memory pressure constraint.
 
 Seven landable waves. Each leaves the tree green.
 
-### Wave 0 — Layer-Stack Types
+### Wave 0 — Layer-Stack Types (next)
 
 Add `SceneLayer`, `LayerSource`, `LayerBlendMode`, `LayerTransform`,
 `LayerAdjust`, `LayerBinding`, `AssetId`, `SceneLayerId`. Migration on
 read/write for `RenderGroup`. Tests for round-trip, default synthesis,
 and ordering invariants. No behavior change yet.
 
-### Wave 1 — Display-Face Composition Unification (stage B only)
+### Wave 1 — Display-Face Composition Unification (landed)
 
-The narrow, bug-fix wave. Does **not** require the `Vec<SceneLayer>`
-schema change.
+The narrow, bug-fix wave landed before the layer-stack schema because it
+did not require `Vec<SceneLayer>`.
 
-Scope (matches §8.6):
+Landed scope (matches §8.6):
 
-1. Add `SparkleFlinger::compose_face_overlay()` that takes a scene
-   `PublishedSurface` and a face `PublishedSurface` plus the existing
-   `DisplayFaceTarget.blend_mode + opacity` and runs them through the
-   canonical compositor lane.
-2. Update `display_output/worker.rs` to call `compose_face_overlay()`
-   before its existing viewport / mask / brightness / encode pipeline.
-   The worker keeps every device-specific transform (§8.4).
-3. Replace the wait-for-scene gate in `display_output/mod.rs:492` with
-   the compose-against-black policy from §8.5. Update the affected
-   tests at `display_output/mod.rs:1061` and the alpha-blend tests at
-   `display_output/encode.rs:583` so the new degradation is asserted.
-4. Add `display_face_composition_tests.rs` covering the alpha + slow-
-   scene + Replace + Tint + LumaReveal cases.
+1. Added `render_thread/sparkleflinger/face_overlay.rs` with shared
+   face-over-scene blend helpers.
+2. Updated `display_output/encode.rs` to call the shared helper while
+   keeping viewport, mask, brightness, JPEG, and transport work local to
+   display output.
+3. Replaced wait-for-scene with compose-against-black.
+4. Added regression coverage for every `DisplayFaceBlendMode` and the
+   black fallback.
 
-**Lands during launch hardening.** It closes the in-flight refactor's
-known alpha bug, removes the cross-thread coupling that made it
-fragile, and adds no user-visible feature surface beyond what already
-exists in `DisplayFaceBlendMode`. Tint and LumaReveal continue to use
-their current encode-time math in Wave 1 (they only run between scene
-and face, where the math is unchanged); compositor-side Tint/LumaReveal
-arrive in Wave 6 per §5.3.1.
+Tint and LumaReveal continue to work for face-over-scene composition.
+They become arbitrary authored layer modes in Wave 6 per §5.3.1.
 
 ### Wave 2 — Producer Pump for Layer Stacks
 
@@ -1538,12 +1751,15 @@ Carrying legacy `effect_id`/`controls`/`control_bindings` on
 tool plus a release-note bullet are sufficient; the legacy fields drop
 in the next breaking release (tracked as a follow-up spec).
 
-### 17.6 In-Flight Composition Refactor
+### 17.6 Landed Composition Refactor Boundary
 
-This spec consumes the in-flight refactor's destination shape. If the
-refactor lands a different shape before this spec ships Wave 1, Wave 1's
-scope contracts to "extend the new contract to support multi-layer".
-Coordinate with whoever owns the refactor before Wave 1 starts.
+Wave 1 landed the face-over-scene boundary in SparkleFlinger without
+turning display groups into LED scene layers. Future waves must preserve
+that boundary: display groups produce direct display canvases, and only
+the optional stage-B face-over-scene composite observes the LED scene
+canvas. If Wave 2 changes the render-group producer pump, keep the
+Wave 1 helpers stable until the new path has matching regression
+coverage for every `DisplayFaceBlendMode`.
 
 ### 17.7 No HDR
 
@@ -1604,8 +1820,9 @@ pixels.
 
 ### 18.2 Integration Tests
 
-- **Display-face alpha (Wave 1):** Reproduce the Sibyl-noted alpha
-  failures, verify they pass with the unified pipeline.
+- **Display-face alpha (Wave 1, landed):** Keep the regression coverage
+  that verifies every `DisplayFaceBlendMode` matches legacy math and
+  blended faces compose against black when no scene frame is available.
 - **Multi-layer LED group:** 3-layer scene (effect base + media middle +
   effect overlay) renders correctly at 30 fps; spatial sample matches
   expected pixel values at known LED positions.
@@ -1630,16 +1847,191 @@ pixels.
 
 ---
 
-## 19. Recommendation
+## 19. Implementation Plan
 
-**Land Wave 1 inside the launch hardening window.** It is the in-flight
-composition refactor's destination, closes real bugs (the Sibyl-noted
-alpha tests), and adds no user-facing surface area beyond what already
-exists.
+This is the implementation DAG after Wave 1. Each task is small enough
+to land as an atomic commit with a focused verification gate.
 
-**Hold Waves 0, 2, 3 for v0.2.** Schema changes plus the producer-pump
-refactor are too disruptive for late-cycle hardening, but they unlock
-everything that follows and slot in cleanly post-launch.
+### Wave 0A — Shared Types and Serde
+
+**Files:** `crates/hypercolor-types/src/layer.rs`,
+`crates/hypercolor-types/src/asset.rs`,
+`crates/hypercolor-types/src/scene.rs`,
+`crates/hypercolor-types/src/lib.rs`,
+`crates/hypercolor-types/tests/layer_tests.rs`,
+`crates/hypercolor-types/tests/asset_tests.rs`,
+`crates/hypercolor-types/tests/scene_tests.rs`
+
+**Implementation:**
+
+- Add `AssetId`, `SceneLayerId`, `SceneLayer`, `LayerSource`,
+  `LayerBlendMode`, `LayerTransform`, `LayerAdjust`, and `LayerBinding`.
+- Add `RenderGroup.layers` and `RenderGroup.layers_version`.
+- Implement `RenderGroup` serde via an internal helper so legacy fields
+  can synthesize a one-layer stack on read.
+- Keep legacy mirrors authoritative only when `layers` is absent.
+
+**Verify:**
+
+- `just test-crate hypercolor-types`
+- `just check`
+- Assertions: legacy scene JSON without `layers` reads as one effect
+  layer; scene JSON with both fields treats `layers` as authoritative;
+  layer order round-trips bottom-to-top.
+
+### Wave 0B — Scene Manager Layer Mutations
+
+**Files:** `crates/hypercolor-core/src/scene/mod.rs`,
+`crates/hypercolor-core/tests/scene_engine_tests.rs`
+
+**Implementation:**
+
+- Add layer add/update/delete/reorder helpers with optional
+  `layers_version` preconditions.
+- Add per-layer effect-control mutation for `LayerSource::Effect`.
+- Extend `Scene::validate()` and active render-group cache refresh for
+  layer mutations.
+
+**Verify:**
+
+- `just test-crate hypercolor-core scene_engine_tests`
+- Assertions: stale `layers_version` returns a distinct mismatch; reorder
+  requires an exact permutation; one request bumps the version once.
+
+### Wave 0C — API Layer Endpoints
+
+**Files:** `crates/hypercolor-daemon/src/api/layers.rs`,
+`crates/hypercolor-daemon/src/api/mod.rs`,
+`crates/hypercolor-daemon/src/api/openapi.rs`,
+`crates/hypercolor-daemon/src/api/effects.rs`,
+`crates/hypercolor-daemon/tests/layer_api_tests.rs`
+
+**Implementation:**
+
+- Add CRUD, reorder, and per-layer controls endpoints.
+- Reuse the existing `If-Match` parser/`ETag` convention.
+- Make top-level current-controls PATCH return HTTP 422 for multi-layer
+  groups instead of guessing which layer to edit.
+
+**Verify:**
+
+- `just test-crate hypercolor-daemon layer_api_tests`
+- `just check`
+- Assertions: 412 on stale version, 422 on bad reorder membership,
+  successful mutation returns `ETag` and `layers_version`.
+
+### Wave 2A — Effect-Layer Producer Pump
+
+**Files:** `crates/hypercolor-core/src/effect/pool.rs`,
+`crates/hypercolor-daemon/src/render_thread/render_groups.rs`,
+`crates/hypercolor-daemon/src/render_thread/composition_planner.rs`,
+`crates/hypercolor-daemon/src/render_thread/frame_composer.rs`,
+`crates/hypercolor-daemon/tests/multi_layer_render_tests.rs`
+
+**Implementation:**
+
+- Change effect renderer slot identity to `(RenderGroupId, SceneLayerId)`.
+- Reconcile active effect layers instead of active groups.
+- Compile enabled effect layers into `CompositionPlan` in serialized
+  bottom-to-top order.
+- Keep display groups on their direct-canvas route, with Wave 1 stage-B
+  overlay unchanged.
+
+**Verify:**
+
+- `just test-crate hypercolor-daemon multi_layer_render_tests`
+- `just test-crate hypercolor-core effect_generation_tests`
+- Assertions: duplicate `EffectId` layers get separate renderer state;
+  disabled layers do not allocate slots; display preview streams remain
+  separate from the LED scene preview.
+
+### Wave 2B — Layer Health and Runtime Bindings Skeleton
+
+**Files:** `crates/hypercolor-daemon/src/render_thread/layer_runtime.rs`,
+`crates/hypercolor-daemon/src/render_thread/binding_eval.rs`,
+`crates/hypercolor-types/src/event.rs`,
+`crates/hypercolor-types/tests/event_tests.rs`
+
+**Implementation:**
+
+- Add per-layer runtime state map keyed by `(RenderGroupId, SceneLayerId)`.
+- Publish `LayerHealthChanged` events for loading, active, stalled,
+  failed, and missing-source transitions.
+- Stub binding evaluation for scalar layer fields so Wave 6 only needs
+  source drivers, not plumbing.
+
+**Verify:**
+
+- `just test-crate hypercolor-types event_tests`
+- `just test-crate hypercolor-daemon layer_runtime`
+- Assertions: health events coalesce, removed layers clear runtime state,
+  failed layers render transparent black.
+
+### Wave 3A — Asset Library Core
+
+**Files:** `crates/hypercolor-core/src/asset/mod.rs`,
+`crates/hypercolor-core/src/asset/library.rs`,
+`crates/hypercolor-core/src/asset/index.rs`,
+`crates/hypercolor-core/src/asset/watcher.rs`,
+`crates/hypercolor-core/tests/asset_library_tests.rs`
+
+**Implementation:**
+
+- Build SHA-256 content-addressed storage, atomic index writes, MIME
+  sniffing, metadata scan, thumbnails, and hot reload.
+- Enforce size caps and filename sanitization.
+- Emit `AssetEvent` for add/update/remove.
+
+**Verify:**
+
+- `just test-crate hypercolor-core asset_library_tests`
+- Assertions: duplicate uploads dedupe, corrupt index never deletes
+  objects, watcher rebuild preserves stable `AssetId → hash`.
+
+### Wave 3B — Asset API and Tier-1 Media Producer
+
+**Files:** `crates/hypercolor-daemon/src/api/assets.rs`,
+`crates/hypercolor-core/src/effect/media/*`,
+`crates/hypercolor-core/src/effect/builtin/media_player.rs`,
+`crates/hypercolor-core/src/effect/registry.rs`,
+`crates/hypercolor-core/src/effect/meta_parser.rs`,
+`crates/hypercolor-daemon/tests/asset_api_tests.rs`,
+`crates/hypercolor-core/tests/media_producer_tests.rs`
+
+**Implementation:**
+
+- Add asset REST endpoints.
+- Add tier-1 decoders for PNG/JPEG/GIF/APNG/PNG sequences.
+- Add `media_player` and `ControlType::Asset`.
+- Wire `LayerSource::Media` through the producer pump.
+
+**Verify:**
+
+- `just test-crate hypercolor-core media_producer_tests`
+- `just test-crate hypercolor-daemon asset_api_tests`
+- Assertions: GIF loop/ping-pong timing is deterministic; missing asset
+  layers do not block scene activation; uploaded GIF can drive a display
+  group in the virtual simulator.
+
+### Review Gate
+
+After any implementation wave touching three or more files, run an
+independent verification pass against the original wave scope, changed
+files, and test receipts. Wave 0 and Wave 2 both require this before
+reporting completion.
+
+---
+
+## 20. Recommendation
+
+**Treat Wave 1 as done.** It landed the bug-fix composition boundary,
+closed the alpha/black-fallback defects, and added no new user-facing
+surface area beyond what already existed in `DisplayFaceBlendMode`.
+
+**Start implementation with Wave 0A.** The schema and serde helper are
+the next load-bearing pieces. Land them before producer-pump work so
+every later wave can depend on stable `SceneLayer` IDs, ordering, and
+`layers_version` semantics.
 
 **Treat Wave 6 (video) and Wave 7 (Lottie + livestream) as marketing
 ammunition.** They are the differentiators against iCUE Murals and the
@@ -1653,7 +2045,8 @@ compositor. The user-facing payoff is a layer stack that competitors do
 not have, a vector media format (Lottie) that nobody else supports, and
 a livestream source that nobody else has even tried.
 
-Start with Wave 1 to retire the bug. The rest follows post-launch.
+Start with Wave 0A, then Wave 0B/0C, then Wave 2A. The media library
+should wait until effect-layer stacks are rendering end to end.
 
 ---
 
