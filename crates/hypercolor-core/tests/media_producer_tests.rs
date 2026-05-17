@@ -1,6 +1,10 @@
+#[cfg(feature = "media-video")]
+use std::net::TcpListener;
 use std::path::Path;
 #[cfg(feature = "media-video")]
 use std::process::Command;
+#[cfg(feature = "media-video")]
+use std::thread;
 #[cfg(feature = "media-video")]
 use std::time::{Duration, Instant};
 
@@ -318,6 +322,34 @@ fn stream_url_producer_returns_before_first_live_frame() {
     assert!(!producer.has_renderable_frame());
     let playback = MediaPlayback::default();
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 255));
+}
+
+#[cfg(feature = "media-video")]
+#[test]
+fn stream_url_producer_surfaces_worker_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test listener address should resolve");
+    drop(listener);
+    let policy = StreamUrlPolicy::from_private_network_allowlist(["127.0.0.1/32"]);
+    let producer = MediaProducer::from_bytes_with_stream_policy(
+        format!("http://{addr}/missing-live.m3u8\n").as_bytes(),
+        "application/vnd.hypercolor.stream-url",
+        &policy,
+    )
+    .expect("stream URL producer should start");
+    let deadline = Instant::now() + Duration::from_secs(7);
+
+    while Instant::now() < deadline {
+        if let Some(error) = producer.live_stream_error() {
+            assert!(!error.is_empty());
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    panic!("stream URL producer should surface a worker error");
 }
 
 #[test]

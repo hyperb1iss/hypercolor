@@ -137,7 +137,10 @@ struct CachedMediaProducer {
 }
 
 enum MediaLayerFrame {
-    Ready(ProducerFrame),
+    Ready {
+        frame: ProducerFrame,
+        health: LayerHealth,
+    },
     Loading,
     Missing,
     Failed(String),
@@ -956,12 +959,12 @@ impl RenderGroupRuntime {
                 }
                 LayerSource::Media { asset_id, playback } => {
                     match self.render_media_layer_frame(*asset_id, playback, elapsed_ms) {
-                        MediaLayerFrame::Ready(frame) => {
+                        MediaLayerFrame::Ready { frame, health } => {
                             self.layer_runtime.note_health(
                                 active_scene_id,
                                 group.id,
                                 layer_runtime.id,
-                                LayerHealth::Active,
+                                health,
                             );
                             frame
                         }
@@ -1129,12 +1132,22 @@ impl RenderGroupRuntime {
         let Some(cached) = self.media_producers.get(&asset_id) else {
             return MediaLayerFrame::Loading;
         };
+        if let Some(reason) = cached.producer.live_stream_error() {
+            if !cached.producer.has_renderable_frame() {
+                return MediaLayerFrame::Failed(reason);
+            }
+            return MediaLayerFrame::Ready {
+                frame: ProducerFrame::Canvas(cached.producer.intrinsic_frame(playback, elapsed_ms)),
+                health: LayerHealth::Failed { reason },
+            };
+        }
         if !cached.producer.has_renderable_frame() {
             return MediaLayerFrame::Loading;
         }
-        MediaLayerFrame::Ready(ProducerFrame::Canvas(
-            cached.producer.intrinsic_frame(playback, elapsed_ms),
-        ))
+        MediaLayerFrame::Ready {
+            frame: ProducerFrame::Canvas(cached.producer.intrinsic_frame(playback, elapsed_ms)),
+            health: LayerHealth::Active,
+        }
     }
 
     #[expect(

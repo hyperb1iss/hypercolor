@@ -112,6 +112,7 @@ struct LiveStreamInner {
 struct LiveStreamState {
     latest_frame: Option<DecodedMediaFrame>,
     frames_seen: usize,
+    last_error: Option<String>,
 }
 
 impl MediaProducer {
@@ -251,6 +252,16 @@ impl MediaProducer {
         }
 
         !self.frames.is_empty()
+    }
+
+    #[must_use]
+    pub fn live_stream_error(&self) -> Option<String> {
+        #[cfg(feature = "media-video")]
+        if let Some(live_stream) = &self.live_stream {
+            return live_stream.last_error();
+        }
+
+        None
     }
 
     #[must_use]
@@ -488,6 +499,14 @@ impl LiveStreamProducer {
             .lock()
             .is_ok_and(|state| state.latest_frame.is_some())
     }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.last_error.clone())
+    }
 }
 
 #[cfg(feature = "media-video")]
@@ -706,12 +725,14 @@ fn run_live_stream_worker(
             Ok(LiveStreamPumpExit::Shutdown) => break,
             Ok(LiveStreamPumpExit::Retry) => {
                 backoff.reset_if_frames_advanced(frames_before, &state);
+                record_live_stream_error(&state, "live stream ended");
                 if sleep_live_stream_backoff(backoff.next_delay(), &shutdown) {
                     break;
                 }
             }
             Err(error) => {
                 backoff.reset_if_frames_advanced(frames_before, &state);
+                record_live_stream_error(&state, error.to_string());
                 tracing::warn!(%uri, %error, "live media stream reconnecting");
                 if sleep_live_stream_backoff(backoff.next_delay(), &shutdown) {
                     break;
@@ -780,6 +801,14 @@ fn record_live_stream_frame(state: &Arc<Mutex<LiveStreamState>>, frame: DecodedM
     if let Ok(mut state) = state.lock() {
         state.latest_frame = Some(frame);
         state.frames_seen = state.frames_seen.saturating_add(1);
+        state.last_error = None;
+    }
+}
+
+#[cfg(feature = "media-video")]
+fn record_live_stream_error(state: &Arc<Mutex<LiveStreamState>>, reason: impl Into<String>) {
+    if let Ok(mut state) = state.lock() {
+        state.last_error = Some(reason.into());
     }
 }
 

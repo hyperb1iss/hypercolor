@@ -38,9 +38,9 @@ explicit `stream`/`livestream` upload hint and start a rolling latest-frame
 gstreamer worker with reconnect/backoff. The stream SSRF policy is
 configurable through `media.stream_private_network_allowlist`, and scene
 activation enforces the configured video/livestream producer hard caps.
-Stream producers currently publish CPU canvases; direct GPU media textures,
-worker error surfacing, and repeated-fallback downgrade remain follow-up
-work.
+Stream producers currently publish CPU canvases and surface worker errors
+through layer health; direct GPU media textures and repeated-fallback
+downgrade remain follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1742,8 +1742,8 @@ Lottie decoding and scene-wide broadcast routing are now in tree. Stream
 URL assets are accepted and run through a rolling latest-frame gstreamer
 worker with reconnect/backoff. Configurable private-network stream
 allowlists and video/livestream producer hard caps are in tree. The stream
-path still emits CPU canvases; direct GPU media textures and UI-visible
-stream worker error surfacing remain part of GPU media hardening.
+path still emits CPU canvases while surfacing worker errors through layer
+health; direct GPU media textures remain part of GPU media hardening.
 
 ---
 
