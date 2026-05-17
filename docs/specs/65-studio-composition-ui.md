@@ -199,6 +199,17 @@ with different device outputs assigned to each — with no second redesign.
   dedicated mobile treatment is spec 63's scope.
 - **Effects-page redesign.** The Effects gallery stays as the effect
   browser; §5.3 records how it relates to Studio.
+- **A node-graph editor or graph data model.** The runtime is a DAG —
+  producers → the per-layer composite chain → the zone canvas → spatial
+  sample → device outputs — but the layer stack is a deliberately linear
+  *projection* of it, and `Vec<SceneLayer>` / `Vec<RenderGroup>` stays the
+  model. A linear stack is a path and a multi-zone scene is a forest of
+  paths sharing a device-pool sink; those constraints are what keep the
+  design simple. Relaxing them into a general graph adds ports, edge
+  topology, and cycle handling for branching that spec 60's adjacent-pair
+  blend modes do not need, and discards landed spec 60/64 work. A
+  node-graph *view* is at most a future advanced mode for power users who
+  hit a real branching wall, never the default.
 
 ### 3.3 Guiding Principle: Progressive Simplicity
 
