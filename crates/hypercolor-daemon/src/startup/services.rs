@@ -12,6 +12,7 @@ use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{info, warn};
 
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -134,6 +135,16 @@ impl DaemonState {
         let event_bus = Arc::new(HypercolorBus::new());
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         info!("Event bus created");
+
+        let asset_library_path = ConfigManager::config_dir().join("assets");
+        let asset_library = AssetLibrary::open(asset_library_path.clone()).with_context(|| {
+            format!(
+                "failed to open asset library at {}",
+                asset_library_path.display()
+            )
+        })?;
+        let asset_library = Arc::new(RwLock::new(asset_library));
+        info!(path = %asset_library_path.display(), "Asset library ready");
 
         let (power_state, _) = watch::channel(OutputPowerState::default());
         let scene_transactions = SceneTransactionQueue::default();
@@ -466,6 +477,7 @@ impl DaemonState {
             scene_manager,
             scene_store,
             event_bus,
+            asset_library,
             preview_runtime,
             render_loop,
             configured_max_fps_tier,

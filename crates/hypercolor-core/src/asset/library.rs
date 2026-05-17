@@ -81,6 +81,13 @@ pub struct AssetUpsert {
     pub events: Vec<AssetEvent>,
 }
 
+/// Result of updating mutable asset metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssetMetadataUpdate {
+    pub record: MediaAssetRecord,
+    pub event: Option<AssetEvent>,
+}
+
 /// Errors produced by the asset library.
 #[derive(Debug, thiserror::Error)]
 pub enum AssetLibraryError {
@@ -306,6 +313,38 @@ impl AssetLibrary {
         let _ = fs::remove_file(self.thumbnail_path(record.id));
         self.persist_index()?;
         Ok(Some(AssetEvent::Removed { asset_id: id }))
+    }
+
+    pub fn update_metadata(
+        &mut self,
+        id: AssetId,
+        name: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Option<AssetMetadataUpdate>, AssetLibraryError> {
+        let Some(previous) = self.index.get(id).cloned() else {
+            return Ok(None);
+        };
+        let mut record = previous.clone();
+        if let Some(name) = name {
+            record.name = sanitize_name(&name);
+        }
+        if let Some(tags) = tags {
+            record.tags = sanitize_tags(tags);
+        }
+        if record == previous {
+            return Ok(Some(AssetMetadataUpdate {
+                record,
+                event: None,
+            }));
+        }
+
+        record.modified_at = now_utc();
+        self.index.upsert(record.clone());
+        self.persist_index()?;
+        Ok(Some(AssetMetadataUpdate {
+            record: record.clone(),
+            event: Some(AssetEvent::Modified { record }),
+        }))
     }
 
     pub fn rebuild_index_from_objects(&mut self) -> Result<Vec<AssetEvent>, AssetLibraryError> {

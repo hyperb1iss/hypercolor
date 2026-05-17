@@ -84,6 +84,8 @@ pub enum ErrorCode {
     BadRequest,
     /// 413 — Payload too large.
     PayloadTooLarge,
+    /// 415 — Unsupported media type.
+    UnsupportedMediaType,
     /// 401 — Missing or invalid credentials.
     Unauthorized,
     /// 403 — Credentials valid but insufficient permissions.
@@ -106,6 +108,7 @@ impl ErrorCode {
         match self {
             Self::BadRequest => StatusCode::BAD_REQUEST,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -162,6 +165,11 @@ impl ApiError {
     /// 413 Payload Too Large.
     pub fn payload_too_large(message: impl Into<String>) -> Response {
         Self::build(ErrorCode::PayloadTooLarge, message.into(), None)
+    }
+
+    /// 415 Unsupported Media Type.
+    pub fn unsupported_media_type(message: impl Into<String>) -> Response {
+        Self::build(ErrorCode::UnsupportedMediaType, message.into(), None)
     }
 
     /// 401 Unauthorized.

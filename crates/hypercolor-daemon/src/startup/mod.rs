@@ -16,6 +16,7 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -99,6 +100,9 @@ pub struct DaemonState {
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Daemon-managed user media asset library.
+    pub asset_library: Arc<RwLock<AssetLibrary>>,
 
     /// Dedicated preview fanout for browser-facing canvas consumers.
     pub preview_runtime: Arc<PreviewRuntime>,

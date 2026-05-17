@@ -5,6 +5,7 @@
 //! [`State`](axum::extract::State) extractor.
 
 pub mod access_log;
+pub mod assets;
 pub mod attachments;
 #[cfg(feature = "cloud")]
 pub mod cloud;
@@ -47,6 +48,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -123,6 +125,9 @@ pub struct AppState {
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Daemon-managed user media asset library.
+    pub asset_library: Arc<RwLock<AssetLibrary>>,
 
     /// Dedicated preview fanout for browser-facing canvas consumers.
     pub preview_runtime: Arc<PreviewRuntime>,
@@ -410,6 +415,8 @@ impl AppState {
         let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
         let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
+        let asset_library = AssetLibrary::open(ConfigManager::data_dir().join("assets"))
+            .expect("default app state should open asset library");
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
@@ -484,6 +491,7 @@ impl AppState {
             scene_manager,
             scene_store,
             event_bus,
+            asset_library: Arc::new(RwLock::new(asset_library)),
             preview_runtime,
             render_loop,
             configured_max_fps_tier,
@@ -578,6 +586,7 @@ impl AppState {
             scene_manager: Arc::clone(&daemon.scene_manager),
             scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),
+            asset_library: Arc::clone(&daemon.asset_library),
             preview_runtime: Arc::clone(&daemon.preview_runtime),
             render_loop: Arc::clone(&daemon.render_loop),
             configured_max_fps_tier: daemon.configured_max_fps_tier.clone(),
@@ -934,6 +943,25 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let cors_origin = cors_origins(&web_config, security_state.security_enabled());
 
     let api = Router::new()
+        // ── Assets ───────────────────────────────────────────────────
+        .route(
+            "/assets",
+            axum::routing::get(assets::list_assets).post(assets::upload_asset),
+        )
+        .route(
+            "/assets/{id}",
+            axum::routing::get(assets::get_asset)
+                .put(assets::update_asset)
+                .delete(assets::delete_asset),
+        )
+        .route(
+            "/assets/{id}/blob",
+            axum::routing::get(assets::get_asset_blob),
+        )
+        .route(
+            "/assets/{id}/thumbnail",
+            axum::routing::get(assets::get_asset_thumbnail),
+        )
         // ── Devices ──────────────────────────────────────────────────
         .route("/devices", axum::routing::get(devices::list_devices))
         .route("/drivers", axum::routing::get(drivers::list_drivers))
