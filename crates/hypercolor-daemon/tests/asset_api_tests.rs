@@ -172,6 +172,18 @@ async fn asset_upload_list_metadata_blob_and_thumbnail_work() {
             .and_then(|value| value.to_str().ok()),
         Some("image/png")
     );
+    assert_eq!(
+        blob.headers()
+            .get(http::header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok()),
+        Some("attachment")
+    );
+    assert_eq!(
+        blob.headers()
+            .get("x-content-type-options")
+            .and_then(|value| value.to_str().ok()),
+        Some("nosniff")
+    );
     assert_eq!(body_bytes(blob).await, bytes);
 
     let thumbnail = send(
@@ -186,6 +198,13 @@ async fn asset_upload_list_metadata_blob_and_thumbnail_work() {
             .get(http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
         Some("image/webp")
+    );
+    assert_eq!(
+        thumbnail
+            .headers()
+            .get("x-content-type-options")
+            .and_then(|value| value.to_str().ok()),
+        Some("nosniff")
     );
     assert!(!body_bytes(thumbnail).await.is_empty());
 }

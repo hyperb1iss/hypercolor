@@ -153,7 +153,11 @@ pub async fn get_asset_blob(
     };
 
     match tokio::fs::read(&path).await {
-        Ok(bytes) => binary_response(record.mime_type, bytes),
+        Ok(bytes) => binary_response(
+            record.mime_type,
+            bytes,
+            Some(HeaderValue::from_static("attachment")),
+        ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             ApiError::not_found(format!("Asset blob not found: {id}"))
         }
@@ -174,7 +178,7 @@ pub async fn get_asset_thumbnail(
     };
 
     match tokio::fs::read(&path).await {
-        Ok(bytes) => binary_response("image/webp".to_owned(), bytes),
+        Ok(bytes) => binary_response("image/webp".to_owned(), bytes, None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             ApiError::not_found(format!("Asset thumbnail not found: {id}"))
         }
@@ -309,13 +313,24 @@ fn publish_asset_events(state: &AppState, events: &[AssetEvent]) {
     }
 }
 
-fn binary_response(content_type: String, bytes: Vec<u8>) -> Response {
+fn binary_response(
+    content_type: String,
+    bytes: Vec<u8>,
+    content_disposition: Option<HeaderValue>,
+) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(&content_type)
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    if let Some(content_disposition) = content_disposition {
+        headers.insert(header::CONTENT_DISPOSITION, content_disposition);
+    }
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=86400"),
