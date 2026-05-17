@@ -181,6 +181,7 @@ fn animated_webp_loop_timing_is_deterministic() {
 
     assert_eq!(producer.frame_count(), 3);
     assert_eq!(producer.total_duration_us(), 300_000);
+    assert_eq!(producer.estimated_cost_us(), 400);
     assert_pixel_near(pixel_at(&producer, &playback, 0), Rgba::new(255, 0, 0, 255));
     assert_pixel_near(
         pixel_at(&producer, &playback, 100),
@@ -204,6 +205,7 @@ fn gif_loop_timing_is_deterministic() {
 
     assert_eq!(producer.frame_count(), 3);
     assert_eq!(producer.total_duration_us(), 300_000);
+    assert_eq!(producer.estimated_cost_us(), 400);
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(255, 0, 0, 255));
     assert_eq!(
         pixel_at(&producer, &playback, 100),
@@ -262,6 +264,7 @@ fn png_sequence_directory_uses_lexical_frame_order() {
     let playback = MediaPlayback::default();
 
     assert_eq!(producer.frame_count(), 2);
+    assert_eq!(producer.estimated_cost_us(), 400);
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(255, 0, 0, 255));
     assert_eq!(
         pixel_at(&producer, &playback, 100),
@@ -278,6 +281,7 @@ fn lottie_frames_decode_when_feature_is_enabled() {
 
     assert_eq!(producer.frame_count(), 2);
     assert_eq!(producer.total_duration_us(), 66_666);
+    assert_eq!(producer.estimated_cost_us(), 8_000);
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 0));
     assert_eq!(pixel_at(&producer, &playback, 34), Rgba::new(0, 0, 0, 0));
 }
@@ -298,6 +302,7 @@ fn webm_video_frames_decode_when_feature_is_enabled() {
 
     assert_eq!(producer.frame_count(), 2);
     assert_eq!(producer.total_duration_us(), 2_000_000);
+    assert_eq!(producer.estimated_cost_us(), 20_000);
     assert_eq!(producer.render_frame(&playback, 0, 16, 16).width(), 16,);
     let pixel = pixel_at(&producer, &playback, 0);
     assert!(pixel.r >= 250 && pixel.g >= 250 && pixel.b >= 250 && pixel.a == 255);
@@ -319,6 +324,7 @@ fn stream_url_producer_returns_before_first_live_frame() {
         "stream URL producer should not preroll frames before returning"
     );
     assert_eq!(producer.frame_count(), 0);
+    assert_eq!(producer.estimated_cost_us(), 25_000);
     assert!(!producer.has_renderable_frame());
     let playback = MediaPlayback::default();
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 255));

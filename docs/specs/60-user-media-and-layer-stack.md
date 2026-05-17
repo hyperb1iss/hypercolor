@@ -38,9 +38,11 @@ explicit `stream`/`livestream` upload hint and start a rolling latest-frame
 gstreamer worker with reconnect/backoff. The stream SSRF policy is
 configurable through `media.stream_private_network_allowlist`, and scene
 activation enforces the configured video/livestream producer hard caps.
-Stream producers currently publish CPU canvases and surface worker errors
-through layer health; direct GPU media textures and repeated-fallback
-downgrade remain follow-up work.
+Heavy producers advertise cost hints and scene activation preemptively
+downshifts the render loop when the estimated media cost exceeds the
+60 ms soft cap. Stream producers currently publish CPU canvases and
+surface worker errors through layer health; direct GPU media textures and
+repeated-fallback downgrade remain follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1647,16 +1649,16 @@ applies hard-cap admission before arming the scene:
 - **Hard cap: 1 livestream producer** across all groups, default.
   Configurable via `media.max_livestream_producers` (0..=2).
 - **Soft cap: producer cost sum ≤ 60 ms.** Above this, the daemon logs
-  a warning and the FPS controller pre-emptively downshifts the affected
-  groups by one tier before the first miss.
+  a warning and the FPS controller pre-emptively downshifts one tier
+  before the first miss.
 
 Scenes that exceed hard caps fail activation with HTTP 422 and a body
 listing which layers exceed the cap; users edit the scene to comply
 rather than discovering the failure at runtime.
 
-Current implementation status: hard video/livestream caps are enforced
-from daemon scene activation using asset MIME classifications; the soft
-cost-sum downshift policy remains part of GPU media hardening.
+Current implementation status: hard video/livestream caps and the soft
+cost-sum downshift policy are enforced from daemon scene activation using
+asset MIME classifications.
 
 **GPU lane numbers:** Transform + adjust ~0.3 ms / layer, blend
 ~0.2 ms / layer. The GPU lane raises the practical layer ceiling but
@@ -2066,9 +2068,10 @@ closed the alpha/black-fallback defects, and added no new user-facing
 surface area beyond what already existed in `DisplayFaceBlendMode`.
 
 **The implementation substrate is now in place.** Tier-1/2 media,
-Lottie, file-backed MP4/WebM decoding, stream URL rolling producers, and
-hard media admission caps are implemented. The remaining work is GPU media
-hardening and the later compatibility purge of legacy render-group mirrors.
+Lottie, file-backed MP4/WebM decoding, stream URL rolling producers, hard
+media admission caps, and media-cost preemptive downshift are implemented.
+The remaining work is GPU media hardening and the later compatibility
+purge of legacy render-group mirrors.
 
 **Treat the livestream and legacy-purge follow-ups as separate shipping
 decisions.** Lottie and file-backed video are already useful without

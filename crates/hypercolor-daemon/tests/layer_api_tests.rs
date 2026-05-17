@@ -7,6 +7,7 @@ use http::{Request, StatusCode};
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_core::engine::FpsTier;
 use hypercolor_core::scene::make_scene;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::asset::AssetId;
@@ -446,6 +447,44 @@ async fn activate_scene_rejects_livestream_media_cap() {
         state.scene_manager.read().await.active_scene_id().copied(),
         Some(scene_id)
     );
+}
+
+#[tokio::test]
+async fn activate_scene_downshifts_when_media_cost_exceeds_soft_cap() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let asset_a = insert_mp4_asset(&state, "a.mp4", 1).await;
+    let asset_b = insert_mp4_asset(&state, "b.mp4", 2).await;
+    let stream_asset = insert_stream_asset(
+        &state,
+        "camera.stream",
+        "https://media.example.test/live.m3u8",
+    )
+    .await;
+    let scene_id = install_media_scene(
+        &state,
+        vec![
+            media_layer(asset_a),
+            media_layer(asset_b),
+            media_layer(stream_asset),
+        ],
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    assert_eq!(state.render_loop.read().await.stats().tier, FpsTier::Full);
+
+    let response = send(
+        &app,
+        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.scene_manager.read().await.active_scene_id().copied(),
+        Some(scene_id)
+    );
+    assert_eq!(state.render_loop.read().await.stats().tier, FpsTier::High);
 }
 
 #[tokio::test]

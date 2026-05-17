@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::asset::AssetId;
@@ -22,6 +23,11 @@ use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
     persist_runtime_session, publish_active_scene_changed, save_scene_store_snapshot,
 };
+
+const MEDIA_SOFT_PRODUCER_COST_US: u64 = 60_000;
+const LOTTIE_PRODUCER_COST_US: u64 = 8_000;
+const VIDEO_PRODUCER_COST_US: u64 = 20_000;
+const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -292,14 +298,14 @@ pub async fn activate_scene(
     };
     let previous_active_scene = manager.active_scene_id().copied();
 
-    let scene_name = match manager.get(&scene_id) {
+    let (scene_name, media_admission) = match manager.get(&scene_id) {
         Some(scene) => {
-            if let Some(response) =
-                validate_scene_media_admission(scene, &asset_mime_types, &media_config)
+            let media_admission = scene_media_admission_counts(scene, &asset_mime_types);
+            if let Some(response) = validate_scene_media_admission(&media_admission, &media_config)
             {
                 return response;
             }
-            scene.name.clone()
+            (scene.name.clone(), media_admission)
         }
         None => return ApiError::not_found(format!("Scene not found: {id}")),
     };
@@ -309,6 +315,14 @@ pub async fn activate_scene(
     }
     let current_active_scene = manager.active_scene().cloned();
     drop(manager);
+
+    apply_scene_media_soft_admission(
+        state.as_ref(),
+        scene_id,
+        &scene_name,
+        media_admission.estimated_cost_us,
+    )
+    .await;
 
     persist_runtime_session(&state).await;
     if previous_active_scene != current_active_scene.as_ref().map(|scene| scene.id)
@@ -408,11 +422,9 @@ fn current_media_config(state: &AppState) -> MediaConfig {
 }
 
 fn validate_scene_media_admission(
-    scene: &Scene,
-    asset_mime_types: &HashMap<AssetId, String>,
+    counts: &MediaAdmissionCounts,
     media_config: &MediaConfig,
 ) -> Option<Response> {
-    let counts = scene_media_admission_counts(scene, asset_mime_types);
     let video_cap = usize::from(media_config.max_video_producers.clamp(1, 4));
     let livestream_cap = usize::from(media_config.max_livestream_producers.clamp(0, 2));
     let video_count = counts.video_asset_ids.len();
@@ -458,6 +470,8 @@ fn validate_scene_media_admission(
 struct MediaAdmissionCounts {
     video_asset_ids: HashSet<AssetId>,
     livestream_asset_ids: HashSet<AssetId>,
+    lottie_asset_ids: HashSet<AssetId>,
+    estimated_cost_us: u64,
     video_layers: Vec<serde_json::Value>,
     livestream_layers: Vec<serde_json::Value>,
 }
@@ -483,16 +497,31 @@ fn scene_media_admission_counts(
 
             match mime_type.as_str() {
                 "video/mp4" | "video/webm" => {
-                    counts.video_asset_ids.insert(*asset_id);
+                    if counts.video_asset_ids.insert(*asset_id) {
+                        counts.estimated_cost_us = counts
+                            .estimated_cost_us
+                            .saturating_add(VIDEO_PRODUCER_COST_US);
+                    }
                     counts.video_layers.push(media_admission_layer_detail(
                         group, layer, *asset_id, mime_type,
                     ));
                 }
                 "application/vnd.hypercolor.stream-url" => {
-                    counts.livestream_asset_ids.insert(*asset_id);
+                    if counts.livestream_asset_ids.insert(*asset_id) {
+                        counts.estimated_cost_us = counts
+                            .estimated_cost_us
+                            .saturating_add(LIVESTREAM_PRODUCER_COST_US);
+                    }
                     counts.livestream_layers.push(media_admission_layer_detail(
                         group, layer, *asset_id, mime_type,
                     ));
+                }
+                "application/json" => {
+                    if counts.lottie_asset_ids.insert(*asset_id) {
+                        counts.estimated_cost_us = counts
+                            .estimated_cost_us
+                            .saturating_add(LOTTIE_PRODUCER_COST_US);
+                    }
                 }
                 _ => {}
             }
@@ -500,6 +529,42 @@ fn scene_media_admission_counts(
     }
 
     counts
+}
+
+async fn apply_scene_media_soft_admission(
+    state: &AppState,
+    scene_id: SceneId,
+    scene_name: &str,
+    estimated_cost_us: u64,
+) {
+    if estimated_cost_us <= MEDIA_SOFT_PRODUCER_COST_US {
+        return;
+    }
+
+    let mut render_loop = state.render_loop.write().await;
+    let current_tier = render_loop.stats().tier;
+    let Some(next_tier) = current_tier.downshift() else {
+        warn!(
+            %scene_id,
+            scene_name,
+            estimated_cost_us,
+            soft_cap_us = MEDIA_SOFT_PRODUCER_COST_US,
+            current_tier = %current_tier,
+            "Scene media producer cost exceeds soft cap but render loop is already at minimum tier"
+        );
+        return;
+    };
+
+    warn!(
+        %scene_id,
+        scene_name,
+        estimated_cost_us,
+        soft_cap_us = MEDIA_SOFT_PRODUCER_COST_US,
+        previous_tier = %current_tier,
+        next_tier = %next_tier,
+        "Scene media producer cost exceeds soft cap; preemptively downshifting render loop"
+    );
+    render_loop.set_tier(next_tier);
 }
 
 fn media_admission_layer_detail(

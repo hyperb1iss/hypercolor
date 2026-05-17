@@ -47,6 +47,14 @@ const LIVE_STREAM_SHUTDOWN_POLL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_RECONNECT_BACKOFF_MS: [u64; 5] = [1_000, 2_000, 5_000, 10_000, 30_000];
 #[cfg(feature = "media-video")]
 const STREAM_URL_MIME: &str = "application/vnd.hypercolor.stream-url";
+const STATIC_MEDIA_ESTIMATED_COST_US: u64 = 0;
+const ANIMATED_MEDIA_ESTIMATED_COST_US: u64 = 400;
+#[cfg(feature = "media-lottie")]
+const LOTTIE_MEDIA_ESTIMATED_COST_US: u64 = 8_000;
+#[cfg(feature = "media-video")]
+const VIDEO_MEDIA_ESTIMATED_COST_US: u64 = 20_000;
+#[cfg(feature = "media-video")]
+const STREAM_MEDIA_ESTIMATED_COST_US: u64 = 25_000;
 
 #[derive(Debug, Error)]
 pub enum MediaProducerError {
@@ -83,6 +91,7 @@ pub enum MediaProducerError {
 pub struct MediaProducer {
     frames: Vec<DecodedMediaFrame>,
     total_duration_us: u64,
+    estimated_cost_us: u64,
     #[cfg(feature = "media-video")]
     live_stream: Option<LiveStreamProducer>,
 }
@@ -270,6 +279,11 @@ impl MediaProducer {
     }
 
     #[must_use]
+    pub const fn estimated_cost_us(&self) -> u64 {
+        self.estimated_cost_us
+    }
+
+    #[must_use]
     pub fn frame_index_at(&self, playback: &MediaPlayback, elapsed_ms: u32) -> usize {
         if self.frames.len() <= 1 || self.total_duration_us == 0 {
             return 0;
@@ -358,10 +372,13 @@ impl MediaProducer {
 
     fn from_static_bytes(bytes: &[u8]) -> Result<Self, MediaProducerError> {
         let image = image::load_from_memory(bytes)?.to_rgba8();
-        Ok(Self::from_decoded_frames(vec![DecodedMediaFrame {
-            canvas: canvas_from_rgba_image(image),
-            duration_us: DEFAULT_FRAME_DURATION_US,
-        }]))
+        Ok(Self::from_decoded_frames_with_cost(
+            vec![DecodedMediaFrame {
+                canvas: canvas_from_rgba_image(image),
+                duration_us: DEFAULT_FRAME_DURATION_US,
+            }],
+            STATIC_MEDIA_ESTIMATED_COST_US,
+        ))
     }
 
     #[cfg(feature = "media-lottie")]
@@ -388,7 +405,10 @@ impl MediaProducer {
             });
         }
 
-        Ok(Self::from_decoded_frames(frames))
+        Ok(Self::from_decoded_frames_with_cost(
+            frames,
+            LOTTIE_MEDIA_ESTIMATED_COST_US,
+        ))
     }
 
     #[cfg(feature = "media-video")]
@@ -397,7 +417,10 @@ impl MediaProducer {
         let uri = gst::glib::filename_to_uri(path, None)
             .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
         let frames = decode_video_uri(uri.as_str(), None)?;
-        Ok(Self::from_decoded_frames(frames))
+        Ok(Self::from_decoded_frames_with_cost(
+            frames,
+            VIDEO_MEDIA_ESTIMATED_COST_US,
+        ))
     }
 
     #[cfg(feature = "media-video")]
@@ -411,6 +434,7 @@ impl MediaProducer {
         Ok(Self {
             frames: Vec::new(),
             total_duration_us: DEFAULT_FRAME_DURATION_US,
+            estimated_cost_us: STREAM_MEDIA_ESTIMATED_COST_US,
             live_stream: Some(LiveStreamProducer::spawn(url)?),
         })
     }
@@ -420,7 +444,7 @@ impl MediaProducer {
             return Err(MediaProducerError::EmptySequence);
         }
 
-        Ok(Self::from_decoded_frames(
+        Ok(Self::from_decoded_frames_with_cost(
             frames
                 .into_iter()
                 .map(|frame| {
@@ -431,10 +455,18 @@ impl MediaProducer {
                     }
                 })
                 .collect(),
+            ANIMATED_MEDIA_ESTIMATED_COST_US,
         ))
     }
 
     fn from_decoded_frames(frames: Vec<DecodedMediaFrame>) -> Self {
+        Self::from_decoded_frames_with_cost(frames, ANIMATED_MEDIA_ESTIMATED_COST_US)
+    }
+
+    fn from_decoded_frames_with_cost(
+        frames: Vec<DecodedMediaFrame>,
+        estimated_cost_us: u64,
+    ) -> Self {
         let total_duration_us = frames
             .iter()
             .map(|frame| frame.duration_us.max(1))
@@ -442,6 +474,7 @@ impl MediaProducer {
         Self {
             frames,
             total_duration_us,
+            estimated_cost_us,
             #[cfg(feature = "media-video")]
             live_stream: None,
         }
