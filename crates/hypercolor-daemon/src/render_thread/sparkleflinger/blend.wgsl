@@ -28,6 +28,8 @@ const MODE_OVERLAY: u32 = 5u;
 const MODE_SOFT_LIGHT: u32 = 6u;
 const MODE_COLOR_DODGE: u32 = 7u;
 const MODE_DIFFERENCE: u32 = 8u;
+const MODE_TINT: u32 = 9u;
+const MODE_LUMA_REVEAL: u32 = 10u;
 
 const FIT_CONTAIN: u32 = 0u;
 const FIT_COVER: u32 = 1u;
@@ -115,6 +117,61 @@ fn compose_blend(destination: vec4<f32>, source: vec4<f32>, opacity: f32, mode: 
     let rgb = destination.rgb * inverse_alpha + blended * source_alpha;
     let alpha = min(destination.a + source_alpha - destination.a * source_alpha, 1.0);
     return vec4<f32>(rgb, alpha);
+}
+
+fn linear_rgb_luma(rgb: vec3<f32>) -> f32 {
+    return clamp(rgb.r * 0.2126 + rgb.g * 0.7152 + rgb.b * 0.0722, 0.0, 1.0);
+}
+
+fn rgb_colorfulness(rgb: vec3<f32>) -> f32 {
+    let min_channel = min(min(rgb.r, rgb.g), rgb.b);
+    let max_channel = max(max(rgb.r, rgb.g), rgb.b);
+    return clamp(max_channel - min_channel, 0.0, 1.0);
+}
+
+fn screen_blend_channel(base: f32, blend: f32) -> f32 {
+    return 1.0 - (1.0 - base) * (1.0 - blend);
+}
+
+fn tint_channel(effect_channel: f32, face_channel: f32, neutral: f32, emission_strength: f32) -> f32 {
+    let tint = neutral * (1.0 - 0.72) + max(face_channel, neutral * 0.75) * 0.72;
+    return screen_blend_channel(effect_channel * tint, face_channel * emission_strength);
+}
+
+fn effect_tint_material(effect_rgb: vec3<f32>, face_rgb: vec3<f32>) -> vec3<f32> {
+    let luma = linear_rgb_luma(face_rgb);
+    let colorfulness = rgb_colorfulness(face_rgb);
+    let neutral = clamp(0.18 * (1.0 - luma) + luma, 0.18, 1.0);
+    let emission_strength = (1.0 - colorfulness) * luma * 0.12;
+    return vec3<f32>(
+        tint_channel(effect_rgb.r, face_rgb.r, neutral, emission_strength),
+        tint_channel(effect_rgb.g, face_rgb.g, neutral, emission_strength),
+        tint_channel(effect_rgb.b, face_rgb.b, neutral, emission_strength),
+    );
+}
+
+fn compose_tint(destination: vec4<f32>, source: vec4<f32>, opacity: f32) -> vec4<f32> {
+    let source_alpha = source.a * opacity;
+    let material = effect_tint_material(destination.rgb, source.rgb);
+    let rgb = destination.rgb * (1.0 - source_alpha) + material * source_alpha;
+    return vec4<f32>(rgb, destination.a);
+}
+
+fn smoothstep01(edge0: f32, edge1: f32, x: f32) -> f32 {
+    if (edge0 >= edge1) {
+        return select(0.0, 1.0, x >= edge1);
+    }
+    let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn compose_luma_reveal(destination: vec4<f32>, source: vec4<f32>, opacity: f32) -> vec4<f32> {
+    let source_alpha = source.a * opacity;
+    let material = effect_tint_material(destination.rgb, source.rgb);
+    let reveal = smoothstep01(0.18, 0.92, linear_rgb_luma(source.rgb));
+    let inside = source.rgb * (1.0 - reveal) + material * reveal;
+    let rgb = destination.rgb * (1.0 - source_alpha) + inside * source_alpha;
+    return vec4<f32>(rgb, destination.a);
 }
 
 fn positive_mod(value: i32, modulus: i32) -> i32 {
@@ -293,6 +350,10 @@ fn compose(@builtin(global_invocation_id) gid: vec3<u32>) {
         composed = compose_add(destination, source, params.opacity.x);
     } else if (params.size_and_mode.z == MODE_SCREEN) {
         composed = compose_screen(destination, source, params.opacity.x);
+    } else if (params.size_and_mode.z == MODE_TINT) {
+        composed = compose_tint(destination, source, params.opacity.x);
+    } else if (params.size_and_mode.z == MODE_LUMA_REVEAL) {
+        composed = compose_luma_reveal(destination, source, params.opacity.x);
     } else if (params.size_and_mode.z >= MODE_MULTIPLY) {
         composed = compose_blend(destination, source, params.opacity.x, params.size_and_mode.z);
     }

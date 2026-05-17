@@ -6,6 +6,7 @@ use hypercolor_core::types::canvas::{
 };
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
+use super::face_overlay::{blend_luma_reveal_rgba, blend_material_tint_rgba};
 use super::transform::process_layer_canvas;
 use super::{
     ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
@@ -385,6 +386,26 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         return target_opaque;
     }
 
+    match layer.mode {
+        CompositionMode::Tint => {
+            blend_material_tint_rgba(
+                target.as_rgba_bytes_mut(),
+                source_canvas.as_rgba_bytes(),
+                opacity,
+            );
+            return target_opaque;
+        }
+        CompositionMode::LumaReveal => {
+            blend_luma_reveal_rgba(
+                target.as_rgba_bytes_mut(),
+                source_canvas.as_rgba_bytes(),
+                opacity,
+            );
+            return target_opaque;
+        }
+        _ => {}
+    }
+
     let blend_mode = match layer.mode {
         CompositionMode::Replace | CompositionMode::Alpha => RgbaBlendMode::Normal,
         CompositionMode::Add => RgbaBlendMode::Add,
@@ -394,6 +415,7 @@ fn compose_layer(target: &mut Canvas, target_opaque: bool, layer: CompositionLay
         CompositionMode::SoftLight => RgbaBlendMode::SoftLight,
         CompositionMode::ColorDodge => RgbaBlendMode::ColorDodge,
         CompositionMode::Difference => RgbaBlendMode::Difference,
+        CompositionMode::Tint | CompositionMode::LumaReveal => RgbaBlendMode::Normal,
     };
     let result_opaque = target_opaque && layer_opaque_hint;
     if blend_mode == RgbaBlendMode::Normal && result_opaque {

@@ -1641,9 +1641,9 @@ fn composition_layer_for_scene_layer(layer: &SceneLayer, frame: ProducerFrame) -
 fn composition_mode_for_layer(blend: LayerBlendMode) -> CompositionMode {
     match blend {
         LayerBlendMode::Replace => CompositionMode::Replace,
-        LayerBlendMode::Alpha | LayerBlendMode::Tint | LayerBlendMode::LumaReveal => {
-            CompositionMode::Alpha
-        }
+        LayerBlendMode::Alpha => CompositionMode::Alpha,
+        LayerBlendMode::Tint => CompositionMode::Tint,
+        LayerBlendMode::LumaReveal => CompositionMode::LumaReveal,
         LayerBlendMode::Add => CompositionMode::Add,
         LayerBlendMode::Screen => CompositionMode::Screen,
         LayerBlendMode::Multiply => CompositionMode::Multiply,

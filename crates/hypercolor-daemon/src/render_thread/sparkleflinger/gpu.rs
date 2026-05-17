@@ -2495,6 +2495,8 @@ fn compose_layer_into_gpu(
             CompositionMode::SoftLight => ComposeShaderMode::SoftLight,
             CompositionMode::ColorDodge => ComposeShaderMode::ColorDodge,
             CompositionMode::Difference => ComposeShaderMode::Difference,
+            CompositionMode::Tint => ComposeShaderMode::Tint,
+            CompositionMode::LumaReveal => ComposeShaderMode::LumaReveal,
         }
     };
     let output_surface = if use_front_as_current {
@@ -3381,6 +3383,8 @@ enum ComposeShaderMode {
     SoftLight = 6,
     ColorDodge = 7,
     Difference = 8,
+    Tint = 9,
+    LumaReveal = 10,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

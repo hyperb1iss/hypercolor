@@ -18,6 +18,7 @@ workspace = true
 [features]
 builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
 cloud = ["dep:futures-util", "dep:hypercolor-cloud-client", "dep:rand", "dep:tokio-tungstenite"]
+media-video = ["hypercolor-core/media-video"]
 nvidia = ["hypercolor-core/nvidia"]
 official-cloud = ["cloud"]
 wgpu = ["dep:wgpu", "dep:pollster"]

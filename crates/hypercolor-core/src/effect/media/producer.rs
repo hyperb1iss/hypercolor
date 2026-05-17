@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
+use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, ImageError};
 use thiserror::Error;
 
@@ -65,7 +66,23 @@ impl MediaProducer {
                     Self::from_animation_frames(frames)
                 }
             }
-            "image/png" | "image/jpeg" | "image/webp" => Self::from_static_bytes(bytes),
+            "image/webp" => {
+                let frames = decode_webp_frames(bytes)?;
+                if frames.is_empty() {
+                    Self::from_static_bytes(bytes)
+                } else {
+                    Self::from_animation_frames(frames)
+                }
+            }
+            "image/png" | "image/jpeg" => Self::from_static_bytes(bytes),
+            #[cfg(not(feature = "media-video"))]
+            video_mime @ ("video/mp4" | "video/webm") => Err(MediaProducerError::UnsupportedMime(
+                format!("{video_mime} (enable the media-video feature to decode video assets)"),
+            )),
+            #[cfg(feature = "media-video")]
+            video_mime @ ("video/mp4" | "video/webm") => Err(MediaProducerError::UnsupportedMime(
+                format!("{video_mime} video decoding is not available in this build"),
+            )),
             other => Err(MediaProducerError::UnsupportedMime(other.to_owned())),
         }
     }
@@ -263,6 +280,12 @@ fn decode_apng_frames(bytes: &[u8]) -> Result<Vec<Frame>, ImageError> {
     let reader = BufReader::new(Cursor::new(bytes));
     let decoder = PngDecoder::new(reader)?;
     decoder.apng()?.into_frames().collect_frames()
+}
+
+fn decode_webp_frames(bytes: &[u8]) -> Result<Vec<Frame>, ImageError> {
+    let reader = BufReader::new(Cursor::new(bytes));
+    let decoder = WebPDecoder::new(reader)?;
+    decoder.into_frames().collect_frames()
 }
 
 fn canvas_from_rgba_image(image: image::RgbaImage) -> Canvas {

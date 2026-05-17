@@ -40,6 +40,8 @@ pub(crate) enum CompositionMode {
     SoftLight,
     ColorDodge,
     Difference,
+    Tint,
+    LumaReveal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1259,6 +1261,50 @@ mod tests {
                 surface.rgba_bytes(),
                 expected.as_slice(),
                 "surface face overlay mismatch for {blend_mode:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn sparkleflinger_composes_face_modes_as_general_layers() {
+        let scene = patterned_surface(48);
+        let face = patterned_surface(144);
+        let mut sparkleflinger = SparkleFlinger::cpu();
+
+        for (composition_mode, face_mode) in [
+            (CompositionMode::Tint, DisplayFaceBlendMode::Tint),
+            (
+                CompositionMode::LumaReveal,
+                DisplayFaceBlendMode::LumaReveal,
+            ),
+        ] {
+            let mut expected = legacy_face_overlay_rgba(&scene, &face, face_mode, 0.6);
+            for (expected_pixel, scene_pixel) in expected
+                .chunks_exact_mut(4)
+                .zip(scene.rgba_bytes().chunks_exact(4))
+            {
+                expected_pixel[3] = scene_pixel[3];
+            }
+            let composed = sparkleflinger.compose(CompositionPlan::with_layers(
+                2,
+                2,
+                vec![
+                    CompositionLayer::replace_opaque(ProducerFrame::Surface(scene.clone())),
+                    CompositionLayer::from_parts(
+                        ProducerFrame::Surface(face.clone()),
+                        composition_mode,
+                        0.6,
+                        true,
+                    ),
+                ],
+            ));
+            assert_eq!(
+                composed
+                    .sampling_canvas
+                    .expect("general layer composition should materialize a canvas")
+                    .as_rgba_bytes(),
+                expected.as_slice(),
+                "general layer composition mismatch for {composition_mode:?}",
             );
         }
     }

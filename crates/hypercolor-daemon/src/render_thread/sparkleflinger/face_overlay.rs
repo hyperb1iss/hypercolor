@@ -72,12 +72,8 @@ pub(super) fn blend_face_overlay_rgba(
         DisplayFaceBlendMode::Replace => {
             replace_face_rgba_in_place(scene_rgba, face_rgba, opacity);
         }
-        DisplayFaceBlendMode::Tint => {
-            blend_face_material_tint_rgba(scene_rgba, face_rgba, opacity);
-        }
-        DisplayFaceBlendMode::LumaReveal => {
-            blend_face_luma_reveal_rgba(scene_rgba, face_rgba, opacity);
-        }
+        DisplayFaceBlendMode::Tint => blend_material_tint_rgba(scene_rgba, face_rgba, opacity),
+        DisplayFaceBlendMode::LumaReveal => blend_luma_reveal_rgba(scene_rgba, face_rgba, opacity),
         _ => {
             let Some(canvas_blend_mode) = blend_mode.standard_canvas_blend_mode() else {
                 return;
@@ -110,7 +106,7 @@ fn replace_face_rgba_in_place(target_rgba: &mut [u8], source_rgba: &[u8], opacit
     }
 }
 
-fn blend_face_material_tint_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
+pub(super) fn blend_material_tint_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
     if opacity <= 0.0 {
         return;
@@ -143,7 +139,7 @@ fn blend_face_material_tint_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opa
     }
 }
 
-fn blend_face_luma_reveal_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
+pub(super) fn blend_luma_reveal_rgba(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
     if opacity <= 0.0 {
         return;
