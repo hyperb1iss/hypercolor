@@ -259,6 +259,7 @@ mod tests {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: SpatialLayout {
                 id: "desk".into(),
                 name: "Desk".into(),
@@ -300,6 +301,7 @@ mod tests {
             display_target: None,
             role: RenderGroupRole::Custom,
             controls_version: 0,
+            layers_version: 0,
         }
     }
 

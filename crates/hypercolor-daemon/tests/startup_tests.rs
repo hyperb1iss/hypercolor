@@ -1225,6 +1225,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         controls: std::collections::HashMap::new(),
         control_bindings: std::collections::HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout: SpatialLayout {
             id: "default_saved".to_owned(),
             name: "Saved Default Layout".to_owned(),
@@ -1243,6 +1244,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         display_target: None,
         role: RenderGroupRole::Primary,
         controls_version: 0,
+        layers_version: 0,
     };
     runtime_state::save(
         &guard.runtime_state_path(),
@@ -1293,6 +1295,7 @@ async fn default_scene_contents_restore_on_restart() {
                 )]),
                 control_bindings: std::collections::HashMap::new(),
                 preset_id: None,
+                layers: Vec::new(),
                 layout: SpatialLayout {
                     id: "default_saved".to_owned(),
                     name: "Saved Default Layout".to_owned(),
@@ -1311,6 +1314,7 @@ async fn default_scene_contents_restore_on_restart() {
                 display_target: None,
                 role: RenderGroupRole::Primary,
                 controls_version: 0,
+                layers_version: 0,
             }],
             active_layout_id: None,
             global_brightness: 1.0,

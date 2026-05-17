@@ -9,6 +9,7 @@ use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
 };
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 
@@ -18,7 +19,20 @@ use super::traits::{EffectRenderOutput, EffectRenderer, FrameInput, prepare_targ
 use crate::input::{InteractionData, ScreenData};
 
 pub struct EffectPool {
-    slots: HashMap<RenderGroupId, EffectSlot>,
+    slots: HashMap<EffectSlotKey, EffectSlot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EffectSlotKey {
+    pub group_id: RenderGroupId,
+    pub layer_id: SceneLayerId,
+}
+
+impl EffectSlotKey {
+    #[must_use]
+    pub const fn new(group_id: RenderGroupId, layer_id: SceneLayerId) -> Self {
+        Self { group_id, layer_id }
+    }
 }
 
 impl EffectPool {
@@ -35,31 +49,33 @@ impl EffectPool {
     }
 
     pub fn reconcile(&mut self, groups: &[RenderGroup], registry: &EffectRegistry) -> Result<()> {
-        let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
-        self.slots
-            .retain(|group_id, _| desired_ids.contains(group_id));
+        let desired_keys = desired_effect_layers(groups)
+            .into_iter()
+            .map(|(group, layer)| EffectSlotKey::new(group.id, layer.id))
+            .collect::<HashSet<_>>();
+        self.slots.retain(|key, _| desired_keys.contains(key));
 
-        for group in groups {
-            let Some(effect_id) = group.effect_id else {
-                self.slots.remove(&group.id);
+        for (group, layer) in desired_effect_layers(groups) {
+            let Some((effect_id, _, _)) = layer_effect_source(&layer) else {
                 continue;
             };
+            let key = EffectSlotKey::new(group.id, layer.id);
 
             let entry = lookup_effect_entry(registry, effect_id)?;
             let resolved_effect_id = registry.resolve_id(&effect_id).unwrap_or(effect_id);
 
             let needs_rebuild = self
                 .slots
-                .get(&group.id)
+                .get(&key)
                 .is_none_or(|slot| slot.needs_rebuild(resolved_effect_id, entry));
             if needs_rebuild {
-                let slot = EffectSlot::build(entry, group)?;
-                self.slots.insert(group.id, slot);
+                let slot = EffectSlot::build(entry, group, &layer)?;
+                self.slots.insert(key, slot);
                 continue;
             }
 
-            if let Some(slot) = self.slots.get_mut(&group.id) {
-                slot.sync_group_state(group);
+            if let Some(slot) = self.slots.get_mut(&key) {
+                slot.sync_layer_state(&layer);
             }
         }
 
@@ -80,21 +96,55 @@ impl EffectPool {
         sensors: &SystemSnapshot,
         target: &mut Canvas,
     ) -> Result<()> {
+        let Some(layer) = single_enabled_effect_layer(group)? else {
+            target.clear();
+            return Ok(());
+        };
+        self.render_layer_into(
+            group,
+            &layer,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            target,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs the full frame input plus a mutable target canvas"
+    )]
+    pub fn render_layer_into(
+        &mut self,
+        group: &RenderGroup,
+        layer: &SceneLayer,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+        target: &mut Canvas,
+    ) -> Result<()> {
         prepare_target_canvas(
             target,
             group.layout.canvas_width,
             group.layout.canvas_height,
         );
 
-        if !group.enabled || group.effect_id.is_none() {
+        if !group.enabled || !layer.enabled || !matches!(&layer.source, LayerSource::Effect { .. })
+        {
             target.clear();
             return Ok(());
         }
 
-        let slot = self.slots.get_mut(&group.id).ok_or_else(|| {
+        let key = EffectSlotKey::new(group.id, layer.id);
+        let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
-                "render group '{}' is not reconciled before rendering",
-                group.name
+                "render group '{}' layer '{}' is not reconciled before rendering",
+                group.name,
+                layer.id
             )
         })?;
         slot.render_into(
@@ -118,17 +168,51 @@ impl EffectPool {
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
     ) -> Result<EffectRenderOutput> {
-        if !group.enabled || group.effect_id.is_none() {
+        let Some(layer) = single_enabled_effect_layer(group)? else {
+            return Ok(EffectRenderOutput::Cpu(Canvas::new(
+                group.layout.canvas_width,
+                group.layout.canvas_height,
+            )));
+        };
+        self.render_layer_output(
+            group,
+            &layer,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rendering needs the full frame input for output-capable renderers"
+    )]
+    pub fn render_layer_output(
+        &mut self,
+        group: &RenderGroup,
+        layer: &SceneLayer,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<EffectRenderOutput> {
+        if !group.enabled || !layer.enabled || !matches!(&layer.source, LayerSource::Effect { .. })
+        {
             return Ok(EffectRenderOutput::Cpu(Canvas::new(
                 group.layout.canvas_width,
                 group.layout.canvas_height,
             )));
         }
 
-        let slot = self.slots.get_mut(&group.id).ok_or_else(|| {
+        let key = EffectSlotKey::new(group.id, layer.id);
+        let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
-                "render group '{}' is not reconciled before rendering",
-                group.name
+                "render group '{}' layer '{}' is not reconciled before rendering",
+                group.name,
+                layer.id
             )
         })?;
         slot.render_output(
@@ -163,7 +247,7 @@ struct EffectSlot {
 }
 
 impl EffectSlot {
-    fn build(entry: &EffectEntry, group: &RenderGroup) -> Result<Self> {
+    fn build(entry: &EffectEntry, group: &RenderGroup, layer: &SceneLayer) -> Result<Self> {
         let mut renderer = create_renderer_for_metadata(&entry.metadata)?;
         renderer.init_with_canvas_size(
             &entry.metadata,
@@ -183,7 +267,7 @@ impl EffectSlot {
             elapsed_secs: 0.0,
             frame_number: 0,
         };
-        slot.sync_group_state(group);
+        slot.sync_layer_state(layer);
         Ok(slot)
     }
 
@@ -194,24 +278,28 @@ impl EffectSlot {
             || self.registry_modified != entry.modified
     }
 
-    fn sync_group_state(&mut self, group: &RenderGroup) {
+    fn sync_layer_state(&mut self, layer: &SceneLayer) {
         let mut desired = HashMap::new();
+        let Some((_, controls, control_bindings)) = layer_effect_source(layer) else {
+            self.controls.clear();
+            self.binding_state.clear();
+            return;
+        };
 
         for definition in &mut self.metadata.controls {
-            let next_binding = group.control_bindings.get(definition.control_id()).cloned();
+            let next_binding = control_bindings.get(definition.control_id()).cloned();
             if definition.binding != next_binding {
                 definition.binding = next_binding;
                 self.binding_state.remove(definition.control_id());
             }
-            let value = group
-                .controls
+            let value = controls
                 .get(definition.control_id())
                 .cloned()
                 .unwrap_or_else(|| definition.default_value.clone());
             desired.insert(definition.control_id().to_owned(), value);
         }
 
-        for (name, value) in &group.controls {
+        for (name, value) in controls {
             desired.entry(name.clone()).or_insert_with(|| value.clone());
         }
 
@@ -312,6 +400,62 @@ fn lookup_effect_entry(registry: &EffectRegistry, effect_id: EffectId) -> Result
     registry
         .get(&effect_id)
         .ok_or_else(|| anyhow!("effect '{effect_id}' is not registered"))
+}
+
+fn desired_effect_layers(groups: &[RenderGroup]) -> Vec<(&RenderGroup, SceneLayer)> {
+    groups
+        .iter()
+        .filter(|group| group.enabled)
+        .flat_map(|group| {
+            group
+                .effective_layers()
+                .into_iter()
+                .filter(|layer| {
+                    layer.enabled && matches!(&layer.source, LayerSource::Effect { .. })
+                })
+                .map(move |layer| (group, layer))
+        })
+        .collect()
+}
+
+fn single_enabled_effect_layer(group: &RenderGroup) -> Result<Option<SceneLayer>> {
+    if !group.enabled {
+        return Ok(None);
+    }
+
+    let mut layers = group
+        .effective_layers()
+        .into_iter()
+        .filter(|layer| layer.enabled && matches!(&layer.source, LayerSource::Effect { .. }));
+    let Some(layer) = layers.next() else {
+        return Ok(None);
+    };
+    if layers.next().is_some() {
+        return Err(anyhow!(
+            "render group '{}' has multiple enabled effect layers; render layers explicitly",
+            group.name
+        ));
+    }
+    Ok(Some(layer))
+}
+
+fn layer_effect_source(
+    layer: &SceneLayer,
+) -> Option<(
+    EffectId,
+    &HashMap<String, ControlValue>,
+    &HashMap<String, hypercolor_types::effect::ControlBinding>,
+)> {
+    let LayerSource::Effect {
+        effect_id,
+        controls,
+        control_bindings,
+        ..
+    } = &layer.source
+    else {
+        return None;
+    };
+    Some((*effect_id, controls, control_bindings))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -437,12 +581,13 @@ mod tests {
 
     use anyhow::Result;
 
-    use super::{EffectPool, EffectSlot};
+    use super::{EffectPool, EffectSlot, EffectSlotKey};
     use crate::effect::builtin::register_builtin_effects;
     use crate::effect::registry::EffectRegistry;
     use crate::effect::traits::{EffectRenderer, FrameInput};
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+    use hypercolor_types::layer::SceneLayerId;
     use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -599,9 +744,10 @@ mod tests {
     fn reconcile_pruning_destroys_removed_slot() {
         let destroyed = Arc::new(AtomicBool::new(false));
         let group_id = RenderGroupId::new();
+        let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            group_id,
+            EffectSlotKey::new(group_id, layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 
@@ -616,9 +762,10 @@ mod tests {
     fn clear_destroys_slots() {
         let destroyed = Arc::new(AtomicBool::new(false));
         let group_id = RenderGroupId::new();
+        let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            group_id,
+            EffectSlotKey::new(group_id, layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 
@@ -632,9 +779,10 @@ mod tests {
     fn reconcile_replacement_destroys_old_slot() {
         let destroyed = Arc::new(AtomicBool::new(false));
         let group_id = RenderGroupId::new();
+        let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            group_id,
+            EffectSlotKey::new(group_id, layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 

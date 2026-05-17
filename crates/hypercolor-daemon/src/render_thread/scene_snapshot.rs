@@ -4,6 +4,7 @@ use std::sync::Arc;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{ColorInterpolation, RenderGroup, RenderGroupId, SceneId};
 
 use crate::session::OutputPowerState;
@@ -250,7 +251,7 @@ async fn snapshot_scene_runtime(
     let active_render_group_count = u32::try_from(
         active_render_groups
             .iter()
-            .filter(|group| group.enabled && group.effect_id.is_some())
+            .filter(|group| group_has_enabled_effect_layer(group))
             .count(),
     )
     .unwrap_or(u32::MAX);
@@ -334,14 +335,19 @@ async fn current_effect_scene_snapshot(
             continue;
         }
 
-        let Some(effect_id) = group.effect_id else {
-            continue;
-        };
+        for layer in group.effective_layers() {
+            let LayerSource::Effect { effect_id, .. } = layer.source else {
+                continue;
+            };
+            if !layer.enabled {
+                continue;
+            }
 
-        effect_running = true;
-        if let Some(entry) = registry.get(&effect_id) {
-            audio_capture_active |= entry.metadata.audio_reactive;
-            screen_capture_active |= entry.metadata.screen_reactive;
+            effect_running = true;
+            if let Some(entry) = registry.get(&effect_id) {
+                audio_capture_active |= entry.metadata.audio_reactive;
+                screen_capture_active |= entry.metadata.screen_reactive;
+            }
         }
     }
 
@@ -360,6 +366,14 @@ async fn current_effect_scene_snapshot(
         demand,
         dependency_key,
     }
+}
+
+fn group_has_enabled_effect_layer(group: &RenderGroup) -> bool {
+    group.enabled
+        && group
+            .effective_layers()
+            .into_iter()
+            .any(|layer| layer.enabled && matches!(layer.source, LayerSource::Effect { .. }))
 }
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
@@ -528,6 +542,7 @@ mod tests {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: sample_layout(),
             brightness: 1.0,
             enabled: true,
@@ -535,6 +550,7 @@ mod tests {
             display_target: None,
             role: RenderGroupRole::Custom,
             controls_version: 0,
+            layers_version: 0,
         }
     }
 

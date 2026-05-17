@@ -1860,6 +1860,7 @@ async fn activate_display_face_test_scene(
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: SpatialLayout {
                 id: "display-face-layout".to_owned(),
                 name: "Display Face Layout".to_owned(),
@@ -1878,6 +1879,7 @@ async fn activate_display_face_test_scene(
             display_target: Some(DisplayFaceTarget::new(device_id)),
             role: RenderGroupRole::Display,
             controls_version: 0,
+            layers_version: 0,
         }],
         transition: TransitionSpec {
             duration_ms: 0,

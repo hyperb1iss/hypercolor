@@ -13,8 +13,9 @@ use hypercolor_core::spatial::{SpatialEngine, sample_led};
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
-use hypercolor_types::canvas::{Canvas, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_types::canvas::{Canvas, RenderSurfacePool, RgbaF32, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::layer::{LayerBlendMode, LayerSource, SceneLayer};
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -25,6 +26,10 @@ use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::micros_u32;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
+use super::sparkleflinger::{
+    ComposedFrameSet, CompositionLayer, CompositionMode, CompositionPlan, PreviewSurfaceRequest,
+    SparkleFlinger,
+};
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -333,6 +338,7 @@ impl RenderGroupRuntime {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
         self.reconcile(groups, dependency_key, registry)?;
@@ -348,6 +354,7 @@ impl RenderGroupRuntime {
             interaction,
             screen,
             sensors,
+            sparkleflinger,
             zones,
         )? {
             self.clear_effect_error();
@@ -359,7 +366,7 @@ impl RenderGroupRuntime {
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         for group in groups {
-            if !group.enabled || group.effect_id.is_none() {
+            if !group_is_active(group) {
                 continue;
             }
 
@@ -383,6 +390,7 @@ impl RenderGroupRuntime {
                     interaction,
                     screen,
                     sensors,
+                    sparkleflinger,
                 )?
                 else {
                     continue;
@@ -394,33 +402,34 @@ impl RenderGroupRuntime {
                 continue;
             }
 
+            let render_start = Instant::now();
+            let frame = self.render_group_frame(
+                group,
+                registry,
+                delta_secs,
+                audio,
+                interaction,
+                screen,
+                sensors,
+                sparkleflinger,
+                true,
+                false,
+            )?;
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
                 continue;
             };
-            let render_start = Instant::now();
-            self.effect_pool
-                .render_group_into(
-                    group,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                    target,
-                )
-                .map_err(|error| {
-                    anyhow::Error::new(render_group_effect_error(group, registry, error))
-                })?;
+            let Some(frame) = frame else {
+                target.clear();
+                continue;
+            };
+            if !copy_producer_frame_to_canvas(frame, target) {
+                target.clear();
+                continue;
+            }
             render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
         }
         zones.clear();
-        let logical_layer_count = u32::try_from(
-            groups
-                .iter()
-                .filter(|group| group_contributes_to_scene_canvas(group))
-                .count(),
-        )
-        .unwrap_or(u32::MAX);
+        let logical_layer_count = scene_logical_layer_count(groups);
         let scene_compose_start = Instant::now();
         let scene_frame = self.compose_scene_frame(groups);
         let scene_compose_us = micros_u32(scene_compose_start.elapsed());
@@ -573,6 +582,7 @@ impl RenderGroupRuntime {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<Option<RenderGroupResult>> {
         let Some(scene_group) = self.single_full_scene_group(groups) else {
@@ -583,44 +593,23 @@ impl RenderGroupRuntime {
         };
 
         let render_start = Instant::now();
-        #[cfg(feature = "servo-gpu-import")]
-        let scene_frame = match self
-            .effect_pool
-            .render_group_output(scene_group, delta_secs, audio, interaction, screen, sensors)
-            .map_err(|error| {
-                anyhow::Error::new(render_group_effect_error(scene_group, registry, error))
-            })? {
-            EffectRenderOutput::Cpu(canvas) => {
-                let Some(mut lease) = self.scene_surface_pool.dequeue() else {
-                    return Ok(None);
-                };
-                *lease.canvas_mut() = canvas;
-                ProducerFrame::Surface(lease.submit(0, 0))
-            }
-            EffectRenderOutput::Gpu(frame) => ProducerFrame::Gpu(frame),
+        let Some(scene_frame) = self.render_group_frame(
+            scene_group,
+            registry,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            sparkleflinger,
+            true,
+            true,
+        )?
+        else {
+            return Ok(None);
         };
-        #[cfg(not(feature = "servo-gpu-import"))]
-        let scene_frame = {
-            let Some(mut lease) = self.scene_surface_pool.dequeue() else {
-                return Ok(None);
-            };
-            if let Err(error) = self.effect_pool.render_group_into(
-                scene_group,
-                delta_secs,
-                audio,
-                interaction,
-                screen,
-                sensors,
-                lease.canvas_mut(),
-            ) {
-                lease.release();
-                return Err(anyhow::Error::new(render_group_effect_error(
-                    scene_group,
-                    registry,
-                    error,
-                )));
-            }
-            ProducerFrame::Surface(lease.submit(0, 0))
+        let Some(scene_frame) = self.surface_backed_scene_frame(scene_frame) else {
+            return Ok(None);
         };
         record_producer_frame(&scene_frame);
         let mut render_us = micros_u32(render_start.elapsed());
@@ -659,6 +648,7 @@ impl RenderGroupRuntime {
                 interaction,
                 screen,
                 sensors,
+                sparkleflinger,
             )?
             else {
                 continue;
@@ -678,7 +668,7 @@ impl RenderGroupRuntime {
             render_us,
             sample_us,
             scene_compose_us: 0,
-            logical_layer_count: 1,
+            logical_layer_count: enabled_effect_layer_count(scene_group),
         }))
     }
 
@@ -787,61 +777,178 @@ impl RenderGroupRuntime {
         interaction: &InteractionData,
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
+        sparkleflinger: &mut SparkleFlinger,
     ) -> Result<Option<PendingGroupCanvasFrame>> {
         let display_target = group
             .display_target
             .clone()
             .expect("direct display group should carry a display target");
 
-        #[cfg(feature = "servo-gpu-import")]
-        let frame = match self
-            .effect_pool
-            .render_group_output(group, delta_secs, audio, interaction, screen, sensors)
-            .map_err(|error| {
-                anyhow::Error::new(render_group_effect_error(group, registry, error))
-            })? {
-            EffectRenderOutput::Cpu(canvas) => {
-                let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
-                    return Ok(None);
-                };
-                let Some(mut lease) = surface_pool.dequeue() else {
-                    return Ok(None);
-                };
-                *lease.canvas_mut() = canvas;
-                ProducerFrame::Surface(lease.submit(0, 0))
-            }
-            EffectRenderOutput::Gpu(frame) => ProducerFrame::Gpu(frame),
+        let Some(frame) = self.render_group_frame(
+            group,
+            registry,
+            delta_secs,
+            audio,
+            interaction,
+            screen,
+            sensors,
+            sparkleflinger,
+            true,
+            true,
+        )?
+        else {
+            return Ok(None);
         };
-
-        #[cfg(not(feature = "servo-gpu-import"))]
-        let frame = {
-            let Some(surface_pool) = self.direct_surface_pools.get_mut(&group.id) else {
-                return Ok(None);
-            };
-            let Some(mut lease) = surface_pool.dequeue() else {
-                return Ok(None);
-            };
-            self.effect_pool
-                .render_group_into(
-                    group,
-                    delta_secs,
-                    audio,
-                    interaction,
-                    screen,
-                    sensors,
-                    lease.canvas_mut(),
-                )
-                .map_err(|error| {
-                    anyhow::Error::new(render_group_effect_error(group, registry, error))
-                })?;
-            ProducerFrame::Surface(lease.submit(0, 0))
+        let Some(frame) = self.surface_backed_direct_frame(group.id, frame) else {
+            return Ok(None);
         };
-
         record_producer_frame(&frame);
         Ok(Some(PendingGroupCanvasFrame {
             frame,
             display_target,
         }))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "layer rendering uses the same per-frame inputs as group rendering"
+    )]
+    fn render_group_frame(
+        &mut self,
+        group: &RenderGroup,
+        registry: &EffectRegistry,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+        sparkleflinger: &mut SparkleFlinger,
+        requires_cpu_sampling_canvas: bool,
+        requires_published_surface: bool,
+    ) -> Result<Option<ProducerFrame>> {
+        let mut composition_layers = Vec::new();
+        for layer in group.effective_layers() {
+            if !layer.enabled {
+                continue;
+            }
+            let frame = match &layer.source {
+                LayerSource::Effect { .. } => self.render_effect_layer_frame(
+                    group,
+                    &layer,
+                    registry,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                )?,
+                LayerSource::ColorFill { rgba } => {
+                    color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
+                }
+                LayerSource::Media { .. }
+                | LayerSource::ScreenRegion { .. }
+                | LayerSource::WebViewport { .. } => continue,
+            };
+            record_producer_frame(&frame);
+            composition_layers.push(composition_layer_for_scene_layer(&layer, frame));
+        }
+
+        if composition_layers.is_empty() {
+            return Ok(None);
+        }
+
+        let plan = if composition_layers.len() == 1 {
+            let layer = composition_layers
+                .into_iter()
+                .next()
+                .expect("single composition layer should exist");
+            CompositionPlan::single(group.layout.canvas_width, group.layout.canvas_height, layer)
+        } else {
+            CompositionPlan::with_layers(
+                group.layout.canvas_width,
+                group.layout.canvas_height,
+                composition_layers,
+            )
+        };
+        let composed = sparkleflinger.compose_for_outputs(
+            plan.with_cpu_replay_cacheable(false),
+            requires_cpu_sampling_canvas,
+            requires_published_surface.then_some(PreviewSurfaceRequest {
+                width: group.layout.canvas_width,
+                height: group.layout.canvas_height,
+            }),
+        );
+        Ok(composed_frame_to_producer_frame(composed))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "effect layer rendering uses the full frame input"
+    )]
+    fn render_effect_layer_frame(
+        &mut self,
+        group: &RenderGroup,
+        layer: &SceneLayer,
+        registry: &EffectRegistry,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+        screen: Option<&ScreenData>,
+        sensors: &SystemSnapshot,
+    ) -> Result<ProducerFrame> {
+        #[cfg(feature = "servo-gpu-import")]
+        {
+            match self
+                .effect_pool
+                .render_layer_output(
+                    group,
+                    layer,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                )
+                .map_err(|error| {
+                    anyhow::Error::new(render_layer_effect_error(group, layer, registry, error))
+                })? {
+                EffectRenderOutput::Cpu(canvas) => Ok(ProducerFrame::Canvas(canvas)),
+                EffectRenderOutput::Gpu(frame) => Ok(ProducerFrame::Gpu(frame)),
+            }
+        }
+
+        #[cfg(not(feature = "servo-gpu-import"))]
+        {
+            let mut canvas = Canvas::new(group.layout.canvas_width, group.layout.canvas_height);
+            self.effect_pool
+                .render_layer_into(
+                    group,
+                    layer,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                    &mut canvas,
+                )
+                .map_err(|error| {
+                    anyhow::Error::new(render_layer_effect_error(group, layer, registry, error))
+                })?;
+            Ok(ProducerFrame::Canvas(canvas))
+        }
+    }
+
+    fn surface_backed_scene_frame(&mut self, frame: ProducerFrame) -> Option<ProducerFrame> {
+        surface_backed_frame(&mut self.scene_surface_pool, frame)
+    }
+
+    fn surface_backed_direct_frame(
+        &mut self,
+        group_id: RenderGroupId,
+        frame: ProducerFrame,
+    ) -> Option<ProducerFrame> {
+        let surface_pool = self.direct_surface_pools.get_mut(&group_id)?;
+        surface_backed_frame(surface_pool, frame)
     }
 
     fn compose_scene_frame(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
@@ -1192,7 +1299,7 @@ fn compose_preview_grid_canvas(
 }
 
 fn group_is_active(group: &RenderGroup) -> bool {
-    group.enabled && group.effect_id.is_some()
+    enabled_effect_layer_count(group) > 0
 }
 
 fn group_contributes_to_scene_canvas(group: &RenderGroup) -> bool {
@@ -1201,6 +1308,105 @@ fn group_contributes_to_scene_canvas(group: &RenderGroup) -> bool {
 
 fn group_publishes_direct_canvas(group: &RenderGroup) -> bool {
     group_is_active(group) && group.display_target.is_some()
+}
+
+fn enabled_effect_layer_count(group: &RenderGroup) -> u32 {
+    if !group.enabled {
+        return 0;
+    }
+    u32::try_from(
+        group
+            .effective_layers()
+            .into_iter()
+            .filter(|layer| layer.enabled && matches!(&layer.source, LayerSource::Effect { .. }))
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+fn scene_logical_layer_count(groups: &[RenderGroup]) -> u32 {
+    groups
+        .iter()
+        .filter(|group| group_contributes_to_scene_canvas(group))
+        .map(enabled_effect_layer_count)
+        .fold(0_u32, u32::saturating_add)
+}
+
+fn composition_layer_for_scene_layer(layer: &SceneLayer, frame: ProducerFrame) -> CompositionLayer {
+    CompositionLayer::from_parts(
+        frame,
+        composition_mode_for_layer(layer.blend),
+        layer.opacity,
+        false,
+    )
+}
+
+fn composition_mode_for_layer(blend: LayerBlendMode) -> CompositionMode {
+    match blend {
+        LayerBlendMode::Replace => CompositionMode::Replace,
+        LayerBlendMode::Alpha
+        | LayerBlendMode::Multiply
+        | LayerBlendMode::Overlay
+        | LayerBlendMode::SoftLight
+        | LayerBlendMode::ColorDodge
+        | LayerBlendMode::Difference
+        | LayerBlendMode::Tint
+        | LayerBlendMode::LumaReveal => CompositionMode::Alpha,
+        LayerBlendMode::Add => CompositionMode::Add,
+        LayerBlendMode::Screen => CompositionMode::Screen,
+    }
+}
+
+fn color_fill_frame(width: u32, height: u32, rgba: [f32; 4]) -> ProducerFrame {
+    let mut canvas = Canvas::new(width, height);
+    canvas.fill(RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba());
+    ProducerFrame::Canvas(canvas)
+}
+
+fn composed_frame_to_producer_frame(composed: ComposedFrameSet) -> Option<ProducerFrame> {
+    composed
+        .sampling_surface
+        .map(ProducerFrame::Surface)
+        .or_else(|| composed.sampling_canvas.map(ProducerFrame::Canvas))
+}
+
+fn surface_backed_frame(
+    surface_pool: &mut RenderSurfacePool,
+    frame: ProducerFrame,
+) -> Option<ProducerFrame> {
+    match frame {
+        ProducerFrame::Canvas(canvas) => {
+            let mut lease = surface_pool.dequeue()?;
+            *lease.canvas_mut() = canvas;
+            Some(ProducerFrame::Surface(lease.submit(0, 0)))
+        }
+        ProducerFrame::Surface(surface) if surface.generation() == 0 => {
+            let mut lease = surface_pool.dequeue()?;
+            *lease.canvas_mut() =
+                Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
+            Some(ProducerFrame::Surface(
+                lease.submit(surface.frame_number(), surface.timestamp_ms()),
+            ))
+        }
+        frame => Some(frame),
+    }
+}
+
+fn copy_producer_frame_to_canvas(frame: ProducerFrame, target: &mut Canvas) -> bool {
+    match frame {
+        ProducerFrame::Canvas(canvas) => {
+            *target = canvas;
+            true
+        }
+        ProducerFrame::Surface(surface) => {
+            *target = Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
+            true
+        }
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => false,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => false,
+    }
 }
 
 fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
@@ -1218,16 +1424,24 @@ fn empty_group_layout(width: u32, height: u32) -> SpatialLayout {
     }
 }
 
-fn render_group_effect_error(
+fn render_layer_effect_error(
     group: &RenderGroup,
+    layer: &SceneLayer,
     registry: &EffectRegistry,
     error: anyhow::Error,
 ) -> RenderGroupEffectError {
-    let effect_id = group
-        .effect_id
-        .map_or_else(|| "unknown".to_owned(), |effect_id| effect_id.to_string());
+    let effect_id = match &layer.source {
+        LayerSource::Effect { effect_id, .. } => effect_id.to_string(),
+        _ => "unknown".to_owned(),
+    };
     let effect_name = group
-        .effect_id
+        .effective_layers()
+        .into_iter()
+        .find(|candidate| candidate.id == layer.id)
+        .and_then(|layer| match layer.source {
+            LayerSource::Effect { effect_id, .. } => Some(effect_id),
+            _ => None,
+        })
         .and_then(|effect_id| {
             registry
                 .get(&effect_id)
@@ -1320,6 +1534,7 @@ mod tests {
             controls: HashMap::new(),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: SpatialLayout {
                 id: "preview-group".into(),
                 name: "Preview Group".into(),
@@ -1338,6 +1553,7 @@ mod tests {
             display_target: None,
             role: RenderGroupRole::Custom,
             controls_version: 0,
+            layers_version: 0,
         }
     }
 
@@ -1429,6 +1645,7 @@ mod tests {
         registry: &EffectRegistry,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
+        let mut sparkleflinger = SparkleFlinger::cpu();
         runtime.render_scene(
             groups,
             SceneDependencyKey::new(groups_revision, registry.generation()),
@@ -1440,6 +1657,7 @@ mod tests {
             &InteractionData::default(),
             None,
             &SystemSnapshot::empty(),
+            &mut sparkleflinger,
             zones,
         )
     }
@@ -1899,6 +2117,7 @@ mod tests {
             controls: HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
             control_bindings: HashMap::new(),
             preset_id: None,
+            layers: Vec::new(),
             layout: SpatialLayout {
                 id: "direct-group".into(),
                 name: "Direct Group".into(),
@@ -1917,6 +2136,7 @@ mod tests {
             display_target: None,
             role: RenderGroupRole::Custom,
             controls_version: 0,
+            layers_version: 0,
         };
         let mut zones = Vec::new();
         let display_group_target_fps = HashMap::new();
@@ -2090,6 +2310,7 @@ mod tests {
                 )]),
                 control_bindings: HashMap::new(),
                 preset_id: None,
+                layers: Vec::new(),
                 layout: SpatialLayout {
                     id: "left-group".into(),
                     name: "Left Group".into(),
@@ -2108,6 +2329,7 @@ mod tests {
                 display_target: None,
                 role: RenderGroupRole::Custom,
                 controls_version: 0,
+                layers_version: 0,
             },
             RenderGroup {
                 id: RenderGroupId::new(),
@@ -2120,6 +2342,7 @@ mod tests {
                 )]),
                 control_bindings: HashMap::new(),
                 preset_id: None,
+                layers: Vec::new(),
                 layout: SpatialLayout {
                     id: "right-group".into(),
                     name: "Right Group".into(),
@@ -2138,6 +2361,7 @@ mod tests {
                 display_target: None,
                 role: RenderGroupRole::Custom,
                 controls_version: 0,
+                layers_version: 0,
             },
         ];
         let mut zones = Vec::new();

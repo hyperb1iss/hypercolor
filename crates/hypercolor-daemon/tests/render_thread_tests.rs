@@ -270,6 +270,7 @@ fn primary_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout,
         brightness: 1.0,
         enabled: true,
@@ -277,6 +278,7 @@ fn primary_group(
         display_target: None,
         role: RenderGroupRole::Primary,
         controls_version: 0,
+        layers_version: 0,
     }
 }
 
@@ -294,6 +296,7 @@ fn custom_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout,
         brightness: 1.0,
         enabled: true,
@@ -301,6 +304,7 @@ fn custom_group(
         display_target: None,
         role: RenderGroupRole::Custom,
         controls_version: 0,
+        layers_version: 0,
     }
 }
 
@@ -319,6 +323,7 @@ fn display_group(
         controls,
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout,
         brightness: 1.0,
         enabled: true,
@@ -326,6 +331,7 @@ fn display_group(
         display_target: Some(DisplayFaceTarget::new(device_id)),
         role: RenderGroupRole::Display,
         controls_version: 0,
+        layers_version: 0,
     }
 }
 

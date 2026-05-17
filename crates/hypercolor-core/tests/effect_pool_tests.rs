@@ -7,6 +7,7 @@ use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -86,6 +87,16 @@ fn render_group(id: RenderGroupId, effect_id: EffectId) -> RenderGroup {
         controls_version: 0,
         layers_version: 0,
     }
+}
+
+fn effect_layer(effect_id: EffectId, color: [f32; 4]) -> SceneLayer {
+    SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::from([("color".into(), ControlValue::Color(color))]),
+        HashMap::new(),
+        None,
+    )
 }
 
 fn top_left(canvas: &Canvas) -> Rgba {
@@ -351,7 +362,7 @@ fn effect_pool_prunes_removed_groups() {
 }
 
 #[test]
-fn effect_pool_clears_disabled_groups_without_dropping_slots() {
+fn effect_pool_prunes_disabled_groups() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let group_id = RenderGroupId::new();
@@ -378,6 +389,67 @@ fn effect_pool_clears_disabled_groups_without_dropping_slots() {
     )
     .expect("disabled group should clear");
 
-    assert_eq!(pool.slot_count(), 1);
+    assert_eq!(pool.slot_count(), 0);
     assert_eq!(top_left(&canvas), Rgba::new(0, 0, 0, 255));
+}
+
+#[test]
+fn effect_pool_reconciles_duplicate_effect_layers_as_separate_slots() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let group_id = RenderGroupId::new();
+    let red_layer = effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]);
+    let blue_layer = effect_layer(solid_id, [0.0, 0.0, 1.0, 1.0]);
+    let mut group = render_group(group_id, solid_id);
+    group.layers = vec![red_layer.clone(), blue_layer.clone()];
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("layered group should reconcile");
+
+    let mut red_canvas = Canvas::new(1, 1);
+    pool.render_layer_into(
+        &group,
+        &red_layer,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut red_canvas,
+    )
+    .expect("red layer should render");
+
+    let mut blue_canvas = Canvas::new(1, 1);
+    pool.render_layer_into(
+        &group,
+        &blue_layer,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        &mut blue_canvas,
+    )
+    .expect("blue layer should render");
+
+    assert_eq!(pool.slot_count(), 2);
+    assert_eq!(top_left(&red_canvas), Rgba::new(255, 0, 0, 255));
+    assert_eq!(top_left(&blue_canvas), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
+fn effect_pool_skips_disabled_effect_layers() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut group = render_group(RenderGroupId::new(), solid_id);
+    let mut disabled_layer = effect_layer(solid_id, [0.0, 0.0, 1.0, 1.0]);
+    disabled_layer.enabled = false;
+    group.layers = vec![effect_layer(solid_id, [1.0, 0.0, 0.0, 1.0]), disabled_layer];
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(std::slice::from_ref(&group), &registry)
+        .expect("enabled layer should reconcile");
+
+    assert_eq!(pool.slot_count(), 1);
 }

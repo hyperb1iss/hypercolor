@@ -681,6 +681,7 @@ impl ComposeRuntime<'_> {
                 &inputs.interaction,
                 inputs.screen_data.as_ref(),
                 inputs.sensors.as_ref(),
+                self.sparkleflinger,
                 zones,
             ),
             false,
