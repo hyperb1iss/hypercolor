@@ -9,6 +9,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::scene::make_scene;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -16,7 +17,8 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
+    SceneLayerId,
 };
 use hypercolor_types::scene::{
     DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole, SceneId,
@@ -291,6 +293,159 @@ async fn insert_lottie_asset(state: &Arc<AppState>) -> hypercolor_types::asset::
         .add_bytes(br#"{"v":"5.7.4","layers":[]}"#, options)
         .expect("lottie asset should upload");
     upsert.record.id
+}
+
+async fn insert_stream_asset(state: &Arc<AppState>, name: &str, url: &str) -> AssetId {
+    let mut options = AssetUploadOptions::new(name);
+    options.type_hint = Some(AssetTypeHint::Stream);
+    let upsert = state
+        .asset_library
+        .write()
+        .await
+        .add_bytes(format!("{url}\n").as_bytes(), options)
+        .expect("stream URL asset should upload");
+    assert_eq!(
+        upsert.record.mime_type,
+        "application/vnd.hypercolor.stream-url"
+    );
+    upsert.record.id
+}
+
+async fn insert_mp4_asset(state: &Arc<AppState>, name: &str, seed: u8) -> AssetId {
+    let mut bytes = b"\0\0\0\x18ftypisom\0\0\0\0isomiso2".to_vec();
+    bytes.push(seed);
+    let upsert = state
+        .asset_library
+        .write()
+        .await
+        .add_bytes(&bytes, AssetUploadOptions::new(name))
+        .expect("mp4 asset should upload");
+    assert_eq!(upsert.record.mime_type, "video/mp4");
+    upsert.record.id
+}
+
+fn media_layer(asset_id: AssetId) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::Media {
+            asset_id,
+            playback: MediaPlayback::default(),
+        },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
+}
+
+async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> SceneId {
+    let mut scene = make_scene("Media Admission Scene");
+    let scene_id = scene.id;
+    scene.groups = vec![RenderGroup {
+        id: RenderGroupId::new(),
+        name: "Media".to_owned(),
+        description: None,
+        effect_id: None,
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers,
+        layout: sample_layout("media:main"),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: RenderGroupRole::Primary,
+        controls_version: 0,
+        layers_version: 0,
+    }];
+
+    let mut manager = state.scene_manager.write().await;
+    manager.create(scene).expect("scene should create");
+    scene_id
+}
+
+#[tokio::test]
+async fn activate_scene_rejects_video_media_cap() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let asset_a = insert_mp4_asset(&state, "a.mp4", 1).await;
+    let asset_b = insert_mp4_asset(&state, "b.mp4", 2).await;
+    let asset_c = insert_mp4_asset(&state, "c.mp4", 3).await;
+    let scene_id = install_media_scene(
+        &state,
+        vec![
+            media_layer(asset_a),
+            media_layer(asset_b),
+            media_layer(asset_c),
+        ],
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = send(
+        &app,
+        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("video producers 3/2")
+    );
+    assert_eq!(json["error"]["details"]["counts"]["video"], 3);
+    assert_eq!(json["error"]["details"]["caps"]["video"], 2);
+    assert_ne!(
+        state.scene_manager.read().await.active_scene_id().copied(),
+        Some(scene_id)
+    );
+}
+
+#[tokio::test]
+async fn activate_scene_rejects_livestream_media_cap() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let asset_a = insert_stream_asset(
+        &state,
+        "camera-a.stream",
+        "https://media-a.example.test/live.m3u8",
+    )
+    .await;
+    let asset_b = insert_stream_asset(
+        &state,
+        "camera-b.stream",
+        "https://media-b.example.test/live.m3u8",
+    )
+    .await;
+    let scene_id =
+        install_media_scene(&state, vec![media_layer(asset_a), media_layer(asset_b)]).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = send(
+        &app,
+        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("livestream producers 2/1")
+    );
+    assert_eq!(json["error"]["details"]["counts"]["livestream"], 2);
+    assert_eq!(json["error"]["details"]["caps"]["livestream"], 1);
+    assert_ne!(
+        state.scene_manager.read().await.active_scene_id().copied(),
+        Some(scene_id)
+    );
 }
 
 #[tokio::test]

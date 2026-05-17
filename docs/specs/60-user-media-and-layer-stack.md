@@ -9,7 +9,7 @@
 > Wave 1 display-face overlay fix so LED and display-face groups can use
 > one composition contract.
 
-**Status:** Layer substrate and file-backed tier-1/2/3/4 media implemented; true livestream and legacy purge pending
+**Status:** Layer substrate, file-backed tier-1/2/3/4 media, and media admission caps implemented; true livestream, GPU media hardening, and legacy purge pending
 **Author:** Nova
 **Date:** 2026-05-15
 **Updated:** 2026-05-17
@@ -36,9 +36,10 @@ gated behind `media-video` and uses gstreamer to predecode file-backed
 assets to RGBA canvases. Stream URL assets are accepted through the
 explicit `stream`/`livestream` upload hint and can preroll a bounded frame
 window through the gstreamer path. The stream SSRF policy is configurable
-through `media.stream_private_network_allowlist`, but the true rolling
-livestream producer with reconnect policy, admission control, and GPU
-upload/readback is still follow-up work.
+through `media.stream_private_network_allowlist`, and scene activation
+enforces the configured video/livestream producer hard caps. The true
+rolling livestream producer with reconnect policy plus GPU upload/readback
+is still follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1637,9 +1638,8 @@ cadence):**
 | HTTP livestream    | 10–25 ms @ 1080p          | 1080p hard cap   |
 
 Heavy-decoder layers (Lottie, video, livestream) advertise their
-per-frame cost in `MediaProducer::estimated_cost_us()`. The render
-thread sums advertised costs across all active layers and applies
-admission control before activating a scene:
+per-frame cost in `MediaProducer::estimated_cost_us()`. Scene activation
+applies hard-cap admission before arming the scene:
 
 - **Hard cap: 2 concurrent video producers** across all groups, default.
   Configurable via `media.max_video_producers` (1..=4).
@@ -1652,6 +1652,10 @@ admission control before activating a scene:
 Scenes that exceed hard caps fail activation with HTTP 422 and a body
 listing which layers exceed the cap; users edit the scene to comply
 rather than discovering the failure at runtime.
+
+Current implementation status: hard video/livestream caps are enforced
+from daemon scene activation using asset MIME classifications; the soft
+cost-sum downshift policy remains part of GPU media hardening.
 
 **GPU lane numbers:** Transform + adjust ~0.3 ms / layer, blend
 ~0.2 ms / layer. The GPU lane raises the practical layer ceiling but
@@ -1722,8 +1726,9 @@ flag (tier 3). `LayerBinding` evaluator and SDK exposure.
 
 Animated WebP, file-backed MP4/WebM decoding, and the binding/runtime
 plumbing are now in tree. The current video backend emits CPU canvases;
-the GPU upload path, GPU readback fallback, and admission-control caps
-remain part of the video hardening follow-up.
+the GPU upload path and GPU readback fallback remain part of the video
+hardening follow-up. Scene activation now enforces video/livestream
+producer hard caps.
 
 ### Wave 7 — Tier 4/5 Decoders + Multi-Face Routing
 
@@ -1734,9 +1739,9 @@ per-group transforms.
 Lottie decoding and scene-wide broadcast routing are now in tree. Stream
 URL assets are accepted and can preroll a bounded frame window through
 the gstreamer backend, but this is not the final livestream producer:
-rolling latest-frame latching, reconnect/backoff, and admission control
-remain open. Configurable private-network stream allowlists are in tree
-via `media.stream_private_network_allowlist`.
+rolling latest-frame latching and reconnect/backoff remain open.
+Configurable private-network stream allowlists and video/livestream
+producer hard caps are in tree.
 
 ---
 
@@ -2067,9 +2072,8 @@ surface area beyond what already existed in `DisplayFaceBlendMode`.
 
 **The implementation substrate is now in place.** Tier-1/2 media,
 Lottie, and file-backed MP4/WebM decoding are implemented. The remaining
-work is the true livestream producer, GPU media hardening, admission
-control, and the later compatibility purge of legacy render-group
-mirrors.
+work is the true livestream producer, GPU media hardening, and the later
+compatibility purge of legacy render-group mirrors.
 
 **Treat the livestream and legacy-purge follow-ups as separate shipping
 decisions.** Lottie and file-backed video are already useful without

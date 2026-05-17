@@ -1,6 +1,6 @@
 //! Scene endpoints — `/api/v1/scenes/*`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::Json;
@@ -9,6 +9,9 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
 use hypercolor_core::scene::SceneManager;
+use hypercolor_types::asset::AssetId;
+use hypercolor_types::config::MediaConfig;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind, SceneMutationMode,
     ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
@@ -281,6 +284,8 @@ pub async fn activate_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
+    let asset_mime_types = asset_mime_types(state.as_ref()).await;
+    let media_config = current_media_config(state.as_ref());
     let mut manager = state.scene_manager.write().await;
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
@@ -288,7 +293,14 @@ pub async fn activate_scene(
     let previous_active_scene = manager.active_scene_id().copied();
 
     let scene_name = match manager.get(&scene_id) {
-        Some(s) => s.name.clone(),
+        Some(scene) => {
+            if let Some(response) =
+                validate_scene_media_admission(scene, &asset_mime_types, &media_config)
+            {
+                return response;
+            }
+            scene.name.clone()
+        }
         None => return ApiError::not_found(format!("Scene not found: {id}")),
     };
 
@@ -377,4 +389,131 @@ pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Opti
         .iter()
         .find(|scene| scene.name.eq_ignore_ascii_case(id_or_name))
         .map(|scene| scene.id)
+}
+
+async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {
+    let library = state.asset_library.read().await;
+    library
+        .records()
+        .iter()
+        .map(|record| (record.id, record.mime_type.clone()))
+        .collect()
+}
+
+fn current_media_config(state: &AppState) -> MediaConfig {
+    state
+        .config_manager
+        .as_ref()
+        .map_or_else(MediaConfig::default, |manager| manager.get().media.clone())
+}
+
+fn validate_scene_media_admission(
+    scene: &Scene,
+    asset_mime_types: &HashMap<AssetId, String>,
+    media_config: &MediaConfig,
+) -> Option<Response> {
+    let counts = scene_media_admission_counts(scene, asset_mime_types);
+    let video_cap = usize::from(media_config.max_video_producers.clamp(1, 4));
+    let livestream_cap = usize::from(media_config.max_livestream_producers.clamp(0, 2));
+    let video_count = counts.video_asset_ids.len();
+    let livestream_count = counts.livestream_asset_ids.len();
+
+    if video_count <= video_cap && livestream_count <= livestream_cap {
+        return None;
+    }
+
+    let mut violations = Vec::new();
+    if video_count > video_cap {
+        violations.push(format!("video producers {video_count}/{video_cap}"));
+    }
+    if livestream_count > livestream_cap {
+        violations.push(format!(
+            "livestream producers {livestream_count}/{livestream_cap}"
+        ));
+    }
+
+    Some(ApiError::validation_with_details(
+        format!(
+            "Scene exceeds media producer caps: {}",
+            violations.join(", ")
+        ),
+        serde_json::json!({
+            "caps": {
+                "video": video_cap,
+                "livestream": livestream_cap,
+            },
+            "counts": {
+                "video": video_count,
+                "livestream": livestream_count,
+            },
+            "layers": {
+                "video": counts.video_layers,
+                "livestream": counts.livestream_layers,
+            },
+        }),
+    ))
+}
+
+#[derive(Debug, Default)]
+struct MediaAdmissionCounts {
+    video_asset_ids: HashSet<AssetId>,
+    livestream_asset_ids: HashSet<AssetId>,
+    video_layers: Vec<serde_json::Value>,
+    livestream_layers: Vec<serde_json::Value>,
+}
+
+fn scene_media_admission_counts(
+    scene: &Scene,
+    asset_mime_types: &HashMap<AssetId, String>,
+) -> MediaAdmissionCounts {
+    let mut counts = MediaAdmissionCounts::default();
+
+    for group in scene.groups.iter().filter(|group| group.enabled) {
+        for layer in group
+            .effective_layers()
+            .iter()
+            .filter(|layer| layer.enabled)
+        {
+            let LayerSource::Media { asset_id, .. } = &layer.source else {
+                continue;
+            };
+            let Some(mime_type) = asset_mime_types.get(asset_id) else {
+                continue;
+            };
+
+            match mime_type.as_str() {
+                "video/mp4" | "video/webm" => {
+                    counts.video_asset_ids.insert(*asset_id);
+                    counts.video_layers.push(media_admission_layer_detail(
+                        group, layer, *asset_id, mime_type,
+                    ));
+                }
+                "application/vnd.hypercolor.stream-url" => {
+                    counts.livestream_asset_ids.insert(*asset_id);
+                    counts.livestream_layers.push(media_admission_layer_detail(
+                        group, layer, *asset_id, mime_type,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    counts
+}
+
+fn media_admission_layer_detail(
+    group: &RenderGroup,
+    layer: &SceneLayer,
+    asset_id: AssetId,
+    mime_type: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "group_id": group.id.to_string(),
+        "group_name": &group.name,
+        "layer_id": layer.id.to_string(),
+        "layer_name": &layer.name,
+        "asset_id": asset_id.to_string(),
+        "mime_type": mime_type,
+    })
 }
