@@ -20,6 +20,7 @@ pub enum HtmlControlKind {
     Hue,
     Area,
     Text,
+    Asset,
     Rect,
     Other(String),
 }
@@ -36,6 +37,7 @@ impl HtmlControlKind {
             "hue" => Self::Hue,
             "area" => Self::Area,
             "textfield" | "text" | "input" => Self::Text,
+            "asset" => Self::Asset,
             "rect" => Self::Rect,
             _ => Self::Other(normalized),
         }

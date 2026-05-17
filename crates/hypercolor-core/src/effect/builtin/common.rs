@@ -120,6 +120,25 @@ pub(super) fn dropdown_control(
     }
 }
 
+pub(super) fn asset_control(id: &str, name: &str, group: &str, tooltip: &str) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Text,
+        control_type: ControlType::Asset,
+        default_value: ControlValue::Text(String::new()),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
 #[cfg(feature = "servo")]
 pub(super) fn text_control(
     id: &str,

@@ -470,6 +470,11 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
             ControlType::TextInput,
             text_default(raw.default.as_deref(), ""),
         ),
+        HtmlControlKind::Asset => (
+            ControlKind::Text,
+            ControlType::Asset,
+            text_default(raw.default.as_deref(), ""),
+        ),
         HtmlControlKind::Rect => (
             ControlKind::Rect,
             ControlType::Rect,

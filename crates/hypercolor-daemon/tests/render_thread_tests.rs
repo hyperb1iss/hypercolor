@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::{Mutex, Notify, RwLock, watch};
 
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
@@ -144,6 +145,14 @@ fn builtin_effect_registry() -> EffectRegistry {
     let mut registry = EffectRegistry::new(Vec::new());
     register_builtin_effects(&mut registry);
     registry
+}
+
+fn test_asset_library() -> Arc<RwLock<AssetLibrary>> {
+    let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+    let asset_dir = asset_tempdir.path().join("assets");
+    Arc::new(RwLock::new(
+        AssetLibrary::open(asset_dir).expect("test asset library should open"),
+    ))
 }
 
 fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
@@ -941,6 +950,7 @@ fn make_render_state(
     }
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
+        asset_library: test_asset_library(),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: DeviceRegistry::new(),
@@ -2493,6 +2503,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
+        asset_library: test_asset_library(),
         spatial_engine,
         backend_manager,
         device_registry: DeviceRegistry::new(),
@@ -4064,6 +4075,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     let event_bus = Arc::new(HypercolorBus::new());
     let state = RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
+        asset_library: test_asset_library(),
         spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),

@@ -77,13 +77,20 @@ fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Ico
             ControlType::Slider => LuGauge,
             _ => LuSettings2,
         },
-        ControlKind::Text => LuType,
+        ControlKind::Text => {
+            if matches!(control_type, ControlType::Asset) {
+                LuFolder
+            } else {
+                LuType
+            }
+        }
         ControlKind::Other(_) => match control_type {
             ControlType::Slider => LuGauge,
             ControlType::Toggle => LuToggleLeft,
             ControlType::ColorPicker => LuPalette,
             ControlType::Dropdown => LuList,
             ControlType::TextInput => LuType,
+            ControlType::Asset => LuFolder,
             ControlType::GradientEditor => LuPalette,
             ControlType::Rect => LuSquare,
         },
@@ -325,7 +332,7 @@ fn ControlWidget(
             on_change,
         )
         .into_any(),
-        ControlType::TextInput => {
+        ControlType::TextInput | ControlType::Asset => {
             if matches!(def.kind, ControlKind::Sensor) {
                 sensor::render_sensor_dropdown(
                     name,

@@ -76,6 +76,7 @@ impl DaemonState {
         // Spawn the render thread.
         let rt_state = RenderThreadState {
             effect_registry: Arc::clone(&self.effect_registry),
+            asset_library: Arc::clone(&self.asset_library),
             spatial_engine: Arc::clone(&self.spatial_engine),
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),

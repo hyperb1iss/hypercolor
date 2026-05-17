@@ -3,13 +3,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use tokio::sync::RwLock;
 
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget};
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
+use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
 use hypercolor_core::input::{InteractionData, ScreenData};
 use hypercolor_core::spatial::{SpatialEngine, sample_led};
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
@@ -127,6 +131,18 @@ struct CachedZoneProjection {
     samples: Vec<ProjectionSample>,
 }
 
+struct CachedMediaProducer {
+    hash_sha256: String,
+    producer: MediaProducer,
+}
+
+enum MediaLayerFrame {
+    Ready(ProducerFrame),
+    Loading,
+    Missing,
+    Failed(String),
+}
+
 #[derive(Clone, Copy)]
 struct ProjectionSample {
     x: u32,
@@ -135,7 +151,9 @@ struct ProjectionSample {
 }
 
 pub(crate) struct RenderGroupRuntime {
+    asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     effect_pool: EffectPool,
+    media_producers: HashMap<AssetId, CachedMediaProducer>,
     target_canvases: HashMap<RenderGroupId, Canvas>,
     scene_projection_cache: HashMap<RenderGroupId, CachedGroupProjection>,
     spatial_engines: HashMap<RenderGroupId, SpatialEngine>,
@@ -156,7 +174,9 @@ pub(crate) struct RenderGroupRuntime {
 impl RenderGroupRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Self {
         Self {
+            asset_library: None,
             effect_pool: EffectPool::new(),
+            media_producers: HashMap::new(),
             target_canvases: HashMap::new(),
             scene_projection_cache: HashMap::new(),
             spatial_engines: HashMap::new(),
@@ -184,6 +204,20 @@ impl RenderGroupRuntime {
             scene_width,
             scene_height,
         }
+    }
+
+    pub(crate) fn with_asset_library(
+        scene_width: u32,
+        scene_height: u32,
+        asset_library: Arc<RwLock<AssetLibrary>>,
+    ) -> Self {
+        let mut runtime = Self::new(scene_width, scene_height);
+        runtime.asset_library = Some(asset_library);
+        runtime
+    }
+
+    pub(crate) fn asset_library(&self) -> Option<Arc<RwLock<AssetLibrary>>> {
+        self.asset_library.clone()
     }
 
     /// Total count of times the backing scene-surface pool had to reuse a
@@ -279,6 +313,7 @@ impl RenderGroupRuntime {
         }
 
         self.effect_pool.clear();
+        self.media_producers.clear();
         self.target_canvases.clear();
         self.scene_projection_cache.clear();
         self.spatial_engines.clear();
@@ -481,6 +516,9 @@ impl RenderGroupRuntime {
         self.layer_runtime.reconcile(active_scene_id, groups);
 
         let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
+        let desired_media_ids = desired_media_asset_ids(groups);
+        self.media_producers
+            .retain(|asset_id, _| desired_media_ids.contains(asset_id));
         let scene_group_ids = groups
             .iter()
             .filter(|group| group_contributes_to_scene_canvas(group))
@@ -905,14 +943,60 @@ impl RenderGroupRuntime {
                 LayerSource::ColorFill { rgba } => {
                     color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
                 }
-                LayerSource::Media { .. } => {
-                    self.layer_runtime.note_health(
-                        active_scene_id,
-                        group.id,
-                        layer_runtime.id,
-                        LayerHealth::AssetMissing,
-                    );
-                    transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+                LayerSource::Media { asset_id, playback } => {
+                    match self.render_media_layer_frame(
+                        *asset_id,
+                        playback,
+                        elapsed_ms,
+                        group.layout.canvas_width,
+                        group.layout.canvas_height,
+                    ) {
+                        MediaLayerFrame::Ready(frame) => {
+                            self.layer_runtime.note_health(
+                                active_scene_id,
+                                group.id,
+                                layer_runtime.id,
+                                LayerHealth::Active,
+                            );
+                            frame
+                        }
+                        MediaLayerFrame::Loading => {
+                            self.layer_runtime.note_health(
+                                active_scene_id,
+                                group.id,
+                                layer_runtime.id,
+                                LayerHealth::Loading,
+                            );
+                            transparent_black_frame(
+                                group.layout.canvas_width,
+                                group.layout.canvas_height,
+                            )
+                        }
+                        MediaLayerFrame::Missing => {
+                            self.layer_runtime.note_health(
+                                active_scene_id,
+                                group.id,
+                                layer_runtime.id,
+                                LayerHealth::AssetMissing,
+                            );
+                            transparent_black_frame(
+                                group.layout.canvas_width,
+                                group.layout.canvas_height,
+                            )
+                        }
+                        MediaLayerFrame::Failed(reason) => {
+                            self.layer_runtime.note_health(
+                                active_scene_id,
+                                group.id,
+                                layer_runtime.id,
+                                LayerHealth::Failed { reason },
+                            );
+                            transparent_black_frame(
+                                group.layout.canvas_width,
+                                group.layout.canvas_height,
+                            )
+                        }
+                    }
                 }
                 LayerSource::ScreenRegion { .. } | LayerSource::WebViewport { .. } => {
                     self.layer_runtime.note_health(
@@ -967,6 +1051,58 @@ impl RenderGroupRuntime {
             }),
         );
         Ok(composed_frame_to_producer_frame(composed))
+    }
+
+    fn render_media_layer_frame(
+        &mut self,
+        asset_id: AssetId,
+        playback: &hypercolor_types::layer::MediaPlayback,
+        elapsed_ms: u32,
+        width: u32,
+        height: u32,
+    ) -> MediaLayerFrame {
+        let Some(asset_library) = &self.asset_library else {
+            return MediaLayerFrame::Missing;
+        };
+        let Ok(library) = asset_library.try_read() else {
+            return MediaLayerFrame::Loading;
+        };
+        let Some(record) = library.get(asset_id).cloned() else {
+            return MediaLayerFrame::Missing;
+        };
+        let object_path = match library.object_path_for_hash(&record.hash_sha256) {
+            Ok(path) => path,
+            Err(error) => return MediaLayerFrame::Failed(error.to_string()),
+        };
+        drop(library);
+
+        let needs_reload = self
+            .media_producers
+            .get(&asset_id)
+            .is_none_or(|cached| cached.hash_sha256 != record.hash_sha256);
+        if needs_reload {
+            match MediaProducer::from_path(&object_path, &record.mime_type) {
+                Ok(producer) => {
+                    self.media_producers.insert(
+                        asset_id,
+                        CachedMediaProducer {
+                            hash_sha256: record.hash_sha256,
+                            producer,
+                        },
+                    );
+                }
+                Err(error) => return MediaLayerFrame::Failed(error.to_string()),
+            }
+        }
+
+        let Some(cached) = self.media_producers.get(&asset_id) else {
+            return MediaLayerFrame::Loading;
+        };
+        MediaLayerFrame::Ready(ProducerFrame::Canvas(
+            cached
+                .producer
+                .render_frame(playback, elapsed_ms, width, height),
+        ))
     }
 
     #[expect(
@@ -1481,6 +1617,18 @@ fn enabled_layer_count(group: &RenderGroup) -> u32 {
     .unwrap_or(u32::MAX)
 }
 
+fn desired_media_asset_ids(groups: &[RenderGroup]) -> HashSet<AssetId> {
+    groups
+        .iter()
+        .filter(|group| group.enabled)
+        .flat_map(RenderGroup::effective_layers)
+        .filter_map(|layer| match layer.source {
+            LayerSource::Media { asset_id, .. } if layer.enabled => Some(asset_id),
+            _ => None,
+        })
+        .collect()
+}
+
 fn scene_logical_layer_count(groups: &[RenderGroup]) -> u32 {
     groups
         .iter()
@@ -1676,6 +1824,8 @@ mod tests {
     use std::collections::HashMap;
     use std::f32::consts::FRAC_PI_4;
 
+    use gif::{Encoder, Frame, Repeat};
+    use hypercolor_core::asset::{AssetLibrary, AssetUploadOptions};
     use hypercolor_core::effect::EffectRegistry;
     use hypercolor_core::effect::builtin::register_builtin_effects;
     use hypercolor_core::input::InteractionData;
@@ -1874,6 +2024,24 @@ mod tests {
         }
     }
 
+    fn red_gif_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder =
+                Encoder::new(&mut bytes, 1, 1, &[]).expect("test GIF encoder should initialize");
+            encoder
+                .set_repeat(Repeat::Infinite)
+                .expect("test GIF repeat should set");
+            let mut pixels = vec![255, 0, 0, 255];
+            let mut frame = Frame::from_rgba_speed(1, 1, &mut pixels, 10);
+            frame.delay = 10;
+            encoder
+                .write_frame(&frame)
+                .expect("test GIF frame should encode");
+        }
+        bytes
+    }
+
     #[test]
     fn legacy_single_effect_group_can_passthrough_layer_compositor() {
         let group = sample_group(4, 4);
@@ -1993,6 +2161,63 @@ mod tests {
                 health: LayerHealth::AssetMissing,
                 ..
             }] if *group_id == group.id && *event_layer_id == layer_id
+        ));
+    }
+
+    #[test]
+    fn gif_asset_layer_can_drive_direct_display_group() {
+        let tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+        let mut library =
+            AssetLibrary::open(tempdir.path().join("assets")).expect("asset library should open");
+        let upload = library
+            .add_bytes(&red_gif_bytes(), AssetUploadOptions::new("red.gif"))
+            .expect("GIF upload should be accepted");
+        let asset_library = Arc::new(RwLock::new(library));
+        let mut runtime = RenderGroupRuntime::with_asset_library(4, 4, asset_library);
+        let registry = EffectRegistry::new(Vec::new());
+        let mut group = sample_display_group(2, 2);
+        group.effect_id = None;
+        group.controls.clear();
+        group.layers = vec![SceneLayer {
+            id: hypercolor_types::layer::SceneLayerId::new(),
+            name: Some("GIF".into()),
+            source: LayerSource::Media {
+                asset_id: upload.record.id,
+                playback: MediaPlayback::default(),
+            },
+            blend: LayerBlendMode::Replace,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        }];
+        let mut zones = Vec::new();
+
+        let result = render_scene_for_test(
+            &mut runtime,
+            &[group.clone()],
+            1,
+            0,
+            &HashMap::from([(group.id, 60)]),
+            &registry,
+            &mut zones,
+        )
+        .expect("GIF media display group should render");
+        let (_, frame) = result
+            .group_canvases
+            .first()
+            .expect("display group should publish a direct frame");
+        let surface = frame.surface_for_test();
+        let canvas = Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
+
+        assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+        assert!(matches!(
+            runtime.drain_layer_runtime_events().as_slice(),
+            [HypercolorEvent::LayerHealthChanged {
+                health: LayerHealth::Active,
+                ..
+            }]
         ));
     }
 

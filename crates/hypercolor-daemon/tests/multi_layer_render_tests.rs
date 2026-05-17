@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::{DisplayGroupFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
@@ -143,8 +144,13 @@ fn display_group(
 fn render_state() -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+    let asset_dir = asset_tempdir.path().join("assets");
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
+        asset_library: Arc::new(RwLock::new(
+            AssetLibrary::open(asset_dir).expect("test asset library should open"),
+        )),
         spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(test_layout(Vec::new())))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),

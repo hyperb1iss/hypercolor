@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use anyhow::Result;
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::{InputData, InteractionData, ScreenData};
@@ -17,6 +18,7 @@ use hypercolor_types::scene::SceneId;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::warn;
 
 use super::capture_demand::CaptureDemandState;
@@ -950,7 +952,12 @@ impl RenderCaches {
             SurfaceDescriptor::rgba8888(width, height),
             desired_render_surface_slots(0),
         );
-        self.render_group_runtime = RenderGroupRuntime::new(width, height);
+        self.render_group_runtime = match self.render_group_runtime.asset_library() {
+            Some(asset_library) => {
+                RenderGroupRuntime::with_asset_library(width, height, asset_library)
+            }
+            None => RenderGroupRuntime::new(width, height),
+        };
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts.reset_for_canvas_resize();
@@ -1018,6 +1025,7 @@ impl PipelineRuntime {
             state.render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             state.render_gpu_device.clone(),
+            Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
         )
     }
@@ -1039,6 +1047,7 @@ impl PipelineRuntime {
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             None,
+            None,
             configured_max_fps_tier,
         )
     }
@@ -1050,6 +1059,7 @@ impl PipelineRuntime {
         screen_capture_configured: bool,
         render_acceleration_mode: RenderAccelerationMode,
         #[cfg(feature = "wgpu")] render_gpu_device: Option<GpuRenderDevice>,
+        asset_library: Option<Arc<RwLock<AssetLibrary>>>,
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
         Ok(Self {
@@ -1078,7 +1088,14 @@ impl PipelineRuntime {
                 )?,
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
-                render_group_runtime: RenderGroupRuntime::new(canvas_width, canvas_height),
+                render_group_runtime: match asset_library {
+                    Some(asset_library) => RenderGroupRuntime::with_asset_library(
+                        canvas_width,
+                        canvas_height,
+                        asset_library,
+                    ),
+                    None => RenderGroupRuntime::new(canvas_width, canvas_height),
+                },
                 render_surface_pool: RenderSurfacePool::with_slot_count(
                     SurfaceDescriptor::rgba8888(canvas_width, canvas_height),
                     desired_render_surface_slots(0),

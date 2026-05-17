@@ -548,6 +548,7 @@ fn map_control_type(control_type: &ApiControlType) -> String {
         ApiControlType::GradientEditor => "gradient",
         ApiControlType::Dropdown => "dropdown",
         ApiControlType::TextInput => "text",
+        ApiControlType::Asset => "asset",
         ApiControlType::Rect => "rect",
     }
     .to_string()

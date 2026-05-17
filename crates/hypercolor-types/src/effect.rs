@@ -179,6 +179,8 @@ pub enum ControlType {
     Dropdown,
     /// Free-form single-line text input.
     TextInput,
+    /// User media asset picker.
+    Asset,
     /// Interactive rectangular viewport picker.
     Rect,
 }
@@ -229,6 +231,7 @@ pub enum ControlKind {
 /// | `GradientEditor` | `Gradient(Vec<GradientStop>)` |
 /// | `Dropdown`       | `Enum(String)`             |
 /// | `TextInput`      | `Text(String)`             |
+/// | `Asset`          | `Text(String)`             |
 /// | `Rect`           | `Rect(ViewportRect)`       |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]

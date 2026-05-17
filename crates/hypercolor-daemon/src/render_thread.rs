@@ -59,6 +59,7 @@ use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
+use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
@@ -179,6 +180,9 @@ pub struct RenderThread {
 pub struct RenderThreadState {
     /// Effect catalog used to resolve render-group assignments.
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
+
+    /// User media asset library used by media-backed scene layers.
+    pub asset_library: Arc<RwLock<AssetLibrary>>,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
     pub spatial_engine: Arc<RwLock<SpatialEngine>>,

@@ -371,8 +371,9 @@ fn control_type_all_variants_exist() {
         ControlType::GradientEditor,
         ControlType::Dropdown,
         ControlType::TextInput,
+        ControlType::Asset,
     ];
-    assert_eq!(types.len(), 6);
+    assert_eq!(types.len(), 7);
 }
 
 #[test]
@@ -384,6 +385,7 @@ fn control_type_serde_round_trip() {
         ControlType::GradientEditor,
         ControlType::Dropdown,
         ControlType::TextInput,
+        ControlType::Asset,
     ] {
         let json = serde_json::to_string(&ct).expect("serialize");
         let back: ControlType = serde_json::from_str(&json).expect("deserialize");

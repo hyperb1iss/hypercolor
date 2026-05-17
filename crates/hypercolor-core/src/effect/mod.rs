@@ -9,6 +9,7 @@ pub mod builtin;
 mod factory;
 mod lightscript;
 mod loader;
+pub mod media;
 mod meta_parser;
 mod paths;
 mod pool;

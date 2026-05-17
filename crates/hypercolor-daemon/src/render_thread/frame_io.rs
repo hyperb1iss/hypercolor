@@ -540,6 +540,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use hypercolor_core::asset::AssetLibrary;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_core::bus::HypercolorBus;
     use hypercolor_core::device::{BackendManager, DeviceRegistry};
@@ -615,9 +616,14 @@ mod tests {
     fn minimal_render_thread_state() -> RenderThreadState {
         let event_bus = Arc::new(HypercolorBus::new());
         let (_, power_state) = watch::channel(OutputPowerState::default());
+        let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+        let asset_dir = asset_tempdir.path().join("assets");
 
         RenderThreadState {
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
+            asset_library: Arc::new(RwLock::new(
+                AssetLibrary::open(asset_dir).expect("test asset library should open"),
+            )),
             spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             device_registry: DeviceRegistry::new(),

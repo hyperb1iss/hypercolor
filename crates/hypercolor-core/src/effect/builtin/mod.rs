@@ -21,6 +21,7 @@
 //! | `color_wave`    | Ambient        | Traveling wavefront bands with fade trails       |
 //! | `color_zones`   | Ambient        | Multi-zone color grid with per-zone control      |
 //! | `screen_cast`   | Utility        | Live screen crop with aspect-fit controls        |
+//! | `media_player`  | Source         | User media asset playback                        |
 //! | `calibration`   | Utility        | High-contrast layout calibration patterns        |
 
 mod audio_pulse;
@@ -30,6 +31,7 @@ mod color_wave;
 mod color_zones;
 mod common;
 mod gradient;
+mod media_player;
 mod rainbow;
 mod screen_cast;
 mod solid_color;
@@ -46,6 +48,7 @@ pub use self::calibration::CalibrationRenderer;
 pub use self::color_wave::ColorWaveRenderer;
 pub use self::color_zones::ColorZonesRenderer;
 pub use self::gradient::GradientRenderer;
+pub use self::media_player::MediaPlayerRenderer;
 pub use self::rainbow::RainbowRenderer;
 pub use self::screen_cast::ScreenCastRenderer;
 pub use self::solid_color::SolidColorRenderer;
@@ -65,6 +68,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         color_wave::metadata(),
         color_zones::metadata(),
         screen_cast::metadata(),
+        media_player::metadata(),
         #[cfg(feature = "servo")]
         web_viewport::metadata(),
         calibration::metadata(),
@@ -104,6 +108,7 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
         "color_wave" => Some(Box::new(ColorWaveRenderer::new())),
         "color_zones" => Some(Box::new(ColorZonesRenderer::new())),
         "screen_cast" => Some(Box::new(ScreenCastRenderer::new())),
+        "media_player" => Some(Box::new(MediaPlayerRenderer::new())),
         #[cfg(feature = "servo")]
         "web_viewport" => Some(Box::new(WebViewportRenderer::new())),
         "calibration" => Some(Box::new(CalibrationRenderer::new())),
