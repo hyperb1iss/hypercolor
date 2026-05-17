@@ -315,6 +315,7 @@ fn stream_url_producer_returns_before_first_live_frame() {
         "stream URL producer should not preroll frames before returning"
     );
     assert_eq!(producer.frame_count(), 0);
+    assert!(!producer.has_renderable_frame());
     let playback = MediaPlayback::default();
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 255));
 }

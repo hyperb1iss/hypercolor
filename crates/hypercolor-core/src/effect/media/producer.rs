@@ -244,6 +244,16 @@ impl MediaProducer {
     }
 
     #[must_use]
+    pub fn has_renderable_frame(&self) -> bool {
+        #[cfg(feature = "media-video")]
+        if let Some(live_stream) = &self.live_stream {
+            return live_stream.has_frame();
+        }
+
+        !self.frames.is_empty()
+    }
+
+    #[must_use]
     pub const fn total_duration_us(&self) -> u64 {
         self.total_duration_us
     }
@@ -470,6 +480,13 @@ impl LiveStreamProducer {
 
     fn frame_count(&self) -> usize {
         self.inner.state.lock().map_or(0, |state| state.frames_seen)
+    }
+
+    fn has_frame(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .is_ok_and(|state| state.latest_frame.is_some())
     }
 }
 

@@ -1129,6 +1129,9 @@ impl RenderGroupRuntime {
         let Some(cached) = self.media_producers.get(&asset_id) else {
             return MediaLayerFrame::Loading;
         };
+        if !cached.producer.has_renderable_frame() {
+            return MediaLayerFrame::Loading;
+        }
         MediaLayerFrame::Ready(ProducerFrame::Canvas(
             cached.producer.intrinsic_frame(playback, elapsed_ms),
         ))
@@ -1882,6 +1885,8 @@ mod tests {
     use std::f32::consts::FRAC_PI_4;
 
     use gif::{Encoder, Frame, Repeat};
+    #[cfg(feature = "media-video")]
+    use hypercolor_core::asset::AssetTypeHint;
     use hypercolor_core::asset::{AssetLibrary, AssetUploadOptions};
     use hypercolor_core::effect::EffectRegistry;
     use hypercolor_core::effect::builtin::register_builtin_effects;
@@ -2356,6 +2361,64 @@ mod tests {
                 health: LayerHealth::Active,
                 ..
             }]
+        ));
+    }
+
+    #[cfg(feature = "media-video")]
+    #[test]
+    fn stream_media_layer_reports_loading_until_first_frame() {
+        let tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+        let mut library =
+            AssetLibrary::open(tempdir.path().join("assets")).expect("asset library should open");
+        let mut options = AssetUploadOptions::new("camera.stream");
+        options.type_hint = Some(AssetTypeHint::Stream);
+        let upload = library
+            .add_bytes(b"http://1.1.1.1/hypercolor-missing-live.m3u8\n", options)
+            .expect("stream URL upload should be accepted");
+        let asset_library = Arc::new(RwLock::new(library));
+        let mut runtime = RenderGroupRuntime::with_asset_library(4, 4, asset_library);
+        let registry = EffectRegistry::new(Vec::new());
+        let mut group = sample_group(4, 4);
+        group.effect_id = None;
+        group.controls.clear();
+        group.layers = vec![SceneLayer {
+            id: hypercolor_types::layer::SceneLayerId::new(),
+            name: Some("Stream".into()),
+            source: LayerSource::Media {
+                asset_id: upload.record.id,
+                playback: MediaPlayback::default(),
+            },
+            blend: LayerBlendMode::Replace,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        }];
+        let layer_id = group.layers[0].id;
+        let mut zones = Vec::new();
+
+        let result = render_scene_for_test(
+            &mut runtime,
+            &[group.clone()],
+            1,
+            0,
+            &HashMap::new(),
+            &registry,
+            &mut zones,
+        )
+        .expect("stream media layer should not fail scene rendering");
+        let canvas = canvas_from_scene_frame(&result.scene_frame);
+
+        assert_eq!(canvas.get_pixel(0, 0), Rgba::TRANSPARENT);
+        assert!(matches!(
+            runtime.drain_layer_runtime_events().as_slice(),
+            [HypercolorEvent::LayerHealthChanged {
+                group_id,
+                layer_id: event_layer_id,
+                health: LayerHealth::Loading,
+                ..
+            }] if *group_id == group.id && *event_layer_id == layer_id
         ));
     }
 
