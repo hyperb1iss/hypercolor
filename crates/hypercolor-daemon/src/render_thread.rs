@@ -15,6 +15,7 @@
 //! }
 //! ```
 
+mod binding_eval;
 mod capture_demand;
 mod composition_planner;
 mod frame_admission;
@@ -29,6 +30,7 @@ mod frame_throttle;
 #[cfg(feature = "wgpu")]
 #[doc(hidden)]
 pub mod gpu_device;
+mod layer_runtime;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;

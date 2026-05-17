@@ -2,13 +2,15 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::device::{ConnectionType, DeviceOrigin};
 use hypercolor_types::event::{
-    ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState, EffectRef,
-    EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData, FrameTiming,
-    HypercolorEvent, InputButtonState, InputEvent, RenderGroupChangeKind, SceneChangeReason,
-    Severity, TransitionRef, ZoneColors, ZoneRef,
+    AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
+    EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
+    FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
+    RenderGroupChangeKind, SceneChangeReason, Severity, TransitionRef, ZoneColors, ZoneRef,
 };
+use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{
     RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode,
 };
@@ -170,6 +172,18 @@ fn scene_events_have_scene_category() {
             role: RenderGroupRole::Primary,
             kind: RenderGroupChangeKind::Updated,
         },
+        HypercolorEvent::LayerStackChanged {
+            scene_id: SceneId::DEFAULT,
+            group_id: RenderGroupId::new(),
+            layers_version: 2,
+            kind: LayerStackChangeKind::Updated,
+        },
+        HypercolorEvent::LayerHealthChanged {
+            scene_id: SceneId::DEFAULT,
+            group_id: RenderGroupId::new(),
+            layer_id: SceneLayerId::new(),
+            health: LayerHealth::Active,
+        },
         HypercolorEvent::ActiveSceneChanged {
             previous: None,
             current: SceneId::DEFAULT,
@@ -188,6 +202,16 @@ fn scene_events_have_scene_category() {
             "Expected Scene category for {event:?}"
         );
     }
+}
+
+#[test]
+fn asset_events_have_asset_category() {
+    let event = HypercolorEvent::AssetChanged {
+        asset_id: AssetId::new(),
+        kind: AssetChangeKind::Added,
+    };
+
+    assert_eq!(event.category(), EventCategory::Asset);
 }
 
 #[test]
@@ -497,6 +521,20 @@ fn high_priority_events() {
             group_name: None,
             state: EffectDegradationState::Failed,
             reason: Some("boom".into()),
+        },
+        HypercolorEvent::LayerHealthChanged {
+            scene_id: SceneId::DEFAULT,
+            group_id: RenderGroupId::new(),
+            layer_id: SceneLayerId::new(),
+            health: LayerHealth::Failed {
+                reason: "decoder_timeout".into(),
+            },
+        },
+        HypercolorEvent::LayerHealthChanged {
+            scene_id: SceneId::DEFAULT,
+            group_id: RenderGroupId::new(),
+            layer_id: SceneLayerId::new(),
+            health: LayerHealth::AssetMissing,
         },
     ];
 

@@ -13,18 +13,20 @@ use hypercolor_core::spatial::{SpatialEngine, sample_led};
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
 use hypercolor_types::canvas::PublishedSurface;
-use hypercolor_types::canvas::{Canvas, RenderSurfacePool, RgbaF32, SurfaceDescriptor};
-use hypercolor_types::event::ZoneColors;
+use hypercolor_types::canvas::{Canvas, RenderSurfacePool, Rgba, RgbaF32, SurfaceDescriptor};
+use hypercolor_types::event::{HypercolorEvent, LayerHealth, ZoneColors};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
 };
-use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId};
+use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId, SceneId};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
 };
 
+use super::binding_eval::evaluate_layer_runtime;
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
+use super::layer_runtime::LayerRuntimeRegistry;
 use super::micros_u32;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
@@ -144,6 +146,7 @@ pub(crate) struct RenderGroupRuntime {
     retained_frame: Option<RetainedRenderGroupFrame>,
     last_effect_error: Option<RenderGroupEffectError>,
     recovered_effect_error: Option<RenderGroupEffectError>,
+    layer_runtime: LayerRuntimeRegistry,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
     scene_width: u32,
@@ -172,6 +175,7 @@ impl RenderGroupRuntime {
             retained_frame: None,
             last_effect_error: None,
             recovered_effect_error: None,
+            layer_runtime: LayerRuntimeRegistry::default(),
             combined_led_layout: Arc::new(empty_group_layout(scene_width, scene_height)),
             combined_led_spatial_engine: SpatialEngine::new(empty_group_layout(
                 scene_width,
@@ -284,6 +288,7 @@ impl RenderGroupRuntime {
         self.retained_frame = None;
         self.last_effect_error = None;
         self.recovered_effect_error = None;
+        self.layer_runtime.clear();
         self.combined_led_layout =
             Arc::new(empty_group_layout(self.scene_width, self.scene_height));
         self.combined_led_spatial_engine =
@@ -331,6 +336,7 @@ impl RenderGroupRuntime {
     pub(crate) fn render_scene(
         &mut self,
         groups: &[RenderGroup],
+        active_scene_id: Option<SceneId>,
         dependency_key: SceneDependencyKey,
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
@@ -343,10 +349,11 @@ impl RenderGroupRuntime {
         sparkleflinger: &mut SparkleFlinger,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<RenderGroupResult> {
-        self.reconcile(groups, dependency_key, registry)?;
+        self.reconcile(groups, active_scene_id, dependency_key, registry)?;
 
         if let Some(result) = self.render_single_full_scene_group(
             groups,
+            active_scene_id,
             elapsed_ms,
             display_group_target_fps,
             dependency_key,
@@ -386,6 +393,8 @@ impl RenderGroupRuntime {
                 let render_start = Instant::now();
                 let Some(frame) = self.render_direct_group_frame(
                     group,
+                    active_scene_id,
+                    elapsed_ms,
                     registry,
                     delta_secs,
                     audio,
@@ -407,6 +416,8 @@ impl RenderGroupRuntime {
             let render_start = Instant::now();
             let frame = self.render_group_frame(
                 group,
+                active_scene_id,
+                elapsed_ms,
                 registry,
                 delta_secs,
                 audio,
@@ -458,6 +469,7 @@ impl RenderGroupRuntime {
     fn reconcile(
         &mut self,
         groups: &[RenderGroup],
+        active_scene_id: Option<SceneId>,
         dependency_key: SceneDependencyKey,
         registry: &EffectRegistry,
     ) -> Result<()> {
@@ -466,6 +478,7 @@ impl RenderGroupRuntime {
         }
 
         self.effect_pool.reconcile(groups, registry)?;
+        self.layer_runtime.reconcile(active_scene_id, groups);
 
         let desired_ids = groups.iter().map(|group| group.id).collect::<HashSet<_>>();
         let scene_group_ids = groups
@@ -575,6 +588,7 @@ impl RenderGroupRuntime {
     fn render_single_full_scene_group(
         &mut self,
         groups: &[RenderGroup],
+        active_scene_id: Option<SceneId>,
         elapsed_ms: u32,
         display_group_target_fps: &HashMap<RenderGroupId, u32>,
         dependency_key: SceneDependencyKey,
@@ -597,6 +611,7 @@ impl RenderGroupRuntime {
         let render_start = Instant::now();
         let scene_frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
             scene_group,
+            active_scene_id,
             registry,
             delta_secs,
             audio,
@@ -608,6 +623,8 @@ impl RenderGroupRuntime {
         } else {
             let Some(frame) = self.render_group_frame(
                 scene_group,
+                active_scene_id,
+                elapsed_ms,
                 registry,
                 delta_secs,
                 audio,
@@ -636,7 +653,7 @@ impl RenderGroupRuntime {
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         for group in groups {
-            if !group.enabled || group.effect_id.is_none() || group.id == scene_group.id {
+            if !group.enabled || group.id == scene_group.id {
                 continue;
             }
             if !group_publishes_direct_canvas(group) {
@@ -657,6 +674,8 @@ impl RenderGroupRuntime {
             let render_start = Instant::now();
             let Some(frame) = self.render_direct_group_frame(
                 group,
+                active_scene_id,
+                elapsed_ms,
                 registry,
                 delta_secs,
                 audio,
@@ -683,7 +702,7 @@ impl RenderGroupRuntime {
             render_us,
             sample_us,
             scene_compose_us: 0,
-            logical_layer_count: enabled_effect_layer_count(scene_group),
+            logical_layer_count: enabled_layer_count(scene_group),
         }))
     }
 
@@ -708,6 +727,10 @@ impl RenderGroupRuntime {
 
     pub(crate) fn take_recovered_effect_error(&mut self) -> Option<RenderGroupEffectError> {
         self.recovered_effect_error.take()
+    }
+
+    pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {
+        self.layer_runtime.drain_events()
     }
 
     fn single_full_scene_group<'a>(&self, groups: &'a [RenderGroup]) -> Option<&'a RenderGroup> {
@@ -786,6 +809,8 @@ impl RenderGroupRuntime {
     fn render_direct_group_frame(
         &mut self,
         group: &RenderGroup,
+        active_scene_id: Option<SceneId>,
+        elapsed_ms: u32,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -801,6 +826,7 @@ impl RenderGroupRuntime {
 
         let frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
             group,
+            active_scene_id,
             registry,
             delta_secs,
             audio,
@@ -812,6 +838,8 @@ impl RenderGroupRuntime {
         } else {
             let Some(frame) = self.render_group_frame(
                 group,
+                active_scene_id,
+                elapsed_ms,
                 registry,
                 delta_secs,
                 audio,
@@ -844,6 +872,8 @@ impl RenderGroupRuntime {
     fn render_group_frame(
         &mut self,
         group: &RenderGroup,
+        active_scene_id: Option<SceneId>,
+        elapsed_ms: u32,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -859,10 +889,12 @@ impl RenderGroupRuntime {
             if !layer.enabled {
                 continue;
             }
-            let frame = match &layer.source {
+            let layer_runtime =
+                evaluate_layer_runtime(&layer, audio, sensors, elapsed_ms).apply_to_layer(&layer);
+            let frame = match &layer_runtime.source {
                 LayerSource::Effect { .. } => self.render_effect_layer_frame(
                     group,
-                    &layer,
+                    &layer_runtime,
                     registry,
                     delta_secs,
                     audio,
@@ -873,12 +905,40 @@ impl RenderGroupRuntime {
                 LayerSource::ColorFill { rgba } => {
                     color_fill_frame(group.layout.canvas_width, group.layout.canvas_height, *rgba)
                 }
-                LayerSource::Media { .. }
-                | LayerSource::ScreenRegion { .. }
-                | LayerSource::WebViewport { .. } => continue,
+                LayerSource::Media { .. } => {
+                    self.layer_runtime.note_health(
+                        active_scene_id,
+                        group.id,
+                        layer_runtime.id,
+                        LayerHealth::AssetMissing,
+                    );
+                    transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+                }
+                LayerSource::ScreenRegion { .. } | LayerSource::WebViewport { .. } => {
+                    self.layer_runtime.note_health(
+                        active_scene_id,
+                        group.id,
+                        layer_runtime.id,
+                        LayerHealth::Failed {
+                            reason: "layer source is not wired into the producer pump yet".into(),
+                        },
+                    );
+                    transparent_black_frame(group.layout.canvas_width, group.layout.canvas_height)
+                }
             };
+            if matches!(
+                &layer_runtime.source,
+                LayerSource::Effect { .. } | LayerSource::ColorFill { .. }
+            ) {
+                self.layer_runtime.note_health(
+                    active_scene_id,
+                    group.id,
+                    layer_runtime.id,
+                    LayerHealth::Active,
+                );
+            }
             record_producer_frame(&frame);
-            composition_layers.push(composition_layer_for_scene_layer(&layer, frame));
+            composition_layers.push(composition_layer_for_scene_layer(&layer_runtime, frame));
         }
 
         if composition_layers.is_empty() {
@@ -916,6 +976,7 @@ impl RenderGroupRuntime {
     fn render_passthrough_effect_layer_frame(
         &mut self,
         group: &RenderGroup,
+        active_scene_id: Option<SceneId>,
         registry: &EffectRegistry,
         delta_secs: f32,
         audio: &AudioData,
@@ -927,7 +988,7 @@ impl RenderGroupRuntime {
             return Ok(None);
         };
 
-        self.render_effect_layer_frame(
+        let frame = self.render_effect_layer_frame(
             group,
             &layer,
             registry,
@@ -936,8 +997,10 @@ impl RenderGroupRuntime {
             interaction,
             screen,
             sensors,
-        )
-        .map(Some)
+        )?;
+        self.layer_runtime
+            .note_health(active_scene_id, group.id, layer.id, LayerHealth::Active);
+        Ok(Some(frame))
     }
 
     #[expect(
@@ -1358,7 +1421,7 @@ fn compose_preview_grid_canvas(
 }
 
 fn group_is_active(group: &RenderGroup) -> bool {
-    enabled_effect_layer_count(group) > 0
+    enabled_layer_count(group) > 0
 }
 
 fn group_contributes_to_scene_canvas(group: &RenderGroup) -> bool {
@@ -1404,7 +1467,7 @@ fn passthrough_effect_layer(group: &RenderGroup) -> Option<SceneLayer> {
     Some(layer)
 }
 
-fn enabled_effect_layer_count(group: &RenderGroup) -> u32 {
+fn enabled_layer_count(group: &RenderGroup) -> u32 {
     if !group.enabled {
         return 0;
     }
@@ -1412,7 +1475,7 @@ fn enabled_effect_layer_count(group: &RenderGroup) -> u32 {
         group
             .effective_layers()
             .into_iter()
-            .filter(|layer| layer.enabled && matches!(&layer.source, LayerSource::Effect { .. }))
+            .filter(|layer| layer.enabled)
             .count(),
     )
     .unwrap_or(u32::MAX)
@@ -1422,7 +1485,7 @@ fn scene_logical_layer_count(groups: &[RenderGroup]) -> u32 {
     groups
         .iter()
         .filter(|group| group_contributes_to_scene_canvas(group))
-        .map(enabled_effect_layer_count)
+        .map(enabled_layer_count)
         .fold(0_u32, u32::saturating_add)
 }
 
@@ -1454,6 +1517,12 @@ fn composition_mode_for_layer(blend: LayerBlendMode) -> CompositionMode {
 fn color_fill_frame(width: u32, height: u32, rgba: [f32; 4]) -> ProducerFrame {
     let mut canvas = Canvas::new(width, height);
     canvas.fill(RgbaF32::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_srgba());
+    ProducerFrame::Canvas(canvas)
+}
+
+fn transparent_black_frame(width: u32, height: u32) -> ProducerFrame {
+    let mut canvas = Canvas::new(width, height);
+    canvas.fill(Rgba::TRANSPARENT);
     ProducerFrame::Canvas(canvas)
 }
 
@@ -1610,9 +1679,11 @@ mod tests {
     use hypercolor_core::effect::EffectRegistry;
     use hypercolor_core::effect::builtin::register_builtin_effects;
     use hypercolor_core::input::InteractionData;
+    use hypercolor_types::asset::AssetId;
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Rgba;
     use hypercolor_types::effect::{ControlValue, EffectId};
+    use hypercolor_types::layer::MediaPlayback;
     use hypercolor_types::scene::RenderGroupRole;
     use hypercolor_types::spatial::{DeviceZone, LedTopology, NormalizedPosition, StripDirection};
     use uuid::Uuid;
@@ -1742,6 +1813,7 @@ mod tests {
         let mut sparkleflinger = SparkleFlinger::cpu();
         runtime.render_scene(
             groups,
+            Some(SceneId::DEFAULT),
             SceneDependencyKey::new(groups_revision, registry.generation()),
             elapsed_ms,
             display_group_target_fps,
@@ -1874,6 +1946,54 @@ mod tests {
         group.layers = vec![layer];
 
         assert!(passthrough_effect_layer(&group).is_none());
+    }
+
+    #[test]
+    fn missing_media_layer_renders_transparent_black_and_reports_health() {
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let registry = EffectRegistry::new(Vec::new());
+        let mut group = sample_group(4, 4);
+        group.effect_id = None;
+        group.controls.clear();
+        group.layers = vec![SceneLayer {
+            id: hypercolor_types::layer::SceneLayerId::new(),
+            name: Some("Missing Media".into()),
+            source: LayerSource::Media {
+                asset_id: AssetId::new(),
+                playback: MediaPlayback::default(),
+            },
+            blend: LayerBlendMode::Replace,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        }];
+        let layer_id = group.layers[0].id;
+        let mut zones = Vec::new();
+
+        let result = render_scene_for_test(
+            &mut runtime,
+            &[group.clone()],
+            1,
+            0,
+            &HashMap::new(),
+            &registry,
+            &mut zones,
+        )
+        .expect("missing media should not fail scene rendering");
+        let canvas = canvas_from_scene_frame(&result.scene_frame);
+
+        assert_eq!(canvas.get_pixel(0, 0), Rgba::TRANSPARENT);
+        assert!(matches!(
+            runtime.drain_layer_runtime_events().as_slice(),
+            [HypercolorEvent::LayerHealthChanged {
+                group_id,
+                layer_id: event_layer_id,
+                health: LayerHealth::AssetMissing,
+                ..
+            }] if *group_id == group.id && *event_layer_id == layer_id
+        ));
     }
 
     #[test]

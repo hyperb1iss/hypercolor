@@ -13,7 +13,7 @@ use utoipa::ToSchema;
 
 use hypercolor_core::scene::{LayerMutationError, SceneManager};
 use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::event::RenderGroupChangeKind;
+use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, RenderGroupChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
     SceneLayerId,
@@ -149,7 +149,7 @@ pub async fn create_layer(
         }
     };
     if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, RenderGroupChangeKind::Updated).await
+        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Created).await
     {
         return response;
     }
@@ -189,7 +189,7 @@ pub async fn update_layer(
         }
     };
     if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, RenderGroupChangeKind::Updated).await
+        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Updated).await
     {
         return response;
     }
@@ -222,7 +222,7 @@ pub async fn delete_layer(
         }
     };
     if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, RenderGroupChangeKind::Updated).await
+        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Removed).await
     {
         return response;
     }
@@ -258,7 +258,7 @@ pub async fn reorder_layers(
         }
     };
     if let Err(response) =
-        finalize_layer_mutation(&state, scene_id, &group, RenderGroupChangeKind::Updated).await
+        finalize_layer_mutation(&state, scene_id, &group, LayerStackChangeKind::Reordered).await
     {
         return response;
     }
@@ -338,7 +338,7 @@ pub async fn patch_layer_controls(
         &state,
         scene_id,
         &group,
-        RenderGroupChangeKind::ControlsPatched,
+        LayerStackChangeKind::ControlsPatched,
     )
     .await
     {
@@ -412,7 +412,7 @@ async fn finalize_layer_mutation(
     state: &Arc<AppState>,
     scene_id: SceneId,
     group: &RenderGroup,
-    kind: RenderGroupChangeKind,
+    kind: LayerStackChangeKind,
 ) -> Result<(), Response> {
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
         return Err(ApiError::internal(format!(
@@ -420,8 +420,29 @@ async fn finalize_layer_mutation(
         )));
     }
     persist_runtime_session(state).await;
-    publish_render_group_changed(state.as_ref(), scene_id, group, kind);
+    publish_render_group_changed(
+        state.as_ref(),
+        scene_id,
+        group,
+        render_group_change_kind_for_layer_stack(kind),
+    );
+    state.event_bus.publish(HypercolorEvent::LayerStackChanged {
+        scene_id,
+        group_id: group.id,
+        layers_version: group.layers_version,
+        kind,
+    });
     Ok(())
+}
+
+fn render_group_change_kind_for_layer_stack(kind: LayerStackChangeKind) -> RenderGroupChangeKind {
+    match kind {
+        LayerStackChangeKind::ControlsPatched => RenderGroupChangeKind::ControlsPatched,
+        LayerStackChangeKind::Created
+        | LayerStackChangeKind::Updated
+        | LayerStackChangeKind::Removed
+        | LayerStackChangeKind::Reordered => RenderGroupChangeKind::Updated,
+    }
 }
 
 async fn normalize_layer_controls(

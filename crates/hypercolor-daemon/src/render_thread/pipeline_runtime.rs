@@ -672,6 +672,7 @@ impl ComposeRuntime<'_> {
         (
             self.render_group_runtime.render_scene(
                 scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+                scene_snapshot.scene_runtime.active_scene_id,
                 dependency_key,
                 scene_snapshot.elapsed_ms,
                 &scene_snapshot.scene_runtime.active_display_group_target_fps,

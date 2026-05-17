@@ -8,8 +8,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::AssetId;
 use crate::controls::ControlSurfaceEvent;
 use crate::device::DeviceOrigin;
+use crate::layer::SceneLayerId;
 use crate::scene::{RenderGroupId, RenderGroupRole, SceneId, SceneKind, SceneMutationMode};
 use crate::session::SessionEvent;
 
@@ -116,6 +118,37 @@ pub enum RenderGroupChangeKind {
     Updated,
     Removed,
     ControlsPatched,
+}
+
+/// How an asset library record changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetChangeKind {
+    Added,
+    Modified,
+    Removed,
+}
+
+/// How a render group's authored layer stack changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerStackChangeKind {
+    Created,
+    Updated,
+    Removed,
+    Reordered,
+    ControlsPatched,
+}
+
+/// Runtime health for one authored layer producer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerHealth {
+    Loading,
+    Active,
+    Stalled,
+    Failed { reason: String },
+    AssetMissing,
 }
 
 /// Why the active scene changed.
@@ -560,6 +593,22 @@ pub enum HypercolorEvent {
         kind: RenderGroupChangeKind,
     },
 
+    /// An authored layer stack in a render group changed.
+    LayerStackChanged {
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layers_version: u64,
+        kind: LayerStackChangeKind,
+    },
+
+    /// Runtime health for one authored layer producer changed.
+    LayerHealthChanged {
+        scene_id: SceneId,
+        group_id: RenderGroupId,
+        layer_id: SceneLayerId,
+        health: LayerHealth,
+    },
+
     /// The active scene changed.
     ActiveSceneChanged {
         previous: Option<SceneId>,
@@ -698,6 +747,12 @@ pub enum HypercolorEvent {
     /// A typed driver/device control surface changed.
     ControlSurfaceChanged(ControlSurfaceEvent),
 
+    /// A user media asset changed in the daemon-managed asset library.
+    AssetChanged {
+        asset_id: AssetId,
+        kind: AssetChangeKind,
+    },
+
     /// A system-level error occurred.
     Error {
         code: String,
@@ -786,6 +841,7 @@ pub enum EventCategory {
     Layout,
     Input,
     Integration,
+    Asset,
 }
 
 /// Delivery priority for events.
@@ -830,6 +886,8 @@ impl HypercolorEvent {
             | Self::SceneTransitionComplete { .. }
             | Self::SceneEnabled { .. }
             | Self::RenderGroupChanged { .. }
+            | Self::LayerStackChanged { .. }
+            | Self::LayerHealthChanged { .. }
             | Self::ActiveSceneChanged { .. } => EventCategory::Scene,
 
             Self::AudioSourceChanged { .. }
@@ -853,6 +911,8 @@ impl HypercolorEvent {
             | Self::SessionChanged(..)
             | Self::ControlSurfaceChanged(..)
             | Self::Error { .. } => EventCategory::System,
+
+            Self::AssetChanged { .. } => EventCategory::Asset,
 
             Self::TriggerFired { .. }
             | Self::ScheduleActivated { .. }
@@ -891,6 +951,10 @@ impl HypercolorEvent {
             Self::DeviceConnected { .. }
             | Self::DeviceDisconnected { .. }
             | Self::DeviceError { .. }
+            | Self::LayerHealthChanged {
+                health: LayerHealth::Failed { .. } | LayerHealth::AssetMissing,
+                ..
+            }
             | Self::EffectDegraded {
                 state: EffectDegradationState::Failed,
                 ..

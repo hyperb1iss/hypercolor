@@ -257,6 +257,7 @@ impl ComposeContext<'_> {
         match render_group_result {
             Ok(render_group_result) => {
                 self.publish_effect_recovered();
+                self.publish_layer_runtime_events();
                 let scene_frame = render_group_result.scene_frame.clone();
                 let composition_start = Instant::now();
                 let compiled_plan = self.compose.composition_planner.compile_primary_frame(
@@ -333,6 +334,7 @@ impl ComposeContext<'_> {
                 }
             }
             Err(error) => {
+                self.publish_layer_runtime_events();
                 if self.publish_effect_error(&error)
                     || error.downcast_ref::<RenderGroupEffectError>().is_none()
                 {
@@ -669,6 +671,16 @@ impl ComposeContext<'_> {
         };
 
         self.publish_effect_degraded(&effect_error, EffectDegradationState::Recovered, None);
+    }
+
+    fn publish_layer_runtime_events(&mut self) {
+        for event in self
+            .compose
+            .render_group_runtime
+            .drain_layer_runtime_events()
+        {
+            self.state.event_bus.publish(event);
+        }
     }
 
     fn publish_effect_degraded(

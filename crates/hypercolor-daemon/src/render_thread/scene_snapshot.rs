@@ -251,7 +251,7 @@ async fn snapshot_scene_runtime(
     let active_render_group_count = u32::try_from(
         active_render_groups
             .iter()
-            .filter(|group| group_has_enabled_effect_layer(group))
+            .filter(|group| group_has_enabled_layer(group))
             .count(),
     )
     .unwrap_or(u32::MAX);
@@ -368,12 +368,12 @@ async fn current_effect_scene_snapshot(
     }
 }
 
-fn group_has_enabled_effect_layer(group: &RenderGroup) -> bool {
+fn group_has_enabled_layer(group: &RenderGroup) -> bool {
     group.enabled
         && group
             .effective_layers()
             .into_iter()
-            .any(|layer| layer.enabled && matches!(layer.source, LayerSource::Effect { .. }))
+            .any(|layer| layer.enabled)
 }
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {

@@ -12,6 +12,7 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState,
 };
+use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
@@ -229,6 +230,7 @@ async fn layer_crud_returns_etags_and_stale_versions() {
     let (scene_id, group_id) = install_scene(&state, effect.id, Vec::new()).await;
     let app = test_app_with_state(Arc::clone(&state));
     let base_uri = format!("/api/v1/scenes/{scene_id}/groups/{group_id}/layers");
+    let mut events = state.event_bus.subscribe_all();
 
     let list_response = send(&app, empty_request("GET", base_uri.clone())).await;
     assert_eq!(list_response.status(), StatusCode::OK);
@@ -254,6 +256,21 @@ async fn layer_crud_returns_etags_and_stale_versions() {
     .await;
     assert_eq!(create_response.status(), StatusCode::CREATED);
     assert_eq!(response_etag(&create_response), "\"1\"");
+    let event = events.recv().await.expect("layer stack changed event");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::RenderGroupChanged { .. }
+    ));
+    let event = events.recv().await.expect("layer stack changed event");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::LayerStackChanged {
+            scene_id: event_scene_id,
+            group_id: event_group_id,
+            layers_version: 1,
+            kind: LayerStackChangeKind::Created,
+        } if event_scene_id == scene_id && event_group_id == group_id
+    ));
     let create_json = body_json(create_response).await;
     assert_eq!(create_json["data"]["layers_version"], 1);
     assert_eq!(
