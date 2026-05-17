@@ -4,18 +4,19 @@
 > authorable feature. The data model and per-group rendering primitives
 > already exist; this spec adds the missing core piece (per-group LED
 > sampling, so multi-zone output is partition-safe), the authoring surface
-> (zone lifecycle in `SceneManager`, REST API, real-time preview, UI), and
-> the engine hardening (unassigned-device behavior) needed to ship it.
+> (zone lifecycle in `SceneManager`, REST API, real-time preview, Studio
+> backend contract), and the engine hardening (unassigned-device behavior)
+> needed to ship it.
 
 **Status:** Draft
 **Author:** Nova
 **Date:** 2026-05-17
-**Crates:** `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
+**Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
 **Evolves:** Render Groups (27)
 **Depends on:** Spatial Layout Engine (06), Effect System (07),
 Scenes & Automation (13), Render Groups (27), Canonical Render Pipeline (48)
-**Related:** User Media & Layer Stack (60), SparkleFlinger (design/30),
-brainstorm decision `decision_626e122a924d`
+**Related:** User Media & Layer Stack (60), Studio Composition UI (65),
+SparkleFlinger (design/30), brainstorm decision `decision_626e122a924d`
 
 ---
 
@@ -54,7 +55,7 @@ single Scene. This spec keeps that vocabulary: a Scene holds many Zones.
 8. [Device and Zone Assignment](#8-device-and-zone-assignment)
 9. [API Surface](#9-api-surface)
 10. [Real-Time Preview](#10-real-time-preview)
-11. [UI Integration](#11-ui-integration)
+11. [Studio Backend Contract](#11-studio-backend-contract)
 12. [Render Engine Changes](#12-render-engine-changes)
 13. [Migration and Persistence](#13-migration-and-persistence)
 14. [Relationship to Spec 60](#14-relationship-to-spec-60)
@@ -104,14 +105,14 @@ Three things are missing, and this spec supplies all three.
 
 Spec 64 makes multi-zone real: per-group LED sampling so output is correct,
 `UnassignedBehavior` enforcement, zone lifecycle mutations in the
-`SceneManager`, a `/api/v1/scenes/:id/zones` REST surface, per-zone preview
-frames, and a zone-management UI.
+`SceneManager`, a `/api/v1/scenes/{id}/zones` REST surface, per-zone preview
+frames, and the backend capabilities Studio consumes.
 
 The data model is complete. This spec adds exactly one field to
 `hypercolor-types` (`Scene.groups_revision`, a version counter). The
 remaining work is a contained render-thread change, `SceneManager` methods,
-daemon API, UI, and verification. It is not a pipeline rewrite, but §12.1 is
-a real engine change, not cosmetic hardening.
+daemon API, capability/status surfacing, and verification. It is not a
+pipeline rewrite, but §12.1 is a real engine change, not cosmetic hardening.
 
 ---
 
@@ -119,7 +120,7 @@ a real engine change, not cosmetic hardening.
 
 ### 2.1 One Effect Per Scene Is the Only Authorable Shape
 
-The everyday path is `POST /api/v1/effects/:id/apply`. It resolves the
+The everyday path is `POST /api/v1/effects/{id}/apply`. It resolves the
 effect, resolves the full active layout, and writes both into the active
 scene's `Primary` render group through `SceneManager::upsert_primary_group`.
 Every connected LED device is a zone inside that one group's layout, so every
@@ -141,7 +142,7 @@ groups, but nothing constructs one.
 
 ### 2.2 The REST Surface Cannot Touch Groups
 
-`PUT /api/v1/scenes/:id` (`update_scene`) rebuilds a `Scene` from the request
+`PUT /api/v1/scenes/{id}` (`update_scene`) rebuilds a `Scene` from the request
 body but copies `existing.groups` through untouched. `create_scene` always
 produces an empty `groups` vector. `GET /api/v1/scenes/active` returns
 `groups` for display, but no endpoint creates, edits, or deletes them. The
@@ -218,19 +219,24 @@ is authoring surface.
   with the existing `controls_version` / `layers_version` pattern.
 - **Device-to-zone assignment.** Move a `DeviceZone` from one group's layout
   into another, preserving the exclusivity invariant.
-- **REST surface.** A `/api/v1/scenes/:id/zones` resource for zone CRUD and
+- **REST surface.** A `/api/v1/scenes/{id}/zones` resource for zone CRUD and
   device assignment, mirroring the CRUD shape used by `api/layers.rs`.
 - **`UnassignedBehavior` enforcement.** Define and wire `Off`, `Hold`, and
   `Fallback` for devices not claimed by any zone, with a concrete routing
   mechanism (§12.2).
+- **`UnassignedBehavior` write API.** Expose a scene-level write route for the
+  Studio "unassigned lights" control, with the same revision semantics as the
+  zone-structure endpoints.
 - **`effects/apply` that respects zones.** Applying an effect updates the
   `Primary` zone's content without clobbering an established multi-zone
   device assignment.
+- **Capability advertisement.** Report named multi-zone capabilities through
+  the status surface so Studio enables affordances only when their backend is
+  actually live.
 - **Per-zone preview.** Publish each zone's canvas as an addressable preview
   frame on the WebSocket.
-- **Zone-management UI.** A zone sidebar, device assignment, per-zone effect
-  and control panels, a zone-scoped layout editor, and a tiled multi-zone
-  preview.
+- **Studio backend contract.** Provide the API and stream contracts that Spec
+  65's zone sidebar, assignment UI, per-zone panels, and tiled preview consume.
 - **Backwards compatibility.** Existing single-group and legacy
   `zone_assignments` scenes load and render unchanged.
 
@@ -248,12 +254,16 @@ is authoring surface.
 - **Surfaces.** A future model where a stable device partition owns its own
   independent scene stack and automation is the north star but out of scope.
   v1 zones are its substrate.
-- **New `hypercolor-types` domain types.** Only `Scene.groups_revision` (a
-  `u64` version counter) is added.
+- **New render-group domain types.** `RenderGroup` stays the internal zone
+  type. The only persisted scene field added is `Scene.groups_revision`; event
+  and status response shapes may grow to support the backend contract.
 - **A per-zone target for `effects/apply`.** `effects/apply` keeps targeting
   the `Primary` zone. Setting a non-primary zone's effect goes through the
   per-group layer endpoints. A `?zone=` parameter is a possible future
   convenience, not v1.
+- **Studio UI implementation.** Spec 65 owns the Leptos Studio workspace,
+  feature flag, Media page, zone rail, assignment interactions, and visual
+  verification. Spec 64 owns the daemon capabilities those UI waves consume.
 - **Changes to the layer stack.** Spec 60 owns the per-group layer model.
   Spec 64 consumes `RenderGroup` as Spec 60 leaves it (see §14).
 
@@ -301,15 +311,16 @@ disjoint device sets. The two compose cleanly and touch different fields of
 | `UnassignedBehavior` enforcement         | render thread + `BackendManager`        | 1    |
 | Custom-zone lifecycle and assignment     | `SceneManager`, `Scene.groups_revision` | 2    |
 | `effects/apply` zone-preserving behavior | `api/effects.rs`                        | 2    |
-| `/api/v1/scenes/:id/zones` REST surface  | new `api/scenes_zones.rs`               | 3    |
+| `/api/v1/scenes/{id}/zones` REST surface | new `api/scenes_zones.rs`               | 3    |
+| Unassigned-behavior write route          | `api/scenes.rs` or `api/scenes_zones.rs`| 3    |
+| Multi-zone capability advertisement      | `/api/v1/status`                        | 3    |
 | Per-zone preview frames                  | WebSocket, render thread                | 3    |
-| Zone-management UI                       | `hypercolor-ui`                         | 4    |
 
 ### 4.4 Data Flow
 
 ```mermaid
 graph TD
-    UI[Zone UI] -->|/scenes/:id/zones| API[scenes_zones API]
+    UI[Studio UI] -->|/scenes/{id}/zones| API[scenes_zones API]
     API -->|create / delete / assign| SM[SceneManager]
     SM -->|refresh_active_render_groups| RT[render thread]
     RT -->|render_scene| RGR[RenderGroupRuntime]
@@ -422,7 +433,7 @@ This interacts with `effects/apply`. Today `effects/apply` resolves the full
 active layout and hands it to `upsert_primary_group`, which overwrites the
 `Primary` group's layout. In a multi-zone scene that would pull every device
 back into `Primary` and duplicate zones already owned by `Custom` groups.
-"Unchanged" is therefore not safe. §9.5 specifies the corrected behavior:
+"Unchanged" is therefore not safe. §9.6 specifies the corrected behavior:
 `effects/apply` seeds `Primary`'s layout with the full device set only when
 the scene has no `Custom` zones; otherwise it updates `Primary`'s content
 without expanding `Primary`'s device assignment beyond the devices that no
@@ -577,11 +588,12 @@ only new snapshot-locked surface is structural zone mutation. If a uniform
 policy is wanted, that is a separate change.
 
 A new `groups_revision: u64` on `Scene`, bumped on every create, delete,
-assignment, or role change, gives the API an optimistic-concurrency token for
-structural edits and lets the UI detect a concurrent restructure. It is added
-with `#[serde(default)]`, the same compatibility pattern as
-`controls_version`. This is the single field Spec 64 adds to
-`hypercolor-types`.
+assignment, role change, and unassigned-output policy change, gives the API
+an optimistic-concurrency token for scene routing edits and lets the UI detect
+a concurrent restructure. It is added with `#[serde(default)]`, the same
+compatibility pattern as `controls_version`. This is the single persisted
+scene field Spec 64 adds to `hypercolor-types`; API responses and event
+variants may still grow to advertise the new capability surface.
 
 ---
 
@@ -658,25 +670,29 @@ unchanged.
 
 ## 9. API Surface
 
-A new `/api/v1/scenes/:id/zones` resource, handled by a new
+A new `/api/v1/scenes/{id}/zones` resource, handled by a new
 `crates/hypercolor-daemon/src/api/scenes_zones.rs` module, shaped like
 `api/layers.rs`. All responses use the standard `{ data, meta }` envelope.
 
 ### 9.1 Endpoints
 
 ```
-GET    /api/v1/scenes/:id/zones                       List zones in a scene
-POST   /api/v1/scenes/:id/zones                       Create a Custom zone
-GET    /api/v1/scenes/:id/zones/:zone_id              Get one zone
-PATCH  /api/v1/scenes/:id/zones/:zone_id              Update zone metadata
-DELETE /api/v1/scenes/:id/zones/:zone_id              Delete a Custom zone
-POST   /api/v1/scenes/:id/zones/:zone_id/devices      Assign device zones
-DELETE /api/v1/scenes/:id/zones/:zone_id/devices/:dz  Unassign a device zone
+GET    /api/v1/scenes/{id}/zones                      List zones in a scene
+POST   /api/v1/scenes/{id}/zones                      Create a Custom zone
+GET    /api/v1/scenes/{id}/zones/{zone_id}            Get one zone
+PATCH  /api/v1/scenes/{id}/zones/{zone_id}            Update zone metadata
+DELETE /api/v1/scenes/{id}/zones/{zone_id}            Delete a Custom zone
+POST   /api/v1/scenes/{id}/zones/{zone_id}/devices    Assign device zones
+DELETE /api/v1/scenes/{id}/zones/{zone_id}/devices/{dz}
+                                                       Unassign a device zone
+PATCH  /api/v1/scenes/{id}/unassigned-behavior        Update unassigned outputs
 ```
 
 Per-zone effects, controls, and layers are **not** new endpoints. They reuse
 the existing per-group layer and control routes, addressed by the zone's
-`RenderGroupId`. Spec 64's API is zone lifecycle and device assignment only.
+`RenderGroupId`. Spec 64's zone API is lifecycle and device assignment; the
+unassigned-behavior route is scene-level because it affects outputs outside
+any one zone.
 
 ### 9.2 Request Types
 
@@ -703,6 +719,11 @@ pub struct AssignDevicesRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UpdateUnassignedBehaviorRequest {
+    pub unassigned_behavior: UnassignedBehavior,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum DeviceZoneAssignment {
     /// Move an existing device zone by id.
@@ -714,17 +735,17 @@ pub enum DeviceZoneAssignment {
 
 ### 9.3 Optimistic Concurrency
 
-Structural endpoints (`POST`, `DELETE`, the device endpoints, and `PATCH`
-when it sets `make_primary`) follow the **same precondition contract the
-per-effect controls and layer endpoints use**: the response carries the
-scene's `groups_revision` as an `ETag`, and a structural request may carry an
-`If-Match` header. A mismatch returns `412 Precondition Failed` with the
-current revision in the body. This matches `PATCH /effects/:id/controls` and
-the `api/layers.rs` endpoints. The legacy `PATCH /effects/current/controls`
-endpoint predates that contract and does not use it; new code follows the
-`412` plus `ETag` pattern. `412` is distinct from the `409 Conflict` this
-spec uses for snapshot-locked scenes. Metadata-only `PATCH` calls do not
-require `If-Match`.
+Structural endpoints (`POST`, `DELETE`, the device endpoints,
+`PATCH /zones/{zone_id}` when it sets `make_primary`, and
+`PATCH /unassigned-behavior`) follow the **same precondition contract the
+layer endpoints use**: the response carries the scene's `groups_revision` as
+an `ETag`, and a structural request may carry an `If-Match` header. A
+mismatch returns `412 Precondition Failed` with the current revision in the
+body. This matches the `api/layers.rs` endpoints. The legacy
+`PATCH /effects/current/controls` endpoint predates that contract and does
+not use it; new code follows the `412` plus `ETag` pattern. `412` is distinct
+from the `409 Conflict` this spec uses for snapshot-locked scenes.
+Metadata-only `PATCH` calls do not require `If-Match`.
 
 ### 9.4 Error Cases
 
@@ -735,12 +756,40 @@ require `If-Match`.
 | Device zone id not found in the scene         | 404    |                                             |
 | Structural mutation on a `Snapshot` scene     | 409    | `blocks_runtime_mutation` is true           |
 | Delete a `Primary` or `Display` zone          | 409    | Use the dedicated lifecycle endpoints       |
+| Fallback behavior names a missing zone        | 404    | `Fallback(RenderGroupId)` must resolve      |
 | `If-Match` revision mismatch                  | 412    | Body carries current `groups_revision`      |
 | Assignment that empties a zone                | 200    | An empty zone is valid                      |
 
-### 9.5 `effects/apply` Preserves Zone Assignment
+### 9.5 Capability Advertisement
 
-`POST /api/v1/effects/:id/apply` keeps targeting the `Primary` zone, but its
+Studio gates its multi-zone affordances on named daemon capabilities. Spec 64
+extends `GET /api/v1/status` with:
+
+```rust
+pub struct SystemStatus {
+    // existing fields...
+    pub capabilities: Vec<String>,
+}
+```
+
+The backend advertises capabilities only once the matching behavior is
+implemented and verified:
+
+| Capability                             | Advertised when                                      |
+| -------------------------------------- | ---------------------------------------------------- |
+| `multi-zone-sampling`                  | Per-group LED sampling is the live output path       |
+| `zone-crud`                            | Zone list/create/get/patch/delete endpoints are live |
+| `zone-device-assignment`               | Device assignment and unassignment routes are live   |
+| `zone-preview-frames`                  | Per-zone preview frames are published                |
+| `scene-unassigned-behavior-write`      | The scene-level unassigned behavior route is live    |
+
+These are daemon/product capabilities, separate from the WebSocket protocol's
+existing channel-capability list. A UI must not infer them by probing mutating
+routes.
+
+### 9.6 `effects/apply` Preserves Zone Assignment
+
+`POST /api/v1/effects/{id}/apply` keeps targeting the `Primary` zone, but its
 layout handling changes (§6.2). Today it always passes the full resolved
 layout to `upsert_primary_group`, which overwrites `Primary`'s device
 assignment. Under multi-zone that destroys the partition.
@@ -767,6 +816,21 @@ MCP `set_effect` and `set_color` tools also call `upsert_primary_group` with
 the full layout today; they must move to the same helper so the REST and MCP
 paths cannot diverge. The quick path "pick an effect, it covers everything"
 is preserved for users who have not opted into zones.
+
+`profiles::apply_profile_snapshot` uses the same primary-group write path and
+must move to the same helper. Older profiles snapshot only the `Primary` group
+and display groups; applying one in a multi-zone scene updates the `Primary`
+zone's content but does not reclaim device outputs already owned by `Custom`
+zones.
+
+The associated-layout path is part of this fix. `effects/apply`,
+profile apply, and explicit layout apply all eventually call
+`apply_layout_update`, which currently calls `sync_primary_group_layout` with
+the full layout. Under multi-zone that would re-expand `Primary` after the
+zone-preserving helper ran. Spec 64 changes the layout-apply path so full
+layout sync occurs only when no `Custom` zones exist; with `Custom` zones
+present, a layout apply must target an explicit zone or preserve the existing
+`Primary` assignment.
 
 ---
 
@@ -815,45 +879,51 @@ frame. Previews are throttled to the preview tick rate, not the render rate.
 
 ---
 
-## 11. UI Integration
+## 11. Studio Backend Contract
 
-In `crates/hypercolor-ui`, Leptos 0.8 CSR, following the leptos-ui
-conventions (SilkCircuit tokens, signal-driven state, WebSocket binary
-protocol).
+Spec 65 owns the Leptos Studio UI. Spec 64 owns the daemon contract that lets
+Studio turn on multi-zone affordances without unsafe probing.
 
-### 11.1 Zone Sidebar
+### 11.1 Zone Rail Contract
 
-A panel listing the active scene's zones. Each row shows the zone's `color`
-swatch, `name`, current effect name, an enabled toggle, and a small live
-preview fed by the §10 `ZonePreviewFrame`. A "new zone" control calls `POST
-/zones`. Selecting a zone makes it the editing context for the effect panel,
-the control panel, and the layout editor.
+Studio reads the active scene's `groups` and the new `groups_revision`.
+LED-role groups appear under Lights; display-role groups appear under
+Screens. Zone CRUD uses the `/api/v1/scenes/{id}/zones` endpoints and the
+`zone-crud` capability. Responses include the updated zone and
+`groups_revision`, with `ETag` carrying the same revision.
 
-### 11.2 Device Assignment
+### 11.2 Device-Output Assignment Contract
 
-An unassigned-device tray plus drag-and-drop into zone rows. A drop issues
-`POST /zones/:zone_id/devices`. Dragging a device from one zone row to
-another issues the same call against the destination; the source loses the
-device by exclusivity. The tray is populated from connected devices whose
-`DeviceZone` is in no zone.
+Studio's assignment unit is a `DeviceZone`, not a physical device. The
+assignment endpoint accepts either an existing zone id or a full `DeviceZone`
+payload; moving a payload to a zone removes it from any prior owner before
+adding it to the destination. Unassigning uses
+`DELETE /api/v1/scenes/{id}/zones/{zone_id}/devices/{dz}`. The daemon remains
+the source of truth for exclusivity and returns the current zone list after a
+successful structural edit.
 
-### 11.3 Per-Zone Panels
+### 11.3 Unassigned Entry Contract
 
-The effect picker, the control panel, and the layout editor bind to the
-selected zone's `RenderGroupId` and call the existing per-group layer and
-control endpoints. The layout editor is zone-scoped (§8.4).
+The Studio Unassigned entry is synthetic and has no layer stack. It reads the
+active scene's `unassigned_behavior` and writes it through
+`PATCH /api/v1/scenes/{id}/unassigned-behavior`, gated by
+`scene-unassigned-behavior-write`. The response carries the updated behavior
+and `groups_revision`; the daemon publishes a scene-level change event so
+other clients know to refetch the active scene.
 
-### 11.4 Multi-Zone Dashboard Preview
+### 11.4 Per-Zone Panels
 
-The dashboard shows a tiled preview, one tile per active zone, each labeled
-with the zone name and effect, built client-side from the per-zone
-`ZonePreviewFrame` stream.
+Studio binds effect, layer, and control panels to the selected zone's
+`RenderGroupId` and uses the existing per-group layer and control endpoints.
+No new per-zone effect endpoint exists in v1. Applying an effect to a
+non-primary zone is a layer mutation, not `effects/apply`.
 
-### 11.5 Progressive Disclosure
+### 11.5 Preview Contract
 
-A user with one zone sees the current single-effect dashboard; the zone
-sidebar shows one row ("All Devices"). Zone management is discoverable but
-never in the way. Complexity scales with the user's setup.
+Studio's tiled multi-zone Stage consumes `ZonePreviewFrame` messages when the
+`zone-preview-frames` capability is present. If that capability is absent but
+zone CRUD exists, Studio may fall back to the existing composited scene
+preview; correctness of device output is still gated on `multi-zone-sampling`.
 
 ---
 
@@ -943,12 +1013,13 @@ groups but not `Scene.unassigned_behavior`. Spec 64 adds `unassigned_behavior`
 to that snapshot so the render thread applies the policy without locking the
 scene manager mid-frame. The render thread's frame-reuse key currently
 combines the active-render-group revision with the effect-registry
-generation; Spec 64 also folds in the device-registry generation and the
-active `unassigned_behavior`. Without the device-registry generation, a
-device connecting or disconnecting would not invalidate a retained frame and
-the unassigned-output set would go stale; without `unassigned_behavior` in
-the key, a policy change from (say) `Off` to `Hold` would not take effect
-until some unrelated change invalidated the frame.
+generation; Spec 64 extends that dependency key, or its generation hash, to
+include the device-registry generation and the active `unassigned_behavior`.
+Without the device-registry generation, a device connecting or disconnecting
+would not invalidate a retained frame and the unassigned-output set would go
+stale; without `unassigned_behavior` in the key, a policy change from (say)
+`Off` to `Hold` would not take effect until some unrelated change invalidated
+the frame.
 
 ### 12.3 Publish Per-Zone Preview Frames
 
@@ -1059,16 +1130,17 @@ Ordered by dependency. Each wave is independently shippable and verifiable.
 | Wave | Scope                                                                | Crates           |
 | ---- | -------------------------------------------------------------------- | ---------------- |
 | 1    | Per-group LED sampling; `UnassignedBehavior` enforcement; render tests | core, daemon   |
-| 2    | `SceneManager` zone lifecycle and assignment; `groups_revision`; `effects/apply` zone-preserving change | types, core, daemon |
-| 3    | `/scenes/:id/zones` REST surface; per-zone `ZonePreviewFrame`         | daemon           |
-| 4    | Zone-management UI: sidebar, assignment, per-zone panels, preview     | ui               |
+| 2    | `SceneManager` zone lifecycle and assignment; `groups_revision`; zone-preserving effect/profile/layout apply | types, core, daemon |
+| 3    | `/scenes/{id}/zones` REST surface; unassigned-behavior write route; capability advertisement | daemon |
+| 4    | Per-zone `ZonePreviewFrame`; WebSocket/status tests; Studio contract hardening | daemon |
 
 Wave 1 makes a manually constructed multi-zone scene render correctly. It
 carries the real engine risk and must land first, before any authoring
 surface can produce such a scene. Wave 2 makes zones constructible in the
-core and corrects `effects/apply`. Wave 3 exposes them over REST. Wave 4
-makes them usable. Waves 1 through 3 are testable headless; Wave 4 needs
-visual verification.
+core and corrects every existing path that can rewrite the `Primary` layout.
+Wave 3 exposes zone mutation and capability gates over REST. Wave 4 publishes
+per-zone previews so Spec 65 can build the tiled Studio Stage. All four waves
+are backend-testable headless; Spec 65 owns visual verification.
 
 ---
 
@@ -1097,11 +1169,13 @@ workspace convention. Inline `#[cfg(test)]` is used only where the existing
 - **Assignment**: `assign_device_zone` moves a device zone and removes it
   from the prior owner; exclusivity holds after arbitrary move sequences;
   placement resets on a cross-zone move while topology is preserved.
-- **`effects/apply`**: a scene with no `Custom` zones still gets a full
-  `Primary` layout; a scene with `Custom` zones keeps its `Primary` device
-  assignment after apply.
+- **Apply paths**: a scene with no `Custom` zones still gets a full `Primary`
+  layout; a scene with `Custom` zones keeps its `Primary` device assignment
+  after `effects/apply`, MCP `set_effect`, MCP `set_color`, profile apply, and
+  associated-layout apply.
 - **API** (`hypercolor-daemon`): zone CRUD, device assignment,
-  `If-Match` / `412` handling, the §9.4 error matrix.
+  unassigned-behavior writes, capability advertisement, `If-Match` / `412`
+  handling, and the §9.4 error matrix.
 - **Persistence**: a scene with `Custom` zones round-trips through the scene
   store; `groups_revision` defaults to `0` on older scenes.
 
@@ -1119,7 +1193,7 @@ workspace convention. Inline `#[cfg(test)]` is used only where the existing
 ### 16.3 Gates
 
 `just verify` (fmt, lint, test) passes after every wave. `cargo check
---workspace` passes for Waves 1 through 3. `just ui-test` passes for Wave 4.
+--workspace` passes for every Spec 64 wave. `just ui-test` belongs to Spec 65.
 
 ---
 
@@ -1152,7 +1226,7 @@ workspace convention. Inline `#[cfg(test)]` is used only where the existing
 
 ## 18. Recommendation
 
-Build it, in the four waves of §15.
+Build it, in the four backend waves of §15.
 
 The data model is complete and most of the renderer is built: per-layer
 effect renderers, per-group canvases, per-group spatial engines, independent
@@ -1164,9 +1238,10 @@ reusing the per-group `SpatialEngine`s that already exist and the
 `sample_append_into_at` primitive. That is a contained render-thread change,
 not a rewrite, but it is real engine work and it is the heart of Wave 1.
 
-The rest is authoring surface: one new field, a handful of `SceneManager`
-methods, the `effects/apply` correction, one REST module, one WebSocket
-message, and a UI panel.
+The rest is authoring surface for Studio to consume: one new persisted scene
+field, a handful of `SceneManager` methods, the apply-path corrections, one
+REST module, one scene-level write route, capability advertisement, and one
+WebSocket message.
 
 Start with Wave 1. Per-group sampling and `UnassignedBehavior` carry the
 engine risk and must prove out before any authoring surface is built on top
@@ -1186,25 +1261,30 @@ New files:
 
 | Path                                                       | Purpose                          |
 | ----------------------------------------------------------- | -------------------------------- |
-| `crates/hypercolor-daemon/src/api/scenes_zones.rs`          | `/scenes/:id/zones` handlers     |
+| `crates/hypercolor-daemon/src/api/scenes_zones.rs`          | `/scenes/{id}/zones` handlers    |
 | `crates/hypercolor-core/tests/zone_lifecycle_tests.rs`      | Zone mutation coverage           |
 | `crates/hypercolor-daemon/tests/scenes_zones_api_tests.rs`  | Zone REST coverage               |
-| `crates/hypercolor-ui/src/zones/` (module)                  | Zone sidebar, assignment, panels |
 
 Modified files:
 
 | Path                                                       | Change                                          |
 | ----------------------------------------------------------- | ----------------------------------------------- |
 | `crates/hypercolor-types/src/scene.rs`                      | Add `Scene.groups_revision`                     |
+| `crates/hypercolor-types/src/event.rs`                      | Add scene-level event for unassigned behavior or scene settings changes |
 | `crates/hypercolor-core/src/scene/mod.rs`                   | Zone lifecycle and assignment mutations         |
 | `crates/hypercolor-core/src/device/manager.rs`              | `BackendManager` unassigned clear path          |
 | `crates/hypercolor-daemon/src/render_thread/render_groups.rs` | Per-group LED sampling; multi-group tests     |
 | `crates/hypercolor-daemon/src/render_thread/` (snapshot, reuse) | `unassigned_behavior` in the scene snapshot; device-registry generation and policy in the reuse key |
 | `crates/hypercolor-daemon/src/api/effects.rs`               | `effects/apply` preserves zone assignment       |
+| `crates/hypercolor-daemon/src/api/profiles.rs`              | Profile apply uses the same zone-preserving primary helper |
+| `crates/hypercolor-daemon/src/api/layouts.rs`               | Explicit layout apply avoids expanding `Primary` in multi-zone scenes |
+| `crates/hypercolor-daemon/src/scene_transactions.rs`        | Zone-aware layout application and primary sync  |
 | `crates/hypercolor-daemon/src/mcp/tools/effects.rs`         | MCP `set_effect`/`set_color` use the shared helper |
 | `crates/hypercolor-daemon/src/api/mod.rs`                   | Mount the zones router                          |
+| `crates/hypercolor-daemon/src/api/scenes.rs`                | Scene-level unassigned behavior write route     |
+| `crates/hypercolor-daemon/src/api/system.rs`                | Advertise multi-zone capabilities in status     |
+| `crates/hypercolor-daemon/src/api/openapi.rs`               | Document zone and unassigned behavior endpoints |
 | `crates/hypercolor-daemon/src/api/ws/` (preview channel)    | `ZonePreviewFrame` message                      |
-| `crates/hypercolor-ui/` (dashboard, layout editor)          | Zone-scoped editing, tiled preview              |
 
-No changes to `hypercolor-hal`, the driver crates, or `hypercolor-types`
-beyond the single `groups_revision` field.
+No changes to `hypercolor-hal`, the driver crates, or `hypercolor-ui` are in
+Spec 64. Spec 65 owns the Studio UI.
