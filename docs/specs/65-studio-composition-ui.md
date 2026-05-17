@@ -9,7 +9,8 @@
 > in parallel with the existing pages behind a runtime feature flag,
 > reusing the already-polished layer manager.
 
-**Status:** Draft (revised after Codex cross-model review, 2026-05-17)
+**Status:** Ready to build (revised after Codex cross-model review and a
+pre-build foundation audit, 2026-05-17)
 **Author:** Nova
 **Date:** 2026-05-17
 **Crates:** `hypercolor-ui`
@@ -121,10 +122,13 @@ intuitively go to a page named "Assets."
 ### 2.2 The Same Model Is Split Two Ways
 
 `/displays` edits display-role render groups; `/assets` edits the primary
-LED render group. These are the same type with the same layer-stack
-contract. The split forces the user to learn an internal distinction
-(LED consumer vs. screen consumer) that the architecture explicitly treats
-as irrelevant to authoring.
+LED render group. The engine treats both as the same type — a render
+group with a layer stack — but the two pages were built on divergent code
+paths: `/displays` predates spec 60's layer model and still drives the
+`DisplayFaceBlendMode` API client, not `LayerPanel` (§6.7). The split
+forces the user to learn an internal distinction (LED consumer vs. screen
+consumer) that the architecture explicitly treats as irrelevant to
+authoring.
 
 ### 2.3 Internal Jargon Leaks Into the UI
 
@@ -256,7 +260,7 @@ The UI uses exactly these words. The internal type is never shown.
 | `SceneLayer`                            | a **layer**                      |                                                              |
 | `LayerSource` variant                   | a **source**                     | Picker tabs: Effect, Media, Screen Capture, Web Page, Color. |
 | `LayerBlendMode`                        | **blend mode**                   | Grouped per spec 60 §12.4.                                   |
-| `LayerRuntimeState` / `LayerHealthEvent`| a layer **health** pill          | Spec 60 §6.5; already rendered by the layer manager.         |
+| `LayerRuntimeState` / `LayerHealthEvent`| a layer **health** pill          | Spec 60 §6.5; rendered by the layer manager from Wave 6 (§10). |
 | `Scene.unassigned_behavior`             | what **unassigned lights** do    | Plain words: turn off / hold last colors / follow a zone.    |
 | Layer / asset / group / device UUID     | (never shown)                    | Resolve to display names; UUIDs only in dev tooling.         |
 | The composition workspace               | **Studio**                       |                                                              |
@@ -378,14 +382,15 @@ toggle is hidden — a single LCD has no spatial placement to edit.
 
 ### 6.4 The Layers Rail
 
-The right rail is the selected surface's layer stack: the spec 60
-`LayerPanel` component, reused under the contract pinned in §10. It
-provides top-to-bottom ordering, drag reorder, blend mode, opacity, the
-transform/color disclosure, per-layer health pill, enable toggle, delete,
-the five-source "Add layer" picker, and `If-Match` optimistic-concurrency
-handling against `layers_version`. Spec 65 does not redesign it; it
-reparents it from the `/assets` right rail into the Studio rail and fixes
-its labels (§6.5).
+The right rail is the selected surface's layer stack: the `LayerPanel`
+component, reused under the contract pinned in §10. Its core provides
+top-to-bottom ordering, drag reorder, blend mode, opacity, the
+transform/color-adjust disclosure, enable toggle, and delete. Wave 1
+completes it with the five-source "Add layer" picker and `If-Match`
+optimistic concurrency against `layers_version`; the per-layer health
+pill arrives in Wave 6 (§10). Spec 65 does not redesign the core editor;
+it reparents the panel from the `/assets` right rail into the Studio rail
+and fixes its labels (§6.5).
 
 ### 6.5 Jargon Scrub in the Layers Rail
 
@@ -447,6 +452,15 @@ parity with it. The parity checklist, verified in Wave 7:
 An item not yet at parity blocks the **Wave 7 default flip** — Studio must
 not become the default while a Screen can do less than the page it
 replaces. The Wave 8 deletion additionally requires the soak (§11.4).
+
+Because the live `/displays` page runs on the `DisplayFaceBlendMode`
+client rather than the layer model, the Studio Screen surfaces are built
+on the `api/layers.rs` per-group endpoints addressed to display-role
+groups — the same path every other surface uses. Wave 7 parity work
+therefore re-expresses display-face composition on the uniform layer
+contract; it is not a lift of the existing `/displays` UI. That the
+daemon serves display-role render groups through the per-group layer
+endpoints is a prerequisite to confirm before Wave 7 begins.
 
 ---
 
@@ -622,26 +636,55 @@ scene preview rather than blocking the feature.
 
 ## 10. Reusing the Layer Manager
 
-The layer manager is `LayerPanel` and `LayerRow`, currently defined as
-**inline functions inside `pages/assets.rs`** (around lines 489 and 626).
-It is the polished, working surface this spec must not regress.
+The layer manager is `LayerPanel` and `LayerRow`, today **inline
+`#[component]` functions inside `pages/assets.rs`** (`LayerPanel` at
+~line 488, `LayerRow` at ~line 651). The core stack editing it does —
+top-to-bottom ordering, drag reorder, blend mode, opacity, the
+transform/color-adjust disclosure, per-layer enable, and delete — is
+polished and working, and this spec must not regress it.
 
-Wave 1 has two distinct deliverables, kept separate on purpose:
+A pre-implementation foundation audit found the component is **not yet as
+complete as a Studio-ready layer manager needs**. Three capabilities the
+later Studio waves assume are absent today and are net-new work, not
+reuse:
 
-1. **Pure extraction.** Move `LayerPanel` / `LayerRow` into a standalone
-   module (`components/layer_panel/`) with no behavior change, and
-   repoint `/assets` at it. Verified by the old page behaving identically.
-2. **The Studio-ready contract.** Document and test the component's
-   prop/event surface so Studio (Wave 4) can mount it without surprises.
-   The contract covers: the surface identity it edits (scene id + group
-   id), the `layers_version` it carries for `If-Match`, the five-source
-   Add-layer picker, per-layer health-pill rendering (spec 60 §6.5),
-   transform/adjust/binding sub-panels, and the mutation callbacks
-   (`on_layers_mutated` and friends). "Reuse unchanged" means the
-   *behavior* is unchanged; it does not mean the contract is left
-   implicit. Wave 1 makes it explicit and test-covered.
+- **No five-source Add-layer picker.** The current add-layer flow is
+  **media-only** and is coupled to the asset page's `selected_asset`
+  signal. The Effect / Screen Capture / Web Page / Color sources have no
+  picker UI. Studio's §6.4 Layers rail needs all five.
+- **No per-layer health pill.** `LayerRow` renders no `LayerRuntimeState`
+  / `LayerHealthEvent` indicator. Whether the daemon already emits layer
+  health for the UI to consume must be confirmed before this is built.
+- **No `If-Match` on layer mutations.** `api/layers.rs` sends no
+  `If-Match` header on create / update / delete / reorder; `layers_version`
+  is only displayed. The optimistic-concurrency pattern exists elsewhere
+  in the crate (`api/effects.rs`, `viewport_designer.rs`) and is the
+  model to follow.
 
-Reusing one component for both the old and new pages means the polished
+Wave 1 therefore has three deliverables, kept separate on purpose:
+
+1. **Extract and decouple.** Move `LayerPanel` / `LayerRow` into a
+   standalone module (`components/layer_panel/`) and **decouple the
+   add-layer flow from `selected_asset` / `assets`** so the component owns
+   its own content selection. Repoint `/assets` at it. The core editing
+   behavior is unchanged; the extraction is verified by `/assets`
+   behaving identically for the existing media-layer flow.
+2. **Complete the component.** Build the five-source Add-layer picker and
+   add `If-Match` concurrency to the `api/layers.rs` mutations. Both land
+   in `components/layer_panel/` and benefit `/assets` immediately, so
+   there is still exactly one implementation. The per-layer health pill is
+   sequenced into Wave 6 (polish), gated on confirming daemon health
+   emission. The parameter-binding sub-panel an earlier draft implied is
+   **not built** — the `bindings` field has no UI today and none is in
+   scope.
+3. **Pin the contract.** Document and test the component's prop/event
+   surface so Studio (Wave 4) can mount it without surprises: the surface
+   identity it edits (scene id + group id), the `layers_version` it
+   carries for `If-Match`, the five-source picker, the single
+   `on_layers_mutated: Callback<()>` mutation callback (there is exactly
+   one), and the transform/adjust sub-panels.
+
+Reusing one component for both the old and new pages means the layer
 manager cannot drift: there is exactly one implementation, proven against
 `/assets` before Studio consumes it.
 
@@ -651,10 +694,23 @@ manager cannot drift: there is exactly one implementation, proven against
 
 ### 11.1 The Flag
 
-A runtime preference `studio_ui_beta: bool` (default `false`) is added to
-`preferences.rs`, surfaced as a toggle in Settings ("Studio UI (beta)").
-A runtime preference, not a Cargo feature, so the redesign can be flipped
-on and off against a live daemon during iteration without a rebuild.
+A browser-local `studio_ui_beta: bool` flag (default `false`) gates the
+new UI. It is **not** a Cargo feature — it flips on and off against a
+live daemon without a rebuild — and it is **not** a daemon config value:
+it is a per-browser UI preference.
+
+The foundation audit found the crate has no general app-preference
+struct. `preferences.rs` is a per-effect preset store
+(`HashMap<effect_id, EffectPreferences>`), the wrong home for an app
+flag; and the Settings page is a thin editor over the daemon's
+`HypercolorConfig` — every existing Settings control PATCHes daemon
+config, none is browser-local. The flag therefore follows the
+established **`storage.rs` localStorage pattern** already used for UI
+booleans such as `hc-fx-favorites`: a `signal()` seeded from
+`storage::get("hc-studio-ui-beta")`, provided as an app context in
+`app.rs`. Surfacing it in Settings requires a **new browser-local toggle
+widget** (the existing section components only emit daemon-config PATCH
+events); it lands in the Settings Developer section.
 
 ### 11.2 Parallel Pages
 
@@ -741,8 +797,14 @@ A third item is optional, not a blocker:
    If a reference endpoint is added the panel surfaces it; otherwise the
    panel omits reference information. This blocks nothing.
 
-Items 1 and 2 are not spec 65's to build. They are flagged to the spec 64 (backend)
-track and must be resolved there before Waves 9-10 can be implemented.
+Items 1 and 2 were not spec 65's to build, and as of 2026-05-17 spec 64
+has **delivered both**: `PATCH /api/v1/scenes/:id/unassigned-behavior`
+with `groups_revision` concurrency and a scene-settings change event, and
+a `capabilities` list on `GET /api/v1/status` advertising
+`multi-zone-sampling`, `zone-crud`, `zone-device-assignment`,
+`zone-preview-frames`, and `scene-unassigned-behavior-write`. Waves 9-10
+are therefore unblocked. Item 3 (media reference lookup) remains
+unbuilt; §7's panel omits reference information until it exists.
 
 ---
 
@@ -760,12 +822,12 @@ treatment and navigation.
 
 | Wave | Scope                                                                        | Gate |
 | ---- | ---------------------------------------------------------------------------- | ---- |
-| 1    | Extract `LayerPanel`/`LayerRow` to `components/layer_panel/`; repoint `/assets`; document and test the §10 contract. | — |
+| 1    | Extract `LayerPanel`/`LayerRow` to `components/layer_panel/` and decouple from asset-page state; build the five-source Add-layer picker; add `If-Match` to the layer mutations; repoint `/assets`; document and test the §10 contract. | — |
 | 2    | `studio_ui_beta` preference + Settings toggle; flag-driven nav swap; `/studio` and `/media` routes with off-flag redirect (§11.2). | — |
 | 3    | `/media` catalog page; shared catalog-grid component (also the Add-layer Media tab). | — |
 | 4    | Studio shell — three rails; Lights & Screens list; surface selection; Layers rail (Wave 1 component); Stage Output view. | — |
 | 5    | Stage Layout view — embed `layout_builder`/`layout_canvas`; Output/Layout toggle; retire `/layout` link. | — |
-| 6    | Jargon scrub (§6.5); friendly names; Add-layer target scope (§6.6); visual polish; responsive collapse (§13). | — |
+| 6    | Jargon scrub (§6.5); friendly names; per-layer health pill (§10); Add-layer target scope (§6.6); visual polish; responsive collapse (§13). | — |
 | 7    | Full UI QA sweep (§15.2); §6.7 display-parity checklist; flip `studio_ui_beta` default to `true` — flag and old pages **retained** (default-on soak). | — |
 | 8    | After soak: remove flag and toggle; delete `assets.rs`, `displays.rs`, `layout.rs` and their routes. | Soak confirms Studio stable |
 | 9    | Zone lifecycle — `+ New zone`, zone rows, rename/color/delete, Default-zone relabel, the Unassigned entry (read-only until its capability lands). | `zone-crud` + `multi-zone-sampling` + `zone-device-assignment` |
@@ -840,11 +902,12 @@ reviewed against spec 64 §11 for parity.
 - **Single-zone until spec 64.** Studio ships showing one Light
   ("All Lights"). The disabled `+ New zone` affordance signals the model
   to the user in the interim.
-- **Waves 9-10 depend on spec 64.** If spec 64 slips, single-zone Studio
-  still ships and cuts over at Wave 7; the multi-zone UX is fully designed
-  and waits. Spec 65 is not blocked on spec 64 for its core value. The two
-  §12.2 API additions are hard prerequisites for Wave 10 and must be
-  tracked on the backend.
+- **Waves 9-10 build on spec 64, which is done.** Spec 64 landed on
+  2026-05-17 — per-group sampling, zone CRUD, device assignment, the
+  unassigned-behavior write route, capability advertisement, and
+  `ZonePreviewFrame` are all implemented and verified. The multi-zone
+  waves are unblocked; each affordance still activates per its §9.6
+  capability gate.
 - **Layout view for Screens is intentionally absent.** A single LCD has
   no spatial placement; hiding the toggle is correct, not a gap.
 
@@ -885,7 +948,7 @@ New files:
 
 | Path                                                  | Purpose                                      |
 | ------------------------------------------------------ | -------------------------------------------- |
-| `crates/hypercolor-ui/src/components/layer_panel/`     | Extracted `LayerPanel` / `LayerRow`          |
+| `crates/hypercolor-ui/src/components/layer_panel/`     | Extracted + completed `LayerPanel` / `LayerRow` (picker, `If-Match`) |
 | `crates/hypercolor-ui/src/pages/studio/`               | Studio page — rails, stage, surface state    |
 | `crates/hypercolor-ui/src/pages/media.rs`              | Media catalog page                           |
 | `crates/hypercolor-ui/src/components/media_grid.rs`    | Shared catalog grid (Media page + picker tab)|
@@ -895,12 +958,12 @@ Modified files:
 | Path                                              | Change                                            |
 | -------------------------------------------------- | ------------------------------------------------- |
 | `crates/hypercolor-ui/src/pages/assets.rs`         | Repoint at extracted `LayerPanel` (Wave 1); deleted Wave 8 |
+| `crates/hypercolor-ui/src/api/layers.rs`           | Add `If-Match` concurrency to layer mutations (Wave 1) |
 | `crates/hypercolor-ui/src/components/sidebar.rs`   | Flag-driven nav set                               |
-| `crates/hypercolor-ui/src/preferences.rs`          | Add `studio_ui_beta`                              |
+| `crates/hypercolor-ui/src/app.rs`                  | `/studio` + `/media` routes in `AppRoutes`; off-flag redirect guard; `studio_ui_beta` context |
 | `crates/hypercolor-ui/src/pages/mod.rs`            | Register `studio`, `media` modules                |
-| `crates/hypercolor-ui/src/route_ui.rs`             | `/studio`, `/media` routes; off-flag redirect     |
 | `crates/hypercolor-ui/src/pages/effects.rs`        | Apply-target selector once multiple zones exist   |
-| `crates/hypercolor-ui/src/components/settings_sections.rs` | Studio UI beta toggle                     |
+| `crates/hypercolor-ui/src/components/settings_sections.rs` | New browser-local toggle widget for Studio UI beta |
 
 Deleted at cleanup (Wave 8):
 
