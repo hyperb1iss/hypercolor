@@ -953,6 +953,9 @@ fn display_preview_payload_frame_number(payload: &Bytes) -> u32 {
 
 #[test]
 fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
+    let _guard = WS_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     reset_ws_payload_caches();
     let snapshot = DisplayFrameSnapshot {
         jpeg_data: Arc::new(vec![0xff, 0xd8, 0x42, 0xff, 0xd9]),
