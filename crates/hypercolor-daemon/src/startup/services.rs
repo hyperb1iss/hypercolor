@@ -12,7 +12,7 @@ use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{info, warn};
 
-use hypercolor_core::asset::AssetLibrary;
+use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -137,7 +137,14 @@ impl DaemonState {
         info!("Event bus created");
 
         let asset_library_path = ConfigManager::config_dir().join("assets");
-        let asset_library = AssetLibrary::open(asset_library_path.clone()).with_context(|| {
+        let stream_url_policy = StreamUrlPolicy::from_private_network_allowlist(
+            &config.media.stream_private_network_allowlist,
+        );
+        let asset_library = AssetLibrary::open_with_stream_url_policy(
+            asset_library_path.clone(),
+            stream_url_policy,
+        )
+        .with_context(|| {
             format!(
                 "failed to open asset library at {}",
                 asset_library_path.display()

@@ -3,7 +3,7 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, CloudConfig, DaemonConfig, DbusConfig, DiscoveryConfig,
     EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    LogLevel, McpConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+    LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
     RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
     ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
@@ -64,6 +64,14 @@ fn effect_engine_defaults_match_spec() {
 fn rendering_defaults_match_spec() {
     let rendering = RenderingConfig::default();
     assert_eq!(rendering.servo_gpu_import.mode, ServoGpuImportMode::Off);
+}
+
+#[test]
+fn media_defaults_match_spec() {
+    let media = MediaConfig::default();
+    assert_eq!(media.max_video_producers, 2);
+    assert_eq!(media.max_livestream_producers, 1);
+    assert!(media.stream_private_network_allowlist.is_empty());
 }
 
 #[test]
@@ -210,6 +218,7 @@ fn full_config_toml_roundtrip() {
         mcp: McpConfig::default(),
         effect_engine: EffectEngineConfig::default(),
         rendering: RenderingConfig::default(),
+        media: MediaConfig::default(),
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
         discovery: DiscoveryConfig::default(),
@@ -239,6 +248,7 @@ fn full_config_toml_roundtrip() {
         restored.rendering.servo_gpu_import.mode,
         ServoGpuImportMode::Off
     );
+    assert_eq!(restored.media.max_video_producers, 2);
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
@@ -272,6 +282,7 @@ fn minimal_toml_fills_defaults() {
         config.rendering.servo_gpu_import.mode,
         ServoGpuImportMode::Off
     );
+    assert_eq!(config.media.max_livestream_producers, 1);
     assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
@@ -310,6 +321,28 @@ mode = "on"
     assert_eq!(
         config.rendering.servo_gpu_import.mode,
         ServoGpuImportMode::On
+    );
+}
+
+#[test]
+fn media_config_toml_deserializes_stream_policy() {
+    let config: HypercolorConfig = toml::from_str(
+        r#"
+schema_version = 4
+
+[media]
+max_video_producers = 3
+max_livestream_producers = 2
+stream_private_network_allowlist = ["192.168.50.0/24", "fd00::/8"]
+"#,
+    )
+    .expect("deserialize media config");
+
+    assert_eq!(config.media.max_video_producers, 3);
+    assert_eq!(config.media.max_livestream_producers, 2);
+    assert_eq!(
+        config.media.stream_private_network_allowlist,
+        vec!["192.168.50.0/24".to_owned(), "fd00::/8".to_owned()]
     );
 }
 

@@ -35,9 +35,10 @@ tree. Lottie is gated behind `media-lottie` and uses `rlottie`; video is
 gated behind `media-video` and uses gstreamer to predecode file-backed
 assets to RGBA canvases. Stream URL assets are accepted through the
 explicit `stream`/`livestream` upload hint and can preroll a bounded frame
-window through the gstreamer path, but the true rolling livestream
-producer with reconnect policy, admission control, and GPU upload/readback
-is still follow-up work.
+window through the gstreamer path. The stream SSRF policy is configurable
+through `media.stream_private_network_allowlist`, but the true rolling
+livestream producer with reconnect policy, admission control, and GPU
+upload/readback is still follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1733,8 +1734,9 @@ per-group transforms.
 Lottie decoding and scene-wide broadcast routing are now in tree. Stream
 URL assets are accepted and can preroll a bounded frame window through
 the gstreamer backend, but this is not the final livestream producer:
-rolling latest-frame latching, reconnect/backoff, admission control, and
-configurable private-network allowlists remain open.
+rolling latest-frame latching, reconnect/backoff, and admission control
+remain open. Configurable private-network stream allowlists are in tree
+via `media.stream_private_network_allowlist`.
 
 ---
 
@@ -2066,8 +2068,8 @@ surface area beyond what already existed in `DisplayFaceBlendMode`.
 **The implementation substrate is now in place.** Tier-1/2 media,
 Lottie, and file-backed MP4/WebM decoding are implemented. The remaining
 work is the true livestream producer, GPU media hardening, admission
-control, private-network stream allowlist config, and the later
-compatibility purge of legacy render-group mirrors.
+control, and the later compatibility purge of legacy render-group
+mirrors.
 
 **Treat the livestream and legacy-purge follow-ups as separate shipping
 decisions.** Lottie and file-backed video are already useful without

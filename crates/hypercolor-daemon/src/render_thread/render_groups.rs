@@ -1100,6 +1100,7 @@ impl RenderGroupRuntime {
             Ok(path) => path,
             Err(error) => return MediaLayerFrame::Failed(error.to_string()),
         };
+        let stream_url_policy = library.stream_url_policy().clone();
         drop(library);
 
         let needs_reload = self
@@ -1107,7 +1108,11 @@ impl RenderGroupRuntime {
             .get(&asset_id)
             .is_none_or(|cached| cached.hash_sha256 != record.hash_sha256);
         if needs_reload {
-            match MediaProducer::from_path(&object_path, &record.mime_type) {
+            match MediaProducer::from_path_with_stream_policy(
+                &object_path,
+                &record.mime_type,
+                &stream_url_policy,
+            ) {
                 Ok(producer) => {
                     self.media_producers.insert(
                         asset_id,

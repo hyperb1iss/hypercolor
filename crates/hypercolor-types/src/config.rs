@@ -154,6 +154,12 @@ mod defaults {
     pub const fn servo_gpu_import_mode() -> ServoGpuImportMode {
         ServoGpuImportMode::Off
     }
+    pub const fn max_video_producers() -> u8 {
+        2
+    }
+    pub const fn max_livestream_producers() -> u8 {
+        1
+    }
 
     // Shared
     pub fn bool_true() -> bool {
@@ -190,6 +196,9 @@ pub struct HypercolorConfig {
 
     #[serde(default)]
     pub rendering: RenderingConfig,
+
+    #[serde(default)]
+    pub media: MediaConfig,
 
     #[serde(default)]
     pub audio: AudioConfig,
@@ -235,6 +244,7 @@ impl Default for HypercolorConfig {
             mcp: McpConfig::default(),
             effect_engine: EffectEngineConfig::default(),
             rendering: RenderingConfig::default(),
+            media: MediaConfig::default(),
             audio: AudioConfig::default(),
             capture: CaptureConfig::default(),
             discovery: DiscoveryConfig::default(),
@@ -457,6 +467,31 @@ pub struct RenderingConfig {
 pub struct ServoGpuImportConfig {
     #[serde(default = "defaults::servo_gpu_import_mode")]
     pub mode: ServoGpuImportMode,
+}
+
+// ─── Media ──────────────────────────────────────────────────────────────────
+
+/// User media decoder policy and resource caps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaConfig {
+    #[serde(default = "defaults::max_video_producers")]
+    pub max_video_producers: u8,
+
+    #[serde(default = "defaults::max_livestream_producers")]
+    pub max_livestream_producers: u8,
+
+    #[serde(default)]
+    pub stream_private_network_allowlist: Vec<String>,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            max_video_producers: defaults::max_video_producers(),
+            max_livestream_producers: defaults::max_livestream_producers(),
+            stream_private_network_allowlist: Vec::new(),
+        }
+    }
 }
 
 // ─── Effect Engine ───────────────────────────────────────────────────────────

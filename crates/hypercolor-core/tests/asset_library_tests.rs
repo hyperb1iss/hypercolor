@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use hypercolor_core::asset::{
     AssetEvent, AssetLibrary, AssetLibraryLimits, AssetScanStatus, AssetTypeHint,
-    AssetUploadOptions,
+    AssetUploadOptions, StreamUrlPolicy, stream_url_from_bytes_with_policy,
 };
 use image::{ImageBuffer, ImageFormat, Rgba};
 use serde_json::json;
@@ -187,6 +187,33 @@ fn stream_url_hint_rejects_private_network_sources() {
         .expect_err("private stream URL should reject");
 
     assert!(format!("{error}").contains("unsupported"));
+}
+
+#[test]
+fn stream_url_hint_accepts_configured_private_network_sources() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let policy = StreamUrlPolicy::from_private_network_allowlist(["192.168.1.0/24", "fd00::/8"]);
+    let mut library =
+        AssetLibrary::open_with_stream_url_policy(tempdir.path().join("assets"), policy)
+            .expect("open library");
+    let mut options = AssetUploadOptions::new("local.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+
+    let added = library
+        .add_bytes(b"http://192.168.1.10/live.m3u8\n", options)
+        .expect("configured private stream URL should upload");
+
+    assert_eq!(
+        added.record.mime_type,
+        "application/vnd.hypercolor.stream-url"
+    );
+    assert_eq!(
+        stream_url_from_bytes_with_policy(
+            b"http://[fd00::42]/live.m3u8\n",
+            library.stream_url_policy()
+        ),
+        Some("http://[fd00::42]/live.m3u8".to_owned())
+    );
 }
 
 #[test]

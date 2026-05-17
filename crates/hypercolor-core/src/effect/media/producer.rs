@@ -17,8 +17,9 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, ImageError};
 use thiserror::Error;
 
+use crate::asset::library::StreamUrlPolicy;
 #[cfg(feature = "media-video")]
-use crate::asset::library::stream_url_from_bytes;
+use crate::asset::library::stream_url_from_bytes_with_policy;
 use crate::spatial::sample_viewport;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
@@ -79,6 +80,14 @@ struct DecodedMediaFrame {
 
 impl MediaProducer {
     pub fn from_path(path: &Path, mime_type: &str) -> Result<Self, MediaProducerError> {
+        Self::from_path_with_stream_policy(path, mime_type, &StreamUrlPolicy::default())
+    }
+
+    pub fn from_path_with_stream_policy(
+        path: &Path,
+        mime_type: &str,
+        stream_url_policy: &StreamUrlPolicy,
+    ) -> Result<Self, MediaProducerError> {
         if path.is_dir() {
             return Self::from_png_sequence_dir(path, DEFAULT_FRAME_DURATION_US);
         }
@@ -92,10 +101,19 @@ impl MediaProducer {
             path: path.to_path_buf(),
             source,
         })?;
-        Self::from_bytes(&bytes, mime_type)
+        Self::from_bytes_with_stream_policy(&bytes, mime_type, stream_url_policy)
     }
 
     pub fn from_bytes(bytes: &[u8], mime_type: &str) -> Result<Self, MediaProducerError> {
+        Self::from_bytes_with_stream_policy(bytes, mime_type, &StreamUrlPolicy::default())
+    }
+
+    pub fn from_bytes_with_stream_policy(
+        bytes: &[u8],
+        mime_type: &str,
+        stream_url_policy: &StreamUrlPolicy,
+    ) -> Result<Self, MediaProducerError> {
+        let _ = stream_url_policy;
         match mime_type {
             "image/gif" => Self::from_animation_frames(decode_gif_frames(bytes)?),
             "image/apng" => {
@@ -131,7 +149,7 @@ impl MediaProducer {
                 format!("{video_mime} video decoding requires a file-backed asset"),
             )),
             #[cfg(feature = "media-video")]
-            STREAM_URL_MIME => Self::from_stream_url_bytes(bytes),
+            STREAM_URL_MIME => Self::from_stream_url_bytes(bytes, stream_url_policy),
             other => Err(MediaProducerError::UnsupportedMime(other.to_owned())),
         }
     }
@@ -314,9 +332,13 @@ impl MediaProducer {
     }
 
     #[cfg(feature = "media-video")]
-    fn from_stream_url_bytes(bytes: &[u8]) -> Result<Self, MediaProducerError> {
+    fn from_stream_url_bytes(
+        bytes: &[u8],
+        stream_url_policy: &StreamUrlPolicy,
+    ) -> Result<Self, MediaProducerError> {
         ensure_gstreamer()?;
-        let url = stream_url_from_bytes(bytes).ok_or(MediaProducerError::InvalidStreamUrl)?;
+        let url = stream_url_from_bytes_with_policy(bytes, stream_url_policy)
+            .ok_or(MediaProducerError::InvalidStreamUrl)?;
         let frames = decode_video_uri(&url, Some(STREAM_PREROLL_FRAME_LIMIT))?;
         Ok(Self::from_decoded_frames(frames))
     }

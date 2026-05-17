@@ -9,6 +9,6 @@ pub use index::{
 };
 pub use library::{
     AssetLibrary, AssetLibraryError, AssetLibraryLimits, AssetMetadataUpdate, AssetTypeHint,
-    AssetUploadOptions, AssetUpsert,
+    AssetUploadOptions, AssetUpsert, StreamUrlPolicy, stream_url_from_bytes_with_policy,
 };
 pub use watcher::{AssetWatchEvent, AssetWatcher};

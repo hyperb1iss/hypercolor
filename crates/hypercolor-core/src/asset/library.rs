@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::Write;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -52,6 +52,79 @@ impl Default for AssetLibraryLimits {
 pub enum AssetTypeHint {
     Lottie,
     Stream,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamUrlPolicy {
+    private_network_allowlist: Vec<StreamIpRule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamIpRule {
+    Exact(IpAddr),
+    Cidr { network: IpAddr, prefix: u8 },
+}
+
+impl StreamUrlPolicy {
+    #[must_use]
+    pub fn from_private_network_allowlist<I, S>(rules: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            private_network_allowlist: rules
+                .into_iter()
+                .filter_map(|rule| StreamIpRule::parse(rule.as_ref().trim()))
+                .collect(),
+        }
+    }
+
+    fn allows_url(&self, raw: &str) -> bool {
+        let Ok(url) = reqwest::Url::parse(raw) else {
+            return false;
+        };
+        if !matches!(url.scheme(), "http" | "https" | "rtmp" | "rtsp") {
+            return false;
+        }
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        if is_local_hostname(host) {
+            return false;
+        }
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return is_public_ip(ip) || self.allows_private_ip(ip);
+        }
+        true
+    }
+
+    fn allows_private_ip(&self, ip: IpAddr) -> bool {
+        self.private_network_allowlist
+            .iter()
+            .any(|rule| rule.matches(ip))
+    }
+}
+
+impl StreamIpRule {
+    fn parse(raw: &str) -> Option<Self> {
+        if raw.is_empty() {
+            return None;
+        }
+        if let Some((network, prefix)) = raw.split_once('/') {
+            let network = network.parse::<IpAddr>().ok()?;
+            let prefix = prefix.parse::<u8>().ok()?;
+            return cidr_prefix_valid(network, prefix).then_some(Self::Cidr { network, prefix });
+        }
+        raw.parse::<IpAddr>().ok().map(Self::Exact)
+    }
+
+    fn matches(self, ip: IpAddr) -> bool {
+        match self {
+            Self::Exact(rule_ip) => rule_ip == ip,
+            Self::Cidr { network, prefix } => cidr_contains(network, prefix, ip),
+        }
+    }
 }
 
 /// Upload options for adding a media asset.
@@ -158,6 +231,7 @@ pub struct AssetLibrary {
     index_path: PathBuf,
     index: AssetIndex,
     limits: AssetLibraryLimits,
+    stream_url_policy: StreamUrlPolicy,
 }
 
 impl AssetLibrary {
@@ -166,10 +240,29 @@ impl AssetLibrary {
         Self::open_with_limits(root, AssetLibraryLimits::default())
     }
 
+    pub fn open_with_stream_url_policy(
+        root: impl Into<PathBuf>,
+        stream_url_policy: StreamUrlPolicy,
+    ) -> Result<Self, AssetLibraryError> {
+        Self::open_with_limits_and_stream_url_policy(
+            root,
+            AssetLibraryLimits::default(),
+            stream_url_policy,
+        )
+    }
+
     /// Open an asset library at `root` with explicit policy limits.
     pub fn open_with_limits(
         root: impl Into<PathBuf>,
         limits: AssetLibraryLimits,
+    ) -> Result<Self, AssetLibraryError> {
+        Self::open_with_limits_and_stream_url_policy(root, limits, StreamUrlPolicy::default())
+    }
+
+    pub fn open_with_limits_and_stream_url_policy(
+        root: impl Into<PathBuf>,
+        limits: AssetLibraryLimits,
+        stream_url_policy: StreamUrlPolicy,
     ) -> Result<Self, AssetLibraryError> {
         let root = root.into();
         let objects_dir = root.join(OBJECTS_DIR);
@@ -190,6 +283,7 @@ impl AssetLibrary {
             index_path,
             index,
             limits,
+            stream_url_policy,
         };
 
         if !library.index_path.exists() || library.index.records().is_empty() {
@@ -197,6 +291,11 @@ impl AssetLibrary {
         }
 
         Ok(library)
+    }
+
+    #[must_use]
+    pub fn stream_url_policy(&self) -> &StreamUrlPolicy {
+        &self.stream_url_policy
     }
 
     #[must_use]
@@ -266,7 +365,7 @@ impl AssetLibrary {
             return self.handle_duplicate(existing, options);
         }
 
-        let scan = scan_metadata(bytes, options.type_hint)?;
+        let scan = scan_metadata(bytes, options.type_hint, &self.stream_url_policy)?;
         let object_path = self.write_object_once(&hash, bytes)?;
         let now = now_utc();
         let record = MediaAssetRecord {
@@ -724,8 +823,9 @@ fn index_change_events(previous: &AssetIndex, next: &AssetIndex) -> Vec<AssetEve
 fn scan_metadata(
     bytes: &[u8],
     type_hint: Option<AssetTypeHint>,
+    stream_url_policy: &StreamUrlPolicy,
 ) -> Result<ScannedMetadata, AssetLibraryError> {
-    let Some(mime_type) = sniff_mime(bytes, type_hint) else {
+    let Some(mime_type) = sniff_mime(bytes, type_hint, stream_url_policy) else {
         return Err(AssetLibraryError::UnsupportedMediaType {
             reason: "unsupported or unverifiable file signature".to_owned(),
         });
@@ -749,11 +849,17 @@ fn scan_metadata(
     Ok(metadata)
 }
 
-fn sniff_mime(bytes: &[u8], type_hint: Option<AssetTypeHint>) -> Option<String> {
+fn sniff_mime(
+    bytes: &[u8],
+    type_hint: Option<AssetTypeHint>,
+    stream_url_policy: &StreamUrlPolicy,
+) -> Option<String> {
     if type_hint == Some(AssetTypeHint::Lottie) && is_json(bytes) {
         return Some("application/json".to_owned());
     }
-    if type_hint == Some(AssetTypeHint::Stream) && stream_url_from_bytes(bytes).is_some() {
+    if type_hint == Some(AssetTypeHint::Stream)
+        && stream_url_from_bytes_with_policy(bytes, stream_url_policy).is_some()
+    {
         return Some("application/vnd.hypercolor.stream-url".to_owned());
     }
     if is_png(bytes) {
@@ -791,29 +897,18 @@ fn is_thumbnail_source(mime_type: &str) -> bool {
     )
 }
 
-pub(crate) fn stream_url_from_bytes(bytes: &[u8]) -> Option<String> {
-    let raw = std::str::from_utf8(bytes).ok()?;
-    let url = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
-    is_allowed_stream_url(url).then(|| url.to_owned())
+pub fn stream_url_from_bytes(bytes: &[u8]) -> Option<String> {
+    stream_url_from_bytes_with_policy(bytes, &StreamUrlPolicy::default())
 }
 
-fn is_allowed_stream_url(raw: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(raw) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https" | "rtmp" | "rtsp") {
-        return false;
-    }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    if is_local_hostname(host) {
-        return false;
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return is_public_ip(ip);
-    }
-    true
+#[must_use]
+pub fn stream_url_from_bytes_with_policy(
+    bytes: &[u8],
+    stream_url_policy: &StreamUrlPolicy,
+) -> Option<String> {
+    let raw = std::str::from_utf8(bytes).ok()?;
+    let url = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    stream_url_policy.allows_url(url).then(|| url.to_owned())
 }
 
 fn is_local_hostname(host: &str) -> bool {
@@ -838,6 +933,45 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 || ip.is_unicast_link_local())
         }
     }
+}
+
+fn cidr_prefix_valid(network: IpAddr, prefix: u8) -> bool {
+    match network {
+        IpAddr::V4(_) => prefix <= 32,
+        IpAddr::V6(_) => prefix <= 128,
+    }
+}
+
+fn cidr_contains(network: IpAddr, prefix: u8, client: IpAddr) -> bool {
+    match (network, client) {
+        (IpAddr::V4(network), IpAddr::V4(client)) => {
+            masked_v4(network, prefix) == masked_v4(client, prefix)
+        }
+        (IpAddr::V6(network), IpAddr::V6(client)) => {
+            masked_v6(network, prefix) == masked_v6(client, prefix)
+        }
+        _ => false,
+    }
+}
+
+fn masked_v4(address: Ipv4Addr, prefix: u8) -> u32 {
+    let bits = u32::from(address);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    bits & mask
+}
+
+fn masked_v6(address: Ipv6Addr, prefix: u8) -> u128 {
+    let bits = u128::from(address);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    bits & mask
 }
 
 fn is_sha256_hex(value: &str) -> bool {
