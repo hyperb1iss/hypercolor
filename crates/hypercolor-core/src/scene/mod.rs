@@ -406,6 +406,7 @@ impl SceneManager {
                 controls,
                 control_bindings: HashMap::new(),
                 preset_id: active_preset_id,
+                layers: Vec::new(),
                 layout: full_scope_layout,
                 brightness: 1.0,
                 enabled: true,
@@ -413,6 +414,7 @@ impl SceneManager {
                 display_target: None,
                 role: RenderGroupRole::Primary,
                 controls_version: 0,
+                layers_version: 0,
             });
         }
 
@@ -458,6 +460,7 @@ impl SceneManager {
                 controls,
                 control_bindings: HashMap::new(),
                 preset_id: None,
+                layers: Vec::new(),
                 layout,
                 brightness: 1.0,
                 enabled: true,
@@ -465,6 +468,7 @@ impl SceneManager {
                 display_target: Some(DisplayFaceTarget::new(device_id)),
                 role: RenderGroupRole::Display,
                 controls_version: 0,
+                layers_version: 0,
             });
         }
 

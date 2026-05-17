@@ -5,14 +5,15 @@
 //! state — serializable, composable, restorable snapshots that describe what
 //! every targeted LED should look like.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use uuid::{Uuid, uuid};
 
 use crate::canvas::BlendMode;
 use crate::device::DeviceId;
 use crate::effect::{ControlBinding, ControlValue, EffectId};
+use crate::layer::{LayerSource, SceneLayer, SceneLayerId};
 use crate::library::PresetId;
 use crate::spatial::SpatialLayout;
 
@@ -76,7 +77,7 @@ impl fmt::Display for RenderGroupId {
 }
 
 /// An independent rendering pipeline within a scene.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RenderGroup {
     /// Unique identifier.
     pub id: RenderGroupId,
@@ -91,32 +92,30 @@ pub struct RenderGroup {
     pub effect_id: Option<EffectId>,
 
     /// Effect control overrides for this group.
-    #[serde(default)]
     pub controls: HashMap<String, ControlValue>,
 
     /// Live sensor bindings applied to controls in this group.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub control_bindings: HashMap<String, ControlBinding>,
 
     /// Optional preset applied to the group.
     pub preset_id: Option<PresetId>,
 
+    /// Authored bottom-to-top layer stack for this group.
+    pub layers: Vec<SceneLayer>,
+
     /// Spatial layout used to sample this group.
     pub layout: SpatialLayout,
 
     /// Per-group brightness multiplier.
-    #[serde(default = "default_group_brightness")]
     pub brightness: f32,
 
     /// Whether this group is currently active.
-    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Optional UI accent color.
     pub color: Option<String>,
 
     /// Direct display target for face-style render groups.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_target: Option<DisplayFaceTarget>,
 
     /// Semantic role inside the scene.
@@ -128,8 +127,196 @@ pub struct RenderGroup {
     /// clients can detect concurrent edits via an `If-Match` header on
     /// the controls PATCH endpoint. Serialized with `#[serde(default)]`
     /// so older persisted scenes load at version 0 without migration.
-    #[serde(default)]
     pub controls_version: u64,
+
+    /// Monotonic version counter for the layer mutation stream.
+    pub layers_version: u64,
+}
+
+#[derive(Serialize)]
+struct RenderGroupSerialize {
+    id: RenderGroupId,
+    name: String,
+    description: Option<String>,
+    effect_id: Option<EffectId>,
+    controls: HashMap<String, ControlValue>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    control_bindings: HashMap<String, ControlBinding>,
+    preset_id: Option<PresetId>,
+    layers: Vec<SceneLayer>,
+    layout: SpatialLayout,
+    #[serde(default = "default_group_brightness")]
+    brightness: f32,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_target: Option<DisplayFaceTarget>,
+    role: RenderGroupRole,
+    #[serde(default)]
+    controls_version: u64,
+    #[serde(default)]
+    layers_version: u64,
+}
+
+#[derive(Deserialize)]
+struct RenderGroupDeserialize {
+    id: RenderGroupId,
+    name: String,
+    description: Option<String>,
+    #[serde(default)]
+    effect_id: Option<EffectId>,
+    #[serde(default)]
+    controls: HashMap<String, ControlValue>,
+    #[serde(default)]
+    control_bindings: HashMap<String, ControlBinding>,
+    #[serde(default)]
+    preset_id: Option<PresetId>,
+    layers: Option<Vec<SceneLayer>>,
+    layout: SpatialLayout,
+    #[serde(default = "default_group_brightness")]
+    brightness: f32,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    color: Option<String>,
+    #[serde(default)]
+    display_target: Option<DisplayFaceTarget>,
+    role: RenderGroupRole,
+    #[serde(default)]
+    controls_version: u64,
+    #[serde(default)]
+    layers_version: u64,
+}
+
+impl Serialize for RenderGroup {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let layers = self.layers_for_serialization();
+        let legacy = legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields);
+
+        RenderGroupSerialize {
+            id: self.id,
+            name: self.name.clone(),
+            description: self.description.clone(),
+            effect_id: legacy.0,
+            controls: legacy.1,
+            control_bindings: legacy.2,
+            preset_id: legacy.3,
+            layers,
+            layout: self.layout.clone(),
+            brightness: self.brightness,
+            enabled: self.enabled,
+            color: self.color.clone(),
+            display_target: self.display_target.clone(),
+            role: self.role,
+            controls_version: self.controls_version,
+            layers_version: self.layers_version,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RenderGroup {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let helper = RenderGroupDeserialize::deserialize(deserializer)?;
+        let layers_were_present = helper.layers.is_some();
+        let layers = helper.layers.unwrap_or_else(|| {
+            legacy_effect_layer(
+                helper.id,
+                helper.effect_id,
+                &helper.controls,
+                &helper.control_bindings,
+                helper.preset_id,
+            )
+            .into_iter()
+            .collect()
+        });
+        let legacy = if layers_were_present {
+            legacy_effect_fields_from_layers(&layers).unwrap_or_else(empty_effect_fields)
+        } else {
+            legacy_effect_fields_from_layers(&layers).unwrap_or((
+                helper.effect_id,
+                helper.controls,
+                helper.control_bindings,
+                helper.preset_id,
+            ))
+        };
+
+        Ok(Self {
+            id: helper.id,
+            name: helper.name,
+            description: helper.description,
+            effect_id: legacy.0,
+            controls: legacy.1,
+            control_bindings: legacy.2,
+            preset_id: legacy.3,
+            layers,
+            layout: helper.layout,
+            brightness: helper.brightness,
+            enabled: helper.enabled,
+            color: helper.color,
+            display_target: helper.display_target,
+            role: helper.role,
+            controls_version: helper.controls_version,
+            layers_version: helper.layers_version,
+        })
+    }
+}
+
+fn empty_effect_fields() -> (
+    Option<EffectId>,
+    HashMap<String, ControlValue>,
+    HashMap<String, ControlBinding>,
+    Option<PresetId>,
+) {
+    (None, HashMap::new(), HashMap::new(), None)
+}
+
+fn legacy_effect_fields_from_layers(
+    layers: &[SceneLayer],
+) -> Option<(
+    Option<EffectId>,
+    HashMap<String, ControlValue>,
+    HashMap<String, ControlBinding>,
+    Option<PresetId>,
+)> {
+    layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect {
+            effect_id,
+            controls,
+            control_bindings,
+            preset_id,
+        } => Some((
+            Some(*effect_id),
+            controls.clone(),
+            control_bindings.clone(),
+            *preset_id,
+        )),
+        _ => None,
+    })
+}
+
+fn legacy_effect_layer(
+    group_id: RenderGroupId,
+    effect_id: Option<EffectId>,
+    controls: &HashMap<String, ControlValue>,
+    control_bindings: &HashMap<String, ControlBinding>,
+    preset_id: Option<PresetId>,
+) -> Option<SceneLayer> {
+    effect_id.map(|effect_id| {
+        SceneLayer::from_effect(
+            SceneLayerId::from_uuid(group_id.0),
+            effect_id,
+            controls.clone(),
+            control_bindings.clone(),
+            preset_id,
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -234,6 +421,55 @@ impl DisplayFaceTarget {
 }
 
 impl RenderGroup {
+    /// Return the stable synthetic layer ID used for legacy single-effect groups.
+    #[must_use]
+    pub fn legacy_layer_id(&self) -> SceneLayerId {
+        SceneLayerId::from_uuid(self.id.0)
+    }
+
+    fn layers_for_serialization(&self) -> Vec<SceneLayer> {
+        if !self.layers.is_empty() {
+            return self.layers.clone();
+        }
+
+        legacy_effect_layer(
+            self.id,
+            self.effect_id,
+            &self.controls,
+            &self.control_bindings,
+            self.preset_id,
+        )
+        .into_iter()
+        .collect()
+    }
+
+    /// Validate layer-stack invariants owned by this group.
+    pub fn validate_layers(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        let mut seen = HashSet::new();
+        for layer in &self.layers {
+            if !seen.insert(layer.id) {
+                errors.push(format!(
+                    "render group '{}' has duplicate layer id {}",
+                    self.name, layer.id
+                ));
+            }
+            if let Err(mut layer_errors) = layer.validate() {
+                errors.extend(
+                    layer_errors
+                        .drain(..)
+                        .map(|error| format!("layer {} in '{}': {error}", layer.id, self.name)),
+                );
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
     /// Flatten this render group into zone assignments.
     #[must_use]
     pub fn zone_assignments(&self) -> Vec<ZoneAssignment> {
@@ -499,6 +735,10 @@ impl Scene {
 
         let mut display_targets = HashMap::<DeviceId, RenderGroupId>::new();
         for group in &self.groups {
+            if let Err(mut layer_errors) = group.validate_layers() {
+                errors.append(&mut layer_errors);
+            }
+
             match (&group.role, &group.display_target) {
                 (RenderGroupRole::Display, None) => errors.push(format!(
                     "display render group '{}' is missing a display target",

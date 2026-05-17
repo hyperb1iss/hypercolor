@@ -2,6 +2,7 @@
 
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::layer::{LayerSource, SceneLayerId};
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget,
     EasingFunction, RenderGroup, RenderGroupId, RenderGroupRole, Scene, SceneId, SceneKind,
@@ -95,6 +96,7 @@ fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
         controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
         control_bindings: HashMap::new(),
         preset_id: None,
+        layers: Vec::new(),
         layout: sample_layout(zone_id),
         brightness: 0.8,
         enabled: true,
@@ -102,6 +104,7 @@ fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> RenderGroup {
         display_target: None,
         role: RenderGroupRole::Custom,
         controls_version: 0,
+        layers_version: 0,
     }
 }
 
@@ -243,6 +246,90 @@ fn render_group_display_target_round_trips_in_scene_json() {
     let restored: Scene = serde_json::from_str(&json).expect("deserialize Scene");
 
     assert_eq!(restored.groups[0].display_target, Some(display_target));
+}
+
+#[test]
+fn render_group_legacy_json_synthesizes_effect_layer() {
+    let group_id = RenderGroupId::new();
+    let effect_id = EffectId::from(Uuid::now_v7());
+    let json = serde_json::json!({
+        "id": group_id,
+        "name": "Primary",
+        "description": null,
+        "effect_id": effect_id,
+        "controls": { "speed": { "float": 0.75 } },
+        "control_bindings": {},
+        "preset_id": null,
+        "layout": sample_layout("desk:main"),
+        "brightness": 1.0,
+        "enabled": true,
+        "color": null,
+        "display_target": null,
+        "role": "primary",
+        "controls_version": 4
+    });
+
+    let group: RenderGroup = serde_json::from_value(json).expect("deserialize legacy group");
+
+    assert_eq!(group.effect_id, Some(effect_id));
+    assert_eq!(group.controls_version, 4);
+    assert_eq!(group.layers_version, 0);
+    assert_eq!(group.layers.len(), 1);
+    assert_eq!(group.layers[0].id, SceneLayerId::from_uuid(group_id.0));
+    let LayerSource::Effect {
+        effect_id: layer_effect,
+        controls,
+        ..
+    } = &group.layers[0].source
+    else {
+        panic!("legacy group should synthesize an effect layer");
+    };
+    assert_eq!(*layer_effect, effect_id);
+    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(0.75)));
+}
+
+#[test]
+fn render_group_layers_are_authoritative_over_legacy_fields() {
+    let legacy_effect = EffectId::from(Uuid::now_v7());
+    let layer_effect = EffectId::from(Uuid::now_v7());
+    let layer_id = SceneLayerId::new();
+    let json = serde_json::json!({
+        "id": RenderGroupId::new(),
+        "name": "Layered",
+        "description": null,
+        "effect_id": legacy_effect,
+        "controls": { "speed": { "float": 0.25 } },
+        "control_bindings": {},
+        "preset_id": null,
+        "layers": [{
+            "id": layer_id,
+            "source": {
+                "type": "effect",
+                "effect_id": layer_effect,
+                "controls": { "speed": { "float": 1.5 } }
+            },
+            "blend": "replace",
+            "opacity": 1.0
+        }],
+        "layout": sample_layout("desk:main"),
+        "brightness": 1.0,
+        "enabled": true,
+        "color": null,
+        "display_target": null,
+        "role": "primary"
+    });
+
+    let group: RenderGroup = serde_json::from_value(json).expect("deserialize layered group");
+
+    assert_eq!(group.effect_id, Some(layer_effect));
+    assert_eq!(group.controls.get("speed"), Some(&ControlValue::Float(1.5)));
+
+    let serialized = serde_json::to_value(&group).expect("serialize group");
+    assert_eq!(
+        serialized["effect_id"],
+        serde_json::to_value(layer_effect).expect("effect id json")
+    );
+    assert_eq!(serialized["layers"][0]["id"], serde_json::json!(layer_id));
 }
 
 #[test]

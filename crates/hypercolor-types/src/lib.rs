@@ -2,6 +2,7 @@
 //!
 //! This crate contains all data types used across crate boundaries.
 //! No logic, no I/O, no async — pure data structures with serde derives.
+pub mod asset;
 pub mod attachment;
 pub mod audio;
 pub mod canvas;
@@ -10,6 +11,7 @@ pub mod controls;
 pub mod device;
 pub mod effect;
 pub mod event;
+pub mod layer;
 pub mod library;
 pub mod palette;
 pub mod scene;
