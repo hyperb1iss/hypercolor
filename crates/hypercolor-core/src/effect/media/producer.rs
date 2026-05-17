@@ -13,6 +13,8 @@ use hypercolor_types::layer::{LoopMode, MediaPlayback};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 const DEFAULT_FRAME_DURATION_US: u64 = 100_000;
+#[cfg(feature = "media-lottie")]
+const DEFAULT_LOTTIE_CACHE_KEY: &str = "hypercolor-inline-lottie";
 
 #[derive(Debug, Error)]
 pub enum MediaProducerError {
@@ -28,6 +30,15 @@ pub enum MediaProducerError {
     EmptySequence,
     #[error("unsupported media type: {0}")]
     UnsupportedMime(String),
+    #[cfg(feature = "media-lottie")]
+    #[error("failed to decode Lottie animation")]
+    LottieDecode,
+    #[cfg(feature = "media-lottie")]
+    #[error("Lottie animation data contains an embedded NUL byte")]
+    LottieContainsNul,
+    #[cfg(feature = "media-lottie")]
+    #[error("Lottie animation has invalid dimensions {width}x{height}")]
+    InvalidLottieSize { width: usize, height: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -81,9 +92,7 @@ impl MediaProducer {
                     .to_owned(),
             )),
             #[cfg(feature = "media-lottie")]
-            "application/json" => Err(MediaProducerError::UnsupportedMime(
-                "application/json Lottie decoding is not available in this build".to_owned(),
-            )),
+            "application/json" => Self::from_lottie_bytes(bytes),
             #[cfg(not(feature = "media-video"))]
             video_mime @ ("video/mp4" | "video/webm") => Err(MediaProducerError::UnsupportedMime(
                 format!("{video_mime} (enable the media-video feature to decode video assets)"),
@@ -237,6 +246,33 @@ impl MediaProducer {
         }]))
     }
 
+    #[cfg(feature = "media-lottie")]
+    fn from_lottie_bytes(bytes: &[u8]) -> Result<Self, MediaProducerError> {
+        if bytes.contains(&0) {
+            return Err(MediaProducerError::LottieContainsNul);
+        }
+
+        let mut animation =
+            rlottie::Animation::from_data(bytes.to_vec(), DEFAULT_LOTTIE_CACHE_KEY, Path::new("."))
+                .ok_or(MediaProducerError::LottieDecode)?;
+        let size = animation.size();
+        validate_lottie_size(size)?;
+
+        let frame_count = animation.totalframe().max(1);
+        let duration_us = lottie_frame_duration_us(&animation, frame_count);
+        let mut surface = rlottie::Surface::new(size);
+        let mut frames = Vec::with_capacity(frame_count);
+        for frame_index in 0..frame_count {
+            animation.render(frame_index, &mut surface);
+            frames.push(DecodedMediaFrame {
+                canvas: canvas_from_lottie_surface(&surface),
+                duration_us,
+            });
+        }
+
+        Ok(Self::from_decoded_frames(frames))
+    }
+
     fn from_animation_frames(frames: Vec<Frame>) -> Result<Self, MediaProducerError> {
         if frames.is_empty() {
             return Err(MediaProducerError::EmptySequence);
@@ -300,6 +336,44 @@ fn decode_webp_frames(bytes: &[u8]) -> Result<Vec<Frame>, ImageError> {
 fn canvas_from_rgba_image(image: image::RgbaImage) -> Canvas {
     let (width, height) = image.dimensions();
     Canvas::from_vec(image.into_raw(), width, height)
+}
+
+#[cfg(feature = "media-lottie")]
+fn validate_lottie_size(size: rlottie::Size) -> Result<(), MediaProducerError> {
+    if size.width == 0 || size.height == 0 {
+        return Err(MediaProducerError::InvalidLottieSize {
+            width: size.width,
+            height: size.height,
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "media-lottie")]
+fn lottie_frame_duration_us(animation: &rlottie::Animation, frame_count: usize) -> u64 {
+    let framerate = animation.framerate();
+    if framerate.is_finite() && framerate > 0.0 {
+        return (1_000_000.0 / framerate).round().max(1.0) as u64;
+    }
+
+    let duration = animation.duration();
+    if duration.is_finite() && duration > 0.0 && frame_count > 0 {
+        return (duration * 1_000_000.0 / frame_count as f64)
+            .round()
+            .max(1.0) as u64;
+    }
+
+    DEFAULT_FRAME_DURATION_US
+}
+
+#[cfg(feature = "media-lottie")]
+fn canvas_from_lottie_surface(surface: &rlottie::Surface) -> Canvas {
+    let mut rgba = Vec::with_capacity(surface.width() * surface.height() * 4);
+    for pixel in surface.data() {
+        rgba.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
+    }
+    Canvas::from_vec(rgba, surface.width() as u32, surface.height() as u32)
 }
 
 fn delay_us(delay: image::Delay) -> u64 {

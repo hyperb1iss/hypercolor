@@ -14,7 +14,7 @@ workspace = true
 [features]
 nvidia = ["dep:nvml-wrapper"]
 default = []
-media-lottie = []
+media-lottie = ["dep:rlottie"]
 media-video = []
 servo = [
     "dep:base",
@@ -64,6 +64,7 @@ tokio-util = { workspace = true }
 zerocopy = { workspace = true }
 image = { workspace = true }
 fast_image_resize = { workspace = true }
+rlottie = { workspace = true, optional = true }
 base = { package = "servo-base", version = "0.1.0", optional = true }
 profile_traits = { package = "servo-profile-traits", version = "0.1.0", optional = true }
 wgpu = { workspace = true, optional = true }

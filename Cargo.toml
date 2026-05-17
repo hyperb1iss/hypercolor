@@ -194,6 +194,7 @@ open = "5"
 # Imaging
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 gif = "0.14.2"
+rlottie = "0.5.4"
 turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", "require-simd"] }
 fast_image_resize = "6.0.0"
 wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }

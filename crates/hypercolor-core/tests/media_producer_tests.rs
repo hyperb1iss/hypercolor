@@ -72,6 +72,22 @@ fn animated_webp_bytes() -> Vec<u8> {
     bytes
 }
 
+#[cfg(feature = "media-lottie")]
+fn empty_lottie_bytes() -> &'static [u8] {
+    br#"{
+        "v": "5.7.6",
+        "fr": 30,
+        "ip": 0,
+        "op": 2,
+        "w": 1,
+        "h": 1,
+        "nm": "hypercolor-test",
+        "ddd": 0,
+        "assets": [],
+        "layers": []
+    }"#
+}
+
 fn encoded_still_webp(rgba: [u8; 4]) -> Vec<u8> {
     let mut bytes = Vec::new();
     WebPEncoder::new_lossless(&mut bytes)
@@ -217,6 +233,19 @@ fn png_sequence_directory_uses_lexical_frame_order() {
         pixel_at(&producer, &playback, 100),
         Rgba::new(0, 0, 255, 255)
     );
+}
+
+#[cfg(feature = "media-lottie")]
+#[test]
+fn lottie_frames_decode_when_feature_is_enabled() {
+    let producer = MediaProducer::from_bytes(empty_lottie_bytes(), "application/json")
+        .expect("test Lottie should decode");
+    let playback = MediaPlayback::default();
+
+    assert_eq!(producer.frame_count(), 2);
+    assert_eq!(producer.total_duration_us(), 66_666);
+    assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 0));
+    assert_eq!(pixel_at(&producer, &playback, 34), Rgba::new(0, 0, 0, 0));
 }
 
 #[test]
