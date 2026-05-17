@@ -17,11 +17,15 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderName, HeaderValue, Method, Request, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use if_addrs::IfAddr;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use crate::api::envelope::ApiError;
-use hypercolor_types::config::{HypercolorConfig, NetworkConfig};
+use hypercolor_types::config::{
+    HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+};
 
 const RATE_WINDOW: Duration = Duration::from_mins(1);
 const READ_LIMIT_PER_MIN: u32 = 120;
@@ -164,6 +168,14 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
         }
     }
+
+    fn with_network_policy(network: NetworkAccessPolicy) -> Self {
+        Self {
+            auth: AuthConfig::default(),
+            network,
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -176,12 +188,35 @@ struct AuthConfig {
 struct NetworkAccessPolicy {
     allowed_clients: Vec<ClientAddressRule>,
     invalid_rules: Vec<String>,
+    scope_errors: Vec<String>,
 }
 
 impl NetworkAccessPolicy {
     fn from_config(config: &NetworkConfig) -> Self {
+        Self::from_config_with_local_subnets(config, discover_local_subnet_rules())
+    }
+
+    fn from_config_with_local_subnets(
+        config: &NetworkConfig,
+        local_subnet_rules: Result<Vec<ClientAddressRule>, String>,
+    ) -> Self {
         let mut allowed_clients = Vec::new();
         let mut invalid_rules = Vec::new();
+        let mut scope_errors = Vec::new();
+
+        if config.remote_access_enabled() && config.access_mode != NetworkAccessMode::Custom {
+            match config.client_scope {
+                NetworkClientScope::LocalSubnets => match local_subnet_rules {
+                    Ok(rules) if !rules.is_empty() => allowed_clients.extend(rules),
+                    Ok(_) => scope_errors.push("no non-loopback local subnets found".to_owned()),
+                    Err(error) => scope_errors.push(error),
+                },
+                NetworkClientScope::PrivateRanges => {
+                    allowed_clients.extend(private_network_rules());
+                }
+                NetworkClientScope::Custom => {}
+            }
+        }
 
         for raw_rule in &config.allowed_clients {
             let trimmed = raw_rule.trim();
@@ -198,11 +233,15 @@ impl NetworkAccessPolicy {
         Self {
             allowed_clients,
             invalid_rules,
+            scope_errors,
         }
     }
 
     fn reject_request(&self, request: &Request<Body>) -> Option<Response> {
-        if self.allowed_clients.is_empty() && self.invalid_rules.is_empty() {
+        if self.allowed_clients.is_empty()
+            && self.invalid_rules.is_empty()
+            && self.scope_errors.is_empty()
+        {
             return None;
         }
 
@@ -223,6 +262,13 @@ impl NetworkAccessPolicy {
             ));
         }
 
+        if !self.scope_errors.is_empty() {
+            return Some(ApiError::forbidden_with_details(
+                "Network client scope is unavailable; remote clients are blocked",
+                json!({ "scope_errors": &self.scope_errors }),
+            ));
+        }
+
         if self
             .allowed_clients
             .iter()
@@ -236,6 +282,69 @@ impl NetworkAccessPolicy {
             json!({ "client_ip": client_ip.to_string() }),
         ))
     }
+}
+
+fn discover_local_subnet_rules() -> Result<Vec<ClientAddressRule>, String> {
+    let interfaces = if_addrs::get_if_addrs()
+        .map_err(|error| format!("failed to enumerate local interfaces: {error}"))?;
+    let mut rules = Vec::new();
+
+    for interface in interfaces {
+        if interface.is_loopback() {
+            continue;
+        }
+
+        match interface.addr {
+            IfAddr::V4(addr) if !addr.ip.is_unspecified() => {
+                rules.push(ClientAddressRule::Cidr {
+                    network: IpAddr::V4(addr.ip),
+                    prefix: addr.prefixlen.min(32),
+                });
+            }
+            IfAddr::V6(addr) if !addr.ip.is_unspecified() => {
+                rules.push(ClientAddressRule::Cidr {
+                    network: IpAddr::V6(addr.ip),
+                    prefix: addr.prefixlen.min(128),
+                });
+            }
+            IfAddr::V4(_) | IfAddr::V6(_) => {}
+        }
+    }
+
+    if rules.is_empty() {
+        warn!("No non-loopback interfaces available for local subnet API allowlist");
+    }
+
+    Ok(rules)
+}
+
+fn private_network_rules() -> Vec<ClientAddressRule> {
+    vec![
+        ClientAddressRule::Cidr {
+            network: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)),
+            prefix: 8,
+        },
+        ClientAddressRule::Cidr {
+            network: IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)),
+            prefix: 12,
+        },
+        ClientAddressRule::Cidr {
+            network: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)),
+            prefix: 16,
+        },
+        ClientAddressRule::Cidr {
+            network: IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0)),
+            prefix: 16,
+        },
+        ClientAddressRule::Cidr {
+            network: IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0)),
+            prefix: 7,
+        },
+        ClientAddressRule::Cidr {
+            network: IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
+            prefix: 10,
+        },
+    ]
 }
 
 #[derive(Clone)]
@@ -409,7 +518,7 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    if !state.security_enabled() {
+    if !state.security_enabled() || request_is_loopback(&request) {
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
@@ -612,6 +721,10 @@ fn client_identity(request: &Request<Body>) -> String {
     client_ip(request).map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
 }
 
+fn request_is_loopback(request: &Request<Body>) -> bool {
+    client_ip(request).is_some_and(|ip| ip.is_loopback())
+}
+
 fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     if let Some(ConnectInfo(socket_addr)) = request
         .extensions()
@@ -735,9 +848,11 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use hypercolor_types::config::NetworkConfig;
+    use hypercolor_types::config::{NetworkAccessMode, NetworkClientScope, NetworkConfig};
 
-    use super::{SecurityState, enforce_security, normalize_api_key};
+    use super::{
+        ClientAddressRule, NetworkAccessPolicy, SecurityState, enforce_security, normalize_api_key,
+    };
 
     const CONTROL_KEY: &str = "hc_ak_control_test";
     const READ_KEY: &str = "hc_ak_r_read_test";
@@ -772,6 +887,15 @@ mod tests {
             allowed_clients,
             ..NetworkConfig::default()
         }))
+    }
+
+    fn network_policy_test_router(
+        config: &NetworkConfig,
+        local_subnet_rules: Vec<ClientAddressRule>,
+    ) -> Router {
+        router_with_security_state(SecurityState::with_network_policy(
+            NetworkAccessPolicy::from_config_with_local_subnets(config, Ok(local_subnet_rules)),
+        ))
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
@@ -840,6 +964,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = response_json(response).await;
         assert_eq!(json["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn loopback_clients_do_not_need_api_key() {
+        let app = secured_test_router();
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
     }
 
     #[tokio::test]
@@ -969,6 +1112,111 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let json = response_json(response).await;
         assert_eq!(json["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn lan_trusted_mode_allows_only_local_subnet_clients() {
+        let config = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            client_scope: NetworkClientScope::LocalSubnets,
+            ..NetworkConfig::default()
+        };
+        let app = network_policy_test_router(
+            &config,
+            vec![ClientAddressRule::Cidr {
+                network: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)),
+                prefix: 24,
+            }],
+        );
+
+        let allowed = app
+            .clone()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42)),
+                3042,
+            ))
+            .await
+            .expect("request failed");
+        let rejected = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 2, 42)),
+                3043,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn private_range_scope_rejects_public_clients() {
+        let config = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            client_scope: NetworkClientScope::PrivateRanges,
+            ..NetworkConfig::default()
+        };
+        let app = network_policy_test_router(&config, Vec::new());
+
+        let allowed = app
+            .clone()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)),
+                4042,
+            ))
+            .await
+            .expect("request failed");
+        let rejected = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+                4043,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn custom_mode_uses_explicit_allowed_clients_only() {
+        let config = NetworkConfig {
+            access_mode: NetworkAccessMode::Custom,
+            client_scope: NetworkClientScope::PrivateRanges,
+            allowed_clients: vec!["203.0.113.0/24".to_owned()],
+            ..NetworkConfig::default()
+        };
+        let app = network_policy_test_router(&config, Vec::new());
+
+        let rejected = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/status")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)),
+                5042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

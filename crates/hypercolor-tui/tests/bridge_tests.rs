@@ -52,6 +52,7 @@ async fn active_scene_event_refreshes_daemon_status() {
         spawn_data_bridge(
             "127.0.0.1".to_string(),
             addr.port(),
+            None,
             action_tx,
             bridge_cancel,
         )
@@ -116,6 +117,7 @@ async fn control_surface_event_refreshes_device_surface() {
         spawn_data_bridge(
             "127.0.0.1".to_string(),
             addr.port(),
+            None,
             action_tx,
             bridge_cancel,
         )

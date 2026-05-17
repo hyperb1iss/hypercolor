@@ -81,6 +81,8 @@ pub struct App {
     host: String,
     /// Daemon port.
     port: u16,
+    /// API key for authenticated daemon connections.
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -108,13 +110,13 @@ struct SimulatorPreviewState {
 
 impl App {
     /// Create a new app targeting the given daemon.
-    pub fn new(host: String, port: u16) -> Self {
+    pub fn new(host: String, port: u16, api_key: Option<String>) -> Self {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
         let screen_defs = crate::views::create_screens();
         let available_screens = screen_defs.iter().map(|(id, _)| *id).collect();
         let screens = screen_defs.into_iter().collect();
 
-        let client = DaemonClient::new(&host, port);
+        let client = DaemonClient::new(&host, port, api_key.as_deref());
 
         // Query the terminal for the best graphics protocol BEFORE entering
         // raw/alternate-screen mode. Falls back to halfblocks on any failure
@@ -162,6 +164,7 @@ impl App {
             data_cancel: CancellationToken::new(),
             host,
             port,
+            api_key,
         }
     }
 
@@ -199,9 +202,16 @@ impl App {
         let bridge_cancel = self.data_cancel.clone();
         let bridge_host = self.host.clone();
         let bridge_port = self.port;
+        let bridge_api_key = self.api_key.clone();
         tokio::spawn(async move {
-            crate::bridge::spawn_data_bridge(bridge_host, bridge_port, bridge_tx, bridge_cancel)
-                .await;
+            crate::bridge::spawn_data_bridge(
+                bridge_host,
+                bridge_port,
+                bridge_api_key,
+                bridge_tx,
+                bridge_cancel,
+            )
+            .await;
         });
 
         // Event reader: 250ms tick, ~15 FPS render

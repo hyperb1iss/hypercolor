@@ -31,8 +31,13 @@ pub enum WsMessage {
 }
 
 /// Connect to the daemon WebSocket and stream decoded messages.
-pub async fn connect(host: &str, port: u16, tx: mpsc::UnboundedSender<WsMessage>) -> Result<()> {
-    let url = format!("ws://{host}:{port}/api/v1/ws");
+pub async fn connect(
+    host: &str,
+    port: u16,
+    api_key: Option<&str>,
+    tx: mpsc::UnboundedSender<WsMessage>,
+) -> Result<()> {
+    let url = build_ws_url(host, port, api_key);
     let (ws_stream, _response) = tokio_tungstenite::connect_async(&url)
         .await
         .with_context(|| format!("Failed to connect WebSocket at {url}"))?;
@@ -81,6 +86,26 @@ pub async fn connect(host: &str, port: u16, tx: mpsc::UnboundedSender<WsMessage>
 
     let _ = tx.send(WsMessage::Closed);
     Ok(())
+}
+
+fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
+    let base = format!("ws://{host}:{port}/api/v1/ws");
+    api_key.map_or(base.clone(), |key| {
+        format!("{base}?token={}", percent_encode(key))
+    })
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 /// Decode a binary WebSocket message by its type header byte.
@@ -255,5 +280,26 @@ pub fn decode_json(text: &str) -> Option<WsMessage> {
             tracing::trace!("Unknown WS message type: {other}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ws_url;
+
+    #[test]
+    fn websocket_url_includes_percent_encoded_api_key() {
+        assert_eq!(
+            build_ws_url("192.168.1.10", 9420, Some("hc key/1")),
+            "ws://192.168.1.10:9420/api/v1/ws?token=hc%20key%2F1"
+        );
+    }
+
+    #[test]
+    fn websocket_url_omits_token_without_api_key() {
+        assert_eq!(
+            build_ws_url("localhost", 9420, None),
+            "ws://localhost:9420/api/v1/ws"
+        );
     }
 }

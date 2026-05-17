@@ -22,11 +22,11 @@ pub struct AudioDevicesData {
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
-/// Fetch the full daemon config.
-pub async fn fetch_config() -> Result<hypercolor_types::config::HypercolorConfig, String> {
+/// Fetch the full daemon config while preserving typed HTTP errors.
+pub async fn fetch_config_typed()
+-> Result<hypercolor_types::config::HypercolorConfig, client::ApiError> {
     client::fetch_json("/api/v1/config")
         .await
-        .map_err(Into::into)
 }
 
 /// Set a single config key. Value is JSON-stringified per daemon contract.

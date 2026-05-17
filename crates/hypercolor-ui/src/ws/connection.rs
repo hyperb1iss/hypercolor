@@ -31,6 +31,7 @@ use super::preview::{
     send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use crate::api::DeviceMetricsSnapshot;
+use crate::api::client;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
 const TAURI_WINDOW_VISIBILITY_EVENT: &str = "hypercolor-window-visibility";
@@ -640,7 +641,23 @@ fn build_ws_url() -> String {
         location.host()
     };
 
-    format!("{ws_protocol}//{host}/api/v1/ws")
+    let base = format!("{ws_protocol}//{host}/api/v1/ws");
+    client::stored_api_key().map_or(base.clone(), |key| {
+        format!("{base}?token={}", percent_encode(&key))
+    })
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn document_is_visible() -> bool {

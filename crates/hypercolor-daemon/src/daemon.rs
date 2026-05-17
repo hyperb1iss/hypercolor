@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_types::config::{
-    HypercolorConfig, LogLevel, RenderAccelerationMode, ServoGpuImportMode,
+    HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
 };
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpListener;
@@ -94,7 +94,7 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
         &options,
         &config,
         control_api_key_configured,
-        config.network.allow_unauthenticated_remote_access,
+        config.network.unauthenticated_remote_access_allowed(),
     );
     if fell_back_to_loopback {
         warn!(
@@ -128,7 +128,7 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
         validate_network_bind_auth(
             *bind,
             control_api_key_configured,
-            config.network.allow_unauthenticated_remote_access,
+            config.network.unauthenticated_remote_access_allowed(),
         )?;
     }
     let listeners = bind_api_listeners(&binds)?;
@@ -484,7 +484,13 @@ pub fn effective_bind_targets(
         all_interface_hosts()
     } else if let Some(host) = options.listen_address.as_deref() {
         expand_listen_host(host)
-    } else if config.network.remote_access && is_loopback_host(&config.daemon.listen_address) {
+    } else if config.network.access_mode == NetworkAccessMode::LocalOnly
+        && !config.network.remote_access
+    {
+        return loopback_bind_targets(config.daemon.port);
+    } else if config.network.remote_access_enabled()
+        && is_loopback_host(&config.daemon.listen_address)
+    {
         all_interface_hosts()
     } else {
         expand_listen_host(&config.daemon.listen_address)

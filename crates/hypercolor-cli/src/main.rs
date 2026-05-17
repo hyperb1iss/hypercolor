@@ -212,7 +212,20 @@ async fn main() -> Result<()> {
         let Commands::Tui(args) = cli.command else {
             unreachable!()
         };
-        return hypercolor_tui::launch(cli.host, cli.port, cli.theme, &args.log_level).await;
+        let conn = config::resolve_connection(
+            &cli.host,
+            cli.port,
+            cli.api_key.as_deref(),
+            cli.profile.as_deref(),
+        )?;
+        return hypercolor_tui::launch(
+            conn.host,
+            conn.port,
+            conn.api_key,
+            cli.theme,
+            &args.log_level,
+        )
+        .await;
     }
 
     init_tracing(cli.verbose);

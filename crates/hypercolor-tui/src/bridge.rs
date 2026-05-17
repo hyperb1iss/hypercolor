@@ -28,10 +28,11 @@ use hypercolor_types::controls::ControlSurfaceScope;
 pub async fn spawn_data_bridge(
     host: String,
     port: u16,
+    api_key: Option<String>,
     action_tx: mpsc::UnboundedSender<Action>,
     cancel: CancellationToken,
 ) {
-    let client = DaemonClient::new(&host, port);
+    let client = DaemonClient::new(&host, port, api_key.as_deref());
 
     // Track whether we've already notified the UI about the current
     // disconnection. Prevents spamming DaemonDisconnected on every
@@ -68,10 +69,11 @@ pub async fn spawn_data_bridge(
             let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
 
             let ws_host = host.clone();
+            let ws_api_key = api_key.clone();
             let ws_cancel = cancel.clone();
             let ws_handle = tokio::spawn(async move {
                 tokio::select! {
-                    result = ws::connect(&ws_host, port, ws_tx) => {
+                    result = ws::connect(&ws_host, port, ws_api_key.as_deref(), ws_tx) => {
                         if let Err(e) = result {
                             tracing::debug!("WebSocket connection error: {e}");
                         }

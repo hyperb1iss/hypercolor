@@ -6,6 +6,7 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::hooks::use_location;
 use leptos_router::path;
 
+use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
@@ -515,15 +516,28 @@ pub fn App() -> impl IntoView {
     // Global WebSocket connection
     let ws = WsManager::new();
     let (config, set_config) = signal(None::<hypercolor_types::config::HypercolorConfig>);
+    let (api_key_required, set_api_key_required) = signal(false);
     let (preview_presenter, set_preview_presenter) = signal(PreviewPresenterTelemetry::default());
     let (live_canvas_analysis, set_live_canvas_analysis) = signal(None::<CanvasFrameAnalysis>);
     let (last_canvas_analysis_at, set_last_canvas_analysis_at) = signal(0.0_f64);
     let refresh_config = Callback::new(move |()| {
         leptos::task::spawn_local(async move {
-            if let Ok(fresh) = api::fetch_config().await {
-                set_config.set(Some(fresh));
+            match api::fetch_config_typed().await {
+                Ok(fresh) => {
+                    set_api_key_required.set(false);
+                    set_config.set(Some(fresh));
+                }
+                Err(api::client::ApiError::Http { status }) if status == 401 || status == 403 => {
+                    set_api_key_required.set(true);
+                }
+                Err(_) => {}
             }
         });
+    });
+    let unlock_api = Callback::new(move |api_key: String| {
+        api::client::save_api_key(&api_key);
+        set_api_key_required.set(false);
+        reload_page();
     });
     let audio_enabled =
         Memo::new(move |_| config.get().is_some_and(|current| current.audio.enabled));
@@ -836,7 +850,66 @@ pub fn App() -> impl IntoView {
             <AppRoutes />
         </Router>
 
+        <Show when=move || api_key_required.get()>
+            <ApiKeyPrompt on_unlock=unlock_api />
+        </Show>
+
         <leptoaster::Toaster />
+    }
+}
+
+#[component]
+fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
+    let (api_key, set_api_key) = signal(String::new());
+    let submit = Callback::new(move |()| {
+        let key = api_key.get().trim().to_owned();
+        if !key.is_empty() {
+            on_unlock.run(key);
+        }
+    });
+    let submit_key = submit.clone();
+    let submit_click = submit.clone();
+
+    view! {
+        <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+            <div class="w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-panel p-5 shadow-2xl">
+                <div class="text-sm font-semibold text-fg-primary">"Network API Key"</div>
+                <div class="mt-1 text-xs text-fg-tertiary/75">
+                    "This daemon requires a key for network access."
+                </div>
+                <input
+                    type="password"
+                    class="mt-4 w-full rounded-lg border border-edge-subtle bg-surface-overlay/60 px-3 py-2 text-sm text-fg-primary placeholder-fg-tertiary focus:border-accent-muted focus:outline-none"
+                    placeholder="hc_..."
+                    prop:value=move || api_key.get()
+                    on:input=move |event| {
+                        let input = Input::from_event(event);
+                        if let Some(value) = input.value_string() {
+                            set_api_key.set(value);
+                        }
+                    }
+                    on:keydown=move |event| {
+                        if event.key() == "Enter" {
+                            submit_key.run(());
+                        }
+                    }
+                />
+                <button
+                    type="button"
+                    class="mt-4 w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition hover:bg-accent-bright"
+                    on:click=move |_| submit_click.run(())
+                >
+                    "Connect"
+                </button>
+            </div>
+        </div>
+    }
+}
+
+fn reload_page() {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().reload();
     }
 }
 

@@ -24,6 +24,7 @@ pub mod widgets;
 pub async fn launch(
     host: String,
     port: u16,
+    api_key: Option<String>,
     theme: Option<String>,
     log_level: &str,
 ) -> anyhow::Result<()> {
@@ -49,6 +50,6 @@ pub async fn launch(
         original_hook(panic_info);
     }));
 
-    let mut app = app::App::new(host, port);
+    let mut app = app::App::new(host, port, api_key);
     app.run().await
 }

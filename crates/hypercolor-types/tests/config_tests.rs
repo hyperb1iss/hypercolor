@@ -3,9 +3,9 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, CloudConfig, DaemonConfig, DbusConfig, DiscoveryConfig,
     EffectEngineConfig, EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig,
-    LogLevel, McpConfig, NetworkConfig, RenderAccelerationMode, RenderingConfig,
-    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
-    default_driver_configs,
+    LogLevel, McpConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
+    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -97,6 +97,8 @@ fn discovery_defaults_match_spec() {
 #[test]
 fn network_defaults_match_spec() {
     let n = NetworkConfig::default();
+    assert_eq!(n.access_mode, NetworkAccessMode::LocalOnly);
+    assert_eq!(n.client_scope, NetworkClientScope::LocalSubnets);
     assert!(n.mdns_publish);
     assert!(!n.remote_access);
     assert!(!n.allow_unauthenticated_remote_access);
@@ -398,6 +400,8 @@ enabled = false
 fft_size = 2048
 
 [network]
+access_mode = "lan_trusted"
+client_scope = "private_ranges"
 mdns_publish = false
 remote_access = true
 allow_unauthenticated_remote_access = true
@@ -427,6 +431,11 @@ dedup_threshold = 0
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
     assert!(!config.audio.enabled);
     assert_eq!(config.audio.fft_size, 2048);
+    assert_eq!(config.network.access_mode, NetworkAccessMode::LanTrusted);
+    assert_eq!(
+        config.network.client_scope,
+        NetworkClientScope::PrivateRanges
+    );
     assert!(!config.network.mdns_publish);
     assert!(config.network.remote_access);
     assert!(config.network.allow_unauthenticated_remote_access);

@@ -60,6 +60,7 @@ image = { workspace = true }
 turbojpeg = { workspace = true }
 fast_image_resize = { workspace = true }
 tokio-util = { workspace = true }
+if-addrs = { workspace = true }
 mdns-sd = { workspace = true }
 owo-colors = { workspace = true }
 utoipa = { workspace = true }

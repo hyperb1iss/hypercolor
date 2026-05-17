@@ -11,10 +11,13 @@
 
 use std::fmt;
 
-use gloo_net::http::{Request, Response};
+use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::ApiEnvelope;
+
+#[cfg(target_arch = "wasm32")]
+const API_KEY_STORAGE_KEY: &str = "hypercolor.api_key";
 
 // ── Error type ──────────────────────────────────────────────────────────────
 
@@ -63,6 +66,59 @@ fn ensure_success(resp: &Response) -> Result<(), ApiError> {
     }
 }
 
+/// Return the browser-stored API key, if one has been configured.
+#[must_use]
+pub fn stored_api_key() -> Option<String> {
+    stored_api_key_impl()
+}
+
+/// Persist the browser API key used for REST and WebSocket requests.
+pub fn save_api_key(api_key: &str) {
+    save_api_key_impl(api_key);
+}
+
+fn with_auth(request: RequestBuilder) -> RequestBuilder {
+    if let Some(api_key) = stored_api_key() {
+        request.header("Authorization", &format!("Bearer {api_key}"))
+    } else {
+        request
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn stored_api_key_impl() -> Option<String> {
+    let storage = web_sys::window().and_then(|window| window.local_storage().ok().flatten())?;
+    storage
+        .get_item(API_KEY_STORAGE_KEY)
+        .ok()
+        .flatten()
+        .map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stored_api_key_impl() -> Option<String> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn save_api_key_impl(api_key: &str) {
+    let trimmed = api_key.trim();
+    let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    else {
+        return;
+    };
+
+    if trimmed.is_empty() {
+        let _ = storage.remove_item(API_KEY_STORAGE_KEY);
+    } else {
+        let _ = storage.set_item(API_KEY_STORAGE_KEY, trimmed);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_api_key_impl(_api_key: &str) {}
+
 // ── GET helpers ─────────────────────────────────────────────────────────────
 
 /// GET `url`, unwrap the [`ApiEnvelope`], return the inner data.
@@ -70,7 +126,7 @@ pub async fn fetch_json<T>(url: &str) -> Result<T, ApiError>
 where
     T: DeserializeOwned,
 {
-    let resp = Request::get(url)
+    let resp = with_auth(Request::get(url))
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
@@ -89,7 +145,7 @@ pub async fn fetch_json_optional<T>(url: &str) -> Result<Option<T>, ApiError>
 where
     T: DeserializeOwned,
 {
-    let resp = Request::get(url)
+    let resp = with_auth(Request::get(url))
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
@@ -113,7 +169,7 @@ where
     Res: DeserializeOwned,
 {
     let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = Request::post(url)
+    let resp = with_auth(Request::post(url))
         .header("Content-Type", "application/json")
         .body(body_str)
         .map_err(|e| ApiError::Network(e.to_string()))?
@@ -135,7 +191,7 @@ where
     Res: DeserializeOwned,
 {
     let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = Request::patch(url)
+    let resp = with_auth(Request::patch(url))
         .header("Content-Type", "application/json")
         .body(body_str)
         .map_err(|e| ApiError::Network(e.to_string()))?
@@ -157,7 +213,7 @@ where
     Res: DeserializeOwned,
 {
     let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = Request::put(url)
+    let resp = with_auth(Request::put(url))
         .header("Content-Type", "application/json")
         .body(body_str)
         .map_err(|e| ApiError::Network(e.to_string()))?
@@ -177,7 +233,7 @@ where
 /// POST with no request body, discard the response. Used for trigger actions
 /// like `apply_effect` or `discover_devices`.
 pub async fn post_empty(url: &str) -> Result<(), ApiError> {
-    let resp = Request::post(url)
+    let resp = with_auth(Request::post(url))
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;
@@ -192,7 +248,7 @@ where
     Req: Serialize + ?Sized,
 {
     let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = Request::post(url)
+    let resp = with_auth(Request::post(url))
         .header("Content-Type", "application/json")
         .body(body_str)
         .map_err(|e| ApiError::Network(e.to_string()))?
@@ -210,7 +266,7 @@ where
     Req: Serialize + ?Sized,
 {
     let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = Request::put(url)
+    let resp = with_auth(Request::put(url))
         .header("Content-Type", "application/json")
         .body(body_str)
         .map_err(|e| ApiError::Network(e.to_string()))?
@@ -228,7 +284,7 @@ where
     Req: Serialize + ?Sized,
 {
     let body_str = serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-    let resp = Request::patch(url)
+    let resp = with_auth(Request::patch(url))
         .header("Content-Type", "application/json")
         .body(body_str)
         .map_err(|e| ApiError::Network(e.to_string()))?
@@ -241,7 +297,7 @@ where
 
 /// DELETE `url`, discard the response body.
 pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
-    let resp = Request::delete(url)
+    let resp = with_auth(Request::delete(url))
         .send()
         .await
         .map_err(|e| ApiError::Network(e.to_string()))?;

@@ -4770,6 +4770,7 @@ dependencies = [
  "hypercolor-leptos-ext",
  "hypercolor-network",
  "hypercolor-types",
+ "if-addrs",
  "image",
  "mdns-sd",
  "owo-colors",

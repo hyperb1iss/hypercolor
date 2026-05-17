@@ -28,16 +28,18 @@ use crate::state::{
 pub struct DaemonClient {
     base_url: String,
     http: reqwest::Client,
+    api_key: Option<String>,
 }
 
 impl DaemonClient {
     /// Create a client targeting the given host and port.
     #[must_use]
-    pub fn new(host: &str, port: u16) -> Self {
+    pub fn new(host: &str, port: u16, api_key: Option<&str>) -> Self {
         let base_url = format!("http://{host}:{port}");
         Self {
             base_url,
             http: reqwest::Client::new(),
+            api_key: api_key.map(ToOwned::to_owned),
         }
     }
 
@@ -199,8 +201,7 @@ impl DaemonClient {
             self.base_url
         );
         let response = self
-            .http
-            .get(&url)
+            .auth_request(self.http.get(&url))
             .send()
             .await
             .with_context(|| format!("Failed to fetch simulator frame for {simulator_id}"))?;
@@ -236,7 +237,7 @@ impl DaemonClient {
         controls: Option<&serde_json::Value>,
     ) -> Result<()> {
         let url = format!("{}/api/v1/effects/{effect_id}/apply", self.base_url);
-        let mut req = self.http.post(&url);
+        let mut req = self.auth_request(self.http.post(&url));
         if let Some(body) = controls {
             req = req.json(body);
         } else {
@@ -252,13 +253,12 @@ impl DaemonClient {
     pub async fn toggle_favorite(&self, effect_id: &str, is_favorite: bool) -> Result<()> {
         if is_favorite {
             let url = format!("{}/api/v1/library/favorites/{effect_id}", self.base_url);
-            let response = self.http.delete(&url).send().await?;
+            let response = self.auth_request(self.http.delete(&url)).send().await?;
             ensure_success(response, &format!("Failed to remove favorite {effect_id}")).await?;
         } else {
             let url = format!("{}/api/v1/library/favorites", self.base_url);
             let response = self
-                .http
-                .post(&url)
+                .auth_request(self.http.post(&url))
                 .json(&serde_json::json!({ "effect": effect_id }))
                 .send()
                 .await?;
@@ -271,8 +271,7 @@ impl DaemonClient {
     pub async fn update_control(&self, control_id: &str, value: &serde_json::Value) -> Result<()> {
         let url = format!("{}/api/v1/effects/current/controls", self.base_url);
         let response = self
-            .http
-            .patch(&url)
+            .auth_request(self.http.patch(&url))
             .json(&serde_json::json!({ "controls": { control_id: value } }))
             .send()
             .await
@@ -284,8 +283,7 @@ impl DaemonClient {
     pub async fn reset_controls(&self) -> Result<()> {
         let url = format!("{}/api/v1/effects/current/reset", self.base_url);
         let response = self
-            .http
-            .post(&url)
+            .auth_request(self.http.post(&url))
             .send()
             .await
             .context("Failed to reset controls")?;
@@ -297,8 +295,7 @@ impl DaemonClient {
     async fn get_data<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
-            .http
-            .get(&url)
+            .auth_request(self.http.get(&url))
             .send()
             .await
             .with_context(|| format!("Failed to connect to daemon at {url}"))?;
@@ -322,8 +319,7 @@ impl DaemonClient {
     async fn get_optional_data<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
-            .http
-            .get(&url)
+            .auth_request(self.http.get(&url))
             .send()
             .await
             .with_context(|| format!("Failed to connect to daemon at {url}"))?;
@@ -342,8 +338,7 @@ impl DaemonClient {
     {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
-            .http
-            .post(&url)
+            .auth_request(self.http.post(&url))
             .json(body)
             .send()
             .await
@@ -358,8 +353,7 @@ impl DaemonClient {
     {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
-            .http
-            .patch(&url)
+            .auth_request(self.http.patch(&url))
             .json(body)
             .send()
             .await
@@ -373,6 +367,14 @@ impl DaemonClient {
 
     async fn get_active_effect(&self) -> Result<ActiveEffectResponse> {
         self.get_data("/effects/active").await
+    }
+
+    fn auth_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(api_key) = &self.api_key {
+            request.bearer_auth(api_key)
+        } else {
+            request
+        }
     }
 }
 

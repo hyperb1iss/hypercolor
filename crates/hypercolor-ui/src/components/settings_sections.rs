@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 
 use crate::api;
@@ -52,6 +52,25 @@ fn listen_scope_value(address: &str, remote_access: bool) -> String {
     } else {
         "custom".to_owned()
     }
+}
+
+fn network_access_mode_value(mode: NetworkAccessMode) -> String {
+    match mode {
+        NetworkAccessMode::LocalOnly => "local_only",
+        NetworkAccessMode::LanTrusted => "lan_trusted",
+        NetworkAccessMode::LanProtected => "lan_protected",
+        NetworkAccessMode::Custom => "custom",
+    }
+    .to_owned()
+}
+
+fn network_client_scope_value(scope: NetworkClientScope) -> String {
+    match scope {
+        NetworkClientScope::LocalSubnets => "local_subnets",
+        NetworkClientScope::PrivateRanges => "private_ranges",
+        NetworkClientScope::Custom => "custom",
+    }
+    .to_owned()
 }
 
 fn is_loopback_listen_address(address: &str) -> bool {
@@ -396,6 +415,12 @@ pub fn NetworkSection(
     let port = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.port)));
     let remote_access =
         Signal::derive(move || read_config(config, |cfg| cfg.network.remote_access));
+    let access_mode = Signal::derive(move || {
+        network_access_mode_value(read_config(config, |cfg| cfg.network.access_mode))
+    });
+    let client_scope = Signal::derive(move || {
+        network_client_scope_value(read_config(config, |cfg| cfg.network.client_scope))
+    });
     let allow_unauthenticated_remote_access = Signal::derive(move || {
         read_config(config, |cfg| {
             cfg.network.allow_unauthenticated_remote_access
@@ -406,11 +431,22 @@ pub fn NetworkSection(
     });
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
     let mcp_enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
-    let scope_options = vec![
+    let access_mode_options = Signal::stored(vec![
+        ("local_only".to_string(), "Local".to_string()),
+        ("lan_trusted".to_string(), "LAN".to_string()),
+        ("lan_protected".to_string(), "Protected".to_string()),
+        ("custom".to_string(), "Custom".to_string()),
+    ]);
+    let client_scope_options = Signal::stored(vec![
+        ("local_subnets".to_string(), "Subnet".to_string()),
+        ("private_ranges".to_string(), "Private".to_string()),
+        ("custom".to_string(), "Custom".to_string()),
+    ]);
+    let scope_options = Signal::stored(vec![
         ("local".to_string(), "Local".to_string()),
         ("all".to_string(), "All".to_string()),
         ("custom".to_string(), "Custom".to_string()),
-    ];
+    ]);
     let (custom_scope_open, set_custom_scope_open) = signal(false);
     let listen_scope = Signal::derive(move || {
         if custom_scope_open.get() {
@@ -420,6 +456,53 @@ pub fn NetworkSection(
         }
     });
     let scope_change = on_change;
+    let apply_access_mode = Callback::new(move |(_, value): (String, serde_json::Value)| {
+        let Some(mode) = value.as_str() else {
+            return;
+        };
+
+        scope_change.run(("network.access_mode".to_string(), serde_json::json!(mode)));
+        match mode {
+            "local_only" => {
+                scope_change.run((
+                    "network.remote_access".to_string(),
+                    serde_json::json!(false),
+                ));
+                scope_change.run((
+                    "network.allow_unauthenticated_remote_access".to_string(),
+                    serde_json::json!(false),
+                ));
+                scope_change.run((
+                    "daemon.listen_address".to_string(),
+                    serde_json::json!("127.0.0.1"),
+                ));
+            }
+            "lan_trusted" => {
+                scope_change.run(("network.remote_access".to_string(), serde_json::json!(true)));
+                scope_change.run((
+                    "network.allow_unauthenticated_remote_access".to_string(),
+                    serde_json::json!(true),
+                ));
+                scope_change.run((
+                    "daemon.listen_address".to_string(),
+                    serde_json::json!("127.0.0.1"),
+                ));
+            }
+            "lan_protected" => {
+                scope_change.run(("network.remote_access".to_string(), serde_json::json!(true)));
+                scope_change.run((
+                    "network.allow_unauthenticated_remote_access".to_string(),
+                    serde_json::json!(false),
+                ));
+                scope_change.run((
+                    "daemon.listen_address".to_string(),
+                    serde_json::json!("127.0.0.1"),
+                ));
+            }
+            "custom" => {}
+            _ => {}
+        }
+    });
     let apply_listen_scope = Callback::new(move |(_, value): (String, serde_json::Value)| {
         let Some(scope) = value.as_str() else {
             return;
@@ -471,14 +554,36 @@ pub fn NetworkSection(
         <section id="section-network" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Network" icon=LuGlobe />
             <SettingSegmented
+                label="Access Mode"
+                description="How the daemon API is exposed"
+                key="network.access_mode"
+                value=access_mode
+                options=access_mode_options
+                on_change=apply_access_mode
+                restart_required=true
+            />
+            <Show when=move || matches!(access_mode.get().as_str(), "lan_trusted" | "lan_protected")>
+                <SettingSegmented
+                    label="Client Scope"
+                    description="Which network clients can connect"
+                    key="network.client_scope"
+                    value=client_scope
+                    options=client_scope_options
+                    on_change=on_change
+                    restart_required=true
+                />
+            </Show>
+            <Show when=move || access_mode.get() == "custom">
+            <SettingSegmented
                 label="Listen Scope"
                 description="Who can reach the daemon API"
                 key="daemon.listen_scope"
                 value=listen_scope
-                options=Signal::stored(scope_options)
+                options=scope_options
                 on_change=apply_listen_scope
                 restart_required=true
             />
+            </Show>
             <Show when=move || listen_scope.get() == "custom">
                 <SettingTextInput
                     label="Interface Address"
@@ -499,6 +604,7 @@ pub fn NetworkSection(
                 min=1024.0 max=65535.0 step=1.0
                 restart_required=true
             />
+            <Show when=move || access_mode.get() == "custom">
             <SettingToggle
                 label="Allow Without API Key"
                 description="Permit remote clients when no control API key is configured"
@@ -507,6 +613,10 @@ pub fn NetworkSection(
                 on_change=on_change
                 restart_required=true
             />
+            </Show>
+            <Show when=move || {
+                access_mode.get() == "custom" || client_scope.get() == "custom"
+            }>
             <SettingTextInput
                 label="Allowed Clients"
                 description="Exact IPs or CIDR ranges, comma-separated"
@@ -516,6 +626,7 @@ pub fn NetworkSection(
                 restart_required=true
                 placeholder="192.168.1.0/24"
             />
+            </Show>
             <SettingToggle
                 label="Open Browser on Start"
                 description="Automatically open the web UI when the daemon starts"
@@ -533,9 +644,10 @@ pub fn NetworkSection(
             />
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
                 for key in &[
-                    "daemon.listen_address", "daemon.port", "network.remote_access",
-                    "network.allow_unauthenticated_remote_access", "network.allowed_clients",
-                    "web.open_browser", "mcp.enabled",
+                    "daemon.listen_address", "daemon.port", "network.access_mode",
+                    "network.client_scope", "network.remote_access",
+                    "network.allow_unauthenticated_remote_access",
+                    "network.allowed_clients", "web.open_browser", "mcp.enabled",
                 ] {
                     on_reset.run(key.to_string());
                 }

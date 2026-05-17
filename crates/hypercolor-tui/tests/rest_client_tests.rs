@@ -4,8 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::http::Uri;
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use hypercolor_tui::client::rest::DaemonClient;
@@ -23,7 +22,7 @@ use tokio::sync::Mutex;
 type CapturedControlPayloads = (Arc<Mutex<Option<Value>>>, Arc<Mutex<Option<Value>>>);
 
 fn client_for(addr: SocketAddr) -> DaemonClient {
-    DaemonClient::new("127.0.0.1", addr.port())
+    DaemonClient::new("127.0.0.1", addr.port(), None)
 }
 
 async fn spawn_server(router: Router) -> SocketAddr {
@@ -194,6 +193,36 @@ async fn get_status_maps_system_and_active_effect_responses() {
     assert_eq!(status.scene_name.as_deref(), Some("Focus"));
     assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);
+}
+
+#[tokio::test]
+async fn rest_client_sends_bearer_token_when_configured() {
+    let router = Router::new().route(
+        "/api/v1/status",
+        get(|headers: HeaderMap| async move {
+            assert_eq!(
+                headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok()),
+                Some("Bearer hc_tui_test")
+            );
+            Json(json!({
+                "data": {
+                    "running": true,
+                    "global_brightness": 1,
+                    "device_count": 0,
+                    "active_effect": null,
+                    "active_scene": null,
+                    "active_scene_snapshot_locked": false
+                }
+            }))
+        }),
+    );
+
+    let addr = spawn_server(router).await;
+    let client = DaemonClient::new("127.0.0.1", addr.port(), Some("hc_tui_test"));
+
+    client.get_status().await.expect("fetch status");
 }
 
 #[tokio::test]

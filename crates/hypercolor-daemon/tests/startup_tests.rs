@@ -30,7 +30,7 @@ use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
-    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, RenderAccelerationMode,
+    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, NetworkAccessMode, RenderAccelerationMode,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -439,6 +439,7 @@ fn effective_bind_target_accepts_all_interface_aliases() {
     let mut config = default_config();
     config.daemon.listen_address = "all".to_owned();
     config.daemon.port = 9431;
+    config.network.access_mode = NetworkAccessMode::Custom;
     let options = DaemonRunOptions::default();
 
     assert_eq!(effective_bind_target(&options, &config), "0.0.0.0:9431");
@@ -679,6 +680,65 @@ fn startup_bind_targets_keep_explicit_listen_all_for_auth_validation() {
 
     assert!(!fell_back);
     assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
+}
+
+#[test]
+fn startup_bind_targets_force_loopback_for_local_only_mode() {
+    let mut config = default_config();
+    config.daemon.listen_address = "all".to_owned();
+    config.network.access_mode = NetworkAccessMode::LocalOnly;
+    let options = DaemonRunOptions::default();
+
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["127.0.0.1:9420", "[::1]:9420"]
+    );
+}
+
+#[test]
+fn startup_bind_targets_expand_lan_modes_to_all_interfaces() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::LanTrusted;
+    let options = DaemonRunOptions::default();
+
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["0.0.0.0:9420", "[::]:9420"]
+    );
+}
+
+#[test]
+fn startup_bind_targets_keep_lan_trusted_without_control_key() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::LanTrusted;
+    let options = DaemonRunOptions::default();
+
+    let (targets, fell_back) = effective_startup_bind_targets(
+        &options,
+        &config,
+        false,
+        config.network.unauthenticated_remote_access_allowed(),
+    );
+
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9420", "[::]:9420"]);
+}
+
+#[test]
+fn startup_bind_targets_fall_back_for_lan_protected_without_control_key() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::LanProtected;
+    let options = DaemonRunOptions::default();
+
+    let (targets, fell_back) = effective_startup_bind_targets(
+        &options,
+        &config,
+        false,
+        config.network.unauthenticated_remote_access_allowed(),
+    );
+
+    assert!(fell_back);
+    assert_eq!(targets, vec!["127.0.0.1:9420", "[::1]:9420"]);
 }
 
 #[tokio::test]
