@@ -2910,6 +2910,7 @@ fn gpu_composed_without_surfaces() -> ComposedFrameSet {
         preview_surface: None,
         bypassed: false,
         backend: CompositorBackendKind::Gpu,
+        gpu_readback_failed: false,
     }
 }
 
@@ -2920,6 +2921,7 @@ fn gpu_composed_with_preview_surface(preview_surface: PublishedSurface) -> Compo
         preview_surface: Some(preview_surface),
         bypassed: false,
         backend: CompositorBackendKind::Gpu,
+        gpu_readback_failed: false,
     }
 }
 
@@ -2930,6 +2932,7 @@ fn gpu_bypassed_without_surfaces() -> ComposedFrameSet {
         preview_surface: None,
         bypassed: true,
         backend: CompositorBackendKind::Gpu,
+        gpu_readback_failed: false,
     }
 }
 
@@ -2945,6 +2948,7 @@ fn gpu_composed_from_surface(
             preview_surface: None,
             bypassed: false,
             backend: CompositorBackendKind::Gpu,
+            gpu_readback_failed: false,
         };
     }
 
@@ -2954,6 +2958,7 @@ fn gpu_composed_from_surface(
         preview_surface: Some(sampling_surface),
         bypassed: false,
         backend: CompositorBackendKind::Gpu,
+        gpu_readback_failed: false,
     }
 }
 
@@ -2978,6 +2983,7 @@ fn gpu_bypassed_surface_frame(
         preview_surface,
         bypassed: true,
         backend: CompositorBackendKind::Gpu,
+        gpu_readback_failed: false,
     }
 }
 
@@ -3010,6 +3016,7 @@ fn gpu_bypassed_canvas_frame(
         preview_surface,
         bypassed: true,
         backend: CompositorBackendKind::Gpu,
+        gpu_readback_failed: false,
     }
 }
 

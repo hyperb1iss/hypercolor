@@ -926,6 +926,7 @@ impl RenderGroupRuntime {
         requires_published_surface: bool,
     ) -> Result<Option<ProducerFrame>> {
         let mut composition_layers = Vec::new();
+        let mut gpu_source_layers = Vec::new();
         for layer in group.effective_layers() {
             if !layer.enabled {
                 continue;
@@ -1052,6 +1053,9 @@ impl RenderGroupRuntime {
                     LayerHealth::Active,
                 );
             }
+            if producer_frame_is_gpu(&frame) {
+                gpu_source_layers.push(layer_runtime.id);
+            }
             record_producer_frame(&frame);
             composition_layers.push(composition_layer_for_scene_layer(&layer_runtime, frame));
         }
@@ -1081,6 +1085,18 @@ impl RenderGroupRuntime {
                 height: group.layout.canvas_height,
             }),
         );
+        if composed.gpu_readback_failed {
+            for layer_id in gpu_source_layers {
+                self.layer_runtime.note_health(
+                    active_scene_id,
+                    group.id,
+                    layer_id,
+                    LayerHealth::Failed {
+                        reason: "gpu_readback_failed".to_owned(),
+                    },
+                );
+            }
+        }
         Ok(composed_frame_to_producer_frame(composed))
     }
 
@@ -1789,6 +1805,16 @@ fn copy_producer_frame_to_canvas(frame: ProducerFrame, target: &mut Canvas) -> b
         ProducerFrame::Gpu(_) => false,
         #[cfg(feature = "wgpu")]
         ProducerFrame::GpuTexture(_) => false,
+    }
+}
+
+fn producer_frame_is_gpu(frame: &ProducerFrame) -> bool {
+    match frame {
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => true,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => true,
+        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => false,
     }
 }
 

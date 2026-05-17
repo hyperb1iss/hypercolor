@@ -41,8 +41,10 @@ activation enforces the configured video/livestream producer hard caps.
 Heavy producers advertise cost hints and scene activation preemptively
 downshifts the render loop when the estimated media cost exceeds the
 60 ms soft cap. Stream producers currently publish CPU canvases and
-surface worker errors through layer health; direct GPU media textures and
-repeated-fallback downgrade remain follow-up work.
+surface worker errors through layer health. GPU producer readback
+failures now compose black and mark affected layer health as
+`gpu_readback_failed`; direct GPU media textures and repeated-fallback
+downgrade remain follow-up work.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1824,23 +1826,19 @@ Target GPU video and livestream producers will feed `ProducerFrame::Gpu`
 or `ProducerFrame::GpuTexture`, so the final GPU media lane will exercise
 this constantly. The current file-backed `media-video` and stream
 backends still emit CPU canvases, so the remaining work is direct GPU
-media texture production and hardening the failure policy around readback
-errors.
+media texture production and the repeated-fallback acceleration downgrade.
 
-**Remaining policy (GPU media follow-up):**
+**GPU media policy status:**
 
-1. Read-back failures (rare; OOM or device loss) escalate to a hard
-   error event on the bus and the frame composes as black. The
-   `LayerHealth` of affected layers transitions to `Failed` with reason
-   `gpu_readback_failed`.
-2. Two consecutive read-back fallbacks downshift the compositor
+1. Read-back failures (rare; OOM or device loss) compose the frame as
+   black and transition affected layers to `LayerHealth::Failed` with
+   reason `gpu_readback_failed`, which publishes the existing
+   `LayerHealthChanged` bus event. Synthetic fallback-frame coverage
+   lives in `sparkleflinger_gpu_readback_failure_composes_black`.
+2. Remaining: two consecutive read-back fallbacks downshift the compositor
    acceleration mode for the rest of the session (returning to GPU on
    the next session start). Surface this as a one-time toast in the UI
    so users know they have left the fast path.
-
-The GPU media follow-up must also add synthetic failure coverage that
-injects a GPU readback failure on a video plan and asserts the hard-error
-path is surfaced instead of silently producing an empty frame.
 
 ---
 

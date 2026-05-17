@@ -295,6 +295,7 @@ pub(crate) async fn execute_frame(
         preview_surface,
         bypassed: _,
         backend: compositor_backend,
+        gpu_readback_failed: _,
     } = render_stage.composed_frame;
     let publish_stats = publish_frame_updates(
         state,
@@ -477,6 +478,7 @@ mod tests {
             preview_surface: None,
             bypassed: false,
             backend,
+            gpu_readback_failed: false,
         };
         if preview_surface_present {
             composed_frame.preview_surface =

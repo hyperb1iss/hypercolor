@@ -313,6 +313,7 @@ fn cpu_frame_without_surfaces() -> ComposedFrameSet {
         preview_surface: None,
         bypassed: false,
         backend: CompositorBackendKind::Cpu,
+        gpu_readback_failed: false,
     }
 }
 

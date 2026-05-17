@@ -353,6 +353,7 @@ pub struct ComposedFrameSet {
     pub preview_surface: Option<PublishedSurface>,
     pub bypassed: bool,
     pub(crate) backend: CompositorBackendKind,
+    pub(crate) gpu_readback_failed: bool,
 }
 
 pub(crate) type RenderFrame = (Canvas, Option<PublishedSurface>);
@@ -460,6 +461,8 @@ impl SparkleFlinger {
             ),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, cpu_fallback } => {
+                let failure_width = plan.width;
+                let failure_height = plan.height;
                 let gpu_compose_result = if gpu.supports_plan(&plan) {
                     Some(gpu.compose(&plan, requires_cpu_sampling_canvas, preview_surface_request))
                 } else {
@@ -484,7 +487,13 @@ impl SparkleFlinger {
                                     %readback_error,
                                     "GPU producer readback fallback failed"
                                 );
-                                return gpu_frame_without_cpu_fallback();
+                                return gpu_frame_without_cpu_fallback(
+                                    failure_width,
+                                    failure_height,
+                                    requires_cpu_sampling_canvas,
+                                    preview_surface_request,
+                                    &mut self.preview_surface_pool,
+                                );
                             }
                         }
                     }
@@ -504,7 +513,13 @@ impl SparkleFlinger {
                                     %readback_error,
                                     "Unsupported GPU producer plan readback fallback failed"
                                 );
-                                return gpu_frame_without_cpu_fallback();
+                                return gpu_frame_without_cpu_fallback(
+                                    failure_width,
+                                    failure_height,
+                                    requires_cpu_sampling_canvas,
+                                    preview_surface_request,
+                                    &mut self.preview_surface_pool,
+                                );
                             }
                         }
                     }
@@ -604,6 +619,7 @@ impl SparkleFlinger {
             ),
             bypassed: true,
             backend,
+            gpu_readback_failed: false,
         }
     }
 
@@ -810,14 +826,37 @@ impl SparkleFlinger {
 }
 
 #[cfg(feature = "wgpu")]
-fn gpu_frame_without_cpu_fallback() -> ComposedFrameSet {
-    ComposedFrameSet {
-        sampling_canvas: None,
-        sampling_surface: None,
-        preview_surface: None,
-        bypassed: false,
-        backend: CompositorBackendKind::GpuFallback,
-    }
+fn gpu_frame_without_cpu_fallback(
+    width: u32,
+    height: u32,
+    requires_cpu_sampling_canvas: bool,
+    preview_surface_request: Option<PreviewSurfaceRequest>,
+    preview_surface_pool: &mut RenderSurfacePool,
+) -> ComposedFrameSet {
+    let canvas = Canvas::new(width, height);
+    let requires_full_size_preview = preview_surface_request
+        .is_some_and(|request| request.width == width && request.height == height);
+    let preview_surface = preview_surface_request
+        .filter(|_| !requires_full_size_preview)
+        .and_then(|request| {
+            scaled_preview_surface_from_rgba(
+                canvas.as_rgba_bytes(),
+                width,
+                height,
+                request,
+                preview_surface_pool,
+            )
+        });
+    let mut composed = publish_composed_frame(
+        (canvas, None),
+        false,
+        requires_cpu_sampling_canvas,
+        requires_full_size_preview,
+    );
+    composed.preview_surface = preview_surface;
+    composed.backend = CompositorBackendKind::GpuFallback;
+    composed.gpu_readback_failed = true;
+    composed
 }
 
 #[cfg(feature = "wgpu")]
@@ -916,6 +955,7 @@ pub(super) fn publish_composed_frame(
             preview_surface: None,
             bypassed,
             backend: CompositorBackendKind::Cpu,
+            gpu_readback_failed: false,
         };
     }
 
@@ -926,6 +966,7 @@ pub(super) fn publish_composed_frame(
             preview_surface: None,
             bypassed,
             backend: CompositorBackendKind::Cpu,
+            gpu_readback_failed: false,
         };
     }
 
@@ -938,6 +979,7 @@ pub(super) fn publish_composed_frame(
         preview_surface: None,
         bypassed,
         backend: CompositorBackendKind::Cpu,
+        gpu_readback_failed: false,
     }
 }
 
@@ -1063,6 +1105,8 @@ mod tests {
         CompositionAdjust, CompositionLayer, CompositionMode, CompositionPlan,
         CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
     };
+    #[cfg(feature = "wgpu")]
+    use super::{gpu_frame_without_cpu_fallback, new_preview_surface_pool};
     #[cfg(feature = "wgpu")]
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::producer_queue::ProducerFrame;
@@ -1459,6 +1503,32 @@ mod tests {
                 .expect("CPU expectation should materialize a sampling canvas")
                 .as_rgba_bytes(),
             1,
+        );
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn sparkleflinger_gpu_readback_failure_composes_black() {
+        let mut preview_surface_pool = new_preview_surface_pool();
+        let composed = gpu_frame_without_cpu_fallback(
+            2,
+            2,
+            true,
+            Some(PreviewSurfaceRequest {
+                width: 1,
+                height: 1,
+            }),
+            &mut preview_surface_pool,
+        );
+
+        assert_eq!(composed.backend, CompositorBackendKind::GpuFallback);
+        assert!(composed.gpu_readback_failed);
+        assert_eq!(
+            composed
+                .sampling_canvas
+                .expect("GPU readback failure should materialize a black frame")
+                .as_rgba_bytes(),
+            Canvas::new(2, 2).as_rgba_bytes(),
         );
     }
 
