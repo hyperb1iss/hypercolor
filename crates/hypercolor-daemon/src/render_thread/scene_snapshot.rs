@@ -456,7 +456,7 @@ mod tests {
         LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
     };
     use hypercolor_types::scene::RenderGroupId;
-    use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
+    use hypercolor_types::scene::{RenderGroup, RenderGroupRole, UnassignedBehavior};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use hypercolor_types::viewport::ViewportRect;
 
@@ -679,7 +679,7 @@ mod tests {
             active_render_groups_revision: 7,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
-            unassigned_behavior: Default::default(),
+            unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
@@ -732,7 +732,7 @@ mod tests {
             active_render_groups_revision: 7,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
-            unassigned_behavior: Default::default(),
+            unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
@@ -759,7 +759,7 @@ mod tests {
             active_render_groups_revision: 7,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
-            unassigned_behavior: Default::default(),
+            unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
         let mut scene_snapshot_cache = SceneSnapshotCache::new();

@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
@@ -26,6 +27,7 @@ const INDEX_TMP_FILE: &str = "index.json.tmp";
 const THUMBNAIL_SIZE: u32 = 256;
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const BYTES_PER_GIB: u64 = 1024 * BYTES_PER_MIB;
+static INDEX_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Default asset library policy limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -730,7 +732,7 @@ impl AssetLibrary {
     fn persist_index(&self) -> Result<(), AssetLibraryError> {
         let bytes =
             serde_json::to_vec_pretty(&self.index).map_err(AssetLibraryError::SerializeIndex)?;
-        let tmp_path = self.root.join(INDEX_TMP_FILE);
+        let tmp_path = index_tmp_path(&self.root);
         write_file_synced(&tmp_path, &bytes)?;
         fs::rename(&tmp_path, &self.index_path).map_err(|source| AssetLibraryError::Replace {
             path: self.index_path.clone(),
@@ -1155,6 +1157,15 @@ fn create_dir(path: &Path) -> Result<(), AssetLibraryError> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn index_tmp_path(root: &Path) -> PathBuf {
+    let sequence = INDEX_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    root.join(format!(
+        "{INDEX_TMP_FILE}.{}.{}",
+        std::process::id(),
+        sequence
+    ))
 }
 
 fn write_file_synced(path: &Path, bytes: &[u8]) -> Result<(), AssetLibraryError> {

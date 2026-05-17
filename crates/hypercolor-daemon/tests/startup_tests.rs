@@ -37,7 +37,7 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
     ZoneLayoutHint,
 };
-use hypercolor_types::effect::EffectSource;
+use hypercolor_types::effect::{EffectId, EffectSource};
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::spatial::{
@@ -1348,6 +1348,7 @@ async fn default_scene_contents_restore_on_restart() {
         .expect("default scene should exist");
     assert_eq!(default_scene.groups.len(), 1);
     assert_eq!(default_scene.groups[0].name, "Saved Default Group");
+    assert_eq!(default_scene.groups[0].effect_id, Some(effect_id));
     assert_eq!(
         default_scene.groups[0].controls.get("speed"),
         Some(&hypercolor_types::effect::ControlValue::Float(4.5))

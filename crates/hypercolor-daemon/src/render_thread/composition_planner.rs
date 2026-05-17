@@ -232,7 +232,9 @@ mod tests {
 
     use hypercolor_core::types::canvas::{Canvas, Rgba};
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+    use hypercolor_types::scene::{
+        RenderGroup, RenderGroupId, RenderGroupRole, UnassignedBehavior,
+    };
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
         StripDirection,
@@ -323,7 +325,7 @@ mod tests {
                 active_render_groups_revision: 1,
                 active_render_group_count: 1,
                 active_display_group_target_fps: std::collections::HashMap::new(),
-                unassigned_behavior: Default::default(),
+                unassigned_behavior: UnassignedBehavior::default(),
                 device_registry_generation: 0,
             },
             vec![PlannedSceneLayer::replace(
@@ -391,7 +393,7 @@ mod tests {
             active_render_groups_revision: 0,
             active_render_group_count: 0,
             active_display_group_target_fps: std::collections::HashMap::new(),
-            unassigned_behavior: Default::default(),
+            unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
         let compiled = planner.compile_primary_frame(2, 2, &transition_runtime, entering, true);

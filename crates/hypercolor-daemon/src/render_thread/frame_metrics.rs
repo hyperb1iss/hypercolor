@@ -363,7 +363,7 @@ mod tests {
     use std::sync::Arc;
 
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_types::scene::{ColorInterpolation, RenderGroup};
+    use hypercolor_types::scene::{ColorInterpolation, RenderGroup, UnassignedBehavior};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
     use super::{
@@ -402,7 +402,7 @@ mod tests {
                 active_render_groups_revision: 3,
                 active_render_group_count: 2,
                 active_display_group_target_fps: HashMap::new(),
-                unassigned_behavior: Default::default(),
+                unassigned_behavior: UnassignedBehavior::default(),
                 device_registry_generation: 0,
             },
             spatial_engine: SpatialEngine::new(SpatialLayout {
