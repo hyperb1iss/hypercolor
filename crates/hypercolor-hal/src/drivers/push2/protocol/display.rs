@@ -34,6 +34,8 @@ const DISPLAY_HEADER: Push2DisplayHeader = Push2DisplayHeader {
 };
 const PUSH2_DISPLAY_LINES_PER_TRANSFER: usize =
     PUSH2_DISPLAY_TRANSFER_CHUNK / PUSH2_DISPLAY_LINE_SIZE;
+const PUSH2_DISPLAY_LINE_PADDING_BYTES: [u8; PUSH2_DISPLAY_LINE_PADDING] =
+    push2_display_line_padding();
 
 const _: () = assert!(
     std::mem::size_of::<Push2DisplayHeader>() == 16,
@@ -43,6 +45,16 @@ const _: () = assert!(
     PUSH2_DISPLAY_LINE_SIZE == PUSH2_DISPLAY_LINE_PIXELS + PUSH2_DISPLAY_LINE_PADDING,
     "Push2 display line must be exactly 2048 bytes"
 );
+
+const fn push2_display_line_padding() -> [u8; PUSH2_DISPLAY_LINE_PADDING] {
+    let mut padding = [0; PUSH2_DISPLAY_LINE_PADDING];
+    let mut index = 0;
+    while index < PUSH2_DISPLAY_LINE_PADDING {
+        padding[index] = PUSH2_DISPLAY_XOR_MASK[index & 3];
+        index += 1;
+    }
+    padding
+}
 
 #[derive(Default)]
 pub(super) struct Push2DisplayEncoder {
@@ -192,27 +204,29 @@ fn build_display_commands(rgb_bytes: &[u8], commands: &mut Vec<ProtocolCommand>)
     buffer.finish();
 }
 
-fn encode_rgb565(red: u8, green: u8, blue: u8) -> [u8; 2] {
-    let encoded = (u16::from(blue >> 3) << 11) | (u16::from(green >> 2) << 5) | u16::from(red >> 3);
-    encoded.to_le_bytes()
-}
-
 fn encode_display_line_into(rgb_bytes: &[u8], row: usize, line: &mut [u8]) {
     let row_start = row * PUSH2_DISPLAY_WIDTH * 3;
+    let row_end = row_start + PUSH2_DISPLAY_WIDTH * 3;
+    let row_bytes = &rgb_bytes[row_start..row_end];
+    let pixel_bytes = &mut line[..PUSH2_DISPLAY_LINE_PIXELS];
 
-    for column in 0..PUSH2_DISPLAY_WIDTH {
-        let rgb_offset = row_start + column * 3;
-        let pixel_offset = column * 2;
-        let encoded = encode_rgb565(
-            rgb_bytes[rgb_offset],
-            rgb_bytes[rgb_offset + 1],
-            rgb_bytes[rgb_offset + 2],
-        );
-        line[pixel_offset] = encoded[0] ^ PUSH2_DISPLAY_XOR_MASK[pixel_offset & 3];
-        line[pixel_offset + 1] = encoded[1] ^ PUSH2_DISPLAY_XOR_MASK[(pixel_offset + 1) & 3];
+    for (rgb_pair, output_pair) in row_bytes
+        .chunks_exact(6)
+        .zip(pixel_bytes.chunks_exact_mut(4))
+    {
+        output_pair[0] = encode_rgb565_low(rgb_pair[0], rgb_pair[1]) ^ PUSH2_DISPLAY_XOR_MASK[0];
+        output_pair[1] = encode_rgb565_high(rgb_pair[1], rgb_pair[2]) ^ PUSH2_DISPLAY_XOR_MASK[1];
+        output_pair[2] = encode_rgb565_low(rgb_pair[3], rgb_pair[4]) ^ PUSH2_DISPLAY_XOR_MASK[2];
+        output_pair[3] = encode_rgb565_high(rgb_pair[4], rgb_pair[5]) ^ PUSH2_DISPLAY_XOR_MASK[3];
     }
 
-    for index in 0..PUSH2_DISPLAY_LINE_PADDING {
-        line[PUSH2_DISPLAY_LINE_PIXELS + index] = PUSH2_DISPLAY_XOR_MASK[index & 3];
-    }
+    line[PUSH2_DISPLAY_LINE_PIXELS..].copy_from_slice(&PUSH2_DISPLAY_LINE_PADDING_BYTES);
+}
+
+fn encode_rgb565_low(red: u8, green: u8) -> u8 {
+    (red >> 3) | ((green << 3) & 0xE0)
+}
+
+fn encode_rgb565_high(green: u8, blue: u8) -> u8 {
+    (green >> 5) | (blue & 0xF8)
 }
