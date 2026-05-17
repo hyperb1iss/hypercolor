@@ -450,6 +450,66 @@ impl GpuSparkleFlinger {
         }))
     }
 
+    pub(crate) fn read_back_frame_for_cpu_fallback(
+        &mut self,
+        frame: ProducerFrame,
+    ) -> Result<ProducerFrame> {
+        let Some(gpu_frame) = gpu_source_frame(&frame) else {
+            return Ok(frame);
+        };
+        let width = gpu_frame.width();
+        let height = gpu_frame.height();
+        let padded_bytes_per_row = padded_bytes_per_row(width);
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU producer fallback readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SparkleFlinger GPU producer fallback readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: gpu_frame.texture(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            texture_extent(width, height),
+        );
+        let mut readback_surfaces =
+            RenderSurfacePool::new(SurfaceDescriptor::rgba8888(width, height));
+        #[cfg(test)]
+        let mut last_readback_bytes = 0;
+        let Some(surface) = try_read_back_texture_into_surface(
+            &self.device,
+            &readback,
+            u64::from(padded_bytes_per_row) * u64::from(height),
+            width,
+            height,
+            padded_bytes_per_row,
+            self.queue.submit(Some(encoder.finish())),
+            &mut readback_surfaces,
+            #[cfg(test)]
+            &mut last_readback_bytes,
+        )?
+        else {
+            anyhow::bail!("GPU producer frame readback was not ready");
+        };
+        Ok(ProducerFrame::Surface(surface))
+    }
+
     fn flush_pending_output_submission(&mut self) -> Result<()> {
         if self.pending_preview_readback.is_some() {
             return self.submit_pending_preview_work();
