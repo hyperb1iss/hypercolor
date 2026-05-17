@@ -2026,10 +2026,12 @@ impl BackendManager {
         if !newly_inactive.is_empty() {
             let devices = newly_inactive
                 .iter()
+                .take(8)
                 .map(|(backend_id, device_id)| format!("{backend_id}:{device_id}"))
                 .collect::<Vec<_>>();
             let mapped_layout_ids_by_device = newly_inactive
                 .iter()
+                .take(8)
                 .map(|(backend_id, device_id)| {
                     let aliases = plan
                         .mapped_layout_ids_by_device
@@ -2039,13 +2041,26 @@ impl BackendManager {
                     format!("{backend_id}:{device_id} => [{}]", aliases.join(", "))
                 })
                 .collect::<Vec<_>>();
-            warn!(
-                inactive_device_count = devices.len(),
-                devices = ?devices,
-                layout_zone_count = layout.zones.len(),
-                mapped_layout_ids = ?mapped_layout_ids_by_device,
-                "connected devices have no active layout zones; frames will not be sent"
-            );
+            let inactive_device_count = newly_inactive.len();
+            let omitted_device_count = inactive_device_count.saturating_sub(devices.len());
+            if layout.zones.is_empty() {
+                debug!(
+                    inactive_device_count,
+                    sample_devices = ?devices,
+                    omitted_device_count,
+                    layout_zone_count = layout.zones.len(),
+                    "connected devices are not in the empty active layout; frames will not be sent"
+                );
+            } else {
+                warn!(
+                    inactive_device_count,
+                    sample_devices = ?devices,
+                    omitted_device_count,
+                    layout_zone_count = layout.zones.len(),
+                    sample_mapped_layout_ids = ?mapped_layout_ids_by_device,
+                    "connected devices have no active layout zones; frames will not be sent"
+                );
+            }
         }
         self.warned_inactive_layout_devices.clear();
         self.warned_inactive_layout_devices

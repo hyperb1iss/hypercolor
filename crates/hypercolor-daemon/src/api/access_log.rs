@@ -6,8 +6,9 @@
 //!
 //! - `5xx` → `ERROR`
 //! - `4xx` → `WARN`
-//! - `2xx` / `3xx` → `INFO` (demoted to `DEBUG` for `/health` so systemd and
-//!   orchestrator probes don't drown out real traffic)
+//! - `2xx` / `3xx` → `INFO` (demoted to `DEBUG` for `/health` and high-volume
+//!   UI polling reads so systemd and app refresh loops don't drown out real
+//!   traffic)
 //!
 //! Query strings are logged, but `token` values are redacted: WebSocket
 //! upgrades authenticate via `?token=...` and plaintext keys must never hit
@@ -45,7 +46,7 @@ pub async fn log_access(request: Request<Body>, next: Next) -> Response {
     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     emit(
-        select_level(status, &path),
+        select_level(status, &method, &path),
         &method,
         &path,
         query.as_deref().unwrap_or(""),
@@ -95,16 +96,36 @@ fn emit(
     }
 }
 
-fn select_level(status: u16, path: &str) -> Level {
+fn select_level(status: u16, method: &Method, path: &str) -> Level {
     if status >= 500 {
         Level::ERROR
     } else if status >= 400 {
         Level::WARN
-    } else if matches!(path, "/health") {
+    } else if quiet_success_request(method, path) {
         Level::DEBUG
     } else {
         Level::INFO
     }
+}
+
+fn quiet_success_request(method: &Method, path: &str) -> bool {
+    if matches!(path, "/health") {
+        return true;
+    }
+
+    if method != Method::GET {
+        return false;
+    }
+
+    if matches!(path, "/api/v1/scenes/active") {
+        return true;
+    }
+
+    let segments = path.split('/').collect::<Vec<_>>();
+    matches!(
+        segments.as_slice(),
+        ["", "api", "v1", "scenes", _, "groups", _, "layers"]
+    )
 }
 
 fn client_addr(request: &Request<Body>) -> Option<String> {
@@ -165,7 +186,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::extract::ConnectInfo;
-    use axum::http::Request;
+    use axum::http::{Method, Request};
     use tracing::Level;
 
     use super::{client_addr, redact_sensitive_query, select_level};
@@ -211,21 +232,61 @@ mod tests {
 
     #[test]
     fn level_scales_with_status() {
-        assert_eq!(select_level(200, "/api/v1/effects"), Level::INFO);
-        assert_eq!(select_level(302, "/api/v1/effects"), Level::INFO);
-        assert_eq!(select_level(404, "/api/v1/effects"), Level::WARN);
-        assert_eq!(select_level(500, "/api/v1/effects"), Level::ERROR);
+        assert_eq!(
+            select_level(200, &Method::GET, "/api/v1/effects"),
+            Level::INFO
+        );
+        assert_eq!(
+            select_level(302, &Method::GET, "/api/v1/effects"),
+            Level::INFO
+        );
+        assert_eq!(
+            select_level(404, &Method::GET, "/api/v1/effects"),
+            Level::WARN
+        );
+        assert_eq!(
+            select_level(500, &Method::GET, "/api/v1/effects"),
+            Level::ERROR
+        );
     }
 
     #[test]
     fn health_probes_log_at_debug() {
-        assert_eq!(select_level(200, "/health"), Level::DEBUG);
+        assert_eq!(select_level(200, &Method::GET, "/health"), Level::DEBUG);
     }
 
     #[test]
     fn health_errors_still_escalate() {
-        assert_eq!(select_level(503, "/health"), Level::ERROR);
-        assert_eq!(select_level(401, "/health"), Level::WARN);
+        assert_eq!(select_level(503, &Method::GET, "/health"), Level::ERROR);
+        assert_eq!(select_level(401, &Method::GET, "/health"), Level::WARN);
+    }
+
+    #[test]
+    fn high_volume_scene_polling_reads_log_at_debug() {
+        assert_eq!(
+            select_level(200, &Method::GET, "/api/v1/scenes/active"),
+            Level::DEBUG
+        );
+        assert_eq!(
+            select_level(
+                200,
+                &Method::GET,
+                "/api/v1/scenes/scene-id/groups/group-id/layers"
+            ),
+            Level::DEBUG
+        );
+    }
+
+    #[test]
+    fn scene_layer_writes_still_log_at_info() {
+        assert_eq!(
+            select_level(
+                200,
+                &Method::DELETE,
+                "/api/v1/scenes/scene-id/groups/group-id/layers/layer-id"
+            ),
+            Level::INFO
+        );
     }
 
     fn request_with_connect_info(ip: IpAddr) -> Request<Body> {
