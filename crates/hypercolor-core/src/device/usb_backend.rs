@@ -785,9 +785,21 @@ impl UsbBackend {
                 Self::flatten_actor_result(result, "USB control actor")
             }
             result = &mut display_task => {
-                control_task.abort();
-                let _ = control_task.await;
-                Self::flatten_actor_result(result, "USB display actor")
+                match Self::flatten_actor_result(result, "USB display actor") {
+                    Ok(()) => debug!(
+                        device_id = %device_id,
+                        device = device_name,
+                        "USB display actor exited; control lane remains active"
+                    ),
+                    Err(error) => warn!(
+                        device_id = %device_id,
+                        device = device_name,
+                        error = %error,
+                        error_chain = %format_error_chain(&error),
+                        "USB display actor failed; keeping control lane active"
+                    ),
+                }
+                Self::flatten_actor_result(control_task.await, "USB control actor")
             }
         }
     }
@@ -916,14 +928,24 @@ impl UsbBackend {
             };
 
             record_usb_display_lane(Duration::ZERO, false);
-            Self::run_device_display_frame(
+            if let Err(error) = Self::run_device_display_frame(
                 device_id,
                 protocol.as_ref(),
                 transport.as_ref(),
                 &frame,
                 &mut display_commands,
             )
-            .await?;
+            .await
+            {
+                warn!(
+                    device_id = %device_id,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "USB display frame write failed; display lane will continue"
+                );
+            }
         }
 
         Ok(())
@@ -1120,14 +1142,25 @@ impl UsbBackend {
                     .await?;
                     record_usb_display_lane(wait_for_led_started.elapsed(), delayed_for_led);
 
-                    Self::run_device_display_frame(
+                    if let Err(error) = Self::run_device_display_frame(
                         device_id,
                         protocol.as_ref(),
                         transport.as_ref(),
                         &frame,
                         &mut display_commands,
                     )
-                    .await?;
+                    .await
+                    {
+                        warn!(
+                            device_id = %device_id,
+                            device = device_name,
+                            protocol = protocol.name(),
+                            transport = transport.name(),
+                            error = %error,
+                            error_chain = %format_error_chain(&error),
+                            "USB display frame write failed; LED lane will continue"
+                        );
+                    }
                 }
                 changed = frame_rx.changed() => {
                     if changed.is_err() {
@@ -2363,6 +2396,107 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn display_write_failure_does_not_stop_single_lane_led_actor() {
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+        let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+
+        display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
+            payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
+        })));
+
+        let transport =
+            Arc::new(RecordingTransport::default().with_failed_transfer_type(TransferType::Bulk));
+        let actor_protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+        let actor_transport: Arc<dyn Transport> = transport.clone();
+
+        let actor = tokio::spawn(UsbBackend::run_device_actor(
+            DeviceId::new(),
+            "display-failure-single-lane-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+            colors: Arc::new(vec![[0x22, 0x33, 0x44]]),
+        })));
+
+        assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x22]]);
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(UsbDeviceCommand::Shutdown {
+                led_count: 0,
+                response_tx,
+            })
+            .expect("actor command channel should stay open after display failure");
+        response_rx
+            .await
+            .expect("shutdown response should be delivered")
+            .expect("shutdown should succeed");
+        actor
+            .await
+            .expect("actor task should join")
+            .expect("actor should exit cleanly");
+    }
+
+    #[tokio::test]
+    async fn parallel_display_write_failure_does_not_stop_control_lane() {
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+        let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+
+        display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
+            payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
+        })));
+
+        let transport = Arc::new(
+            RecordingTransport::default()
+                .with_parallel_transfer_lanes()
+                .with_failed_transfer_type(TransferType::Bulk),
+        );
+        let actor_protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+        let actor_transport: Arc<dyn Transport> = transport.clone();
+
+        let actor = tokio::spawn(UsbBackend::run_parallel_device_actor(
+            DeviceId::new(),
+            "display-failure-parallel-test-device",
+            actor_protocol,
+            actor_transport,
+            frame_rx,
+            display_rx,
+            command_rx,
+        ));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload {
+            colors: Arc::new(vec![[0x33, 0x44, 0x55]]),
+        })));
+
+        assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![0x33]]);
+
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(UsbDeviceCommand::Shutdown {
+                led_count: 0,
+                response_tx,
+            })
+            .expect("control command channel should stay open after display failure");
+        response_rx
+            .await
+            .expect("shutdown response should be delivered")
+            .expect("shutdown should succeed");
+        actor
+            .await
+            .expect("actor task should join")
+            .expect("actor should exit cleanly");
+    }
+
     async fn wait_for_writes(transport: &RecordingTransport, count: usize) -> Vec<Vec<u8>> {
         timeout(Duration::from_secs(1), async {
             loop {
@@ -2493,6 +2627,7 @@ mod tests {
         primary_send_delay: Option<Duration>,
         bulk_send_delay: Option<Duration>,
         parallel_transfer_lanes: bool,
+        failed_transfer_type: Option<TransferType>,
     }
 
     impl RecordingTransport {
@@ -2508,6 +2643,11 @@ mod tests {
 
         fn with_parallel_transfer_lanes(mut self) -> Self {
             self.parallel_transfer_lanes = true;
+            self
+        }
+
+        const fn with_failed_transfer_type(mut self, transfer_type: TransferType) -> Self {
+            self.failed_transfer_type = Some(transfer_type);
             self
         }
 
@@ -2557,6 +2697,11 @@ mod tests {
             data: &[u8],
             transfer_type: TransferType,
         ) -> std::result::Result<(), TransportError> {
+            if self.failed_transfer_type == Some(transfer_type) {
+                return Err(TransportError::IoError {
+                    detail: format!("injected {transfer_type:?} failure"),
+                });
+            }
             self.record_send(data, self.send_delay_for(transfer_type))
                 .await;
             Ok(())
