@@ -242,6 +242,42 @@ default is to disclose it on demand. A permanent control that a
 single-zone, single-layer user does not need is a bug against this
 principle, and §15.2 verifies the minimal baseline explicitly.
 
+### 3.4 Guiding Principle: Luminary by Default
+
+Studio is the most visible surface this spec ships, and it must be
+*gorgeous* — not functional-then-polished, gorgeous on the wave it
+lands. The bar is already set inside this app: the `/layout` workspace
+(`layout_builder`, `layout_canvas`, `viewport_designer`) is the most
+polished page Hypercolor has, and Studio must match or beat it.
+
+Two non-negotiables govern every visible wave:
+
+- **The Luminary design system is the only visual vocabulary.**
+  Hypercolor's visual language is Luminary (ambient reactivity) and
+  Prism (layered glass), specified in
+  `docs/design/19-luminary-design-system.md` and shipped as three-tier
+  tokens (`tokens/primitives.css`, `tokens/semantic.css`, `input.css`).
+  Studio uses its OKLCH surface and accent tokens, its `section_label`
+  typography, its `--ease-silk` / `--ease-spring` motion, its
+  `edge-glow` luminance elevation, its `card-hover` / `btn-press` /
+  `chip-interactive` micro-interactions, and its ambient-hue accent
+  flow. The anti-patterns are explicit: no drop-shadow elevation, no
+  hover lift, no flat-gray neutrals, no hard outline focus rings, no
+  hand-rolled label type. The layout page avoids every one of those; so
+  does Studio.
+- **Design is built per wave, not deferred.** Wave 6 carries the jargon
+  scrub and a final cohesion pass, but it is not where Studio "becomes
+  pretty." Wave 4's shell, Wave 5's Stage, and Waves 9-10's zone
+  surfaces each ship at the Luminary bar on the wave they land. Every
+  wave that renders a surface gets `agent-browser` visual verification
+  against the bar (§15.2), not only the Wave 7 sweep.
+
+Component reuse is the consistency mechanism: `PageHeader`,
+`PreviewCabinet`, `CanvasPreview`, `LayoutCanvas`, the `device_card`
+family, `ResizeHandle`, `section_label`, and `SilkSelect` are the shared
+anchors (§6, §10). Reaching for a reused component is the default; a
+bespoke one is justified per case.
+
 ---
 
 ## 4. User-Facing Vocabulary
@@ -840,6 +876,10 @@ makes Studio the default while keeping the rollback path; Wave 8 removes
 the old UI only after the soak. Waves 9-10 are additive on the shipped
 Studio and each affordance activates per its §9.6 capability gate.
 
+Every wave that renders a surface ships it at the Luminary bar (§3.4)
+and is visually verified with `agent-browser` on the wave it lands; the
+Wave 7 sweep is the comprehensive pass, not Studio's first look.
+
 ---
 
 ## 15. Verification Strategy
@@ -853,8 +893,12 @@ and the shared catalog grid.
 
 ### 15.2 Visual and Manual (agent-browser)
 
-The directive to "test every tiny aspect" is a structured QA sweep in
-Wave 7, driven by `agent-browser` against a live daemon on `:9430`:
+Each surface-rendering wave (4, 5, 6, 9, 10) is visually verified with
+`agent-browser` against the §3.4 Luminary bar when it lands — token use,
+motion, elevation, empty states, and component reuse all checked on the
+wave, not deferred. The directive to "test every tiny aspect" is then a
+structured full QA sweep in Wave 7, driven by `agent-browser` against a
+live daemon on `:9430`:
 
 - Every surface in the rail selects, previews, and loads its layer stack.
 - Add, reorder, blend, opacity, transform, adjust, enable, delete, and the
