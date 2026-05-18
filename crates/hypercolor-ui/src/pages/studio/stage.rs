@@ -510,7 +510,7 @@ fn UnassignedStage() -> impl IntoView {
                 <span class="text-sm font-semibold text-fg-primary">"Unassigned lights"</span>
             </div>
             <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
-                <div class="max-w-md text-center">
+                <div class="w-full max-w-[28rem] text-center">
                     <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-surface-sunken/70">
                         <Icon
                             icon=LuBan
