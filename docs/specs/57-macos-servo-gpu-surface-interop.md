@@ -1,6 +1,7 @@
 # 57 - macOS Servo GPU Surface Interop
 
-**Status:** Planned; Linux lane landed, macOS baseline captured
+**Status:** Implemented; macOS live validation captured; `just dev` defaults to
+`auto`
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, optional interop crate
@@ -69,6 +70,80 @@ composer after Servo readback. The WebSocket preview path is also visible in
 The macOS opportunity is therefore specific: remove Servo `glReadPixels` and
 the CPU-to-GPU source texture upload. GPU import will not remove JavaScript
 evaluation cost, canvas preview encoding cost, or device output cost.
+
+## 2.1 Post-import Profile
+
+Captured on 2026-05-18 on the same MacBook Pro after implementing the
+IOSurface-to-Metal importer and running:
+
+```bash
+./scripts/servo-cache-build.sh cargo run \
+  -p hypercolor-daemon \
+  --bin hypercolor-daemon \
+  --profile preview \
+  --features "servo wgpu servo-gpu-import" \
+  -- \
+  --log-level debug \
+  --compositor-acceleration-mode gpu \
+  --servo-gpu-import-mode auto
+```
+
+The active effect was still `Breakthrough`, with six discovered devices, GPU
+SparkleFlinger composition, GPU spatial sampling, and Servo GPU import in
+`auto` mode. The implementation used the macOS hardware Surfman context, a
+generic IOSurface-backed surface, and Metal texture wrapping. The previous
+`NoWidgetAttached` present spam was removed because offscreen Surfman generic
+surfaces do not present to a widget.
+
+Artifacts:
+
+- `/tmp/hypercolor-mac-import-20260518-115445.jsonl`
+- `/tmp/hypercolor-daemon-ps-import-20260518-115445.csv`
+- `/tmp/hypercolor-daemon-sample-import-20260518-1854.txt`
+- `/tmp/hypercolor-mac-import-light-20260518-115807.json`
+- `/tmp/hypercolor-daemon-ps-import-light-20260518-115807.csv`
+
+The first 60-sample REST run is useful for frame-time distribution but perturbs
+the daemon because `/status` enumerates CoreAudio devices on each request. It
+still showed successful import:
+
+- actual FPS: mean 58.5, p95 60.0
+- render-loop total: mean 0.36 ms, p95 0.56 ms, max 1.20 ms
+- effect rendering: mean 0.22 ms
+- GPU spatial sampling: mean 0.10 ms
+- process CPU from `ps`: mean 16.1%, p95 19.8%
+- resident set from `ps`: mean 311.5 MiB, max 317.5 MiB
+- Servo GPU frames: +3406
+- Servo CPU frames: +0
+- Servo readback: +0.0 ms
+- Servo GPU import failures/fallbacks: +0/+0
+- SparkleFlinger source upload skipped: +3408
+- Servo GPU import total: +63.138 ms over the window
+- Servo GPU import sync: +0.0 ms
+
+The lower-perturbation run sampled process stats every second but hit `/status`
+only at the start and end:
+
+- actual FPS at end: 60.0
+- frame delta: +3432
+- Servo render requests: +3431
+- Servo GPU frames: +3431
+- Servo CPU frames: +0
+- Servo soft stalls: +0
+- Servo readback: +0.0 ms
+- Servo GPU import failures/fallbacks: +0/+0
+- SparkleFlinger source upload skipped: +3432
+- Servo GPU import total: +71.609 ms over the window
+- Servo GPU import sync: +0.0 ms
+- latest render-loop total at end: 0.31 ms
+- process CPU from `ps`: mean 13.9%, p95 16.0%
+- resident set from `ps`: mean 236.3 MiB, max 251.6 MiB
+
+The `sample` trace from the import run no longer contains Servo `read_pixels`,
+`glReadPixels`, or `wgpu::Queue::write_texture` source-upload frames. The
+remaining visible samples are Servo/WebRender update work, WebSocket preview
+traffic, CoreAudio enumeration during status requests, USB output, and scheduler
+idle/parking.
 
 ## 3. What We Know
 
