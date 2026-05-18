@@ -265,7 +265,10 @@ fn SurfaceStage() -> impl IntoView {
                     // canvas above, the zone-assignment panel docked below.
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                            <div class="min-h-0 flex-1 overflow-hidden">
+                            // Must be a flex column: LayoutBuilder's root is a
+                            // flex-1 child and has no h-full, so a plain block
+                            // here collapses the canvas to zero height.
+                            <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                                 <LayoutBuilder compact=true />
                             </div>
                             {multi_zone.get().then(|| view! { <ZoneAssignment /> })}
