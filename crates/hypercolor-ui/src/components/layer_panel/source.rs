@@ -203,6 +203,10 @@ pub fn hex_to_layer_rgba(hex: &str) -> Option<[f32; 4]> {
 /// bare kind ("Effect", "Media") — a raw UUID is never shown to the user
 /// (Spec 65 §15.2). An effect outside the HTML catalog, such as a native
 /// display face, has no resolvable name and reads simply as "Effect".
+// Superseded in the live UI by the row's split title/kind rendering, but
+// kept as the leptos-free pinned-contract function the §15.2 no-raw-UUID
+// test exercises.
+#[allow(dead_code)]
 #[must_use]
 pub fn layer_source_label(
     source: &LayerSource,

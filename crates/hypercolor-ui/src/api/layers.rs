@@ -138,6 +138,29 @@ pub async fn delete_layer(
     .await
 }
 
+/// Patch the effect controls of one layer. `controls` is a JSON object of
+/// `{ control_id: raw_value }` pairs — the daemon normalizes each against
+/// the effect's control schema and merges them into the layer's stored
+/// controls, so a partial payload is fine. Guarded by `If-Match`.
+pub async fn patch_layer_controls(
+    scene_id: &str,
+    group_id: &str,
+    layer_id: &str,
+    controls: &serde_json::Value,
+    expected_version: Option<u64>,
+) -> Result<LayerStackOutcome, String> {
+    let body = serde_json::to_string(&serde_json::json!({ "controls": controls }))
+        .map_err(|error| error.to_string())?;
+    send_layer_mutation(
+        Request::patch(&format!(
+            "/api/v1/scenes/{scene_id}/groups/{group_id}/layers/{layer_id}/controls"
+        )),
+        Some(body),
+        expected_version,
+    )
+    .await
+}
+
 pub async fn reorder_layers(
     scene_id: &str,
     group_id: &str,

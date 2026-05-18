@@ -25,6 +25,7 @@
 //! Content selection is owned internally (its own asset resource), so the
 //! component is decoupled from any host page's selection state.
 
+mod controls;
 mod picker;
 mod row;
 mod source;
@@ -259,11 +260,17 @@ pub fn LayerPanel(
                                 .enumerate()
                                 .collect::<Vec<_>>();
                             rows.reverse();
+                            // The Top/Bottom stack markers orient a real
+                            // stack; with a single layer there is no
+                            // ordering to convey, so they stay hidden.
+                            let show_stack_markers = total > 1;
                             view! {
                                 <div class="space-y-2">
-                                    <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
-                                        "Top"
-                                    </div>
+                                    {show_stack_markers.then(|| view! {
+                                        <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
+                                            "Top"
+                                        </div>
+                                    })}
                                     {rows.into_iter().map(|(stack_index, layer)| {
                                         let row_health_key = layer_health_key(
                                             &scene_id,
@@ -289,9 +296,11 @@ pub fn LayerPanel(
                                             />
                                         }
                                     }).collect_view()}
-                                    <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
-                                        "Bottom"
-                                    </div>
+                                    {show_stack_markers.then(|| view! {
+                                        <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
+                                            "Bottom"
+                                        </div>
+                                    })}
                                 </div>
                             }.into_any()
                         }
