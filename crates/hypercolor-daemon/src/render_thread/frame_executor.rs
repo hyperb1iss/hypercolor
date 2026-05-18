@@ -200,6 +200,7 @@ pub(crate) async fn execute_frame(
         cpu_sampling_late_readback,
         refresh_reused_frame_metadata,
         reuses_published_frame,
+        zone_shape_signature,
     } = {
         let mut sampling = render.sampling_runtime();
         resolve_led_sampling(
@@ -225,8 +226,13 @@ pub(crate) async fn execute_frame(
             state.backend_manager.lock().await
         };
         let device_brightness_generation = manager.output_brightness_generation();
-        let output_reuse_key =
-            OutputReuseKey::new(global_brightness_bits, device_brightness_generation);
+        let routing_signature = manager.routed_output_signature(layout.as_ref());
+        let output_reuse_key = OutputReuseKey::new(
+            global_brightness_bits,
+            device_brightness_generation,
+            routing_signature,
+            zone_shape_signature,
+        );
         let output_reuse_decision = frame_loop.output_reuse.decide_frame_source(
             reuses_published_frame,
             output_reuse_key,

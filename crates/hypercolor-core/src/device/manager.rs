@@ -2161,6 +2161,17 @@ impl BackendManager {
         })
     }
 
+    /// Stable identity for the active routed-output lane.
+    #[must_use]
+    pub fn routed_output_signature(&mut self, layout: &SpatialLayout) -> u64 {
+        let plan = self.routing_plan(layout);
+        let mut hasher = DefaultHasher::new();
+        plan.layout_signature.hash(&mut hasher);
+        plan.mapping_generation.hash(&mut hasher);
+        plan.active_target_keys.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Reuse the latest routed outputs for the active layout.
     ///
     /// This only nudges queues that need a retry after an asynchronous write

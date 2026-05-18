@@ -102,6 +102,13 @@ impl GpuRenderDevice {
 }
 
 impl GpuRenderDeviceInfo {
+    #[cfg_attr(
+        not(feature = "servo-gpu-import"),
+        allow(
+            dead_code,
+            reason = "Servo GPU import backend checks are used only when zero-copy import is enabled"
+        )
+    )]
     pub(crate) const fn servo_gpu_import_backend_compatible(&self) -> bool {
         if cfg!(target_os = "linux") {
             matches!(self.backend, wgpu::Backend::Vulkan)
@@ -112,6 +119,13 @@ impl GpuRenderDeviceInfo {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "servo-gpu-import"),
+        allow(
+            dead_code,
+            reason = "Servo GPU import backend checks are used only when zero-copy import is enabled"
+        )
+    )]
     pub(crate) const fn servo_gpu_import_backend_reason(&self) -> Option<&'static str> {
         if cfg!(target_os = "linux") {
             if matches!(self.backend, wgpu::Backend::Vulkan) {

@@ -1,15 +1,24 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
 use tracing::warn;
 
 use hypercolor_core::scene::interpolate_color;
-use hypercolor_core::spatial::{SpatialEngine, is_led_sampled_zone};
+#[cfg(test)]
+use hypercolor_core::spatial::generate_positions;
+#[cfg(test)]
+use hypercolor_core::spatial::is_led_sampled_zone;
+use hypercolor_core::spatial::{PreparedZonePlan, SpatialEngine};
 use hypercolor_core::types::canvas::{Canvas, RgbaF32};
+#[cfg(test)]
 use hypercolor_core::types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
+#[cfg(test)]
+use hypercolor_types::spatial::DeviceZone;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
@@ -95,6 +104,7 @@ pub(crate) struct LedSamplingOutcome {
     pub(crate) cpu_sampling_late_readback: bool,
     pub(crate) refresh_reused_frame_metadata: bool,
     pub(crate) reuses_published_frame: bool,
+    pub(crate) zone_shape_signature: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -104,6 +114,7 @@ enum CpuSamplingCanvasStatus {
     Unavailable,
 }
 
+#[cfg(test)]
 pub(crate) fn can_reuse_published_frame_for_deferred_sampling(
     render_stage: &RenderStageStats,
     layout: &SpatialLayout,
@@ -113,6 +124,7 @@ pub(crate) fn can_reuse_published_frame_for_deferred_sampling(
         && can_hold_published_frame_for_deferred_sampling(layout, published_frame)
 }
 
+#[cfg(test)]
 pub(crate) fn can_hold_published_frame_for_deferred_sampling(
     layout: &SpatialLayout,
     published_frame: &FrameData,
@@ -120,20 +132,85 @@ pub(crate) fn can_hold_published_frame_for_deferred_sampling(
     can_hold_zone_colors_for_deferred_sampling(layout, &published_frame.zones)
 }
 
+#[cfg(test)]
 pub(crate) fn can_hold_zone_colors_for_deferred_sampling(
     layout: &SpatialLayout,
     zones: &[ZoneColors],
 ) -> bool {
+    zone_shapes_match(
+        layout
+            .zones
+            .iter()
+            .filter(|zone| is_led_sampled_zone(zone))
+            .map(|zone| (zone.id.as_str(), expected_zone_sample_count(zone))),
+        zones,
+    )
+}
+
+pub(crate) fn can_hold_zone_colors_for_prepared_sampling(
+    prepared_zones: &[PreparedZonePlan],
+    zones: &[ZoneColors],
+) -> bool {
+    zone_shapes_match(
+        prepared_zones
+            .iter()
+            .map(|zone| (zone.zone_id.as_str(), zone.sample_positions.len())),
+        zones,
+    )
+}
+
+pub(crate) fn zone_shape_signature_for_prepared_sampling(
+    prepared_zones: &[PreparedZonePlan],
+) -> u64 {
+    hash_zone_shapes(
+        prepared_zones
+            .iter()
+            .map(|zone| (zone.zone_id.as_str(), zone.sample_positions.len())),
+    )
+}
+
+pub(crate) fn zone_shape_signature_for_zone_colors(zones: &[ZoneColors]) -> u64 {
+    hash_zone_shapes(
+        zones
+            .iter()
+            .map(|zone| (zone.zone_id.as_str(), zone.colors.len())),
+    )
+}
+
+fn zone_shapes_match<'a>(
+    expected: impl IntoIterator<Item = (&'a str, usize)>,
+    zones: &[ZoneColors],
+) -> bool {
     let mut published_zones = zones.iter();
-    for layout_zone in layout.zones.iter().filter(|zone| is_led_sampled_zone(zone)) {
+    for (zone_id, sample_count) in expected {
         let Some(zone_colors) = published_zones.next() else {
             return false;
         };
-        if zone_colors.zone_id != layout_zone.id {
+        if zone_colors.zone_id != zone_id || zone_colors.colors.len() != sample_count {
             return false;
         }
     }
     published_zones.next().is_none()
+}
+
+fn hash_zone_shapes<'a>(shapes: impl IntoIterator<Item = (&'a str, usize)>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let mut count = 0_usize;
+    for (zone_id, sample_count) in shapes {
+        zone_id.hash(&mut hasher);
+        sample_count.hash(&mut hasher);
+        count = count.saturating_add(1);
+    }
+    count.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+fn expected_zone_sample_count(zone: &DeviceZone) -> usize {
+    if zone.led_positions.is_empty() {
+        return generate_positions(&zone.topology).len();
+    }
+    zone.led_positions.len()
 }
 
 fn try_retire_stale_zone_sampling(
@@ -331,6 +408,7 @@ pub(crate) fn resolve_led_sampling(
     let mut gpu_sample_cpu_fallback = false;
     let mut cpu_sampling_late_readback = false;
     let mut refresh_reused_frame_metadata = false;
+    let mut zone_shape_signature = None::<u64>;
     let mut pending_gpu_zone_sampling = None;
     let mut can_reuse_published_frame = false;
     let mut can_hold_published_frame = false;
@@ -356,20 +434,26 @@ pub(crate) fn resolve_led_sampling(
         render_stage.sampled_us = 0;
         let prepared_zones = sampling_engine.sampling_plan();
         let layout = sampling_engine.layout();
+        zone_shape_signature = Some(zone_shape_signature_for_prepared_sampling(
+            prepared_zones.as_ref(),
+        ));
         (can_reuse_published_frame, can_hold_published_frame) = {
             let published_frame = state.event_bus.frame_sender().borrow();
             (
-                can_reuse_published_frame_for_deferred_sampling(
-                    render_stage,
-                    layout.as_ref(),
-                    &published_frame,
+                render_stage.screen_retained
+                    && can_hold_zone_colors_for_prepared_sampling(
+                        prepared_zones.as_ref(),
+                        &published_frame.zones,
+                    ),
+                can_hold_zone_colors_for_prepared_sampling(
+                    prepared_zones.as_ref(),
+                    &published_frame.zones,
                 ),
-                can_hold_published_frame_for_deferred_sampling(layout.as_ref(), &published_frame),
             )
         };
         let completed_sampling_matches_current = completed_deferred_sampling.is_some()
-            && can_hold_zone_colors_for_deferred_sampling(
-                layout.as_ref(),
+            && can_hold_zone_colors_for_prepared_sampling(
+                prepared_zones.as_ref(),
                 sampling.deferred_sampling.scratch(),
             );
         let mut should_queue_followup_sampling = false;
@@ -700,6 +784,14 @@ pub(crate) fn resolve_led_sampling(
         render_stage.led_sampling_strategy,
         LedSamplingStrategy::ReusePublished(_)
     );
+    let zone_shape_signature = zone_shape_signature.unwrap_or_else(|| {
+        if reuses_published_frame {
+            let published_frame = state.event_bus.frame_sender().borrow();
+            zone_shape_signature_for_zone_colors(&published_frame.zones)
+        } else {
+            zone_shape_signature_for_zone_colors(sampling.output_artifacts.zones())
+        }
+    });
     if scene_snapshot.scene_runtime.active_transition.is_none() {
         if let Some(retained_zones) = retained_scene_zones.as_ref() {
             sampling
@@ -729,6 +821,7 @@ pub(crate) fn resolve_led_sampling(
         cpu_sampling_late_readback,
         refresh_reused_frame_metadata,
         reuses_published_frame,
+        zone_shape_signature,
     }
 }
 
@@ -788,9 +881,13 @@ mod tests {
     }
 
     fn zone_colors(id: &str) -> ZoneColors {
+        zone_colors_with_count(id, 2)
+    }
+
+    fn zone_colors_with_count(id: &str, count: usize) -> ZoneColors {
         ZoneColors {
             zone_id: id.to_owned(),
-            colors: vec![[1, 2, 3], [4, 5, 6]],
+            colors: vec![[1, 2, 3]; count],
         }
     }
 
@@ -808,6 +905,37 @@ mod tests {
         let zones = vec![zone_colors("right"), zone_colors("left")];
 
         assert!(!can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+
+    #[test]
+    fn frame_sampling_rejects_same_zone_ids_with_different_sample_counts() {
+        let layout = test_layout(vec![test_zone("left"), test_zone("right")]);
+        let zones = vec![
+            zone_colors_with_count("left", 2),
+            zone_colors_with_count("right", 3),
+        ];
+
+        assert!(!can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+
+    #[test]
+    fn frame_sampling_rejects_missing_extra_and_resized_zones() {
+        let layout = test_layout(vec![test_zone("left"), test_zone("right")]);
+        let missing = vec![zone_colors("left")];
+        let extra = vec![
+            zone_colors("left"),
+            zone_colors("right"),
+            zone_colors("third"),
+        ];
+        let resized = vec![zone_colors_with_count("left", 1), zone_colors("right")];
+
+        assert!(!can_hold_zone_colors_for_deferred_sampling(
+            &layout, &missing
+        ));
+        assert!(!can_hold_zone_colors_for_deferred_sampling(&layout, &extra));
+        assert!(!can_hold_zone_colors_for_deferred_sampling(
+            &layout, &resized
+        ));
     }
 
     #[test]

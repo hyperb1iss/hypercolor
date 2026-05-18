@@ -2455,6 +2455,29 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     assert!(brightness_writes.lock().await.is_empty());
 }
 
+#[test]
+fn routed_output_signature_tracks_layout_and_mapping_identity() {
+    let first_device = DeviceId::new();
+    let second_device = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.map_device("mock:cached-strip", "mock", first_device);
+
+    let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
+    let initial = manager.routed_output_signature(&layout);
+
+    assert_eq!(manager.routed_output_signature(&layout), initial);
+
+    let mut remapped_zone = make_zone("zone_0", "mock:cached-strip", 5);
+    remapped_zone.led_mapping = Some(vec![4, 3, 2, 1, 0]);
+    let remapped_layout = make_layout(vec![remapped_zone]);
+
+    assert_ne!(manager.routed_output_signature(&remapped_layout), initial);
+
+    manager.map_device("mock:cached-strip", "mock", second_device);
+
+    assert_ne!(manager.routed_output_signature(&layout), initial);
+}
+
 #[tokio::test]
 async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
     let device_id = DeviceId::new();

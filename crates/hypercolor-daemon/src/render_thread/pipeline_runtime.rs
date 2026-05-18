@@ -520,16 +520,22 @@ pub(crate) struct OutputReuseState {
 pub(crate) struct OutputReuseKey {
     pub(crate) output_brightness_bits: u32,
     pub(crate) device_output_brightness_generation: u64,
+    pub(crate) routing_signature: u64,
+    pub(crate) zone_shape_signature: u64,
 }
 
 impl OutputReuseKey {
     pub(crate) const fn new(
         output_brightness_bits: u32,
         device_output_brightness_generation: u64,
+        routing_signature: u64,
+        zone_shape_signature: u64,
     ) -> Self {
         Self {
             output_brightness_bits,
             device_output_brightness_generation,
+            routing_signature,
+            zone_shape_signature,
         }
     }
 }
@@ -1156,7 +1162,7 @@ mod tests {
     #[test]
     fn output_frame_source_reuses_routed_outputs_when_dependencies_match() {
         let mut reuse = OutputReuseState::default();
-        let key = OutputReuseKey::new(1, 7);
+        let key = OutputReuseKey::new(1, 7, 11, 13);
         reuse.record(key);
 
         let source = reuse.decide_frame_source(true, key, || true).source();
@@ -1167,7 +1173,7 @@ mod tests {
     #[test]
     fn output_frame_source_falls_back_to_published_frame_when_route_reuse_is_unavailable() {
         let mut reuse = OutputReuseState::default();
-        let key = OutputReuseKey::new(1, 7);
+        let key = OutputReuseKey::new(1, 7, 11, 13);
         reuse.record(key);
 
         let source = reuse.decide_frame_source(true, key, || false).source();
@@ -1179,7 +1185,7 @@ mod tests {
     fn output_frame_source_skips_route_reuse_probe_without_published_frame_reuse() {
         let reuse = OutputReuseState::default();
         let route_probe_calls = Cell::new(0_u32);
-        let key = OutputReuseKey::new(1, 7);
+        let key = OutputReuseKey::new(1, 7, 11, 13);
 
         let source = reuse
             .decide_frame_source(false, key, || {
@@ -1195,11 +1201,45 @@ mod tests {
     #[test]
     fn output_frame_source_skips_route_reuse_probe_when_reuse_metadata_mismatches() {
         let mut reuse = OutputReuseState::default();
-        reuse.record(OutputReuseKey::new(1, 7));
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13));
         let route_probe_calls = Cell::new(0_u32);
 
         let source = reuse
-            .decide_frame_source(true, OutputReuseKey::new(1, 8), || {
+            .decide_frame_source(true, OutputReuseKey::new(1, 8, 11, 13), || {
+                route_probe_calls.set(route_probe_calls.get() + 1);
+                true
+            })
+            .source();
+
+        assert_eq!(source, OutputFrameSource::PublishedFrame);
+        assert_eq!(route_probe_calls.get(), 0);
+    }
+
+    #[test]
+    fn output_frame_source_uses_published_frame_when_routing_signature_changes() {
+        let mut reuse = OutputReuseState::default();
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13));
+        let route_probe_calls = Cell::new(0_u32);
+
+        let source = reuse
+            .decide_frame_source(true, OutputReuseKey::new(1, 7, 12, 13), || {
+                route_probe_calls.set(route_probe_calls.get() + 1);
+                true
+            })
+            .source();
+
+        assert_eq!(source, OutputFrameSource::PublishedFrame);
+        assert_eq!(route_probe_calls.get(), 0);
+    }
+
+    #[test]
+    fn output_frame_source_uses_published_frame_when_zone_shape_changes() {
+        let mut reuse = OutputReuseState::default();
+        reuse.record(OutputReuseKey::new(1, 7, 11, 13));
+        let route_probe_calls = Cell::new(0_u32);
+
+        let source = reuse
+            .decide_frame_source(true, OutputReuseKey::new(1, 7, 11, 14), || {
                 route_probe_calls.set(route_probe_calls.get() + 1);
                 true
             })
@@ -1212,7 +1252,7 @@ mod tests {
     #[test]
     fn output_frame_source_records_reuse_metadata_after_decision() {
         let mut reuse = OutputReuseState::default();
-        let key = OutputReuseKey::new(1, 7);
+        let key = OutputReuseKey::new(1, 7, 11, 13);
 
         let decision = reuse.decide_frame_source(false, key, || true);
         reuse.record_decision(decision);
