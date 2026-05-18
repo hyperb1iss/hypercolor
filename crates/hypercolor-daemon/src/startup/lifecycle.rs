@@ -1,6 +1,7 @@
 //! Daemon lifecycle: start, shutdown, runtime session persistence, and background workers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
@@ -25,6 +26,8 @@ use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
 use super::discovery_worker::DiscoveryWorkerContext;
+
+const USB_HOTPLUG_REMOVAL_RECOVERY_SCAN_DELAY: Duration = Duration::from_secs(2);
 
 impl DaemonState {
     /// Start all subsystems — render loop, render thread, backend discovery.
@@ -683,6 +686,7 @@ impl DaemonState {
                                 }
                                 Ok(UsbHotplugEvent::Removed { vendor_id, product_id }) => {
                                     info!(vendor_id, product_id, "USB hotplug removal detected");
+                                    spawn_delayed_usb_hotplug_scan(worker.clone());
                                     true
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -717,4 +721,15 @@ impl DaemonState {
             }
         }));
     }
+}
+
+fn spawn_delayed_usb_hotplug_scan(worker: DiscoveryWorkerContext) {
+    std::mem::drop(tokio::spawn(async move {
+        tokio::time::sleep(USB_HOTPLUG_REMOVAL_RECOVERY_SCAN_DELAY).await;
+        debug!(
+            delay_ms = USB_HOTPLUG_REMOVAL_RECOVERY_SCAN_DELAY.as_millis(),
+            "running delayed USB hotplug recovery scan"
+        );
+        worker.run_usb_hotplug_scan().await;
+    }));
 }
