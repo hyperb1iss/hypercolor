@@ -21,6 +21,7 @@ pub mod library;
 pub mod scenes;
 pub mod simulators;
 pub mod system;
+pub mod zones;
 
 // ── Shared Envelope ─────────────────────────────────────────────────────────
 
@@ -48,3 +49,6 @@ pub use library::*;
 pub use scenes::*;
 pub use simulators::*;
 pub use system::*;
+// `zones` is referenced by its module path (`api::zones::…`) rather than
+// flat-globbed, to avoid colliding `ZoneResponse`/`ZoneListResponse` with
+// other domains.

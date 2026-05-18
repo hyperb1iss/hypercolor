@@ -107,6 +107,33 @@ pub struct StudioFlag {
     pub set_enabled: WriteSignal<bool>,
 }
 
+/// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio affordances
+/// gate on whether their backing capability is advertised by the daemon's
+/// `GET /api/v1/status` response — there is no probe fallback, so an
+/// absent advertisement means the affordance stays hidden.
+#[derive(Clone, Copy)]
+pub struct CapabilitiesContext {
+    pub capabilities: Signal<HashSet<String>>,
+}
+
+impl CapabilitiesContext {
+    /// Whether the daemon advertises a named capability.
+    #[must_use]
+    pub fn has(&self, capability: &str) -> bool {
+        self.capabilities.with(|set| set.contains(capability))
+    }
+
+    /// Whether every zone-lifecycle capability is live. `+ New zone` and
+    /// the zone rows need all three: a user who can create a zone but
+    /// cannot render it or move outputs into it has an unusable zone.
+    #[must_use]
+    pub fn zone_crud_ready(&self) -> bool {
+        self.has("zone-crud")
+            && self.has("multi-zone-sampling")
+            && self.has("zone-device-assignment")
+    }
+}
+
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
 #[derive(Clone, Copy)]
 pub struct EffectsContext {
@@ -616,6 +643,19 @@ pub fn App() -> impl IntoView {
         enabled: studio_ui_beta,
         set_enabled: set_studio_ui_beta,
     });
+
+    // Daemon capability advertisement (§9.6). Fetched once — the set is
+    // fixed per daemon build — and exposed as a context so multi-zone
+    // Studio affordances can gate on it without each re-querying status.
+    let status_resource = LocalResource::new(api::fetch_status);
+    let capabilities = Signal::derive(move || {
+        status_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|status| status.capabilities.into_iter().collect::<HashSet<_>>())
+            .unwrap_or_default()
+    });
+    provide_context(CapabilitiesContext { capabilities });
 
     Effect::new(move |_| {
         let Some(frame) = ws.canvas_frame.get() else {

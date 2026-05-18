@@ -24,16 +24,37 @@ use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
 use super::stage_view::{StageView, resolve_stage_view};
-use super::surface::{SurfaceKind, surfaces_from_groups};
+use super::surface::{SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::surface_rail::unassigned_behavior_label;
 
 /// Preview FPS ceiling while the Layout editor is on the Stage, matching
 /// the retired `/layout` page so spatial editing stays smooth.
 const LAYOUT_PREVIEW_FPS_CAP: u32 = 60;
 
-/// The center Stage. Reads the selected surface from [`StudioContext`] and
-/// the live preview streams from [`WsContext`].
+/// The center Stage. Dispatches on the current selection: a real surface
+/// renders its Output/Layout views, the synthetic Unassigned entry (§9.4)
+/// renders the unassigned-lights panel instead.
 #[component]
 pub fn Stage() -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let is_unassigned = Memo::new(move |_| {
+        studio.selected_surface_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID)
+    });
+    view! {
+        {move || {
+            if is_unassigned.get() {
+                view! { <UnassignedStage /> }.into_any()
+            } else {
+                view! { <SurfaceStage /> }.into_any()
+            }
+        }}
+    }
+}
+
+/// The Stage for a real surface. Reads the selected surface from
+/// [`StudioContext`] and the live preview streams from [`WsContext`].
+#[component]
+fn SurfaceStage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let studio = expect_context::<StudioContext>();
     let displays = expect_context::<DisplaysContext>().displays_resource;
@@ -338,6 +359,59 @@ fn DegradedBanner() -> impl IntoView {
                     </div>
                     <div class="mt-1 text-sm leading-5 text-fg-secondary">
                         "A layer on this surface failed to render or is missing its asset. Open the layer stack to see which."
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// The Stage shown while the synthetic Unassigned entry is selected. It is
+/// not a surface (§9.4) — it has no composited output and no layer stack —
+/// so the Stage shows the scene-level policy for device outputs claimed by
+/// no zone. The behavior is read-only here; the §9.4 write control and the
+/// unassigned-output tray land with the `scene-unassigned-behavior-write`
+/// and `zone-device-assignment` capabilities (Wave 10).
+#[component]
+fn UnassignedStage() -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let behavior = Memo::new(move |_| {
+        studio
+            .active_scene
+            .get()
+            .map(|scene| unassigned_behavior_label(&scene.unassigned_behavior))
+            .unwrap_or_else(|| "—".to_owned())
+    });
+    view! {
+        <div class="flex h-full flex-col bg-surface-sunken/20">
+            <div class="flex items-center gap-2 border-b border-edge-subtle/60 px-5 py-3">
+                <span class=label_class(LabelSize::Small, LabelTone::Default)>"Stage"</span>
+                <span class="text-sm font-semibold text-fg-primary">"Unassigned lights"</span>
+            </div>
+            <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
+                <div class="max-w-md text-center">
+                    <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-surface-sunken/70">
+                        <Icon
+                            icon=LuBan
+                            width="22px"
+                            height="22px"
+                            style="color: rgba(241, 250, 140, 0.75)"
+                        />
+                    </div>
+                    <div class="text-sm leading-5 text-fg-secondary">
+                        "Device outputs in no zone follow the scene's unassigned-lights
+                         policy."
+                    </div>
+                    <div class="mt-4 inline-flex items-center gap-2 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-3 py-2">
+                        <span class=label_class(LabelSize::Micro, LabelTone::Default)>
+                            "Unassigned lights"
+                        </span>
+                        <span class="text-sm font-medium text-fg-primary">
+                            {move || behavior.get()}
+                        </span>
+                    </div>
+                    <div class="mt-3 text-[12px] leading-5 text-fg-tertiary/65">
+                        "Assign these outputs to a zone in a zone's Stage Layout view."
                     </div>
                 </div>
             </div>

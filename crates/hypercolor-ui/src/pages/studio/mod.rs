@@ -18,12 +18,23 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
 
 use stage::Stage;
-use surface::surfaces_from_groups;
+use surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use surface_rail::SurfaceRail;
+
+/// An empty layer stack at version 0 — the resource value for a selection
+/// that has no per-group layer endpoint (none selected, or the synthetic
+/// Unassigned entry).
+fn empty_layer_stack() -> api::LayerStackResponse {
+    api::LayerStackResponse {
+        items: Vec::new(),
+        layers_version: 0,
+    }
+}
 
 const SURFACE_WIDTH_KEY: &str = "hc-studio-surface-width";
 const LAYERS_WIDTH_KEY: &str = "hc-studio-layers-width";
@@ -36,6 +47,9 @@ const LAYERS_WIDTH_RANGE: (f64, f64) = (300.0, 540.0);
 pub struct StudioContext {
     pub selected_surface_id: RwSignal<Option<String>>,
     pub active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    /// Re-fetch the active scene. Zone mutations call this so the rail and
+    /// Stage pick up the new group set and `groups_revision`.
+    pub refresh_scene: Callback<()>,
 }
 
 #[component]
@@ -62,9 +76,13 @@ pub fn StudioPage() -> impl IntoView {
             return;
         };
         let current = selected_surface_id.get_untracked();
-        let still_present = current
-            .as_ref()
-            .is_some_and(|id| scene.groups.iter().any(|group| group.id.to_string() == *id));
+        // The synthetic Unassigned entry has no group; it is "present"
+        // while the scene is genuinely multi-zone (§9.4).
+        let multi_zone = surface::led_zone_count(&scene.groups) > 1;
+        let still_present = current.as_ref().is_some_and(|id| {
+            (id == UNASSIGNED_SURFACE_ID && multi_zone)
+                || scene.groups.iter().any(|group| group.id.to_string() == *id)
+        });
         if still_present {
             return;
         }
@@ -83,17 +101,22 @@ pub fn StudioPage() -> impl IntoView {
         let group_id = selected_surface_id.get();
         async move {
             match (scene, group_id) {
+                // The Unassigned entry is not a surface — it has no layer
+                // stack, so it never hits the per-group layer endpoint.
+                (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => {
+                    Ok(empty_layer_stack())
+                }
                 (Some(scene), Some(group_id)) => api::list_layers(&scene.id, &group_id).await,
-                _ => Ok(api::LayerStackResponse {
-                    items: Vec::new(),
-                    layers_version: 0,
-                }),
+                _ => Ok(empty_layer_stack()),
             }
         }
     });
 
     let on_layers_mutated = Callback::new(move |()| {
         set_layers_tick.update(|tick| *tick = tick.wrapping_add(1));
+        set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
+    });
+    let refresh_scene = Callback::new(move |()| {
         set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
     });
 
@@ -142,9 +165,16 @@ pub fn StudioPage() -> impl IntoView {
         }
     });
 
+    // The Unassigned entry has no layer stack; the rail still renders, but
+    // the Layers rail swaps the panel for an explanatory note.
+    let is_unassigned = Signal::derive(move || {
+        selected_surface_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID)
+    });
+
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
+        refresh_scene,
     });
 
     view! {
@@ -219,14 +249,23 @@ pub fn StudioPage() -> impl IntoView {
                     class=("max-lg:translate-x-full", move || !layers_drawer.get())
                     style:--layers-w=move || format!("{}px", layers_width.get())
                 >
-                    <LayerPanel
-                        active_scene=active_scene
-                        selected_group_id=selected_surface_id.read_only()
-                        set_selected_group_id=selected_surface_id.write_only()
-                        surface_label=surface_label
-                        layers_resource=layers_resource
-                        on_layers_mutated=on_layers_mutated
-                    />
+                    {move || {
+                        if is_unassigned.get() {
+                            view! { <UnassignedLayersNote /> }.into_any()
+                        } else {
+                            view! {
+                                <LayerPanel
+                                    active_scene=active_scene
+                                    selected_group_id=selected_surface_id.read_only()
+                                    set_selected_group_id=selected_surface_id.write_only()
+                                    surface_label=surface_label
+                                    layers_resource=layers_resource
+                                    on_layers_mutated=on_layers_mutated
+                                />
+                            }
+                                .into_any()
+                        }
+                    }}
                 </aside>
 
                 <Show when=move || surface_drawer.get() || layers_drawer.get()>
@@ -238,6 +277,38 @@ pub fn StudioPage() -> impl IntoView {
                         }
                     />
                 </Show>
+            </div>
+        </div>
+    }
+}
+
+/// The Layers rail content shown while the synthetic Unassigned entry is
+/// selected. Unassigned device outputs are not a surface (§9.4): they have
+/// no layer stack, so the rail explains that rather than rendering an
+/// empty editor. Assigning outputs into a zone happens in the Stage
+/// Layout view.
+#[component]
+fn UnassignedLayersNote() -> impl IntoView {
+    view! {
+        <div class="pt-4">
+            <div class="mb-3">
+                <span class=label_class(LabelSize::Section, LabelTone::Strong)>"Layers"</span>
+            </div>
+            <div class="rounded-xl border border-dashed border-edge-subtle/55 bg-surface-overlay/30 px-4 py-6 text-center">
+                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-surface-sunken/70">
+                    <Icon
+                        icon=LuBan
+                        width="16px"
+                        height="16px"
+                        style="color: rgba(241, 250, 140, 0.75)"
+                    />
+                </div>
+                <div class="text-sm font-medium text-fg-secondary">"No layer stack"</div>
+                <div class="mt-1.5 text-[12px] leading-5 text-fg-tertiary/70">
+                    "Unassigned lights belong to no zone, so there is nothing to
+                     compose here. Assign their outputs to a zone in the Stage
+                     Layout view to give them a layer stack."
+                </div>
             </div>
         </div>
     }

@@ -6,6 +6,11 @@
 
 use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
 
+/// Synthetic rail-entry id for the §9.4 Unassigned entry. It is not a
+/// surface — it has no layer stack and no Stage — so it never collides
+/// with a real `RenderGroupId` (a UUID, which this is not).
+pub const UNASSIGNED_SURFACE_ID: &str = "__unassigned__";
+
 /// Which rail section a surface belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceKind {
@@ -23,6 +28,11 @@ pub struct Surface {
     pub name: String,
     pub kind: SurfaceKind,
     pub enabled: bool,
+    /// Semantic role of the backing render group. `Primary` is the §9.2
+    /// Default zone — it cannot be deleted through the zone endpoints.
+    pub role: RenderGroupRole,
+    /// Optional UI accent color for the zone swatch (§9.2).
+    pub color: Option<String>,
     /// Physical display device backing a Screen surface — the key the
     /// Stage subscribes to for that screen's live face preview. `None`
     /// for Lights and for display groups with no target assigned yet.
@@ -34,15 +44,32 @@ pub struct Surface {
     pub layer_ids: Vec<String>,
 }
 
+impl Surface {
+    /// Whether this surface is an LED zone the user may delete. The
+    /// `Primary` Default zone is permanent; `Custom` zones are removable.
+    #[must_use]
+    pub fn is_deletable_zone(&self) -> bool {
+        self.kind == SurfaceKind::Light && self.role == RenderGroupRole::Custom
+    }
+}
+
+/// Count of LED-role render groups in a scene. While this is one, the sole
+/// zone reads as "All Lights"; once it exceeds one, multi-zone naming and
+/// the Default-zone relabel take over (§9.2).
+#[must_use]
+pub fn led_zone_count(groups: &[RenderGroup]) -> usize {
+    groups
+        .iter()
+        .filter(|group| group.role != RenderGroupRole::Display)
+        .count()
+}
+
 /// Build the surface list from the active scene's render groups, in scene
 /// order. LED-role groups become Lights; display-role groups become
 /// Screens.
 #[must_use]
 pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
-    let led_count = groups
-        .iter()
-        .filter(|group| group.role != RenderGroupRole::Display)
-        .count();
+    let led_count = led_zone_count(groups);
     groups
         .iter()
         .map(|group| {
@@ -56,6 +83,8 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
                 name: surface_name(group, kind, led_count),
                 kind,
                 enabled: group.enabled,
+                role: group.role,
+                color: group.color.clone(),
                 display_device_id: group
                     .display_target
                     .as_ref()
@@ -72,12 +101,27 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
 
 /// Display name for a surface. While a single LED group owns every output
 /// it reads as **"All Lights"** (§9.2); the moment a second LED zone
-/// exists the §9.2 Default-zone relabel takes over and the user's typed
-/// names are shown.
+/// exists the §9.2 Default-zone relabel takes over — the `Primary` group
+/// shows the user's typed name, or **"Default zone"** if still unnamed.
 fn surface_name(group: &RenderGroup, kind: SurfaceKind, led_count: usize) -> String {
-    if kind == SurfaceKind::Light && group.role == RenderGroupRole::Primary && led_count == 1 {
-        "All Lights".to_owned()
+    if kind != SurfaceKind::Light || group.role != RenderGroupRole::Primary {
+        return group.name.clone();
+    }
+    if led_count <= 1 {
+        return "All Lights".to_owned();
+    }
+    if is_blank_default_name(&group.name) {
+        "Default zone".to_owned()
     } else {
         group.name.clone()
     }
+}
+
+/// Whether the `Primary` group still carries its un-customized name. The
+/// daemon seeds the Default zone as "Primary"; until the user renames it,
+/// the multi-zone rail shows the friendlier "Default zone" instead of
+/// leaking that internal label (§4 hard rule).
+fn is_blank_default_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary")
 }

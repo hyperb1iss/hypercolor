@@ -15,7 +15,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId, Ren
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
-use surface::{SurfaceKind, surfaces_from_groups};
+use surface::{SurfaceKind, led_zone_count, surfaces_from_groups};
 
 fn sample_layout() -> SpatialLayout {
     SpatialLayout {
@@ -147,4 +147,68 @@ fn led_and_display_groups_split_into_lights_and_screens() {
     // A screen alongside an LED zone still leaves a lone LED group, so the
     // §9.2 "All Lights" relabel holds.
     assert_eq!(surfaces[0].name, "All Lights");
+}
+
+#[test]
+fn a_renamed_primary_zone_shows_its_typed_name_when_multi_zone() {
+    let surfaces = surfaces_from_groups(&[
+        group("Living Room", RenderGroupRole::Primary, None),
+        group("Case Fans", RenderGroupRole::Custom, None),
+    ]);
+    // A multi-zone Primary group keeps the user's typed name.
+    assert_eq!(surfaces[0].name, "Living Room");
+}
+
+#[test]
+fn an_unnamed_primary_zone_reads_as_default_zone_when_multi_zone() {
+    // The daemon seeds the Default zone as "Primary"; until renamed, the
+    // multi-zone rail shows "Default zone" rather than leaking that label.
+    let surfaces = surfaces_from_groups(&[
+        group("Primary", RenderGroupRole::Primary, None),
+        group("Case Fans", RenderGroupRole::Custom, None),
+    ]);
+    assert_eq!(surfaces[0].name, "Default zone");
+    // With one zone the same group still reads as "All Lights".
+    let solo = surfaces_from_groups(&[group("Primary", RenderGroupRole::Primary, None)]);
+    assert_eq!(solo[0].name, "All Lights");
+}
+
+#[test]
+fn a_surface_carries_its_groups_role_and_accent_color() {
+    let mut zone = group("Case Fans", RenderGroupRole::Custom, None);
+    zone.color = Some("#e135ff".to_owned());
+    let surfaces = surfaces_from_groups(&[zone]);
+    assert_eq!(surfaces[0].role, RenderGroupRole::Custom);
+    assert_eq!(surfaces[0].color.as_deref(), Some("#e135ff"));
+}
+
+#[test]
+fn only_custom_led_zones_are_deletable() {
+    let surfaces = surfaces_from_groups(&[
+        group("Default", RenderGroupRole::Primary, None),
+        group("Case Fans", RenderGroupRole::Custom, None),
+        group(
+            "AIO Screen",
+            RenderGroupRole::Display,
+            Some(DisplayFaceTarget::new(DeviceId::new())),
+        ),
+    ]);
+    // Primary is the permanent Default zone; a Screen is not a zone.
+    assert!(!surfaces[0].is_deletable_zone());
+    assert!(surfaces[1].is_deletable_zone());
+    assert!(!surfaces[2].is_deletable_zone());
+}
+
+#[test]
+fn led_zone_count_excludes_display_groups() {
+    let groups = [
+        group("Default", RenderGroupRole::Primary, None),
+        group("Case Fans", RenderGroupRole::Custom, None),
+        group(
+            "AIO Screen",
+            RenderGroupRole::Display,
+            Some(DisplayFaceTarget::new(DeviceId::new())),
+        ),
+    ];
+    assert_eq!(led_zone_count(&groups), 2);
 }
