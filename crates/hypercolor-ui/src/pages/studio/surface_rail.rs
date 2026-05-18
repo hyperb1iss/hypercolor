@@ -15,7 +15,7 @@ use hypercolor_types::scene::UnassignedBehavior;
 
 use crate::api;
 use crate::api::zones::ZoneOutcome;
-use crate::app::{CapabilitiesContext, WsContext};
+use crate::app::{CapabilitiesContext, DevicesContext, WsContext};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::toasts;
@@ -30,6 +30,7 @@ use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_
 pub fn SurfaceRail() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let caps = expect_context::<CapabilitiesContext>();
+    let devices = expect_context::<DevicesContext>();
 
     let surfaces = Memo::new(move |_| {
         studio
@@ -59,6 +60,18 @@ pub fn SurfaceRail() -> impl IntoView {
     // live (§9.6): creating a zone you cannot render or fill is a trap.
     let zone_crud_ready = Memo::new(move |_| caps.zone_crud_ready());
 
+    // Connected devices minus the one display behind each Screen surface —
+    // i.e. how much hardware the lone "All Lights" zone drives. `None`
+    // until the device list resolves, so the rail never flashes a stale
+    // "0 devices" subtitle while loading.
+    let led_device_count = Memo::new(move |_| {
+        devices
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|list| list.len().saturating_sub(screens.get().len()))
+    });
+
     view! {
         <div class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40">
             <div class="border-b border-edge-subtle/60 px-4 py-3">
@@ -76,6 +89,10 @@ pub fn SurfaceRail() -> impl IntoView {
                     {move || {
                         let items = lights.get();
                         let multi = multi_zone.get();
+                        // The lone "All Lights" zone drives every light, so it
+                        // carries the device count; per-zone rows in a
+                        // multi-zone scene cannot be attributed from here.
+                        let led_devices = if multi { None } else { led_device_count.get() };
                         if items.is_empty() {
                             view! {
                                 <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
@@ -87,7 +104,13 @@ pub fn SurfaceRail() -> impl IntoView {
                             items
                                 .into_iter()
                                 .map(|surface| {
-                                    view! { <SurfaceRow surface=surface multi_zone=multi /> }
+                                    view! {
+                                        <SurfaceRow
+                                            surface=surface
+                                            multi_zone=multi
+                                            device_count=led_devices
+                                        />
+                                    }
                                 })
                                 .collect_view()
                                 .into_any()
@@ -145,7 +168,14 @@ fn SurfaceSection(
 }
 
 #[component]
-fn SurfaceRow(surface: Surface, multi_zone: bool) -> impl IntoView {
+fn SurfaceRow(
+    surface: Surface,
+    multi_zone: bool,
+    /// Device count shown as a row subtitle. `Some` only for the lone
+    /// "All Lights" row; `None` leaves the row a single line.
+    #[prop(optional_no_strip)]
+    device_count: Option<usize>,
+) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let ws = use_context::<WsContext>();
     let row_id = surface.id.clone();
@@ -218,8 +248,22 @@ fn SurfaceRow(surface: Surface, multi_zone: bool) -> impl IntoView {
                     }
                         .into_any()
                 }}
-                <span class="min-w-0 flex-1 truncate text-sm font-medium text-fg-primary">
-                    {row_name}
+                <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm font-medium text-fg-primary">
+                        {row_name}
+                    </span>
+                    {device_count.map(|count| {
+                        let label = if count == 1 {
+                            "1 device".to_owned()
+                        } else {
+                            format!("{count} devices")
+                        };
+                        view! {
+                            <span class="block truncate text-[10px] text-fg-tertiary/65">
+                                {label}
+                            </span>
+                        }
+                    })}
                 </span>
                 <Show when=move || degraded.get()>
                     <span
