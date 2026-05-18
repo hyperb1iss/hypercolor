@@ -11,10 +11,6 @@
 //! exercisable from `tests/studio_device_grouping_tests.rs` via a
 //! `#[path]` include, mirroring `surface.rs`.
 
-// The `ZoneTree` component that consumes this lands in the next wave; for
-// now the only caller is the `#[path]` test. Allow is dropped then.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 
 use hypercolor_types::scene::RenderGroup;
