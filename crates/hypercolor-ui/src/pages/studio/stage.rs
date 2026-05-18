@@ -1,10 +1,11 @@
-//! The Studio Stage — the center preview of the selected surface.
+//! The Studio Stage — the center workspace for the selected surface.
 //!
-//! Wave 4 ships the Output view: a Light shows the live composited LED
-//! canvas via `CanvasPreview`; a Screen shows that device's live face
-//! preview via `DisplayPreviewSurface`, the same component the Displays
-//! page uses. Wave 5 adds the Layout view and the Output/Layout toggle;
-//! Wave 10 adds per-zone preview frames.
+//! The Stage has two views. **Output** is the live preview: a Light shows
+//! the composited LED canvas via `CanvasPreview`, a Screen shows that
+//! device's face via `DisplayPreviewSurface`. **Layout** embeds the
+//! spatial device-placement editor lifted from the retired `/layout`
+//! page. The Output/Layout toggle is hidden for Screens — a single LCD
+//! has no spatial placement. Wave 10 adds per-zone preview frames.
 
 use leptos::prelude::*;
 
@@ -12,12 +13,18 @@ use crate::api;
 use crate::app::{DisplaysContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::display_preview_surface::DisplayPreviewSurface;
+use crate::components::layout_builder::LayoutBuilder;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::display_preview_state::use_display_preview_subscription;
 use crate::ws::CanvasFrame;
 
 use super::StudioContext;
+use super::stage_view::{StageView, resolve_stage_view};
 use super::surface::{SurfaceKind, surfaces_from_groups};
+
+/// Preview FPS ceiling while the Layout editor is on the Stage, matching
+/// the retired `/layout` page so spatial editing stays smooth.
+const LAYOUT_PREVIEW_FPS_CAP: u32 = 60;
 
 /// The center Stage. Reads the selected surface from [`StudioContext`] and
 /// the live preview streams from [`WsContext`].
@@ -38,6 +45,28 @@ pub fn Stage() -> impl IntoView {
     let surface_name = Memo::new(move |_| selected_surface.get().map(|surface| surface.name));
     let is_screen =
         Memo::new(move |_| selected_surface.get().map(|s| s.kind) == Some(SurfaceKind::Screen));
+
+    // The toggle latches the last requested view; `resolved_view` applies
+    // the §6.3 rule that a Screen has no Layout view.
+    let requested_view = RwSignal::new(StageView::default());
+    let resolved_view =
+        Memo::new(move |_| resolve_stage_view(requested_view.get(), is_screen.get()));
+
+    // The Layout editor wants the same preview headroom the `/layout`
+    // page reserved; Output falls back to the shared default.
+    Effect::new(move |_| {
+        let cap = if resolved_view.get() == StageView::Layout {
+            LAYOUT_PREVIEW_FPS_CAP
+        } else {
+            crate::ws::DEFAULT_PREVIEW_FPS_CAP
+        };
+        ws.set_preview_cap.set(cap);
+        ws.set_preview_width_cap.set(0);
+    });
+    on_cleanup(move || {
+        ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
+        ws.set_preview_width_cap.set(0);
+    });
 
     // A Screen surface drives the per-display face-preview stream; a Light
     // leaves the target `None`, which unsubscribes. The subscription
@@ -62,11 +91,6 @@ pub fn Stage() -> impl IntoView {
             .cloned()
     });
 
-    // `display_preview_frame` is one shared, untagged signal: a direct
-    // screen-to-screen switch would otherwise show the previous screen's
-    // last face under the new name until its stream delivers a frame.
-    // Latch the frame and drop it the instant the target device changes,
-    // so the gap falls back to the new screen's still image instead.
     let screen_frame = RwSignal::new(None::<CanvasFrame>);
     Effect::new(move |_| {
         display_device.track();
@@ -118,71 +142,135 @@ pub fn Stage() -> impl IntoView {
                         {move || surface_name.get().unwrap_or_else(|| "No surface".to_owned())}
                     </span>
                 </div>
-                <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Output"</span>
+                {move || {
+                    if is_screen.get() {
+                        view! {
+                            <span class=label_class(
+                                LabelSize::Micro,
+                                LabelTone::Default,
+                            )>"Output"</span>
+                        }
+                            .into_any()
+                    } else {
+                        view! { <StageViewToggle requested=requested_view /> }.into_any()
+                    }
+                }}
             </div>
 
-            <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
-                <div class="flex max-w-full flex-col items-center gap-3">
-                    {move || {
-                        if is_screen.get() {
-                            let Some(display) = selected_display.get() else {
-                                return view! {
-                                    <div class="flex h-64 w-64 items-center justify-center rounded-xl border border-dashed border-edge-subtle/45 text-[11px] text-fg-tertiary/55">
-                                        "Preparing screen preview…"
-                                    </div>
-                                }
-                                    .into_any();
-                            };
-                            let aspect = format!(
-                                "{} / {}",
-                                display.width.max(1),
-                                display.height.max(1),
-                            );
-                            let shape = if display.circular {
-                                "rounded-full"
-                            } else {
-                                "rounded-xl"
-                            };
-                            let container_class = format!(
-                                "w-full max-w-[520px] overflow-hidden border \
-                                 border-edge-subtle/70 bg-black shadow-2xl {shape}",
-                            );
-                            view! {
-                                <DisplayPreviewSurface
-                                    frame=screen_frame
-                                    fallback_src=api::display_preview_url(&display.id, None)
-                                    aspect_ratio=aspect
-                                    aria_label=format!(
-                                        "Studio stage preview of {}",
-                                        display.name,
-                                    )
-                                    container_class=container_class
-                                />
-                            }
-                                .into_any()
-                        } else {
-                            view! {
-                                <div
-                                    class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-black/45"
-                                    style="box-shadow: 0 0 44px rgba(225, 53, 255, 0.09)"
-                                >
-                                    <CanvasPreview
-                                        frame=ws.canvas_frame
-                                        fps=ws.preview_fps
-                                        fps_target=ws.preview_target_fps
-                                        max_width="min(640px, 100%)".to_string()
-                                        aria_label="Studio stage live output".to_string()
-                                    />
+            {move || match resolved_view.get() {
+                StageView::Layout => {
+                    view! {
+                        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                            <LayoutBuilder />
+                        </div>
+                    }
+                        .into_any()
+                }
+                StageView::Output => {
+                    view! {
+                        <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
+                            <div class="flex max-w-full flex-col items-center gap-3">
+                                {move || {
+                                    if is_screen.get() {
+                                        let Some(display) = selected_display.get() else {
+                                            return view! {
+                                                <div class="flex h-64 w-64 items-center justify-center rounded-xl border border-dashed border-edge-subtle/45 text-[11px] text-fg-tertiary/55">
+                                                    "Preparing screen preview…"
+                                                </div>
+                                            }
+                                                .into_any();
+                                        };
+                                        let aspect = format!(
+                                            "{} / {}",
+                                            display.width.max(1),
+                                            display.height.max(1),
+                                        );
+                                        let shape = if display.circular {
+                                            "rounded-full"
+                                        } else {
+                                            "rounded-xl"
+                                        };
+                                        let container_class = format!(
+                                            "w-full max-w-[520px] overflow-hidden border \
+                                             border-edge-subtle/70 bg-black shadow-2xl {shape}",
+                                        );
+                                        view! {
+                                            <DisplayPreviewSurface
+                                                frame=screen_frame
+                                                fallback_src=api::display_preview_url(
+                                                    &display.id,
+                                                    None,
+                                                )
+                                                aspect_ratio=aspect
+                                                aria_label=format!(
+                                                    "Studio stage preview of {}",
+                                                    display.name,
+                                                )
+                                                container_class=container_class
+                                            />
+                                        }
+                                            .into_any()
+                                    } else {
+                                        view! {
+                                            <div
+                                                class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-black/45"
+                                                style="box-shadow: 0 0 44px rgba(225, 53, 255, 0.09)"
+                                            >
+                                                <CanvasPreview
+                                                    frame=ws.canvas_frame
+                                                    fps=ws.preview_fps
+                                                    fps_target=ws.preview_target_fps
+                                                    max_width="min(640px, 100%)".to_string()
+                                                    aria_label="Studio stage live output"
+                                                        .to_string()
+                                                />
+                                            </div>
+                                        }
+                                            .into_any()
+                                    }
+                                }}
+                                <div class="font-mono text-[11px] tabular-nums text-fg-tertiary/70">
+                                    {move || caption.get()}
                                 </div>
-                            }
-                                .into_any()
-                        }
-                    }}
-                    <div class="font-mono text-[11px] tabular-nums text-fg-tertiary/70">
-                        {move || caption.get()}
-                    </div>
-                </div>
-            </div>
+                            </div>
+                        </div>
+                    }
+                        .into_any()
+                }
+            }}
         </div>
+    }
+}
+
+/// The Output/Layout segmented toggle in the Stage header. Shown only for
+/// Light surfaces; a Screen has no Layout view.
+#[component]
+fn StageViewToggle(requested: RwSignal<StageView>) -> impl IntoView {
+    view! {
+        <div class="flex items-center gap-0.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 p-0.5">
+            <StageTab label="Output" value=StageView::Output requested=requested />
+            <StageTab label="Layout" value=StageView::Layout requested=requested />
+        </div>
+    }
+}
+
+#[component]
+fn StageTab(
+    label: &'static str,
+    value: StageView,
+    requested: RwSignal<StageView>,
+) -> impl IntoView {
+    let selected = move || requested.get() == value;
+    view! {
+        <button
+            type="button"
+            class="rounded-md px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide transition-colors"
+            class=("bg-accent/12", selected)
+            class=("text-fg-primary", selected)
+            class=("text-fg-tertiary/65", move || !selected())
+            on:click=move |_| requested.set(value)
+        >
+            {label}
+        </button>
     }
 }

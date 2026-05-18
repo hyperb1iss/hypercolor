@@ -7,6 +7,7 @@
 //! rebuilding the workspace.
 
 mod stage;
+mod stage_view;
 mod surface;
 mod surface_rail;
 
