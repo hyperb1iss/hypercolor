@@ -304,20 +304,3 @@ pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
     ensure_success(&resp)?;
     Ok(())
 }
-
-/// DELETE `url`, unwrap the response envelope, return the inner data.
-pub async fn delete_json<T>(url: &str) -> Result<T, ApiError>
-where
-    T: DeserializeOwned,
-{
-    let resp = with_auth(Request::delete(url))
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    ensure_success(&resp)?;
-    let envelope: ApiEnvelope<T> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(envelope.data)
-}
