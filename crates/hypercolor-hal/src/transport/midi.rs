@@ -18,9 +18,9 @@ use midir::{
 };
 use nusb::transfer::{Buffer, Bulk, Out, TransferError};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
-use tracing::{debug, trace};
 #[cfg(target_os = "linux")]
 use tracing::warn;
+use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
 use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
