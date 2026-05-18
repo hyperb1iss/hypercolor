@@ -231,6 +231,10 @@ pub(super) enum ServoGpuImportFallbackReason {
     GlFramebufferIncomplete,
     UnsupportedPlatform,
     ImportSlotsExhausted,
+    MissingWgpuMetalDevice,
+    MissingMacosServoSurface,
+    IosurfacePixelFormatMismatch,
+    MetalTextureCreateFailed,
     Other,
 }
 
@@ -250,7 +254,11 @@ impl ServoGpuImportFallbackReason {
             Self::GlFramebufferIncomplete => 10,
             Self::UnsupportedPlatform => 11,
             Self::ImportSlotsExhausted => 12,
-            Self::Other => 13,
+            Self::MissingWgpuMetalDevice => 13,
+            Self::MissingMacosServoSurface => 14,
+            Self::IosurfacePixelFormatMismatch => 15,
+            Self::MetalTextureCreateFailed => 16,
+            Self::Other => 17,
         }
     }
 
@@ -268,7 +276,11 @@ impl ServoGpuImportFallbackReason {
             10 => Some(Self::GlFramebufferIncomplete),
             11 => Some(Self::UnsupportedPlatform),
             12 => Some(Self::ImportSlotsExhausted),
-            13 => Some(Self::Other),
+            13 => Some(Self::MissingWgpuMetalDevice),
+            14 => Some(Self::MissingMacosServoSurface),
+            15 => Some(Self::IosurfacePixelFormatMismatch),
+            16 => Some(Self::MetalTextureCreateFailed),
+            17 => Some(Self::Other),
             _ => None,
         }
     }
@@ -287,6 +299,10 @@ impl ServoGpuImportFallbackReason {
             Self::GlFramebufferIncomplete => "gl_framebuffer_incomplete",
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::ImportSlotsExhausted => "import_slots_exhausted",
+            Self::MissingWgpuMetalDevice => "missing_wgpu_metal_device",
+            Self::MissingMacosServoSurface => "missing_macos_servo_surface",
+            Self::IosurfacePixelFormatMismatch => "iosurface_pixel_format_mismatch",
+            Self::MetalTextureCreateFailed => "metal_texture_create_failed",
             Self::Other => "other",
         }
     }

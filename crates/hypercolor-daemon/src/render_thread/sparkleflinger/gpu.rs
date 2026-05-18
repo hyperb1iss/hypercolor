@@ -343,16 +343,24 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn with_render_device(render_device: GpuRenderDevice) -> Result<Self> {
         let probe = probe_render_device(&render_device)?;
-        #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-        if probe.linux_servo_gpu_import_backend_compatible
-            && let Err(error) = hypercolor_core::effect::install_servo_gpu_import_device(
-                render_device.device_handle(),
-            )
+        #[cfg(all(
+            any(target_os = "linux", target_os = "macos"),
+            feature = "servo-gpu-import"
+        ))]
         {
-            tracing::debug!(
-                %error,
-                "Servo GPU import device was already installed or unavailable"
-            );
+            let info = render_device.info();
+            if info.servo_gpu_import_backend_compatible()
+                && let Err(error) = hypercolor_core::effect::install_servo_gpu_import_device(
+                    render_device.device_handle(),
+                )
+            {
+                tracing::debug!(
+                    %error,
+                    "Servo GPU import device was already installed or unavailable"
+                );
+            } else if let Some(reason) = info.servo_gpu_import_backend_reason() {
+                tracing::debug!(reason, "Servo GPU import device was not installed");
+            }
         }
         let device = render_device.device().clone();
         let queue = render_device.queue().clone();

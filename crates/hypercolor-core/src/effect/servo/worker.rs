@@ -51,6 +51,11 @@ use super::worker_client::{
 use crate::effect::servo_bootstrap::{ServoRenderingContextHandle, bootstrap_rendering_context};
 use crate::effect::traits::EffectRenderOutput;
 
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+type PlatformServoGpuImporter = hypercolor_macos_gpu_interop::MacosIosurfaceImporter;
+#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+type PlatformServoGpuImporter = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter;
+
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -994,7 +999,7 @@ struct ServoSession {
     script_buffer: String,
     readback_buffers: ServoReadbackBuffers,
     #[cfg(feature = "servo-gpu-import")]
-    gpu_importer: Option<hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter>,
+    gpu_importer: Option<PlatformServoGpuImporter>,
     /// Most recent successful readback, retained so ticks where Servo has
     /// nothing new to composite can skip `read_to_image` entirely. Cloning a
     /// `Canvas` is an Arc refcount bump (zero-copy), so repeated reuse costs
@@ -1753,7 +1758,7 @@ impl ServoWorkerRuntime {
     }
 }
 
-#[cfg(feature = "servo-gpu-import")]
+#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
 impl ServoWorkerRuntime {
     fn warm_gpu_importer_if_available(
         &mut self,
@@ -1824,7 +1829,7 @@ impl ServoWorkerRuntime {
         device: &wgpu::Device,
         descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
         source_framebuffer: hypercolor_linux_gpu_interop::GlFramebufferSource,
-    ) -> Result<hypercolor_linux_gpu_interop::ImportedEffectFrame> {
+    ) -> Result<crate::effect::traits::ImportedEffectFrame> {
         let gl = {
             let session = self.session(session_id)?;
             session
@@ -1878,6 +1883,99 @@ impl ServoWorkerRuntime {
     }
 }
 
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+impl ServoWorkerRuntime {
+    fn warm_gpu_importer_if_available(
+        &mut self,
+        session_id: ServoSessionId,
+        _width: u32,
+        _height: u32,
+    ) {
+        if !super::servo_gpu_import_should_attempt() {
+            return;
+        }
+        let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
+            return;
+        };
+        let Ok(native_frame) = self.macos_native_frame(session_id) else {
+            return;
+        };
+        let Ok(descriptor) = hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor::new(
+            native_frame.width,
+            native_frame.height,
+            native_frame.format,
+        ) else {
+            return;
+        };
+        if let Err(error) = self.ensure_gpu_importer(session_id, device, descriptor) {
+            debug!(%error, "Servo GPU import pool warmup skipped");
+        }
+    }
+
+    fn ensure_gpu_importer(
+        &mut self,
+        session_id: ServoSessionId,
+        device: &wgpu::Device,
+        descriptor: hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor,
+    ) -> Result<()> {
+        let should_recreate = self
+            .session(session_id)?
+            .gpu_importer
+            .as_ref()
+            .is_none_or(|importer| importer.descriptor() != descriptor);
+        if !should_recreate {
+            return Ok(());
+        }
+
+        self.session_mut(session_id)?.gpu_importer = Some(
+            hypercolor_macos_gpu_interop::MacosIosurfaceImporter::new(device, descriptor)?,
+        );
+        Ok(())
+    }
+
+    fn import_gpu_frame(
+        &mut self,
+        session_id: ServoSessionId,
+        device: &wgpu::Device,
+    ) -> Result<crate::effect::traits::ImportedEffectFrame> {
+        let native_frame = self.macos_native_frame(session_id)?;
+        let descriptor = hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor::new(
+            native_frame.width,
+            native_frame.height,
+            native_frame.format,
+        )?;
+        self.ensure_gpu_importer(session_id, device, descriptor)?;
+        let importer = self
+            .session_mut(session_id)?
+            .gpu_importer
+            .as_mut()
+            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
+        Ok(importer.import_iosurface(device, &native_frame.iosurface)?)
+    }
+
+    fn macos_native_frame(
+        &self,
+        session_id: ServoSessionId,
+    ) -> Result<hypercolor_macos_gpu_interop::MacosServoNativeFrame> {
+        let session = self.session(session_id)?;
+        let context = session
+            .macos_hardware_context
+            .as_ref()
+            .ok_or(hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface)?;
+        Ok(context.native_frame()?)
+    }
+
+    fn clear_gpu_importer(&mut self, session_id: ServoSessionId) {
+        if let Ok(session) = self.session_mut(session_id) {
+            session.gpu_importer = None;
+        }
+    }
+
+    fn destroy_gpu_importer_for_session(session: &mut ServoSession) {
+        session.gpu_importer = None;
+    }
+}
+
 fn render_servo_framebuffer(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
@@ -1901,11 +1999,7 @@ fn render_servo_framebuffer(
     if matches!(mode, ServoRenderMode::GpuPreferred) {
         match import_servo_framebuffer_into_wgpu(runtime, session_id, size.width, size.height) {
             Ok(frame) => {
-                record_servo_gpu_import_frame(
-                    frame.timings.blit_us,
-                    frame.timings.sync_us,
-                    frame.timings.total_us,
-                );
+                record_imported_gpu_frame(&frame);
                 runtime.session(session_id)?.rendering_context.present();
                 return Ok(EffectRenderOutput::Gpu(frame));
             }
@@ -1941,13 +2035,13 @@ fn render_servo_framebuffer(
     Ok(EffectRenderOutput::Cpu(canvas))
 }
 
-#[cfg(feature = "servo-gpu-import")]
+#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
 fn import_servo_framebuffer_into_wgpu(
     runtime: &mut ServoWorkerRuntime,
     session_id: ServoSessionId,
     width: u32,
     height: u32,
-) -> Result<hypercolor_linux_gpu_interop::ImportedEffectFrame> {
+) -> Result<crate::effect::traits::ImportedEffectFrame> {
     use hypercolor_linux_gpu_interop::{
         GlFramebufferSource, ImportedFrameFormat, LinuxGlFramebufferImportDescriptor,
     };
@@ -1965,9 +2059,65 @@ fn import_servo_framebuffer_into_wgpu(
         .context("failed to import Servo GL framebuffer into wgpu")
 }
 
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+fn import_servo_framebuffer_into_wgpu(
+    runtime: &mut ServoWorkerRuntime,
+    session_id: ServoSessionId,
+    _width: u32,
+    _height: u32,
+) -> Result<crate::effect::traits::ImportedEffectFrame> {
+    let device = super::gpu_import::servo_gpu_import_device()?;
+    runtime
+        .import_gpu_frame(session_id, device)
+        .context("failed to import Servo IOSurface into wgpu")
+}
+
+#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
+fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
+    record_servo_gpu_import_frame(
+        frame.timings.blit_us,
+        frame.timings.sync_us,
+        frame.timings.total_us,
+    );
+}
+
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
+    record_servo_gpu_import_frame(frame.timings.wrap_us, 0, frame.timings.total_us);
+}
+
 #[cfg(feature = "servo-gpu-import")]
 fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallbackReason {
     for cause in error.chain() {
+        #[cfg(target_os = "macos")]
+        if let Some(error) =
+            cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
+        {
+            return match error {
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingWgpuMetalDevice => {
+                    ServoGpuImportFallbackReason::MissingWgpuMetalDevice
+                }
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::InvalidDimensions { .. }
+                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceShapeMismatch {
+                    ..
+                }
+                | hypercolor_macos_gpu_interop::MacosGpuInteropError::PixelBufferSizeMismatch {
+                    ..
+                } => ServoGpuImportFallbackReason::InvalidDimensions,
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::ServoContext { .. }
+                | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface => {
+                    ServoGpuImportFallbackReason::MissingMacosServoSurface
+                }
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfacePixelFormatMismatch {
+                    ..
+                } => ServoGpuImportFallbackReason::IosurfacePixelFormatMismatch,
+                hypercolor_macos_gpu_interop::MacosGpuInteropError::MetalTextureCreateFailed => {
+                    ServoGpuImportFallbackReason::MetalTextureCreateFailed
+                }
+                _ => ServoGpuImportFallbackReason::Other,
+            };
+        }
+
         if let Some(error) =
             cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
         {

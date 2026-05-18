@@ -68,7 +68,10 @@ impl GpuRenderDevice {
         &self.inner.device
     }
 
-    #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "servo-gpu-import"
+    ))]
     pub(crate) fn device_handle(&self) -> wgpu::Device {
         self.inner.device.clone()
     }
@@ -99,6 +102,34 @@ impl GpuRenderDevice {
 }
 
 impl GpuRenderDeviceInfo {
+    pub(crate) const fn servo_gpu_import_backend_compatible(&self) -> bool {
+        if cfg!(target_os = "linux") {
+            matches!(self.backend, wgpu::Backend::Vulkan)
+        } else if cfg!(target_os = "macos") {
+            matches!(self.backend, wgpu::Backend::Metal)
+        } else {
+            false
+        }
+    }
+
+    pub(crate) const fn servo_gpu_import_backend_reason(&self) -> Option<&'static str> {
+        if cfg!(target_os = "linux") {
+            if matches!(self.backend, wgpu::Backend::Vulkan) {
+                None
+            } else {
+                Some("linux servo gpu import requires a Vulkan wgpu backend")
+            }
+        } else if cfg!(target_os = "macos") {
+            if matches!(self.backend, wgpu::Backend::Metal) {
+                None
+            } else {
+                Some("macOS servo gpu import requires a Metal wgpu backend")
+            }
+        } else {
+            Some("servo gpu import is only available on linux and macOS")
+        }
+    }
+
     pub(crate) const fn linux_servo_gpu_import_backend_compatible(&self) -> bool {
         cfg!(target_os = "linux") && matches!(self.backend, wgpu::Backend::Vulkan)
     }
@@ -187,5 +218,37 @@ mod tests {
         };
         assert!(!non_vulkan.linux_servo_gpu_import_backend_compatible());
         assert!(non_vulkan.linux_servo_gpu_import_backend_reason().is_some());
+    }
+
+    #[test]
+    fn reports_servo_import_backend_support_from_platform_and_backend() {
+        let vulkan = GpuRenderDeviceInfo {
+            adapter_name: "test".to_owned(),
+            backend: wgpu::Backend::Vulkan,
+            max_texture_dimension_2d: 16_384,
+            max_storage_textures_per_shader_stage: 8,
+        };
+        let metal = GpuRenderDeviceInfo {
+            backend: wgpu::Backend::Metal,
+            ..vulkan.clone()
+        };
+        let gl = GpuRenderDeviceInfo {
+            backend: wgpu::Backend::Gl,
+            ..vulkan.clone()
+        };
+
+        assert_eq!(
+            vulkan.servo_gpu_import_backend_compatible(),
+            cfg!(target_os = "linux")
+        );
+        assert_eq!(
+            metal.servo_gpu_import_backend_compatible(),
+            cfg!(target_os = "macos")
+        );
+        assert!(!gl.servo_gpu_import_backend_compatible());
+        assert_eq!(
+            metal.servo_gpu_import_backend_reason().is_none(),
+            cfg!(target_os = "macos")
+        );
     }
 }

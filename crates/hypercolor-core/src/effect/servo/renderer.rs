@@ -34,7 +34,7 @@ use super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
 #[cfg(feature = "servo-gpu-import")]
-use crate::effect::traits::EffectRenderOutput;
+use crate::effect::traits::{EffectRenderOutput, ImportedEffectFrame};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::engine::FpsTier;
 
@@ -128,7 +128,7 @@ pub struct ServoRenderer {
     queued_frame: Option<QueuedFrameInput>,
     last_canvas: Option<Canvas>,
     #[cfg(feature = "servo-gpu-import")]
-    last_gpu_frame: Option<hypercolor_linux_gpu_interop::ImportedEffectFrame>,
+    last_gpu_frame: Option<ImportedEffectFrame>,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
     include_audio_updates: bool,

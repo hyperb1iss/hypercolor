@@ -11,8 +11,10 @@ use hypercolor_types::sensor::SystemSnapshot;
 
 use crate::input::{InteractionData, ScreenData};
 
-#[cfg(feature = "servo-gpu-import")]
+#[cfg(all(feature = "servo-gpu-import", not(target_os = "macos")))]
 pub use hypercolor_linux_gpu_interop::ImportedEffectFrame;
+#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+pub use hypercolor_macos_gpu_interop::ImportedEffectFrame;
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
