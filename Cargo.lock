@@ -5220,6 +5220,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-macos-gpu-interop"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "pollster",
+ "thiserror 2.0.18",
+ "wgpu",
+ "wgpu-hal 29.0.1",
+]
+
+[[package]]
 name = "hypercolor-network"
 version = "0.1.0"
 dependencies = [
@@ -8193,6 +8208,7 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
+ "objc2-io-surface",
 ]
 
 [[package]]

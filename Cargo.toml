@@ -129,6 +129,7 @@ hypercolor-cloud-client = { path = "crates/hypercolor-cloud-client" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
+hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
 hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default-features = false }
 hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue" }
@@ -202,6 +203,10 @@ turbojpeg = { version = "1.4.0", default-features = false, features = ["cmake", 
 fast_image_resize = "6.0.0"
 wgpu = { version = "29.0.1", default-features = false, features = ["std", "vulkan", "metal", "dx12", "gles", "wgsl"] }
 wgpu-hal = { version = "29.0.1", default-features = false, features = ["vulkan"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false }
+objc2-io-surface = { version = "0.3.2", default-features = false }
+objc2-metal = { version = "0.3.2", default-features = false }
+objc2 = { version = "0.6.4", default-features = false }
 pollster = "0.4.0"
 
 # Testing
