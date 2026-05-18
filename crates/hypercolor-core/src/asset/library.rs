@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -93,10 +93,27 @@ impl StreamUrlPolicy {
         if is_local_hostname(host) {
             return false;
         }
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Some(ip) = host_as_ip(host) {
+            let ip = canonical_ip(ip);
             return is_public_ip(ip) || self.allows_private_ip(ip);
         }
-        true
+        let port = match url.scheme() {
+            "rtsp" => url.port().unwrap_or(554),
+            "rtmp" => url.port().unwrap_or(1935),
+            _ => url.port_or_known_default().unwrap_or(443),
+        };
+        let Ok(resolved) = (host, port).to_socket_addrs() else {
+            return false;
+        };
+        let mut resolved_any = false;
+        for address in resolved {
+            resolved_any = true;
+            let ip = canonical_ip(address.ip());
+            if !(is_public_ip(ip) || self.allows_private_ip(ip)) {
+                return false;
+            }
+        }
+        resolved_any
     }
 
     fn allows_private_ip(&self, ip: IpAddr) -> bool {
@@ -116,7 +133,7 @@ impl StreamIpRule {
             let prefix = prefix.parse::<u8>().ok()?;
             return cidr_prefix_valid(network, prefix).then_some(Self::Cidr { network, prefix });
         }
-        raw.parse::<IpAddr>().ok().map(Self::Exact)
+        raw.parse::<IpAddr>().ok().map(canonical_ip).map(Self::Exact)
     }
 
     fn matches(self, ip: IpAddr) -> bool {
@@ -909,6 +926,22 @@ pub fn stream_url_from_bytes_with_policy(
     let raw = std::str::from_utf8(bytes).ok()?;
     let url = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
     stream_url_policy.allows_url(url).then(|| url.to_owned())
+}
+
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    }
+}
+
+/// `Url::host_str` wraps IPv6 literals in brackets, which `IpAddr` parsing rejects.
+fn host_as_ip(host: &str) -> Option<IpAddr> {
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse::<IpAddr>()
+        .ok()
 }
 
 fn is_local_hostname(host: &str) -> bool {

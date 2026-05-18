@@ -166,7 +166,7 @@ fn stream_url_hint_accepts_public_http_sources() {
     options.type_hint = Some(AssetTypeHint::Stream);
 
     let added = library
-        .add_bytes(b"https://media.example.test/live.m3u8\n", options)
+        .add_bytes(b"https://1.1.1.1/live.m3u8\n", options)
         .expect("stream URL asset should upload");
 
     assert_eq!(
@@ -228,4 +228,38 @@ fn stream_url_hint_rejects_localhost_sources() {
         .expect_err("localhost stream URL should reject");
 
     assert!(format!("{error}").contains("unsupported"));
+}
+
+#[test]
+fn stream_url_hint_rejects_ipv4_mapped_ipv6_private_sources() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(tempdir.path().join("assets")).expect("open library");
+    let mut options = AssetUploadOptions::new("mapped.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+
+    let error = library
+        .add_bytes(b"http://[::ffff:192.168.1.10]/live.m3u8\n", options)
+        .expect_err("IPv4-mapped private source should reject");
+
+    assert!(format!("{error}").contains("unsupported"));
+}
+
+#[test]
+fn stream_url_hint_matches_mapped_ipv6_exact_allowlist_entries() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let policy = StreamUrlPolicy::from_private_network_allowlist(["::ffff:192.168.1.10"]);
+    let mut library =
+        AssetLibrary::open_with_stream_url_policy(tempdir.path().join("assets"), policy)
+            .expect("open library");
+    let mut options = AssetUploadOptions::new("mapped-allowlist.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+
+    let added = library
+        .add_bytes(b"http://192.168.1.10/live.m3u8\n", options)
+        .expect("plain IPv4 source should match a mapped-IPv6 exact allowlist entry");
+
+    assert_eq!(
+        added.record.mime_type,
+        "application/vnd.hypercolor.stream-url"
+    );
 }
