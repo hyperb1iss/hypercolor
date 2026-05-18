@@ -12,12 +12,15 @@ mod source;
 use std::collections::HashMap;
 
 use hypercolor_types::layer::{LayerBlendMode, LayerSource};
+use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole};
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::FitMode;
 
 use source::{
-    LayerSourceKind, blend_options, blend_value, color_layer_source, effect_layer_source,
-    fit_options, fit_value, hex_to_layer_rgba, layer_source_label, media_layer_source,
-    parse_blend, parse_fit, screen_layer_source, web_layer_source,
+    AddLayerScope, LayerSourceKind, available_add_layer_scopes, blend_options, blend_value,
+    color_layer_source, effect_layer_source, fit_options, fit_value, hex_to_layer_rgba,
+    layer_source_label, media_layer_source, parse_blend, parse_fit, resolve_add_layer_targets,
+    screen_layer_source, web_layer_source,
 };
 
 /// A valid UUID string for effect/media id parsing.
@@ -214,5 +217,104 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
     assert_eq!(
         layer_source_label(&color_layer_source([0.0; 4]), &media_names, &effect_names),
         "Color fill"
+    );
+}
+
+// ── Add-layer target scope (§6.6) ───────────────────────────────────────
+
+fn sample_layout() -> SpatialLayout {
+    SpatialLayout {
+        id: "layout".to_owned(),
+        name: "Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn group(name: &str, role: RenderGroupRole) -> RenderGroup {
+    RenderGroup {
+        id: RenderGroupId::new(),
+        name: name.to_owned(),
+        description: None,
+        effect_id: None,
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: sample_layout(),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+#[test]
+fn a_single_surface_offers_no_target_scope() {
+    let scopes = available_add_layer_scopes(&[group("Zone A", RenderGroupRole::Primary)]);
+    assert!(scopes.is_empty());
+}
+
+#[test]
+fn a_light_and_screen_scene_offers_every_relevant_scope() {
+    let groups = [
+        group("Zone A", RenderGroupRole::Primary),
+        group("AIO Screen", RenderGroupRole::Display),
+    ];
+    assert_eq!(
+        available_add_layer_scopes(&groups),
+        [
+            AddLayerScope::ThisSurface,
+            AddLayerScope::AllLights,
+            AddLayerScope::AllScreens,
+            AddLayerScope::WholeScene,
+        ]
+    );
+}
+
+#[test]
+fn all_screens_scope_is_dropped_when_no_screens_exist() {
+    let groups = [
+        group("Zone A", RenderGroupRole::Primary),
+        group("Zone B", RenderGroupRole::Custom),
+    ];
+    let scopes = available_add_layer_scopes(&groups);
+    assert!(!scopes.contains(&AddLayerScope::AllScreens));
+    assert!(scopes.contains(&AddLayerScope::AllLights));
+}
+
+#[test]
+fn scope_resolution_picks_the_right_surfaces() {
+    let groups = [
+        group("Zone A", RenderGroupRole::Primary),
+        group("Zone B", RenderGroupRole::Custom),
+        group("AIO Screen", RenderGroupRole::Display),
+    ];
+    let selected = groups[0].id.to_string();
+
+    assert_eq!(
+        resolve_add_layer_targets(AddLayerScope::ThisSurface, &groups, &selected),
+        [selected.clone()]
+    );
+    assert_eq!(
+        resolve_add_layer_targets(AddLayerScope::AllLights, &groups, &selected).len(),
+        2
+    );
+    assert_eq!(
+        resolve_add_layer_targets(AddLayerScope::AllScreens, &groups, &selected),
+        [groups[2].id.to_string()]
+    );
+    assert_eq!(
+        resolve_add_layer_targets(AddLayerScope::WholeScene, &groups, &selected).len(),
+        3
     );
 }

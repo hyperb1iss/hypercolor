@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use super::source::{
-    LayerSourceKind, color_layer_source, effect_layer_source, hex_to_layer_rgba,
+    AddLayerScope, LayerSourceKind, color_layer_source, effect_layer_source, hex_to_layer_rgba,
     media_layer_source, screen_layer_source, web_layer_source,
 };
 use crate::api;
@@ -41,10 +41,20 @@ impl NewLayerDraft {
 #[component]
 pub fn AddLayerPicker(
     #[prop(into)] assets: Signal<Vec<api::MediaAssetRecord>>,
-    on_pick: Callback<NewLayerDraft>,
+    /// Scopes the new layer can target (§6.6); a list shorter than two
+    /// hides the selector — there is nothing to scope to.
+    #[prop(into)]
+    scopes: Signal<Vec<AddLayerScope>>,
+    on_pick: Callback<(NewLayerDraft, AddLayerScope)>,
     on_cancel: Callback<()>,
 ) -> impl IntoView {
     let tab = RwSignal::new(LayerSourceKind::Effect);
+    let scope = RwSignal::new(AddLayerScope::ThisSurface);
+    // The source tabs stay scope-unaware: they emit a draft, and this
+    // wrapper tags it with the chosen target scope before it leaves.
+    let emit = Callback::new(move |draft: NewLayerDraft| {
+        on_pick.run((draft, scope.get()));
+    });
     let effects = LocalResource::new(api::fetch_effects);
 
     view! {
@@ -93,21 +103,57 @@ pub fn AddLayerPicker(
                     }).collect_view()}
                 </div>
 
+                {move || {
+                    let available = scopes.get();
+                    (available.len() > 1)
+                        .then(|| {
+                            view! {
+                                <div class="flex flex-wrap items-center gap-2 border-b border-edge-subtle/50 px-5 py-2.5">
+                                    <span class="text-[11px] font-medium text-fg-tertiary">
+                                        "Add to"
+                                    </span>
+                                    <div class="flex flex-wrap items-center gap-1">
+                                        {available
+                                            .into_iter()
+                                            .map(|option| {
+                                                let selected = move || scope.get() == option;
+                                                view! {
+                                                    <button
+                                                        type="button"
+                                                        class="rounded-md border px-2 py-1 text-[11px] font-medium transition-colors"
+                                                        class=("border-accent-muted", selected)
+                                                        class=("bg-accent/10", selected)
+                                                        class=("text-fg-primary", selected)
+                                                        class=("border-edge-subtle/60", move || !selected())
+                                                        class=("text-fg-tertiary", move || !selected())
+                                                        on:click=move |_| scope.set(option)
+                                                    >
+                                                        {option.label()}
+                                                    </button>
+                                                }
+                                            })
+                                            .collect_view()}
+                                    </div>
+                                </div>
+                            }
+                        })
+                }}
+
                 <div class="flex-1 overflow-y-auto px-5 py-4">
                     <div class:hidden=move || tab.get() != LayerSourceKind::Effect>
-                        <EffectTab effects=effects on_pick=on_pick />
+                        <EffectTab effects=effects on_pick=emit />
                     </div>
                     <div class:hidden=move || tab.get() != LayerSourceKind::Media>
-                        <MediaTab assets=assets on_pick=on_pick />
+                        <MediaTab assets=assets on_pick=emit />
                     </div>
                     <div class:hidden=move || tab.get() != LayerSourceKind::ScreenCapture>
-                        <ScreenTab on_pick=on_pick />
+                        <ScreenTab on_pick=emit />
                     </div>
                     <div class:hidden=move || tab.get() != LayerSourceKind::WebPage>
-                        <WebTab on_pick=on_pick />
+                        <WebTab on_pick=emit />
                     </div>
                     <div class:hidden=move || tab.get() != LayerSourceKind::Color>
-                        <ColorTab on_pick=on_pick />
+                        <ColorTab on_pick=emit />
                     </div>
                 </div>
             </div>

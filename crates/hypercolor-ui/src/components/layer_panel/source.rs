@@ -11,6 +11,7 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback, WebViewportRender};
+use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 use uuid::Uuid;
 
@@ -45,6 +46,80 @@ impl LayerSourceKind {
             Self::WebPage => "Web Page",
             Self::Color => "Color",
         }
+    }
+}
+
+/// Where an Add-layer action sends the new layer (§6.6). The spec's
+/// *Selected surfaces* scope, which rides the surface-rail multi-select,
+/// is deferred until that multi-select lands with multi-zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddLayerScope {
+    /// The selected surface only — the default.
+    ThisSurface,
+    /// Every LED light zone.
+    AllLights,
+    /// Every display-face screen.
+    AllScreens,
+    /// Every surface in the scene.
+    WholeScene,
+}
+
+impl AddLayerScope {
+    /// User-facing label for the scope selector.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ThisSurface => "This surface",
+            Self::AllLights => "All lights",
+            Self::AllScreens => "All screens",
+            Self::WholeScene => "Whole scene",
+        }
+    }
+}
+
+/// The scopes worth offering for a scene. With one surface there is
+/// nothing to scope to, and a scope that would target nothing is dropped
+/// (§6.6), so a result shorter than two means "show no selector".
+#[must_use]
+pub fn available_add_layer_scopes(groups: &[RenderGroup]) -> Vec<AddLayerScope> {
+    if groups.len() < 2 {
+        return Vec::new();
+    }
+    let has_lights = groups.iter().any(|group| group.role != RenderGroupRole::Display);
+    let has_screens = groups.iter().any(|group| group.role == RenderGroupRole::Display);
+    let mut scopes = vec![AddLayerScope::ThisSurface];
+    if has_lights {
+        scopes.push(AddLayerScope::AllLights);
+    }
+    if has_screens {
+        scopes.push(AddLayerScope::AllScreens);
+    }
+    scopes.push(AddLayerScope::WholeScene);
+    scopes
+}
+
+/// Resolve a scope to the render-group ids that should receive the layer,
+/// in scene order. Targets are deduplicated so a scope can never queue the
+/// same surface twice.
+#[must_use]
+pub fn resolve_add_layer_targets(
+    scope: AddLayerScope,
+    groups: &[RenderGroup],
+    selected_group_id: &str,
+) -> Vec<String> {
+    match scope {
+        AddLayerScope::ThisSurface => vec![selected_group_id.to_owned()],
+        AddLayerScope::AllLights => groups
+            .iter()
+            .filter(|group| group.role != RenderGroupRole::Display)
+            .map(|group| group.id.to_string())
+            .collect(),
+        AddLayerScope::AllScreens => groups
+            .iter()
+            .filter(|group| group.role == RenderGroupRole::Display)
+            .map(|group| group.id.to_string())
+            .collect(),
+        AddLayerScope::WholeScene => groups.iter().map(|group| group.id.to_string()).collect(),
     }
 }
 

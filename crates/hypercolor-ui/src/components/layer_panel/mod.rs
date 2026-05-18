@@ -43,6 +43,7 @@ use crate::toasts;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
+use source::{AddLayerScope, available_add_layer_scopes, resolve_add_layer_targets};
 
 /// Layer-stack editor for one render group. See the module docs for the
 /// mount contract.
@@ -119,7 +120,15 @@ pub fn LayerPanel(
             .unwrap_or_default()
     });
 
-    let add_layer = Callback::new(move |draft: NewLayerDraft| {
+    // The Add-layer target scopes worth offering for the current scene.
+    let scopes = Signal::derive(move || {
+        active_scene
+            .get()
+            .map(|scene| available_add_layer_scopes(&scene.groups))
+            .unwrap_or_default()
+    });
+
+    let add_layer = Callback::new(move |(draft, scope): (NewLayerDraft, AddLayerScope)| {
         set_show_picker.set(false);
         let Some(scene) = active_scene.get_untracked() else {
             toasts::toast_error("No active scene is available");
@@ -129,6 +138,11 @@ pub fn LayerPanel(
             toasts::toast_error("No surface is selected");
             return;
         };
+        let targets = resolve_add_layer_targets(scope, &scene.groups, &group_id);
+        if targets.is_empty() {
+            toasts::toast_error("No target surfaces for that scope");
+            return;
+        }
         let expected_version = layers_version.get_untracked();
         let request = api::CreateLayerRequest {
             name: draft.name,
@@ -141,16 +155,33 @@ pub fn LayerPanel(
             enabled: true,
         };
         leptos::task::spawn_local(async move {
-            match api::create_layer(&scene.id, &group_id, &request, expected_version).await {
-                Ok(api::LayerStackOutcome::Applied(_)) => {
-                    on_layers_mutated.run(());
-                    toasts::toast_success("Layer added");
+            let mut applied = 0_usize;
+            let mut failed = 0_usize;
+            for target in &targets {
+                // `If-Match` guards the surface on screen; bulk targets are
+                // not being watched, so they add unconditionally.
+                let version = if *target == group_id {
+                    expected_version
+                } else {
+                    None
+                };
+                match api::create_layer(&scene.id, target, &request, version).await {
+                    Ok(api::LayerStackOutcome::Applied(_)) => applied += 1,
+                    Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => failed += 1,
                 }
-                Ok(api::LayerStackOutcome::Stale { .. }) => {
-                    on_layers_mutated.run(());
-                    toasts::toast_error("Layer stack changed elsewhere — reloaded");
-                }
-                Err(error) => toasts::toast_error(&format!("Layer add failed: {error}")),
+            }
+            on_layers_mutated.run(());
+            if failed == 0 {
+                toasts::toast_success(&match applied {
+                    1 => "Layer added".to_owned(),
+                    count => format!("Layer added to {count} surfaces"),
+                });
+            } else if applied == 0 {
+                toasts::toast_error("Layer add failed");
+            } else {
+                toasts::toast_error(&format!(
+                    "Layer added to {applied} surfaces, {failed} failed"
+                ));
             }
         });
     });
@@ -266,6 +297,7 @@ pub fn LayerPanel(
             <Show when=move || show_picker.get()>
                 <AddLayerPicker
                     assets=assets
+                    scopes=scopes
                     on_pick=add_layer
                     on_cancel=Callback::new(move |()| set_show_picker.set(false))
                 />
