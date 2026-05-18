@@ -13,10 +13,12 @@ mod surface_rail;
 
 use hypercolor_types::scene::RenderGroupRole;
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
 use crate::components::resize_handle::ResizeHandle;
+use crate::icons::*;
 use crate::storage;
 
 use stage::Stage;
@@ -129,57 +131,114 @@ pub fn StudioPage() -> impl IntoView {
     let surface_drag_start = StoredValue::new(0.0_f64);
     let layers_drag_start = StoredValue::new(0.0_f64);
 
+    // Narrow viewports collapse the rails into slide-over drawers (§13).
+    let surface_drawer = RwSignal::new(false);
+    let layers_drawer = RwSignal::new(false);
+    // Picking a surface from the drawer reveals the Stage behind it.
+    Effect::new(move |_| {
+        let _ = selected_surface_id.get();
+        if surface_drawer.get_untracked() {
+            surface_drawer.set(false);
+        }
+    });
+
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
     });
 
     view! {
-        <div class="flex h-full overflow-hidden">
-            <div
-                class="shrink-0 overflow-hidden"
-                style:width=move || format!("{}px", surface_width.get())
-            >
-                <SurfaceRail />
+        <div class="flex h-full flex-col overflow-hidden">
+            // Narrow-viewport drawer toggles; the three rails are side by
+            // side on `lg` and up, so this strip is hidden there.
+            <div class="flex shrink-0 items-center gap-2 border-b border-edge-subtle/70 bg-surface-raised/40 px-3 py-2 lg:hidden">
+                <button
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary btn-press"
+                    on:click=move |_| {
+                        layers_drawer.set(false);
+                        surface_drawer.set(true);
+                    }
+                >
+                    <Icon icon=LuLightbulb width="13px" height="13px" />
+                    "Lights & Screens"
+                </button>
+                <div class="flex-1" />
+                <button
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary btn-press"
+                    on:click=move |_| {
+                        surface_drawer.set(false);
+                        layers_drawer.set(true);
+                    }
+                >
+                    "Layers"
+                    <Icon icon=LuLayers width="13px" height="13px" />
+                </button>
             </div>
-            <ResizeHandle
-                on_drag_start=Callback::new(move |()| {
-                    surface_drag_start.set_value(surface_width.get_untracked());
-                })
-                on_drag=Callback::new(move |delta: f64| {
-                    let next = (surface_drag_start.get_value() + delta)
-                        .clamp(SURFACE_WIDTH_RANGE.0, SURFACE_WIDTH_RANGE.1);
-                    surface_width.set(next);
-                })
-                on_drag_end=Callback::new(|()| {})
-            />
-            <div class="min-w-0 flex-1">
-                <Stage />
+
+            <div class="relative flex min-h-0 flex-1 overflow-hidden">
+                <div
+                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--surface-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:border-r max-lg:border-edge-subtle/70 max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200"
+                    class=("max-lg:-translate-x-full", move || !surface_drawer.get())
+                    style:--surface-w=move || format!("{}px", surface_width.get())
+                >
+                    <SurfaceRail />
+                </div>
+                <div class="hidden lg:contents">
+                    <ResizeHandle
+                        on_drag_start=Callback::new(move |()| {
+                            surface_drag_start.set_value(surface_width.get_untracked());
+                        })
+                        on_drag=Callback::new(move |delta: f64| {
+                            let next = (surface_drag_start.get_value() + delta)
+                                .clamp(SURFACE_WIDTH_RANGE.0, SURFACE_WIDTH_RANGE.1);
+                            surface_width.set(next);
+                        })
+                        on_drag_end=Callback::new(|()| {})
+                    />
+                </div>
+                <div class="min-w-0 flex-1">
+                    <Stage />
+                </div>
+                <div class="hidden lg:contents">
+                    <ResizeHandle
+                        on_drag_start=Callback::new(move |()| {
+                            layers_drag_start.set_value(layers_width.get_untracked());
+                        })
+                        on_drag=Callback::new(move |delta: f64| {
+                            let next = (layers_drag_start.get_value() - delta)
+                                .clamp(LAYERS_WIDTH_RANGE.0, LAYERS_WIDTH_RANGE.1);
+                            layers_width.set(next);
+                        })
+                        on_drag_end=Callback::new(|()| {})
+                    />
+                </div>
+                <aside
+                    class="scrollbar-none w-80 shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 lg:w-[var(--layers-w)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200"
+                    class=("max-lg:translate-x-full", move || !layers_drawer.get())
+                    style:--layers-w=move || format!("{}px", layers_width.get())
+                >
+                    <LayerPanel
+                        active_scene=active_scene
+                        selected_group_id=selected_surface_id.read_only()
+                        set_selected_group_id=selected_surface_id.write_only()
+                        surface_label=surface_label
+                        layers_resource=layers_resource
+                        on_layers_mutated=on_layers_mutated
+                    />
+                </aside>
+
+                <Show when=move || surface_drawer.get() || layers_drawer.get()>
+                    <div
+                        class="fixed inset-0 z-30 bg-black/55 lg:hidden"
+                        on:click=move |_| {
+                            surface_drawer.set(false);
+                            layers_drawer.set(false);
+                        }
+                    />
+                </Show>
             </div>
-            <ResizeHandle
-                on_drag_start=Callback::new(move |()| {
-                    layers_drag_start.set_value(layers_width.get_untracked());
-                })
-                on_drag=Callback::new(move |delta: f64| {
-                    let next = (layers_drag_start.get_value() - delta)
-                        .clamp(LAYERS_WIDTH_RANGE.0, LAYERS_WIDTH_RANGE.1);
-                    layers_width.set(next);
-                })
-                on_drag_end=Callback::new(|()| {})
-            />
-            <aside
-                class="scrollbar-none shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6"
-                style:width=move || format!("{}px", layers_width.get())
-            >
-                <LayerPanel
-                    active_scene=active_scene
-                    selected_group_id=selected_surface_id.read_only()
-                    set_selected_group_id=selected_surface_id.write_only()
-                    surface_label=surface_label
-                    layers_resource=layers_resource
-                    on_layers_mutated=on_layers_mutated
-                />
-            </aside>
         </div>
     }
 }
