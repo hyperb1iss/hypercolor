@@ -9,8 +9,11 @@ mod surface;
 use std::collections::HashMap;
 
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::EffectId;
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, RenderGroup, RenderGroupId, RenderGroupRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use uuid::Uuid;
 
 use surface::{SurfaceKind, surfaces_from_groups};
 
@@ -99,6 +102,32 @@ fn display_group_without_a_target_has_no_preview_device() {
     let surface = &surfaces[0];
     assert_eq!(surface.kind, SurfaceKind::Screen);
     assert_eq!(surface.display_device_id, None);
+}
+
+#[test]
+fn a_surface_carries_its_groups_live_layer_ids() {
+    let mut zone = group("Zone A", RenderGroupRole::Primary, None);
+    let first = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(Uuid::nil()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    let second = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(Uuid::nil()),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    let expected = vec![first.id.to_string(), second.id.to_string()];
+    zone.layers = vec![first, second];
+
+    // The surface mirrors the group's live layer ids, in stack order — the
+    // set the degraded check filters streamed health against.
+    let surfaces = surfaces_from_groups(&[zone]);
+    assert_eq!(surfaces[0].layer_ids, expected);
 }
 
 #[test]

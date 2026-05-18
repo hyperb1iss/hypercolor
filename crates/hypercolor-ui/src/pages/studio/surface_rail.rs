@@ -99,6 +99,7 @@ fn SurfaceRow(surface: Surface) -> impl IntoView {
     let row_id = surface.id.clone();
     let select_id = surface.id.clone();
     let health_group = surface.id.clone();
+    let health_layer_ids = surface.layer_ids.clone();
     let is_selected =
         Signal::derive(move || studio.selected_surface_id.get().as_deref() == Some(row_id.as_str()));
     let icon = match surface.kind {
@@ -112,8 +113,9 @@ fn SurfaceRow(surface: Surface) -> impl IntoView {
         let (Some(ws), Some(scene)) = (ws, studio.active_scene.get()) else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &health_group))
+        ws.layer_health.with(|map| {
+            group_has_degraded_layer(map, &scene.id, &health_group, &health_layer_ids)
+        })
     });
 
     view! {

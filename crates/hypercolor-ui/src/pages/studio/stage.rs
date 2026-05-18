@@ -57,8 +57,9 @@ pub fn Stage() -> impl IntoView {
         else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &surface.id))
+        ws.layer_health.with(|map| {
+            group_has_degraded_layer(map, &scene.id, &surface.id, &surface.layer_ids)
+        })
     });
 
     // The toggle latches the last requested view; `resolved_view` applies

@@ -178,6 +178,11 @@ fn layer_health_key_separates_groups_that_share_a_layer_id() {
     assert_ne!(group_a, group_b);
 }
 
+/// The group's live layer-id set, as `group_has_degraded_layer` expects it.
+fn ids(list: &[&str]) -> Vec<String> {
+    list.iter().map(|id| (*id).to_owned()).collect()
+}
+
 #[test]
 fn group_has_degraded_layer_flags_only_the_owning_group() {
     let mut map = HashMap::new();
@@ -193,9 +198,24 @@ fn group_has_degraded_layer_flags_only_the_owning_group() {
     );
 
     // group-a owns the failed layer; group-b and an unrelated scene do not.
-    assert!(group_has_degraded_layer(&map, "scene-1", "group-a"));
-    assert!(!group_has_degraded_layer(&map, "scene-1", "group-b"));
-    assert!(!group_has_degraded_layer(&map, "scene-2", "group-a"));
+    assert!(group_has_degraded_layer(
+        &map,
+        "scene-1",
+        "group-a",
+        &ids(&["layer-1"]),
+    ));
+    assert!(!group_has_degraded_layer(
+        &map,
+        "scene-1",
+        "group-b",
+        &ids(&["layer-2"]),
+    ));
+    assert!(!group_has_degraded_layer(
+        &map,
+        "scene-2",
+        "group-a",
+        &ids(&["layer-1"]),
+    ));
 }
 
 #[test]
@@ -210,12 +230,52 @@ fn group_has_degraded_layer_ignores_transient_states() {
         LayerHealth::Loading,
     );
     // Loading and Stalled are transient — not a degraded surface.
-    assert!(!group_has_degraded_layer(&map, "scene-1", "group-a"));
+    assert!(!group_has_degraded_layer(
+        &map,
+        "scene-1",
+        "group-a",
+        &ids(&["layer-1", "layer-2"]),
+    ));
 
     map.insert(
         layer_health_key("scene-1", "group-a", "layer-3"),
         LayerHealth::AssetMissing,
     );
     // A missing asset does count as degraded.
-    assert!(group_has_degraded_layer(&map, "scene-1", "group-a"));
+    assert!(group_has_degraded_layer(
+        &map,
+        "scene-1",
+        "group-a",
+        &ids(&["layer-1", "layer-2", "layer-3"]),
+    ));
+}
+
+#[test]
+fn group_has_degraded_layer_ignores_stale_removed_layers() {
+    let mut map = HashMap::new();
+    map.insert(
+        layer_health_key("scene-1", "group-a", "layer-gone"),
+        LayerHealth::Failed {
+            reason: "boom".to_owned(),
+        },
+    );
+
+    // The failed layer was removed from the stack. The daemon drops its
+    // health silently, leaving a stale map entry — but with the layer no
+    // longer in the live set, the surface must not read as degraded.
+    assert!(!group_has_degraded_layer(&map, "scene-1", "group-a", &[]));
+    assert!(!group_has_degraded_layer(
+        &map,
+        "scene-1",
+        "group-a",
+        &ids(&["layer-still-here"]),
+    ));
+
+    // It does flag while the failed layer is still in the stack.
+    assert!(group_has_degraded_layer(
+        &map,
+        "scene-1",
+        "group-a",
+        &ids(&["layer-gone"]),
+    ));
 }

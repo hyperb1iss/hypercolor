@@ -483,22 +483,33 @@ pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, 
     Some((layer_health_key(scene_id, group_id, layer_id), health))
 }
 
-/// Whether any layer in a render group is in a degraded health state.
-/// "Degraded" is the alarming end of `LayerHealth` — a failed producer or
-/// a missing asset; transient `Loading`/`Stalled` states do not count, so
-/// the §6.7 Screen-row and Stage indicators stay meaningful. Reads the same
-/// map that feeds the Wave 6 per-layer health pill.
+/// Whether any *current* layer in a render group is in a degraded health
+/// state. "Degraded" is the alarming end of `LayerHealth` — a failed
+/// producer or a missing asset; transient `Loading`/`Stalled` states do not
+/// count, so the §6.7 Screen-row and Stage indicators stay meaningful.
+///
+/// The health map is append-only and the daemon drops a layer's runtime
+/// state on reconcile without a recovery event, so a removed-but-failed
+/// layer leaves a stale entry behind. `current_layer_ids` is the group's
+/// live layer set; an entry for a layer no longer in it is ignored, so a
+/// deleted failed layer cannot keep the surface flagged.
 pub(crate) fn group_has_degraded_layer(
     layer_health: &HashMap<String, LayerHealth>,
     scene_id: &str,
     group_id: &str,
+    current_layer_ids: &[String],
 ) -> bool {
     layer_health.iter().any(|(key, health)| {
         if !matches!(health, LayerHealth::Failed { .. } | LayerHealth::AssetMissing) {
             return false;
         }
         let mut parts = key.splitn(3, '/');
-        parts.next() == Some(scene_id) && parts.next() == Some(group_id)
+        if parts.next() != Some(scene_id) || parts.next() != Some(group_id) {
+            return false;
+        }
+        parts
+            .next()
+            .is_some_and(|layer| current_layer_ids.iter().any(|id| id.as_str() == layer))
     })
 }
 

@@ -27,6 +27,11 @@ pub struct Surface {
     /// Stage subscribes to for that screen's live face preview. `None`
     /// for Lights and for display groups with no target assigned yet.
     pub display_device_id: Option<String>,
+    /// Ids of the layers this surface currently holds. The degraded
+    /// indicator filters streamed layer health against this live set, so
+    /// a stale entry for an already-removed layer cannot keep the surface
+    /// flagged after the layer is gone.
+    pub layer_ids: Vec<String>,
 }
 
 /// Build the surface list from the active scene's render groups, in scene
@@ -55,6 +60,11 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
                     .display_target
                     .as_ref()
                     .map(|target| target.device_id.to_string()),
+                layer_ids: group
+                    .effective_layers()
+                    .iter()
+                    .map(|layer| layer.id.to_string())
+                    .collect(),
             }
         })
         .collect()
