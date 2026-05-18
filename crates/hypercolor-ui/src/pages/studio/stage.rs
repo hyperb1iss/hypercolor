@@ -14,6 +14,7 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::display_preview_state::use_display_preview_subscription;
+use crate::ws::CanvasFrame;
 
 use super::StudioContext;
 use super::surface::{SurfaceKind, surfaces_from_groups};
@@ -59,6 +60,20 @@ pub fn Stage() -> impl IntoView {
             .iter()
             .find(|display| display.id == device_id)
             .cloned()
+    });
+
+    // `display_preview_frame` is one shared, untagged signal: a direct
+    // screen-to-screen switch would otherwise show the previous screen's
+    // last face under the new name until its stream delivers a frame.
+    // Latch the frame and drop it the instant the target device changes,
+    // so the gap falls back to the new screen's still image instead.
+    let screen_frame = RwSignal::new(None::<CanvasFrame>);
+    Effect::new(move |_| {
+        display_device.track();
+        screen_frame.set(None);
+    });
+    Effect::new(move |_| {
+        screen_frame.set(ws.display_preview_frame.get());
     });
 
     // The display-preview stream carries no FPS, so the Screen caption is
@@ -119,7 +134,7 @@ pub fn Stage() -> impl IntoView {
                             );
                             view! {
                                 <DisplayPreviewSurface
-                                    frame=ws.display_preview_frame
+                                    frame=screen_frame
                                     fallback_src=api::display_preview_url(&display.id, None)
                                     aspect_ratio=aspect
                                     aria_label=format!(
