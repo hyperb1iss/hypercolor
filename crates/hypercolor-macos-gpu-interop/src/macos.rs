@@ -211,8 +211,8 @@ impl MacosIosurfaceImporter {
             depth: 1,
         };
         // SAFETY: metal_texture was created from the same Metal device behind
-        // this wgpu device, matches wgpu_desc, and references initialized
-        // IOSurface storage that the caller keeps alive.
+        // this wgpu device, matches wgpu_desc, and retains IOSurface-backed
+        // storage for the wrapped texture lifetime.
         let hal_texture = unsafe {
             wgpu_hal::metal::Device::texture_from_raw(
                 metal_texture,
@@ -274,7 +274,7 @@ pub fn write_bgra_pixels(
         iosurface,
     )?;
 
-    lock_iosurface(iosurface)?;
+    let lock = IosurfaceLockGuard::lock(iosurface)?;
     let bytes_per_row = iosurface.bytes_per_row();
     let row_len = width as usize * BYTES_PER_PIXEL as usize;
     let base_address = iosurface.base_address().as_ptr().cast::<u8>();
@@ -286,7 +286,7 @@ pub fn write_bgra_pixels(
             std::ptr::copy_nonoverlapping(row_pixels.as_ptr(), target, row_len);
         }
     }
-    unlock_iosurface(iosurface)
+    lock.unlock()
 }
 
 fn create_iosurface(
@@ -425,6 +425,35 @@ fn unlock_iosurface(iosurface: &IOSurfaceRef) -> Result<()> {
             operation: "unlock",
             code,
         })
+    }
+}
+
+struct IosurfaceLockGuard<'a> {
+    iosurface: &'a IOSurfaceRef,
+    locked: bool,
+}
+
+impl<'a> IosurfaceLockGuard<'a> {
+    fn lock(iosurface: &'a IOSurfaceRef) -> Result<Self> {
+        lock_iosurface(iosurface)?;
+        Ok(Self {
+            iosurface,
+            locked: true,
+        })
+    }
+
+    fn unlock(mut self) -> Result<()> {
+        unlock_iosurface(self.iosurface)?;
+        self.locked = false;
+        Ok(())
+    }
+}
+
+impl Drop for IosurfaceLockGuard<'_> {
+    fn drop(&mut self) {
+        if self.locked {
+            let _ = unlock_iosurface(self.iosurface);
+        }
     }
 }
 

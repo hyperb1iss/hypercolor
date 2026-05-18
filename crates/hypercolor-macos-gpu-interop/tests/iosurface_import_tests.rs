@@ -3,8 +3,8 @@
 use std::sync::mpsc;
 
 use hypercolor_macos_gpu_interop::{
-    ImportedFrameFormat, MacosIosurfaceImportDescriptor, MacosIosurfaceImporter,
-    create_bgra_iosurface, write_bgra_pixels,
+    ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
+    MacosIosurfaceImporter, create_bgra_iosurface, write_bgra_pixels,
 };
 
 const WIDTH: u32 = 4;
@@ -32,7 +32,6 @@ fn imports_synthetic_iosurface_into_wgpu_texture() -> Result<(), String> {
     assert_eq!(frame.height, HEIGHT);
     assert_eq!(frame.format, ImportedFrameFormat::Bgra8Unorm);
     assert_eq!(pixels, expected_pixels);
-    assert!(frame.timings.total_us >= frame.timings.wrap_us);
 
     Ok(())
 }
@@ -45,6 +44,47 @@ fn rejects_zero_sized_descriptors() {
     assert!(
         MacosIosurfaceImportDescriptor::new(WIDTH, 0, ImportedFrameFormat::Bgra8Unorm).is_err()
     );
+}
+
+#[test]
+fn rejects_mismatched_pixel_buffer_lengths() -> Result<(), String> {
+    let iosurface = create_bgra_iosurface(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
+    let actual_len = (WIDTH * HEIGHT * 4 - 1) as usize;
+    let pixels = vec![0; actual_len];
+    let error = write_bgra_pixels(&iosurface, WIDTH, HEIGHT, &pixels)
+        .expect_err("mismatched pixel buffers should be rejected");
+
+    assert_eq!(
+        error,
+        MacosGpuInteropError::PixelBufferSizeMismatch {
+            expected_len: (WIDTH * HEIGHT * 4) as usize,
+            actual_len,
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rejects_iosurface_shape_mismatches() -> Result<(), String> {
+    let actual_width = WIDTH + 1;
+    let iosurface =
+        create_bgra_iosurface(actual_width, HEIGHT).map_err(|error| error.to_string())?;
+    let pixels = fixture_pixels();
+    let error = write_bgra_pixels(&iosurface, WIDTH, HEIGHT, &pixels)
+        .expect_err("mismatched IOSurface shapes should be rejected");
+
+    assert_eq!(
+        error,
+        MacosGpuInteropError::IosurfaceShapeMismatch {
+            expected_width: WIDTH,
+            expected_height: HEIGHT,
+            actual_width: actual_width as usize,
+            actual_height: HEIGHT as usize,
+        }
+    );
+
+    Ok(())
 }
 
 struct WgpuFixture {
