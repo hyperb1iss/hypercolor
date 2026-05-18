@@ -60,16 +60,17 @@ pub fn SurfaceRail() -> impl IntoView {
     // live (§9.6): creating a zone you cannot render or fill is a trap.
     let zone_crud_ready = Memo::new(move |_| caps.zone_crud_ready());
 
-    // Connected devices minus the one display behind each Screen surface —
-    // i.e. how much hardware the lone "All Lights" zone drives. `None`
-    // until the device list resolves, so the rail never flashes a stale
-    // "0 devices" subtitle while loading.
+    // LED-lit devices the lone "All Lights" zone drives. A display-face
+    // device reports zero LEDs (an LCD is not a light), and OS monitors
+    // never appear in the device registry at all, so counting devices
+    // with LEDs lands on exactly the hardware "All Lights" feeds. `None`
+    // until the list resolves, so the rail never flashes a stale subtitle.
     let led_device_count = Memo::new(move |_| {
         devices
             .devices_resource
             .get()
             .and_then(Result::ok)
-            .map(|list| list.len().saturating_sub(screens.get().len()))
+            .map(|list| list.iter().filter(|device| device.total_leds > 0).count())
     });
 
     view! {
