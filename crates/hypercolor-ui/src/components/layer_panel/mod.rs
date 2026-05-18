@@ -157,7 +157,13 @@ pub fn LayerPanel(
                     type="button"
                     class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-cyan-300/20 bg-cyan-300/8 px-3 py-2 text-xs font-semibold text-cyan-200 transition-colors hover:bg-cyan-300/12 btn-press disabled:cursor-not-allowed disabled:opacity-45"
                     disabled=move || selected_group_id.get().is_none()
-                    on:click=move |_| set_show_picker.set(true)
+                    on:click=move |_| {
+                        // The asset list is decoupled from any host page's
+                        // refresh tick, so refresh it on demand — otherwise a
+                        // file uploaded since mount is missing from the picker.
+                        assets_resource.refetch();
+                        set_show_picker.set(true);
+                    }
                 >
                     <Icon icon=LuPlus width="13px" height="13px" />
                     "Add layer"
