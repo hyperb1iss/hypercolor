@@ -20,6 +20,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::storage;
 
 use stage::Stage;
+use surface::surfaces_from_groups;
 use surface_rail::SurfaceRail;
 
 const SURFACE_WIDTH_KEY: &str = "hc-studio-surface-width";
@@ -94,6 +95,18 @@ pub fn StudioPage() -> impl IntoView {
         set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
     });
 
+    // The surface rail owns selection, so the layer panel shows the
+    // selected surface's name in its header instead of a redundant
+    // group selector.
+    let surface_label = Signal::derive(move || {
+        let id = selected_surface_id.get()?;
+        let scene = active_scene.get()?;
+        surfaces_from_groups(&scene.groups)
+            .into_iter()
+            .find(|surface| surface.id == id)
+            .map(|surface| surface.name)
+    });
+
     // Rail widths persist per browser; the Stage takes the space between.
     let surface_width = RwSignal::new(storage::get_clamped(
         SURFACE_WIDTH_KEY,
@@ -162,6 +175,7 @@ pub fn StudioPage() -> impl IntoView {
                     active_scene=active_scene
                     selected_group_id=selected_surface_id.read_only()
                     set_selected_group_id=selected_surface_id.write_only()
+                    surface_label=surface_label
                     layers_resource=layers_resource
                     on_layers_mutated=on_layers_mutated
                 />

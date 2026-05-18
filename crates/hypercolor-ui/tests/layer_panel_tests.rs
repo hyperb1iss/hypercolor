@@ -12,13 +12,12 @@ mod source;
 use std::collections::HashMap;
 
 use hypercolor_types::layer::{LayerBlendMode, LayerSource};
-use hypercolor_types::scene::RenderGroupRole;
 use hypercolor_types::viewport::FitMode;
 
 use source::{
     LayerSourceKind, blend_options, blend_value, color_layer_source, effect_layer_source,
-    fit_options, fit_value, group_role_label, hex_to_layer_rgba, layer_source_label,
-    media_layer_source, parse_blend, parse_fit, screen_layer_source, web_layer_source,
+    fit_options, fit_value, hex_to_layer_rgba, layer_source_label, media_layer_source,
+    parse_blend, parse_fit, screen_layer_source, web_layer_source,
 };
 
 /// A valid UUID string for effect/media id parsing.
@@ -86,13 +85,6 @@ fn fit_modes_round_trip_through_their_wire_tokens() {
     for (value, _label) in &options {
         assert_eq!(fit_value(parse_fit(value)), value.as_str());
     }
-}
-
-#[test]
-fn group_role_label_names_each_role() {
-    assert_eq!(group_role_label(RenderGroupRole::Primary), "Primary");
-    assert_eq!(group_role_label(RenderGroupRole::Custom), "Custom");
-    assert_eq!(group_role_label(RenderGroupRole::Display), "Display");
 }
 
 #[test]
@@ -177,30 +169,50 @@ fn hex_parses_to_linear_rgba() {
 }
 
 #[test]
-fn layer_source_label_resolves_media_names_and_never_leaks_raw_types() {
+fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
     let mut media_names = HashMap::new();
     media_names.insert(SAMPLE_ID.to_owned(), "paimon.gif".to_owned());
+    let mut effect_names = HashMap::new();
+    effect_names.insert(SAMPLE_ID.to_owned(), "Aurora".to_owned());
 
     let known_media = media_layer_source(SAMPLE_ID).expect("valid uuid");
     assert_eq!(
-        layer_source_label(&known_media, &media_names),
+        layer_source_label(&known_media, &media_names, &effect_names),
         "Media paimon.gif"
     );
 
     let unknown_media =
         media_layer_source("0192f5a0-aaaa-7890-abcd-ef0123456789").expect("valid uuid");
-    assert!(layer_source_label(&unknown_media, &media_names).starts_with("Media "));
+    assert!(layer_source_label(&unknown_media, &media_names, &effect_names).starts_with("Media "));
+
+    // An effect id resolves to its registry name, never the raw UUID.
+    let known_effect = effect_layer_source(SAMPLE_ID).expect("valid uuid");
+    assert_eq!(
+        layer_source_label(&known_effect, &media_names, &effect_names),
+        "Effect Aurora"
+    );
+
+    // An unmatched effect id still produces a non-empty label.
+    let unknown_effect =
+        effect_layer_source("0192f5a0-bbbb-7890-abcd-ef0123456789").expect("valid uuid");
+    let unknown_label = layer_source_label(&unknown_effect, &media_names, &effect_names);
+    assert!(unknown_label.starts_with("Effect "));
+    assert!(unknown_label.len() > "Effect ".len());
 
     assert_eq!(
-        layer_source_label(&screen_layer_source(), &media_names),
+        layer_source_label(&screen_layer_source(), &media_names, &effect_names),
         "Screen region"
     );
     assert_eq!(
-        layer_source_label(&web_layer_source("https://hyperb1iss.dev"), &media_names),
+        layer_source_label(
+            &web_layer_source("https://hyperb1iss.dev"),
+            &media_names,
+            &effect_names,
+        ),
         "Web https://hyperb1iss.dev"
     );
     assert_eq!(
-        layer_source_label(&color_layer_source([0.0; 4]), &media_names),
+        layer_source_label(&color_layer_source([0.0; 4]), &media_names, &effect_names),
         "Color fill"
     );
 }

@@ -42,7 +42,6 @@ use crate::toasts;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
-use source::group_role_label;
 
 /// Layer-stack editor for one render group. See the module docs for the
 /// mount contract.
@@ -51,6 +50,11 @@ pub fn LayerPanel(
     #[prop(into)] active_scene: Signal<Option<api::ActiveSceneResponse>>,
     selected_group_id: ReadSignal<Option<String>>,
     set_selected_group_id: WriteSignal<Option<String>>,
+    /// Surface name supplied by a host that owns surface selection
+    /// elsewhere (Studio's surface rail). When present the panel shows it
+    /// in the header and drops its own redundant group selector.
+    #[prop(optional, into)]
+    surface_label: MaybeProp<String>,
     layers_resource: LocalResource<Result<api::LayerStackResponse, String>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
@@ -71,6 +75,21 @@ pub fn LayerPanel(
             .map(|asset| (asset.id, asset.name))
             .collect::<HashMap<String, String>>()
     });
+    // Effect ids on a layer are UUIDs; resolve them to registry names so
+    // a layer row reads "Effect Aurora", never "Effect <uuid>".
+    let effects_resource = LocalResource::new(api::fetch_effects);
+    let effect_names = Memo::new(move |_| {
+        effects_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|effects| {
+                effects
+                    .into_iter()
+                    .map(|effect| (effect.id, effect.name))
+                    .collect::<HashMap<String, String>>()
+            })
+            .unwrap_or_default()
+    });
     let layers_version = Signal::derive(move || {
         layers_resource
             .get()
@@ -87,10 +106,7 @@ pub fn LayerPanel(
                 scene
                     .groups
                     .into_iter()
-                    .map(|group| {
-                        let role = group_role_label(group.role);
-                        (group.id.to_string(), format!("{} · {role}", group.name))
-                    })
+                    .map(|group| (group.id.to_string(), group.name))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -137,21 +153,29 @@ pub fn LayerPanel(
             <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/60 px-4 py-3">
                 <div>
                     <div class="text-sm font-semibold text-fg-primary">"Layer Stack"</div>
-                    <div class="text-[11px] text-fg-tertiary">"Active scene render group"</div>
+                    <div class="text-[11px] text-fg-tertiary">
+                        {move || {
+                            surface_label
+                                .get()
+                                .unwrap_or_else(|| "Active scene render group".to_owned())
+                        }}
+                    </div>
                 </div>
                 <Icon icon=LuLayers width="16px" height="16px" style="color: rgba(128, 255, 234, 0.72)" />
             </div>
             <div class="space-y-4 px-4 py-4">
-                <SilkSelect
-                    value=Signal::derive(move || selected_group_id.get().unwrap_or_default())
-                    options=group_options
-                    on_change=Callback::new(move |id: String| {
-                        set_selected_group_id.set((!id.is_empty()).then_some(id));
-                    })
-                    placeholder="Select group"
-                    class="border border-edge-subtle bg-surface-sunken/55 px-3 py-2 text-xs text-fg-primary"
-                    label_class="font-medium"
-                />
+                <Show when=move || surface_label.get().is_none()>
+                    <SilkSelect
+                        value=Signal::derive(move || selected_group_id.get().unwrap_or_default())
+                        options=group_options
+                        on_change=Callback::new(move |id: String| {
+                            set_selected_group_id.set((!id.is_empty()).then_some(id));
+                        })
+                        placeholder="Select group"
+                        class="border border-edge-subtle bg-surface-sunken/55 px-3 py-2 text-xs text-fg-primary"
+                        label_class="font-medium"
+                    />
+                </Show>
 
                 <button
                     type="button"
@@ -186,6 +210,7 @@ pub fn LayerPanel(
                             let scene_id = active_scene.get().map(|scene| scene.id).unwrap_or_default();
                             let group_id = selected_group_id.get().unwrap_or_default();
                             let names = media_names.get();
+                            let effect_name_map = effect_names.get();
                             let version = stack.layers_version;
                             let total = stack.items.len();
                             let mut rows = stack
@@ -197,9 +222,8 @@ pub fn LayerPanel(
                             rows.reverse();
                             view! {
                                 <div class="space-y-2">
-                                    <div class="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
-                                        <span>"Top"</span>
-                                        <span>{format!("v{version}")}</span>
+                                    <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
+                                        "Top"
                                     </div>
                                     {rows.into_iter().map(|(stack_index, layer)| {
                                         view! {
@@ -212,6 +236,7 @@ pub fn LayerPanel(
                                                 stack=stack.items.clone()
                                                 layers_version=version
                                                 media_names=names.clone()
+                                                effect_names=effect_name_map.clone()
                                                 on_layers_mutated=on_layers_mutated
                                             />
                                         }

@@ -11,7 +11,6 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback, WebViewportRender};
-use hypercolor_types::scene::RenderGroupRole;
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 use uuid::Uuid;
 
@@ -124,11 +123,23 @@ pub fn hex_to_layer_rgba(hex: &str) -> Option<[f32; 4]> {
 }
 
 /// Human-readable description of a layer's content source. `media_names`
-/// resolves asset ids to filenames; an unknown id falls back to the id.
+/// resolves asset ids to filenames and `effect_names` resolves effect ids
+/// to their registry display name; an id with no match falls back to the
+/// raw id so the label is never blank.
 #[must_use]
-pub fn layer_source_label(source: &LayerSource, media_names: &HashMap<String, String>) -> String {
+pub fn layer_source_label(
+    source: &LayerSource,
+    media_names: &HashMap<String, String>,
+    effect_names: &HashMap<String, String>,
+) -> String {
     match source {
-        LayerSource::Effect { effect_id, .. } => format!("Effect {effect_id}"),
+        LayerSource::Effect { effect_id, .. } => {
+            let id = effect_id.to_string();
+            effect_names
+                .get(&id)
+                .map(|name| format!("Effect {name}"))
+                .unwrap_or_else(|| format!("Effect {effect_id}"))
+        }
         LayerSource::Media { asset_id, .. } => {
             let id = asset_id.to_string();
             media_names
@@ -139,16 +150,6 @@ pub fn layer_source_label(source: &LayerSource, media_names: &HashMap<String, St
         LayerSource::ScreenRegion { .. } => "Screen region".to_owned(),
         LayerSource::WebViewport { url, .. } => format!("Web {url}"),
         LayerSource::ColorFill { .. } => "Color fill".to_owned(),
-    }
-}
-
-/// Render-group role label used by the in-panel group selector.
-#[must_use]
-pub fn group_role_label(role: RenderGroupRole) -> &'static str {
-    match role {
-        RenderGroupRole::Custom => "Custom",
-        RenderGroupRole::Primary => "Primary",
-        RenderGroupRole::Display => "Display",
     }
 }
 

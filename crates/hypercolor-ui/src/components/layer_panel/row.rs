@@ -26,9 +26,10 @@ pub fn LayerRow(
     stack: Vec<SceneLayer>,
     layers_version: u64,
     media_names: HashMap<String, String>,
+    effect_names: HashMap<String, String>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
-    let source = layer_source_label(&layer.source, &media_names);
+    let source = layer_source_label(&layer.source, &media_names, &effect_names);
     let title = layer.name.clone().unwrap_or_else(|| source.clone());
     let layer_id = layer.id.to_string();
     let can_move_up = stack_index + 1 < total_layers;
