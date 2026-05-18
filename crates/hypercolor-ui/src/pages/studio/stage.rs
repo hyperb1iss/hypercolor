@@ -98,8 +98,10 @@ fn SurfaceStage() -> impl IntoView {
 
     // The toggle latches the last requested view; `resolved_view` applies
     // the §6.3 rule that a Screen has no Layout view and the §9.5 rule
-    // that the All-zones view needs a genuinely multi-zone scene.
-    let requested_view = RwSignal::new(StageView::default());
+    // that the All-zones view needs a genuinely multi-zone scene. The
+    // requested view lives on [`StudioContext`] so the workspace can
+    // collapse the Layers rail while Layout owns the Stage.
+    let requested_view = studio.stage_view;
     let resolved_view = Memo::new(move |_| {
         resolve_stage_view(requested_view.get(), is_screen.get(), multi_zone.get())
     });

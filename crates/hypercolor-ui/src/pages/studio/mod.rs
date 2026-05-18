@@ -25,8 +25,11 @@ use crate::icons::*;
 use crate::storage;
 
 use stage::Stage;
-use surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use stage_view::StageView;
+use surface::{SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use surface_rail::SurfaceRail;
+
+const LAYERS_COLLAPSED_KEY: &str = "hc-studio-layers-collapsed";
 
 /// An empty layer stack at version 0 — the resource value for a selection
 /// that has no per-group layer endpoint (none selected, or the synthetic
@@ -52,6 +55,10 @@ pub struct StudioContext {
     /// Re-fetch the active scene. Zone mutations call this so the rail and
     /// Stage pick up the new group set and `groups_revision`.
     pub refresh_scene: Callback<()>,
+    /// The Stage's requested view. Lifted to the context so the workspace
+    /// can react — the Layers rail steps aside while the Layout view owns
+    /// the Stage, since layout editing is not layer compositing.
+    pub stage_view: RwSignal<StageView>,
 }
 
 #[component]
@@ -188,10 +195,41 @@ pub fn StudioPage() -> impl IntoView {
     });
     on_cleanup(move || ws.set_zone_preview_active.set(false));
 
+    // The Stage view, lifted so the workspace can collapse the Layers rail
+    // while Layout owns the Stage.
+    let stage_view = RwSignal::new(StageView::default());
+
+    // The Layers rail is manually collapsible (persisted per browser) and
+    // also steps aside automatically while the Layout view is active for a
+    // Light — layout editing is not layer compositing, so the rail would
+    // only be noise there.
+    let layers_collapsed = RwSignal::new(
+        storage::get_parsed::<bool>(LAYERS_COLLAPSED_KEY).unwrap_or(false),
+    );
+    Effect::new(move |_| {
+        storage::set(LAYERS_COLLAPSED_KEY, &layers_collapsed.get().to_string());
+    });
+    let selected_is_light = Signal::derive(move || {
+        let (Some(id), Some(scene)) = (selected_surface_id.get(), active_scene.get()) else {
+            return false;
+        };
+        surfaces_from_groups(&scene.groups)
+            .into_iter()
+            .find(|surface| surface.id == id)
+            .is_some_and(|surface| surface.kind == SurfaceKind::Light)
+    });
+    let layout_active =
+        Signal::derive(move || stage_view.get() == StageView::Layout && selected_is_light.get());
+    // The rail shows for a real surface that is not in Layout mode and not
+    // manually collapsed. The Unassigned entry keeps its own note.
+    let layers_visible =
+        Signal::derive(move || !layout_active.get() && !layers_collapsed.get());
+
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
         refresh_scene,
+        stage_view,
     });
 
     view! {
@@ -216,6 +254,7 @@ pub fn StudioPage() -> impl IntoView {
                     class="inline-flex items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary btn-press"
                     on:click=move |_| {
                         surface_drawer.set(false);
+                        layers_collapsed.set(false);
                         layers_drawer.set(true);
                     }
                 >
@@ -248,24 +287,38 @@ pub fn StudioPage() -> impl IntoView {
                 <div class="min-w-0 flex-1">
                     <Stage />
                 </div>
-                <div class="hidden lg:contents">
-                    <ResizeHandle
-                        on_drag_start=Callback::new(move |()| {
-                            layers_drag_start.set_value(layers_width.get_untracked());
-                        })
-                        on_drag=Callback::new(move |delta: f64| {
-                            let next = (layers_drag_start.get_value() - delta)
-                                .clamp(LAYERS_WIDTH_RANGE.0, LAYERS_WIDTH_RANGE.1);
-                            layers_width.set(next);
-                        })
-                        on_drag_end=Callback::new(|()| {})
-                    />
-                </div>
+                // Layers resize handle — desktop only, and gone while the
+                // rail is collapsed or stepped aside for Layout.
+                <Show when=move || layers_visible.get()>
+                    <div class="hidden lg:contents">
+                        <ResizeHandle
+                            on_drag_start=Callback::new(move |()| {
+                                layers_drag_start.set_value(layers_width.get_untracked());
+                            })
+                            on_drag=Callback::new(move |delta: f64| {
+                                let next = (layers_drag_start.get_value() - delta)
+                                    .clamp(LAYERS_WIDTH_RANGE.0, LAYERS_WIDTH_RANGE.1);
+                                layers_width.set(next);
+                            })
+                            on_drag_end=Callback::new(|()| {})
+                        />
+                    </div>
+                </Show>
                 <aside
-                    class="scrollbar-none w-80 shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 lg:w-[var(--layers-w)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:transition-transform max-lg:duration-200"
+                    class="scrollbar-none relative w-80 shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 lg:w-[var(--layers-w)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:transition-transform max-lg:duration-200"
                     class=("max-lg:translate-x-full", move || !layers_drawer.get())
+                    class=("lg:hidden", move || !layers_visible.get())
                     style:--layers-w=move || format!("{}px", layers_width.get())
                 >
+                    // Desktop collapse control — reclaims the Stage width.
+                    <button
+                        type="button"
+                        class="absolute left-1 top-3 z-10 hidden rounded-md p-1 text-fg-tertiary transition-colors hover:text-fg-primary lg:block"
+                        title="Hide the layers panel"
+                        on:click=move |_| layers_collapsed.set(true)
+                    >
+                        <Icon icon=LuChevronRight width="14px" height="14px" />
+                    </button>
                     {move || {
                         if is_unassigned.get() {
                             view! { <UnassignedLayersNote /> }.into_any()
@@ -284,6 +337,18 @@ pub fn StudioPage() -> impl IntoView {
                         }
                     }}
                 </aside>
+                // Collapsed re-open strip — desktop only, while the rail is
+                // manually collapsed (Layout mode hides it with no strip).
+                <Show when=move || layers_collapsed.get() && !layout_active.get()>
+                    <button
+                        type="button"
+                        class="hidden shrink-0 items-center justify-center border-l border-edge-subtle/70 bg-surface-raised/40 px-2 text-fg-tertiary transition-colors hover:text-fg-primary lg:flex"
+                        title="Show the layers panel"
+                        on:click=move |_| layers_collapsed.set(false)
+                    >
+                        <Icon icon=LuLayers width="15px" height="15px" />
+                    </button>
+                </Show>
 
                 <Show when=move || surface_drawer.get() || layers_drawer.get()>
                     <div
