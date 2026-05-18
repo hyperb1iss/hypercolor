@@ -6,11 +6,13 @@ mod api;
 #[path = "../src/ws/messages.rs"]
 mod messages;
 
+use std::collections::HashMap;
+
 use hypercolor_types::event::{LayerHealth, RenderGroupChangeKind};
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use messages::{
-    extract_effect_error_hint, extract_layer_health, extract_scene_event_hint, layer_health_key,
-    scene_event_affects_active_effect,
+    extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
+    group_has_degraded_layer, layer_health_key, scene_event_affects_active_effect,
 };
 
 #[test]
@@ -174,4 +176,46 @@ fn layer_health_key_separates_groups_that_share_a_layer_id() {
     let group_a = layer_health_key("scene-1", "group-a", shared_layer);
     let group_b = layer_health_key("scene-1", "group-b", shared_layer);
     assert_ne!(group_a, group_b);
+}
+
+#[test]
+fn group_has_degraded_layer_flags_only_the_owning_group() {
+    let mut map = HashMap::new();
+    map.insert(
+        layer_health_key("scene-1", "group-a", "layer-1"),
+        LayerHealth::Failed {
+            reason: "boom".to_owned(),
+        },
+    );
+    map.insert(
+        layer_health_key("scene-1", "group-b", "layer-2"),
+        LayerHealth::Active,
+    );
+
+    // group-a owns the failed layer; group-b and an unrelated scene do not.
+    assert!(group_has_degraded_layer(&map, "scene-1", "group-a"));
+    assert!(!group_has_degraded_layer(&map, "scene-1", "group-b"));
+    assert!(!group_has_degraded_layer(&map, "scene-2", "group-a"));
+}
+
+#[test]
+fn group_has_degraded_layer_ignores_transient_states() {
+    let mut map = HashMap::new();
+    map.insert(
+        layer_health_key("scene-1", "group-a", "layer-1"),
+        LayerHealth::Stalled,
+    );
+    map.insert(
+        layer_health_key("scene-1", "group-a", "layer-2"),
+        LayerHealth::Loading,
+    );
+    // Loading and Stalled are transient — not a degraded surface.
+    assert!(!group_has_degraded_layer(&map, "scene-1", "group-a"));
+
+    map.insert(
+        layer_health_key("scene-1", "group-a", "layer-3"),
+        LayerHealth::AssetMissing,
+    );
+    // A missing asset does count as degraded.
+    assert!(group_has_degraded_layer(&map, "scene-1", "group-a"));
 }

@@ -483,6 +483,25 @@ pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, 
     Some((layer_health_key(scene_id, group_id, layer_id), health))
 }
 
+/// Whether any layer in a render group is in a degraded health state.
+/// "Degraded" is the alarming end of `LayerHealth` — a failed producer or
+/// a missing asset; transient `Loading`/`Stalled` states do not count, so
+/// the §6.7 Screen-row and Stage indicators stay meaningful. Reads the same
+/// map that feeds the Wave 6 per-layer health pill.
+pub(crate) fn group_has_degraded_layer(
+    layer_health: &HashMap<String, LayerHealth>,
+    scene_id: &str,
+    group_id: &str,
+) -> bool {
+    layer_health.iter().any(|(key, health)| {
+        if !matches!(health, LayerHealth::Failed { .. } | LayerHealth::AssetMissing) {
+            return false;
+        }
+        let mut parts = key.splitn(3, '/');
+        parts.next() == Some(scene_id) && parts.next() == Some(group_id)
+    })
+}
+
 pub(crate) fn extract_scene_event_hint(
     event_type: &str,
     scene_data: &serde_json::Value,

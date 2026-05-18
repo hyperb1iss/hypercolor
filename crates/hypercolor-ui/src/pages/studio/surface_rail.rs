@@ -7,8 +7,10 @@
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use crate::app::WsContext;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
+use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
 use super::surface::{Surface, SurfaceKind, surfaces_from_groups};
@@ -93,8 +95,10 @@ fn SurfaceSection(
 #[component]
 fn SurfaceRow(surface: Surface) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let ws = use_context::<WsContext>();
     let row_id = surface.id.clone();
     let select_id = surface.id.clone();
+    let health_group = surface.id.clone();
     let is_selected =
         Signal::derive(move || studio.selected_surface_id.get().as_deref() == Some(row_id.as_str()));
     let icon = match surface.kind {
@@ -102,6 +106,15 @@ fn SurfaceRow(surface: Surface) -> impl IntoView {
         SurfaceKind::Screen => LuMonitor,
     };
     let dimmed = !surface.enabled;
+    // A surface whose layer stack carries a failed or asset-missing layer
+    // flags itself on the rail, so trouble shows without opening the stack.
+    let degraded = Signal::derive(move || {
+        let (Some(ws), Some(scene)) = (ws, studio.active_scene.get()) else {
+            return false;
+        };
+        ws.layer_health
+            .with(|map| group_has_degraded_layer(map, &scene.id, &health_group))
+    });
 
     view! {
         <button
@@ -125,6 +138,14 @@ fn SurfaceRow(surface: Surface) -> impl IntoView {
             <span class="min-w-0 flex-1 truncate text-sm font-medium text-fg-primary">
                 {surface.name}
             </span>
+            <Show when=move || degraded.get()>
+                <span
+                    class="shrink-0 text-[rgba(255,99,99,0.9)]"
+                    title="A layer on this surface failed to render"
+                >
+                    <Icon icon=LuTriangleAlert width="13px" height="13px" />
+                </span>
+            </Show>
         </button>
     }
 }

@@ -8,6 +8,7 @@
 //! has no spatial placement. Wave 10 adds per-zone preview frames.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{DisplaysContext, WsContext};
@@ -16,7 +17,10 @@ use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::layout_builder::LayoutBuilder;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::display_preview_state::use_display_preview_subscription;
+use crate::display_utils::display_preview_shell_url;
+use crate::icons::*;
 use crate::ws::CanvasFrame;
+use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
 use super::stage_view::{StageView, resolve_stage_view};
@@ -45,6 +49,17 @@ pub fn Stage() -> impl IntoView {
     let surface_name = Memo::new(move |_| selected_surface.get().map(|surface| surface.name));
     let is_screen =
         Memo::new(move |_| selected_surface.get().map(|s| s.kind) == Some(SurfaceKind::Screen));
+
+    // The selected surface flags itself when its layer stack has a failed or
+    // asset-missing layer — the §6.7 Stage-side degraded indicator.
+    let surface_degraded = Memo::new(move |_| {
+        let (Some(surface), Some(scene)) = (selected_surface.get(), studio.active_scene.get())
+        else {
+            return false;
+        };
+        ws.layer_health
+            .with(|map| group_has_degraded_layer(map, &scene.id, &surface.id))
+    });
 
     // The toggle latches the last requested view; `resolved_view` applies
     // the §6.3 rule that a Screen has no Layout view.
@@ -145,10 +160,33 @@ pub fn Stage() -> impl IntoView {
                 {move || {
                     if is_screen.get() {
                         view! {
-                            <span class=label_class(
-                                LabelSize::Micro,
-                                LabelTone::Default,
-                            )>"Output"</span>
+                            <div class="flex items-center gap-2">
+                                <span class=label_class(
+                                    LabelSize::Micro,
+                                    LabelTone::Default,
+                                )>"Output"</span>
+                                {move || {
+                                    selected_display
+                                        .get()
+                                        .map(|display| {
+                                            view! {
+                                                <a
+                                                    href=display_preview_shell_url(&display.id)
+                                                    target="_blank"
+                                                    rel="noopener"
+                                                    class="rounded-md p-1 text-fg-tertiary transition-colors hover:text-fg-primary"
+                                                    title="Open full-screen preview"
+                                                >
+                                                    <Icon
+                                                        icon=LuExternalLink
+                                                        width="12px"
+                                                        height="12px"
+                                                    />
+                                                </a>
+                                            }
+                                        })
+                                }}
+                            </div>
                         }
                             .into_any()
                     } else {
@@ -168,70 +206,75 @@ pub fn Stage() -> impl IntoView {
                 }
                 StageView::Output => {
                     view! {
-                        <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
-                            <div class="flex max-w-full flex-col items-center gap-3">
-                                {move || {
-                                    if is_screen.get() {
-                                        let Some(display) = selected_display.get() else {
-                                            return view! {
-                                                <div class="flex h-64 w-64 items-center justify-center rounded-xl border border-dashed border-edge-subtle/45 text-[11px] text-fg-tertiary/55">
-                                                    "Preparing screen preview…"
+                        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                            {move || {
+                                surface_degraded.get().then(|| view! { <DegradedBanner /> })
+                            }}
+                            <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
+                                <div class="flex max-w-full flex-col items-center gap-3">
+                                    {move || {
+                                        if is_screen.get() {
+                                            let Some(display) = selected_display.get() else {
+                                                return view! {
+                                                    <div class="flex h-64 w-64 items-center justify-center rounded-xl border border-dashed border-edge-subtle/45 text-[11px] text-fg-tertiary/55">
+                                                        "Preparing screen preview…"
+                                                    </div>
+                                                }
+                                                    .into_any();
+                                            };
+                                            let aspect = format!(
+                                                "{} / {}",
+                                                display.width.max(1),
+                                                display.height.max(1),
+                                            );
+                                            let shape = if display.circular {
+                                                "rounded-full"
+                                            } else {
+                                                "rounded-xl"
+                                            };
+                                            let container_class = format!(
+                                                "w-full max-w-[520px] overflow-hidden border \
+                                                 border-edge-subtle/70 bg-black edge-glow-accent \
+                                                 {shape}",
+                                            );
+                                            view! {
+                                                <DisplayPreviewSurface
+                                                    frame=screen_frame
+                                                    fallback_src=api::display_preview_url(
+                                                        &display.id,
+                                                        None,
+                                                    )
+                                                    aspect_ratio=aspect
+                                                    aria_label=format!(
+                                                        "Studio stage preview of {}",
+                                                        display.name,
+                                                    )
+                                                    container_class=container_class
+                                                />
+                                            }
+                                                .into_any()
+                                        } else {
+                                            view! {
+                                                <div
+                                                    class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-black/45"
+                                                    style="box-shadow: 0 0 44px rgba(225, 53, 255, 0.09)"
+                                                >
+                                                    <CanvasPreview
+                                                        frame=ws.canvas_frame
+                                                        fps=ws.preview_fps
+                                                        fps_target=ws.preview_target_fps
+                                                        max_width="min(640px, 100%)".to_string()
+                                                        aria_label="Studio stage live output"
+                                                            .to_string()
+                                                    />
                                                 </div>
                                             }
-                                                .into_any();
-                                        };
-                                        let aspect = format!(
-                                            "{} / {}",
-                                            display.width.max(1),
-                                            display.height.max(1),
-                                        );
-                                        let shape = if display.circular {
-                                            "rounded-full"
-                                        } else {
-                                            "rounded-xl"
-                                        };
-                                        let container_class = format!(
-                                            "w-full max-w-[520px] overflow-hidden border \
-                                             border-edge-subtle/70 bg-black edge-glow-accent \
-                                             {shape}",
-                                        );
-                                        view! {
-                                            <DisplayPreviewSurface
-                                                frame=screen_frame
-                                                fallback_src=api::display_preview_url(
-                                                    &display.id,
-                                                    None,
-                                                )
-                                                aspect_ratio=aspect
-                                                aria_label=format!(
-                                                    "Studio stage preview of {}",
-                                                    display.name,
-                                                )
-                                                container_class=container_class
-                                            />
+                                                .into_any()
                                         }
-                                            .into_any()
-                                    } else {
-                                        view! {
-                                            <div
-                                                class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-black/45"
-                                                style="box-shadow: 0 0 44px rgba(225, 53, 255, 0.09)"
-                                            >
-                                                <CanvasPreview
-                                                    frame=ws.canvas_frame
-                                                    fps=ws.preview_fps
-                                                    fps_target=ws.preview_target_fps
-                                                    max_width="min(640px, 100%)".to_string()
-                                                    aria_label="Studio stage live output"
-                                                        .to_string()
-                                                />
-                                            </div>
-                                        }
-                                            .into_any()
-                                    }
-                                }}
-                                <div class="font-mono text-[11px] tabular-nums text-fg-tertiary/70">
-                                    {move || caption.get()}
+                                    }}
+                                    <div class="font-mono text-[11px] tabular-nums text-fg-tertiary/70">
+                                        {move || caption.get()}
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -273,5 +316,30 @@ fn StageTab(
         >
             {label}
         </button>
+    }
+}
+
+/// The §6.7 degraded indicator for the Stage Output view, shown when the
+/// selected surface has a failed or asset-missing layer. The layer rail's
+/// per-layer health pill (Wave 6) names the offending layer; this banner
+/// is the surface-level alarm so trouble is visible without scanning rows.
+#[component]
+fn DegradedBanner() -> impl IntoView {
+    view! {
+        <div class="px-6 pt-4">
+            <div class="flex items-start gap-2.5 rounded-xl border border-[rgba(255,99,99,0.28)] bg-[rgba(255,99,99,0.1)] px-4 py-3">
+                <span class="mt-0.5 shrink-0 text-[rgba(255,99,99,0.94)]">
+                    <Icon icon=LuTriangleAlert width="14px" height="14px" />
+                </span>
+                <div class="min-w-0">
+                    <div class="text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(255,99,99,0.84)]">
+                        "Degraded"
+                    </div>
+                    <div class="mt-1 text-sm leading-5 text-fg-secondary">
+                        "A layer on this surface failed to render or is missing its asset. Open the layer stack to see which."
+                    </div>
+                </div>
+            </div>
+        </div>
     }
 }
