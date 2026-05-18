@@ -5,6 +5,7 @@
 //! effect and layer editing — slides in over the Stage on demand rather
 //! than occupying a permanent rail.
 
+mod composition_panel;
 mod device_grouping;
 mod stage;
 mod stage_view;
@@ -23,13 +24,24 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
+use composition_panel::CompositionPanel;
 use stage::Stage;
 use stage_view::StageView;
-use surface::UNASSIGNED_SURFACE_ID;
+use surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use zone_tree::ZoneTree;
 
 const TREE_WIDTH_KEY: &str = "hc-studio-tree-width";
 const TREE_WIDTH_RANGE: (f64, f64) = (240.0, 460.0);
+
+/// An empty layer stack at version 0 — the resource value for a selection
+/// that has no per-group layer endpoint (none selected, or the synthetic
+/// Unassigned entry).
+fn empty_layer_stack() -> api::LayerStackResponse {
+    api::LayerStackResponse {
+        items: Vec::new(),
+        layers_version: 0,
+    }
+}
 
 /// Shared Studio state — the selected surface and the active scene —
 /// provided to the columns so surface selection is one source of truth.
@@ -50,6 +62,7 @@ pub struct StudioContext {
 #[component]
 pub fn StudioPage() -> impl IntoView {
     let (scene_tick, set_scene_tick) = signal(0_u64);
+    let (layers_tick, set_layers_tick) = signal(0_u64);
 
     let scene_resource = LocalResource::new(move || {
         let _ = scene_tick.get();
@@ -89,8 +102,40 @@ pub fn StudioPage() -> impl IntoView {
         selected_surface_id.set(next);
     });
 
+    let layers_resource = LocalResource::new(move || {
+        let _ = layers_tick.get();
+        let scene = active_scene.get();
+        let group_id = selected_surface_id.get();
+        async move {
+            match (scene, group_id) {
+                // The Unassigned entry is not a surface — it has no layer
+                // stack, so it never hits the per-group layer endpoint.
+                (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => {
+                    Ok(empty_layer_stack())
+                }
+                (Some(scene), Some(group_id)) => api::list_layers(&scene.id, &group_id).await,
+                _ => Ok(empty_layer_stack()),
+            }
+        }
+    });
+
+    let on_layers_mutated = Callback::new(move |()| {
+        set_layers_tick.update(|tick| *tick = tick.wrapping_add(1));
+        set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
+    });
     let refresh_scene = Callback::new(move |()| {
         set_scene_tick.update(|tick| *tick = tick.wrapping_add(1));
+    });
+
+    // The zone tree owns selection, so the layer panel shows the selected
+    // surface's name in its header rather than a redundant group selector.
+    let surface_label = Signal::derive(move || {
+        let id = selected_surface_id.get()?;
+        let scene = active_scene.get()?;
+        surfaces_from_groups(&scene.groups)
+            .into_iter()
+            .find(|surface| surface.id == id)
+            .map(|surface| surface.name)
     });
 
     // The Zones & Devices column width persists per browser; the Stage
@@ -179,6 +224,14 @@ pub fn StudioPage() -> impl IntoView {
                 </div>
                 <div class="relative min-w-0 flex-1">
                     <Stage />
+                    <CompositionPanel
+                        active_scene=active_scene
+                        selected_group_id=selected_surface_id.read_only()
+                        set_selected_group_id=selected_surface_id.write_only()
+                        surface_label=surface_label
+                        layers_resource=layers_resource
+                        on_layers_mutated=on_layers_mutated
+                    />
                 </div>
 
                 <Show when=move || tree_drawer.get()>
