@@ -76,6 +76,12 @@ fn SurfaceStage() -> impl IntoView {
     let surface_name = Memo::new(move |_| selected_surface.get().map(|surface| surface.name));
     let is_screen =
         Memo::new(move |_| selected_surface.get().map(|s| s.kind) == Some(SurfaceKind::Screen));
+    let multi_zone = Memo::new(move |_| {
+        studio
+            .active_scene
+            .get()
+            .is_some_and(|scene| super::surface::led_zone_count(&scene.groups) > 1)
+    });
 
     // The selected surface flags itself when its layer stack has a failed or
     // asset-missing layer — the §6.7 Stage-side degraded indicator.
@@ -90,10 +96,12 @@ fn SurfaceStage() -> impl IntoView {
     });
 
     // The toggle latches the last requested view; `resolved_view` applies
-    // the §6.3 rule that a Screen has no Layout view.
+    // the §6.3 rule that a Screen has no Layout view and the §9.5 rule
+    // that the All-zones view needs a genuinely multi-zone scene.
     let requested_view = RwSignal::new(StageView::default());
-    let resolved_view =
-        Memo::new(move |_| resolve_stage_view(requested_view.get(), is_screen.get()));
+    let resolved_view = Memo::new(move |_| {
+        resolve_stage_view(requested_view.get(), is_screen.get(), multi_zone.get())
+    });
 
     // The Layout editor wants the same preview headroom the `/layout`
     // page reserved; Output falls back to the shared default.
@@ -235,12 +243,19 @@ fn SurfaceStage() -> impl IntoView {
                         }
                             .into_any()
                     } else {
-                        view! { <StageViewToggle requested=requested_view /> }.into_any()
+                        view! {
+                            <StageViewToggle
+                                requested=requested_view
+                                multi_zone=multi_zone.get()
+                            />
+                        }
+                            .into_any()
                     }
                 }}
             </div>
 
             {move || match resolved_view.get() {
+                StageView::AllZones => view! { <AllZonesStage /> }.into_any(),
                 StageView::Layout => {
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -332,13 +347,24 @@ fn SurfaceStage() -> impl IntoView {
 }
 
 /// The Output/Layout segmented toggle in the Stage header. Shown only for
-/// Light surfaces; a Screen has no Layout view.
+/// Light surfaces; a Screen has no Layout view. The All-zones tab appears
+/// only while the scene is genuinely multi-zone (§9.5).
 #[component]
-fn StageViewToggle(requested: RwSignal<StageView>) -> impl IntoView {
+fn StageViewToggle(requested: RwSignal<StageView>, multi_zone: bool) -> impl IntoView {
     view! {
         <div class="flex items-center gap-0.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 p-0.5">
             <StageTab label="Output" value=StageView::Output requested=requested />
             <StageTab label="Layout" value=StageView::Layout requested=requested />
+            {multi_zone
+                .then(|| {
+                    view! {
+                        <StageTab
+                            label="All zones"
+                            value=StageView::AllZones
+                            requested=requested
+                        />
+                    }
+                })}
         </div>
     }
 }
@@ -546,5 +572,107 @@ fn parse_unassigned_behavior(value: &str) -> Option<UnassignedBehavior> {
             .strip_prefix("fallback:")
             .and_then(|raw| raw.parse::<uuid::Uuid>().ok())
             .map(|uuid| UnassignedBehavior::Fallback(RenderGroupId(uuid))),
+    }
+}
+
+/// The §9.5 "All zones" Stage mode — a tiled, scene-wide glance with one
+/// preview tile per LED zone, each labelled with the zone name and its
+/// top layer. Clicking a tile selects that zone and returns to the
+/// per-zone Output view.
+#[component]
+fn AllZonesStage() -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let ws = expect_context::<WsContext>();
+    let zones = Memo::new(move |_| {
+        studio
+            .active_scene
+            .get()
+            .map(|scene| {
+                surfaces_from_groups(&scene.groups)
+                    .into_iter()
+                    .filter(|surface| surface.kind == SurfaceKind::Light)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    view! {
+        <div class="flex h-full flex-col bg-surface-sunken/20">
+            <div class="flex items-center gap-2 border-b border-edge-subtle/60 px-5 py-3">
+                <span class=label_class(LabelSize::Small, LabelTone::Default)>"Stage"</span>
+                <span class="text-sm font-semibold text-fg-primary">"All zones"</span>
+            </div>
+            <div class="scrollbar-none flex-1 overflow-y-auto p-5">
+                <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+                    {move || {
+                        zones
+                            .get()
+                            .into_iter()
+                            .map(|zone| {
+                                let select_id = zone.id.clone();
+                                let frame_id = zone.id.clone();
+                                let frame = Signal::derive(move || {
+                                    ws.zone_preview_frames
+                                        .with(|frames| frames.get(&frame_id).cloned())
+                                });
+                                let top_layer = zone
+                                    .top_layer
+                                    .clone()
+                                    .unwrap_or_else(|| "No layers".to_owned());
+                                let dimmed = !zone.enabled;
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="card-hover flex flex-col gap-2 rounded-xl border border-edge-subtle/70 bg-surface-overlay/40 p-3 text-left"
+                                        class=("opacity-55", move || dimmed)
+                                        on:click=move |_| {
+                                            studio
+                                                .selected_surface_id
+                                                .set(Some(select_id.clone()));
+                                        }
+                                    >
+                                        <div
+                                            class="overflow-hidden rounded-lg border border-edge-subtle/70 bg-black/45"
+                                            style="box-shadow: 0 0 28px rgba(225, 53, 255, 0.07)"
+                                        >
+                                            {move || {
+                                                if frame.get().is_some() {
+                                                    view! {
+                                                        <CanvasPreview
+                                                            frame=frame
+                                                            fps=Signal::derive(|| 0.0_f32)
+                                                            fps_target=Signal::derive(|| 0_u32)
+                                                            max_width="100%".to_string()
+                                                            aria_label="Zone preview tile"
+                                                                .to_string()
+                                                            register_main_preview_consumer=false
+                                                        />
+                                                    }
+                                                        .into_any()
+                                                } else {
+                                                    view! {
+                                                        <div class="flex h-28 items-center justify-center text-[11px] text-fg-tertiary/55">
+                                                            "Preview unavailable"
+                                                        </div>
+                                                    }
+                                                        .into_any()
+                                                }
+                                            }}
+                                        </div>
+                                        <div class="min-w-0">
+                                            <div class="truncate text-sm font-medium text-fg-primary">
+                                                {zone.name.clone()}
+                                            </div>
+                                            <div class="truncate text-[11px] text-fg-tertiary/70">
+                                                {top_layer}
+                                            </div>
+                                        </div>
+                                    </button>
+                                }
+                            })
+                            .collect_view()
+                    }}
+                </div>
+            </div>
+        </div>
     }
 }

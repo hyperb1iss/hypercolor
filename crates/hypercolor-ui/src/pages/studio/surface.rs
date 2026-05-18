@@ -4,6 +4,7 @@
 //! "All Lights" are the same shape, so multi-zone (Wave 9) is more rows in
 //! the rail, never a rebuilt editor. Kept leptos-free for `#[path]` tests.
 
+use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
 
 /// Synthetic rail-entry id for the §9.4 Unassigned entry. It is not a
@@ -42,6 +43,9 @@ pub struct Surface {
     /// a stale entry for an already-removed layer cannot keep the surface
     /// flagged after the layer is gone.
     pub layer_ids: Vec<String>,
+    /// Display label of the surface's top layer — the §9.5 tile caption.
+    /// `None` when the surface has no layers.
+    pub top_layer: Option<String>,
 }
 
 impl Surface {
@@ -94,9 +98,36 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
                     .iter()
                     .map(|layer| layer.id.to_string())
                     .collect(),
+                top_layer: top_layer_label(group),
             }
         })
         .collect()
+}
+
+/// Display label of a group's top layer — the last entry of the
+/// bottom-to-top authored stack. Uses the layer's user-set name when it
+/// has one, otherwise a plain-words label for its source kind.
+fn top_layer_label(group: &RenderGroup) -> Option<String> {
+    let layers = group.effective_layers();
+    let top = layers.last()?;
+    Some(
+        top.name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| layer_source_kind(&top.source).to_owned()),
+    )
+}
+
+/// Plain-words label for a layer source kind — never an internal enum
+/// name (§4 hard rule).
+fn layer_source_kind(source: &LayerSource) -> &'static str {
+    match source {
+        LayerSource::Effect { .. } => "Effect",
+        LayerSource::Media { .. } => "Media",
+        LayerSource::ScreenRegion { .. } => "Screen capture",
+        LayerSource::WebViewport { .. } => "Web page",
+        LayerSource::ColorFill { .. } => "Color",
+    }
 }
 
 /// Display name for a surface. While a single LED group owns every output
