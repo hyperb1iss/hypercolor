@@ -390,11 +390,11 @@ pub(super) fn handle_json_message(
                 {
                     set_last_device_event.set(Some(hint));
                 } else if LAYER_HEALTH_EVENTS.contains(&event_type)
-                    && let Some((layer_id, health)) =
+                    && let Some((key, health)) =
                         extract_layer_health(msg.get("data").unwrap_or(&serde_json::Value::Null))
                 {
                     set_layer_health.update(|map| {
-                        map.insert(layer_id, health);
+                        map.insert(key, health);
                     });
                 }
             }
@@ -464,12 +464,23 @@ pub(crate) fn extract_effect_error_hint(
     })
 }
 
-/// Decode a `layer_health_changed` event into its `(layer_id, health)`.
-/// Layer ids are scene-unique UUIDs, so the id alone keys the health map.
+/// Compose the health-map key for a layer. A `SceneLayerId` is unique only
+/// within its render group — two groups can carry the same layer id — and
+/// the daemon keys health by group as well, so scene and group ride along
+/// or one group's health would clobber another group's row.
+pub(crate) fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> String {
+    format!("{scene_id}/{group_id}/{layer_id}")
+}
+
+/// Decode a `layer_health_changed` event into its `(health-map key, health)`.
+/// All three identity fields are required: the daemon always sends them, and
+/// without scene + group the key would collide across render groups.
 pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
-    let layer_id = data.get("layer_id")?.as_str()?.to_owned();
+    let scene_id = data.get("scene_id")?.as_str()?;
+    let group_id = data.get("group_id")?.as_str()?;
+    let layer_id = data.get("layer_id")?.as_str()?;
     let health = serde_json::from_value::<LayerHealth>(data.get("health")?.clone()).ok()?;
-    Some((layer_id, health))
+    Some((layer_health_key(scene_id, group_id, layer_id), health))
 }
 
 pub(crate) fn extract_scene_event_hint(

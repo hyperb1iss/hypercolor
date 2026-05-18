@@ -113,6 +113,11 @@ impl WsManager {
         let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
         let (last_control_surface_event, set_last_control_surface_event) =
             signal(None::<ControlSurfaceEventHint>);
+        // Per-layer health accumulates from `layer_health_changed` events as
+        // they arrive. The map starts empty and the daemon does not replay a
+        // snapshot on connect, so a layer that failed before this session
+        // connected reads as healthy until its next health transition. A
+        // health snapshot in `hello`/`list_layers` is the daemon-side fix.
         let (layer_health, set_layer_health) = signal(HashMap::<String, LayerHealth>::new());
         let (audio_level, set_audio_level) = signal(AudioLevel::default());
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);

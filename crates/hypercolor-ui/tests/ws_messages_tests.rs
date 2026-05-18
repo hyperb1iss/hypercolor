@@ -9,7 +9,7 @@ mod messages;
 use hypercolor_types::event::{LayerHealth, RenderGroupChangeKind};
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use messages::{
-    extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
+    extract_effect_error_hint, extract_layer_health, extract_scene_event_hint, layer_health_key,
     scene_event_affects_active_effect,
 };
 
@@ -112,8 +112,8 @@ fn extract_effect_error_hint_parses_fallback_payload() {
 }
 
 #[test]
-fn extract_layer_health_parses_a_unit_state() {
-    let (layer_id, health) = extract_layer_health(&serde_json::json!({
+fn extract_layer_health_keys_by_scene_group_and_layer() {
+    let (key, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
         "group_id": "group-1",
         "layer_id": "layer-7",
@@ -121,13 +121,15 @@ fn extract_layer_health_parses_a_unit_state() {
     }))
     .expect("layer health hint");
 
-    assert_eq!(layer_id, "layer-7");
+    assert_eq!(key, layer_health_key("scene-1", "group-1", "layer-7"));
     assert_eq!(health, LayerHealth::Stalled);
 }
 
 #[test]
 fn extract_layer_health_parses_a_failure_reason() {
     let (_, health) = extract_layer_health(&serde_json::json!({
+        "scene_id": "scene-1",
+        "group_id": "group-1",
         "layer_id": "layer-7",
         "health": { "failed": { "reason": "decode error" } },
     }))
@@ -142,6 +144,34 @@ fn extract_layer_health_parses_a_failure_reason() {
 }
 
 #[test]
-fn extract_layer_health_rejects_a_payload_without_a_layer_id() {
+fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
+    // All three identity fields are mandatory. Dropping any one leaves a
+    // key that could collide across render groups, so the event is rejected.
     assert!(extract_layer_health(&serde_json::json!({ "health": "active" })).is_none());
+    assert!(
+        extract_layer_health(&serde_json::json!({
+            "group_id": "group-1",
+            "layer_id": "layer-7",
+            "health": "active",
+        }))
+        .is_none()
+    );
+    assert!(
+        extract_layer_health(&serde_json::json!({
+            "scene_id": "scene-1",
+            "layer_id": "layer-7",
+            "health": "active",
+        }))
+        .is_none()
+    );
+}
+
+#[test]
+fn layer_health_key_separates_groups_that_share_a_layer_id() {
+    // A SceneLayerId is unique only within its render group; two groups can
+    // hold the same id, so the composite key must keep their rows distinct.
+    let shared_layer = "layer-7";
+    let group_a = layer_health_key("scene-1", "group-a", shared_layer);
+    let group_b = layer_health_key("scene-1", "group-b", shared_layer);
+    assert_ne!(group_a, group_b);
 }

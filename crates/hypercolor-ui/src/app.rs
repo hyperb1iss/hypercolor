@@ -84,8 +84,10 @@ pub struct WsContext {
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub last_control_surface_event: ReadSignal<Option<ControlSurfaceEventHint>>,
-    /// Per-layer runtime health, keyed by layer id, fed by the daemon's
-    /// `layer_health_changed` events. A layer with no entry is healthy.
+    /// Per-layer runtime health, keyed by `scene/group/layer`, fed by the
+    /// daemon's `layer_health_changed` events. A layer with no entry is
+    /// treated as healthy — including, until the daemon replays a snapshot
+    /// on connect, layers that failed before this session connected.
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
 }

@@ -100,7 +100,9 @@ pub fn LayerRow(
             <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
                     <div class="flex items-center gap-1.5">
-                        <span class="truncate text-sm font-semibold text-fg-primary">{title}</span>
+                        <span class="min-w-0 truncate text-sm font-semibold text-fg-primary">
+                            {title}
+                        </span>
                         {move || health_pill(health.get())}
                     </div>
                     <div class="mt-0.5 truncate text-[11px] text-fg-tertiary">{source}</div>

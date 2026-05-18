@@ -40,6 +40,7 @@ use crate::app::WsContext;
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
+use crate::ws::messages::layer_health_key;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
@@ -264,9 +265,13 @@ pub fn LayerPanel(
                                         "Top"
                                     </div>
                                     {rows.into_iter().map(|(stack_index, layer)| {
-                                        let row_layer_id = layer.id.to_string();
+                                        let row_health_key = layer_health_key(
+                                            &scene_id,
+                                            &group_id,
+                                            &layer.id.to_string(),
+                                        );
                                         let row_health = Signal::derive(move || {
-                                            layer_health.with(|map| map.get(&row_layer_id).cloned())
+                                            layer_health.with(|map| map.get(&row_health_key).cloned())
                                         });
                                         view! {
                                             <LayerRow
