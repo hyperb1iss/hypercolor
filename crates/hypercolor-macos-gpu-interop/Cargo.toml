@@ -16,11 +16,20 @@ thiserror = { workspace = true }
 wgpu = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+dpi = { workspace = true }
+euclid = "0.22"
+gleam = "0.15"
+glow = { workspace = true }
+image = { workspace = true }
 libc = { workspace = true }
 objc2 = { workspace = true, features = ["std"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
 objc2-io-surface = { workspace = true, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation", "libc", "bitflags"] }
 objc2-metal = { workspace = true, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
+paint_api = { package = "servo-paint-api", version = "0.1.0" }
+surfman = "0.11"
+tracing = { workspace = true }
+webrender_api = "0.68"
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]

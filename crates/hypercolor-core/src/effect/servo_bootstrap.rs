@@ -11,6 +11,8 @@ use anyhow::{Result, anyhow};
 use dpi::PhysicalSize;
 use servo::{RenderingContext, SoftwareRenderingContext};
 
+#[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+use hypercolor_macos_gpu_interop::MacosHardwareRenderingContext;
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 #[cfg(target_os = "windows")]
@@ -23,6 +25,8 @@ use tao::event_loop::{EventLoop, EventLoopBuilder};
 use tao::platform::windows::EventLoopBuilderExtWindows;
 #[cfg(target_os = "windows")]
 use tao::window::{Window, WindowBuilder};
+#[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+use tracing::warn;
 
 #[cfg(target_os = "windows")]
 thread_local! {
@@ -33,6 +37,31 @@ thread_local! {
 struct WindowsServoWindow {
     _event_loop: EventLoop<()>,
     _window: Window,
+}
+
+pub(crate) struct ServoRenderingContextHandle {
+    pub(crate) rendering_context: Rc<dyn RenderingContext>,
+    #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+    pub(crate) macos_hardware_context: Option<Rc<MacosHardwareRenderingContext>>,
+}
+
+impl ServoRenderingContextHandle {
+    fn new(rendering_context: Rc<dyn RenderingContext>) -> Self {
+        Self {
+            rendering_context,
+            #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+            macos_hardware_context: None,
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
+    fn macos_hardware(context: Rc<MacosHardwareRenderingContext>) -> Self {
+        let rendering_context: Rc<dyn RenderingContext> = context.clone();
+        Self {
+            rendering_context,
+            macos_hardware_context: Some(context),
+        }
+    }
 }
 
 /// Create a headless Servo software rendering context.
@@ -61,7 +90,7 @@ pub fn bootstrap_software_rendering_context(
 pub(crate) fn bootstrap_rendering_context(
     width: u32,
     height: u32,
-) -> Result<Rc<dyn RenderingContext>> {
+) -> Result<ServoRenderingContextHandle> {
     let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
     let window = WindowBuilder::new()
         .with_title("Hypercolor Servo Renderer")
@@ -94,15 +123,51 @@ pub(crate) fn bootstrap_rendering_context(
         });
     });
 
-    Ok(Rc::new(context))
+    Ok(ServoRenderingContextHandle::new(Rc::new(context)))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
 pub(crate) fn bootstrap_rendering_context(
     width: u32,
     height: u32,
-) -> Result<Rc<dyn RenderingContext>> {
-    Ok(Rc::new(bootstrap_software_rendering_context(
-        width, height,
-    )?))
+) -> Result<ServoRenderingContextHandle> {
+    if crate::effect::servo_gpu_import_should_attempt() {
+        match MacosHardwareRenderingContext::new(width, height) {
+            Ok(context) => {
+                return Ok(ServoRenderingContextHandle::macos_hardware(Rc::new(
+                    context,
+                )));
+            }
+            Err(error)
+                if matches!(
+                    crate::effect::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::On
+                ) =>
+            {
+                return Err(anyhow!(
+                    "failed to create required macOS Servo hardware context: {error}"
+                ));
+            }
+            Err(error) => {
+                warn!(%error, "macOS Servo hardware context unavailable; using software context");
+            }
+        }
+    }
+
+    Ok(ServoRenderingContextHandle::new(Rc::new(
+        bootstrap_software_rendering_context(width, height)?,
+    )))
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "servo-gpu-import")
+)))]
+pub(crate) fn bootstrap_rendering_context(
+    width: u32,
+    height: u32,
+) -> Result<ServoRenderingContextHandle> {
+    Ok(ServoRenderingContextHandle::new(Rc::new(
+        bootstrap_software_rendering_context(width, height)?,
+    )))
 }

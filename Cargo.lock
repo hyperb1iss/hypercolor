@@ -4909,6 +4909,7 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-hal",
  "hypercolor-linux-gpu-interop",
+ "hypercolor-macos-gpu-interop",
  "hypercolor-types",
  "image",
  "libpulse-binding",
@@ -5223,13 +5224,22 @@ dependencies = [
 name = "hypercolor-macos-gpu-interop"
 version = "0.1.0"
 dependencies = [
+ "dpi",
+ "euclid",
+ "gleam",
+ "glow 0.16.0",
+ "image",
  "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "pollster",
+ "servo-paint-api",
+ "surfman",
  "thiserror 2.0.18",
+ "tracing",
+ "webrender_api",
  "wgpu",
  "wgpu-hal 29.0.1",
 ]

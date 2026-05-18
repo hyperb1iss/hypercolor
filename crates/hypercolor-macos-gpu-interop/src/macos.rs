@@ -78,6 +78,19 @@ pub enum MacosGpuInteropError {
         actual_len: usize,
     },
 
+    /// A macOS Servo hardware context operation failed.
+    #[error("macOS Servo hardware context {operation} failed: {message}")]
+    ServoContext {
+        /// Failed context operation.
+        operation: &'static str,
+        /// Context error details.
+        message: String,
+    },
+
+    /// The macOS Servo hardware context has no bound Surfman surface.
+    #[error("macOS Servo hardware context has no bound Surfman surface")]
+    MissingServoSurface,
+
     /// Metal could not create a texture from the IOSurface.
     #[error("Metal failed to create texture from IOSurface")]
     MetalTextureCreateFailed,

@@ -48,7 +48,7 @@ use super::worker_client::{
     ServoRenderMode, ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState,
     WORKER_READY_TIMEOUT, WorkerCommand,
 };
-use crate::effect::servo_bootstrap::bootstrap_rendering_context;
+use crate::effect::servo_bootstrap::{ServoRenderingContextHandle, bootstrap_rendering_context};
 use crate::effect::traits::EffectRenderOutput;
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
@@ -987,6 +987,8 @@ impl Drop for ServoWorker {
 struct ServoSession {
     webview: Option<WebView>,
     rendering_context: Rc<dyn RenderingContext>,
+    #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+    macos_hardware_context: Option<Rc<hypercolor_macos_gpu_interop::MacosHardwareRenderingContext>>,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
@@ -1261,7 +1263,8 @@ impl ServoWorkerRuntime {
             bail!("Servo session {session_id:?} already exists");
         }
 
-        let rendering_context = Self::create_rendering_context(width, height)?;
+        let rendering_context_handle = Self::create_rendering_context(width, height)?;
+        let rendering_context = rendering_context_handle.rendering_context.clone();
         rendering_context.make_current().map_err(|error| {
             anyhow!("failed to make Servo rendering context current: {error:?}")
         })?;
@@ -1279,6 +1282,8 @@ impl ServoWorkerRuntime {
             ServoSession {
                 webview: Some(webview),
                 rendering_context,
+                #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+                macos_hardware_context: rendering_context_handle.macos_hardware_context,
                 delegate,
                 loaded_html_path: None,
                 script_buffer: String::new(),
@@ -1295,11 +1300,39 @@ impl ServoWorkerRuntime {
             return Err(error);
         }
 
+        #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+        self.trace_macos_native_surface(session_id);
+
         Ok(())
     }
 
-    fn create_rendering_context(width: u32, height: u32) -> Result<Rc<dyn RenderingContext>> {
+    fn create_rendering_context(width: u32, height: u32) -> Result<ServoRenderingContextHandle> {
         bootstrap_rendering_context(width, height)
+    }
+
+    #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+    fn trace_macos_native_surface(&self, session_id: ServoSessionId) {
+        let Ok(session) = self.session(session_id) else {
+            return;
+        };
+        let Some(context) = session.macos_hardware_context.as_ref() else {
+            return;
+        };
+        match context.native_frame() {
+            Ok(frame) => {
+                debug!(
+                    width = frame.width,
+                    height = frame.height,
+                    surface_id = frame.surface_id,
+                    format = ?frame.format,
+                    origin = ?frame.origin,
+                    "macOS Servo hardware context exposes IOSurface"
+                );
+            }
+            Err(error) => {
+                debug!(%error, "macOS Servo IOSurface diagnostics unavailable");
+            }
+        }
     }
 
     fn build_webview(
