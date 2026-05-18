@@ -42,6 +42,9 @@ pub struct StudioContext {
     pub refresh_scene: Callback<()>,
     /// The Stage's requested view (Preview / Layout / All-zones).
     pub stage_view: RwSignal<StageView>,
+    /// Whether the composition slide-over is open. The now-playing chip
+    /// toggles it; the panel and its scrim read it.
+    pub composition_open: RwSignal<bool>,
 }
 
 #[component]
@@ -128,12 +131,14 @@ pub fn StudioPage() -> impl IntoView {
     on_cleanup(move || ws.set_zone_preview_active.set(false));
 
     let stage_view = RwSignal::new(StageView::default());
+    let composition_open = RwSignal::new(false);
 
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
         refresh_scene,
         stage_view,
+        composition_open,
     });
 
     view! {

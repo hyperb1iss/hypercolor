@@ -424,11 +424,6 @@ pub fn LayoutBuilder(
     let (dragging, set_dragging) = signal(None::<PanelDrag>);
     let container_ref = NodeRef::<leptos::html::Div>::new();
 
-    // Compact embeddings collapse the palette into a slide-over drawer;
-    // this tracks whether it is open. Stays false on the full-page editor,
-    // where the palette is a permanent resizable column instead.
-    let palette_drawer = RwSignal::new(false);
-
     // Global mousemove / mouseup listeners for drag (registered once)
     let _drag_move = window_event_listener(ev::mousemove, move |ev| {
         let Some(drag) = dragging.try_get_untracked().flatten() else {
@@ -1011,29 +1006,6 @@ pub fn LayoutBuilder(
                     })}
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    // Compact mode: the device palette lives in a drawer, so
-                    // it needs a toolbar handle. Glows cyan while open.
-                    {compact.then(|| view! {
-                        <button
-                            class="flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5
-                                   text-xs font-medium transition-all btn-press"
-                            style=move || if palette_drawer.get() {
-                                "background: rgba(128, 255, 234, 0.12); \
-                                 border-color: rgba(128, 255, 234, 0.34); \
-                                 color: rgb(128, 255, 234); \
-                                 box-shadow: 0 0 14px rgba(128, 255, 234, 0.16)"
-                            } else {
-                                "background: var(--color-surface-overlay); \
-                                 border-color: var(--color-border-subtle); \
-                                 color: var(--color-text-secondary)"
-                            }
-                            title="Show the device palette"
-                            on:click=move |_| palette_drawer.update(|open| *open = !*open)
-                        >
-                            <Icon icon=LuCpu width="13px" height="13px" />
-                            "Devices"
-                        </button>
-                    })}
                     <div class="flex items-center gap-3">
 
                     {move || if renaming.get() {
@@ -1339,47 +1311,6 @@ pub fn LayoutBuilder(
                             <LayoutZoneProperties />
                         </div>
                     </div>
-
-                    // Compact embedding: the palette rides in a slide-over
-                    // drawer so the canvas keeps the full width. Scrim and
-                    // panel both stay mounted and animate via transforms.
-                    {compact.then(|| view! {
-                        <div
-                            class="absolute inset-0 z-30 bg-black/45 backdrop-blur-sm
-                                   transition-opacity duration-200 ease-out"
-                            class=("opacity-0", move || !palette_drawer.get())
-                            class=("pointer-events-none", move || !palette_drawer.get())
-                            on:click=move |_| palette_drawer.set(false)
-                        />
-
-                        <aside
-                            class="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85%] flex-col
-                                   border-r border-edge-subtle bg-surface-base/95 backdrop-blur-md
-                                   transition-transform duration-200 ease-out"
-                            class=("-translate-x-full", move || !palette_drawer.get())
-                            style="box-shadow: 20px 0 52px -28px rgba(0, 0, 0, 0.75)"
-                            inert=move || !palette_drawer.get()
-                        >
-                            <div class="flex shrink-0 items-center justify-between gap-2
-                                        border-b border-edge-subtle/55 px-3 py-2">
-                                <span class="text-[10px] text-fg-tertiary/80">
-                                    "Pick a device to add to the layout"
-                                </span>
-                                <button
-                                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md
-                                           text-fg-tertiary transition-all btn-press
-                                           hover:bg-surface-hover/40 hover:text-fg-primary"
-                                    title="Close device drawer"
-                                    on:click=move |_| palette_drawer.set(false)
-                                >
-                                    <Icon icon=LuX width="13px" height="13px" />
-                                </button>
-                            </div>
-                            <div class="min-h-0 flex-1 overflow-y-auto">
-                                <LayoutPalette />
-                            </div>
-                        </aside>
-                    })}
                 </div>
             </Show>
         </div>

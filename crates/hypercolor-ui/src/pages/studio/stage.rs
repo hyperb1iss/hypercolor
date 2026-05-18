@@ -30,7 +30,7 @@ use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
 use super::stage_view::{StageView, resolve_stage_view};
-use super::surface::{SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use super::zone_controls::unassigned_behavior_label;
 use super::zone_assignment::ZoneAssignment;
 
@@ -207,12 +207,20 @@ fn SurfaceStage() -> impl IntoView {
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
             <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/60 px-5 py-3">
-                <div class="flex items-baseline gap-2">
-                    <span class=label_class(LabelSize::Small, LabelTone::Default)>"Stage"</span>
-                    <span class="text-sm font-semibold text-fg-primary">
-                        {move || surface_name.get().unwrap_or_else(|| "No surface".to_owned())}
-                    </span>
-                </div>
+                {move || {
+                    if is_screen.get() {
+                        view! {
+                            <span class="text-sm font-semibold text-fg-primary">
+                                {move || {
+                                    surface_name.get().unwrap_or_else(|| "No surface".to_owned())
+                                }}
+                            </span>
+                        }
+                            .into_any()
+                    } else {
+                        view! { <NowPlayingChip surface=selected_surface /> }.into_any()
+                    }
+                }}
                 {move || {
                     if is_screen.get() {
                         view! {
@@ -220,7 +228,7 @@ fn SurfaceStage() -> impl IntoView {
                                 <span class=label_class(
                                     LabelSize::Micro,
                                     LabelTone::Default,
-                                )>"Output"</span>
+                                )>"Preview"</span>
                                 {move || {
                                     selected_display
                                         .get()
@@ -365,7 +373,7 @@ fn SurfaceStage() -> impl IntoView {
 fn StageViewToggle(requested: RwSignal<StageView>, multi_zone: bool) -> impl IntoView {
     view! {
         <div class="flex items-center gap-0.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 p-0.5">
-            <StageTab label="Output" value=StageView::Output requested=requested />
+            <StageTab label="Preview" value=StageView::Output requested=requested />
             <StageTab label="Layout" value=StageView::Layout requested=requested />
             {multi_zone
                 .then(|| {
@@ -398,6 +406,44 @@ fn StageTab(
             on:click=move |_| requested.set(value)
         >
             {label}
+        </button>
+    }
+}
+
+/// The Stage header's now-playing chip. Names the selected zone's top
+/// layer and, on click, toggles the composition slide-over — the only
+/// way layer editing is summoned in the two-column workspace.
+#[component]
+fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let label = move || {
+        surface
+            .get()
+            .and_then(|surface| surface.top_layer)
+            .unwrap_or_else(|| "No layers".to_owned())
+    };
+    view! {
+        <button
+            type="button"
+            class="group flex items-center gap-2 rounded-lg border border-edge-subtle/60 bg-surface-overlay/40 px-3 py-1.5 transition-colors hover:border-accent-muted hover:bg-surface-overlay/70"
+            title="Open the composition panel"
+            on:click=move |_| studio.composition_open.update(|open| *open = !*open)
+        >
+            <Icon
+                icon=LuLayers
+                width="13px"
+                height="13px"
+                style="color: rgba(128, 255, 234, 0.75)"
+            />
+            <span class="max-w-[200px] truncate text-[12px] font-medium text-fg-secondary group-hover:text-fg-primary">
+                {label}
+            </span>
+            <Icon
+                icon=LuChevronRight
+                width="12px"
+                height="12px"
+                style="color: rgba(139, 133, 160, 0.55)"
+            />
         </button>
     }
 }
@@ -511,7 +557,6 @@ fn UnassignedStage() -> impl IntoView {
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
             <div class="flex items-center gap-2 border-b border-edge-subtle/60 px-5 py-3">
-                <span class=label_class(LabelSize::Small, LabelTone::Default)>"Stage"</span>
                 <span class="text-sm font-semibold text-fg-primary">"Unassigned lights"</span>
             </div>
             <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
@@ -610,7 +655,6 @@ fn AllZonesStage() -> impl IntoView {
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
             <div class="flex items-center gap-2 border-b border-edge-subtle/60 px-5 py-3">
-                <span class=label_class(LabelSize::Small, LabelTone::Default)>"Stage"</span>
                 <span class="text-sm font-semibold text-fg-primary">"All zones"</span>
             </div>
             <div class="scrollbar-none flex-1 overflow-y-auto p-5">
