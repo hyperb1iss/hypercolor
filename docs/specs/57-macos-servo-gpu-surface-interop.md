@@ -1,10 +1,11 @@
 # 57 - macOS Servo GPU Surface Interop
 
-**Status:** Planned after Linux proof
+**Status:** Planned; Linux lane landed, macOS baseline captured
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, optional interop crate
-**Related:** Specs 48, 56; `docs/design/34-servo-perf-and-crash-isolation.md`,
+**Related:** Specs 48, 56, 59;
+`docs/design/34-servo-perf-and-crash-isolation.md`,
 `docs/design/45-graphics-pipeline-unification-plan.md`
 
 ## 1. Goal
@@ -22,12 +23,54 @@ Servo GL framebuffer
   -> SparkleFlinger source texture
 ```
 
-Linux should prove the shared Hypercolor architecture first: shared GPU device,
-GPU effect output, `ProducerFrame::Gpu`, SparkleFlinger direct source binding,
+Linux proved the shared Hypercolor architecture first: shared GPU device, GPU
+effect output, `ProducerFrame::Gpu`, SparkleFlinger direct source binding,
 fallback diagnostics, and parity tests. This spec defines the macOS importer and
-platform work needed after that shared lane exists.
+platform work needed to reuse that lane with IOSurface and Metal.
 
-## 2. What We Know
+## 2. Baseline Profile
+
+Captured on 2026-05-18 with the daemon already running on a MacBook Pro
+`Mac16,5`: Apple M4 Max, 16 CPU cores, 40 GPU cores, 48 GB RAM, Metal 4.
+The active effect was `Breakthrough`, with six devices, a full-resolution RGB
+canvas preview subscriber, GPU SparkleFlinger composition, and GPU spatial
+sampling. Servo GPU import was off.
+
+Artifacts:
+
+- `/tmp/hypercolor-mac-baseline-20260518-095240.jsonl`
+- `/tmp/hypercolor-daemon-ps-20260518-095443.csv`
+- `/tmp/hypercolor-daemon-sample-correct-20260518-095443.txt`
+
+60 REST samples over 65.9 seconds:
+
+- actual FPS: mean 57.5, p95 60.0, max 60.0
+- render-loop total: mean 0.63 ms, p95 0.91 ms, max 3.09 ms
+- effect rendering: mean 0.41 ms, p95 0.61 ms, max 2.42 ms
+- GPU spatial sampling: mean 0.17 ms, p95 0.25 ms, max 0.61 ms
+- process CPU from `ps`: mean 24.1%, p95 31.7%, max 34.8%
+- resident set from `ps`: mean 302 MiB, p95 308 MiB
+
+Servo cumulative counters during the same window:
+
+- delta frames: 3786
+- evaluate scripts: average 2.89 ms per frame, max 24.52 ms
+- paint: average 0.63 ms per frame, max 18.92 ms
+- readback: average 0.73 ms per frame, max 40.14 ms
+- total Servo render: average 4.27 ms per frame, max 64.06 ms
+
+The `sample` trace shows the render thread spending visible CPU time in
+`wgpu::Queue::write_texture`, `wgpu_core::Queue::write_texture`,
+`_platform_memmove`, `wgpu_hal::metal::Device::create_buffer`, Metal blit setup,
+and `copy_buffer_to_texture`. That is the CPU canvas upload into the GPU
+composer after Servo readback. The WebSocket preview path is also visible in
+`relay_canvas`, RGB preview encoding, tungstenite framing, and `sendto`.
+
+The macOS opportunity is therefore specific: remove Servo `glReadPixels` and
+the CPU-to-GPU source texture upload. GPU import will not remove JavaScript
+evaluation cost, canvas preview encoding cost, or device output cost.
+
+## 3. What We Know
 
 Surfman macOS surfaces are backed by `IOSurfaceRef`.
 
@@ -49,9 +92,26 @@ The reference crate is not ready to vendor. On this machine,
 because it mixes `metal` crate texture types with the newer `objc2_metal` raw
 types expected by `wgpu-hal`.
 
-## 3. Non-goals
+Hypercolor currently pins `wgpu = 29.0.1`. The workspace `wgpu-hal` dependency
+also pins `29.0.1`, but only enables the `vulkan` feature today because the
+Linux importer is the only HAL user. The macOS importer must enable `metal` for
+its interop crate without making non-macOS builds pull in macOS-only code.
 
-- Do not implement macOS before Linux proves the shared GPU surface lane.
+The current crate versions have the raw APIs needed for the spike:
+
+- `wgpu_hal::metal::Device::texture_from_raw` accepts
+  `Retained<ProtocolObject<dyn MTLTexture>>`, `TextureFormat`,
+  `MTLTextureType`, layer count, mip count, and copy extent.
+- `wgpu::Device::create_texture_from_hal::<wgpu_hal::api::Metal>` wraps that
+  HAL texture back into a safe `wgpu::Texture`.
+- `objc2-metal 0.3.2` exposes
+  `MTLDevice::newTextureWithDescriptor_iosurface_plane` when the
+  `objc2-io-surface` feature is enabled.
+- `objc2-io-surface 0.3.2` is already present in `Cargo.lock` and exposes
+  both `IOSurface` Objective-C object bindings and `IOSurfaceRef` helpers.
+
+## 4. Non-goals
+
 - Do not add `IOSurface`, `metal`, or `objc2` dependencies to
   `hypercolor-types`.
 - Do not remove CPU Servo readback.
@@ -59,9 +119,9 @@ types expected by `wgpu-hal`.
 - Do not add a separate macOS-only effect output contract.
 - Do not vendor `wgpu-graft` unchanged.
 
-## 4. Hard Constraints
+## 5. Hard Constraints
 
-### 4.1 macOS requires a Metal-backed SparkleFlinger device
+### 5.1 macOS requires a Metal-backed SparkleFlinger device
 
 The imported texture must be created from the same Metal device behind
 SparkleFlinger's `wgpu::Device`.
@@ -69,11 +129,11 @@ SparkleFlinger's `wgpu::Device`.
 Import is unavailable when:
 
 - the active `wgpu` backend is not Metal
-- the Metal HAL device cannot be accessed
+- the Metal HAL device cannot be accessed through `wgpu::Device::as_hal`
 - an IOSurface-backed Servo surface is unavailable
 - Metal cannot create a texture from the IOSurface
 
-### 4.2 Current macOS Servo bootstrap is not enough
+### 5.2 Current macOS Servo bootstrap is not enough
 
 Hypercolor currently uses Servo `SoftwareRenderingContext` on non-Windows
 targets. A macOS GPU path needs a hardware Surfman context and a generic
@@ -82,7 +142,7 @@ IOSurface-backed surface.
 The CPU path must remain available because some machines or CI environments may
 not have the required GL/Metal interop path.
 
-### 4.3 Pixel format needs explicit normalization
+### 5.3 Pixel format needs explicit normalization
 
 macOS IOSurface and Metal paths commonly expose BGRA-native textures. Hypercolor
 canonical surfaces are non-premultiplied sRGB RGBA with top-left origin.
@@ -94,13 +154,13 @@ The importer must state exactly where it performs:
 - sRGB versus unorm interpretation
 - alpha representation preservation
 
-### 4.4 Unsafe stays boxed in
+### 5.4 Unsafe stays boxed in
 
 The importer will likely require Objective-C messaging, raw `IOSurfaceRef`,
 `wgpu-hal`, and raw Metal texture wrapping. Keep that code in one small audited
 interop boundary with a safe Hypercolor wrapper.
 
-## 5. Target Architecture
+## 6. Target Architecture
 
 This spec reuses the shared architecture from Spec 56:
 
@@ -133,7 +193,7 @@ pub(crate) struct MacosServoNativeFrame {
 The exact retained wrapper type is implementation detail. The contract is that
 the imported `wgpu::Texture` never outlives the native surface memory it wraps.
 
-## 6. macOS Import Strategy
+## 7. macOS Import Strategy
 
 The first macOS implementation should use IOSurface-to-Metal interop:
 
@@ -152,7 +212,7 @@ That is still GPU-resident and avoids Servo CPU readback. A later optimization
 can skip normalization when SparkleFlinger can consume the native format and
 origin directly.
 
-## 7. Synchronization
+## 8. Synchronization
 
 Milestone 1 may use conservative synchronization:
 
@@ -176,7 +236,7 @@ Milestone 2 should investigate GL fence sync and Metal shared-event or command
 buffer synchronization. Do not block the first correct implementation on perfect
 cross-API synchronization.
 
-## 8. Configuration and Diagnostics
+## 9. Configuration and Diagnostics
 
 Use the same user-facing mode as Spec 56:
 
@@ -199,11 +259,11 @@ During development, default to `off` or a hidden opt-in. Default to `auto` only
 after soak and parity pass on Apple Silicon and at least one Intel Mac if we
 still support that target.
 
-## 9. Implementation Waves
+## 10. Implementation Waves
 
 ### Wave 0: Shared lane from Linux
 
-**Depends on:** Spec 56 Waves 1, 4, 5, and 6.
+**Status:** Landed from Spec 56.
 
 Implementation:
 
@@ -220,21 +280,28 @@ Verify:
 
 ### Wave 1: Metal raw texture compatibility spike
 
-**Files:** optional interop crate or macOS interop module.
+**Files:** new macOS interop crate or tightly scoped macOS interop module.
 
 Implementation:
 
 - Write the minimal IOSurface-to-`wgpu::Texture` wrapper using the exact
   `wgpu-hal` version in Hypercolor.
+- Enable `wgpu-hal` `metal` support only for the macOS interop path.
+- Depend on `objc2-metal 0.3.2` with `objc2-io-surface` support and
+  `objc2-io-surface 0.3.2`.
 - Use `objc2_metal` types consistently. Do not mix incompatible `metal` crate
   texture wrappers unless the conversion is proven.
-- Add a tiny IOSurface fixture independent of Servo.
+- Create an IOSurface fixture independent of Servo.
+- Fill the fixture with deterministic pixels, create an `MTLTexture` from it,
+  wrap it with `wgpu_hal::metal::Device::texture_from_raw`, then import it with
+  `wgpu::Device::create_texture_from_hal::<wgpu_hal::api::Metal>`.
 
 Verify:
 
 - `cargo check` passes on macOS.
 - A synthetic IOSurface imports into a `wgpu::Texture`.
 - A readback from the imported texture matches expected pixels.
+- The same crate compiles to a stub on non-macOS targets.
 
 ### Wave 2: macOS Servo hardware context
 
@@ -253,6 +320,8 @@ Verify:
 - Existing Servo CPU tests still pass.
 - A Servo fixture renders through the macOS hardware context.
 - CPU fallback readback from the same context matches current behavior.
+- Native IOSurface acquisition reports width, height, pixel format, origin, and
+  surface identity in diagnostics.
 
 ### Wave 3: IOSurface importer integration
 
@@ -270,6 +339,9 @@ Verify:
 - A deterministic Servo fixture emits `ImportedEffectFrame`.
 - Pixel parity matches CPU readback.
 - Successful GPU import does not call Servo `glReadPixels`.
+- `producer_gpu_frames_total` increments for Servo producers.
+- Render-thread samples no longer show Servo source upload as a dominant
+  `queue.write_texture` cost.
 
 ### Wave 4: macOS benchmarks and soak
 
@@ -287,24 +359,26 @@ Verify:
 - p95 improves or the macOS path remains opt-in.
 - No IOSurface, Metal texture, or Servo session leak appears in soak.
 
-## 10. Acceptance Criteria
+## 11. Acceptance Criteria
 
 macOS Servo GPU import is ready to enable by default when:
 
-1. Linux shared GPU surface lane has landed.
-2. CPU fallback works.
-3. Metal raw texture wrapping compiles against Hypercolor's pinned `wgpu`.
-4. Servo can render into an IOSurface-backed hardware context.
-5. Imported frames reach SparkleFlinger without CPU readback.
-6. Pixel parity passes against CPU readback.
-7. Diagnostics identify every fallback reason.
-8. Soak shows no IOSurface or Metal texture leak.
+1. CPU fallback works.
+2. Metal raw texture wrapping compiles against Hypercolor's pinned `wgpu`.
+3. Servo can render into an IOSurface-backed hardware context.
+4. Imported frames reach SparkleFlinger without CPU readback.
+5. Pixel parity passes against CPU readback.
+6. Diagnostics identify every fallback reason.
+7. Soak shows no IOSurface or Metal texture leak.
+8. Baseline comparison shows lower readback/upload CPU cost, or the macOS path
+   remains opt-in.
 
-## 11. Recommendation
+## 12. Recommendation
 
-Do macOS second, after Linux proves the shared render-pipeline shape.
+Build the IOSurface-to-`wgpu` spike first, independent of Servo.
 
-The likely winning path is IOSurface-to-Metal, but the first macOS task should
-be a focused raw-texture compatibility spike. The reference implementation
-already failed there once, and we should kill that risk before threading Servo
-through it.
+That kills the highest-risk unknown with the smallest blast radius: whether
+Hypercolor's pinned `wgpu-hal 29.0.1` can safely wrap an IOSurface-backed
+`objc2_metal` texture and round-trip pixels through `wgpu`. Once that is green,
+thread Servo through a hardware Surfman context and reuse the Linux GPU producer
+lane.
