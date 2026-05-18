@@ -24,6 +24,7 @@ fn hardware_context_reads_back_and_exposes_iosurface() -> Result<(), String> {
     gl.viewport(0, 0, WIDTH as i32, HEIGHT as i32);
     gl.clear_color(0.25, 0.5, 0.75, 1.0);
     gl.clear(gl::COLOR_BUFFER_BIT);
+    context.present();
 
     let native_frame = context.native_frame().map_err(|error| error.to_string())?;
     assert_eq!(native_frame.width, WIDTH);

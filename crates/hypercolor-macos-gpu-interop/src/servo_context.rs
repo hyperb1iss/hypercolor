@@ -163,22 +163,6 @@ impl MacosHardwareRenderingContext {
         destroy_surface_or_forget(&device, &mut context, old_surface);
         Ok(())
     }
-
-    fn present_bound_surface(&self) -> Result<()> {
-        let device = self.device.borrow();
-        let mut context = self.context.borrow_mut();
-        let mut surface = device
-            .unbind_surface_from_context(&mut context)
-            .map_err(context_error("unbind surface for present"))?
-            .ok_or(MacosGpuInteropError::MissingServoSurface)?;
-        if let Err(error) = device.present_surface(&context, &mut surface) {
-            let error = context_error("present IOSurface-backed surface")(error);
-            bind_surface(&device, &mut context, surface)?;
-            return Err(error);
-        }
-        bind_surface(&device, &mut context, surface)?;
-        Ok(())
-    }
 }
 
 impl Drop for MacosHardwareRenderingContext {
@@ -242,11 +226,7 @@ impl RenderingContext for MacosHardwareRenderingContext {
         }
     }
 
-    fn present(&self) {
-        if let Err(error) = self.present_bound_surface() {
-            tracing::warn!(%error, "failed to present macOS Servo hardware context");
-        }
-    }
+    fn present(&self) {}
 
     fn make_current(&self) -> std::result::Result<(), Error> {
         let device = self.device.borrow();
