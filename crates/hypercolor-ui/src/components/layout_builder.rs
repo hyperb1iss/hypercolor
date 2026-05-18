@@ -275,7 +275,12 @@ pub(crate) struct LayoutZoneDisplayContext {
 
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
 #[component]
-pub fn LayoutBuilder() -> impl IntoView {
+pub fn LayoutBuilder(
+    /// Compact embedding (Studio Stage). The device palette collapses into
+    /// a slide-over drawer instead of a permanent left column, so the
+    /// canvas reads as the hero rather than one panel among four.
+    #[prop(optional)] compact: bool,
+) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
     // Load any UI state persisted from a previous visit so the page
@@ -418,6 +423,11 @@ pub fn LayoutBuilder() -> impl IntoView {
     }
     let (dragging, set_dragging) = signal(None::<PanelDrag>);
     let container_ref = NodeRef::<leptos::html::Div>::new();
+
+    // Compact embeddings collapse the palette into a slide-over drawer;
+    // this tracks whether it is open. Stays false on the full-page editor,
+    // where the palette is a permanent resizable column instead.
+    let palette_drawer = RwSignal::new(false);
 
     // Global mousemove / mouseup listeners for drag (registered once)
     let _drag_move = window_event_listener(ev::mousemove, move |ev| {
@@ -1001,6 +1011,29 @@ pub fn LayoutBuilder() -> impl IntoView {
                     })}
                 </HeaderTrailing>
                 <HeaderToolbar slot>
+                    // Compact mode: the device palette lives in a drawer, so
+                    // it needs a toolbar handle. Glows cyan while open.
+                    {compact.then(|| view! {
+                        <button
+                            class="flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5
+                                   text-xs font-medium transition-all btn-press"
+                            style=move || if palette_drawer.get() {
+                                "background: rgba(128, 255, 234, 0.12); \
+                                 border-color: rgba(128, 255, 234, 0.34); \
+                                 color: rgb(128, 255, 234); \
+                                 box-shadow: 0 0 14px rgba(128, 255, 234, 0.16)"
+                            } else {
+                                "background: var(--color-surface-overlay); \
+                                 border-color: var(--color-border-subtle); \
+                                 color: var(--color-text-secondary)"
+                            }
+                            title="Show devices to place on the canvas"
+                            on:click=move |_| palette_drawer.update(|open| *open = !*open)
+                        >
+                            <Icon icon=LuCpu width="13px" height="13px" />
+                            "Devices"
+                        </button>
+                    })}
                     <div class="flex items-center gap-3">
 
                     {move || if renaming.get() {
@@ -1225,7 +1258,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 </HeaderToolbar>
             </PageHeader>
 
-            // Three-column layout
+            // Editor body — palette, canvas, and zone properties.
             <Show
                 when=move || has_layout.get()
                 fallback=move || {
@@ -1242,7 +1275,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 }
             >
                 <div
-                    class="flex min-h-0 flex-1 overflow-hidden"
+                    class="relative flex min-h-0 flex-1 overflow-hidden"
                     node_ref=container_ref
                     style=move || {
                         match dragging.get() {
@@ -1252,27 +1285,30 @@ pub fn LayoutBuilder() -> impl IntoView {
                         }
                     }
                 >
-                    // Left palette — resizable width
-                    <div
-                        class="shrink-0 min-h-0 overflow-y-auto"
-                        style=move || format!("width: {:.0}px", sidebar_width.get())
-                    >
-                        <LayoutPalette />
-                    </div>
+                    // Full-page editor keeps the palette as a permanent
+                    // resizable column. Compact embeddings drop it here and
+                    // surface it through the slide-over drawer below instead.
+                    {(!compact).then(|| view! {
+                        <div
+                            class="shrink-0 min-h-0 overflow-y-auto"
+                            style=move || format!("width: {:.0}px", sidebar_width.get())
+                        >
+                            <LayoutPalette />
+                        </div>
 
-                    // Sidebar resize handle
-                    <div
-                        class="shrink-0 w-1 cursor-col-resize group/handle relative hover:bg-accent-muted/20
-                               active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
-                        on:mousedown=move |ev| {
-                            ev.prevent_default();
-                            set_dragging.set(Some(PanelDrag::Sidebar));
-                        }
-                    >
-                        <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
-                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
-                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
-                    </div>
+                        <div
+                            class="shrink-0 w-1 cursor-col-resize group/handle relative hover:bg-accent-muted/20
+                                   active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
+                            on:mousedown=move |ev| {
+                                ev.prevent_default();
+                                set_dragging.set(Some(PanelDrag::Sidebar));
+                            }
+                        >
+                            <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
+                            <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
+                                        rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
+                        </div>
+                    })}
 
                     // Main area: canvas above, zone properties below
                     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1303,6 +1339,47 @@ pub fn LayoutBuilder() -> impl IntoView {
                             <LayoutZoneProperties />
                         </div>
                     </div>
+
+                    // Compact embedding: the palette rides in a slide-over
+                    // drawer so the canvas keeps the full width. Scrim and
+                    // panel both stay mounted and animate via transforms.
+                    {compact.then(|| view! {
+                        <div
+                            class="absolute inset-0 z-30 bg-black/45 backdrop-blur-sm
+                                   transition-opacity duration-200 ease-out"
+                            class=("opacity-0", move || !palette_drawer.get())
+                            class=("pointer-events-none", move || !palette_drawer.get())
+                            on:click=move |_| palette_drawer.set(false)
+                        />
+
+                        <aside
+                            class="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85%] flex-col
+                                   border-r border-edge-subtle bg-surface-base/95 backdrop-blur-md
+                                   transition-transform duration-200 ease-out"
+                            class=("-translate-x-full", move || !palette_drawer.get())
+                            style="box-shadow: 20px 0 52px -28px rgba(0, 0, 0, 0.75)"
+                            inert=move || !palette_drawer.get()
+                        >
+                            <div class="flex shrink-0 items-center justify-between gap-2
+                                        border-b border-edge-subtle/55 px-3 py-2">
+                                <span class="text-[10px] text-fg-tertiary/80">
+                                    "Drag a device onto the canvas"
+                                </span>
+                                <button
+                                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md
+                                           text-fg-tertiary transition-all btn-press
+                                           hover:bg-surface-hover/40 hover:text-fg-primary"
+                                    title="Close device drawer"
+                                    on:click=move |_| palette_drawer.set(false)
+                                >
+                                    <Icon icon=LuX width="13px" height="13px" />
+                                </button>
+                            </div>
+                            <div class="min-h-0 flex-1 overflow-y-auto">
+                                <LayoutPalette />
+                            </div>
+                        </aside>
+                    })}
                 </div>
             </Show>
         </div>

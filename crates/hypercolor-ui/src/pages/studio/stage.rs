@@ -266,7 +266,7 @@ fn SurfaceStage() -> impl IntoView {
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                             <div class="min-h-0 flex-1 overflow-hidden">
-                                <LayoutBuilder />
+                                <LayoutBuilder compact=true />
                             </div>
                             {multi_zone.get().then(|| view! { <ZoneAssignment /> })}
                         </div>
