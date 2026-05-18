@@ -1982,6 +1982,10 @@ fn classify_servo_gpu_import_error(error: &anyhow::Error) -> ServoGpuImportFallb
                 hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions {
                     ..
                 } => ServoGpuImportFallbackReason::InvalidDimensions,
+                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
+                    ..
+                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
+                _ => ServoGpuImportFallbackReason::Other,
             };
         }
     }
