@@ -73,7 +73,22 @@ pub fn Stage() -> impl IntoView {
         screen_frame.set(None);
     });
     Effect::new(move |_| {
-        screen_frame.set(ws.display_preview_frame.get());
+        let frame = ws.display_preview_frame.get();
+        // The channel carries no device id, so accept a frame only when
+        // its resolution matches the selected screen. That rejects an
+        // in-flight frame from the previously selected screen; two
+        // identically sized screens still need daemon-side frame tagging
+        // to be fully distinguishable.
+        let belongs_to_target = match (&frame, selected_display.get()) {
+            (Some(frame), Some(display)) => {
+                frame.width == display.width && frame.height == display.height
+            }
+            (None, _) => true,
+            (Some(_), None) => false,
+        };
+        if belongs_to_target {
+            screen_frame.set(frame);
+        }
     });
 
     // The display-preview stream carries no FPS, so the Screen caption is
