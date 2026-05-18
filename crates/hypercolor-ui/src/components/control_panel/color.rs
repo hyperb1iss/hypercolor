@@ -82,7 +82,7 @@ pub(super) fn render_color_picker(
                     }
                 />
                 <label class="text-xs text-fg-secondary font-medium truncate flex-1 min-w-0">{name.clone()}</label>
-                <span class="text-[10px] font-mono text-fg-tertiary/50 uppercase shrink-0">
+                <span class="text-[10px] font-mono text-fg-tertiary/75 uppercase tabular-nums shrink-0">
                     {move || color.get().to_uppercase()}
                 </span>
             </div>
