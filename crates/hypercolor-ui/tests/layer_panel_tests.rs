@@ -184,9 +184,13 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
         "Media paimon.gif"
     );
 
+    // An unresolved id reads as the bare kind — never the raw UUID (§15.2).
     let unknown_media =
         media_layer_source("0192f5a0-aaaa-7890-abcd-ef0123456789").expect("valid uuid");
-    assert!(layer_source_label(&unknown_media, &media_names, &effect_names).starts_with("Media "));
+    assert_eq!(
+        layer_source_label(&unknown_media, &media_names, &effect_names),
+        "Media"
+    );
 
     // An effect id resolves to its registry name, never the raw UUID.
     let known_effect = effect_layer_source(SAMPLE_ID).expect("valid uuid");
@@ -195,12 +199,14 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
         "Effect Aurora"
     );
 
-    // An unmatched effect id still produces a non-empty label.
+    // An unmatched effect id falls back to the bare kind, never the UUID —
+    // the case a native display face outside the HTML catalog hits.
     let unknown_effect =
         effect_layer_source("0192f5a0-bbbb-7890-abcd-ef0123456789").expect("valid uuid");
-    let unknown_label = layer_source_label(&unknown_effect, &media_names, &effect_names);
-    assert!(unknown_label.starts_with("Effect "));
-    assert!(unknown_label.len() > "Effect ".len());
+    assert_eq!(
+        layer_source_label(&unknown_effect, &media_names, &effect_names),
+        "Effect"
+    );
 
     assert_eq!(
         layer_source_label(&screen_layer_source(), &media_names, &effect_names),

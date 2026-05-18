@@ -200,7 +200,9 @@ pub fn hex_to_layer_rgba(hex: &str) -> Option<[f32; 4]> {
 /// Human-readable description of a layer's content source. `media_names`
 /// resolves asset ids to filenames and `effect_names` resolves effect ids
 /// to their registry display name; an id with no match falls back to the
-/// raw id so the label is never blank.
+/// bare kind ("Effect", "Media") — a raw UUID is never shown to the user
+/// (Spec 65 §15.2). An effect outside the HTML catalog, such as a native
+/// display face, has no resolvable name and reads simply as "Effect".
 #[must_use]
 pub fn layer_source_label(
     source: &LayerSource,
@@ -213,14 +215,14 @@ pub fn layer_source_label(
             effect_names
                 .get(&id)
                 .map(|name| format!("Effect {name}"))
-                .unwrap_or_else(|| format!("Effect {effect_id}"))
+                .unwrap_or_else(|| "Effect".to_owned())
         }
         LayerSource::Media { asset_id, .. } => {
             let id = asset_id.to_string();
             media_names
                 .get(&id)
                 .map(|name| format!("Media {name}"))
-                .unwrap_or_else(|| format!("Media {asset_id}"))
+                .unwrap_or_else(|| "Media".to_owned())
         }
         LayerSource::ScreenRegion { .. } => "Screen region".to_owned(),
         LayerSource::WebViewport { url, .. } => format!("Web {url}"),
