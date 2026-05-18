@@ -31,7 +31,7 @@ use crate::ws::messages::group_has_degraded_layer;
 use super::StudioContext;
 use super::stage_view::{StageView, resolve_stage_view};
 use super::surface::{SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
-use super::surface_rail::unassigned_behavior_label;
+use super::zone_controls::unassigned_behavior_label;
 use super::zone_assignment::ZoneAssignment;
 
 /// Preview FPS ceiling while the Layout editor is on the Stage, matching
