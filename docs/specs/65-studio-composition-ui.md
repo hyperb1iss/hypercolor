@@ -255,7 +255,7 @@ Two non-negotiables govern every visible wave:
 - **The Luminary design system is the only visual vocabulary.**
   Hypercolor's visual language is Luminary (ambient reactivity) and
   Prism (layered glass), specified in
-  `docs/design/19-luminary-design-system.md` and shipped as three-tier
+  `docs/DESIGN-SYSTEM.md` and shipped as three-tier
   tokens (`tokens/primitives.css`, `tokens/semantic.css`, `input.css`).
   Studio uses its OKLCH surface and accent tokens, its `section_label`
   typography, its `--ease-silk` / `--ease-spring` motion, its

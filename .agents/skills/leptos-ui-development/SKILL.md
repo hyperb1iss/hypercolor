@@ -119,16 +119,18 @@ enum EffectCategory {
 }
 ```
 
-## SilkCircuit Token System
+## Design System (Luminary)
 
-Two-tier CSS custom properties in `tokens/`:
+**`docs/DESIGN-SYSTEM.md` is the canonical style guide.** Any UI design work (tokens, color, typography, surfaces, motion, glass, ambient reactivity, components) follows it. Consult it before styling a surface; its §14 ("Working in Luminary") is the rules checklist.
 
-- **`primitives.css`**: Raw OKLCH values via `@theme` — void scale (dark surfaces), cloud scale (light), SilkCircuit palette colors
-- **`semantic.css`**: Intent-mapped tokens (`--surface-base`, `--text-primary`, `--border-focus`) that swap between `:root` (dark) and `[data-theme="light"]`
+Token files in `tokens/` (DESIGN-SYSTEM.md §3 has the full architecture):
 
-**Dynamic ambient glow**: Components set `--ambient-hue` from live canvas frame pixel data. CSS uses it for reactive glow effects.
+- **`primitives.css`**: Tier 1, raw OKLCH values via `@theme` (void scale for dark surfaces, cloud scale for light, SilkCircuit palette). Auto-generates Tailwind utilities.
+- **`semantic.css`**: Tier 2, intent-mapped tokens (`--surface-base`, `--text-primary`, `--border-focus`) that swap between `:root` (dark) and `[data-theme="light"]`.
 
-**Theme switching**: Stored in localStorage as `hc-theme`. Restored _before first paint_ (in `index.html` script) to prevent flash.
+**Dynamic ambient glow**: Components set `--ambient-hue` from live canvas frame pixel data; CSS derives reactive glow tokens from it.
+
+**Theme switching**: Stored in localStorage as `hc-theme`, restored _before first paint_ (inline `index.html` script) to prevent flash.
 
 ## API Client Pattern
 
@@ -172,6 +174,7 @@ Tab hidden → reduce preview FPS to 6 via `document.visibilitychange` listener.
 | Layout builder      | `src/components/layout_builder.rs`                           |
 | Style utilities     | `src/style_utils.rs`                                         |
 | Design tokens       | `tokens/{primitives,semantic}.css`                           |
+| Design system guide | `docs/DESIGN-SYSTEM.md` (canonical Luminary style guide)     |
 | Trunk config        | `Trunk.toml`                                                 |
 | Tests (unit only)   | `tests/`                                                     |
 

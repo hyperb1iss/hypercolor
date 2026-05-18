@@ -173,6 +173,10 @@ just ui-build        # Production build
 Tech stack: Leptos 0.8 CSR, Tailwind v4 with SilkCircuit tokens, wasm-bindgen, leptos_icons.
 Trunk orchestrates Tailwind compilation before WASM build (see `crates/hypercolor-ui/Trunk.toml`).
 
+**Design system:** `docs/DESIGN-SYSTEM.md` is the canonical Luminary style guide:
+token architecture, color, typography, motion, glass, ambient reactivity, and
+component patterns. All UI design work follows it; §14 is the rules checklist.
+
 **Gotcha:** `leptos_icons::Icon`'s `style` prop accepts `MaybeProp<String>` — it takes
 `&str` or `String`, NOT closures. Use conditional rendering to vary icon styles reactively.
 
