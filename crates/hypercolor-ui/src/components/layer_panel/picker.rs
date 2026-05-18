@@ -12,6 +12,7 @@ use super::source::{
     media_layer_source, screen_layer_source, web_layer_source,
 };
 use crate::api;
+use crate::components::media_grid::MediaGrid;
 use crate::icons::*;
 use crate::toasts;
 
@@ -224,45 +225,34 @@ fn MediaTab(
         items
     });
 
+    // A click on a media card is an immediate add, so resolve the asset's
+    // name for the layer and emit a draft — no persistent selection.
+    let pick_media = Callback::new(move |id: String| match media_layer_source(&id) {
+        Ok(source) => {
+            let name = assets.with_untracked(|list| {
+                list.iter()
+                    .find(|asset| asset.id == id)
+                    .map(|asset| asset.name.clone())
+            });
+            on_pick.run(NewLayerDraft { name, source });
+        }
+        Err(error) => toasts::toast_error(&error),
+    });
+
     view! {
         <PickerSearch placeholder="Search media..." value=search />
         {move || {
-            let items = filtered.get();
-            if items.is_empty() {
-                view! { <PickerEmpty detail="No matching media — upload from the Media library" /> }.into_any()
+            if filtered.get().is_empty() {
+                view! {
+                    <PickerEmpty detail="No matching media — upload from the Media library" />
+                }.into_any()
             } else {
                 view! {
-                    <div class="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2.5">
-                        {items.into_iter().map(|asset| {
-                            let id = asset.id.clone();
-                            let name = asset.name.clone();
-                            let thumbnail = format!("/api/v1/assets/{}/thumbnail", asset.id);
-                            let pick = move |_| {
-                                match media_layer_source(&id) {
-                                    Ok(source) => on_pick.run(NewLayerDraft::named(name.clone(), source)),
-                                    Err(error) => toasts::toast_error(&error),
-                                }
-                            };
-                            view! {
-                                <button
-                                    type="button"
-                                    class="group overflow-hidden rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 text-left transition-all card-hover"
-                                    on:click=pick
-                                >
-                                    <div class="aspect-[4/3] overflow-hidden bg-surface-sunken/70">
-                                        <img
-                                            src=thumbnail
-                                            alt=""
-                                            class="h-full w-full object-cover opacity-90 transition duration-300 group-hover:scale-[1.04]"
-                                        />
-                                    </div>
-                                    <div class="truncate px-2.5 py-2 text-[11px] font-medium text-fg-secondary">
-                                        {asset.name}
-                                    </div>
-                                </button>
-                            }
-                        }).collect_view()}
-                    </div>
+                    <MediaGrid
+                        assets=filtered
+                        selected_id=Signal::derive(|| None::<String>)
+                        on_select=pick_media
+                    />
                 }.into_any()
             }
         }}
