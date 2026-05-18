@@ -5,7 +5,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 use alsa::{Direction, Rawmidi, seq::Seq};
@@ -16,7 +18,9 @@ use midir::{
 };
 use nusb::transfer::{Buffer, Bulk, Out, TransferError};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
+#[cfg(target_os = "linux")]
+use tracing::warn;
 
 use crate::protocol::TransferType;
 use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};

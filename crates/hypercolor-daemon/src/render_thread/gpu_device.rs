@@ -68,7 +68,7 @@ impl GpuRenderDevice {
         &self.inner.device
     }
 
-    #[cfg(feature = "servo-gpu-import")]
+    #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
     pub(crate) fn device_handle(&self) -> wgpu::Device {
         self.inner.device.clone()
     }
