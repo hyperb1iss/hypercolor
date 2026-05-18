@@ -5,4 +5,6 @@ pub mod display_preview;
 pub mod displays;
 pub mod effects;
 pub mod layout;
+pub mod media;
 pub mod settings;
+pub mod studio;

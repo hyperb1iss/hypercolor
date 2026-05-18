@@ -10,7 +10,7 @@ use leptos_router::hooks::use_location;
 use leptos_use::use_throttle_fn_with_arg;
 
 use crate::api;
-use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
+use crate::app::{EffectsContext, FrameAnalysisContext, StudioFlag, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
@@ -34,54 +34,10 @@ pub fn Sidebar() -> impl IntoView {
 
     let location = use_location();
     let fx = expect_context::<EffectsContext>();
+    let studio_flag = expect_context::<StudioFlag>();
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
     let canvas_mode = Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
-
-    let nav_items = vec![
-        NavItem {
-            path: "/",
-            label: "Dashboard",
-            icon: LuLayoutDashboard,
-            divider_before: false,
-        },
-        NavItem {
-            path: "/effects",
-            label: "Effects",
-            icon: LuLayers,
-            divider_before: false,
-        },
-        NavItem {
-            path: "/assets",
-            label: "Assets",
-            icon: LuFolder,
-            divider_before: false,
-        },
-        NavItem {
-            path: "/layout",
-            label: "Layout",
-            icon: LuLayoutTemplate,
-            divider_before: false,
-        },
-        NavItem {
-            path: "/devices",
-            label: "Devices",
-            icon: LuCpu,
-            divider_before: false,
-        },
-        NavItem {
-            path: "/displays",
-            label: "Displays",
-            icon: LuMonitor,
-            divider_before: false,
-        },
-        NavItem {
-            path: "/settings",
-            label: "Settings",
-            icon: LuSettings,
-            divider_before: true,
-        },
-    ];
 
     // ── Live canvas + palette from WebSocket frames ────────────────────
     let ws = use_context::<WsContext>();
@@ -423,9 +379,9 @@ pub fn Sidebar() -> impl IntoView {
                 }
             }
 
-            // Nav items
+            // Nav items — the set swaps with the studio_ui_beta flag (§5.1).
             <div class="flex-1 py-3 space-y-0.5 px-2">
-                {nav_items.into_iter().map(|item| {
+                {move || nav_items(studio_flag.enabled.get()).into_iter().map(|item| {
                     let is_active = {
                         let path = item.path;
                         Memo::new(move |_| {
@@ -706,6 +662,82 @@ struct NavItem {
     label: &'static str,
     icon: icondata_core::Icon,
     divider_before: bool,
+}
+
+/// Navigation set for the sidebar. With the `studio_ui_beta` flag on,
+/// Studio and Media replace Assets, Layout, and Displays (Spec 65 §5.1);
+/// with it off, the nav is unchanged from before the redesign.
+fn nav_items(studio_ui: bool) -> Vec<NavItem> {
+    let dashboard = NavItem {
+        path: "/",
+        label: "Dashboard",
+        icon: LuLayoutDashboard,
+        divider_before: false,
+    };
+    let effects = NavItem {
+        path: "/effects",
+        label: "Effects",
+        icon: LuLayers,
+        divider_before: false,
+    };
+    let devices = NavItem {
+        path: "/devices",
+        label: "Devices",
+        icon: LuCpu,
+        divider_before: false,
+    };
+    let settings = NavItem {
+        path: "/settings",
+        label: "Settings",
+        icon: LuSettings,
+        divider_before: true,
+    };
+
+    if studio_ui {
+        vec![
+            dashboard,
+            effects,
+            NavItem {
+                path: "/studio",
+                label: "Studio",
+                icon: LuLayoutTemplate,
+                divider_before: false,
+            },
+            NavItem {
+                path: "/media",
+                label: "Media",
+                icon: LuFolder,
+                divider_before: false,
+            },
+            devices,
+            settings,
+        ]
+    } else {
+        vec![
+            dashboard,
+            effects,
+            NavItem {
+                path: "/assets",
+                label: "Assets",
+                icon: LuFolder,
+                divider_before: false,
+            },
+            NavItem {
+                path: "/layout",
+                label: "Layout",
+                icon: LuLayoutTemplate,
+                divider_before: false,
+            },
+            devices,
+            NavItem {
+                path: "/displays",
+                label: "Displays",
+                icon: LuMonitor,
+                divider_before: false,
+            },
+            settings,
+        ]
+    }
 }
 
 // ── Sidebar Audio Toggle ───────────────────────────────────────────────────

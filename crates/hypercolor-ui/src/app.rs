@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::components::{Route, Router, Routes};
-use leptos_router::hooks::use_location;
+use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
@@ -25,9 +25,12 @@ use crate::pages::display_preview::DisplayPreviewPage;
 use crate::pages::displays::DisplaysPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
+use crate::pages::media::MediaPage;
 use crate::pages::settings::SettingsPage;
+use crate::pages::studio::StudioPage;
 use crate::preferences::{EffectPreferences, PreferencesStore};
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
+use crate::storage;
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
 use crate::ws::messages::scene_event_affects_active_effect;
@@ -86,6 +89,16 @@ pub struct WsContext {
 #[derive(Clone, Copy)]
 pub struct FrameAnalysisContext {
     pub live_canvas: ReadSignal<Option<CanvasFrameAnalysis>>,
+}
+
+/// Browser-local `studio_ui_beta` flag (Spec 65 §11.1). Gates the new
+/// Studio and Media pages plus the §5.1 nav set. Persisted to
+/// `localStorage` under `hc-studio-ui-beta` — never daemon config, so it
+/// flips against a live daemon without a rebuild.
+#[derive(Clone, Copy)]
+pub struct StudioFlag {
+    pub enabled: ReadSignal<bool>,
+    pub set_enabled: WriteSignal<bool>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -584,6 +597,17 @@ pub fn App() -> impl IntoView {
         live_canvas: live_canvas_analysis,
     });
 
+    // Studio UI beta flag — seeded from localStorage, persisted on change.
+    let (studio_ui_beta, set_studio_ui_beta) =
+        signal(storage::get_parsed::<bool>("hc-studio-ui-beta").unwrap_or(false));
+    Effect::new(move |_| {
+        storage::set("hc-studio-ui-beta", &studio_ui_beta.get().to_string());
+    });
+    provide_context(StudioFlag {
+        enabled: studio_ui_beta,
+        set_enabled: set_studio_ui_beta,
+    });
+
     Effect::new(move |_| {
         let Some(frame) = ws.canvas_frame.get() else {
             return;
@@ -929,6 +953,8 @@ fn AppRoutes() -> impl IntoView {
                         <Route path=path!("/effects") view=EffectsPage />
                         <Route path=path!("/effects/:id") view=EffectsPage />
                         <Route path=path!("/assets") view=AssetsPage />
+                        <Route path=path!("/studio") view=StudioRoute />
+                        <Route path=path!("/media") view=MediaRoute />
                         <Route path=path!("/layout") view=LayoutPage />
                         <Route path=path!("/devices") view=DevicesPage />
                         <Route path=path!("/displays") view=DisplaysPage />
@@ -940,4 +966,44 @@ fn AppRoutes() -> impl IntoView {
             <DisplayPreviewPage />
         </Show>
     }
+}
+
+/// Whether the Studio UI beta surfaces are reachable: the `studio_ui_beta`
+/// flag is on, or a `?dev` query override is present. The override lets a
+/// developer preview a half-built beta page without flipping the global
+/// flag (Spec 65 §11.2).
+fn studio_beta_allowed() -> Memo<bool> {
+    let flag = expect_context::<StudioFlag>();
+    let query = use_query_map();
+    Memo::new(move |_| {
+        flag.enabled.get() || query.with(|params| params.get("dev").is_some())
+    })
+}
+
+/// `/studio` route guard. Off-flag without a `?dev` override, redirects to
+/// `/assets` so the beta page is never reached by accident.
+#[component]
+fn StudioRoute() -> impl IntoView {
+    let allowed = studio_beta_allowed();
+    let navigate = use_navigate();
+    Effect::new(move |_| {
+        if !allowed.get() {
+            navigate("/assets", Default::default());
+        }
+    });
+    move || allowed.get().then(|| view! { <StudioPage /> })
+}
+
+/// `/media` route guard. Off-flag without a `?dev` override, redirects to
+/// `/assets`.
+#[component]
+fn MediaRoute() -> impl IntoView {
+    let allowed = studio_beta_allowed();
+    let navigate = use_navigate();
+    Effect::new(move |_| {
+        if !allowed.get() {
+            navigate("/assets", Default::default());
+        }
+    });
+    move || allowed.get().then(|| view! { <MediaPage /> })
 }
