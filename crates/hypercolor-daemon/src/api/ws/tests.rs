@@ -290,6 +290,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
             gpu_sample_cpu_fallback: true,
             cpu_sampling_late_readback: true,
             cpu_readback_skipped: true,
+            gpu_readback_failed: true,
             compositor_backend: CompositorBackendKind::Gpu,
             logical_layer_count: 2,
             render_group_count: 1,
@@ -355,6 +356,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_sample_cpu_fallback"], true);
     assert_eq!(json["timeline"]["cpu_sampling_late_readback"], true);
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
+    assert_eq!(json["timeline"]["gpu_readback_failed"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
     assert_eq!(json["timeline"]["wake_late_ms"], 0.22);
     assert_eq!(json["pacing"]["push_avg_ms"], 0.25);
@@ -369,6 +371,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["pacing"]["gpu_sample_cpu_fallback"], 1);
     assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 1);
+    assert_eq!(json["pacing"]["gpu_readback_failed_frames"], 1);
     assert_eq!(json["pacing"]["output_error_frames"], 1);
     assert_eq!(json["pacing"]["full_frame_copy_frames"], 1);
     assert_eq!(json["render_surfaces"]["scene_pool_slot_count"], 10);
@@ -387,6 +390,10 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["render_surfaces"]["direct_pool_max_ref_count"], 2);
     assert_eq!(json["effect_health"]["errors_total"], 2);
     assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
+    assert_eq!(
+        json["effect_health"]["producer_gpu_readback_failures_total"],
+        1
+    );
     assert_eq!(
         json["effect_health"]["servo_soft_stalls_total"],
         servo_health.soft_stalls_total

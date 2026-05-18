@@ -91,6 +91,7 @@ pub(crate) struct LatestFrameMetrics {
     pub gpu_sample_cpu_fallback: bool,
     pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
+    pub gpu_readback_failed: bool,
     pub compositor_backend: CompositorBackendKind,
     pub logical_layer_count: u32,
     pub render_group_count: u32,
@@ -169,6 +170,7 @@ pub(crate) struct PacingSummary {
     pub gpu_sample_wait_blocked: u32,
     pub gpu_sample_cpu_fallback: u32,
     pub cpu_sampling_late_readback: u32,
+    pub gpu_readback_failed_frames: u32,
     pub output_error_frames: u32,
     pub full_frame_copy_frames: u32,
 }
@@ -178,6 +180,7 @@ pub(crate) struct PacingSummary {
 pub(crate) struct EffectHealthSummary {
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,
+    pub producer_gpu_readback_failures_total: u64,
 }
 
 /// Snapshot exported to API/WebSocket consumers.
@@ -225,9 +228,16 @@ impl PerformanceTracker {
             gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
             gpu_sample_cpu_fallback: metrics.gpu_sample_cpu_fallback,
             cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
+            gpu_readback_failed: metrics.gpu_readback_failed,
             output_error: metrics.output_errors > 0,
             full_frame_copy: metrics.full_frame_copy_count > 0,
         });
+        if metrics.gpu_readback_failed {
+            self.effect_health.producer_gpu_readback_failures_total = self
+                .effect_health
+                .producer_gpu_readback_failures_total
+                .saturating_add(1);
+        }
 
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
             let _ = self.frame_times_us.pop_front();
@@ -319,6 +329,7 @@ struct FramePacingSample {
     gpu_sample_wait_blocked: bool,
     gpu_sample_cpu_fallback: bool,
     cpu_sampling_late_readback: bool,
+    gpu_readback_failed: bool,
     output_error: bool,
     full_frame_copy: bool,
 }
@@ -448,6 +459,13 @@ fn summarize_pacing(
             pacing_history
                 .iter()
                 .filter(|sample| sample.cpu_sampling_late_readback)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        gpu_readback_failed_frames: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.gpu_readback_failed)
                 .count(),
         )
         .unwrap_or(u32::MAX),

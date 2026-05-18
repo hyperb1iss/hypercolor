@@ -1173,12 +1173,16 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: performance_snapshot.pacing.gpu_sample_cpu_fallback,
                 cpu_sampling_late_readback: performance_snapshot.pacing.cpu_sampling_late_readback,
+                gpu_readback_failed_frames: performance_snapshot.pacing.gpu_readback_failed_frames,
                 output_error_frames: performance_snapshot.pacing.output_error_frames,
                 full_frame_copy_frames: performance_snapshot.pacing.full_frame_copy_frames,
             },
             effect_health: MetricsEffectHealth {
                 errors_total: performance_snapshot.effect_health.errors_total,
                 fallbacks_applied_total: performance_snapshot.effect_health.fallbacks_applied_total,
+                producer_gpu_readback_failures_total: performance_snapshot
+                    .effect_health
+                    .producer_gpu_readback_failures_total,
                 servo_soft_stalls_total: servo_health.soft_stalls_total,
                 servo_breaker_opens_total: servo_health.breaker_opens_total,
                 servo_session_creates_total: servo_health.session_creates_total,
@@ -1253,6 +1257,7 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_cpu_fallback: latest_frame.gpu_sample_cpu_fallback,
                 cpu_sampling_late_readback: latest_frame.cpu_sampling_late_readback,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,
+                gpu_readback_failed: latest_frame.gpu_readback_failed,
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
                 wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
                 logical_layer_count: latest_frame.logical_layer_count,

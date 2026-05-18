@@ -169,6 +169,16 @@ graphics-soak-30 *args='':
     mkdir -p target/graphics-soak
     bun scripts/graphics-pipeline-soak.ts --duration 30m --out target/graphics-soak/latest.json {{ args }}
 
+# Observe Servo GPU import/readback performance on an already-running daemon
+servo-import-bench *args='':
+    mkdir -p target/servo-import-bench
+    bun scripts/servo-gpu-import-benchmark.ts {{ args }}
+
+# Run repeatable Servo GPU import A/B measurements with managed daemon restarts
+servo-import-compare *args='':
+    mkdir -p target/servo-import-bench
+    bun scripts/servo-gpu-import-compare.ts {{ args }}
+
 # Compile and smoke-run benchmark targets without full measurement
 bench-smoke:
     ./scripts/cargo-cache-build.sh cargo test -p hypercolor-core --bench core_pipeline
@@ -547,11 +557,12 @@ dev *args='':
     else
       echo "[dev] compositor acceleration mode: config"
     fi
+    servo_gpu_import_mode="${HYPERCOLOR_SERVO_GPU_IMPORT_MODE:-auto}"
+    daemon_args+=(--servo-gpu-import-mode "${servo_gpu_import_mode}")
     if [[ -n "${HYPERCOLOR_SERVO_GPU_IMPORT_MODE:-}" ]]; then
-      daemon_args+=(--servo-gpu-import-mode "${HYPERCOLOR_SERVO_GPU_IMPORT_MODE}")
-      echo "[dev] Servo GPU import mode: ${HYPERCOLOR_SERVO_GPU_IMPORT_MODE}"
+      echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode}"
     else
-      echo "[dev] Servo GPU import mode: config"
+      echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode} (default)"
     fi
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     sleep 2

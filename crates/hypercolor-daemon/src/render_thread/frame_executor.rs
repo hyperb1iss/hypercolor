@@ -296,7 +296,7 @@ pub(crate) async fn execute_frame(
         preview_surface,
         bypassed: _,
         backend: compositor_backend,
-        gpu_readback_failed: _,
+        gpu_readback_failed,
         compositor_acceleration_downgraded,
     } = render_stage.composed_frame;
     if compositor_acceleration_downgraded {
@@ -386,6 +386,7 @@ pub(crate) async fn execute_frame(
         gpu_sample_cpu_fallback,
         cpu_sampling_late_readback,
         cpu_readback_skipped,
+        gpu_readback_failed,
         compositor_backend,
         output_errors,
         logical_layer_count: render_stage.logical_layer_count,

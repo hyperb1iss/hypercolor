@@ -16,6 +16,8 @@ type Config = {
     maxFrameCopyCount: number
     maxPoolSaturationDelta: number
     maxEffectFallbackDelta: number
+    maxProducerGpuReadbackFailureDelta: number
+    maxGpuReadbackFailedFrames: number
     maxServoStallDelta: number
     maxServoBreakerDelta: number
     maxServoFailureDelta: number
@@ -78,6 +80,8 @@ const defaults: Config = {
     maxFrameCopyCount: 0,
     maxPoolSaturationDelta: 0,
     maxEffectFallbackDelta: 0,
+    maxProducerGpuReadbackFailureDelta: 0,
+    maxGpuReadbackFailedFrames: 0,
     maxServoStallDelta: 0,
     maxServoBreakerDelta: 0,
     maxServoFailureDelta: 0,
@@ -110,6 +114,10 @@ Options:
   --max-frame-copy-count <n>           Maximum per-frame full-copy count [${defaults.maxFrameCopyCount}]
   --max-pool-saturation-delta <n>      Maximum render-surface pool saturation reallocs [${defaults.maxPoolSaturationDelta}]
   --max-effect-fallback-delta <n>      Maximum effect fallbacks [${defaults.maxEffectFallbackDelta}]
+  --max-producer-gpu-readback-failure-delta <n>
+                                      Maximum producer GPU readback fallback failures [${defaults.maxProducerGpuReadbackFailureDelta}]
+  --max-gpu-readback-failed-frames <n>
+                                      Maximum rolling frames with failed GPU readback [${defaults.maxGpuReadbackFailedFrames}]
   --max-servo-stall-delta <n>          Maximum Servo soft stalls [${defaults.maxServoStallDelta}]
   --max-servo-breaker-delta <n>        Maximum Servo breaker opens [${defaults.maxServoBreakerDelta}]
   --max-servo-failure-delta <n>        Maximum total Servo lifecycle failures [${defaults.maxServoFailureDelta}]
@@ -127,6 +135,9 @@ function parseArgs(argv: string[]): Config {
 
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index]
+        if (arg === "--") {
+            continue
+        }
         if (arg === "--help" || arg === "-h") {
             console.log(usage())
             process.exit(0)
@@ -185,6 +196,12 @@ function parseArgs(argv: string[]): Config {
                 break
             case "--max-effect-fallback-delta":
                 config.maxEffectFallbackDelta = parseNonNegativeInt(arg, value)
+                break
+            case "--max-producer-gpu-readback-failure-delta":
+                config.maxProducerGpuReadbackFailureDelta = parseNonNegativeInt(arg, value)
+                break
+            case "--max-gpu-readback-failed-frames":
+                config.maxGpuReadbackFailedFrames = parseNonNegativeInt(arg, value)
                 break
             case "--max-servo-stall-delta":
                 config.maxServoStallDelta = parseNonNegativeInt(arg, value)
@@ -450,6 +467,20 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     )
     checks.push(
         checkAtMost(
+            "producer GPU readback failure delta",
+            delta(first.data, last.data, ["effect_health", "producer_gpu_readback_failures_total"]),
+            config.maxProducerGpuReadbackFailureDelta,
+        ),
+    )
+    checks.push(
+        checkAtMost(
+            "GPU readback failed frames",
+            maxAt(observed, ["pacing", "gpu_readback_failed_frames"]),
+            config.maxGpuReadbackFailedFrames,
+        ),
+    )
+    checks.push(
+        checkAtMost(
             "Servo soft stall delta",
             delta(first.data, last.data, ["effect_health", "servo_soft_stalls_total"]),
             config.maxServoStallDelta,
@@ -494,6 +525,11 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         maxFrameCopyCount: maxAt(observed, ["copies", "full_frame_count"]),
         poolSaturationDelta,
         effectFallbackDelta: delta(first.data, last.data, ["effect_health", "fallbacks_applied_total"]),
+        producerGpuReadbackFailureDelta: delta(first.data, last.data, [
+            "effect_health",
+            "producer_gpu_readback_failures_total",
+        ]),
+        maxGpuReadbackFailedFrames: maxAt(observed, ["pacing", "gpu_readback_failed_frames"]),
         servoFailureDelta,
         servoQueueWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"])),
         servoQueueWaitMaxGrowthMs: round(

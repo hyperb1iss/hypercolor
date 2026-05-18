@@ -99,6 +99,7 @@ pub struct LatestFrameStatus {
     pub gpu_sample_cpu_fallback: bool,
     pub cpu_sampling_late_readback: bool,
     pub cpu_readback_skipped: bool,
+    pub gpu_readback_failed: bool,
     pub total_ms: f64,
     pub wake_late_ms: f64,
     pub jitter_ms: f64,
@@ -140,6 +141,7 @@ pub struct RenderSurfaceStatus {
 pub struct EffectHealthStatus {
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,
+    pub producer_gpu_readback_failures_total: u64,
     pub servo_soft_stalls_total: u64,
     pub servo_breaker_opens_total: u64,
     pub servo_session_creates_total: u64,
@@ -297,6 +299,9 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let effect_health = EffectHealthStatus {
         errors_total: performance.effect_health.errors_total,
         fallbacks_applied_total: performance.effect_health.fallbacks_applied_total,
+        producer_gpu_readback_failures_total: performance
+            .effect_health
+            .producer_gpu_readback_failures_total,
         servo_soft_stalls_total: servo_health.soft_stalls_total,
         servo_breaker_opens_total: servo_health.breaker_opens_total,
         servo_session_creates_total: servo_health.session_creates_total,
@@ -768,6 +773,7 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
         cpu_sampling_late_readback: frame.cpu_sampling_late_readback,
         cpu_readback_skipped: frame.cpu_readback_skipped,
+        gpu_readback_failed: frame.gpu_readback_failed,
         total_ms: round_2(us_to_ms(frame.total_us)),
         wake_late_ms: round_2(us_to_ms(frame.wake_late_us)),
         jitter_ms: round_2(us_to_ms(frame.jitter_us)),
@@ -945,6 +951,7 @@ mod tests {
                 gpu_sample_cpu_fallback: true,
                 cpu_sampling_late_readback: true,
                 cpu_readback_skipped: true,
+                gpu_readback_failed: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
                 logical_layer_count: 2,
                 render_group_count: 1,
@@ -1056,6 +1063,7 @@ mod tests {
         assert_eq!(json["data"]["latest_frame"]["publish_preview_ms"], 0.06);
         assert_eq!(json["data"]["latest_frame"]["publish_events_ms"], 0.01);
         assert_eq!(json["data"]["latest_frame"]["cpu_readback_skipped"], true);
+        assert_eq!(json["data"]["latest_frame"]["gpu_readback_failed"], true);
         assert_eq!(
             json["data"]["latest_frame"]["render_surfaces"]["slot_count"],
             6
@@ -1069,6 +1077,10 @@ mod tests {
         assert_eq!(json["data"]["latest_frame"]["output_errors"], 0);
         assert_eq!(json["data"]["effect_health"]["errors_total"], 1);
         assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);
+        assert_eq!(
+            json["data"]["effect_health"]["producer_gpu_readback_failures_total"],
+            1
+        );
         assert_eq!(
             json["data"]["effect_health"]["servo_soft_stalls_total"],
             servo_health.soft_stalls_total

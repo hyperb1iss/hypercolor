@@ -814,6 +814,7 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_wait_blocked: u32,
     pub(super) gpu_sample_cpu_fallback: u32,
     pub(super) cpu_sampling_late_readback: u32,
+    pub(super) gpu_readback_failed_frames: u32,
     pub(super) output_error_frames: u32,
     pub(super) full_frame_copy_frames: u32,
 }
@@ -826,6 +827,7 @@ pub(super) struct MetricsPacing {
 pub(super) struct MetricsEffectHealth {
     pub(super) errors_total: u64,
     pub(super) fallbacks_applied_total: u64,
+    pub(super) producer_gpu_readback_failures_total: u64,
     pub(super) servo_soft_stalls_total: u64,
     pub(super) servo_breaker_opens_total: u64,
     pub(super) servo_session_creates_total: u64,
@@ -885,6 +887,7 @@ pub(super) struct MetricsTimeline {
     pub(super) gpu_sample_cpu_fallback: bool,
     pub(super) cpu_sampling_late_readback: bool,
     pub(super) cpu_readback_skipped: bool,
+    pub(super) gpu_readback_failed: bool,
     pub(super) budget_ms: f64,
     pub(super) wake_late_ms: f64,
     pub(super) logical_layer_count: u32,
