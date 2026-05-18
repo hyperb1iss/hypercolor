@@ -1027,7 +1027,7 @@ pub fn LayoutBuilder(
                                  border-color: var(--color-border-subtle); \
                                  color: var(--color-text-secondary)"
                             }
-                            title="Show devices to place on the canvas"
+                            title="Show the device palette"
                             on:click=move |_| palette_drawer.update(|open| *open = !*open)
                         >
                             <Icon icon=LuCpu width="13px" height="13px" />
@@ -1363,7 +1363,7 @@ pub fn LayoutBuilder(
                             <div class="flex shrink-0 items-center justify-between gap-2
                                         border-b border-edge-subtle/55 px-3 py-2">
                                 <span class="text-[10px] text-fg-tertiary/80">
-                                    "Drag a device onto the canvas"
+                                    "Pick a device to add to the layout"
                                 </span>
                                 <button
                                     class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md
