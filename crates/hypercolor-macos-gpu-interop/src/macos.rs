@@ -91,6 +91,15 @@ pub enum MacosGpuInteropError {
     #[error("macOS Servo hardware context has no bound Surfman surface")]
     MissingServoSurface,
 
+    /// The IOSurface pixel format does not match the expected import format.
+    #[error("IOSurface pixel format mismatch: expected 0x{expected:08x}, got 0x{actual:08x}")]
+    IosurfacePixelFormatMismatch {
+        /// Expected IOSurface pixel format.
+        expected: u32,
+        /// Actual IOSurface pixel format.
+        actual: u32,
+    },
+
     /// Metal could not create a texture from the IOSurface.
     #[error("Metal failed to create texture from IOSurface")]
     MetalTextureCreateFailed,

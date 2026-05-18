@@ -18,6 +18,8 @@ use webrender_api::units::DeviceIntRect;
 
 use crate::{ImportedFrameFormat, MacosGpuInteropError, Result};
 
+const IOSURFACE_PIXEL_FORMAT_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
+
 /// Origin convention for a native macOS Servo frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -99,16 +101,24 @@ impl MacosHardwareRenderingContext {
             .ok_or(MacosGpuInteropError::MissingServoSurface)?;
         let info = device.surface_info(&surface);
         let native_surface = device.native_surface(&surface);
-        let frame = MacosServoNativeFrame {
-            width: info.size.width as u32,
-            height: info.size.height as u32,
-            format: ImportedFrameFormat::Bgra8Unorm,
-            origin: MacosServoFrameOrigin::BottomLeft,
-            surface_id: info.id.0,
-            iosurface: native_surface.0,
+        let actual_format = native_surface.0.pixel_format();
+        let frame = if actual_format == IOSURFACE_PIXEL_FORMAT_BGRA {
+            Ok(MacosServoNativeFrame {
+                width: info.size.width as u32,
+                height: info.size.height as u32,
+                format: ImportedFrameFormat::Bgra8Unorm,
+                origin: MacosServoFrameOrigin::BottomLeft,
+                surface_id: info.id.0,
+                iosurface: native_surface.0,
+            })
+        } else {
+            Err(MacosGpuInteropError::IosurfacePixelFormatMismatch {
+                expected: IOSURFACE_PIXEL_FORMAT_BGRA,
+                actual: actual_format,
+            })
         };
         bind_surface(&device, &mut context, surface)?;
-        Ok(frame)
+        frame
     }
 
     fn framebuffer(&self) -> Option<NativeFramebuffer> {
@@ -123,20 +133,34 @@ impl MacosHardwareRenderingContext {
     fn resize_surface(&self, size: PhysicalSize<u32>) -> Result<()> {
         let device = self.device.borrow();
         let mut context = self.context.borrow_mut();
-        let mut surface = device
+        let old_surface = device
             .unbind_surface_from_context(&mut context)
             .map_err(context_error("unbind surface for resize"))?
             .ok_or(MacosGpuInteropError::MissingServoSurface)?;
-        if let Err(error) = device.resize_surface(
+        let new_surface = match device.create_surface(
             &context,
-            &mut surface,
-            Size2D::new(size.width as i32, size.height as i32),
+            SurfaceAccess::GPUOnly,
+            SurfaceType::Generic {
+                size: Size2D::new(size.width as i32, size.height as i32),
+            },
         ) {
-            let error = context_error("resize IOSurface-backed surface")(error);
-            bind_surface(&device, &mut context, surface)?;
-            return Err(error);
+            Ok(surface) => surface,
+            Err(error) => {
+                let error = context_error("create resized IOSurface-backed surface")(error);
+                bind_surface(&device, &mut context, old_surface)?;
+                return Err(error);
+            }
+        };
+
+        if let Err((error, new_surface)) = device.bind_surface_to_context(&mut context, new_surface)
+        {
+            destroy_surface_or_forget(&device, &mut context, new_surface);
+            bind_surface(&device, &mut context, old_surface)?;
+            return Err(context_error("bind resized IOSurface-backed surface")(
+                error,
+            ));
         }
-        bind_surface(&device, &mut context, surface)?;
+        destroy_surface_or_forget(&device, &mut context, old_surface);
         Ok(())
     }
 
@@ -258,10 +282,14 @@ impl RenderingContext for MacosHardwareRenderingContext {
     fn destroy_texture(&self, surface_texture: SurfaceTexture) -> Option<Surface> {
         let device = self.device.borrow();
         let mut context = self.context.borrow_mut();
-        device
-            .destroy_surface_texture(&mut context, surface_texture)
-            .map_err(|(error, _)| error)
-            .ok()
+        match device.destroy_surface_texture(&mut context, surface_texture) {
+            Ok(surface) => Some(surface),
+            Err((error, surface_texture)) => {
+                std::mem::forget(surface_texture);
+                tracing::warn!(?error, "failed to destroy macOS Servo surface texture");
+                None
+            }
+        }
     }
 
     fn connection(&self) -> Option<Connection> {
