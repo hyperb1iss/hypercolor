@@ -6,10 +6,11 @@ mod api;
 #[path = "../src/ws/messages.rs"]
 mod messages;
 
-use hypercolor_types::event::RenderGroupChangeKind;
+use hypercolor_types::event::{LayerHealth, RenderGroupChangeKind};
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use messages::{
-    extract_effect_error_hint, extract_scene_event_hint, scene_event_affects_active_effect,
+    extract_effect_error_hint, extract_layer_health, extract_scene_event_hint,
+    scene_event_affects_active_effect,
 };
 
 #[test]
@@ -108,4 +109,39 @@ fn extract_effect_error_hint_parses_fallback_payload() {
     assert_eq!(hint.effect_id, "effect-1");
     assert_eq!(hint.error, "render exploded");
     assert_eq!(hint.fallback.as_deref(), Some("clear_groups"));
+}
+
+#[test]
+fn extract_layer_health_parses_a_unit_state() {
+    let (layer_id, health) = extract_layer_health(&serde_json::json!({
+        "scene_id": "scene-1",
+        "group_id": "group-1",
+        "layer_id": "layer-7",
+        "health": "stalled",
+    }))
+    .expect("layer health hint");
+
+    assert_eq!(layer_id, "layer-7");
+    assert_eq!(health, LayerHealth::Stalled);
+}
+
+#[test]
+fn extract_layer_health_parses_a_failure_reason() {
+    let (_, health) = extract_layer_health(&serde_json::json!({
+        "layer_id": "layer-7",
+        "health": { "failed": { "reason": "decode error" } },
+    }))
+    .expect("layer health hint");
+
+    assert_eq!(
+        health,
+        LayerHealth::Failed {
+            reason: "decode error".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn extract_layer_health_rejects_a_payload_without_a_layer_id() {
+    assert!(extract_layer_health(&serde_json::json!({ "health": "active" })).is_none());
 }

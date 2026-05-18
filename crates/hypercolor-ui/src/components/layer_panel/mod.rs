@@ -36,6 +36,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
+use crate::app::WsContext;
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
@@ -96,6 +97,12 @@ pub fn LayerPanel(
             .and_then(Result::ok)
             .map(|stack| stack.layers_version)
     });
+
+    // Per-layer runtime health streams in over the WebSocket, independent
+    // of the layer stack itself; an absent context means no health yet.
+    let ws = use_context::<WsContext>();
+    let layer_health =
+        Signal::derive(move || ws.map(|ws| ws.layer_health.get()).unwrap_or_default());
 
     let (show_picker, set_show_picker) = signal(false);
 
@@ -226,6 +233,10 @@ pub fn LayerPanel(
                                         "Top"
                                     </div>
                                     {rows.into_iter().map(|(stack_index, layer)| {
+                                        let row_layer_id = layer.id.to_string();
+                                        let row_health = Signal::derive(move || {
+                                            layer_health.with(|map| map.get(&row_layer_id).cloned())
+                                        });
                                         view! {
                                             <LayerRow
                                                 scene_id=scene_id.clone()
@@ -237,6 +248,7 @@ pub fn LayerPanel(
                                                 layers_version=version
                                                 media_names=names.clone()
                                                 effect_names=effect_name_map.clone()
+                                                health=row_health
                                                 on_layers_mutated=on_layers_mutated
                                             />
                                         }

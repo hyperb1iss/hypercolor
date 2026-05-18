@@ -1,7 +1,10 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
+
+use hypercolor_types::event::LayerHealth;
 
 use hypercolor_leptos_ext::events::{
     EventHandle, document as browser_document, document_event_target, on, window as browser_window,
@@ -75,6 +78,7 @@ pub struct WsManager {
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub last_control_surface_event: ReadSignal<Option<ControlSurfaceEventHint>>,
+    pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
@@ -109,6 +113,7 @@ impl WsManager {
         let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
         let (last_control_surface_event, set_last_control_surface_event) =
             signal(None::<ControlSurfaceEventHint>);
+        let (layer_health, set_layer_health) = signal(HashMap::<String, LayerHealth>::new());
         let (audio_level, set_audio_level) = signal(AudioLevel::default());
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
@@ -307,6 +312,7 @@ impl WsManager {
                         &set_last_scene_event,
                         &set_last_effect_error,
                         &set_last_control_surface_event,
+                        &set_layer_health,
                         &set_audio_level,
                         &set_engine_preview_target,
                         &set_preview_target_fps,
@@ -560,6 +566,7 @@ impl WsManager {
             last_scene_event,
             last_effect_error,
             last_control_surface_event,
+            layer_health,
             audio_level,
             preview_target_fps,
             set_preview_cap,

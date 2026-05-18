@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use hypercolor_leptos_ext::events::Change;
+use hypercolor_types::event::LayerHealth;
 use hypercolor_types::layer::SceneLayer;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -27,6 +28,7 @@ pub fn LayerRow(
     layers_version: u64,
     media_names: HashMap<String, String>,
     effect_names: HashMap<String, String>,
+    #[prop(into)] health: Signal<Option<LayerHealth>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let source = layer_source_label(&layer.source, &media_names, &effect_names);
@@ -97,7 +99,10 @@ pub fn LayerRow(
         <article class="rounded-xl border border-edge-subtle/70 bg-surface-sunken/45 px-3 py-3 card-hover">
             <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
-                    <div class="truncate text-sm font-semibold text-fg-primary">{title}</div>
+                    <div class="flex items-center gap-1.5">
+                        <span class="truncate text-sm font-semibold text-fg-primary">{title}</span>
+                        {move || health_pill(health.get())}
+                    </div>
                     <div class="mt-0.5 truncate text-[11px] text-fg-tertiary">{source}</div>
                 </div>
                 <div class="flex shrink-0 items-center gap-1">
@@ -284,4 +289,46 @@ fn LayerSlider(
             <span class="text-right">{format!("{value:.2}")}</span>
         </label>
     }
+}
+
+/// A small status pill for a layer's runtime health. A healthy (`Active`)
+/// or not-yet-reported layer shows nothing — the pill flags only trouble,
+/// so the rail stays calm until something needs attention.
+fn health_pill(health: Option<LayerHealth>) -> impl IntoView {
+    health.and_then(|health| {
+        let (label, classes, tooltip): (&str, &str, String) = match health {
+            LayerHealth::Active => return None,
+            LayerHealth::Loading => (
+                "Loading",
+                "border-cyan-300/30 bg-cyan-300/10 text-cyan-200",
+                "Layer is still loading".to_owned(),
+            ),
+            LayerHealth::Stalled => (
+                "Stalled",
+                "border-amber-300/30 bg-amber-300/10 text-amber-200",
+                "Layer producer has stalled".to_owned(),
+            ),
+            LayerHealth::AssetMissing => (
+                "Missing",
+                "border-red-400/30 bg-red-400/10 text-red-200",
+                "Layer asset is missing".to_owned(),
+            ),
+            LayerHealth::Failed { reason } => (
+                "Failed",
+                "border-red-400/30 bg-red-400/10 text-red-200",
+                format!("Layer failed: {reason}"),
+            ),
+        };
+        Some(view! {
+            <span
+                class=format!(
+                    "shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold \
+                     uppercase tracking-wide {classes}",
+                )
+                title=tooltip
+            >
+                {label}
+            </span>
+        })
+    })
 }

@@ -9,6 +9,7 @@ use leptos_router::path;
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 use crate::api;
@@ -83,6 +84,9 @@ pub struct WsContext {
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
     pub last_control_surface_event: ReadSignal<Option<ControlSurfaceEventHint>>,
+    /// Per-layer runtime health, keyed by layer id, fed by the daemon's
+    /// `layer_health_changed` events. A layer with no entry is healthy.
+    pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
 }
 
@@ -585,6 +589,7 @@ pub fn App() -> impl IntoView {
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
         last_control_surface_event: ws.last_control_surface_event,
+        layer_health: ws.layer_health,
         audio_level: ws.audio_level,
     };
     provide_context(ws_ctx);

@@ -1,11 +1,13 @@
 //! JSON and binary message handlers for the daemon WebSocket protocol.
 
+use std::collections::HashMap;
+
 use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
 };
-use hypercolor_types::event::RenderGroupChangeKind;
+use hypercolor_types::event::{LayerHealth, RenderGroupChangeKind};
 use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 use leptos::prelude::*;
 use serde::Deserialize;
@@ -46,6 +48,7 @@ pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_state_changed",
     "device_discovery_completed",
 ];
+pub const LAYER_HEALTH_EVENTS: &[&str] = &["layer_health_changed"];
 
 // ── Metrics & Event Types ───────────────────────────────────────────────────
 
@@ -260,6 +263,7 @@ pub(super) fn handle_json_message(
     set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
     set_last_effect_error: &WriteSignal<Option<EffectErrorHint>>,
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
+    set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
@@ -385,6 +389,13 @@ pub(super) fn handle_json_message(
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
                     set_last_device_event.set(Some(hint));
+                } else if LAYER_HEALTH_EVENTS.contains(&event_type)
+                    && let Some((layer_id, health)) =
+                        extract_layer_health(msg.get("data").unwrap_or(&serde_json::Value::Null))
+                {
+                    set_layer_health.update(|map| {
+                        map.insert(layer_id, health);
+                    });
                 }
             }
         }
@@ -451,6 +462,14 @@ pub(crate) fn extract_effect_error_hint(
         error,
         fallback,
     })
+}
+
+/// Decode a `layer_health_changed` event into its `(layer_id, health)`.
+/// Layer ids are scene-unique UUIDs, so the id alone keys the health map.
+pub(crate) fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
+    let layer_id = data.get("layer_id")?.as_str()?.to_owned();
+    let health = serde_json::from_value::<LayerHealth>(data.get("health")?.clone()).ok()?;
+    Some((layer_id, health))
 }
 
 pub(crate) fn extract_scene_event_hint(
