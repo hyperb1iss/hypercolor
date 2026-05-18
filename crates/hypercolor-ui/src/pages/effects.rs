@@ -15,11 +15,13 @@ use crate::components::page_search_bar::PageSearchBar;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
+use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_leptos_ext::events::document as browser_document;
-use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue, EffectId};
+use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
+use hypercolor_types::scene::{RenderGroupRole, SceneKind, SceneMutationMode};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
@@ -307,6 +309,56 @@ pub fn EffectsPage() -> impl IntoView {
         })
     });
 
+    // Apply-target selector (§5.3). The active scene's LED zones drive an
+    // explicit target picker that appears only once a scene has more than
+    // one zone — a single-zone scene keeps the unchanged "apply effect"
+    // behavior with no extra control.
+    let effects_scene = LocalResource::new(api::fetch_active_scene);
+    // The Custom LED zones — the §5.3 "specific zone" targets. The Primary
+    // group is the "Default zone" target and is not listed separately.
+    let custom_zones = Memo::new(move |_| {
+        effects_scene
+            .get()
+            .and_then(Result::ok)
+            .flatten()
+            .map(|scene| {
+                scene
+                    .groups
+                    .iter()
+                    .filter(|group| group.role == RenderGroupRole::Custom)
+                    .map(|group| (group.id.to_string(), group.name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    // Every LED zone id — the targets for the "all light zones" choice.
+    let all_led_zone_ids = Memo::new(move |_| {
+        effects_scene
+            .get()
+            .and_then(Result::ok)
+            .flatten()
+            .map(|scene| {
+                scene
+                    .groups
+                    .iter()
+                    .filter(|group| group.role != RenderGroupRole::Display)
+                    .map(|group| group.id.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    // A genuinely multi-zone scene is the Default zone plus at least one
+    // Custom zone; only then does the apply-target selector appear.
+    let multi_zone = Memo::new(move |_| !custom_zones.get().is_empty());
+    // Encoded apply target: `default`, `all`, or a specific zone id.
+    let apply_target = RwSignal::new("default".to_owned());
+    let target_options = Memo::new(move |_| {
+        let mut options = vec![("default".to_owned(), "Default zone".to_owned())];
+        options.extend(custom_zones.get());
+        options.push(("all".to_owned(), "All light zones".to_owned()));
+        options
+    });
+
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
         let is_display_face = fx.effects_index.with(|effects| {
@@ -319,7 +371,23 @@ pub fn EffectsPage() -> impl IntoView {
             toasts::toast_info("Display faces are assigned from the Displays page.");
             return;
         }
-        fx.apply_effect(id);
+        // A single-zone scene, or the explicit Default-zone target, uses
+        // the unchanged effects/apply path. A specific-zone or all-zones
+        // target instead replaces each zone's effect layer (§5.3).
+        let target = apply_target.get_untracked();
+        if !multi_zone.get_untracked() || target == "default" {
+            fx.apply_effect(id);
+            return;
+        }
+        let zone_ids: Vec<String> = if target == "all" {
+            all_led_zone_ids.get_untracked()
+        } else {
+            vec![target]
+        };
+        let refresh = move || fx.refresh_active_scene();
+        leptos::task::spawn_local(async move {
+            apply_effect_to_zones(zone_ids, id, refresh).await;
+        });
     });
 
     let on_return_to_default = Callback::new(move |_| {
@@ -638,6 +706,25 @@ pub fn EffectsPage() -> impl IntoView {
                     </div>
                 </HeaderToolbar>
             </PageHeader>
+
+            {move || multi_zone.get().then(|| view! {
+                <div class="px-6 pt-4">
+                    <div class="flex items-center gap-2.5 rounded-xl border border-edge-subtle/70 bg-surface-raised/40 px-4 py-2.5">
+                        <span class=label_class(LabelSize::Micro, LabelTone::Default)>
+                            "Apply to"
+                        </span>
+                        <SilkSelect
+                            value=Signal::derive(move || apply_target.get())
+                            options=Signal::derive(move || target_options.get())
+                            on_change=Callback::new(move |value| apply_target.set(value))
+                            class="border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1 text-[12px]"
+                        />
+                        <span class="text-[11px] text-fg-tertiary/60">
+                            "— where applying an effect lands"
+                        </span>
+                    </div>
+                </div>
+            })}
 
             {move || named_scene_warning.get().map(|(scene_name, snapshot_locked)| view! {
                 <div class="px-6 pt-4">
@@ -1157,4 +1244,98 @@ fn LoadingSkeleton() -> impl IntoView {
             }).collect_view()}
         </div>
     }
+}
+
+/// Apply an effect to a set of LED zones by replacing each zone's effect
+/// layer (§5.3). The `effects/apply` route is Primary-only, so a
+/// specific-zone or all-zones target instead drives per-group layer
+/// mutations: an existing effect layer has its source swapped, and a zone
+/// with none gets a fresh effect layer.
+async fn apply_effect_to_zones(
+    zone_ids: Vec<String>,
+    effect_id: String,
+    refresh: impl Fn() + 'static,
+) {
+    let Some(source) = effect_layer_source(&effect_id) else {
+        toasts::toast_error("That effect has an invalid identifier");
+        return;
+    };
+    let scene = match api::fetch_active_scene().await {
+        Ok(Some(scene)) => scene,
+        _ => {
+            toasts::toast_error("No active scene is available");
+            return;
+        }
+    };
+    let mut applied = 0_usize;
+    let mut failed = 0_usize;
+    for zone_id in &zone_ids {
+        match apply_effect_layer(&scene.id, zone_id, &source).await {
+            Ok(()) => applied += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    refresh();
+    if failed == 0 {
+        toasts::toast_success(&format!("Effect applied to {applied} zone(s)"));
+    } else if applied == 0 {
+        toasts::toast_error("Effect apply failed");
+    } else {
+        toasts::toast_error(&format!(
+            "Effect applied to {applied} zone(s), {failed} failed"
+        ));
+    }
+}
+
+/// Replace one zone's effect layer with `source`, or add it if the zone
+/// has no effect layer yet. Guarded by the zone's `layers_version`.
+async fn apply_effect_layer(
+    scene_id: &str,
+    zone_id: &str,
+    source: &LayerSource,
+) -> Result<(), String> {
+    let stack = api::list_layers(scene_id, zone_id).await?;
+    let outcome = if let Some(layer) = stack
+        .items
+        .iter()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    {
+        let mut request = api::UpdateLayerRequest::from(layer);
+        request.source = source.clone();
+        api::update_layer(
+            scene_id,
+            zone_id,
+            &layer.id.to_string(),
+            &request,
+            Some(stack.layers_version),
+        )
+        .await?
+    } else {
+        let request = api::CreateLayerRequest {
+            name: None,
+            source: source.clone(),
+            blend: LayerBlendMode::Alpha,
+            opacity: 1.0,
+            transform: LayerTransform::default(),
+            adjust: LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        };
+        api::create_layer(scene_id, zone_id, &request, Some(stack.layers_version)).await?
+    };
+    match outcome {
+        api::LayerStackOutcome::Applied(_) => Ok(()),
+        api::LayerStackOutcome::Stale { .. } => Err("layer stack changed".to_owned()),
+    }
+}
+
+/// Build an `Effect` layer source from an effect id string.
+fn effect_layer_source(effect_id: &str) -> Option<LayerSource> {
+    let uuid = uuid::Uuid::parse_str(effect_id.trim()).ok()?;
+    Some(LayerSource::Effect {
+        effect_id: EffectId::new(uuid),
+        controls: std::collections::HashMap::new(),
+        control_bindings: std::collections::HashMap::new(),
+        preset_id: None,
+    })
 }
