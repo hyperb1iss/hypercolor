@@ -22,7 +22,11 @@ pub(super) fn render_slider(
     let initial = value.get_untracked().as_f32().unwrap_or(0.5);
     let min = def.min.unwrap_or(0.0);
     let max = def.max.unwrap_or(1.0);
-    let step = def.step.unwrap_or(0.01);
+    // Effects routinely ship sliders with no `step`; a flat 0.01 default
+    // turns a 10–120 "Count" into nonsense like 31.84. Derive the step
+    // from the range so coarse controls snap to whole numbers.
+    let step = def.step.unwrap_or_else(|| default_slider_step(min, max));
+    let decimals = step_decimals(step);
     let (slider_value, set_slider_value) = signal(initial);
     let control_name = control_id.clone();
 
@@ -38,14 +42,7 @@ pub(super) fn render_slider(
         accent_rgb, accent_rgb
     );
 
-    let fmt_value = move || {
-        let v = slider_value.get();
-        if (v - v.round()).abs() < 0.001 {
-            format!("{}", v as i32)
-        } else {
-            format!("{:.2}", v)
-        }
-    };
+    let fmt_value = move || format!("{:.*}", decimals, slider_value.get());
 
     view! {
         <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
@@ -73,5 +70,35 @@ pub(super) fn render_slider(
                 {fmt_value}
             </span>
         </div>
+    }
+}
+
+/// Pick a slider step when the control definition omits one. Scales with
+/// the range so a wide control (a 10–120 count) snaps to whole numbers
+/// while a narrow control (0–1) still resolves finely.
+fn default_slider_step(min: f32, max: f32) -> f32 {
+    let span = (max - min).abs();
+    if span >= 50.0 {
+        1.0
+    } else if span >= 5.0 {
+        0.1
+    } else if span >= 0.5 {
+        0.01
+    } else {
+        0.001
+    }
+}
+
+/// Decimal places to show for a given step, so the readout matches the
+/// slider's granularity instead of jittering between integer and decimal.
+fn step_decimals(step: f32) -> usize {
+    if step >= 1.0 {
+        0
+    } else if step >= 0.1 {
+        1
+    } else if step >= 0.01 {
+        2
+    } else {
+        3
     }
 }

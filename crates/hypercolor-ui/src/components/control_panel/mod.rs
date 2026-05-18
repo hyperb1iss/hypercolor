@@ -192,10 +192,10 @@ pub fn ControlPanel(
                             <div class="animate-enter-up">
                                 {show_header.then({
                                     let line_style = format!(
-                                        "background: linear-gradient(to right, transparent, rgba({}, 0.25), transparent)",
+                                        "background: linear-gradient(to right, transparent, rgba({}, 0.3), transparent)",
                                         section_rgb
                                     );
-                                    let label_style = format!("color: rgba({}, 0.5)", section_rgb);
+                                    let label_style = format!("color: rgba({}, 0.78)", section_rgb);
                                     move || view! {
                                         <div class="flex items-center gap-2.5 mt-3 mb-1.5 px-1">
                                             <div class="h-px flex-1" style=line_style.clone() />
