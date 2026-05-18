@@ -421,8 +421,8 @@ fn ModalBackdrop(#[prop(into)] on_close: Callback<()>, children: Children) -> im
                 on:click=move |_| on_close.run(())
             />
             // Modal panel — explicit width avoids flex/grid sizing quirks
-            <div class="relative rounded-2xl border border-edge-subtle bg-surface-raised
-                        shadow-2xl animate-enter-scale p-5"
+            <div class="relative rounded-xl border border-edge-subtle bg-surface-raised
+                        animate-enter-scale p-5"
                  style="width: min(28rem, calc(100vw - 2rem)); box-shadow: 0 0 60px rgba(0,0,0,0.3), 0 0 30px rgba(225, 53, 255, 0.05)">
                 {children()}
             </div>

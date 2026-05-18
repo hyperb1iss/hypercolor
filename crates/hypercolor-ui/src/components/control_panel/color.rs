@@ -91,9 +91,9 @@ pub(super) fn render_color_picker(
             <Show when=move || is_open.get()>
                 <Portal>
                     <div
-                        class="fixed z-[9999] rounded-2xl
-                               bg-[#0d0b16]/98 backdrop-blur-xl
-                               border border-white/[0.06]
+                        class="fixed z-[9999] rounded-xl
+                               bg-surface-overlay/98 backdrop-blur-xl
+                               border border-edge-subtle
                                p-3.5 space-y-2.5
                                color-picker-popover animate-picker-in"
                         style=move || color_picker_panel_style(swatch_ref.get())

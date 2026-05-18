@@ -897,7 +897,7 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
 
     view! {
         <div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
-            <div class="w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-panel p-5 shadow-2xl">
+            <div class="w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-overlay p-5 modal-glow">
                 <div class="text-sm font-semibold text-fg-primary">"Network API Key"</div>
                 <div class="mt-1 text-xs text-fg-tertiary/75">
                     "This daemon requires a key for network access."

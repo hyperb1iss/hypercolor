@@ -228,8 +228,8 @@ pub fn ViewportDesignerModal(
             />
             // Modal panel.
             <div
-                class="relative flex flex-col overflow-hidden rounded-2xl border border-edge-subtle
-                       bg-surface-raised shadow-2xl animate-enter-scale"
+                class="relative flex flex-col overflow-hidden rounded-xl border border-edge-subtle
+                       bg-surface-raised animate-enter-scale"
                 style="width: min(72rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem); \
                        box-shadow: 0 0 80px rgba(0, 0, 0, 0.45), 0 0 40px rgba(225, 53, 255, 0.08);"
                 role="dialog"
@@ -362,7 +362,7 @@ fn WebViewportPaneStub(
                 />
             </div>
 
-            <div class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-edge-subtle
+            <div class="flex flex-col items-center justify-center gap-2 rounded-xl border border-edge-subtle
                         bg-surface-sunken/50 px-4 py-10 text-fg-tertiary">
                 <Icon icon=icondata::LuEye width="24" height="24" />
                 <span class="text-sm text-fg-secondary">
@@ -415,7 +415,7 @@ fn WebViewportPaneStub(
 #[component]
 fn ScreenCastPaneStub() -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-edge-subtle
+        <div class="flex flex-col items-center justify-center gap-2 rounded-xl border border-edge-subtle
                     bg-surface-sunken/50 px-4 py-12 text-fg-tertiary">
             <Icon icon=icondata::LuMonitor width="24" height="24" />
             <span class="text-sm text-fg-secondary">

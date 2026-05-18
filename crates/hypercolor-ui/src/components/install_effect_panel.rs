@@ -146,8 +146,8 @@ pub fn InstallEffectPanel() -> impl IntoView {
                 <div class="fixed inset-0 z-20" on:click=move |_| close_panel.run(()) />
                 <div
                     class="absolute right-0 top-full z-30 mt-2 w-[380px] max-w-[calc(100vw-2rem)]
-                           rounded-2xl border border-edge-subtle bg-surface-overlay/97 shadow-2xl
-                           shadow-black/45 backdrop-blur-xl"
+                           rounded-xl border border-edge-subtle bg-surface-overlay/97 dropdown-glow
+                           backdrop-blur-xl"
                 >
                     <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/70 px-4 py-3">
                         <div>
@@ -182,7 +182,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
                             let preview_for_warnings = preview.clone();
                             view! {
                                 <div class="space-y-4">
-                                    <div class="rounded-2xl border border-edge-subtle bg-surface-sunken/45 px-4 py-4">
+                                    <div class="rounded-xl border border-edge-subtle bg-surface-sunken/45 px-4 py-4">
                                         <div class="flex items-start justify-between gap-3">
                                             <div class="min-w-0">
                                                 <div class="text-sm font-semibold text-fg-primary">{preview_for_title.title}</div>
@@ -223,7 +223,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
                                     </div>
 
                                     {(!preview_for_errors.errors.is_empty()).then(|| view! {
-                                        <div class="rounded-2xl border border-error-red/30 bg-error-red/8 px-4 py-3">
+                                        <div class="rounded-xl border border-error-red/30 bg-error-red/8 px-4 py-3">
                                             <div class="mb-2 flex items-center gap-2 text-xs font-medium text-error-red">
                                                 <Icon icon=LuTriangleAlert width="14px" height="14px" />
                                                 "Validation errors"
@@ -237,7 +237,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
                                     })}
 
                                     {(!preview_for_warnings.warnings.is_empty()).then(|| view! {
-                                        <div class="rounded-2xl border border-accent-muted/25 bg-accent-muted/6 px-4 py-3">
+                                        <div class="rounded-xl border border-accent-muted/25 bg-accent-muted/6 px-4 py-3">
                                             <div class="mb-2 flex items-center gap-2 text-xs font-medium text-fg-primary">
                                                 <Icon icon=LuInfo width="14px" height="14px" />
                                                 "Metadata notes"
