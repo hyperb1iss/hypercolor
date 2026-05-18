@@ -303,7 +303,7 @@ fn scope_resolution_picks_the_right_surfaces() {
 
     assert_eq!(
         resolve_add_layer_targets(AddLayerScope::ThisSurface, &groups, &selected),
-        [selected.clone()]
+        vec![selected.clone()]
     );
     assert_eq!(
         resolve_add_layer_targets(AddLayerScope::AllLights, &groups, &selected).len(),
