@@ -158,6 +158,23 @@ fn SurfaceStage() -> impl IntoView {
         }
     });
 
+    // The LED Output frame: in a multi-zone scene the selected zone has
+    // its own composited preview (§9.5), keyed by zone id; until the first
+    // per-zone frame arrives — or in a single-zone scene where the zone
+    // canvas *is* the whole canvas — it falls back to the composited
+    // scene canvas.
+    let led_output_frame = Signal::derive(move || {
+        if let Some(surface) = selected_surface.get()
+            && surface.kind == SurfaceKind::Light
+            && let Some(frame) = ws
+                .zone_preview_frames
+                .with(|frames| frames.get(&surface.id).cloned())
+        {
+            return Some(frame);
+        }
+        ws.canvas_frame.get()
+    });
+
     // The display-preview stream carries no FPS, so the Screen caption is
     // resolution only; the LED canvas reports both.
     let caption = Memo::new(move |_| {
@@ -288,7 +305,7 @@ fn SurfaceStage() -> impl IntoView {
                                                     style="box-shadow: 0 0 44px rgba(225, 53, 255, 0.09)"
                                                 >
                                                     <CanvasPreview
-                                                        frame=ws.canvas_frame
+                                                        frame=led_output_frame
                                                         fps=ws.preview_fps
                                                         fps_target=ws.preview_target_fps
                                                         max_width="min(640px, 100%)".to_string()

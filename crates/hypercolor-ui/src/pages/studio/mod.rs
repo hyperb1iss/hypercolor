@@ -16,6 +16,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
+use crate::app::{CapabilitiesContext, WsContext};
 use crate::components::layer_panel::LayerPanel;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -170,6 +171,21 @@ pub fn StudioPage() -> impl IntoView {
     let is_unassigned = Signal::derive(move || {
         selected_surface_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID)
     });
+
+    // Per-zone preview frames (§9.5) are streamed only while Studio shows a
+    // genuinely multi-zone scene and the daemon advertises the capability;
+    // a single-zone scene's per-zone canvas is just the composited canvas,
+    // so there is nothing extra to stream.
+    let ws = expect_context::<WsContext>();
+    let caps = expect_context::<CapabilitiesContext>();
+    Effect::new(move |_| {
+        let multi_zone = active_scene
+            .get()
+            .is_some_and(|scene| surface::led_zone_count(&scene.groups) > 1);
+        ws.set_zone_preview_active
+            .set(multi_zone && caps.has("zone-preview-frames"));
+    });
+    on_cleanup(move || ws.set_zone_preview_active.set(false));
 
     provide_context(StudioContext {
         selected_surface_id,

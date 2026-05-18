@@ -280,6 +280,36 @@ pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket) {
     let _ = send_websocket_json(ws, &unsubscribe_msg);
 }
 
+/// Zone-preview stream FPS — modest, matching the screen/web-viewport
+/// caps; the per-zone tiles and selected-zone Stage do not need 60 Hz.
+pub(super) const ZONE_PREVIEW_FPS: u32 = 15;
+
+/// Subscribe the `zone_preview` channel (Spec 64 §11.4). The daemon
+/// streams one `ZonePreviewFrame` per zone; width and height are left to
+/// the daemon's configured zone-preview canvas defaults.
+pub(super) fn send_zone_preview_subscribe(ws: &web_sys::WebSocket) {
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["zone_preview"],
+        "config": {
+            "zone_preview": {
+                "fps": ZONE_PREVIEW_FPS,
+                "format": preview_canvas_format_for_host(preview_hostname().as_str()),
+            }
+        }
+    });
+    let _ = send_websocket_json(ws, &subscribe_msg);
+}
+
+/// Unsubscribe from the `zone_preview` channel.
+pub(super) fn send_zone_preview_unsubscribe(ws: &web_sys::WebSocket) {
+    let unsubscribe_msg = serde_json::json!({
+        "type": "unsubscribe",
+        "channels": ["zone_preview"]
+    });
+    let _ = send_websocket_json(ws, &unsubscribe_msg);
+}
+
 fn preview_hostname() -> String {
     current_page_location().hostname
 }

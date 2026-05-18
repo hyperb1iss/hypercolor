@@ -65,6 +65,13 @@ pub struct WsContext {
     /// is safe — subsequent subscribes retarget without dropping the
     /// existing relay task on the server.
     pub set_display_preview_device: WriteSignal<Option<String>>,
+    /// Latest per-zone composited preview frames (Spec 65 §9.5), keyed by
+    /// the zone's hyphenated UUID. Populated only while a view sets
+    /// `set_zone_preview_active`.
+    pub zone_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
+    /// Set to `true` to subscribe the `zone_preview` channel; `false`
+    /// unsubscribes and drops the cached per-zone frames.
+    pub set_zone_preview_active: WriteSignal<bool>,
     pub preview_fps: ReadSignal<f32>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
@@ -602,6 +609,8 @@ pub fn App() -> impl IntoView {
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
         display_preview_frame: ws.display_preview_frame,
         set_display_preview_device: ws.set_display_preview_device,
+        zone_preview_frames: ws.zone_preview_frames,
+        set_zone_preview_active: ws.set_zone_preview_active,
         preview_fps: ws.preview_fps,
         preview_target_fps: ws.preview_target_fps,
         set_preview_cap: ws.set_preview_cap,
