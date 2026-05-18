@@ -339,7 +339,7 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
 #[component]
 fn FavoritesEmpty() -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center justify-center h-full py-10 text-center px-4 gap-3 animate-fade-in">
+        <div class="flex flex-col items-center justify-center h-full py-10 text-center px-4 gap-3 animate-enter-fade">
             <div class="relative w-16 h-16 flex items-center justify-center">
                 <div
                     class="absolute inset-0 rounded-full animate-breathe"
@@ -427,7 +427,7 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
 
     view! {
         <div
-            class=format!("animate-fade-in-up stagger-{stagger}")
+            class=format!("animate-enter-up stagger-{stagger}")
             style:--glow-rgb=move || accent_rgb.get()
         >
             <div

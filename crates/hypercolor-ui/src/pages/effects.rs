@@ -495,7 +495,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 <div
                                     class="absolute top-full right-0 mt-1 z-30 w-[240px] max-h-[360px] overflow-y-auto
                                            rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                           py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown"
+                                           py-1.5 animate-enter-fade animate-glow-reveal scrollbar-dropdown"
                                 >
                                     // ── Category section ──
                                     <div class="px-3 pt-1 pb-1.5">
@@ -769,7 +769,7 @@ pub fn EffectsPage() -> impl IntoView {
 
                             // Preview panel (always visible when effect selected)
                             <aside
-                                class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                class="shrink-0 flex flex-col min-h-0 animate-enter-right"
                                 style=move || format!("width: {}px", detail_width.get())
                             >
                                 // Unified cinematic cabinet — canvas + preset strip, shared
@@ -850,7 +850,7 @@ pub fn EffectsPage() -> impl IntoView {
                                             on_drag_end=on_controls_drag_end
                                         />
                                         <aside
-                                            class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                            class="shrink-0 flex flex-col min-h-0 animate-enter-right"
                                             style=move || format!("width: {}px", controls_width.get())
                                         >
                                             <div

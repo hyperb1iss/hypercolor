@@ -606,7 +606,7 @@ fn PresetSelectorRow(
                                rounded-b-lg
                                backdrop-blur-xl
                                border border-t-0
-                               animate-slide-down
+                               animate-enter-down
                                max-h-[340px] overflow-y-auto scrollbar-dropdown py-1"
                         style=move || {
                             let tint = accent_rgb.get();

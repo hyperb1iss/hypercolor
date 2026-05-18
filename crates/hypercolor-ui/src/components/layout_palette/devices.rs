@@ -185,7 +185,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
 
     view! {
         <div
-            class="rounded-lg overflow-hidden transition-all animate-fade-in-up"
+            class="rounded-lg overflow-hidden transition-all animate-enter-up"
             draggable=move || {
                 if !has_multi_zones && single_zone_in_layout.get() { "true" } else { "false" }
             }

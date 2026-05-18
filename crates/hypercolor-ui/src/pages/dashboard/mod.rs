@@ -627,7 +627,7 @@ fn LayoutMenu(
     view! {
         <div
             class="absolute right-0 top-full mt-2 w-64 rounded-xl glass-dense border \
-                   border-edge-default dropdown-glow animate-slide-down z-50 overflow-hidden"
+                   border-edge-default dropdown-glow animate-enter-down z-50 overflow-hidden"
             style="background: linear-gradient(180deg, \
                    rgba(18, 14, 28, 0.95) 0%, \
                    rgba(10, 8, 20, 0.96) 100%)"

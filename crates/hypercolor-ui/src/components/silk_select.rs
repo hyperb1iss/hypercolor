@@ -146,7 +146,7 @@ pub fn SilkSelect(
                                    rounded-b-xl overflow-hidden
                                    bg-surface-overlay/98 backdrop-blur-xl
                                    border border-t-0 border-edge-subtle
-                                   dropdown-glow animate-slide-down
+                                   dropdown-glow animate-enter-down
                                    overflow-y-auto scrollbar-dropdown"
                             style=move || dropdown_panel_style(trigger_ref.get())
                             on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()

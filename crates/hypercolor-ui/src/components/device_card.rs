@@ -386,7 +386,7 @@ pub fn DeviceCard(
         <button
             class=move || {
                 let base = "relative rounded-xl border text-left w-full group overflow-hidden \
-                            card-hover animate-fade-in-up cursor-pointer";
+                            card-hover animate-enter-up cursor-pointer";
                 let state = if is_selected.get() {
                     "bg-surface-overlay"
                 } else if is_disabled {

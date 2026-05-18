@@ -212,7 +212,7 @@ pub fn ViewportDesignerModal(
             // without depending on flex math inside the caller. Matches
             // the `ModalBackdrop` pattern used by `device_pairing_modal`.
             <div
-                class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in"
+                class="fixed inset-0 z-50 grid place-items-center p-4 animate-enter-fade"
                 on:keydown=handle_keydown
                 tabindex="-1"
             >
@@ -229,7 +229,7 @@ pub fn ViewportDesignerModal(
             // Modal panel.
             <div
                 class="relative flex flex-col overflow-hidden rounded-2xl border border-edge-subtle
-                       bg-surface-raised shadow-2xl animate-scale-in"
+                       bg-surface-raised shadow-2xl animate-enter-scale"
                 style="width: min(72rem, calc(100vw - 2rem)); max-height: calc(100vh - 4rem); \
                        box-shadow: 0 0 80px rgba(0, 0, 0, 0.45), 0 0 40px rgba(225, 53, 255, 0.08);"
                 role="dialog"

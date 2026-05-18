@@ -522,7 +522,7 @@ pub fn Sidebar() -> impl IntoView {
 
                 Some(view! {
                     <div
-                        class="shrink-0 border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
+                        class="shrink-0 border-t border-edge-subtle py-3 space-y-3 animate-enter-fade"
                         style:--np-primary=move || primary_rgb.get()
                         style:--np-secondary=move || secondary_rgb.get()
                         style:--np-tertiary=move || tertiary_rgb.get()
@@ -545,7 +545,7 @@ pub fn Sidebar() -> impl IntoView {
                         // Live canvas thumbnail — only on pages without their own preview
                         {move || {
                             (canvas_mode.get() == NowPlayingCanvasMode::Preview).then(|| view! {
-                                <div class="px-3 animate-fade-in">
+                                <div class="px-3 animate-enter-fade">
                                     <div
                                         class="relative rounded-lg overflow-hidden bg-black/40"
                                         style:box-shadow="0 4px 20px rgba(var(--np-primary), 0.25), \

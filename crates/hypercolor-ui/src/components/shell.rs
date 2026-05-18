@@ -144,7 +144,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     let on_close_apply = on_close;
 
     view! {
-        <div class="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] animate-fade-in">
+        <div class="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] animate-enter-fade">
             // Backdrop
             <div
                 class="absolute inset-0 bg-black/70 backdrop-blur-md"
@@ -154,7 +154,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             // Palette panel
             <div
                 class="relative w-full max-w-lg mx-4 rounded-xl glass border border-edge-subtle
-                        modal-glow overflow-hidden animate-scale-in"
+                        modal-glow overflow-hidden animate-enter-scale"
                 role="dialog"
                 aria-label="Command palette"
             >
@@ -236,7 +236,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                         view! {
                                             <button
                                                 class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                       hover:bg-electric-purple/[0.05] btn-press group animate-fade-in-up"
+                                                       hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
                                                 style=move || if is_selected() {
                                                     format!("animation-delay: {delay_ms}ms; background: rgba(225, 53, 255, 0.10)", delay_ms = i * 30)
                                                 } else {

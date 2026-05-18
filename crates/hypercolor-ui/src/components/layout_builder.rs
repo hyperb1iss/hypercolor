@@ -1006,7 +1006,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                     {move || if renaming.get() {
                         // Inline rename input
                         view! {
-                            <div class="flex items-center gap-2 animate-slide-down">
+                            <div class="flex items-center gap-2 animate-enter-down">
                                 <input
                                     type="text"
                                     class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
@@ -1075,7 +1075,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 // New layout button / inline form
                 {move || if creating.get() {
                     view! {
-                        <div class="flex items-center gap-2 animate-slide-down">
+                        <div class="flex items-center gap-2 animate-enter-down">
                             <input
                                 type="text"
                                 placeholder="Layout name"
@@ -1145,7 +1145,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                                        rounded-lg overflow-hidden
                                        bg-surface-overlay/98 backdrop-blur-xl
                                        border border-edge-subtle dropdown-glow
-                                       animate-slide-down"
+                                       animate-enter-down"
                                 on:keydown=move |ev: web_sys::KeyboardEvent| {
                                     if ev.key() == "Escape" {
                                         set_layout_menu_open.set(false);
@@ -1231,7 +1231,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 fallback=move || {
                     view! {
                         <div class="flex-1 flex items-center justify-center">
-                            <div class="text-center space-y-3 animate-fade-in">
+                            <div class="text-center space-y-3 animate-enter-fade">
                                 <Icon icon=LuLayoutTemplate width="48px" height="48px"
                                       style="color: rgba(255, 106, 193, 0.25); filter: drop-shadow(0 0 12px rgba(255, 106, 193, 0.15))" />
                                 <div class="text-fg-tertiary/50 text-sm">"Select or create a layout to begin"</div>

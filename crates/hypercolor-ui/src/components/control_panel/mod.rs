@@ -189,7 +189,7 @@ pub fn ControlPanel(
                             .collect::<Vec<_>>();
                         let show_header = total_groups > 1 && group != "General";
                         view! {
-                            <div class="animate-fade-in-up">
+                            <div class="animate-enter-up">
                                 {show_header.then({
                                     let line_style = format!(
                                         "background: linear-gradient(to right, transparent, rgba({}, 0.25), transparent)",
@@ -223,7 +223,7 @@ pub fn ControlPanel(
                                     });
                                     let delay = format!("animation-delay: {}ms", i * 30);
                                     view! {
-                                        <div class="animate-fade-in-up" style=delay>
+                                        <div class="animate-enter-up" style=delay>
                                             <ControlWidget
                                                 def=def
                                                 value=value

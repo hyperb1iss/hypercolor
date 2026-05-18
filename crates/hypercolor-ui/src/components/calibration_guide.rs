@@ -146,7 +146,7 @@ pub fn CalibrationGuide(
 
     view! {
         <div
-            class="rounded-xl border border-edge-subtle bg-surface-raised/80 p-3 edge-glow animate-fade-in-up"
+            class="rounded-xl border border-edge-subtle bg-surface-raised/80 p-3 edge-glow animate-enter-up"
             style:border-top=move || format!("2px solid rgba({}, 0.24)", accent_rgb.get())
         >
             <div class="flex items-start gap-2.5 mb-3">

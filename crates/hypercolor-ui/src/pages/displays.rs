@@ -621,7 +621,7 @@ fn DisplaysModalBackdrop(
     let close_backdrop = on_close;
 
     view! {
-        <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in">
+        <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-enter-fade">
             <div
                 class="absolute inset-0 bg-black/65 backdrop-blur-sm"
                 on:click=move |_| close_backdrop.run(())
@@ -1828,7 +1828,7 @@ fn FaceBlendModeSelect(
                                        rounded-b-xl overflow-hidden
                                        bg-surface-overlay/98 backdrop-blur-xl
                                        border border-t-0 border-edge-subtle
-                                       dropdown-glow animate-slide-down
+                                       dropdown-glow animate-enter-down
                                        overflow-y-auto scrollbar-dropdown"
                                 style=move || crate::components::control_panel::dropdown_panel_style(trigger_ref.get())
                                 on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()

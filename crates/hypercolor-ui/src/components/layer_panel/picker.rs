@@ -48,7 +48,7 @@ pub fn AddLayerPicker(
 
     view! {
         <div
-            class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm animate-fade-in"
+            class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm animate-enter-fade"
             on:click=move |_| on_cancel.run(())
         >
             <div

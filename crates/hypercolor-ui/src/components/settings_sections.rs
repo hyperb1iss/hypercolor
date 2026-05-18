@@ -142,7 +142,7 @@ fn AudioVuMeter(#[prop(into)] enabled: Signal<bool>) -> impl IntoView {
 
     view! {
         <Show when=move || enabled.get()>
-            <div class="mb-4 px-3 py-3 rounded-lg animate-fade-in" style="background: rgba(139, 133, 160, 0.04); border: 1px solid rgba(139, 133, 160, 0.06)">
+            <div class="mb-4 px-3 py-3 rounded-lg animate-enter-fade" style="background: rgba(139, 133, 160, 0.04); border: 1px solid rgba(139, 133, 160, 0.06)">
                 <div class="flex items-center gap-4">
                     // Beat indicator + status
                     <div class="shrink-0 flex items-center gap-2 pl-1">

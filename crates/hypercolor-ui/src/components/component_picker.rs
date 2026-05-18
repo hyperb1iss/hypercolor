@@ -255,7 +255,7 @@ pub fn ComponentPicker(
                     <Portal>
                         <div
                             class="component-picker-panel fixed flex flex-col rounded-xl border border-edge-subtle
-                                   bg-surface-overlay shadow-xl dropdown-glow animate-fade-in overflow-hidden"
+                                   bg-surface-overlay shadow-xl dropdown-glow animate-enter-fade overflow-hidden"
                             style=move || dropdown_panel_style(trigger_ref.get())
                             on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
                         >

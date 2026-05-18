@@ -448,27 +448,27 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* ── Entrance Animations ─────────────────────────────────────────────────── */
 
-@keyframes fadeInUp {
+@keyframes enter-up {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes fadeIn {
+@keyframes enter-fade {
     from { opacity: 0; }
     to   { opacity: 1; }
 }
 
-@keyframes slideInRight {
+@keyframes enter-right {
     from { opacity: 0; transform: translateX(16px); }
     to   { opacity: 1; transform: translateX(0); }
 }
 
-@keyframes slideInLeft {
+@keyframes enter-left {
     from { opacity: 0; transform: translateX(-16px); }
     to   { opacity: 1; transform: translateX(0); }
 }
 
-@keyframes scaleIn {
+@keyframes enter-scale {
     from { opacity: 0; transform: scale(0.94); }
     to   { opacity: 1; transform: scale(1); }
 }
@@ -478,13 +478,13 @@ input[type="range"].slider-silk::-moz-range-track {
     to   { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
 }
 
-@keyframes popIn {
+@keyframes enter-pop {
     0%   { opacity: 0; transform: scale(0.8); }
     70%  { transform: scale(1.04); }
     100% { opacity: 1; transform: scale(1); }
 }
 
-@keyframes slideDown {
+@keyframes enter-down {
     from { opacity: 0; transform: translateY(-8px); }
     to   { opacity: 1; transform: translateY(0); }
 }
@@ -604,14 +604,14 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* ── Animation Utility Classes ───────────────────────────────────────────── */
 
-.animate-fade-in-up     { animation: fadeInUp 0.35s var(--ease-silk) both; }
-.animate-fade-in        { animation: fadeIn 0.25s var(--ease-silk) both; }
-.animate-slide-in-right { animation: slideInRight 0.35s var(--ease-silk) both; }
-.animate-slide-in-left  { animation: slideInLeft 0.35s var(--ease-silk) both; }
-.animate-scale-in       { animation: scaleIn 0.25s var(--ease-spring) both; }
+.animate-enter-up       { animation: enter-up 0.35s var(--ease-silk) both; }
+.animate-enter-fade     { animation: enter-fade 0.25s var(--ease-silk) both; }
+.animate-enter-right    { animation: enter-right 0.35s var(--ease-silk) both; }
+.animate-enter-left     { animation: enter-left 0.35s var(--ease-silk) both; }
+.animate-enter-scale    { animation: enter-scale 0.25s var(--ease-spring) both; }
 .animate-picker-in      { animation: pickerIn 0.2s var(--ease-spring) both; }
-.animate-pop-in         { animation: popIn 0.35s var(--ease-spring) both; }
-.animate-slide-down     { animation: slideDown 0.3s var(--ease-silk) both; }
+.animate-enter-pop      { animation: enter-pop 0.35s var(--ease-spring) both; }
+.animate-enter-down     { animation: enter-down 0.3s var(--ease-silk) both; }
 .animate-breathe        { animation: breathe 3s ease-in-out infinite; will-change: opacity, transform; }
 .animate-border-glow    { animation: borderGlow 2s ease-in-out infinite; }
 .animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
@@ -795,14 +795,14 @@ input[type="range"].slider-silk::-moz-range-track {
 /* ── Settings ──────────────────────────────────────────────────────────── */
 
 .settings-card {
-    border-radius: 0.75rem;
-    padding-inline: 1.25rem;
-    background: oklch(0.20 0.015 280 / 0.5);
-    border: 1px solid oklch(0.40 0.02 280 / 0.12);
+    border-radius: var(--radius-xl);
+    padding-inline: var(--spacing-lg);
+    background: var(--surface-overlay);
+    border: 1px solid var(--border-subtle);
     transition: border-color 0.2s ease;
 }
 .settings-card:hover {
-    border-color: oklch(0.50 0.03 280 / 0.15);
+    border-color: var(--border-default);
 }
 
 .setting-row + .setting-row {
@@ -1939,13 +1939,13 @@ body.resizing * {
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
-    .animate-fade-in-up,
-    .animate-fade-in,
-    .animate-slide-in-right,
-    .animate-slide-in-left,
-    .animate-scale-in,
-    .animate-pop-in,
-    .animate-slide-down,
+    .animate-enter-up,
+    .animate-enter-fade,
+    .animate-enter-right,
+    .animate-enter-left,
+    .animate-enter-scale,
+    .animate-enter-pop,
+    .animate-enter-down,
     .animate-breathe,
     .animate-border-glow,
     .animate-edge-shimmer,

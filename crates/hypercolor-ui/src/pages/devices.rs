@@ -370,7 +370,7 @@ pub fn DevicesPage() -> impl IntoView {
                             <div class="fixed inset-0 z-20" on:click=move |_| set_filter_dropdown_open.set(false) />
                             <div class="absolute top-full right-0 mt-1 z-30 w-[240px] max-h-[360px] overflow-y-auto
                                        rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                       py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown">
+                                       py-1.5 animate-enter-fade animate-glow-reveal scrollbar-dropdown">
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class=format!("{} mb-1.5", label_class(LabelSize::Small, LabelTone::Subtle))>"Status"</div>
                                     <div class="flex gap-1 flex-wrap">
@@ -473,7 +473,7 @@ pub fn DevicesPage() -> impl IntoView {
                         view! {
                             <ResizeHandle on_drag_start=on_drag_start on_drag=on_drag on_drag_end=on_drag_end />
                             <aside
-                                class="shrink-0 overflow-y-auto pb-6 pr-6 pt-4 scrollbar-none animate-slide-in-right"
+                                class="shrink-0 overflow-y-auto pb-6 pr-6 pt-4 scrollbar-none animate-enter-right"
                                 style=move || format!("width: {:.0}px", sidebar_width.get())
                             >
                                 <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device />

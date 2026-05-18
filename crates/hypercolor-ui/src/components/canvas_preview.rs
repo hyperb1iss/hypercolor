@@ -529,7 +529,7 @@ pub fn CanvasPreview(
             {if show_fps {
                 Some(view! {
                     <div class="absolute top-2 right-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-fg-tertiary
-                                transition-opacity duration-300 animate-fade-in">
+                                transition-opacity duration-300 animate-enter-fade">
                         {move || {
                             let target = fps_target.get();
                             let mode = runtime_mode.get().unwrap_or("pending");
