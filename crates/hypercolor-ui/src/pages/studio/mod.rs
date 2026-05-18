@@ -6,6 +6,7 @@
 //! twelve, so multi-zone (Waves 9-10) fills in the rail rather than
 //! rebuilding the workspace.
 
+mod device_grouping;
 mod stage;
 mod stage_view;
 mod surface;
