@@ -215,6 +215,9 @@ impl RenderGroupRuntime {
         asset_library: Arc<RwLock<AssetLibrary>>,
     ) -> Self {
         let mut runtime = Self::new(scene_width, scene_height);
+        runtime
+            .effect_pool
+            .set_asset_library(Arc::clone(&asset_library));
         runtime.asset_library = Some(asset_library);
         runtime
     }

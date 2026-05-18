@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Result, anyhow};
@@ -14,14 +15,17 @@ use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::sensor::SystemSnapshot;
 #[cfg(feature = "servo")]
 use hypercolor_types::viewport::FitMode;
+use tokio::sync::RwLock;
 
 use super::factory::create_renderer_for_metadata;
 use super::registry::{EffectEntry, EffectRegistry};
 use super::traits::{EffectRenderOutput, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenData};
 
 pub struct EffectPool {
     slots: HashMap<EffectSlotKey, EffectSlot>,
+    asset_library: Option<Arc<RwLock<AssetLibrary>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,12 +53,18 @@ impl EffectPool {
     pub fn new() -> Self {
         Self {
             slots: HashMap::new(),
+            asset_library: None,
         }
     }
 
     #[must_use]
     pub fn slot_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Provide the asset library used by asset-backed effect renderers.
+    pub fn set_asset_library(&mut self, asset_library: Arc<RwLock<AssetLibrary>>) {
+        self.asset_library = Some(asset_library);
     }
 
     pub fn reconcile(&mut self, groups: &[RenderGroup], registry: &EffectRegistry) -> Result<()> {
@@ -80,7 +90,7 @@ impl EffectPool {
                 .get(&key)
                 .is_none_or(|slot| slot.needs_rebuild(resolved_effect_id, entry));
             if needs_rebuild {
-                let slot = EffectSlot::build(entry, group, &layer)?;
+                let slot = EffectSlot::build(entry, group, &layer, self.asset_library.as_ref())?;
                 self.slots.insert(key, slot);
                 continue;
             }
@@ -256,8 +266,16 @@ struct EffectSlot {
 }
 
 impl EffectSlot {
-    fn build(entry: &EffectEntry, group: &RenderGroup, layer: &SceneLayer) -> Result<Self> {
+    fn build(
+        entry: &EffectEntry,
+        group: &RenderGroup,
+        layer: &SceneLayer,
+        asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
+    ) -> Result<Self> {
         let mut renderer = create_renderer_for_metadata(&entry.metadata)?;
+        if let Some(asset_library) = asset_library {
+            renderer.bind_asset_library(Arc::clone(asset_library));
+        }
         renderer.init_with_canvas_size(
             &entry.metadata,
             group.layout.canvas_width,

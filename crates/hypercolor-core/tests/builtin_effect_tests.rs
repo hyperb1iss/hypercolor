@@ -1124,7 +1124,7 @@ fn register_builtin_effects_populates_registry() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    let expected_builtin_count = if cfg!(feature = "servo") { 10 } else { 9 };
+    let expected_builtin_count = if cfg!(feature = "servo") { 11 } else { 10 };
     assert_eq!(
         registry.len(),
         expected_builtin_count,

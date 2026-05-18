@@ -4,11 +4,15 @@
 //! rendering backends implement. [`FrameInput`] carries all per-frame data
 //! needed to produce a single canvas frame.
 
+use std::sync::Arc;
+
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::sensor::SystemSnapshot;
+use tokio::sync::RwLock;
 
+use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenData};
 
 #[cfg(feature = "servo-gpu-import")]
@@ -177,6 +181,13 @@ pub trait EffectRenderer: Send {
     /// pushes a value. The renderer should store the value and apply it on
     /// the next [`render_into`](Self::render_into) call.
     fn set_control(&mut self, name: &str, value: &ControlValue);
+
+    /// Bind the content-addressed asset library.
+    ///
+    /// Renderers that resolve uploaded media by asset id (the media-player
+    /// effect) use this handle to look assets up against the library. The
+    /// default no-op covers every renderer without asset-backed controls.
+    fn bind_asset_library(&mut self, _library: Arc<RwLock<AssetLibrary>>) {}
 
     /// Optional auxiliary preview canvas for control-panel tooling.
     ///
