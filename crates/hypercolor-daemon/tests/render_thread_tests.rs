@@ -2703,6 +2703,17 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
         .await
         .expect("async failure should start slow disconnect");
 
+    tokio::time::timeout(Duration::from_millis(100), async {
+        loop {
+            if backend_manager.lock().await.mapped_device_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("disconnect should unmap before backend I/O finishes");
+
     loop {
         match event_rx.try_recv() {
             Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
