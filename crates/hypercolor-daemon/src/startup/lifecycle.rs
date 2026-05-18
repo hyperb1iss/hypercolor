@@ -193,6 +193,12 @@ impl DaemonState {
             warn!(error = %e, "display output shutdown error");
         }
 
+        #[cfg(feature = "servo")]
+        match hypercolor_core::effect::shutdown_servo_runtime() {
+            Ok(()) => info!("Servo runtime shutdown complete"),
+            Err(e) => warn!(error = %e, "Servo runtime shutdown error"),
+        }
+
         if let Some(handle) = self.effect_watcher_task.take() {
             handle.abort();
         }

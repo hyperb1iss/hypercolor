@@ -42,6 +42,7 @@ pub use servo::{
     ConsoleMessage, HypercolorWebViewDelegate, ServoMemoryReport, ServoMemoryReportKind,
     ServoMemoryReportSnapshot, ServoMemoryReportTotals, ServoProcessMemoryReport, ServoRenderer,
     ServoTelemetrySnapshot, servo_memory_report_snapshot, servo_telemetry_snapshot,
+    shutdown_servo_runtime,
 };
 #[cfg(feature = "servo-gpu-import")]
 pub use servo::{

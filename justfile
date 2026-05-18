@@ -548,7 +548,28 @@ prepare-dev-assets:
 dev *args='':
     #!/usr/bin/env bash
     set -euo pipefail
-    trap 'kill 0' EXIT
+    daemon_pid=""
+    trunk_pid=""
+
+    send_signal() {
+      local signal="$1"
+      local pid="$2"
+      [[ -n "${pid}" ]] || return 0
+      pkill "-${signal}" -P "${pid}" 2>/dev/null || true
+      kill "-${signal}" "${pid}" 2>/dev/null || true
+    }
+
+    cleanup() {
+      local status=$?
+      trap - EXIT INT TERM
+      send_signal TERM "${trunk_pid}"
+      send_signal INT "${daemon_pid}"
+      [[ -z "${trunk_pid}" ]] || wait "${trunk_pid}" 2>/dev/null || true
+      [[ -z "${daemon_pid}" ]] || wait "${daemon_pid}" 2>/dev/null || true
+      exit "${status}"
+    }
+
+    trap cleanup EXIT INT TERM
     just prepare-dev-assets
     daemon_args=(--log-level debug)
     if [[ -n "${HYPERCOLOR_COMPOSITOR_ACCELERATION_MODE:-}" ]]; then
@@ -565,9 +586,11 @@ dev *args='':
       echo "[dev] Servo GPU import mode: ${servo_gpu_import_mode} (default)"
     fi
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
+    daemon_pid=$!
     sleep 2
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
-    wait
+    (cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev) &
+    trunk_pid=$!
+    wait -n "${daemon_pid}" "${trunk_pid}"
 
 [windows]
 dev *args='':

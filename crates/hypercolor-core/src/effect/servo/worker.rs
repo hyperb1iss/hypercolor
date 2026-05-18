@@ -231,13 +231,23 @@ pub(super) fn poison_shared_servo_worker(reason: &str) {
 
 #[cfg(test)]
 pub(super) fn shutdown_shared_servo_worker() -> Result<()> {
+    retire_shared_servo_worker(SharedServoWorkerState::Vacant)
+}
+
+pub fn shutdown_servo_runtime() -> Result<()> {
+    retire_shared_servo_worker(SharedServoWorkerState::Poisoned {
+        reason: "Servo runtime was shut down for process exit".to_owned(),
+    })
+}
+
+fn retire_shared_servo_worker(replacement: SharedServoWorkerState) -> Result<()> {
     let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    let previous = std::mem::replace(&mut *guard, SharedServoWorkerState::Vacant);
+    let previous = std::mem::replace(&mut *guard, replacement);
     drop(guard);
 
     match previous {
@@ -3008,6 +3018,26 @@ mod tests {
         shutdown_shared_servo_worker().expect("shutdown should clear poisoned state");
 
         assert!(shared_worker_is_vacant());
+    }
+
+    #[test]
+    fn process_exit_shutdown_retires_shared_worker() {
+        let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+        let (worker, stopped) = test_support::spawn_test_worker();
+        install_running_shared_worker(worker);
+
+        shutdown_servo_runtime().expect("process-exit shutdown should stop shared worker");
+
+        assert!(stopped.load(Ordering::SeqCst));
+        let result = acquire_servo_worker();
+        assert!(
+            result.is_err(),
+            "Servo runtime should not restart after process-exit shutdown"
+        );
+        reset_shared_servo_worker_state();
     }
 
     #[test]
