@@ -102,6 +102,8 @@ Artifacts:
 - `/tmp/hypercolor-daemon-sample-import-20260518-1854.txt`
 - `/tmp/hypercolor-mac-import-light-20260518-115807.json`
 - `/tmp/hypercolor-daemon-ps-import-light-20260518-115807.csv`
+- `/tmp/hypercolor-mac-import-soak-20260518-121059.json`
+- `/tmp/hypercolor-daemon-ps-import-soak-20260518-121059.csv`
 
 The first 60-sample REST run is useful for frame-time distribution but perturbs
 the daemon because `/status` enumerates CoreAudio devices on each request. It
@@ -144,6 +146,26 @@ The `sample` trace from the import run no longer contains Servo `read_pixels`,
 remaining visible samples are Servo/WebRender update work, WebSocket preview
 traffic, CoreAudio enumeration during status requests, USB output, and scheduler
 idle/parking.
+
+The final low-perturbation soak ran for 295.03 seconds on `Cyber Descent` with
+the tmux-hosted daemon using `--servo-gpu-import-mode auto`:
+
+- actual FPS at end: 60.0
+- frame delta: +18007
+- Servo render requests: +18001
+- Servo GPU frames: +18001
+- Servo CPU frames: +0
+- Servo soft stalls: +0
+- Servo readback: +0.0 ms
+- Servo GPU import failures/fallbacks: +0/+0
+- SparkleFlinger source upload skipped: +18007
+- Servo GPU import total: +429.606 ms over the soak
+- Servo GPU import sync: +0.0 ms
+- process CPU from `ps`: mean 17.2%, p95 19.9%
+- resident set from `ps`: 254.1 MiB start, 231.1 MiB end, 284.7 MiB max
+
+The soak log contained no `NoWidgetAttached` present warnings, no Servo GPU
+framebuffer import failures, and no GPU-import fallback reason.
 
 ## 3. What We Know
 
