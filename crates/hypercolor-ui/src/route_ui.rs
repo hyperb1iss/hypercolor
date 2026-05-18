@@ -10,6 +10,7 @@ pub fn now_playing_canvas_mode(path: &str) -> NowPlayingCanvasMode {
         || path.starts_with("/effects")
         || path.starts_with("/assets")
         || path.starts_with("/layout")
+        || path.starts_with("/studio")
     {
         NowPlayingCanvasMode::Palette
     } else if path.starts_with("/displays") {

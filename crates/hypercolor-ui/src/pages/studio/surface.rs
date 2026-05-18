@@ -23,6 +23,10 @@ pub struct Surface {
     pub name: String,
     pub kind: SurfaceKind,
     pub enabled: bool,
+    /// Physical display device backing a Screen surface — the key the
+    /// Stage subscribes to for that screen's live face preview. `None`
+    /// for Lights and for display groups with no target assigned yet.
+    pub display_device_id: Option<String>,
 }
 
 /// Build the surface list from the active scene's render groups, in scene
@@ -47,6 +51,10 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
                 name: surface_name(group, kind, led_count),
                 kind,
                 enabled: group.enabled,
+                display_device_id: group
+                    .display_target
+                    .as_ref()
+                    .map(|target| target.device_id.to_string()),
             }
         })
         .collect()
