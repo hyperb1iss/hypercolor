@@ -604,9 +604,11 @@ pub fn App() -> impl IntoView {
         live_canvas: live_canvas_analysis,
     });
 
-    // Studio UI beta flag — seeded from localStorage, persisted on change.
+    // Studio UI beta flag. Defaults on since the Wave 7 cutover (§11.4); a
+    // browser that toggled it off in Settings keeps that choice, which is
+    // the rollback path. Seeded from localStorage, persisted on change.
     let (studio_ui_beta, set_studio_ui_beta) =
-        signal(storage::get_parsed::<bool>("hc-studio-ui-beta").unwrap_or(false));
+        signal(storage::get_parsed::<bool>("hc-studio-ui-beta").unwrap_or(true));
     Effect::new(move |_| {
         storage::set("hc-studio-ui-beta", &studio_ui_beta.get().to_string());
     });
