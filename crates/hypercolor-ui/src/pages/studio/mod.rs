@@ -10,6 +10,7 @@ mod stage;
 mod stage_view;
 mod surface;
 mod surface_rail;
+mod zone_assignment;
 
 use hypercolor_types::scene::RenderGroupRole;
 use leptos::prelude::*;

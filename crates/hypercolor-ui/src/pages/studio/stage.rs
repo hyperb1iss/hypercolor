@@ -32,6 +32,7 @@ use super::StudioContext;
 use super::stage_view::{StageView, resolve_stage_view};
 use super::surface::{SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use super::surface_rail::unassigned_behavior_label;
+use super::zone_assignment::ZoneAssignment;
 
 /// Preview FPS ceiling while the Layout editor is on the Stage, matching
 /// the retired `/layout` page so spatial editing stays smooth.
@@ -257,9 +258,15 @@ fn SurfaceStage() -> impl IntoView {
             {move || match resolved_view.get() {
                 StageView::AllZones => view! { <AllZonesStage /> }.into_any(),
                 StageView::Layout => {
+                    // In a multi-zone scene the Layout view doubles as the
+                    // §9.3 device-output assignment surface: the spatial
+                    // canvas above, the zone-assignment panel docked below.
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                            <LayoutBuilder />
+                            <div class="min-h-0 flex-1 overflow-hidden">
+                                <LayoutBuilder />
+                            </div>
+                            {multi_zone.get().then(|| view! { <ZoneAssignment /> })}
                         </div>
                     }
                         .into_any()
