@@ -192,7 +192,8 @@ pub fn Stage() -> impl IntoView {
                                         };
                                         let container_class = format!(
                                             "w-full max-w-[520px] overflow-hidden border \
-                                             border-edge-subtle/70 bg-black shadow-2xl {shape}",
+                                             border-edge-subtle/70 bg-black edge-glow-accent \
+                                             {shape}",
                                         );
                                         view! {
                                             <DisplayPreviewSurface

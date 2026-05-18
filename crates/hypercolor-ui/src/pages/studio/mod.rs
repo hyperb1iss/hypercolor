@@ -179,7 +179,7 @@ pub fn StudioPage() -> impl IntoView {
 
             <div class="relative flex min-h-0 flex-1 overflow-hidden">
                 <div
-                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--surface-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:border-r max-lg:border-edge-subtle/70 max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200"
+                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--surface-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:border-r max-lg:border-edge-subtle/70 max-lg:transition-transform max-lg:duration-200"
                     class=("max-lg:-translate-x-full", move || !surface_drawer.get())
                     style:--surface-w=move || format!("{}px", surface_width.get())
                 >
@@ -215,7 +215,7 @@ pub fn StudioPage() -> impl IntoView {
                     />
                 </div>
                 <aside
-                    class="scrollbar-none w-80 shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 lg:w-[var(--layers-w)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:shadow-2xl max-lg:transition-transform max-lg:duration-200"
+                    class="scrollbar-none w-80 shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 lg:w-[var(--layers-w)] max-lg:fixed max-lg:inset-y-0 max-lg:right-0 max-lg:z-40 max-lg:transition-transform max-lg:duration-200"
                     class=("max-lg:translate-x-full", move || !layers_drawer.get())
                     style:--layers-w=move || format!("{}px", layers_width.get())
                 >
