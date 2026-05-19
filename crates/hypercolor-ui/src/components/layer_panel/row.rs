@@ -194,7 +194,7 @@ pub fn LayerRow(
                         })}
                     <button
                         type="button"
-                        class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-[rgba(255,99,99,0.92)] btn-press"
+                        class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-status-error btn-press"
                         title="Delete layer"
                         on:click={
                             let scene_id = scene_id.clone();
@@ -497,22 +497,22 @@ fn health_pill(health: Option<LayerHealth>) -> impl IntoView {
             LayerHealth::Active => return None,
             LayerHealth::Loading => (
                 "Loading",
-                "border-cyan-300/30 bg-cyan-300/10 text-cyan-200",
+                "border-status-info/30 bg-status-info/10 text-status-info",
                 "Layer is still loading".to_owned(),
             ),
             LayerHealth::Stalled => (
                 "Stalled",
-                "border-amber-300/30 bg-amber-300/10 text-amber-200",
+                "border-status-warning/30 bg-status-warning/10 text-status-warning",
                 "Layer producer has stalled".to_owned(),
             ),
             LayerHealth::AssetMissing => (
                 "Missing",
-                "border-red-400/30 bg-red-400/10 text-red-200",
+                "border-status-error/30 bg-status-error/10 text-status-error",
                 "Layer asset is missing".to_owned(),
             ),
             LayerHealth::Failed { reason } => (
                 "Failed",
-                "border-red-400/30 bg-red-400/10 text-red-200",
+                "border-status-error/30 bg-status-error/10 text-status-error",
                 format!("Layer failed: {reason}"),
             ),
         };

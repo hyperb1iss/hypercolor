@@ -201,7 +201,7 @@ pub fn LayerPanel(
                         }}
                     </div>
                 </div>
-                <Icon icon=LuLayers width="16px" height="16px" style="color: rgba(128, 255, 234, 0.72)" />
+                <Icon icon=LuLayers width="16px" height="16px" style="color: rgba(225, 53, 255, 0.72)" />
             </div>
             <div class="space-y-4 px-4 py-4">
                 <Show when=move || surface_label.get().is_none()>
@@ -219,7 +219,7 @@ pub fn LayerPanel(
 
                 <button
                     type="button"
-                    class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-cyan-300/20 bg-cyan-300/8 px-3 py-2 text-xs font-semibold text-cyan-200 transition-colors hover:bg-cyan-300/12 btn-press disabled:cursor-not-allowed disabled:opacity-45"
+                    class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-accent-muted/30 bg-accent/10 px-3 py-2 text-xs font-semibold text-accent transition-colors hover:bg-accent/15 btn-press disabled:cursor-not-allowed disabled:opacity-45"
                     disabled=move || selected_group_id.get().is_none()
                     on:click=move |_| {
                         // The asset list is decoupled from any host page's
@@ -237,7 +237,7 @@ pub fn LayerPanel(
                     {move || match layers_resource.get() {
                         None => view! { <LayerLoadingSkeleton /> }.into_any(),
                         Some(Err(error)) => view! {
-                            <div class="rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-3 text-xs text-red-200">
+                            <div class="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-3 text-xs text-status-error">
                                 {error}
                             </div>
                         }.into_any(),

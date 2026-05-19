@@ -310,7 +310,7 @@ fn ScreenTab(on_pick: Callback<NewLayerDraft>) -> impl IntoView {
     view! {
         <div class="flex flex-col items-center justify-center gap-3 py-8 text-center">
             <span class="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/10">
-                <Icon icon=LuMonitor width="24px" height="24px" style="color: rgba(128, 255, 234, 0.85)" />
+                <Icon icon=LuMonitor width="24px" height="24px" style="color: rgba(241, 250, 140, 0.85)" />
             </span>
             <div class="text-sm font-semibold text-fg-primary">"Screen Capture"</div>
             <div class="max-w-sm text-xs text-fg-tertiary">
@@ -318,7 +318,7 @@ fn ScreenTab(on_pick: Callback<NewLayerDraft>) -> impl IntoView {
             </div>
             <button
                 type="button"
-                class="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-4 py-2 text-xs font-semibold text-cyan-200 transition-colors hover:bg-cyan-300/15 btn-press"
+                class="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-accent-muted/30 bg-accent/10 px-4 py-2 text-xs font-semibold text-accent transition-colors hover:bg-accent/15 btn-press"
                 on:click=move |_| on_pick.run(NewLayerDraft::anonymous(screen_layer_source()))
             >
                 <Icon icon=LuPlus width="13px" height="13px" />
@@ -450,7 +450,7 @@ fn PickerEmpty(detail: &'static str) -> impl IntoView {
 #[component]
 fn PickerError(detail: String) -> impl IntoView {
     view! {
-        <div class="rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-3 text-xs text-red-200">
+        <div class="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-3 text-xs text-status-error">
             {detail}
         </div>
     }

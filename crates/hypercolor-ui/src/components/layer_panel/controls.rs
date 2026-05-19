@@ -20,8 +20,8 @@ use crate::toasts;
 
 use super::update_layer;
 
-/// Accent used for an effect layer's control groups — Studio's layer cyan.
-const LAYER_ACCENT_RGB: &str = "128, 255, 234";
+/// Accent RGB for an effect layer's control groups — the app accent.
+const LAYER_ACCENT_RGB: &str = "225, 53, 255";
 
 /// The effect-parameter controls for an Effect-source layer. Fetches the
 /// effect's control schema and renders the shared [`ControlPanel`]; edits
