@@ -659,6 +659,41 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
 }
 
 #[tokio::test]
+async fn scene_wide_media_broadcast_rejects_excessive_target_count() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let effect = insert_effect(&state, "broadcast-target-limit").await;
+    let asset_id = insert_lottie_asset(&state).await;
+    let (scene_id, primary_id, _display_id) = install_scene_with_two_groups(&state, effect.id).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
+
+    let targets: Vec<serde_json::Value> = (0..65)
+        .map(|_| serde_json::json!({ "group_id": primary_id }))
+        .collect();
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            uri,
+            serde_json::json!({
+                "asset_id": asset_id,
+                "targets": targets
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]
+            .as_str()
+            .expect("error")
+            .contains("targets cannot exceed 64 render groups")
+    );
+}
+
+#[tokio::test]
 async fn layer_reorder_rejects_bad_membership_and_returns_next_version() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "pulse").await;
