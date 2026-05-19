@@ -159,6 +159,7 @@ stage_pawnio_assets() {
   download_verified "${modules_url}" "${modules_cache}" "${PAWNIO_MODULES_SHA256}"
 
   cp "${setup_cache}" "${dest}/PawnIO_setup.exe"
+  cp "${modules_cache}" "${dest}/PawnIO.Modules.zip"
   unzip -q "${modules_cache}" -d "${extract}"
 
   for module in SmbusI801.bin SmbusPIIX4.bin SmbusNCT6793.bin; do

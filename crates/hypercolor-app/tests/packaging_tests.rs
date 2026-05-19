@@ -91,6 +91,7 @@ fn app_bundle_staging_includes_pawnio_runtime_payloads() {
     assert!(STAGE_APP_BUNDLE_PS1.contains("'pawnio'"));
 
     assert!(STAGE_APP_BUNDLE_SH.contains("PawnIO_setup.exe"));
+    assert!(STAGE_APP_BUNDLE_SH.contains("PawnIO.Modules.zip"));
     assert!(STAGE_APP_BUNDLE_SH.contains("manifest.json"));
     for module in REQUIRED_PAWNIO_MODULES {
         assert!(
@@ -116,6 +117,20 @@ fn pawnio_scripts_hash_without_requiring_get_file_hash() {
     assert!(FETCH_PAWNIO_ASSETS_PS1.contains("Get-Sha256 $modulePath"));
     assert!(INSTALL_BUNDLED_PAWNIO_PS1.contains("Get-Sha256 $Path"));
     assert!(INSTALL_PAWNIO_MODULES_PS1.contains("Get-Sha256 $zip"));
+}
+
+#[test]
+fn bundled_pawnio_installer_uses_embedded_trust_roots() {
+    assert!(INSTALL_BUNDLED_PAWNIO_PS1.contains("$PawnIoSetupSha256 ="));
+    assert!(INSTALL_BUNDLED_PAWNIO_PS1.contains("$PawnIoModulesZipSha256 ="));
+    assert!(INSTALL_BUNDLED_PAWNIO_PS1.contains(
+        "Assert-FileHash (Join-Path $AssetRoot \"PawnIO_setup.exe\") $PawnIoSetupSha256"
+    ));
+    assert!(INSTALL_BUNDLED_PAWNIO_PS1.contains(
+        "Assert-FileHash (Join-Path $AssetRoot \"PawnIO.Modules.zip\") $PawnIoModulesZipSha256"
+    ));
+    assert!(!INSTALL_BUNDLED_PAWNIO_PS1.contains("ConvertFrom-Json"));
+    assert!(!INSTALL_BUNDLED_PAWNIO_PS1.contains("manifest.json"));
 }
 
 #[test]

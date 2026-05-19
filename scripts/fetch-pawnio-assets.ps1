@@ -115,6 +115,7 @@ Save-VerifiedFile $setupUrl $setupCache $PawnIoSetupSha256
 Save-VerifiedFile $modulesUrl $modulesCache $PawnIoModulesSha256
 
 Copy-Item -LiteralPath $setupCache -Destination (Join-Path $Destination "PawnIO_setup.exe") -Force
+Copy-Item -LiteralPath $modulesCache -Destination (Join-Path $Destination "PawnIO.Modules.zip") -Force
 
 $extractRoot = Join-Path $CacheDir "modules-$PawnIoModulesVersion"
 Reset-Directory $extractRoot
