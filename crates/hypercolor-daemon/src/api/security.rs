@@ -767,10 +767,6 @@ fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     None
 }
 
-fn peer_ip(request: &Request<Body>) -> Option<IpAddr> {
-    peer_socket_addr(request).map(|socket_addr| socket_addr.ip())
-}
-
 fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
     request
         .extensions()
@@ -1020,7 +1016,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().get("x-ratelimit-limit").is_none());
     }
-
 
     #[tokio::test]
     async fn loopback_proxy_with_forwarded_remote_ip_requires_authentication() {
