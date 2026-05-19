@@ -290,6 +290,10 @@ pub fn DeviceCard(
     #[prop(into)] on_select: Callback<String>,
     #[prop(into)] on_pair: Callback<String>,
     #[prop(default = 0)] index: usize,
+    /// The scene zone this device's outputs are assigned to, if any
+    /// (plan 55 Wave B3). Shown as a chip; absent means unassigned.
+    #[prop(into, optional)]
+    zone_name: MaybeProp<String>,
 ) -> impl IntoView {
     let device_id = device.id.clone();
     let device_id_for_pair = device.id.clone();
@@ -473,6 +477,20 @@ pub fn DeviceCard(
                         </div>
                         // Driver · type · connection — single meta line
                         <div class="flex items-center gap-1.5 mt-1">
+                            {move || {
+                                zone_name
+                                    .get()
+                                    .map(|name| {
+                                        view! {
+                                            <span
+                                                class="shrink-0 rounded bg-surface-overlay/60 px-1.5 py-[1px] text-[9px] font-medium text-fg-tertiary/80"
+                                                title="Assigned zone"
+                                            >
+                                                {name}
+                                            </span>
+                                        }
+                                    })
+                            }}
                             {vendor_label_for_chip.map(|label| view! {
                                 <span class="text-[10px] font-semibold uppercase tracking-[0.06em] truncate"
                                       style=format!("color: rgba({primary}, 0.92)", primary = primary.clone())>

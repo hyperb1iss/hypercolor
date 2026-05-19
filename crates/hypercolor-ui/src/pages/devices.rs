@@ -5,6 +5,8 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use hypercolor_types::scene::RenderGroupRole;
+
 use crate::api::DeviceSummary;
 use crate::app::{DevicesContext, WsContext};
 use crate::components::device_card::{
@@ -104,6 +106,31 @@ fn driver_filter_options(devices: &[DeviceSummary]) -> Vec<DriverFilterOption> {
 #[component]
 pub fn DevicesPage() -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
+
+    // Each device's scene-zone membership (plan 55 Wave B3): map every
+    // layout device id to the zone whose layout claims it. A device's
+    // first-found zone wins when its outputs span more than one.
+    let devices_scene = LocalResource::new(crate::api::fetch_active_scene);
+    let device_zones = Memo::new(move |_| {
+        let mut map = std::collections::HashMap::<String, String>::new();
+        if let Some(Ok(Some(scene))) = devices_scene.get() {
+            for group in &scene.groups {
+                if group.role == RenderGroupRole::Display {
+                    continue;
+                }
+                let label = if group.role == RenderGroupRole::Primary && group.name == "Primary" {
+                    "Default zone".to_owned()
+                } else {
+                    group.name.clone()
+                };
+                for output in &group.layout.zones {
+                    map.entry(output.device_id.clone())
+                        .or_insert_with(|| label.clone());
+                }
+            }
+        }
+        map
+    });
 
     // Opt into the `device_metrics` WS topic for as long as this page stays
     // mounted. The daemon only streams per-device telemetry while at least
@@ -454,11 +481,15 @@ pub fn DevicesPage() -> impl IntoView {
                                         <div class=grid_class>
                                             {devices.into_iter().enumerate().map(|(i, dev)| {
                                                 let dev_id = dev.id.clone();
+                                                let dev_layout_id = dev.layout_device_id.clone();
                                                 let is_selected = Signal::derive(move || {
                                                     selected_device.get().as_deref() == Some(&dev_id)
                                                 });
+                                                let zone = Signal::derive(move || {
+                                                    device_zones.get().get(&dev_layout_id).cloned()
+                                                });
                                                 view! {
-                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device on_pair=on_pair_device index=i />
+                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device on_pair=on_pair_device index=i zone_name=zone />
                                                 }
                                             }).collect_view()}
                                         </div>
