@@ -1,4 +1,15 @@
-//! Layout builder wrapper — toolbar + three-column layout editor.
+//! The spatial layout editor.
+//!
+//! `LayoutBuilder` is a thin shell: it mounts `LayoutEditorProvider`
+//! (all editor state, persistence, and history wiring), its own
+//! `PageHeader`, and the headless `LayoutWorkspace` body.
+//!
+//! The provider and workspace are split apart so the Studio Stage can
+//! compose its *own* header around the same editor — it mounts a
+//! `LayoutEditorProvider` on an ancestor, reads the lifted
+//! [`LayoutEditorState`] from context, and renders a bare
+//! `LayoutWorkspace`. Editing `/layout` and editing inside Studio drive
+//! one shared editor; only the header chrome differs.
 //!
 //! Edits are pushed to the spatial engine immediately for live preview.
 //! Save persists to disk. Revert restores to the last saved state.
@@ -273,14 +284,54 @@ pub(crate) struct LayoutZoneDisplayContext {
         LocalResource<std::collections::HashMap<String, api::DeviceAttachmentsResponse>>,
 }
 
-/// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
+/// The layout-library controls and editor actions, lifted out of the
+/// `LayoutBuilder` shell so a separately-composed header (the Studio
+/// Stage) can drive the same editor. Provided via context by
+/// [`LayoutEditorProvider`]; consumed by `LayoutBuilder`'s `PageHeader`
+/// and by the Studio Stage's own header.
+#[derive(Clone, Copy)]
+pub(crate) struct LayoutEditorState {
+    /// The layout currently open in the editor.
+    pub layout: Signal<Option<SpatialLayout>>,
+    /// Saved-layout library options for the picker, and its bound value.
+    pub layout_options: Signal<Vec<(String, String)>>,
+    pub layout_value: Signal<String>,
+    pub set_selected_layout_id: WriteSignal<Option<String>>,
+    /// Whether the open layout is the daemon's active layout.
+    pub is_active: Signal<bool>,
+    /// The editor write handle — undo / redo and zone mutation.
+    pub write: LayoutWriteHandle,
+    pub can_undo: Signal<bool>,
+    pub can_redo: Signal<bool>,
+    pub is_dirty: Signal<bool>,
+    // Inline-edit UI state for the header controls.
+    pub renaming: ReadSignal<bool>,
+    pub set_renaming: WriteSignal<bool>,
+    pub rename_value: ReadSignal<String>,
+    pub set_rename_value: WriteSignal<String>,
+    pub creating: ReadSignal<bool>,
+    pub set_creating: WriteSignal<bool>,
+    pub new_layout_name: ReadSignal<String>,
+    pub set_new_layout_name: WriteSignal<String>,
+    pub menu_open: ReadSignal<bool>,
+    pub set_menu_open: WriteSignal<bool>,
+    // Library actions.
+    pub save: Callback<()>,
+    pub revert: Callback<()>,
+    pub apply: Callback<()>,
+    pub delete: Callback<()>,
+    pub create: Callback<()>,
+    pub commit_rename: Callback<()>,
+    pub duplicate: Callback<()>,
+}
+
+/// Sets up every editor signal, the history wiring, layout-library
+/// persistence, and the live-preview push, then provides
+/// [`LayoutEditorContext`], [`LayoutZoneDisplayContext`], and
+/// [`LayoutEditorState`] to its children. Mount this once above any
+/// header + [`LayoutWorkspace`] pair that should share one editor.
 #[component]
-pub fn LayoutBuilder(
-    /// Compact embedding (Studio Stage). The device palette collapses into
-    /// a slide-over drawer instead of a permanent left column, so the
-    /// canvas reads as the hero rather than one panel among four.
-    #[prop(optional)] compact: bool,
-) -> impl IntoView {
+pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
     // Load any UI state persisted from a previous visit so the page
@@ -330,7 +381,6 @@ pub fn LayoutBuilder(
     let compound_depth_signal = Signal::derive(move || compound_depth.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
-    let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
 
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
@@ -401,73 +451,6 @@ pub fn LayoutBuilder(
         attachment_profiles,
     });
 
-    // --- Resizable panel state ---
-    let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
-        LS_KEY_SIDEBAR,
-        SIDEBAR_DEFAULT,
-        SIDEBAR_MIN,
-        SIDEBAR_MAX,
-    ));
-    let (bottom_height, set_bottom_height) = signal(load_panel_size(
-        LS_KEY_BOTTOM,
-        BOTTOM_DEFAULT,
-        BOTTOM_MIN,
-        BOTTOM_MAX,
-    ));
-
-    // Which panel edge is being dragged (if any)
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum PanelDrag {
-        Sidebar,
-        Bottom,
-    }
-    let (dragging, set_dragging) = signal(None::<PanelDrag>);
-    let container_ref = NodeRef::<leptos::html::Div>::new();
-
-    // Global mousemove / mouseup listeners for drag (registered once)
-    let _drag_move = window_event_listener(ev::mousemove, move |ev| {
-        let Some(drag) = dragging.try_get_untracked().flatten() else {
-            return;
-        };
-        let Some(container) = container_ref.try_get_untracked().flatten() else {
-            return;
-        };
-        let rect = container.get_bounding_client_rect();
-
-        match drag {
-            PanelDrag::Sidebar => {
-                let x = f64::from(ev.client_x()) - rect.left();
-                let clamped = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(rect.width() - 200.0));
-                set_sidebar_width.set(clamped);
-            }
-            PanelDrag::Bottom => {
-                let y = f64::from(ev.client_y()) - rect.top();
-                let panel_h = rect.height() - y;
-                let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
-                set_bottom_height.set(clamped);
-            }
-        }
-    });
-
-    let _drag_end = window_event_listener(ev::mouseup, move |_| {
-        let Some(drag) = dragging.try_get_untracked().flatten() else {
-            return;
-        };
-        set_dragging.set(None);
-        // Persist on release.
-        match drag {
-            PanelDrag::Sidebar => {
-                if let Some(width) = sidebar_width.try_get_untracked() {
-                    save_panel_size(LS_KEY_SIDEBAR, width);
-                }
-            }
-            PanelDrag::Bottom => {
-                if let Some(height) = bottom_height.try_get_untracked() {
-                    save_panel_size(LS_KEY_BOTTOM, height);
-                }
-            }
-        }
-    });
     let selected_layout_summary = Signal::derive(move || {
         let selected_id = selected_layout_id.get()?;
         let layouts = ctx.layouts_resource.get()?.ok()?;
@@ -695,7 +678,7 @@ pub fn LayoutBuilder(
     );
 
     // Save handler — persists to disk via PUT + persist
-    let save_layout = move || {
+    let save = Callback::new(move |()| {
         let Some(l) = layout.get_untracked() else {
             return;
         };
@@ -720,19 +703,19 @@ pub fn LayoutBuilder(
             }
             layouts_resource.refetch();
         });
-    };
+    });
 
     // Revert handler — restores saved snapshot and pushes to spatial engine
-    let revert_layout = move || {
+    let revert = Callback::new(move |()| {
         let Some(saved) = saved_layout.get_untracked() else {
             return;
         };
         set_layout.replace_zones_with_history(saved.zones.clone());
         set_layout.mark_clean();
         toasts::toast_info("Layout reverted");
-    };
+    });
 
-    let apply_layout = move || {
+    let apply = Callback::new(move |()| {
         let Some(current) = layout.get_untracked() else {
             return;
         };
@@ -749,10 +732,10 @@ pub fn LayoutBuilder(
                 }
             }
         });
-    };
+    });
 
     // Delete handler
-    let delete_layout = move || {
+    let delete = Callback::new(move |()| {
         let Some(current_layout) = layout.get_untracked() else {
             return;
         };
@@ -813,10 +796,10 @@ pub fn LayoutBuilder(
                 }
             }
         });
-    };
+    });
 
     // Create handler
-    let create_layout = move || {
+    let create = Callback::new(move |()| {
         let name = new_layout_name.get_untracked();
         if name.trim().is_empty() {
             return;
@@ -838,10 +821,10 @@ pub fn LayoutBuilder(
                 set_id.set(Some(summary.id));
             }
         });
-    };
+    });
 
     // Rename handler — persists name change immediately via API
-    let commit_rename = move || {
+    let commit_rename = Callback::new(move |()| {
         let name = rename_value.get_untracked();
         let name = name.trim().to_string();
         if name.is_empty() {
@@ -890,10 +873,10 @@ pub fn LayoutBuilder(
                 }
             }
         });
-    };
+    });
 
     // Duplicate handler — creates a copy of the current layout with zones
-    let duplicate_layout = move || {
+    let duplicate = Callback::new(move |()| {
         let Some(current) = layout.get_untracked() else {
             return;
         };
@@ -930,389 +913,539 @@ pub fn LayoutBuilder(
                 }
             }
         });
-    };
+    });
+
+    provide_context(LayoutEditorState {
+        layout: layout_signal,
+        layout_options,
+        layout_value,
+        set_selected_layout_id,
+        is_active: selected_layout_is_active,
+        write: set_layout,
+        can_undo,
+        can_redo,
+        is_dirty,
+        renaming,
+        set_renaming,
+        rename_value,
+        set_rename_value,
+        creating,
+        set_creating,
+        new_layout_name,
+        set_new_layout_name,
+        menu_open: layout_menu_open,
+        set_menu_open: set_layout_menu_open,
+        save,
+        revert,
+        apply,
+        delete,
+        create,
+        commit_rename,
+        duplicate,
+    });
+
+    children()
+}
+
+/// The `/layout` page header — the saved-layout picker, rename / new
+/// controls, undo / redo, Revert / Save, and the per-layout action
+/// kebab, wrapped in a `PageHeader`. Reads everything from the
+/// context-provided [`LayoutEditorState`]; the Studio Stage composes a
+/// different header around the same state.
+#[component]
+fn LayoutBuilderHeader() -> impl IntoView {
+    let state = expect_context::<LayoutEditorState>();
+    let layout = state.layout;
+    let is_dirty = state.is_dirty;
+    let can_undo = state.can_undo;
+    let can_redo = state.can_redo;
+    let renaming = state.renaming;
+    let creating = state.creating;
+    let layout_menu_open = state.menu_open;
+    let selected_layout_is_active = state.is_active;
 
     view! {
-        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <PageHeader
-                icon=LuLayoutTemplate
-                title="Layout"
-                tagline="Arrange devices on the canvas"
-                accent=PageAccent::Coral
-            >
-                <HeaderTrailing slot>
-                    // Single-line action cluster: [Undo][Redo]  [Revert][Save].
-                    // Save doubles as the dirty indicator — glows when there
-                    // are unsaved changes, dims when clean. Revert follows the
-                    // same active/disabled pattern. No separate dirty strip.
-                    {move || layout.get().map(|_| {
-                        let dirty = is_dirty.get();
-                        let save_style = if dirty {
-                            "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); \
-                             box-shadow: 0 0 14px rgba(80, 250, 123, 0.18)"
-                        } else {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        };
-                        let revert_style = if dirty {
-                            "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
-                        } else {
-                            "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                        };
-                        view! {
-                            <div class="flex items-center gap-2">
-                                <div class="flex items-center gap-1">
-                                    <button
-                                        class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
-                                               hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
-                                               disabled:opacity-30 disabled:pointer-events-none"
-                                        title="Undo (Ctrl+Z)"
-                                        on:click=move |_| set_layout.undo()
-                                        disabled=move || !can_undo.get()
-                                    >
-                                        <Icon icon=LuUndo2 width="15px" height="15px" />
-                                    </button>
-                                    <button
-                                        class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
-                                               hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
-                                               disabled:opacity-30 disabled:pointer-events-none"
-                                        title="Redo (Ctrl+Shift+Z)"
-                                        on:click=move |_| set_layout.redo()
-                                        disabled=move || !can_redo.get()
-                                    >
-                                        <Icon icon=LuRedo2 width="15px" height="15px" />
-                                    </button>
-                                </div>
-                                <div class="w-px h-5 bg-edge-subtle/40 mx-1" />
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=revert_style
-                                    on:click=move |_| revert_layout()
-                                    disabled=move || !is_dirty.get()
-                                >
-                                    <Icon icon=LuUndo2 width="14px" height="14px" />
-                                    "Revert"
-                                </button>
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                    style=save_style
-                                    on:click=move |_| save_layout()
-                                    disabled=move || !is_dirty.get()
-                                >
-                                    <Icon icon=LuSave width="14px" height="14px" />
-                                    "Save"
-                                </button>
-                            </div>
-                        }
-                    })}
-                </HeaderTrailing>
-                <HeaderToolbar slot>
-                    <div class="flex items-center gap-3">
-
-                    {move || if renaming.get() {
-                        // Inline rename input
-                        view! {
-                            <div class="flex items-center gap-2 animate-enter-down">
-                                <input
-                                    type="text"
-                                    class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                           placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-52 transition-all"
-                                    prop:value=move || rename_value.get()
-                                    autofocus=true
-                                    on:input=move |ev| {
-                                        let event = Input::from_event(ev);
-                                        if let Some(value) = event.value_string() {
-                                            set_rename_value.set(value);
-                                        }
-                                    }
-                                    on:blur=move |_| commit_rename()
-                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                        if ev.key() == "Enter" {
-                                            commit_rename();
-                                        } else if ev.key() == "Escape" {
-                                            set_renaming.set(false);
-                                        }
-                                    }
-                                />
-                            </div>
-                        }.into_any()
+        <PageHeader
+            icon=LuLayoutTemplate
+            title="Layout"
+            tagline="Arrange devices on the canvas"
+            accent=PageAccent::Coral
+        >
+            <HeaderTrailing slot>
+                // Single-line action cluster: [Undo][Redo]  [Revert][Save].
+                // Save doubles as the dirty indicator — glows when there
+                // are unsaved changes, dims when clean. Revert follows the
+                // same active/disabled pattern. No separate dirty strip.
+                {move || layout.get().map(|_| {
+                    let dirty = is_dirty.get();
+                    let save_style = if dirty {
+                        "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); \
+                         box-shadow: 0 0 14px rgba(80, 250, 123, 0.18)"
                     } else {
-                        // Normal dropdown selector + rename button
-                        view! {
-                            <div class="flex items-center gap-2">
-                                <div class="min-w-[200px]">
-                                    <SilkSelect
-                                        value=layout_value
-                                        options=layout_options
-                                        on_change=Callback::new(move |val: String| {
-                                            if val.is_empty() {
-                                                set_selected_layout_id.set(None);
-                                            } else {
-                                                set_selected_layout_id.set(Some(val));
-                                            }
-                                        })
-                                        placeholder="Loading layouts…"
-                                        class="bg-surface-sunken border border-edge-subtle px-3 py-1.5 text-sm text-fg-primary glow-ring"
-                                    />
-                                </div>
-
-                                // Rename button — only when a layout is selected
-                                <Show when=move || layout.with(|l| l.is_some())>
-                                    <button
-                                        class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
-                                               transition-all btn-press"
-                                        title="Rename layout"
-                                        on:click=move |_| {
-                                            if let Some(current) = layout.get_untracked() {
-                                                set_rename_value.set(current.name.clone());
-                                                set_renaming.set(true);
-                                            }
-                                        }
-                                    >
-                                        <Icon icon=LuPencil width="14px" height="14px" />
-                                    </button>
-                                </Show>
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                    };
+                    let revert_style = if dirty {
+                        "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
+                    } else {
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                    };
+                    view! {
+                        <div class="flex items-center gap-2">
+                            <div class="flex items-center gap-1">
+                                <button
+                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
+                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
+                                           disabled:opacity-30 disabled:pointer-events-none"
+                                    title="Undo (Ctrl+Z)"
+                                    on:click=move |_| state.write.undo()
+                                    disabled=move || !can_undo.get()
+                                >
+                                    <Icon icon=LuUndo2 width="15px" height="15px" />
+                                </button>
+                                <button
+                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
+                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
+                                           disabled:opacity-30 disabled:pointer-events-none"
+                                    title="Redo (Ctrl+Shift+Z)"
+                                    on:click=move |_| state.write.redo()
+                                    disabled=move || !can_redo.get()
+                                >
+                                    <Icon icon=LuRedo2 width="15px" height="15px" />
+                                </button>
                             </div>
-                        }.into_any()
-                    }}
+                            <div class="w-px h-5 bg-edge-subtle/40 mx-1" />
+                            <button
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                style=revert_style
+                                on:click=move |_| state.revert.run(())
+                                disabled=move || !is_dirty.get()
+                            >
+                                <Icon icon=LuUndo2 width="14px" height="14px" />
+                                "Revert"
+                            </button>
+                            <button
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                style=save_style
+                                on:click=move |_| state.save.run(())
+                                disabled=move || !is_dirty.get()
+                            >
+                                <Icon icon=LuSave width="14px" height="14px" />
+                                "Save"
+                            </button>
+                        </div>
+                    }
+                })}
+            </HeaderTrailing>
+            <HeaderToolbar slot>
+                <div class="flex items-center gap-3">
 
-                </div>
-
-                // New layout button / inline form
-                {move || if creating.get() {
+                {move || if renaming.get() {
+                    // Inline rename input
                     view! {
                         <div class="flex items-center gap-2 animate-enter-down">
                             <input
                                 type="text"
-                                placeholder="Layout name"
                                 class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-40 transition-all"
-                                prop:value=move || new_layout_name.get()
+                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-52 transition-all"
+                                prop:value=move || state.rename_value.get()
+                                autofocus=true
                                 on:input=move |ev| {
                                     let event = Input::from_event(ev);
                                     if let Some(value) = event.value_string() {
-                                        set_new_layout_name.set(value);
+                                        state.set_rename_value.set(value);
                                     }
                                 }
-                                on:keydown=move |ev| {
-                                    if ev.key() == "Enter" { create_layout(); }
-                                    if ev.key() == "Escape" { set_creating.set(false); }
+                                on:blur=move |_| state.commit_rename.run(())
+                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                    if ev.key() == "Enter" {
+                                        state.commit_rename.run(());
+                                    } else if ev.key() == "Escape" {
+                                        state.set_renaming.set(false);
+                                    }
                                 }
                             />
-                            <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style="background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
-                                on:click=move |_| create_layout()
-                            >"Create"</button>
-                            <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-overlay/40 border border-edge-subtle
-                                       text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press"
-                                on:click=move |_| set_creating.set(false)
-                            >"Cancel"</button>
                         </div>
                     }.into_any()
                 } else {
+                    // Normal dropdown selector + rename button
                     view! {
-                        <button
-                            class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all btn-press"
-                            style="background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
-                            on:click=move |_| set_creating.set(true)
-                        >
-                            <Icon icon=LuPlus width="12px" height="12px" />
-                            "New"
-                        </button>
+                        <div class="flex items-center gap-2">
+                            <div class="min-w-[200px]">
+                                <SilkSelect
+                                    value=state.layout_value
+                                    options=state.layout_options
+                                    on_change=Callback::new(move |val: String| {
+                                        if val.is_empty() {
+                                            state.set_selected_layout_id.set(None);
+                                        } else {
+                                            state.set_selected_layout_id.set(Some(val));
+                                        }
+                                    })
+                                    placeholder="Loading layouts…"
+                                    class="bg-surface-sunken border border-edge-subtle px-3 py-1.5 text-sm text-fg-primary glow-ring"
+                                />
+                            </div>
+
+                            // Rename button — only when a layout is selected
+                            <Show when=move || layout.with(|l| l.is_some())>
+                                <button
+                                    class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
+                                           transition-all btn-press"
+                                    title="Rename layout"
+                                    on:click=move |_| {
+                                        if let Some(current) = layout.get_untracked() {
+                                            state.set_rename_value.set(current.name.clone());
+                                            state.set_renaming.set(true);
+                                        }
+                                    }
+                                >
+                                    <Icon icon=LuPencil width="14px" height="14px" />
+                                </button>
+                            </Show>
+                        </div>
                     }.into_any()
                 }}
 
-                <div class="flex-1" />
+            </div>
 
-                // Overflow menu — per-layout actions (Apply, Duplicate, Delete)
-                // collapsed into a single kebab. Keeps the toolbar row quiet
-                // during normal use; the popover opens on demand.
-                {move || layout.get().map(|_| view! {
-                    <div class="relative layout-action-menu">
+            // New layout button / inline form
+            {move || if creating.get() {
+                view! {
+                    <div class="flex items-center gap-2 animate-enter-down">
+                        <input
+                            type="text"
+                            placeholder="Layout name"
+                            class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
+                                   placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-40 transition-all"
+                            prop:value=move || state.new_layout_name.get()
+                            on:input=move |ev| {
+                                let event = Input::from_event(ev);
+                                if let Some(value) = event.value_string() {
+                                    state.set_new_layout_name.set(value);
+                                }
+                            }
+                            on:keydown=move |ev| {
+                                if ev.key() == "Enter" { state.create.run(()); }
+                                if ev.key() == "Escape" { state.set_creating.set(false); }
+                            }
+                        />
                         <button
-                            class="w-8 h-8 flex items-center justify-center rounded-md
-                                   text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
-                                   transition-all btn-press"
-                            title="Layout actions"
-                            on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                            style="background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
+                            on:click=move |_| state.create.run(())
+                        >"Create"</button>
+                        <button
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-overlay/40 border border-edge-subtle
+                                   text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press"
+                            on:click=move |_| state.set_creating.set(false)
+                        >"Cancel"</button>
+                    </div>
+                }.into_any()
+            } else {
+                view! {
+                    <button
+                        class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all btn-press"
+                        style="background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
+                        on:click=move |_| state.set_creating.set(true)
+                    >
+                        <Icon icon=LuPlus width="12px" height="12px" />
+                        "New"
+                    </button>
+                }.into_any()
+            }}
+
+            <div class="flex-1" />
+
+            // Overflow menu — per-layout actions (Apply, Duplicate, Delete)
+            // collapsed into a single kebab. Keeps the toolbar row quiet
+            // during normal use; the popover opens on demand.
+            {move || layout.get().map(|_| view! {
+                <div class="relative layout-action-menu">
+                    <button
+                        class="w-8 h-8 flex items-center justify-center rounded-md
+                               text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
+                               transition-all btn-press"
+                        title="Layout actions"
+                        on:click=move |_| state.set_menu_open.update(|v| *v = !*v)
+                    >
+                        <Icon icon=LuEllipsis width="15px" height="15px" />
+                    </button>
+                    <Show when=move || layout_menu_open.get()>
+                        <ControlDropdownDismissHandlers
+                            class_name="layout-action-menu".to_string()
+                            is_open=layout_menu_open
+                            set_open=state.set_menu_open
+                        />
+                        <div
+                            class="absolute right-0 top-full mt-1 z-[100] w-48
+                                   rounded-lg overflow-hidden
+                                   bg-surface-overlay/98 backdrop-blur-xl
+                                   border border-edge-subtle dropdown-glow
+                                   animate-enter-down"
+                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Escape" {
+                                    state.set_menu_open.set(false);
+                                }
+                            }
                         >
-                            <Icon icon=LuEllipsis width="15px" height="15px" />
-                        </button>
-                        <Show when=move || layout_menu_open.get()>
-                            <ControlDropdownDismissHandlers
-                                class_name="layout-action-menu".to_string()
-                                is_open=layout_menu_open
-                                set_open=set_layout_menu_open
-                            />
-                            <div
-                                class="absolute right-0 top-full mt-1 z-[100] w-48
-                                       rounded-lg overflow-hidden
-                                       bg-surface-overlay/98 backdrop-blur-xl
-                                       border border-edge-subtle dropdown-glow
-                                       animate-enter-down"
-                                on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                    if ev.key() == "Escape" {
-                                        set_layout_menu_open.set(false);
+                            // Apply / Active — reflects the live state of this layout.
+                            // When active, shows as a green read-only marker.
+                            // When inactive + clean, shows "Apply" as an actionable button.
+                            // When inactive + dirty, hides (save first).
+                            <Show when=move || selected_layout_is_active.get()>
+                                <div class="w-full px-3 py-2 text-xs flex items-center gap-2
+                                            text-fg-tertiary cursor-default">
+                                    <Icon icon=LuCheck width="12px" height="12px"
+                                          style="color: rgb(80, 250, 123); flex-shrink: 0" />
+                                    <span>"Active"</span>
+                                </div>
+                            </Show>
+                            <Show when=move || !selected_layout_is_active.get() && !is_dirty.get()>
+                                <button
+                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                           flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
+                                    on:click=move |_| {
+                                        state.apply.run(());
+                                        state.set_menu_open.set(false);
                                     }
+                                >
+                                    <Icon icon=LuCheck width="12px" height="12px"
+                                          style="color: rgb(128, 255, 234); flex-shrink: 0" />
+                                    <span>"Apply"</span>
+                                </button>
+                            </Show>
+                            <button
+                                class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                       flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
+                                on:click=move |_| {
+                                    if let Some(current) = layout.get_untracked() {
+                                        state.set_rename_value.set(current.name.clone());
+                                        state.set_renaming.set(true);
+                                    }
+                                    state.set_menu_open.set(false);
                                 }
                             >
-                                // Apply / Active — reflects the live state of this layout.
-                                // When active, shows as a green read-only marker.
-                                // When inactive + clean, shows "Apply" as an actionable button.
-                                // When inactive + dirty, hides (save first).
-                                <Show when=move || selected_layout_is_active.get()>
-                                    <div class="w-full px-3 py-2 text-xs flex items-center gap-2
-                                                text-fg-tertiary cursor-default">
-                                        <Icon icon=LuCheck width="12px" height="12px"
-                                              style="color: rgb(80, 250, 123); flex-shrink: 0" />
-                                        <span>"Active"</span>
-                                    </div>
-                                </Show>
-                                <Show when=move || !selected_layout_is_active.get() && !is_dirty.get()>
-                                    <button
-                                        class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                               flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
-                                        on:click=move |_| {
-                                            apply_layout();
-                                            set_layout_menu_open.set(false);
-                                        }
-                                    >
-                                        <Icon icon=LuCheck width="12px" height="12px"
-                                              style="color: rgb(128, 255, 234); flex-shrink: 0" />
-                                        <span>"Apply"</span>
-                                    </button>
-                                </Show>
-                                <button
-                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                           flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
-                                    on:click=move |_| {
-                                        if let Some(current) = layout.get_untracked() {
-                                            set_rename_value.set(current.name.clone());
-                                            set_renaming.set(true);
-                                        }
-                                        set_layout_menu_open.set(false);
-                                    }
-                                >
-                                    <Icon icon=LuPencil width="12px" height="12px"
-                                          style="color: rgba(139, 133, 160, 0.7); flex-shrink: 0" />
-                                    <span>"Rename"</span>
-                                </button>
-                                <button
-                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                           flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
-                                    on:click=move |_| {
-                                        duplicate_layout();
-                                        set_layout_menu_open.set(false);
-                                    }
-                                >
-                                    <Icon icon=LuCopy width="12px" height="12px"
-                                          style="color: rgba(128, 255, 234, 0.7); flex-shrink: 0" />
-                                    <span>"Duplicate"</span>
-                                </button>
-                                <div class="h-px bg-edge-subtle/40 mx-2 my-1" />
-                                <button
-                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                           flex items-center gap-2 text-status-error/70 hover:text-status-error"
-                                    on:click=move |_| {
-                                        delete_layout();
-                                        set_layout_menu_open.set(false);
-                                    }
-                                >
-                                    <Icon icon=LuTrash2 width="12px" height="12px"
-                                          style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0" />
-                                    <span>"Delete"</span>
-                                </button>
-                            </div>
-                        </Show>
-                    </div>
-                })}
-                </HeaderToolbar>
-            </PageHeader>
-
-            // Editor body — palette, canvas, and zone properties.
-            <Show
-                when=move || has_layout.get()
-                fallback=move || {
-                    view! {
-                        <div class="flex-1 flex items-center justify-center">
-                            <div class="text-center space-y-3 animate-enter-fade">
-                                <Icon icon=LuLayoutTemplate width="48px" height="48px"
-                                      style="color: rgba(255, 106, 193, 0.25); filter: drop-shadow(0 0 12px rgba(255, 106, 193, 0.15))" />
-                                <div class="text-fg-tertiary/50 text-sm">"Select or create a layout to begin"</div>
-                                <div class="text-fg-tertiary/40 text-xs font-mono tracking-wide">"Drag devices onto the canvas to build your spatial mapping"</div>
-                            </div>
+                                <Icon icon=LuPencil width="12px" height="12px"
+                                      style="color: rgba(139, 133, 160, 0.7); flex-shrink: 0" />
+                                <span>"Rename"</span>
+                            </button>
+                            <button
+                                class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                       flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
+                                on:click=move |_| {
+                                    state.duplicate.run(());
+                                    state.set_menu_open.set(false);
+                                }
+                            >
+                                <Icon icon=LuCopy width="12px" height="12px"
+                                      style="color: rgba(128, 255, 234, 0.7); flex-shrink: 0" />
+                                <span>"Duplicate"</span>
+                            </button>
+                            <div class="h-px bg-edge-subtle/40 mx-2 my-1" />
+                            <button
+                                class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
+                                       flex items-center gap-2 text-status-error/70 hover:text-status-error"
+                                on:click=move |_| {
+                                    state.delete.run(());
+                                    state.set_menu_open.set(false);
+                                }
+                            >
+                                <Icon icon=LuTrash2 width="12px" height="12px"
+                                      style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0" />
+                                <span>"Delete"</span>
+                            </button>
                         </div>
+                    </Show>
+                </div>
+            })}
+            </HeaderToolbar>
+        </PageHeader>
+    }
+}
+
+/// The headless layout editor body — the device palette, the canvas
+/// viewport, and the zone-properties panel, with their resizable-panel
+/// state. Carries no header; mount it under a [`LayoutEditorProvider`]
+/// beside whatever header the host wants.
+#[component]
+pub(crate) fn LayoutWorkspace(
+    /// Compact embedding (Studio Stage). The device palette collapses
+    /// into a slide-over drawer instead of a permanent left column, so
+    /// the canvas reads as the hero rather than one panel among four.
+    #[prop(optional)]
+    compact: bool,
+) -> impl IntoView {
+    let editor = expect_context::<LayoutEditorContext>();
+    let has_layout = Signal::derive(move || editor.layout.with(Option::is_some));
+
+    // --- Resizable panel state ---
+    let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
+        LS_KEY_SIDEBAR,
+        SIDEBAR_DEFAULT,
+        SIDEBAR_MIN,
+        SIDEBAR_MAX,
+    ));
+    let (bottom_height, set_bottom_height) = signal(load_panel_size(
+        LS_KEY_BOTTOM,
+        BOTTOM_DEFAULT,
+        BOTTOM_MIN,
+        BOTTOM_MAX,
+    ));
+
+    // Which panel edge is being dragged (if any)
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PanelDrag {
+        Sidebar,
+        Bottom,
+    }
+    let (dragging, set_dragging) = signal(None::<PanelDrag>);
+    let container_ref = NodeRef::<leptos::html::Div>::new();
+
+    // Global mousemove / mouseup listeners for drag (registered once)
+    let _drag_move = window_event_listener(ev::mousemove, move |ev| {
+        let Some(drag) = dragging.try_get_untracked().flatten() else {
+            return;
+        };
+        let Some(container) = container_ref.try_get_untracked().flatten() else {
+            return;
+        };
+        let rect = container.get_bounding_client_rect();
+
+        match drag {
+            PanelDrag::Sidebar => {
+                let x = f64::from(ev.client_x()) - rect.left();
+                let clamped = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(rect.width() - 200.0));
+                set_sidebar_width.set(clamped);
+            }
+            PanelDrag::Bottom => {
+                let y = f64::from(ev.client_y()) - rect.top();
+                let panel_h = rect.height() - y;
+                let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
+                set_bottom_height.set(clamped);
+            }
+        }
+    });
+
+    let _drag_end = window_event_listener(ev::mouseup, move |_| {
+        let Some(drag) = dragging.try_get_untracked().flatten() else {
+            return;
+        };
+        set_dragging.set(None);
+        // Persist on release.
+        match drag {
+            PanelDrag::Sidebar => {
+                if let Some(width) = sidebar_width.try_get_untracked() {
+                    save_panel_size(LS_KEY_SIDEBAR, width);
+                }
+            }
+            PanelDrag::Bottom => {
+                if let Some(height) = bottom_height.try_get_untracked() {
+                    save_panel_size(LS_KEY_BOTTOM, height);
+                }
+            }
+        }
+    });
+
+    view! {
+        <Show
+            when=move || has_layout.get()
+            fallback=move || {
+                view! {
+                    <div class="flex-1 flex items-center justify-center">
+                        <div class="text-center space-y-3 animate-enter-fade">
+                            <Icon icon=LuLayoutTemplate width="48px" height="48px"
+                                  style="color: rgba(255, 106, 193, 0.25); filter: drop-shadow(0 0 12px rgba(255, 106, 193, 0.15))" />
+                            <div class="text-fg-tertiary/50 text-sm">"Select or create a layout to begin"</div>
+                            <div class="text-fg-tertiary/40 text-xs font-mono tracking-wide">"Drag devices onto the canvas to build your spatial mapping"</div>
+                        </div>
+                    </div>
+                }
+            }
+        >
+            <div
+                class="relative flex min-h-0 flex-1 overflow-hidden"
+                node_ref=container_ref
+                style=move || {
+                    match dragging.get() {
+                        Some(PanelDrag::Sidebar) => "cursor: col-resize; user-select: none",
+                        Some(PanelDrag::Bottom) => "cursor: row-resize; user-select: none",
+                        None => "",
                     }
                 }
             >
-                <div
-                    class="relative flex min-h-0 flex-1 overflow-hidden"
-                    node_ref=container_ref
-                    style=move || {
-                        match dragging.get() {
-                            Some(PanelDrag::Sidebar) => "cursor: col-resize; user-select: none",
-                            Some(PanelDrag::Bottom) => "cursor: row-resize; user-select: none",
-                            None => "",
+                // Full-page editor keeps the palette as a permanent
+                // resizable column. Compact embeddings drop it here and
+                // surface it through the slide-over drawer below instead.
+                {(!compact).then(|| view! {
+                    <div
+                        class="shrink-0 min-h-0 overflow-y-auto"
+                        style=move || format!("width: {:.0}px", sidebar_width.get())
+                    >
+                        <LayoutPalette />
+                    </div>
+
+                    <div
+                        class="shrink-0 w-1 cursor-col-resize group/handle relative hover:bg-accent-muted/20
+                               active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
+                        on:mousedown=move |ev| {
+                            ev.prevent_default();
+                            set_dragging.set(Some(PanelDrag::Sidebar));
                         }
-                    }
-                >
-                    // Full-page editor keeps the palette as a permanent
-                    // resizable column. Compact embeddings drop it here and
-                    // surface it through the slide-over drawer below instead.
-                    {(!compact).then(|| view! {
-                        <div
-                            class="shrink-0 min-h-0 overflow-y-auto"
-                            style=move || format!("width: {:.0}px", sidebar_width.get())
-                        >
-                            <LayoutPalette />
-                        </div>
+                    >
+                        <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
+                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
+                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
+                    </div>
+                })}
 
-                        <div
-                            class="shrink-0 w-1 cursor-col-resize group/handle relative hover:bg-accent-muted/20
-                                   active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
-                            on:mousedown=move |ev| {
-                                ev.prevent_default();
-                                set_dragging.set(Some(PanelDrag::Sidebar));
-                            }
-                        >
-                            <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
-                            <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
-                                        rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
-                        </div>
-                    })}
+                // Main area: canvas above, zone properties below
+                <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                    // Canvas viewport — flexes to fill remaining space
+                    <div class="relative min-h-0 flex-1 overflow-hidden">
+                        <LayoutCanvas />
+                    </div>
 
-                    // Main area: canvas above, zone properties below
-                    <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                        // Canvas viewport — flexes to fill remaining space
-                        <div class="relative min-h-0 flex-1 overflow-hidden">
-                            <LayoutCanvas />
-                        </div>
+                    // Bottom panel resize handle
+                    <div
+                        class="shrink-0 h-1 cursor-row-resize group/handle relative hover:bg-accent-muted/20
+                               active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
+                        on:mousedown=move |ev| {
+                            ev.prevent_default();
+                            set_dragging.set(Some(PanelDrag::Bottom));
+                        }
+                    >
+                        <div class="absolute inset-x-0 -top-0.5 -bottom-0.5" />
+                        <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-0.5 w-8
+                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
+                    </div>
 
-                        // Bottom panel resize handle
-                        <div
-                            class="shrink-0 h-1 cursor-row-resize group/handle relative hover:bg-accent-muted/20
-                                   active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
-                            on:mousedown=move |ev| {
-                                ev.prevent_default();
-                                set_dragging.set(Some(PanelDrag::Bottom));
-                            }
-                        >
-                            <div class="absolute inset-x-0 -top-0.5 -bottom-0.5" />
-                            <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-0.5 w-8
-                                        rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
-                        </div>
-
-                        // Zone properties — resizable height
-                        <div
-                            class="shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
-                            style=move || format!("height: {:.0}px", bottom_height.get())
-                        >
-                            <LayoutZoneProperties />
-                        </div>
+                    // Zone properties — resizable height
+                    <div
+                        class="shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
+                        style=move || format!("height: {:.0}px", bottom_height.get())
+                    >
+                        <LayoutZoneProperties />
                     </div>
                 </div>
-            </Show>
-        </div>
+            </div>
+        </Show>
+    }
+}
+
+/// Layout builder — the `/layout` page: editor state, its `PageHeader`,
+/// and the headless `LayoutWorkspace`, all under one provider.
+#[component]
+pub fn LayoutBuilder(
+    /// Compact embedding (Studio Stage). Forwarded to [`LayoutWorkspace`].
+    #[prop(optional)]
+    compact: bool,
+) -> impl IntoView {
+    view! {
+        <LayoutEditorProvider>
+            <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <LayoutBuilderHeader />
+                <LayoutWorkspace compact=compact />
+            </div>
+        </LayoutEditorProvider>
     }
 }
