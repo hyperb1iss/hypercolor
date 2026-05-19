@@ -1132,9 +1132,6 @@ jobs:
           if (Test-Path "tauri.bundle.conf.json") {
             $configArgs += @("--config", "tauri.bundle.conf.json")
           }
-          if ($env:RUNNER_OS -eq "Windows" -and (Test-Path "tauri.windows.bundle.conf.json")) {
-            $configArgs += @("--config", "tauri.windows.bundle.conf.json")
-          }
           cargo tauri build --ci --no-sign --bundles $env:TAURI_BUNDLES @configArgs
 
       - name: Normalize macOS DMG artifact name
