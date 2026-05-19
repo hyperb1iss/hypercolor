@@ -5,13 +5,15 @@
 //!
 //! ```text
 //! loop {
-//!     RenderLoop::tick()              // timing gate + FPS control
-//!     compose active scene groups     // render groups → composed canvas
-//!     SpatialEngine::sample()         // map pixels → LED colors
-//!     BackendManager::write_frame()   // push to hardware
-//!     HypercolorBus::publish()        // notify subscribers
-//!     RenderLoop::frame_complete()    // measure + adapt FPS tier
-//!     sleep_until(next_deadline)      // pace to target FPS
+//!     RenderLoop::tick()                 // timing gate + FPS control
+//!     InputManager::sample_all()         // shared frame inputs
+//!     render active scene groups         // Servo/native/media producers
+//!     SparkleFlinger::compose_frame()    // canonical scene canvas
+//!     sample LED output                  // CPU or prepared GPU sampler
+//!     publish scene/display canvases     // latest-value bus/watch streams
+//!     BackendManager::write_frame()      // staged hardware output
+//!     RenderLoop::frame_complete()       // pressure metrics + tier adaptation
+//!     sleep_until(next_deadline)         // pace to target FPS
 //! }
 //! ```
 

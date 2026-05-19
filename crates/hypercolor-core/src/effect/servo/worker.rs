@@ -2022,22 +2022,13 @@ fn render_servo_framebuffer(
                 return Ok(EffectRenderOutput::Gpu(frame));
             }
             Err(error) => {
-                let fallback = !matches!(
-                    super::servo_gpu_import_mode(),
-                    hypercolor_types::config::ServoGpuImportMode::On
-                );
-                record_servo_gpu_import_failure(classify_servo_gpu_import_error(&error), fallback);
-                if matches!(
-                    super::servo_gpu_import_mode(),
-                    hypercolor_types::config::ServoGpuImportMode::On
-                ) {
-                    return Err(error)
-                        .context("Servo GPU framebuffer import is required but unavailable");
-                }
+                record_servo_gpu_import_failure(classify_servo_gpu_import_error(&error), false);
                 warn!(
                     %error,
-                    "Servo GPU framebuffer import failed; falling back to CPU readback"
+                    "Servo GPU framebuffer import failed; refusing CPU readback fallback"
                 );
+                return Err(error)
+                    .context("Servo GPU framebuffer import failed without CPU readback fallback");
             }
         }
     }

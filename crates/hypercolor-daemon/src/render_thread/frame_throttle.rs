@@ -207,7 +207,7 @@ pub(crate) async fn maybe_sleep_throttle(
 
     {
         let mut performance = state.performance.write().await;
-        performance.record_frame(frame_metrics);
+        performance.record_frame(&frame_metrics);
     }
 
     throttle.note_sleep_frame_published();

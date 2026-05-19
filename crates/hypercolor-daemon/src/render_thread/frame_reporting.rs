@@ -14,12 +14,12 @@ pub(crate) struct FrameCompletionReport {
 impl FrameCompletionReport {
     pub(crate) fn new(
         frame_interval_us: u32,
-        metrics: LatestFrameMetrics,
+        metrics: &LatestFrameMetrics,
         write_stats: &FrameWriteStats,
     ) -> Self {
         Self {
             frame_interval_us,
-            metrics,
+            metrics: *metrics,
             devices_written: write_stats.devices_written,
             total_leds: write_stats.total_leds,
         }
@@ -101,7 +101,7 @@ mod tests {
             errors: vec!["boom".to_owned()],
         };
 
-        let report = FrameCompletionReport::new(16_666, metrics, &write_stats);
+        let report = FrameCompletionReport::new(16_666, &metrics, &write_stats);
 
         assert_eq!(report.frame_interval_us, 16_666);
         assert_eq!(report.metrics.timeline.frame_token, 42);

@@ -17,9 +17,9 @@ use super::render_groups::{
     GroupCanvasFrame, PendingGroupCanvasFrame, RenderGroupEffectError, RenderGroupResult,
 };
 use super::scene_snapshot::FrameSceneSnapshot;
-use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 #[cfg(feature = "wgpu")]
-use super::sparkleflinger::{CompositionLayer, CompositionPlan, DisplayFinalizeParams};
+use super::sparkleflinger::DisplayFinalizeParams;
+use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 use super::{RenderThreadState, micros_between, micros_u32};
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
@@ -287,11 +287,12 @@ impl ComposeContext<'_> {
                     .led_sampling_strategy
                     .sparkleflinger_engine()
                     .is_some_and(|spatial_engine| {
-                        requires_cpu_sampling_canvas(
-                            self.compose
-                                .sparkleflinger
-                                .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
-                        )
+                        !self.compose.sparkleflinger.supports_gpu_output_frames()
+                            && requires_cpu_sampling_canvas(
+                                self.compose
+                                    .sparkleflinger
+                                    .can_sample_zone_plan(spatial_engine.sampling_plan().as_ref()),
+                            )
                     });
                 let composed = if requires_full_composition {
                     self.compose.sparkleflinger.compose_for_outputs(
@@ -448,11 +449,12 @@ impl ComposeContext<'_> {
     }
 
     fn requires_cpu_sampling_canvas(&self) -> bool {
-        requires_cpu_sampling_canvas(
-            self.compose
-                .sparkleflinger
-                .can_sample_zone_plan(self.scene_snapshot.spatial_engine.sampling_plan().as_ref()),
-        )
+        !self.compose.sparkleflinger.supports_gpu_output_frames()
+            && requires_cpu_sampling_canvas(
+                self.compose.sparkleflinger.can_sample_zone_plan(
+                    self.scene_snapshot.spatial_engine.sampling_plan().as_ref(),
+                ),
+            )
     }
 
     fn preview_surface_request(&self) -> Option<PreviewSurfaceRequest> {
@@ -662,20 +664,8 @@ impl ComposeContext<'_> {
     }
 
     #[cfg(feature = "wgpu")]
-    fn materialize_gpu_group_canvas(&mut self, frame: ProducerFrame) -> Option<PublishedSurface> {
-        let width = frame.width();
-        let height = frame.height();
-        let plan = CompositionPlan::single(width, height, CompositionLayer::replace_opaque(frame))
-            .with_cpu_replay_cacheable(false);
-        let composed = self
-            .compose
-            .display_sparkleflinger
-            .compose_for_outputs(plan, true, None);
-        composed.sampling_surface.or_else(|| {
-            composed
-                .sampling_canvas
-                .map(|canvas| PublishedSurface::from_owned_canvas(canvas, 0, 0))
-        })
+    fn materialize_gpu_group_canvas(&mut self, _frame: ProducerFrame) -> Option<PublishedSurface> {
+        None
     }
 
     fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {

@@ -37,6 +37,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -100,6 +102,9 @@ use crate::session::{OutputPowerState, current_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 
 // ── AppState ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+static APP_STATE_TEST_DATA_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Shared application state injected into every API handler.
 ///
@@ -310,11 +315,29 @@ impl AppState {
     /// Primarily useful for testing. In production, prefer
     /// [`from_daemon_state`](Self::from_daemon_state) to share subsystems
     /// with the daemon lifecycle.
+    pub fn new() -> Self {
+        #[cfg(test)]
+        {
+            let id = APP_STATE_TEST_DATA_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            Self::new_with_data_dir(
+                std::env::temp_dir()
+                    .join("hypercolor-app-state-tests")
+                    .join(format!("{}-{id}", std::process::id())),
+            )
+        }
+
+        #[cfg(not(test))]
+        {
+            Self::new_with_data_dir(ConfigManager::data_dir())
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "test-facing app state construction wires all shared subsystems in one place"
     )]
-    pub fn new() -> Self {
+    #[doc(hidden)]
+    pub fn new_with_data_dir(data_dir: PathBuf) -> Self {
         use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
         let default_layout = SpatialLayout {
@@ -335,7 +358,7 @@ impl AppState {
             warn!(%error, "Failed to load built-in attachment templates");
         }
 
-        let attachment_templates_dir = ConfigManager::data_dir().join("attachments");
+        let attachment_templates_dir = data_dir.join("attachments");
         if let Err(error) = attachment_registry.load_user_dir(&attachment_templates_dir) {
             warn!(
                 path = %attachment_templates_dir.display(),
@@ -344,7 +367,7 @@ impl AppState {
             );
         }
 
-        let attachment_profiles_path = ConfigManager::data_dir().join("attachment-profiles.json");
+        let attachment_profiles_path = data_dir.join("attachment-profiles.json");
         let attachment_profiles = AttachmentProfileStore::load(&attachment_profiles_path)
             .unwrap_or_else(|error| {
                 warn!(
@@ -354,7 +377,7 @@ impl AppState {
                 );
                 AttachmentProfileStore::new(attachment_profiles_path)
             });
-        let profiles_path = ConfigManager::data_dir().join("profiles.json");
+        let profiles_path = data_dir.join("profiles.json");
         let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
             warn!(
                 path = %profiles_path.display(),
@@ -364,7 +387,7 @@ impl AppState {
             );
             ProfileStore::new(profiles_path)
         });
-        let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
+        let device_settings_path = data_dir.join("device-settings.json");
         let device_settings =
             DeviceSettingsStore::load(&device_settings_path).unwrap_or_else(|error| {
                 warn!(
@@ -374,7 +397,7 @@ impl AppState {
                 );
                 DeviceSettingsStore::new(device_settings_path)
             });
-        let simulated_displays_path = ConfigManager::data_dir().join("simulated-displays.json");
+        let simulated_displays_path = data_dir.join("simulated-displays.json");
         let simulated_displays = SimulatedDisplayStore::load(&simulated_displays_path)
             .unwrap_or_else(|error| {
                 warn!(
@@ -391,12 +414,12 @@ impl AppState {
         });
         let scene_transactions = SceneTransactionQueue::default();
         let credential_store = Arc::new(
-            CredentialStore::open_blocking(&ConfigManager::data_dir())
+            CredentialStore::open_blocking(&data_dir)
                 .expect("default app state should open credential store"),
         );
         let device_registry = DeviceRegistry::new();
         let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
-        let scenes_path = ConfigManager::data_dir().join("scenes.json");
+        let scenes_path = data_dir.join("scenes.json");
         let scene_store = SceneStore::load(&scenes_path).unwrap_or_else(|error| {
             warn!(
                 path = %scenes_path.display(),
@@ -415,7 +438,7 @@ impl AppState {
         let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
         let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
-        let asset_library = AssetLibrary::open(ConfigManager::data_dir().join("assets"))
+        let asset_library = AssetLibrary::open(data_dir.join("assets"))
             .expect("default app state should open asset library");
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
@@ -436,15 +459,14 @@ impl AppState {
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
         let layouts = Arc::new(RwLock::new(HashMap::new()));
-        let layouts_path = ConfigManager::data_dir().join("layouts.json");
+        let layouts_path = data_dir.join("layouts.json");
         let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
-        let layout_auto_exclusions_path =
-            ConfigManager::data_dir().join("layout-auto-exclusions.json");
+        let layout_auto_exclusions_path = data_dir.join("layout-auto-exclusions.json");
         let logical_devices = Arc::new(RwLock::new(HashMap::new()));
-        let logical_devices_path = ConfigManager::data_dir().join("logical-devices.json");
+        let logical_devices_path = data_dir.join("logical-devices.json");
         let effect_layout_links = Arc::new(RwLock::new(HashMap::new()));
-        let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+        let effect_layout_links_path = data_dir.join("effect-layouts.json");
+        let runtime_state_path = data_dir.join("runtime-state.json");
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(
                 &HypercolorConfig::default(),

@@ -234,8 +234,8 @@ pub struct PerformanceTracker {
 
 impl PerformanceTracker {
     /// Record one completed frame.
-    pub(crate) fn record_frame(&mut self, metrics: LatestFrameMetrics) {
-        self.latest_frame = Some(metrics);
+    pub(crate) fn record_frame(&mut self, metrics: &LatestFrameMetrics) {
+        self.latest_frame = Some(*metrics);
         self.frame_times_us.push_back(metrics.total_us);
         self.jitter_us.push_back(metrics.jitter_us);
         self.wake_delay_us.push_back(metrics.wake_late_us);

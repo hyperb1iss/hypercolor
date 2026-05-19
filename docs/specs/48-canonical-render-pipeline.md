@@ -121,6 +121,24 @@ When exactly one non-display group already matches the preview extent, the
 pipeline may render directly into the preview surface and reuse that surface as
 the scene canvas, provided the resulting LED sampling semantics are unchanged.
 
+When one or more scene groups project as full-scene nearest identity layers, the
+pipeline may hand those layers to SparkleFlinger directly instead of
+materializing a CPU scene canvas first. When a Servo or media producer supplies
+a GPU-resident frame, that frame stays on the GPU until a consumer requests a
+transport-specific sampled output.
+
+The hard residency rules are:
+
+- Never read a whole GPU scene image back to the CPU.
+- Never use CPU readback as a GPU producer fallback.
+- LED output may read back only the GPU-sampled LED pixels.
+- Display output may read back only the finalized display region/scale payload.
+- CPU sampling fallback is available only when the frame is already CPU-backed.
+
+If GPU LED sampling cannot satisfy a prepared sampling plan, the render thread
+reuses retained LED output when possible or emits the explicit fallback result;
+it does not materialize the whole scene on the CPU.
+
 This is an optimization, not a semantic fork.
 
 ### 4.2 Multi-group scenes
@@ -134,8 +152,8 @@ Acceptable implementations include:
 - a shared scene compositor that uses the same transform rules as the sampler
 - a scene-canvas reconstruction path derived from the same prepared sampling
   plans used for LED output
-- a future GPU path that produces both preview and LED samples from the same
-  composition graph
+- a GPU path that produces both preview and LED samples from the same
+  composition graph when the sampling mode is supported
 
 What is not acceptable as the final state:
 
@@ -150,8 +168,9 @@ semantic source of truth.
 
 SparkleFlinger's GPU LED sampler currently accepts nearest, bilinear, and
 area-average prepared plans. Gaussian-area plans must not be silently lowered to
-bilinear or area-average on the GPU path; they fall back to the CPU sampler so
-the Gaussian kernel remains real.
+bilinear or area-average on the GPU path. CPU fallback is valid only for frames
+that are already CPU-backed; GPU-resident frames reuse retained output or emit an
+explicit fallback result until an equivalent GPU sampler exists.
 
 ### 4.4 Direct display groups
 
@@ -286,6 +305,13 @@ The core architecture described here is now shipped:
    dependency-key contracts instead of loose revision-field comparisons.
 6. Effect-registry semantic invalidation now flows through explicit mutation
    surfaces only.
+7. Retained scene and display outputs are reused only while dependency keys,
+   group revisions, and display routing still describe the same output lane.
+8. Scene-canvas publication is demand-aware: subscribers can force a full-size
+   surface, while lower-resolution preview-only scenes stay bounded.
+9. Servo and display-output QoS is observable through queue depth, pending age,
+   lifecycle waits, superseded renders, display retries, and lane-priority
+   metrics.
 
 The remaining work is simplification, not architectural replacement:
 
@@ -308,7 +334,8 @@ exercises all active lanes together:
    subscribed simultaneously.
 4. At least one shared USB transport carrying both LED and display traffic.
 5. Runtime checks for frame-budget misses, queue drops, copy counters, Servo
-   lifecycle waits, USB display-delay counters, and async output failures.
+   lifecycle waits, Servo queue age/depth, display retry counters, USB display-
+   delay counters, and async output failures.
 
 The acceptance bar is not merely "no crash." A passing soak must show bounded
 queues, latest-value backpressure instead of unbounded buffering, no sustained

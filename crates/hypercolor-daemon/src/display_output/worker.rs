@@ -627,10 +627,9 @@ async fn run_display_worker(
                         static_hold_refresh_interval,
                     );
                     continue;
-                } else {
-                    record_display_write_success(&display_frames).await;
-                    delivered_frame_number = delivered_frame_number.saturating_add(1);
                 }
+                record_display_write_success(&display_frames).await;
+                delivered_frame_number = delivered_frame_number.saturating_add(1);
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,

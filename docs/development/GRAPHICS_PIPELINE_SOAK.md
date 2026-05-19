@@ -44,5 +44,23 @@ A passing soak shows:
 - Display write failures, retries, and output-error frames do not grow.
 - Full-frame copy counters stay at zero after warmup.
 - Render-surface pool saturation does not grow after warmup.
-- Servo stalls, breaker opens, and lifecycle failures do not grow.
+- Servo stalls, breaker opens, lifecycle failures, and pending render age do not
+  grow after warmup.
 - Display-lane priority wait stays within one LED frame interval.
+
+## Report Fields
+
+The JSON report and terminal summary call out these pressure lanes:
+
+- `copy pressure`: producer, publication, and total full-frame copies.
+- `surface pressure`: preview, forced scene-canvas, LED readback, and pool
+  saturation counters.
+- `servo qos`: render queue wait, pending render age, queue depth, and
+  superseded render deltas.
+- `servo lifecycle`: renderer load wait/failures and destroy wait.
+- `display_output`: write failures, retry attempts, last failure age, and
+  display-lane LED-priority wait.
+
+Investigate any nonzero steady-state growth before calling a soak clean. Some
+startup-time movement is expected during warmup; the acceptance window starts
+after `--warmup`.

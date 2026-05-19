@@ -1280,6 +1280,22 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
 #[tokio::test]
 async fn default_scene_contents_restore_on_restart() {
     let guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+    let effect_id = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .find_map(|(_, entry)| {
+                (entry.metadata.source.source_stem() == Some("breathing"))
+                    .then_some(entry.metadata.id)
+            })
+            .expect("breathing effect should be registered")
+    };
+
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
@@ -1288,7 +1304,7 @@ async fn default_scene_contents_restore_on_restart() {
                 id: RenderGroupId::new(),
                 name: "Saved Default Group".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
-                effect_id: None,
+                effect_id: Some(effect_id),
                 controls: std::collections::HashMap::from([(
                     "speed".to_owned(),
                     hypercolor_types::effect::ControlValue::Float(4.5),
@@ -1322,12 +1338,6 @@ async fn default_scene_contents_restore_on_restart() {
         },
     )
     .expect("runtime state should save");
-
-    let mut config = default_config();
-    config.daemon.start_profile = "last".into();
-    let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
 

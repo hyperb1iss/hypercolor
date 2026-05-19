@@ -7,7 +7,6 @@ use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
-use hypercolor_core::config::ConfigManager;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
@@ -226,9 +225,7 @@ fn filter_frame_zones(
 #[tokio::test]
 async fn metrics_message_includes_latest_frame_timeline() {
     let tempdir = tempfile::tempdir().expect("metrics test data dir should be created");
-    ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
-    let state = Arc::new(AppState::new());
-    ConfigManager::set_data_dir_override(None);
+    let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
     state.render_loop.write().await.start();
     let mut preview_rx = state.preview_runtime.canvas_receiver();
     let mut scene_preview_rx = state.preview_runtime.scene_canvas_receiver();
@@ -277,7 +274,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         performance.record_effect_error();
         performance.record_effect_error();
         performance.record_effect_fallback_applied();
-        performance.record_frame(LatestFrameMetrics {
+        performance.record_frame(&LatestFrameMetrics {
             timestamp_ms: 1234,
             input_us: 200,
             producer_us: 900,

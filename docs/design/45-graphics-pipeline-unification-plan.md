@@ -46,8 +46,26 @@ Hypercolor already has the right architectural bones: render groups, immutable p
 3. Display output can suppress retry of an unchanged frame after a transient write failure.
 4. USB display writes and LED writes share one biased actor, so large LCD frames can delay lighting.
 5. Multi-group scene composition still has a CPU per-zone/per-pixel raster path that is not the same story as SparkleFlinger layer composition.
-6. The pipeline is not end-to-end zero-copy. It is surface-handle-oriented in the middle, but copies remain at Servo readback, display encoding, USB LED handoff, and some publication edges.
+6. The GPU path must stay end-to-end GPU-resident. Whole-image GPU readback is forbidden; only sampled LED pixels and finalized display region/scale payloads cross back to CPU transport buffers.
 7. GPU acceleration is partially present but not exposed honestly by default behavior.
+
+Current hardening status:
+
+- Servo lifecycle operations load and destroy off the render hot path, with
+  renderer load, destroy wait, queue depth, superseded render, and pending-age
+  metrics exposed through WebSocket metrics.
+- Servo render scheduling is per-session latest-value work: a noisy display face
+  can collapse its own pending frames without starving another Servo-backed
+  session.
+- Display output owns retry of the latest encoded payload, including unchanged
+  static-hold frames after transient write failures.
+- Scene-canvas demand, full-frame copy pressure, surface-pool pressure, GPU
+  sampling/readback pressure, display retries, and display-lane priority waits
+  are all visible in the soak report.
+- GPU compositor mode is selected when startup probing succeeds. Servo/media GPU
+  producer frames stay GPU-resident; unsupported GPU sampling plans reuse
+  retained output or emit explicit fallback output instead of forcing CPU
+  materialization.
 
 ## 5. Execution Strategy
 
@@ -342,7 +360,8 @@ Verify:
 Implementation:
 
 - Rename config or split fields so users understand the difference between compositor acceleration and effect renderer acceleration.
-- Make it clear that Servo HTML rendering still involves CPU readback even when scene composition uses GPU.
+- Make it clear that Servo HTML GPU output is a strict residency contract: when
+  Servo hands us a GPU frame, it never falls back to whole-image CPU readback.
 
 Verify:
 
@@ -356,7 +375,8 @@ Verify:
 Implementation:
 
 - Prefer retained frame reuse when GPU sampling readback would miss budget.
-- Make blocking readback opt-in or last resort only.
+- Keep full-frame GPU readback forbidden; CPU fallback applies only to frames
+  that are already CPU-backed.
 - Publish metrics for deferred, stale, saturated, blocked, and fallback outcomes.
 
 Verify:
@@ -371,7 +391,8 @@ Verify:
 Implementation:
 
 - Benchmark single replace layer, transition, multi-layer alpha/add/screen, preview scaling, and LED sampling.
-- Compare p50/p95/p99, copy bytes, readback stalls, and power if available.
+- Compare p50/p95/p99, copy bytes, targeted sampling stalls, and power if
+  available.
 
 Verify:
 
@@ -558,7 +579,9 @@ Verify:
 Implementation:
 
 - Keep Gaussian-area sampling as a real CPU/prepared spatial sampler mode.
-- Make GPU LED sampling reject Gaussian plans explicitly so it falls back to CPU instead of aliasing bilinear or area-average behavior.
+- Make GPU LED sampling reject Gaussian plans explicitly. GPU-resident frames
+  reuse retained output or emit fallback output until a real GPU Gaussian sampler
+  exists; CPU fallback is only for frames already in CPU mode.
 - Document the backend split in the canonical render pipeline spec.
 
 Verify:
@@ -668,7 +691,8 @@ Verify:
 - Avoid mixing Servo lifecycle refactors with GPU compositor changes.
 - Keep compatibility aliases until UI, CLI, docs, and saved config migrations are complete.
 - Treat display retry and USB lane priority as correctness work, not optimization.
-- Treat zero-copy as a budget with measured exceptions, not a slogan.
+- Treat zero-copy as a hard GPU-path invariant. Exceptions belong at explicit
+  transport boundaries, never as whole-image GPU readback.
 - Delete dead display-widget specs instead of carrying stale fallback architecture.
 
 ## 17. Recommendation

@@ -308,8 +308,7 @@ pub(crate) async fn execute_frame(
     if compositor_acceleration_downgraded {
         state.event_bus.publish(HypercolorEvent::Error {
             code: "compositor_acceleration_downgraded".to_owned(),
-            message: "GPU producer readback fallback repeated; using CPU fallback compositor"
-                .to_owned(),
+            message: "GPU producer composition failed; preserving GPU residency".to_owned(),
             severity: Severity::Warning,
         });
     }
@@ -415,11 +414,11 @@ pub(crate) async fn execute_frame(
 
     {
         let mut performance = state.performance.write().await;
-        performance.record_frame(frame_metrics);
+        performance.record_frame(&frame_metrics);
     }
 
     let completion_report =
-        FrameCompletionReport::new(frame_interval_us, frame_metrics, &write_stats);
+        FrameCompletionReport::new(frame_interval_us, &frame_metrics, &write_stats);
     report_active_frame_completion(&completion_report, &write_stats.errors);
 
     let (next_wake, next_skip_decision) = {

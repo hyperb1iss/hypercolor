@@ -5,8 +5,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
@@ -25,7 +26,7 @@ use hypercolor_driver_api::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "builtin-drivers")]
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -74,7 +75,7 @@ use hypercolor_types::spatial::{
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
-static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
 fn assert_canvas_frame_black(frame: &CanvasFrame) {
     assert!(
@@ -102,16 +103,50 @@ fn isolated_state() -> AppState {
 }
 
 fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
-    let _lock = DATA_DIR_LOCK
-        .lock()
-        .expect("data dir lock should not be poisoned");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-    ConfigManager::set_data_dir_override(Some(data_dir));
-    let state = AppState::new();
-    ConfigManager::set_data_dir_override(None);
+    let state = AppState::new_with_data_dir(data_dir);
     (state, tempdir)
+}
+
+struct CoverFixtureGuard {
+    _tempdir: tempfile::TempDir,
+    data_dir: PathBuf,
+}
+
+impl CoverFixtureGuard {
+    fn install(slug: &str) -> Self {
+        let tempdir = tempfile::tempdir().expect("cover fixture dir should be created");
+        let data_dir = tempdir.path().join("data");
+        install_cover_fixture(&data_dir, slug);
+        ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        Self {
+            _tempdir: tempdir,
+            data_dir,
+        }
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.data_dir.clone()
+    }
+}
+
+impl Drop for CoverFixtureGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_data_dir_override(None);
+    }
+}
+
+fn install_cover_fixture(data_dir: &Path, slug: &str) {
+    let cover_dir = data_dir
+        .join("effects")
+        .join("screenshots")
+        .join("curated")
+        .join(slug);
+    fs::create_dir_all(&cover_dir).expect("cover fixture dir should be created");
+    fs::write(cover_dir.join("default.webp"), b"RIFFTESTWEBP")
+        .expect("cover fixture should be written");
 }
 
 /// Build a test router with fresh state.
@@ -4256,7 +4291,9 @@ async fn get_active_effect_returns_primary_group_info() {
 
 #[tokio::test]
 async fn get_active_effect_includes_cover_image_url_when_available() {
-    let state = Arc::new(isolated_state());
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
     insert_test_effect(&state, "rainbow").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -4294,7 +4331,9 @@ async fn get_active_effect_includes_cover_image_url_when_available() {
 
 #[tokio::test]
 async fn get_effect_cover_returns_webp_image() {
-    let state = Arc::new(isolated_state());
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
     insert_test_effect(&state, "rainbow").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -4332,7 +4371,9 @@ async fn get_effect_cover_returns_webp_image() {
 
 #[tokio::test]
 async fn get_active_effect_cover_returns_current_webp_image() {
-    let state = Arc::new(isolated_state());
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
     insert_test_effect(&state, "rainbow").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -6802,9 +6843,6 @@ async fn profile_crud_lifecycle() {
 #[tokio::test]
 async fn pre_final_profile_shape_is_rejected_on_load() {
     let state = {
-        let _lock = DATA_DIR_LOCK
-            .lock()
-            .expect("data dir lock should not be poisoned");
         let tempdir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = tempdir.path().join("data");
         fs::create_dir_all(&data_dir).expect("temp data dir should be created");
@@ -6830,10 +6868,7 @@ async fn pre_final_profile_shape_is_rejected_on_load() {
         )
         .expect("pre-final profile json should be written");
 
-        ConfigManager::set_data_dir_override(Some(data_dir));
-        let state = AppState::new();
-        ConfigManager::set_data_dir_override(None);
-        state
+        AppState::new_with_data_dir(data_dir)
     };
 
     {

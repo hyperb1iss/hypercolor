@@ -1099,6 +1099,7 @@ fn factory_creates_all_builtins() {
         "color_wave",
         "color_zones",
         "screen_cast",
+        "media_player",
         "calibration",
     ];
 
@@ -1124,7 +1125,7 @@ fn register_builtin_effects_populates_registry() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    let expected_builtin_count = if cfg!(feature = "servo") { 10 } else { 9 };
+    let expected_builtin_count = if cfg!(feature = "servo") { 11 } else { 10 };
     assert_eq!(
         registry.len(),
         expected_builtin_count,
@@ -1140,6 +1141,14 @@ fn register_builtin_effects_populates_registry() {
 
     let utility = registry.by_category(EffectCategory::Utility);
     assert_eq!(utility.len(), 2, "2 utility effects expected");
+
+    let source = registry.by_category(EffectCategory::Source);
+    let expected_source_count = if cfg!(feature = "servo") { 2 } else { 1 };
+    assert_eq!(
+        source.len(),
+        expected_source_count,
+        "{expected_source_count} source effects expected"
+    );
 }
 
 #[test]
@@ -1156,6 +1165,7 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
         ("Color Wave", "color_wave"),
         ("Color Zones", "color_zones"),
         ("Screen Cast", "screen_cast"),
+        ("Media Player", "media_player"),
         ("Calibration", "calibration"),
     ];
     if cfg!(feature = "servo") {

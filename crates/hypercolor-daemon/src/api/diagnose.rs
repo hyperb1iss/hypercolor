@@ -89,7 +89,7 @@ pub async fn run_diagnostics(
                 if running {
                     let performance = state.performance.read().await.snapshot();
                     let (status, detail) = render_frame_liveness_status(
-                        performance.latest_frame,
+                        performance.latest_frame.as_ref(),
                         state.start_time.elapsed().as_secs_f64() * 1000.0,
                     );
                     checks.push(DiagnoseCheck {
@@ -165,7 +165,7 @@ pub async fn run_diagnostics(
 }
 
 fn render_frame_liveness_status(
-    latest_frame: Option<LatestFrameMetrics>,
+    latest_frame: Option<&LatestFrameMetrics>,
     render_elapsed_ms: f64,
 ) -> (&'static str, String) {
     let Some(frame) = latest_frame else {
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn render_frame_liveness_fails_stale_running_frame() {
         let (status, detail) = render_frame_liveness_status(
-            Some(LatestFrameMetrics {
+            Some(&LatestFrameMetrics {
                 timestamp_ms: 1_000,
                 timeline: FrameTimeline {
                     frame_token: 42,
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn render_frame_liveness_passes_fresh_running_frame() {
         let (status, detail) = render_frame_liveness_status(
-            Some(LatestFrameMetrics {
+            Some(&LatestFrameMetrics {
                 timestamp_ms: 9_900,
                 timeline: FrameTimeline {
                     frame_token: 43,

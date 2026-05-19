@@ -216,7 +216,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
 
 pub(crate) fn summarize_active_frame(input: ActiveFrameMetricsInput<'_>) -> ActiveFrameSummary {
     let metrics = build_active_frame_metrics(input);
-    let admission = build_frame_admission_sample(metrics);
+    let admission = build_frame_admission_sample(&metrics);
 
     ActiveFrameSummary { metrics, admission }
 }
@@ -317,7 +317,7 @@ pub(crate) fn build_throttle_frame_metrics(
     }
 }
 
-fn build_frame_admission_sample(metrics: LatestFrameMetrics) -> FrameAdmissionSample {
+fn build_frame_admission_sample(metrics: &LatestFrameMetrics) -> FrameAdmissionSample {
     FrameAdmissionSample {
         total_us: metrics.total_us,
         producer_us: metrics.producer_us,

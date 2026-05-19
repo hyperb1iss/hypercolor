@@ -301,7 +301,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let running = render_loop_is_operational(render_loop_status.state.as_str());
     let performance = state.performance.read().await.snapshot();
     let latest_frame = if render_loop_status.state == "running" {
-        performance.latest_frame.map(|frame| {
+        performance.latest_frame.as_ref().map(|frame| {
             latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0)
         })
     } else {
@@ -767,7 +767,7 @@ const fn gpu_source_upload_skipped_total() -> u64 {
     0
 }
 
-fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> LatestFrameStatus {
+fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> LatestFrameStatus {
     let frame_age_ms = if frame.timestamp_ms > 0 {
         (render_elapsed_ms - f64::from(frame.timestamp_ms)).max(0.0)
     } else {
@@ -905,7 +905,6 @@ mod tests {
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
-    use hypercolor_core::config::ConfigManager;
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
     use serde_json::Value;
@@ -919,9 +918,7 @@ mod tests {
     #[tokio::test]
     async fn status_includes_latest_frame_surface_stats() {
         let tempdir = tempfile::tempdir().expect("status test data dir should be created");
-        ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
-        let state = Arc::new(AppState::new());
-        ConfigManager::set_data_dir_override(None);
+        let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
         state.render_loop.write().await.start();
         let mut preview_rx = state.preview_runtime.canvas_receiver();
         let mut scene_preview_rx = state.preview_runtime.scene_canvas_receiver();
@@ -969,7 +966,7 @@ mod tests {
             let mut performance = state.performance.write().await;
             performance.record_effect_error();
             performance.record_effect_fallback_applied();
-            performance.record_frame(LatestFrameMetrics {
+            performance.record_frame(&LatestFrameMetrics {
                 timestamp_ms: 40,
                 input_us: 100,
                 producer_us: 500,

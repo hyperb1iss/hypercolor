@@ -110,7 +110,6 @@ pub(crate) struct LedSamplingOutcome {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CpuSamplingCanvasStatus {
     Ready,
-    LateReadback,
     Unavailable,
 }
 
@@ -244,7 +243,7 @@ fn current_scene_sampled_zones<'a>(
 
 fn ensure_cpu_sampling_canvas(
     state: &RenderThreadState,
-    sampling: &mut SamplingRuntime<'_>,
+    _sampling: &mut SamplingRuntime<'_>,
     render_stage: &mut RenderStageStats,
 ) -> CpuSamplingCanvasStatus {
     if render_stage.composed_frame.sampling_canvas.is_some() {
@@ -273,22 +272,7 @@ fn ensure_cpu_sampling_canvas(
         return CpuSamplingCanvasStatus::Ready;
     }
 
-    match sampling
-        .sparkleflinger
-        .read_back_current_output_surface_for_cpu_sampling()
-    {
-        Ok(Some(surface)) => {
-            render_stage.composed_frame.sampling_canvas =
-                Some(Canvas::from_published_surface(&surface));
-            render_stage.composed_frame.sampling_surface = Some(surface);
-            CpuSamplingCanvasStatus::LateReadback
-        }
-        Ok(None) => CpuSamplingCanvasStatus::Unavailable,
-        Err(error) => {
-            warn!(%error, "Late GPU readback for CPU spatial sampling fallback failed");
-            CpuSamplingCanvasStatus::Unavailable
-        }
-    }
+    CpuSamplingCanvasStatus::Unavailable
 }
 
 pub(crate) fn build_transition_layout(
@@ -406,7 +390,7 @@ pub(crate) fn resolve_led_sampling(
     let mut gpu_sample_queue_saturated = false;
     let mut gpu_sample_wait_blocked = false;
     let mut gpu_sample_cpu_fallback = false;
-    let mut cpu_sampling_late_readback = false;
+    let cpu_sampling_late_readback = false;
     let mut refresh_reused_frame_metadata = false;
     let mut zone_shape_signature = None::<u64>;
     let mut pending_gpu_zone_sampling = None;
@@ -564,7 +548,7 @@ pub(crate) fn resolve_led_sampling(
                                 Ok(ZoneSamplingDispatch::Unsupported)
                                 | Ok(ZoneSamplingDispatch::Saturated) => false,
                                 Err(error) => {
-                                    warn!(%error, "GPU spatial sampling retry after saturation failed; falling back to CPU");
+                                    warn!(%error, "GPU spatial sampling retry after saturation failed; trying resident CPU sampling");
                                     false
                                 }
                             }
@@ -578,7 +562,7 @@ pub(crate) fn resolve_led_sampling(
                         true
                     }
                     Err(error) => {
-                        warn!(%error, "GPU spatial sampling failed; falling back to CPU");
+                        warn!(%error, "GPU spatial sampling failed; trying resident CPU sampling");
                         false
                     }
                 }
@@ -673,14 +657,23 @@ pub(crate) fn resolve_led_sampling(
                         .take_last_sample_readback_wait_blocked();
                 }
                 Ok(false) => {
-                    sampling
-                        .sparkleflinger
-                        .discard_pending_zone_sampling(pending);
-                    warn!("GPU spatial sampling readback was not ready; falling back to CPU");
-                    gpu_zone_sampling = false;
+                    match sampling.sparkleflinger.finish_pending_zone_sampling(
+                        pending,
+                        sampling.output_artifacts.zones_mut(),
+                    ) {
+                        Ok(()) => {
+                            gpu_sample_wait_blocked = sampling
+                                .sparkleflinger
+                                .take_last_sample_readback_wait_blocked();
+                        }
+                        Err(error) => {
+                            warn!(%error, "GPU spatial sampling finalize failed; trying resident CPU sampling");
+                            gpu_zone_sampling = false;
+                        }
+                    }
                 }
                 Err(error) => {
-                    warn!(%error, "GPU spatial sampling finalize failed; falling back to CPU");
+                    warn!(%error, "GPU spatial sampling finalize failed; trying resident CPU sampling");
                     gpu_zone_sampling = false;
                 }
             }
@@ -706,16 +699,14 @@ pub(crate) fn resolve_led_sampling(
             .expect("CPU spatial sampling requires a SparkleFlinger-owned spatial engine");
         let canvas_status = ensure_cpu_sampling_canvas(state, sampling, render_stage);
         match canvas_status {
-            CpuSamplingCanvasStatus::Ready | CpuSamplingCanvasStatus::LateReadback => {
-                cpu_sampling_late_readback =
-                    matches!(canvas_status, CpuSamplingCanvasStatus::LateReadback);
+            CpuSamplingCanvasStatus::Ready => {
                 if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref() {
                     sampling_engine.sample_into(canvas, sampling.output_artifacts.zones_mut());
                 }
             }
             CpuSamplingCanvasStatus::Unavailable if can_hold_published_frame => {
                 warn!(
-                    "CPU spatial sampling fallback could not materialize a canvas; reusing published frame"
+                    "CPU spatial sampling fallback has no resident canvas; reusing published frame"
                 );
                 render_stage.led_sampling_strategy =
                     LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
@@ -723,7 +714,7 @@ pub(crate) fn resolve_led_sampling(
             }
             CpuSamplingCanvasStatus::Unavailable => {
                 warn!(
-                    "CPU spatial sampling fallback could not materialize a canvas; sampling a black fallback frame"
+                    "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame"
                 );
                 let black_canvas =
                     Canvas::new(state.canvas_dims.width(), state.canvas_dims.height());

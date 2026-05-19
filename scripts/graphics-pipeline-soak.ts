@@ -115,9 +115,9 @@ Options:
   --max-pool-saturation-delta <n>      Maximum render-surface pool saturation reallocs [${defaults.maxPoolSaturationDelta}]
   --max-effect-fallback-delta <n>      Maximum effect fallbacks [${defaults.maxEffectFallbackDelta}]
   --max-producer-gpu-readback-failure-delta <n>
-                                      Maximum producer GPU readback fallback failures [${defaults.maxProducerGpuReadbackFailureDelta}]
+                                      Maximum GPU producer residency failures [${defaults.maxProducerGpuReadbackFailureDelta}]
   --max-gpu-readback-failed-frames <n>
-                                      Maximum rolling frames with failed GPU readback [${defaults.maxGpuReadbackFailedFrames}]
+                                      Maximum rolling GPU residency-failure frames [${defaults.maxGpuReadbackFailedFrames}]
   --max-servo-stall-delta <n>          Maximum Servo soft stalls [${defaults.maxServoStallDelta}]
   --max-servo-breaker-delta <n>        Maximum Servo breaker opens [${defaults.maxServoBreakerDelta}]
   --max-servo-failure-delta <n>        Maximum total Servo lifecycle failures [${defaults.maxServoFailureDelta}]
@@ -467,14 +467,14 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
     )
     checks.push(
         checkAtMost(
-            "producer GPU readback failure delta",
+            "GPU producer residency failure delta",
             delta(first.data, last.data, ["effect_health", "producer_gpu_readback_failures_total"]),
             config.maxProducerGpuReadbackFailureDelta,
         ),
     )
     checks.push(
         checkAtMost(
-            "GPU readback failed frames",
+            "GPU residency failed frames",
             maxAt(observed, ["pacing", "gpu_readback_failed_frames"]),
             config.maxGpuReadbackFailedFrames,
         ),
@@ -498,6 +498,13 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         checkAtMost(
             "Servo render queue wait growth ms",
             maxIncreaseAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
+            config.maxServoQueueWaitMs,
+        ),
+    )
+    checks.push(
+        checkAtMost(
+            "Servo pending render age growth ms",
+            maxIncreaseAt(observed, ["effect_health", "servo_render_pending_age_max_ms"]),
             config.maxServoQueueWaitMs,
         ),
     )
@@ -544,6 +551,21 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         servoQueueWaitMaxGrowthMs: round(
             maxIncreaseAt(observed, ["effect_health", "servo_render_queue_wait_max_ms"]),
         ),
+        servoPendingAgeMaxMs: round(maxAt(observed, ["effect_health", "servo_render_pending_age_max_ms"])),
+        servoPendingAgeMaxGrowthMs: round(
+            maxIncreaseAt(observed, ["effect_health", "servo_render_pending_age_max_ms"]),
+        ),
+        servoRenderQueueDepthMax: maxAt(observed, ["effect_health", "servo_render_queue_depth_max"]),
+        servoRenderSupersededDelta: delta(first.data, last.data, [
+            "effect_health",
+            "servo_render_superseded_total",
+        ]),
+        servoRendererLoadWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_renderer_load_wait_max_ms"])),
+        servoRendererLoadFailuresDelta: delta(first.data, last.data, [
+            "effect_health",
+            "servo_renderer_load_failures_total",
+        ]),
+        servoDestroyWaitMaxMs: round(maxAt(observed, ["effect_health", "servo_destroy_wait_max_ms"])),
         displayLanePriorityWaitMaxMs: round(
             requiredMaxAt(observed, [
                 "display_output",
@@ -680,6 +702,15 @@ function printReport(report: Report): void {
     console.log(
         `${palette.cyan}surface pressure${palette.reset} preview=${summary.maxPreviewSurfaceFrames} ` +
             `scene_canvas=${summary.maxSceneCanvasForcedSurfaceFrames} led_readback=${summary.maxLedSamplingReadbackFrames}`,
+    )
+    console.log(
+        `${palette.cyan}servo qos${palette.reset} queue_wait=${summary.servoQueueWaitMaxMs}ms ` +
+            `pending_age=${summary.servoPendingAgeMaxMs}ms depth=${summary.servoRenderQueueDepthMax} ` +
+            `superseded=${summary.servoRenderSupersededDelta}`,
+    )
+    console.log(
+        `${palette.cyan}servo lifecycle${palette.reset} load_wait=${summary.servoRendererLoadWaitMaxMs}ms ` +
+            `load_failures=${summary.servoRendererLoadFailuresDelta} destroy_wait=${summary.servoDestroyWaitMaxMs}ms`,
     )
 }
 

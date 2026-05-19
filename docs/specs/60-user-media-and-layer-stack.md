@@ -43,9 +43,9 @@ downshifts the render loop when the estimated media cost exceeds the
 60 ms soft cap. Video and stream producers decode to RGBA canvases in
 core, and the daemon uploads those frames to `ProducerFrame::GpuTexture`
 when the wgpu compositor is active. Stream producers surface worker
-errors through layer health. GPU producer readback failures now compose
-black and mark affected layer health as `gpu_readback_failed`; repeated
-read-back fallbacks downshift for the rest of the session.
+errors through layer health. GPU producer residency failures emit explicit
+fallback output and mark affected layer health as `gpu_readback_failed`;
+they never trigger whole-frame CPU readback.
 
 Legacy `RenderGroup.effect_id`/`controls` mirrors remain for
 compatibility. They are explicitly tracked as a later purge once
@@ -1825,7 +1825,7 @@ canvas type.
 producer frames and, when the GPU lane cannot compose the plan, explicitly
 reads those frames back into CPU `Surface` frames before replaying the CPU
 lane. Coverage lives in
-`sparkleflinger_reads_back_gpu_frames_for_cpu_fallback`.
+`sparkleflinger_refuses_gpu_frame_cpu_readback_fallback`.
 
 Target GPU video and livestream producers will feed `ProducerFrame::Gpu`
 or `ProducerFrame::GpuTexture`, so the final GPU media lane will exercise
@@ -1835,16 +1835,14 @@ video/stream frames to `ProducerFrame::GpuTexture` when wgpu is active.
 
 **GPU media policy status:**
 
-1. Read-back failures (rare; OOM or device loss) compose the frame as
-   black and transition affected layers to `LayerHealth::Failed` with
-   reason `gpu_readback_failed`, which publishes the existing
-   `LayerHealthChanged` bus event. Synthetic fallback-frame coverage
+1. GPU producer composition failures (rare; unsupported plan, OOM, or device
+   loss) emit explicit fallback output and transition affected layers to
+   `LayerHealth::Failed` with reason `gpu_readback_failed`, which publishes the
+   existing `LayerHealthChanged` bus event. Synthetic fallback-frame coverage
    lives in `sparkleflinger_gpu_readback_failure_composes_black`.
-2. Two consecutive read-back fallbacks downshift the compositor
-   acceleration mode for the rest of the session (returning to GPU on
-   the next session start). The daemon emits one
-   `compositor_acceleration_downgraded` warning event on the transition
-   so UI clients can surface the fast-path downgrade.
+2. The daemon refuses whole-frame CPU readback for GPU producers. Display
+   outputs use finalized region/scale readback, and LED outputs use sampled
+   pixel readback.
 
 ---
 

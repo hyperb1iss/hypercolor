@@ -1386,17 +1386,7 @@ impl RenderGroupRuntime {
             return Some(frame);
         }
 
-        let composed = sparkleflinger.compose_for_outputs(
-            plan,
-            true,
-            Some(PreviewSurfaceRequest {
-                width: self.scene_width,
-                height: self.scene_height,
-            }),
-        );
-        let frame = composed_frame_to_producer_frame(composed, sparkleflinger)?;
-        record_producer_frame(&frame);
-        Some(frame)
+        None
     }
 
     #[cfg(test)]
@@ -2195,7 +2185,9 @@ mod tests {
     use hypercolor_types::effect::{ControlValue, EffectId};
     use hypercolor_types::layer::MediaPlayback;
     use hypercolor_types::scene::RenderGroupRole;
-    use hypercolor_types::spatial::{DeviceZone, LedTopology, NormalizedPosition, StripDirection};
+    use hypercolor_types::spatial::{
+        Corner, DeviceZone, LedTopology, NormalizedPosition, StripDirection,
+    };
     use uuid::Uuid;
 
     use super::*;
@@ -3317,11 +3309,11 @@ mod tests {
     #[cfg(feature = "wgpu")]
     #[test]
     fn gpu_projected_composition_matches_nearest_projection() {
-        let mut sparkleflinger =
-            match SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu) {
-                Ok(sparkleflinger) => sparkleflinger,
-                Err(_) => return,
-            };
+        let Ok(mut sparkleflinger) =
+            SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu)
+        else {
+            return;
+        };
         let mut zone = point_zone("zone_gpu_projection");
         zone.position = NormalizedPosition::new(0.5, 0.5);
         zone.size = NormalizedPosition::new(1.0, 1.0);
@@ -3360,31 +3352,53 @@ mod tests {
         );
         let composed = sparkleflinger.compose_for_outputs(
             CompositionPlan::with_layers(4, 4, layers).with_cpu_replay_cacheable(false),
-            true,
-            Some(PreviewSurfaceRequest {
-                width: 4,
-                height: 4,
-            }),
+            false,
+            None,
         );
-        let actual = composed
-            .sampling_surface
-            .map(|surface| {
-                Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height())
-            })
-            .or(composed.sampling_canvas)
-            .expect("GPU composition should read back the projected canvas");
+        assert!(composed.sampling_canvas.is_none());
+        assert!(composed.sampling_surface.is_none());
 
-        assert_eq!(actual.as_rgba_bytes(), projected.as_rgba_bytes());
+        let mut sample_zone = point_zone("projected_pixels");
+        sample_zone.size = NormalizedPosition::new(1.0, 1.0);
+        sample_zone.topology = LedTopology::Matrix {
+            width: 4,
+            height: 4,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        };
+        sample_zone.sampling_mode = Some(SamplingMode::Nearest);
+        sample_zone.edge_behavior = Some(EdgeBehavior::Clamp);
+        let sampling_engine = SpatialEngine::new(SpatialLayout {
+            id: "projected-pixel-sampling".into(),
+            name: "Projected Pixel Sampling".into(),
+            description: None,
+            canvas_width: 4,
+            canvas_height: 4,
+            zones: vec![sample_zone],
+            default_sampling_mode: SamplingMode::Nearest,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        });
+        let expected = sampling_engine.sample(&projected);
+        let mut actual = Vec::new();
+        assert!(
+            sparkleflinger
+                .sample_zone_plan_into(sampling_engine.sampling_plan().as_ref(), &mut actual)
+                .expect("GPU zone sampling should sample the projected canvas")
+        );
+
+        assert_eq!(actual, expected);
     }
 
     #[cfg(feature = "wgpu")]
     #[test]
     fn gpu_projected_scene_frame_stays_gpu_resident() {
-        let mut sparkleflinger =
-            match SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu) {
-                Ok(sparkleflinger) => sparkleflinger,
-                Err(_) => return,
-            };
+        let Ok(mut sparkleflinger) =
+            SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu)
+        else {
+            return;
+        };
         let Some(gpu_source) = sparkleflinger.upload_canvas_frame(&patterned_source_canvas(4, 4))
         else {
             return;

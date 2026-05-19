@@ -14,7 +14,9 @@
 //! never need to decode binary relay payloads, and any binary frame on the
 //! wire is simply drained until we find a text frame.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -30,12 +32,25 @@ use uuid::Uuid;
 
 // ── Test Harness ─────────────────────────────────────────────────────────
 
+static TEST_DATA_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn test_data_dir() -> PathBuf {
+    let counter = TEST_DATA_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join("hypercolor-ws-protocol-tests")
+        .join(format!("{}-{counter}", std::process::id()))
+}
+
+fn test_app_state() -> Arc<AppState> {
+    Arc::new(AppState::new_with_data_dir(test_data_dir()))
+}
+
 /// Spawn the full daemon router on an ephemeral TCP port.
 ///
 /// Returns the bound address. The serve task runs until the test ends —
 /// tokio tears it down when the runtime shuts down.
 async fn spawn_test_daemon() -> std::net::SocketAddr {
-    spawn_test_daemon_with_state(Arc::new(AppState::new())).await
+    spawn_test_daemon_with_state(test_app_state()).await
 }
 
 async fn spawn_test_daemon_with_state(state: Arc<AppState>) -> std::net::SocketAddr {
@@ -313,7 +328,7 @@ async fn hello_handshake_returns_expected_capability_set() {
 
 #[tokio::test]
 async fn hello_handshake_reports_scene_backed_active_effect() {
-    let state = Arc::new(AppState::new());
+    let state = test_app_state();
     let effect = insert_test_effect(&state, "Aurora").await;
     let layout = {
         let spatial = state.spatial_engine.read().await;
@@ -347,7 +362,7 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
 
 #[tokio::test]
 async fn device_metrics_subscription_streams_seeded_snapshot() {
-    let state = Arc::new(AppState::new());
+    let state = test_app_state();
     let device_id = hypercolor_types::device::DeviceId::new();
     state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
         taken_at_ms: 5_678,
