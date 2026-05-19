@@ -112,6 +112,22 @@ fn empty_lottie_bytes() -> &'static [u8] {
     }"#
 }
 
+#[cfg(feature = "media-lottie")]
+fn oversized_lottie_bytes() -> &'static [u8] {
+    br#"{
+        "v": "5.7.6",
+        "fr": 30,
+        "ip": 0,
+        "op": 2,
+        "w": 4096,
+        "h": 4096,
+        "nm": "hypercolor-oversized",
+        "ddd": 0,
+        "assets": [],
+        "layers": []
+    }"#
+}
+
 #[cfg(feature = "media-video")]
 fn write_test_webm(path: &Path) -> bool {
     Command::new("gst-launch-1.0")
@@ -311,6 +327,17 @@ fn lottie_frames_decode_when_feature_is_enabled() {
     assert_eq!(producer.estimated_cost_us(), 8_000);
     assert_eq!(pixel_at(&producer, &playback, 0), Rgba::new(0, 0, 0, 0));
     assert_eq!(pixel_at(&producer, &playback, 34), Rgba::new(0, 0, 0, 0));
+}
+
+#[cfg(feature = "media-lottie")]
+#[test]
+fn oversized_lottie_frames_are_rejected() {
+    let error = MediaProducer::from_bytes(oversized_lottie_bytes(), "application/json")
+        .expect_err("oversized Lottie should be rejected");
+    assert!(
+        error.to_string().contains("invalid dimensions"),
+        "unexpected error: {error}"
+    );
 }
 
 #[cfg(feature = "media-video")]

@@ -54,6 +54,12 @@ const MAX_ANIMATION_DECODED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ANIMATION_DIMENSION: u32 = 8_192;
 #[cfg(feature = "media-lottie")]
 const LOTTIE_MEDIA_ESTIMATED_COST_US: u64 = 8_000;
+#[cfg(feature = "media-lottie")]
+const MAX_LOTTIE_DIMENSION: usize = 2_048;
+#[cfg(feature = "media-lottie")]
+const MAX_LOTTIE_FRAME_COUNT: usize = 600;
+#[cfg(feature = "media-lottie")]
+const MAX_LOTTIE_DECODED_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(feature = "media-video")]
 const VIDEO_MEDIA_ESTIMATED_COST_US: u64 = 20_000;
 #[cfg(feature = "media-video")]
@@ -84,6 +90,12 @@ pub enum MediaProducerError {
     #[cfg(feature = "media-lottie")]
     #[error("Lottie animation has invalid dimensions {width}x{height}")]
     InvalidLottieSize { width: usize, height: usize },
+    #[cfg(feature = "media-lottie")]
+    #[error("Lottie animation has too many frames: {frame_count} (max {max})")]
+    LottieFrameCountExceeded { frame_count: usize, max: usize },
+    #[cfg(feature = "media-lottie")]
+    #[error("Lottie animation decoded size {decoded_bytes} bytes exceeds max {max_bytes} bytes")]
+    LottieDecodedBudgetExceeded { decoded_bytes: usize, max_bytes: usize },
     #[cfg(feature = "media-video")]
     #[error("failed to decode video: {0}")]
     VideoDecode(String),
@@ -399,6 +411,7 @@ impl MediaProducer {
         validate_lottie_size(size)?;
 
         let frame_count = animation.totalframe().max(1);
+        validate_lottie_decode_budget(size, frame_count)?;
         let duration_us = lottie_frame_duration_us(&animation, frame_count);
         let mut surface = rlottie::Surface::new(size);
         let mut frames = Vec::with_capacity(frame_count);
@@ -612,10 +625,46 @@ fn canvas_from_rgba_image(image: image::RgbaImage) -> Canvas {
 
 #[cfg(feature = "media-lottie")]
 fn validate_lottie_size(size: rlottie::Size) -> Result<(), MediaProducerError> {
-    if size.width == 0 || size.height == 0 {
+    if size.width == 0
+        || size.height == 0
+        || size.width > MAX_LOTTIE_DIMENSION
+        || size.height > MAX_LOTTIE_DIMENSION
+    {
         return Err(MediaProducerError::InvalidLottieSize {
             width: size.width,
             height: size.height,
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "media-lottie")]
+fn validate_lottie_decode_budget(
+    size: rlottie::Size,
+    frame_count: usize,
+) -> Result<(), MediaProducerError> {
+    if frame_count > MAX_LOTTIE_FRAME_COUNT {
+        return Err(MediaProducerError::LottieFrameCountExceeded {
+            frame_count,
+            max: MAX_LOTTIE_FRAME_COUNT,
+        });
+    }
+
+    let decoded_bytes = size
+        .width
+        .checked_mul(size.height)
+        .and_then(|pixels_per_frame| pixels_per_frame.checked_mul(4))
+        .and_then(|bytes_per_frame| bytes_per_frame.checked_mul(frame_count))
+        .ok_or(MediaProducerError::LottieDecodedBudgetExceeded {
+            decoded_bytes: usize::MAX,
+            max_bytes: MAX_LOTTIE_DECODED_BYTES,
+        })?;
+
+    if decoded_bytes > MAX_LOTTIE_DECODED_BYTES {
+        return Err(MediaProducerError::LottieDecodedBudgetExceeded {
+            decoded_bytes,
+            max_bytes: MAX_LOTTIE_DECODED_BYTES,
         });
     }
 
