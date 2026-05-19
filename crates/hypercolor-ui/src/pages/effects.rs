@@ -49,6 +49,61 @@ const CATEGORY_CHIPS: &[(&str, &str)] = &[
     ("utility", "139, 133, 160"),
 ];
 
+/// The apply-target selector. Picks which zone a quick effect-apply
+/// lands in; reads and writes `EffectsContext::apply_target` (plan 55
+/// Wave B3). The empty value is the scene's Primary zone.
+#[component]
+fn ApplyTargetSelect(
+    #[prop(into)] scene: Signal<Option<api::ActiveSceneResponse>>,
+) -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
+
+    let options = Signal::derive(move || {
+        let mut opts = vec![(String::new(), "Default zone".to_owned())];
+        scene.with(|scene| {
+            let Some(scene) = scene else {
+                return;
+            };
+            for group in &scene.groups {
+                match group.role {
+                    RenderGroupRole::Display => {}
+                    // The Primary zone is the empty-value default; a
+                    // renamed Primary relabels that option in place.
+                    RenderGroupRole::Primary => {
+                        if group.name != "Primary"
+                            && let Some(first) = opts.first_mut()
+                        {
+                            first.1 = group.name.clone();
+                        }
+                    }
+                    RenderGroupRole::Custom => {
+                        opts.push((group.id.to_string(), group.name.clone()));
+                    }
+                }
+            }
+        });
+        opts
+    });
+    let value = Signal::derive(move || fx.apply_target.get().unwrap_or_default());
+    let on_change = Callback::new(move |val: String| {
+        fx.apply_target.set((!val.is_empty()).then_some(val));
+    });
+
+    view! {
+        <div class="flex shrink-0 items-center gap-1.5">
+            <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Apply to"</span>
+            <div class="min-w-[130px]">
+                <SilkSelect
+                    value=value
+                    options=options
+                    on_change=on_change
+                    class="border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1 text-[12px] text-fg-primary"
+                />
+            </div>
+        </div>
+    }
+}
+
 /// Effects browse page with compact grid, search, category filtering, and live preview.
 #[component]
 pub fn EffectsPage() -> impl IntoView {
@@ -314,6 +369,8 @@ pub fn EffectsPage() -> impl IntoView {
     // one zone — a single-zone scene keeps the unchanged "apply effect"
     // behavior with no extra control.
     let effects_scene = LocalResource::new(api::fetch_active_scene);
+    let apply_target_scene =
+        Signal::derive(move || effects_scene.get().and_then(Result::ok).flatten());
     // The Custom LED zones — the §5.3 "specific zone" targets. The Primary
     // group is the "Default zone" target and is not listed separately.
     let custom_zones = Memo::new(move |_| {
@@ -497,6 +554,7 @@ pub fn EffectsPage() -> impl IntoView {
                 accent=PageAccent::Purple
             >
                 <HeaderTrailing slot>
+                    <ApplyTargetSelect scene=apply_target_scene />
                     <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
                             let total = total_effects.get();
