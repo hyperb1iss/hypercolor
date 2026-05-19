@@ -39,7 +39,10 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 const SERVICE_START_WAIT_HINT: Duration = Duration::from_secs(15);
 const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(10);
 const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
-const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)";
+// Keep the privileged broker pipe limited to LocalSystem and local Administrators.
+// SMBus access is privileged hardware I/O, so interactive non-admin users must
+// not be able to connect to the LocalSystem service and relay raw transfers.
+const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const CLIENT_CONNECT_ATTEMPTS: usize = 20;
 const CLIENT_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(10);

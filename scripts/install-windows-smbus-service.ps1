@@ -164,6 +164,7 @@ sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/""/
 Write-Host "Installed $ServiceName"
 Write-Host "  Binary: $brokerPath"
 Write-Host "  Account: LocalSystem (SMBus broker only)"
+Write-Host "  Pipe ACL: LocalSystem and local Administrators only"
 if ($resolvedPawnIoHome) {
     Write-Host "  PawnIO: $resolvedPawnIoHome"
 }
