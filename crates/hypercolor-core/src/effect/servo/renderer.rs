@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use super::telemetry::{
-    record_servo_detached_destroy, record_servo_page_load, record_servo_session_create,
-    record_servo_soft_stall,
+    record_servo_detached_destroy, record_servo_page_load, record_servo_pending_render_age,
+    record_servo_renderer_load, record_servo_session_create, record_servo_soft_stall,
 };
 use super::worker::{
     RENDER_RESPONSE_TIMEOUT, effect_is_audio_reactive, prepare_runtime_html_source,
@@ -324,6 +324,7 @@ impl ServoRenderer {
                     .load_task
                     .as_ref()
                     .map_or_else(Instant::now, |task| task.started_at);
+                record_servo_renderer_load(started_at.elapsed(), true);
                 let LoadedServoSession {
                     session,
                     runtime_source,
@@ -342,6 +343,9 @@ impl ServoRenderer {
                 self.enqueue_bootstrap_scripts();
             }
             Ok(Err(error)) => {
+                if let Some(task) = self.load_task.as_ref() {
+                    record_servo_renderer_load(task.started_at.elapsed(), false);
+                }
                 self.load_task = None;
                 let message = error.to_string();
                 if self.load_failed.as_deref() != Some(message.as_str()) {
@@ -351,6 +355,9 @@ impl ServoRenderer {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
+                if let Some(task) = self.load_task.as_ref() {
+                    record_servo_renderer_load(task.started_at.elapsed(), false);
+                }
                 self.load_task = None;
                 let message = "Servo load task disconnected before completion".to_owned();
                 if self.load_failed.as_deref() != Some(message.as_str()) {
@@ -378,6 +385,9 @@ impl ServoRenderer {
             .session
             .as_ref()
             .and_then(ServoSessionHandle::pending_render_age);
+        if let Some(age) = pending_age {
+            record_servo_pending_render_age(age);
+        }
         let soft_stall_timeout = self.soft_stall_timeout();
         let Some(session) = self.session.as_mut() else {
             return;
@@ -423,6 +433,9 @@ impl ServoRenderer {
             .session
             .as_ref()
             .and_then(ServoSessionHandle::pending_render_age);
+        if let Some(age) = pending_age {
+            record_servo_pending_render_age(age);
+        }
         let soft_stall_timeout = self.soft_stall_timeout();
         let Some(session) = self.session.as_mut() else {
             return;

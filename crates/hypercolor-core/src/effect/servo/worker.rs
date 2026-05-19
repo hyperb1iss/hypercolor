@@ -42,7 +42,9 @@ use super::telemetry::{
     ServoGpuImportFallbackReason, record_servo_gpu_import_failure, record_servo_gpu_import_frame,
 };
 use super::telemetry::{
-    record_servo_cpu_render_frame, record_servo_gpu_render_frame, record_servo_render_queue_wait,
+    record_servo_cpu_render_frame, record_servo_destroy_wait, record_servo_gpu_render_frame,
+    record_servo_render_queue_depth, record_servo_render_queue_wait,
+    record_servo_render_superseded,
 };
 use super::worker_client::{
     ServoRenderMode, ServoSessionId, ServoWorkerClient, ServoWorkerClientSharedState,
@@ -1083,6 +1085,14 @@ impl ServoWorkerScheduler {
         self.queue.is_empty() && self.pending_renders.is_empty()
     }
 
+    fn depth(&self) -> usize {
+        self.queue.len()
+    }
+
+    fn record_depth(&self) {
+        record_servo_render_queue_depth(self.depth());
+    }
+
     fn push(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::Render {
@@ -1114,14 +1124,17 @@ impl ServoWorkerScheduler {
                     slot
                 };
                 if let Some(replaced) = self.pending_renders.insert((session_id, slot), pending) {
+                    record_servo_render_superseded();
                     let _ = replaced.response_tx.send(Err(anyhow!(
                         "Servo render request superseded by a newer frame"
                     )));
                 }
+                self.record_depth();
             }
             command => {
                 self.open_render_slots.clear();
                 self.queue.push_back(ServoWorkKey::Command(command));
+                self.record_depth();
             }
         }
     }
@@ -1130,6 +1143,7 @@ impl ServoWorkerScheduler {
         while let Some(key) = self.queue.pop_front() {
             match key {
                 ServoWorkKey::Command(command) => {
+                    self.record_depth();
                     return Some(ScheduledServoWork::Command(command));
                 }
                 ServoWorkKey::Render { session_id, slot } => {
@@ -1141,11 +1155,13 @@ impl ServoWorkerScheduler {
                         {
                             self.open_render_slots.remove(&session_id);
                         }
+                        self.record_depth();
                         return Some(ScheduledServoWork::Render(render));
                     }
                 }
             }
         }
+        self.record_depth();
         None
     }
 }
@@ -1236,7 +1252,9 @@ impl ServoWorkerRuntime {
                     session_id,
                     response_tx,
                 }) => {
+                    let destroy_started = Instant::now();
                     let result = self.destroy_session(session_id);
+                    record_servo_destroy_wait(destroy_started.elapsed());
                     let _ = response_tx.send(result);
                 }
                 ScheduledServoWork::Command(WorkerCommand::MemoryReport { response_tx }) => {
@@ -2541,6 +2559,7 @@ pub(super) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use super::super::telemetry::servo_telemetry_snapshot;
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
@@ -2568,6 +2587,7 @@ mod tests {
     #[test]
     fn scheduler_coalesces_redundant_renders_by_session() {
         let mut scheduler = ServoWorkerScheduler::default();
+        let before = servo_telemetry_snapshot();
         let session_id = ServoSessionId(42);
         let (first, first_rx) = queued_render_command(session_id, "old()");
         let (second, second_rx) = queued_render_command(session_id, "new()");
@@ -2579,6 +2599,8 @@ mod tests {
             .recv_timeout(Duration::from_millis(100))
             .expect("superseded render should receive a response");
         assert!(superseded.is_err());
+        let after = servo_telemetry_snapshot();
+        assert!(after.render_superseded_total > before.render_superseded_total);
 
         let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
             panic!("expected latest render work");

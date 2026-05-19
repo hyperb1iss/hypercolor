@@ -486,12 +486,38 @@ async fn metrics_message_includes_latest_frame_timeline() {
         std::time::Duration::from_micros(servo_health.page_load_wait_max_us).as_secs_f64() * 1000.0
     );
     assert_eq!(
+        json["effect_health"]["servo_renderer_loads_total"],
+        servo_health.renderer_loads_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_renderer_load_failures_total"],
+        servo_health.renderer_load_failures_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_renderer_load_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.renderer_load_wait_total_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_renderer_load_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.renderer_load_wait_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
         json["effect_health"]["servo_detached_destroys_total"],
         servo_health.detached_destroys_total
     );
     assert_eq!(
         json["effect_health"]["servo_detached_destroy_failures_total"],
         servo_health.detached_destroy_failures_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_destroy_wait_total_ms"],
+        std::time::Duration::from_micros(servo_health.destroy_wait_total_us).as_secs_f64() * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_destroy_wait_max_ms"],
+        std::time::Duration::from_micros(servo_health.destroy_wait_max_us).as_secs_f64() * 1000.0
     );
     assert_eq!(
         json["effect_health"]["servo_render_requests_total"],
@@ -505,6 +531,23 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(
         json["effect_health"]["servo_render_queue_wait_max_ms"],
         std::time::Duration::from_micros(servo_health.render_queue_wait_max_us).as_secs_f64()
+            * 1000.0
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_queue_depth"],
+        servo_health.render_queue_depth
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_queue_depth_max"],
+        servo_health.render_queue_depth_max
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_superseded_total"],
+        servo_health.render_superseded_total
+    );
+    assert_eq!(
+        json["effect_health"]["servo_render_pending_age_max_ms"],
+        std::time::Duration::from_micros(servo_health.render_pending_age_max_us).as_secs_f64()
             * 1000.0
     );
     assert_eq!(

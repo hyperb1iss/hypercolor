@@ -13,11 +13,21 @@ pub struct ServoTelemetrySnapshot {
     pub page_load_failures_total: u64,
     pub page_load_wait_total_us: u64,
     pub page_load_wait_max_us: u64,
+    pub renderer_loads_total: u64,
+    pub renderer_load_failures_total: u64,
+    pub renderer_load_wait_total_us: u64,
+    pub renderer_load_wait_max_us: u64,
     pub detached_destroys_total: u64,
     pub detached_destroy_failures_total: u64,
+    pub destroy_wait_total_us: u64,
+    pub destroy_wait_max_us: u64,
     pub render_requests_total: u64,
     pub render_queue_wait_total_us: u64,
     pub render_queue_wait_max_us: u64,
+    pub render_queue_depth: u64,
+    pub render_queue_depth_max: u64,
+    pub render_superseded_total: u64,
+    pub render_pending_age_max_us: u64,
     pub render_cpu_frames_total: u64,
     pub render_cached_frames_total: u64,
     pub render_gpu_frames_total: u64,
@@ -52,11 +62,21 @@ static SERVO_PAGE_LOADS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_PAGE_LOAD_FAILURES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_PAGE_LOAD_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_PAGE_LOAD_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDERER_LOADS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDERER_LOAD_FAILURES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDERER_LOAD_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDERER_LOAD_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_DETACHED_DESTROYS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_DETACHED_DESTROY_FAILURES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_DESTROY_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_DESTROY_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_QUEUE_WAIT_TOTAL_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_QUEUE_WAIT_MAX_US: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_QUEUE_DEPTH_MAX: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_SUPERSEDED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SERVO_RENDER_PENDING_AGE_MAX_US: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_CPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_CACHED_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SERVO_RENDER_GPU_FRAMES_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -112,11 +132,31 @@ pub(super) fn record_servo_page_load(wait: Duration, success: bool) {
     }
 }
 
+pub(super) fn record_servo_renderer_load(wait: Duration, success: bool) {
+    record_wait(
+        wait,
+        &SERVO_RENDERER_LOADS_TOTAL,
+        &SERVO_RENDERER_LOAD_WAIT_TOTAL_US,
+        &SERVO_RENDERER_LOAD_WAIT_MAX_US,
+    );
+    if !success {
+        let _ = SERVO_RENDERER_LOAD_FAILURES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(super) fn record_servo_detached_destroy(success: bool) {
     let _ = SERVO_DETACHED_DESTROYS_TOTAL.fetch_add(1, Ordering::Relaxed);
     if !success {
         let _ = SERVO_DETACHED_DESTROY_FAILURES_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+pub(super) fn record_servo_destroy_wait(wait: Duration) {
+    record_duration(
+        wait,
+        &SERVO_DESTROY_WAIT_TOTAL_US,
+        &SERVO_DESTROY_WAIT_MAX_US,
+    );
 }
 
 pub(super) fn record_servo_render_queue_wait(wait: Duration) {
@@ -126,6 +166,21 @@ pub(super) fn record_servo_render_queue_wait(wait: Duration) {
         &SERVO_RENDER_QUEUE_WAIT_TOTAL_US,
         &SERVO_RENDER_QUEUE_WAIT_MAX_US,
     );
+}
+
+pub(super) fn record_servo_render_queue_depth(depth: usize) {
+    let depth = u64::try_from(depth).unwrap_or(u64::MAX);
+    SERVO_RENDER_QUEUE_DEPTH.store(depth, Ordering::Relaxed);
+    let _ = SERVO_RENDER_QUEUE_DEPTH_MAX.fetch_max(depth, Ordering::Relaxed);
+}
+
+pub(super) fn record_servo_render_superseded() {
+    let _ = SERVO_RENDER_SUPERSEDED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(super) fn record_servo_pending_render_age(age: Duration) {
+    let age_us = u64::try_from(age.as_micros()).unwrap_or(u64::MAX);
+    let _ = SERVO_RENDER_PENDING_AGE_MAX_US.fetch_max(age_us, Ordering::Relaxed);
 }
 
 pub(super) fn record_servo_cpu_render_frame(
@@ -321,12 +376,22 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
         page_load_failures_total: SERVO_PAGE_LOAD_FAILURES_TOTAL.load(Ordering::Relaxed),
         page_load_wait_total_us: SERVO_PAGE_LOAD_WAIT_TOTAL_US.load(Ordering::Relaxed),
         page_load_wait_max_us: SERVO_PAGE_LOAD_WAIT_MAX_US.load(Ordering::Relaxed),
+        renderer_loads_total: SERVO_RENDERER_LOADS_TOTAL.load(Ordering::Relaxed),
+        renderer_load_failures_total: SERVO_RENDERER_LOAD_FAILURES_TOTAL.load(Ordering::Relaxed),
+        renderer_load_wait_total_us: SERVO_RENDERER_LOAD_WAIT_TOTAL_US.load(Ordering::Relaxed),
+        renderer_load_wait_max_us: SERVO_RENDERER_LOAD_WAIT_MAX_US.load(Ordering::Relaxed),
         detached_destroys_total: SERVO_DETACHED_DESTROYS_TOTAL.load(Ordering::Relaxed),
         detached_destroy_failures_total: SERVO_DETACHED_DESTROY_FAILURES_TOTAL
             .load(Ordering::Relaxed),
+        destroy_wait_total_us: SERVO_DESTROY_WAIT_TOTAL_US.load(Ordering::Relaxed),
+        destroy_wait_max_us: SERVO_DESTROY_WAIT_MAX_US.load(Ordering::Relaxed),
         render_requests_total: SERVO_RENDER_REQUESTS_TOTAL.load(Ordering::Relaxed),
         render_queue_wait_total_us: SERVO_RENDER_QUEUE_WAIT_TOTAL_US.load(Ordering::Relaxed),
         render_queue_wait_max_us: SERVO_RENDER_QUEUE_WAIT_MAX_US.load(Ordering::Relaxed),
+        render_queue_depth: SERVO_RENDER_QUEUE_DEPTH.load(Ordering::Relaxed),
+        render_queue_depth_max: SERVO_RENDER_QUEUE_DEPTH_MAX.load(Ordering::Relaxed),
+        render_superseded_total: SERVO_RENDER_SUPERSEDED_TOTAL.load(Ordering::Relaxed),
+        render_pending_age_max_us: SERVO_RENDER_PENDING_AGE_MAX_US.load(Ordering::Relaxed),
         render_cpu_frames_total: SERVO_RENDER_CPU_FRAMES_TOTAL.load(Ordering::Relaxed),
         render_cached_frames_total: SERVO_RENDER_CACHED_FRAMES_TOTAL.load(Ordering::Relaxed),
         render_gpu_frames_total: SERVO_RENDER_GPU_FRAMES_TOTAL.load(Ordering::Relaxed),
@@ -366,6 +431,12 @@ fn record_wait(wait: Duration, count: &AtomicU64, total_us: &AtomicU64, max_us: 
     let _ = count.fetch_add(1, Ordering::Relaxed);
     let _ = total_us.fetch_add(wait_us, Ordering::Relaxed);
     let _ = max_us.fetch_max(wait_us, Ordering::Relaxed);
+}
+
+fn record_duration(duration: Duration, total_us: &AtomicU64, max_us: &AtomicU64) {
+    let duration_us = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+    let _ = total_us.fetch_add(duration_us, Ordering::Relaxed);
+    let _ = max_us.fetch_max(duration_us, Ordering::Relaxed);
 }
 
 fn record_duration_us(value_us: u64, total_us: &AtomicU64, max_us: &AtomicU64) {
@@ -435,6 +506,32 @@ mod tests {
         assert!(after.render_event_loop_total_us >= before.render_event_loop_total_us + 22);
         assert!(after.render_paint_total_us >= before.render_paint_total_us + 33);
         assert!(after.render_frame_total_us >= before.render_frame_total_us + 110);
+    }
+
+    #[test]
+    fn servo_queue_lifecycle_metrics_accumulate() {
+        let _guard = TELEMETRY_TEST_LOCK
+            .lock()
+            .expect("telemetry tests should not poison lock");
+        let before = servo_telemetry_snapshot();
+
+        record_servo_renderer_load(Duration::from_micros(15), false);
+        record_servo_destroy_wait(Duration::from_micros(25));
+        record_servo_render_queue_depth(3);
+        record_servo_render_superseded();
+        record_servo_pending_render_age(Duration::from_micros(35));
+
+        let after = servo_telemetry_snapshot();
+        assert!(after.renderer_loads_total > before.renderer_loads_total);
+        assert!(after.renderer_load_failures_total > before.renderer_load_failures_total);
+        assert!(after.renderer_load_wait_total_us >= before.renderer_load_wait_total_us + 15);
+        assert!(after.renderer_load_wait_max_us >= 15);
+        assert!(after.destroy_wait_total_us >= before.destroy_wait_total_us + 25);
+        assert!(after.destroy_wait_max_us >= 25);
+        assert!(after.render_queue_depth_max >= 3);
+        assert!(after.render_queue_depth <= after.render_queue_depth_max);
+        assert!(after.render_superseded_total > before.render_superseded_total);
+        assert!(after.render_pending_age_max_us >= 35);
     }
 
     #[cfg(feature = "servo-gpu-import")]
