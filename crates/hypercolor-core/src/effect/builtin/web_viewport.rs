@@ -401,7 +401,15 @@ fn validate_web_url(url: &str) -> anyhow::Result<()> {
 fn is_private_or_loopback_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local(),
+        IpAddr::V6(v6) => {
+            // An IPv4-mapped IPv6 literal (::ffff:127.0.0.1) connects to the
+            // embedded IPv4 address, so it must be classified as IPv4 — the
+            // V6 predicates below would otherwise miss it.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return mapped.is_private() || mapped.is_loopback() || mapped.is_link_local();
+            }
+            v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+        }
     }
 }
 
@@ -705,5 +713,17 @@ mod tests {
         assert!(!is_private_or_loopback_ip(IpAddr::V4(Ipv4Addr::new(
             8, 8, 8, 8
         ))));
+
+        // IPv4-mapped IPv6 literals must be classified by their embedded
+        // IPv4 address so they cannot slip past the SSRF policy.
+        assert!(is_private_or_loopback_ip(IpAddr::V6(
+            Ipv4Addr::LOCALHOST.to_ipv6_mapped()
+        )));
+        assert!(is_private_or_loopback_ip(IpAddr::V6(
+            Ipv4Addr::new(192, 168, 1, 1).to_ipv6_mapped()
+        )));
+        assert!(!is_private_or_loopback_ip(IpAddr::V6(
+            Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped()
+        )));
     }
 }
