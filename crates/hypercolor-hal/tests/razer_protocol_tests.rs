@@ -588,6 +588,58 @@ fn parse_response_reads_payload_on_success() {
 }
 
 #[test]
+fn parse_response_accepts_short_feature_report() {
+    let protocol = RazerProtocol::new(
+        RazerProtocolVersion::Modern,
+        RazerLightingCommandSet::Standard,
+        RazerMatrixType::Standard,
+        (6, 16),
+        LED_ID_BACKLIGHT,
+    );
+
+    let mut response = [0_u8; 64];
+    response[0] = 0x02;
+    response[1] = 0x1F;
+    response[5] = 2;
+    response[6] = 0x00;
+    response[7] = 0x82;
+    response[8] = 0xAA;
+    response[9] = 0xBB;
+
+    let parsed = protocol
+        .parse_response(&response)
+        .expect("short feature report should parse");
+
+    assert_eq!(parsed.status, ResponseStatus::Ok);
+    assert_eq!(parsed.data, vec![0xAA, 0xBB]);
+}
+
+#[test]
+fn parse_response_maps_short_busy_feature_report() {
+    let protocol = RazerProtocol::new(
+        RazerProtocolVersion::Modern,
+        RazerLightingCommandSet::Standard,
+        RazerMatrixType::Standard,
+        (6, 16),
+        LED_ID_BACKLIGHT,
+    );
+
+    let mut response = [0_u8; 64];
+    response[0] = 0x01;
+    response[1] = 0x1F;
+    response[5] = 2;
+    response[6] = 0x00;
+    response[7] = 0x82;
+
+    let parsed = protocol
+        .parse_response(&response)
+        .expect("short busy feature report should parse");
+
+    assert_eq!(parsed.status, ResponseStatus::Busy);
+    assert_eq!(parsed.data, vec![0x00, 0x00]);
+}
+
+#[test]
 fn parse_response_accepts_crc_mismatch() {
     let protocol = RazerProtocol::new(
         RazerProtocolVersion::Extended,

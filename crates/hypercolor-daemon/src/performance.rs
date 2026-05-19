@@ -177,6 +177,10 @@ pub(crate) struct PacingSummary {
 
 /// Aggregate effect-health counters observed by the daemon.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "fields mirror exported Prometheus-style total counter names"
+)]
 pub(crate) struct EffectHealthSummary {
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,

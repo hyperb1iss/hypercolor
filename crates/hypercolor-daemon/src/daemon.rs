@@ -229,7 +229,7 @@ fn format_age(elapsed: std::time::Duration) -> String {
 
 #[cfg(target_os = "linux")]
 fn notify_ready() {
-    if let Err(error) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
+    if let Err(error) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
         tracing::warn!("failed to notify systemd: {error}");
     } else {
         tracing::debug!("notified systemd: READY=1");
@@ -245,7 +245,9 @@ fn spawn_watchdog() {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
             interval.tick().await;
-            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+            if let Err(error) = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]) {
+                tracing::debug!("failed to notify systemd watchdog: {error}");
+            }
         }
     });
 }

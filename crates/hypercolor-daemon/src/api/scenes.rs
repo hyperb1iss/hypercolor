@@ -516,12 +516,10 @@ fn scene_media_admission_counts(
                         group, layer, *asset_id, mime_type,
                     ));
                 }
-                "application/json" => {
-                    if counts.lottie_asset_ids.insert(*asset_id) {
-                        counts.estimated_cost_us = counts
-                            .estimated_cost_us
-                            .saturating_add(LOTTIE_PRODUCER_COST_US);
-                    }
+                "application/json" if counts.lottie_asset_ids.insert(*asset_id) => {
+                    counts.estimated_cost_us = counts
+                        .estimated_cost_us
+                        .saturating_add(LOTTIE_PRODUCER_COST_US);
                 }
                 _ => {}
             }

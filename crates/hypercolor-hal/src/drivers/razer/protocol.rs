@@ -27,6 +27,9 @@ use super::types::{
 
 /// Maximum argument payload size within a [`RazerReport`].
 const ARGS_LEN: usize = 80;
+const RAZER_RESPONSE_HEADER_LEN: usize = 8;
+const RAZER_RESPONSE_DATA_SIZE_OFFSET: usize = 5;
+const RAZER_RESPONSE_ARGS_OFFSET: usize = 8;
 const STANDARD_MATRIX_FRAME_DATA_SIZE: u8 = 0x46;
 // Modern custom-effect activation declares a 6-byte payload even though the
 // meaningful arguments only consume 5 bytes.
@@ -855,6 +858,46 @@ impl RazerProtocol {
             _ => ResponseStatus::Failed,
         }
     }
+
+    fn parse_short_response(data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
+        if data.len() < RAZER_RESPONSE_HEADER_LEN {
+            return Err(ProtocolError::MalformedResponse {
+                detail: format!(
+                    "expected at least {} bytes, got {}",
+                    RAZER_RESPONSE_HEADER_LEN,
+                    data.len()
+                ),
+            });
+        }
+
+        let status = Self::map_status(data[0]);
+        if status == ResponseStatus::Failed {
+            return Err(ProtocolError::DeviceError { status });
+        }
+
+        let data_size = usize::from(data[RAZER_RESPONSE_DATA_SIZE_OFFSET]);
+        if data_size > ARGS_LEN {
+            return Err(ProtocolError::MalformedResponse {
+                detail: format!("data size exceeds arguments field: {data_size}"),
+            });
+        }
+
+        let payload_end = RAZER_RESPONSE_ARGS_OFFSET
+            .checked_add(data_size)
+            .ok_or_else(|| ProtocolError::MalformedResponse {
+                detail: format!("data size exceeds arguments field: {data_size}"),
+            })?;
+        if data.len() < payload_end {
+            return Err(ProtocolError::MalformedResponse {
+                detail: format!("expected at least {payload_end} bytes, got {}", data.len()),
+            });
+        }
+
+        Ok(ProtocolResponse {
+            status,
+            data: data[RAZER_RESPONSE_ARGS_OFFSET..payload_end].to_vec(),
+        })
+    }
 }
 
 impl Protocol for RazerProtocol {
@@ -970,6 +1013,10 @@ impl Protocol for RazerProtocol {
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
+        if data.len() < RAZER_REPORT_LEN {
+            return Self::parse_short_response(data);
+        }
+
         // Use read_from_prefix — NOT read_from_bytes — because HID transport
         // can return >90 byte buffers (report ID still attached from decode
         // fallback in hidapi/hidraw).
