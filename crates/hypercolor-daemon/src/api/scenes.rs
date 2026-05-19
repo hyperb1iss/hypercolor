@@ -405,7 +405,7 @@ pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Opti
         .map(|scene| scene.id)
 }
 
-async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {
+pub(crate) async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {
     let library = state.asset_library.read().await;
     library
         .records()
@@ -414,17 +414,42 @@ async fn asset_mime_types(state: &AppState) -> HashMap<AssetId, String> {
         .collect()
 }
 
-fn current_media_config(state: &AppState) -> MediaConfig {
+pub(crate) fn current_media_config(state: &AppState) -> MediaConfig {
     state
         .config_manager
         .as_ref()
         .map_or_else(MediaConfig::default, |manager| manager.get().media.clone())
 }
 
-fn validate_scene_media_admission(
+pub(crate) fn validate_scene_media_admission(
     counts: &MediaAdmissionCounts,
     media_config: &MediaConfig,
 ) -> Option<Response> {
+    let Some(details) = scene_media_admission_violation_details(counts, media_config) else {
+        return None;
+    };
+
+    Some(ApiError::validation_with_details(
+        details.message,
+        serde_json::json!({
+            "caps": details.caps,
+            "counts": details.counts,
+            "layers": details.layers,
+        }),
+    ))
+}
+
+pub(crate) struct MediaAdmissionViolationDetails {
+    pub message: String,
+    pub caps: serde_json::Value,
+    pub counts: serde_json::Value,
+    pub layers: serde_json::Value,
+}
+
+pub(crate) fn scene_media_admission_violation_details(
+    counts: &MediaAdmissionCounts,
+    media_config: &MediaConfig,
+) -> Option<MediaAdmissionViolationDetails> {
     let video_cap = usize::from(media_config.max_video_producers.clamp(1, 4));
     let livestream_cap = usize::from(media_config.max_livestream_producers.clamp(0, 2));
     let video_count = counts.video_asset_ids.len();
@@ -444,30 +469,25 @@ fn validate_scene_media_admission(
         ));
     }
 
-    Some(ApiError::validation_with_details(
-        format!(
-            "Scene exceeds media producer caps: {}",
-            violations.join(", ")
-        ),
-        serde_json::json!({
-            "caps": {
-                "video": video_cap,
-                "livestream": livestream_cap,
-            },
-            "counts": {
-                "video": video_count,
-                "livestream": livestream_count,
-            },
-            "layers": {
-                "video": counts.video_layers,
-                "livestream": counts.livestream_layers,
-            },
+    Some(MediaAdmissionViolationDetails {
+        message: format!("Scene exceeds media producer caps: {}", violations.join(", ")),
+        caps: serde_json::json!({
+            "video": video_cap,
+            "livestream": livestream_cap,
         }),
-    ))
+        counts: serde_json::json!({
+            "video": video_count,
+            "livestream": livestream_count,
+        }),
+        layers: serde_json::json!({
+            "video": counts.video_layers,
+            "livestream": counts.livestream_layers,
+        }),
+    })
 }
 
 #[derive(Debug, Default)]
-struct MediaAdmissionCounts {
+pub(crate) struct MediaAdmissionCounts {
     video_asset_ids: HashSet<AssetId>,
     livestream_asset_ids: HashSet<AssetId>,
     lottie_asset_ids: HashSet<AssetId>,
@@ -476,7 +496,7 @@ struct MediaAdmissionCounts {
     livestream_layers: Vec<serde_json::Value>,
 }
 
-fn scene_media_admission_counts(
+pub(crate) fn scene_media_admission_counts(
     scene: &Scene,
     asset_mime_types: &HashMap<AssetId, String>,
 ) -> MediaAdmissionCounts {
