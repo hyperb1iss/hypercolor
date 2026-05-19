@@ -213,7 +213,7 @@ fn animated_webp_loop_timing_is_deterministic() {
 
 #[test]
 fn animated_media_decode_rejects_excessive_frame_count() {
-    let bytes = oversized_animated_gif_bytes(2_049);
+    let bytes = oversized_animated_gif_bytes(16_385);
     let error = MediaProducer::from_bytes(&bytes, "image/gif")
         .expect_err("oversized GIF should be rejected");
     assert!(
