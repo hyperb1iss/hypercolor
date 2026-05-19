@@ -19,7 +19,8 @@ use super::cache::{
     FrameRelayMessage, WS_CANVAS_BINARY_CACHE, WS_CANVAS_HEADER, WS_CANVAS_JPEG_BODY_BUILD_COUNT,
     WS_CANVAS_JPEG_BODY_CACHE_HIT_COUNT, WS_CANVAS_PAYLOAD_BUILD_COUNT,
     WS_CANVAS_PAYLOAD_CACHE_HIT_COUNT, WS_CANVAS_RAW_BODY_BUILD_COUNT,
-    WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_DISPLAY_PREVIEW_HEADER, WS_FRAME_PAYLOAD_BUILD_COUNT,
+    WS_CANVAS_RAW_BODY_CACHE_HIT_COUNT, WS_DISPLAY_PREVIEW_HEADER,
+    WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES, WS_FRAME_PAYLOAD_BUILD_COUNT,
     WS_FRAME_PAYLOAD_CACHE, WS_FRAME_PAYLOAD_CACHE_HIT_COUNT, WS_SCREEN_CANVAS_HEADER,
     WS_SPECTRUM_PAYLOAD_BUILD_COUNT, WS_SPECTRUM_PAYLOAD_CACHE,
     WS_SPECTRUM_PAYLOAD_CACHE_HIT_COUNT, WS_WEB_VIEWPORT_CANVAS_HEADER,
@@ -968,6 +969,67 @@ fn cached_display_preview_payload_reuses_bytes_for_matching_snapshot() {
     assert_eq!(display_preview_payload_frame_number(&first), 17);
     assert_eq!(first, second);
     assert_eq!(first.as_ptr(), second.as_ptr());
+}
+
+#[test]
+fn cached_display_preview_payload_skips_cache_for_large_payloads() {
+    reset_ws_payload_caches();
+    let large_jpeg = vec![0_u8; 300 * 1024];
+    let snapshot = DisplayFrameSnapshot {
+        jpeg_data: Arc::new(large_jpeg),
+        width: 512,
+        height: 512,
+        circular: false,
+        frame_number: 21,
+        captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(101),
+    };
+
+    let first = cached_display_preview_payload(&snapshot);
+    let second = cached_display_preview_payload(&snapshot);
+
+    assert_eq!(display_preview_payload_frame_number(&first), 21);
+    assert_eq!(first, second);
+    assert_ne!(first.as_ptr(), second.as_ptr());
+}
+
+fn display_preview_snapshot(jpeg_len: usize, frame_number: u64) -> DisplayFrameSnapshot {
+    DisplayFrameSnapshot {
+        jpeg_data: Arc::new(vec![0_u8; jpeg_len]),
+        width: 256,
+        height: 256,
+        circular: false,
+        frame_number,
+        captured_at: SystemTime::UNIX_EPOCH + Duration::from_millis(frame_number),
+    }
+}
+
+#[test]
+fn cached_display_preview_payload_respects_the_size_boundary() {
+    reset_ws_payload_caches();
+
+    // Derive the wire-header length from a probe payload so the boundary math
+    // tracks the real header layout instead of a hard-coded guess.
+    let probe = cached_display_preview_payload(&display_preview_snapshot(1, 30));
+    let header_len = probe.len() - 1;
+    reset_ws_payload_caches();
+
+    let at_limit = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES - header_len;
+    let first = cached_display_preview_payload(&display_preview_snapshot(at_limit, 31));
+    let second = cached_display_preview_payload(&display_preview_snapshot(at_limit, 31));
+    assert_eq!(
+        first.as_ptr(),
+        second.as_ptr(),
+        "a payload exactly at the cache size limit should be cached"
+    );
+
+    reset_ws_payload_caches();
+    let first = cached_display_preview_payload(&display_preview_snapshot(at_limit + 1, 32));
+    let second = cached_display_preview_payload(&display_preview_snapshot(at_limit + 1, 32));
+    assert_ne!(
+        first.as_ptr(),
+        second.as_ptr(),
+        "a payload one byte over the limit should skip the cache"
+    );
 }
 
 #[tokio::test]

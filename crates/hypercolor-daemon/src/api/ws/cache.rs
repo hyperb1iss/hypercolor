@@ -14,7 +14,7 @@ use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
 use serde::Serialize;
 use serde::ser::SerializeSeq;
-use tracing::warn;
+use tracing::{trace, warn};
 
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
@@ -37,6 +37,11 @@ pub(super) const WS_WEB_VIEWPORT_CANVAS_HEADER: u8 = 0x06;
 pub(super) const WS_DISPLAY_PREVIEW_HEADER: u8 = 0x07;
 const WS_CANVAS_BINARY_CACHE_CAPACITY: usize = 32;
 const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY: usize = 64;
+/// Display-preview payloads larger than this skip the shared cache and are
+/// rebuilt per request. Bounds worst-case cache memory at roughly
+/// `WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_CAPACITY` × this value (~16 MiB); typical
+/// previews sit far below it, so the cache hit rate is unaffected.
+pub(super) const WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES: usize = 256 * 1024;
 const WS_FRAME_PAYLOAD_CACHE_CAPACITY: usize = 64;
 const WS_SPECTRUM_PAYLOAD_CACHE_CAPACITY: usize = 32;
 const WS_CACHE_SHARD_COUNT: usize = 8;
@@ -1007,7 +1012,15 @@ pub(super) fn cached_display_preview_payload(snapshot: &DisplayFrameSnapshot) ->
     }
 
     let payload = build_display_preview_payload(snapshot, key);
-    display_preview_payload_cache_put(key, payload.clone());
+    if payload.len() <= WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES {
+        display_preview_payload_cache_put(key, payload.clone());
+    } else {
+        trace!(
+            payload_len = payload.len(),
+            limit = WS_DISPLAY_PREVIEW_PAYLOAD_CACHE_MAX_BYTES,
+            "display preview payload exceeds cache size limit; serving uncached"
+        );
+    }
     payload
 }
 
