@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     let daemon_url = std::env::var("HYPERCOLOR_URL")
         .unwrap_or_else(|_| hypercolor_app::DEFAULT_DAEMON_URL.to_string());
 
-    tracing::info!(url = %daemon_url, "launching Hypercolor app shell");
+    tracing::info!("launching Hypercolor app shell");
 
     tauri::Builder::default()
         .manage(hypercolor_app::supervisor::SupervisorState::default())
@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
                 .parse()
                 .expect("HYPERCOLOR_URL must be a valid URL");
 
-            tracing::info!(%url, "creating webview window");
+            tracing::info!(scheme = %url.scheme(), host = ?url.host_str(), port = ?url.port_or_known_default(), "creating webview window");
 
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.clone()))
                 .title("Hypercolor")
