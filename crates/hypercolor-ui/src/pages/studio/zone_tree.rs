@@ -6,11 +6,12 @@
 //! "+ New zone". It replaces the old surface rail and the separate
 //! device palette — devices are visible here, not behind a drawer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use crate::api::DeviceSummary;
 use crate::app::{CapabilitiesContext, DevicesContext, WsContext};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
@@ -18,6 +19,7 @@ use crate::storage;
 use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
+use super::device_card::StudioDeviceCard;
 use super::device_grouping::{DeviceMeta, ZoneDeviceRow, device_rows_for_zone, unassigned_device_rows};
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use super::zone_controls::{NewZoneControl, ZoneControls};
@@ -86,12 +88,29 @@ pub fn ZoneTree() -> impl IntoView {
             .collect::<Vec<_>>()
     });
 
-    // Each light zone paired with the device rows nested under it.
+    // The same registry keyed by layout device id — the join from a row
+    // back to its full `DeviceSummary`, which the rich card needs for the
+    // brand strip, vendor mark, and component breakdown.
+    let device_by_id = Memo::new(move |_| {
+        devices
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|device| (device.layout_device_id.clone(), device))
+            .collect::<HashMap<String, DeviceSummary>>()
+    });
+
+    // Each light zone paired with the device rows nested under it; every
+    // row carries its resolved `DeviceSummary`, or `None` when the device
+    // is placed in the layout but absent from the registry.
     let zone_rows = Memo::new(move |_| {
         let Some(scene) = studio.active_scene.get() else {
             return Vec::new();
         };
         let metas = device_metas.get();
+        let by_id = device_by_id.get();
         lights
             .get()
             .into_iter()
@@ -102,15 +121,29 @@ pub fn ZoneTree() -> impl IntoView {
                     .find(|group| group.id.to_string() == surface.id)
                     .map(|group| group.layout.zones.clone())
                     .unwrap_or_default();
-                let rows = device_rows_for_zone(&outputs, &metas);
+                let rows = device_rows_for_zone(&outputs, &metas)
+                    .into_iter()
+                    .map(|row| {
+                        let device = by_id.get(&row.device_id).cloned();
+                        (row, device)
+                    })
+                    .collect::<Vec<_>>();
                 (surface, rows)
             })
             .collect::<Vec<_>>()
     });
     let unassigned = Memo::new(move |_| {
-        studio.active_scene.get().map_or_else(Vec::new, |scene| {
-            unassigned_device_rows(&scene.groups, &device_metas.get())
-        })
+        let Some(scene) = studio.active_scene.get() else {
+            return Vec::new();
+        };
+        let by_id = device_by_id.get();
+        unassigned_device_rows(&scene.groups, &device_metas.get())
+            .into_iter()
+            .map(|row| {
+                let device = by_id.get(&row.device_id).cloned();
+                (row, device)
+            })
+            .collect::<Vec<_>>()
     });
 
     let collapsed = RwSignal::new(load_collapsed());
@@ -200,7 +233,7 @@ pub fn ZoneTree() -> impl IntoView {
 #[component]
 fn ZoneNode(
     surface: Surface,
-    devices: Vec<ZoneDeviceRow>,
+    devices: Vec<(ZoneDeviceRow, Option<DeviceSummary>)>,
     multi_zone: bool,
     collapsed: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
@@ -240,11 +273,9 @@ fn ZoneNode(
 
     view! {
         <div
-            class="overflow-hidden rounded-xl border transition-all"
+            class="overflow-hidden rounded-xl border bg-surface-overlay/40 transition-all"
             class=("border-accent-muted", move || is_selected.get())
-            class=("bg-accent/8", move || is_selected.get())
             class=("border-edge-subtle/70", move || !is_selected.get())
-            class=("bg-surface-overlay/40", move || !is_selected.get())
             class=("opacity-55", move || dimmed)
         >
             <div class="flex items-center">
@@ -333,7 +364,7 @@ fn ZoneNode(
                 </div>
             })}
             <div
-                class="space-y-0.5 border-t border-edge-subtle/45 px-1.5 py-1.5"
+                class="space-y-1.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-2"
                 class=("hidden", move || !is_open.get())
             >
                 {if devices.is_empty() {
@@ -346,7 +377,15 @@ fn ZoneNode(
                 } else {
                     devices
                         .into_iter()
-                        .map(|row| view! { <DeviceRow row=row select=zone_id.clone() /> })
+                        .map(|(row, device)| {
+                            view! {
+                                <StudioDeviceCard
+                                    row=row
+                                    device=device
+                                    select=zone_id.clone()
+                                />
+                            }
+                        })
                         .collect_view()
                         .into_any()
                 }}
@@ -355,46 +394,9 @@ fn ZoneNode(
     }
 }
 
-/// One physical device under a zone. Read-only — clicking it selects the
-/// parent zone (or the Unassigned entry).
-#[component]
-fn DeviceRow(row: ZoneDeviceRow, select: String) -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let leds = row.led_count;
-    let count_label = if leds == 1 {
-        "1 LED".to_owned()
-    } else {
-        format!("{leds} LEDs")
-    };
-    view! {
-        <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-surface-hover/30"
-            on:click=move |_| studio.selected_surface_id.set(Some(select.clone()))
-        >
-            <Icon
-                icon=LuCpu
-                width="12px"
-                height="12px"
-                style="color: rgba(128, 255, 234, 0.5)"
-            />
-            <span
-                class="min-w-0 flex-1 truncate text-[12px]"
-                class=("text-fg-secondary", move || row.resolved)
-                class=("text-fg-tertiary/60", move || !row.resolved)
-            >
-                {row.name}
-            </span>
-            <span class="shrink-0 font-mono text-[10px] tabular-nums text-fg-tertiary/55">
-                {count_label}
-            </span>
-        </button>
-    }
-}
-
 /// The §9.4 Unassigned group: hardware the scene places in no zone.
 #[component]
-fn UnassignedNode(rows: Memo<Vec<ZoneDeviceRow>>) -> impl IntoView {
+fn UnassignedNode(rows: Memo<Vec<(ZoneDeviceRow, Option<DeviceSummary>)>>) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let is_selected = Signal::derive(move || {
         studio.selected_surface_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID)
@@ -434,13 +436,14 @@ fn UnassignedNode(rows: Memo<Vec<ZoneDeviceRow>>) -> impl IntoView {
                 let rows = rows.get();
                 (!rows.is_empty()).then(|| {
                     view! {
-                        <div class="space-y-0.5 border-t border-edge-subtle/45 px-1.5 py-1.5">
+                        <div class="space-y-1.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-2">
                             {rows
                                 .into_iter()
-                                .map(|row| {
+                                .map(|(row, device)| {
                                     view! {
-                                        <DeviceRow
+                                        <StudioDeviceCard
                                             row=row
+                                            device=device
                                             select=UNASSIGNED_SURFACE_ID.to_owned()
                                         />
                                     }

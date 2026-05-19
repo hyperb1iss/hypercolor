@@ -6,6 +6,7 @@
 //! than occupying a permanent rail.
 
 mod composition_panel;
+mod device_card;
 mod device_grouping;
 mod stage;
 mod stage_view;
