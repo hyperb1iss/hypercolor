@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::config::ConfigManager;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
@@ -224,15 +225,25 @@ fn filter_frame_zones(
 
 #[tokio::test]
 async fn metrics_message_includes_latest_frame_timeline() {
+    let tempdir = tempfile::tempdir().expect("metrics test data dir should be created");
+    ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
     let state = Arc::new(AppState::new());
+    ConfigManager::set_data_dir_override(None);
     state.render_loop.write().await.start();
     let mut preview_rx = state.preview_runtime.canvas_receiver();
+    let mut scene_preview_rx = state.preview_runtime.scene_canvas_receiver();
     let mut screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
     preview_rx.update_demand(PreviewStreamDemand {
         fps: 20,
         format: PreviewPixelFormat::Jpeg,
         width: 640,
         height: 360,
+    });
+    scene_preview_rx.update_demand(PreviewStreamDemand {
+        fps: 12,
+        format: PreviewPixelFormat::Rgb,
+        width: 320,
+        height: 180,
     });
     screen_preview_rx.update_demand(PreviewStreamDemand {
         fps: 30,
@@ -241,8 +252,13 @@ async fn metrics_message_includes_latest_frame_timeline() {
         height: 0,
     });
     let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
+    let scene_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 66, 33);
     let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
     let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+    let _ = state
+        .event_bus
+        .scene_canvas_sender()
+        .send(scene_frame.clone());
     let _ = state
         .event_bus
         .screen_canvas_sender()
@@ -250,6 +266,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     state
         .preview_runtime
         .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
+    state
+        .preview_runtime
+        .record_scene_canvas_publication(scene_frame.frame_number, scene_frame.timestamp_ms);
     state
         .preview_runtime
         .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
@@ -591,16 +610,24 @@ async fn metrics_message_includes_latest_frame_timeline() {
     );
     assert_eq!(json["render_surfaces"]["preview_pool_grown_slots"], 0);
     assert_eq!(json["preview"]["canvas_receivers"], 1);
+    assert_eq!(json["preview"]["scene_canvas_receivers"], 1);
     assert_eq!(json["preview"]["screen_canvas_receivers"], 1);
     assert_eq!(json["preview"]["canvas_frames_published"], 1);
+    assert_eq!(json["preview"]["scene_canvas_frames_published"], 1);
     assert_eq!(json["preview"]["screen_canvas_frames_published"], 1);
     assert_eq!(json["preview"]["latest_canvas_frame_number"], 88);
+    assert_eq!(json["preview"]["latest_scene_canvas_frame_number"], 66);
     assert_eq!(json["preview"]["latest_screen_canvas_frame_number"], 45);
     assert_eq!(json["preview"]["canvas_demand"]["subscribers"], 1);
     assert_eq!(json["preview"]["canvas_demand"]["max_fps"], 20);
     assert_eq!(json["preview"]["canvas_demand"]["max_width"], 640);
     assert_eq!(json["preview"]["canvas_demand"]["max_height"], 360);
     assert_eq!(json["preview"]["canvas_demand"]["any_jpeg"], true);
+    assert_eq!(json["preview"]["scene_canvas_demand"]["subscribers"], 1);
+    assert_eq!(json["preview"]["scene_canvas_demand"]["max_fps"], 12);
+    assert_eq!(json["preview"]["scene_canvas_demand"]["max_width"], 320);
+    assert_eq!(json["preview"]["scene_canvas_demand"]["max_height"], 180);
+    assert_eq!(json["preview"]["scene_canvas_demand"]["any_rgb"], true);
     assert_eq!(json["preview"]["screen_canvas_demand"]["subscribers"], 1);
     assert_eq!(
         json["preview"]["screen_canvas_demand"]["any_full_resolution"],

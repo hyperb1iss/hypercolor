@@ -184,17 +184,28 @@ pub(crate) fn publish_frame_updates(
     }
     let group_canvas_us = micros_u32(group_canvas_start.elapsed());
     let preview_start = Instant::now();
+    state
+        .preview_runtime
+        .note_scene_canvas_frame(frame_number, elapsed_ms);
     let scene_canvas_receivers = state.scene_canvas_receiver_count();
     if scene_canvas_receivers > 0 {
+        let tracked_scene_canvas_receivers = state.preview_runtime.scene_canvas_receiver_count();
         let publish_scene_canvas = {
             let current = state.event_bus.scene_canvas_sender().borrow();
-            if let Some(surface) = surfaces.authoritative_scene_surface() {
+            let changed = if let Some(surface) = surfaces.authoritative_scene_surface() {
                 should_publish_surface_frame(&current, surface)
             } else if surfaces.active_effect_surface_pending() {
                 false
             } else {
                 should_publish_canvas_frame(&current, &CanvasFrame::empty())
-            }
+            };
+            changed
+                && publication_cadence.scene_canvas_due(
+                    elapsed_ms,
+                    scene_canvas_receivers,
+                    tracked_scene_canvas_receivers,
+                    state.preview_runtime.scene_canvas_demand().max_fps,
+                )
         };
         if publish_scene_canvas {
             let scene_frame = if let Some(surface) = surfaces.authoritative_scene_surface() {
@@ -206,6 +217,10 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
+            publication_cadence.record_scene_canvas_publication(elapsed_ms);
+            state
+                .preview_runtime
+                .record_scene_canvas_publication(frame_number, elapsed_ms);
             let _ = state.event_bus.scene_canvas_sender().send(scene_frame);
         }
     }
@@ -563,7 +578,7 @@ mod tests {
     };
     use crate::device_settings::DeviceSettingsStore;
     use crate::performance::PerformanceTracker;
-    use crate::preview_runtime::PreviewRuntime;
+    use crate::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
     use crate::session::OutputPowerState;
@@ -931,6 +946,137 @@ mod tests {
         assert_eq!(
             scene_rx.borrow().surface().storage_identity(),
             expected_identity
+        );
+    }
+
+    #[test]
+    fn scene_canvas_publication_respects_tracked_fps() {
+        let state = minimal_render_thread_state();
+        let mut scene_rx = state.preview_runtime.scene_canvas_receiver();
+        scene_rx.update_demand(PreviewStreamDemand {
+            fps: 1,
+            format: PreviewPixelFormat::Rgb,
+            width: 4,
+            height: 4,
+        });
+        let first_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 7, 0);
+        let first_identity = first_surface.storage_identity();
+        let mut recycled_frame = FrameData::empty();
+        let mut cadence = PublicationCadenceState::default();
+
+        publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: Some(first_surface),
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                group_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: 7,
+                elapsed_ms: 0,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+
+        assert!(
+            scene_rx
+                .has_changed()
+                .expect("scene canvas receiver should stay connected")
+        );
+        let _ = scene_rx.borrow_and_update();
+
+        publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: Some(PublishedSurface::from_owned_canvas(
+                        Canvas::new(4, 4),
+                        8,
+                        100,
+                    )),
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                group_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: 8,
+                elapsed_ms: 100,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+
+        assert!(
+            !scene_rx
+                .has_changed()
+                .expect("scene canvas receiver should stay connected")
+        );
+        assert_eq!(
+            scene_rx.borrow().surface().storage_identity(),
+            first_identity
+        );
+
+        let third_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 9, 1_000);
+        let third_identity = third_surface.storage_identity();
+        publish_frame_updates(
+            &state,
+            &mut cadence,
+            FramePublicationRequest {
+                recycled_frame: &mut recycled_frame,
+                audio: &AudioData::silence(),
+                surfaces: FramePublicationSurfaces {
+                    canvas: None,
+                    frame_surface: Some(third_surface),
+                    preview_surface: None,
+                    screen_capture_surface: None,
+                    web_viewport_preview_surface: None,
+                    effect_running: true,
+                    screen_capture_active: false,
+                },
+                group_canvases: &[],
+                active_group_canvas_ids: &[],
+                frame_number: 9,
+                elapsed_ms: 1_000,
+                reuse_existing_frame: false,
+                refresh_existing_frame_metadata: false,
+                timing: zero_timing(),
+            },
+        );
+
+        assert!(
+            scene_rx
+                .has_changed()
+                .expect("scene canvas receiver should stay connected")
+        );
+        assert_eq!(
+            scene_rx.borrow_and_update().surface().storage_identity(),
+            third_identity
+        );
+        assert_eq!(
+            state
+                .preview_runtime
+                .snapshot()
+                .scene_canvas_frames_published,
+            2
         );
     }
 

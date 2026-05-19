@@ -393,6 +393,7 @@ impl DeferredSamplingState {
 pub(crate) struct PublicationCadenceState {
     pub(crate) last_audio_level_update_ms: Option<u32>,
     pub(crate) last_canvas_preview_publish_ms: Option<u32>,
+    pub(crate) last_scene_canvas_publish_ms: Option<u32>,
     pub(crate) last_screen_canvas_preview_publish_ms: Option<u32>,
     pub(crate) last_web_viewport_preview_publish_ms: Option<u32>,
 }
@@ -431,6 +432,26 @@ impl PublicationCadenceState {
 
     pub(crate) fn record_canvas_publication(&mut self, elapsed_ms: u32) {
         self.last_canvas_preview_publish_ms = Some(elapsed_ms);
+    }
+
+    pub(crate) fn scene_canvas_due(
+        &self,
+        elapsed_ms: u32,
+        total_receivers: usize,
+        tracked_receivers: usize,
+        tracked_max_fps: u32,
+    ) -> bool {
+        preview_publication_due(
+            elapsed_ms,
+            self.last_scene_canvas_publish_ms,
+            total_receivers,
+            tracked_receivers,
+            tracked_max_fps,
+        )
+    }
+
+    pub(crate) fn record_scene_canvas_publication(&mut self, elapsed_ms: u32) {
+        self.last_scene_canvas_publish_ms = Some(elapsed_ms);
     }
 
     pub(crate) fn screen_canvas_preview_due(

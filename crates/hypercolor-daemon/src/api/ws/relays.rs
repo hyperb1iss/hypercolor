@@ -1105,6 +1105,7 @@ pub(super) async fn build_metrics_message(
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
     let preview_runtime = state.preview_runtime.snapshot();
     let canvas_demand = state.preview_runtime.canvas_demand();
+    let scene_canvas_demand = state.preview_runtime.scene_canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
     let display_output = state.display_frames.read().await.metrics_snapshot();
@@ -1304,18 +1305,22 @@ pub(super) async fn build_metrics_message(
             },
             preview: MetricsPreview {
                 canvas_receivers: preview_runtime.canvas_receivers,
+                scene_canvas_receivers: preview_runtime.scene_canvas_receivers,
                 screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
                 web_viewport_canvas_receivers: preview_runtime.web_viewport_canvas_receivers,
                 canvas_frames_published: preview_runtime.canvas_frames_published,
+                scene_canvas_frames_published: preview_runtime.scene_canvas_frames_published,
                 screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
                 web_viewport_canvas_frames_published: preview_runtime
                     .web_viewport_canvas_frames_published,
                 latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
+                latest_scene_canvas_frame_number: preview_runtime.latest_scene_canvas_frame_number,
                 latest_screen_canvas_frame_number: preview_runtime
                     .latest_screen_canvas_frame_number,
                 latest_web_viewport_canvas_frame_number: preview_runtime
                     .latest_web_viewport_canvas_frame_number,
                 canvas_demand: metrics_preview_demand(canvas_demand),
+                scene_canvas_demand: metrics_preview_demand(scene_canvas_demand),
                 screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),
                 web_viewport_canvas_demand: metrics_preview_demand(web_viewport_canvas_demand),
             },

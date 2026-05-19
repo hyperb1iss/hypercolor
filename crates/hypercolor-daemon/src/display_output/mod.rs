@@ -30,7 +30,7 @@ use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout}
 use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::logical_devices::LogicalDevice;
-use crate::preview_runtime::PreviewRuntime;
+use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
 use crate::session::OutputPowerState;
 use worker::DisplayWorkerHandle;
 
@@ -376,7 +376,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     )
     .await;
     let mut scene_canvas_rx = display_requires_scene_canvas(initial_targets.targets.as_ref())
-        .then(|| state.event_bus.scene_canvas_receiver());
+        .then(|| state.preview_runtime.scene_canvas_receiver());
     reconcile_display_workers(&state, &mut workers, initial_targets.targets.as_ref()).await;
     let mut last_reconciled_target_version = Some(initial_targets.version);
     let mut last_dispatched_sources =
@@ -428,7 +428,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         }
         sync_display_canvas_receiver(
             &mut scene_canvas_rx,
-            state.event_bus.as_ref(),
+            state.preview_runtime.as_ref(),
             display_requires_scene_canvas(targets.targets.as_ref()),
         );
         if targets.targets.is_empty() {
@@ -566,13 +566,13 @@ fn build_display_worker_frame_set(
 }
 
 fn sync_display_canvas_receiver(
-    receiver: &mut Option<watch::Receiver<CanvasFrame>>,
-    event_bus: &HypercolorBus,
+    receiver: &mut Option<PreviewFrameReceiver>,
+    preview_runtime: &PreviewRuntime,
     subscribe: bool,
 ) {
     if subscribe {
         if receiver.is_none() {
-            *receiver = Some(event_bus.scene_canvas_receiver());
+            *receiver = Some(preview_runtime.scene_canvas_receiver());
         }
     } else {
         let _ = receiver.take();

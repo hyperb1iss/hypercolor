@@ -196,12 +196,16 @@ pub struct EffectHealthStatus {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PreviewRuntimeStatus {
     pub canvas_receivers: u32,
+    pub scene_canvas_receivers: u32,
     pub screen_canvas_receivers: u32,
     pub canvas_frames_published: u64,
+    pub scene_canvas_frames_published: u64,
     pub screen_canvas_frames_published: u64,
     pub latest_canvas_frame_number: u32,
+    pub latest_scene_canvas_frame_number: u32,
     pub latest_screen_canvas_frame_number: u32,
     pub canvas_demand: PreviewDemandStatus,
+    pub scene_canvas_demand: PreviewDemandStatus,
     pub screen_canvas_demand: PreviewDemandStatus,
 }
 
@@ -835,12 +839,16 @@ fn preview_runtime_status(runtime: &PreviewRuntime) -> PreviewRuntimeStatus {
     let snapshot = runtime.snapshot();
     PreviewRuntimeStatus {
         canvas_receivers: snapshot.canvas_receivers,
+        scene_canvas_receivers: snapshot.scene_canvas_receivers,
         screen_canvas_receivers: snapshot.screen_canvas_receivers,
         canvas_frames_published: snapshot.canvas_frames_published,
+        scene_canvas_frames_published: snapshot.scene_canvas_frames_published,
         screen_canvas_frames_published: snapshot.screen_canvas_frames_published,
         latest_canvas_frame_number: snapshot.latest_canvas_frame_number,
+        latest_scene_canvas_frame_number: snapshot.latest_scene_canvas_frame_number,
         latest_screen_canvas_frame_number: snapshot.latest_screen_canvas_frame_number,
         canvas_demand: preview_demand_status(runtime.canvas_demand()),
+        scene_canvas_demand: preview_demand_status(runtime.scene_canvas_demand()),
         screen_canvas_demand: preview_demand_status(runtime.screen_canvas_demand()),
     }
 }
@@ -897,6 +905,7 @@ mod tests {
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_core::config::ConfigManager;
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
     use serde_json::Value;
@@ -909,15 +918,25 @@ mod tests {
     )]
     #[tokio::test]
     async fn status_includes_latest_frame_surface_stats() {
+        let tempdir = tempfile::tempdir().expect("status test data dir should be created");
+        ConfigManager::set_data_dir_override(Some(tempdir.path().join("data")));
         let state = Arc::new(AppState::new());
+        ConfigManager::set_data_dir_override(None);
         state.render_loop.write().await.start();
         let mut preview_rx = state.preview_runtime.canvas_receiver();
+        let mut scene_preview_rx = state.preview_runtime.scene_canvas_receiver();
         let mut screen_preview_rx = state.preview_runtime.screen_canvas_receiver();
         preview_rx.update_demand(PreviewStreamDemand {
             fps: 24,
             format: PreviewPixelFormat::Jpeg,
             width: 640,
             height: 360,
+        });
+        scene_preview_rx.update_demand(PreviewStreamDemand {
+            fps: 12,
+            format: PreviewPixelFormat::Rgb,
+            width: 320,
+            height: 180,
         });
         screen_preview_rx.update_demand(PreviewStreamDemand {
             fps: 30,
@@ -926,8 +945,13 @@ mod tests {
             height: 0,
         });
         let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
+        let scene_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 66, 33);
         let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
         let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+        let _ = state
+            .event_bus
+            .scene_canvas_sender()
+            .send(scene_frame.clone());
         let _ = state
             .event_bus
             .screen_canvas_sender()
@@ -935,6 +959,9 @@ mod tests {
         state
             .preview_runtime
             .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
+        state
+            .preview_runtime
+            .record_scene_canvas_publication(scene_frame.frame_number, scene_frame.timestamp_ms);
         state
             .preview_runtime
             .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
@@ -1242,6 +1269,7 @@ mod tests {
             us_to_ms_f64(servo_health.render_frame_max_us)
         );
         assert_eq!(json["data"]["preview_runtime"]["canvas_receivers"], 1);
+        assert_eq!(json["data"]["preview_runtime"]["scene_canvas_receivers"], 1);
         assert_eq!(
             json["data"]["preview_runtime"]["screen_canvas_receivers"],
             1
@@ -1251,12 +1279,20 @@ mod tests {
             1
         );
         assert_eq!(
+            json["data"]["preview_runtime"]["scene_canvas_frames_published"],
+            1
+        );
+        assert_eq!(
             json["data"]["preview_runtime"]["screen_canvas_frames_published"],
             1
         );
         assert_eq!(
             json["data"]["preview_runtime"]["latest_canvas_frame_number"],
             88
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["latest_scene_canvas_frame_number"],
+            66
         );
         assert_eq!(
             json["data"]["preview_runtime"]["latest_screen_canvas_frame_number"],
@@ -1280,6 +1316,26 @@ mod tests {
         );
         assert_eq!(
             json["data"]["preview_runtime"]["canvas_demand"]["any_jpeg"],
+            true
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["scene_canvas_demand"]["subscribers"],
+            1
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["scene_canvas_demand"]["max_fps"],
+            12
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["scene_canvas_demand"]["max_width"],
+            320
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["scene_canvas_demand"]["max_height"],
+            180
+        );
+        assert_eq!(
+            json["data"]["preview_runtime"]["scene_canvas_demand"]["any_rgb"],
             true
         );
         assert_eq!(

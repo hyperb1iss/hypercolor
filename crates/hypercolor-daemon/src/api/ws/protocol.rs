@@ -961,15 +961,19 @@ pub(super) struct MetricsRenderSurfaces {
 #[derive(Debug, Serialize)]
 pub(super) struct MetricsPreview {
     pub(super) canvas_receivers: u32,
+    pub(super) scene_canvas_receivers: u32,
     pub(super) screen_canvas_receivers: u32,
     pub(super) web_viewport_canvas_receivers: u32,
     pub(super) canvas_frames_published: u64,
+    pub(super) scene_canvas_frames_published: u64,
     pub(super) screen_canvas_frames_published: u64,
     pub(super) web_viewport_canvas_frames_published: u64,
     pub(super) latest_canvas_frame_number: u32,
+    pub(super) latest_scene_canvas_frame_number: u32,
     pub(super) latest_screen_canvas_frame_number: u32,
     pub(super) latest_web_viewport_canvas_frame_number: u32,
     pub(super) canvas_demand: MetricsPreviewDemand,
+    pub(super) scene_canvas_demand: MetricsPreviewDemand,
     pub(super) screen_canvas_demand: MetricsPreviewDemand,
     pub(super) web_viewport_canvas_demand: MetricsPreviewDemand,
 }
