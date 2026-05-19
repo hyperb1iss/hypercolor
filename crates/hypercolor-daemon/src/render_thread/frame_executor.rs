@@ -240,7 +240,8 @@ pub(crate) async fn execute_frame(
             &render_stage.zone_canvases,
         );
         let device_brightness_generation = manager.output_brightness_generation();
-        let routing_signature = manager.routed_output_signature(unassigned_output_plan.layout.as_ref());
+        let routing_signature =
+            manager.routed_output_signature(unassigned_output_plan.layout.as_ref());
         let output_reuse_key = OutputReuseKey::new(
             global_brightness_bits,
             device_brightness_generation,

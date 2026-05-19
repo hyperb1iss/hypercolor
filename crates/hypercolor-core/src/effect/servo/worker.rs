@@ -2025,8 +2025,7 @@ fn render_servo_framebuffer(
             Err(error) => {
                 let reason = classify_servo_gpu_import_error(&error);
                 record_servo_gpu_import_failure(reason, false);
-                let cooldown_ms =
-                    super::servo_gpu_import_note_failure().map(duration_millis_u64);
+                let cooldown_ms = super::servo_gpu_import_note_failure().map(duration_millis_u64);
                 warn!(
                     %error,
                     reason = reason.as_str(),
