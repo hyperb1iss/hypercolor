@@ -101,6 +101,38 @@ pub fn StudioPage() -> impl IntoView {
         selected_surface_id.set(next);
     });
 
+    // Studio's selected LED zone is the app-wide effect apply-target
+    // (Wave B3): a quick-apply from anywhere lands in the zone being
+    // composed. A Screen or the Unassigned entry is not an apply target.
+    let effects_ctx = expect_context::<crate::app::EffectsContext>();
+    Effect::new(move |_| {
+        let Some(scene) = active_scene.get() else {
+            return;
+        };
+        let selected_led_zone = selected_surface_id.get().filter(|id| {
+            id != UNASSIGNED_SURFACE_ID
+                && scene.groups.iter().any(|group| {
+                    group.id.to_string() == *id && group.role != RenderGroupRole::Display
+                })
+        });
+        if let Some(zone_id) = selected_led_zone {
+            effects_ctx.apply_target.set(Some(zone_id));
+        } else if effects_ctx
+            .apply_target
+            .get_untracked()
+            .is_some_and(|target| {
+                !scene
+                    .groups
+                    .iter()
+                    .any(|group| group.id.to_string() == target)
+            })
+        {
+            // A Screen / Unassigned selection holding a target left over
+            // from a no-longer-active scene falls back to the Primary zone.
+            effects_ctx.apply_target.set(None);
+        }
+    });
+
     let layers_resource = LocalResource::new(move || {
         let _ = layers_tick.get();
         let scene = active_scene.get();

@@ -172,6 +172,10 @@ pub struct ApplyEffectBody {
     pub preset_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub controls: Option<serde_json::Value>,
+    /// Target zone (render-group id). Omitted applies to the scene's
+    /// Primary zone — the daemon's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub render_group: Option<String>,
 }
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass

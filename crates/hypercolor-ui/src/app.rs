@@ -177,6 +177,11 @@ pub struct EffectsContext {
     /// change. Cleared for an effect when `apply_effect(id)` is called,
     /// so switching away and coming back re-triggers the restore.
     pub restored_effects: StoredValue<HashSet<String>>,
+    /// The zone a quick-apply targets. `None` is the Primary zone — the
+    /// daemon's default. Studio writes it from the selected zone; the
+    /// dashboard, sidebar, and shell quick-apply surfaces read it so an
+    /// apply always lands in the zone the user is composing (Wave B3).
+    pub apply_target: RwSignal<Option<String>>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -240,22 +245,41 @@ impl EffectsContext {
     /// the defaults-flash that used to occur while `restore_effect_preferences`
     /// ran its follow-up round-trip.
     pub fn apply_effect(&self, id: String) {
-        // Skip if already the active effect
-        if self.active_effect_id.get().as_deref() == Some(&id) {
+        let apply_target = self.apply_target.get_untracked();
+        let stored_prefs = self.preferences.get(&id);
+        // A body is sent when there are preferences to bake in, or when a
+        // non-Primary zone has to be named.
+        let body =
+            (stored_prefs.is_some() || apply_target.is_some()).then(|| api::ApplyEffectBody {
+                preset_id: stored_prefs
+                    .as_ref()
+                    .and_then(|prefs| prefs.preset_id.clone()),
+                controls: stored_prefs.as_ref().and_then(|prefs| {
+                    (!prefs.control_values.is_empty())
+                        .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
+                }),
+                render_group: apply_target.clone(),
+            });
+
+        // A named-zone apply renders into that zone and leaves the global
+        // Primary effect untouched, so it skips the Primary-state optimism
+        // the legacy path runs below.
+        if apply_target.is_some() {
+            let ctx = *self;
+            leptos::task::spawn_local(async move {
+                if api::apply_effect(&id, body.as_ref()).await.is_ok() {
+                    ctx.refresh_active_scene();
+                } else {
+                    toasts::toast_error("Couldn't apply the effect to the selected zone");
+                }
+            });
             return;
         }
 
-        let stored_prefs = self.preferences.get(&id);
-        let body = stored_prefs.as_ref().map(|prefs| api::ApplyEffectBody {
-            preset_id: prefs.preset_id.clone(),
-            controls: if prefs.control_values.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::Object(controls_to_json(
-                    &prefs.control_values,
-                )))
-            },
-        });
+        // Primary apply — skip if it is already the active effect.
+        if self.active_effect_id.get().as_deref() == Some(&id) {
+            return;
+        }
 
         // If we're sending prefs with the initial apply, mark the effect
         // as already-restored so the first snapshot falls through to the
@@ -738,6 +762,7 @@ pub fn App() -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         restored_effects: StoredValue::new(HashSet::new()),
+        apply_target: RwSignal::new(None),
     };
     provide_context(effects_ctx);
 
@@ -1024,9 +1049,7 @@ fn AppRoutes() -> impl IntoView {
 fn studio_beta_allowed() -> Memo<bool> {
     let flag = expect_context::<StudioFlag>();
     let query = use_query_map();
-    Memo::new(move |_| {
-        flag.enabled.get() || query.with(|params| params.get("dev").is_some())
-    })
+    Memo::new(move |_| flag.enabled.get() || query.with(|params| params.get("dev").is_some()))
 }
 
 /// `/studio` route guard. Off-flag without a `?dev` override, redirects to
