@@ -896,30 +896,37 @@ impl SceneManager {
         // Placement and visual fields come from the request, keyed by
         // output id; identity and hardware-binding fields are preserved
         // from the stored output so no request can re-bind hardware or
-        // rewrite LED topology.
-        let requested = layout
+        // rewrite LED topology. The request's output order is adopted —
+        // vector order is the canvas tie-breaker for equal `display_order`
+        // and drives ordered routing, so a reorder is a real placement
+        // edit, not a no-op.
+        let group = &mut scene.groups[index];
+        let mut stored = group
+            .layout
             .zones
-            .into_iter()
+            .drain(..)
             .map(|zone| (zone.id.clone(), zone))
             .collect::<HashMap<_, _>>();
-        let group = &mut scene.groups[index];
-        for stored in &mut group.layout.zones {
-            let Some(incoming) = requested.get(&stored.id).cloned() else {
-                continue;
-            };
-            stored.name = incoming.name;
-            stored.position = incoming.position;
-            stored.size = incoming.size;
-            stored.rotation = incoming.rotation;
-            stored.scale = incoming.scale;
-            stored.display_order = incoming.display_order;
-            stored.orientation = incoming.orientation;
-            stored.shape = incoming.shape;
-            stored.shape_preset = incoming.shape_preset;
-            stored.sampling_mode = incoming.sampling_mode;
-            stored.edge_behavior = incoming.edge_behavior;
-            stored.brightness = incoming.brightness;
-        }
+        group.layout.zones = layout
+            .zones
+            .into_iter()
+            .filter_map(|incoming| {
+                let mut merged = stored.remove(&incoming.id)?;
+                merged.name = incoming.name;
+                merged.position = incoming.position;
+                merged.size = incoming.size;
+                merged.rotation = incoming.rotation;
+                merged.scale = incoming.scale;
+                merged.display_order = incoming.display_order;
+                merged.orientation = incoming.orientation;
+                merged.shape = incoming.shape;
+                merged.shape_preset = incoming.shape_preset;
+                merged.sampling_mode = incoming.sampling_mode;
+                merged.edge_behavior = incoming.edge_behavior;
+                merged.brightness = incoming.brightness;
+                Some(merged)
+            })
+            .collect();
         // Canvas dimensions and sampling defaults are mutable; the
         // layout's own identity (id, name, description, version, spaces)
         // is preserved from the stored layout.

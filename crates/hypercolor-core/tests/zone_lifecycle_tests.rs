@@ -600,3 +600,34 @@ fn update_zone_layout_retunes_canvas_and_sampling_defaults() {
     assert_eq!(updated.layout.default_sampling_mode, SamplingMode::Nearest);
     assert_eq!(updated.layout.default_edge_behavior, EdgeBehavior::Wrap);
 }
+
+#[test]
+fn update_zone_layout_adopts_request_output_order() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    let mut seed = sample_layout("out-a");
+    seed.zones.push(sample_zone("out-b"));
+    manager
+        .upsert_primary_group(&sample_effect("Glow"), HashMap::new(), None, seed)
+        .expect("primary should be created");
+    let zone_id = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .map(|group| group.id)
+        .expect("primary group should exist");
+
+    // The same outputs in reversed order — the merge adopts request order,
+    // since vector order is the canvas tie-breaker and drives routing.
+    let mut request = sample_layout("out-a");
+    request.zones = vec![sample_zone("out-b"), sample_zone("out-a")];
+    let updated = manager
+        .update_zone_layout(&scene_id, zone_id, request)
+        .expect("reorder should apply");
+    let order = updated
+        .layout
+        .zones
+        .iter()
+        .map(|zone| zone.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(order, ["out-b", "out-a"]);
+}
