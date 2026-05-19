@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
@@ -112,6 +112,7 @@ impl WebViewportRenderer {
         if url.is_empty() {
             bail!("web viewport URL is empty");
         }
+        validate_web_url(&url)?;
         match session.load_url(&url) {
             Ok(()) => {
                 self.url.clone_from(&url);
@@ -181,6 +182,7 @@ impl EffectRenderer for WebViewportRenderer {
         if url.is_empty() {
             bail!("web viewport URL is empty");
         }
+        validate_web_url(&url)?;
         if let Err(error) = session.load_url(&url) {
             note_servo_session_error("web viewport initial URL load failed", &error);
             self.load_failed = true;
@@ -373,6 +375,44 @@ fn normalize_web_url_input(value: &str) -> String {
     }
 }
 
+fn validate_web_url(url: &str) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(url).context("web viewport URL must be an absolute URL")?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        bail!("web viewport only allows http/https URLs");
+    }
+
+    let Some(host) = parsed.host_str() else {
+        bail!("web viewport URL host is missing");
+    };
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
+        bail!("web viewport rejects local hostnames");
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && is_private_or_loopback_ip(ip)
+    {
+        bail!("web viewport rejects loopback/private IP addresses");
+    }
+
+    Ok(())
+}
+
+fn is_private_or_loopback_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            // An IPv4-mapped IPv6 literal (::ffff:127.0.0.1) connects to the
+            // embedded IPv4 address, so it must be classified as IPv4 — the
+            // V6 predicates below would otherwise miss it.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return mapped.is_private() || mapped.is_loopback() || mapped.is_link_local();
+            }
+            v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+        }
+    }
+}
+
 fn has_url_scheme(value: &str) -> bool {
     value.contains("://")
         || value.starts_with("file:")
@@ -437,7 +477,7 @@ fn controls() -> Vec<ControlDefinition> {
             "URL",
             "https://example.com",
             "Source",
-            "HTTP, HTTPS, or file URL to render through Servo.",
+            "HTTP or HTTPS URL to render through Servo.",
         ),
         rect_control(
             "viewport",
@@ -550,11 +590,12 @@ pub(super) fn metadata() -> EffectMetadata {
 #[cfg(test)]
 mod tests {
     use super::{
-        WebViewportRenderer, default_scheme_for_host_input, looks_like_host_input,
-        normalize_web_url_input,
+        WebViewportRenderer, default_scheme_for_host_input, is_private_or_loopback_ip,
+        looks_like_host_input, normalize_web_url_input,
     };
     use crate::effect::traits::EffectRenderer;
     use hypercolor_types::effect::ControlValue;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn pending_scripts_are_empty_at_origin_with_no_dispatch_history() {
@@ -625,8 +666,8 @@ mod tests {
             "https://example.com/path"
         );
         assert_eq!(
-            normalize_web_url_input("file:///tmp/demo.html"),
-            "file:///tmp/demo.html"
+            normalize_web_url_input("http://example.com"),
+            "http://example.com"
         );
     }
 
@@ -660,5 +701,29 @@ mod tests {
         assert_eq!(default_scheme_for_host_input("127.0.0.1"), "http");
         assert_eq!(default_scheme_for_host_input("printer.local"), "http");
         assert_eq!(default_scheme_for_host_input("example.com"), "https");
+    }
+
+    #[test]
+    fn private_or_loopback_ip_detection_matches_url_policy() {
+        assert!(is_private_or_loopback_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_private_or_loopback_ip(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 1, 5
+        ))));
+        assert!(is_private_or_loopback_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_private_or_loopback_ip(IpAddr::V4(Ipv4Addr::new(
+            8, 8, 8, 8
+        ))));
+
+        // IPv4-mapped IPv6 literals must be classified by their embedded
+        // IPv4 address so they cannot slip past the SSRF policy.
+        assert!(is_private_or_loopback_ip(IpAddr::V6(
+            Ipv4Addr::LOCALHOST.to_ipv6_mapped()
+        )));
+        assert!(is_private_or_loopback_ip(IpAddr::V6(
+            Ipv4Addr::new(192, 168, 1, 1).to_ipv6_mapped()
+        )));
+        assert!(!is_private_or_loopback_ip(IpAddr::V6(
+            Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped()
+        )));
     }
 }
