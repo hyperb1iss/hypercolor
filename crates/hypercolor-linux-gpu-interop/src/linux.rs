@@ -250,13 +250,16 @@ impl LinuxGlFramebufferImporter {
             .ok_or(LinuxGpuInteropError::MissingWgpuVulkanDevice)?;
         let mut slots = Vec::with_capacity(slot_count);
         for _ in 0..slot_count {
-            slots.push(ImportedFrameSlot::create(
-                device,
-                &hal_device,
-                gl,
-                gl_external_memory,
-                descriptor,
-            )?);
+            match ImportedFrameSlot::create(device, &hal_device, gl, gl_external_memory, descriptor)
+            {
+                Ok(slot) => slots.push(slot),
+                Err(error) => {
+                    for slot in &mut slots {
+                        slot.destroy_gl_resources(gl, gl_external_memory);
+                    }
+                    return Err(error);
+                }
+            }
         }
 
         Ok(Self {
