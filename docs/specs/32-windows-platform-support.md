@@ -14,7 +14,8 @@ and daemon API state. Use `just windows-service-install` from an elevated PowerS
 session to install the `Hypercolor` service; the recipe does not start it unless
 `-Start` is passed. The installer validates that the selected daemon binary supports
 SCM mode, prefers the cache-wrapper preview build, and sets service-local PawnIO
-environment variables so `LocalSystem` can find the user's downloaded SMBus modules.
+environment variables only for administrator-owned PawnIO install/module directories;
+per-user module caches are intentionally not used by elevated services.
 
 ---
 
