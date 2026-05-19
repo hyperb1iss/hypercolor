@@ -4,6 +4,7 @@
 //! server switching, REST bootstrap, and WebSocket subscriptions.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -33,6 +34,7 @@ pub struct DaemonClient {
     base_url: String,
     ws_url: String,
     active_server_id: Option<String>,
+    active_api_key: Option<String>,
     known_servers: Vec<ServerEntry>,
     stored_api_keys: HashMap<String, String>,
     tx: mpsc::Sender<DaemonMessage>,
@@ -54,6 +56,7 @@ impl DaemonClient {
             base_url: build_base_url(DEFAULT_HOST, DEFAULT_PORT),
             ws_url: build_ws_url(DEFAULT_HOST, DEFAULT_PORT, None),
             active_server_id: None,
+            active_api_key: None,
             known_servers: Vec::new(),
             stored_api_keys: load_server_api_keys(),
             tx,
@@ -418,11 +421,17 @@ impl DaemonClient {
             Ok(servers) => {
                 self.known_servers = servers
                     .into_iter()
-                    .map(|server| ServerEntry {
-                        has_api_key: self
-                            .stored_api_keys
-                            .contains_key(&server.identity.instance_id),
-                        server,
+                    .map(|server| {
+                        let may_reuse_api_key =
+                            discovered_server_api_key_allowed(&server.host.to_string());
+                        let has_api_key = may_reuse_api_key
+                            && self
+                                .stored_api_keys
+                                .contains_key(&server.identity.instance_id);
+                        ServerEntry {
+                            has_api_key,
+                            server,
+                        }
                     })
                     .collect();
 
@@ -464,12 +473,15 @@ impl DaemonClient {
         };
 
         let host = entry.server.host.to_string();
-        let api_key = self
-            .stored_api_keys
-            .get(&entry.server.identity.instance_id)
-            .map(String::as_str);
+        let api_key = if discovered_server_api_key_allowed(&host) {
+            self.stored_api_keys
+                .get(&entry.server.identity.instance_id)
+                .cloned()
+        } else {
+            None
+        };
         let next_base = build_base_url(&host, entry.server.port);
-        let next_ws = build_ws_url(&host, entry.server.port, api_key);
+        let next_ws = build_ws_url(&host, entry.server.port, api_key.as_deref());
         let changed = self.base_url != next_base
             || self.ws_url != next_ws
             || self.active_server_id.as_deref() != Some(entry.server.identity.instance_id.as_str());
@@ -477,17 +489,14 @@ impl DaemonClient {
         self.base_url = next_base;
         self.ws_url = next_ws;
         self.active_server_id = Some(entry.server.identity.instance_id.clone());
+        self.active_api_key = api_key;
         changed
     }
 
     fn auth_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(active_id) = &self.active_server_id
-            && let Some(api_key) = self.stored_api_keys.get(active_id)
-        {
-            return request.bearer_auth(api_key);
-        }
-
-        request
+        self.active_api_key
+            .as_ref()
+            .map_or(request, |api_key| request.bearer_auth(api_key))
     }
 
     async fn send_command(
@@ -551,6 +560,21 @@ fn load_server_api_keys() -> HashMap<String, String> {
             HashMap::new()
         }
     }
+}
+
+/// Return whether a saved daemon API key may be reused for a discovered host.
+///
+/// mDNS discovery identities are unauthenticated, so a LAN peer can spoof a
+/// known `instance_id`. Only loopback hosts are allowed to receive saved keys;
+/// remote discovered hosts must authenticate through a future verified pairing
+/// flow instead of implicit key reuse.
+#[must_use]
+pub fn discovered_server_api_key_allowed(host: &str) -> bool {
+    let normalized = host.trim().trim_matches(|c| c == '[' || c == ']');
+    normalized.eq_ignore_ascii_case("localhost")
+        || normalized
+            .parse::<IpAddr>()
+            .is_ok_and(|addr| addr.is_loopback())
 }
 
 fn build_base_url(host: &str, port: u16) -> String {
