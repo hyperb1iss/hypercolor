@@ -740,6 +740,10 @@ pub(super) async fn relay_display_preview(
                         });
                 if !known_display_device {
                     active = None;
+                    if subscriptions.changed().await.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
                     continue;
                 }
                 let rx = display_frames.write().await.subscribe(want_id);

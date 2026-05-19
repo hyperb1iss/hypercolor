@@ -1106,8 +1106,18 @@ async fn relay_web_viewport_canvas_clears_pending_send_after_backpressure() {
 
 #[tokio::test]
 async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
+    let state = Arc::new(AppState::new());
+    let config = crate::simulators::SimulatedDisplayConfig {
+        id: DeviceId::new(),
+        name: "WS Preview Display".to_owned(),
+        width: 240,
+        height: 160,
+        circular: false,
+        enabled: true,
+    }
+    .normalized();
+    let device_id = state.device_registry.add(config.device_info()).await;
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
-    let device_id = DeviceId::new();
     let mut subscriptions = SubscriptionState::default();
     subscriptions.channels.insert(WsChannel::DisplayPreview);
     subscriptions.config.display_preview.device_id = Some(device_id.to_string());
