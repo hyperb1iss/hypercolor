@@ -109,10 +109,17 @@ pub fn StudioDeviceCard(
     let remaining = total_components.saturating_sub(MAX_COMPONENTS);
     let show_components = total_components > 1;
 
+    // The duotone radial hero glow and ambient inner/outer glow that
+    // give the card its brand identity — a flat linear wash reads as
+    // generic chrome, not hardware.
     let card_style = format!(
-        "border: 1px solid rgba({primary}, 0.2); \
-         background: linear-gradient(135deg, rgba({primary}, 0.06), rgba({secondary}, 0.02)); \
-         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22)"
+        "border: 1px solid rgba({primary}, 0.24); \
+         background: \
+         radial-gradient(ellipse at 14% 0%, rgba({primary}, 0.24), transparent 60%), \
+         radial-gradient(ellipse at 100% 6%, rgba({secondary}, 0.15), transparent 64%), \
+         linear-gradient(160deg, rgba({primary}, 0.07), transparent 72%); \
+         box-shadow: inset 0 0 20px rgba({primary}, 0.06), \
+         0 0 14px rgba({primary}, 0.07), 0 1px 3px rgba(0, 0, 0, 0.28)"
     );
     let strip_style =
         format!("background: linear-gradient(180deg, rgb({primary}), rgb({secondary}))");
