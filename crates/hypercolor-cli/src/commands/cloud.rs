@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
+use reqwest::Url;
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str};
@@ -427,10 +428,14 @@ fn render_login_start(
         })
         .context("daemon response omitted verification_uri")?;
 
-    if !args.no_open
-        && let Err(error) = open::that_detached(verification_uri)
-    {
-        ctx.warning(&format!("Could not open browser: {error}"));
+    if !args.no_open {
+        if is_allowed_browser_uri(verification_uri) {
+            if let Err(error) = open::that_detached(verification_uri) {
+                ctx.warning(&format!("Could not open browser: {error}"));
+            }
+        } else {
+            ctx.warning("Refusing to auto-open non-HTTP(S) verification URL; use --no-open and open it manually if trusted");
+        }
     }
 
     match ctx.format {
@@ -455,6 +460,12 @@ fn render_login_start(
     }
 
     Ok(())
+}
+
+fn is_allowed_browser_uri(uri: &str) -> bool {
+    Url::parse(uri)
+        .ok()
+        .is_some_and(|parsed| matches!(parsed.scheme(), "https" | "http"))
 }
 
 fn render_login_success(
