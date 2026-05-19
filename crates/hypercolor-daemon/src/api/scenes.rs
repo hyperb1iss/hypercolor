@@ -14,8 +14,9 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, RenderGroup, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
+    ColorInterpolation, EasingFunction, RenderGroup, RenderGroupId, RenderGroupRole, Scene,
+    SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
+    UnassignedBehavior,
 };
 
 use crate::api::AppState;
@@ -156,7 +157,31 @@ pub async fn create_scene(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateSceneRequest>,
 ) -> Response {
-    let mut manager = state.scene_manager.write().await;
+    // Every scene is born with a Default zone holding the current device
+    // output roster, so the Studio scene selector always has a zone to
+    // select (§5.2). The zone is `Primary`; the user renames it freely.
+    let default_zone_id = RenderGroupId::new();
+    let mut default_layout = crate::api::effects::resolve_full_scope_layout(state.as_ref()).await;
+    default_layout.id = format!("zone-{default_zone_id}");
+    "Default zone".clone_into(&mut default_layout.name);
+    let default_zone = RenderGroup {
+        id: default_zone_id,
+        name: "Primary".to_owned(),
+        description: Some("Default zone.".to_owned()),
+        effect_id: None,
+        controls: HashMap::new(),
+        control_bindings: HashMap::new(),
+        preset_id: None,
+        layers: Vec::new(),
+        layout: default_layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: RenderGroupRole::Primary,
+        controls_version: 0,
+        layers_version: 0,
+    };
 
     let scene = Scene {
         id: SceneId::new(),
@@ -164,7 +189,7 @@ pub async fn create_scene(
         description: body.description,
         scope: SceneScope::Full,
         zone_assignments: Vec::new(),
-        groups: Vec::new(),
+        groups: vec![default_zone],
         groups_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
@@ -188,10 +213,12 @@ pub async fn create_scene(
         mutation_mode: scene.mutation_mode,
     };
 
-    if let Err(e) = manager.create(scene) {
-        return ApiError::conflict(format!("Failed to create scene: {e}"));
+    {
+        let mut manager = state.scene_manager.write().await;
+        if let Err(e) = manager.create(scene) {
+            return ApiError::conflict(format!("Failed to create scene: {e}"));
+        }
     }
-    drop(manager);
 
     if let Err(error) = save_scene_store_snapshot(state.as_ref()).await {
         return ApiError::internal(format!("Failed to persist scenes: {error}"));

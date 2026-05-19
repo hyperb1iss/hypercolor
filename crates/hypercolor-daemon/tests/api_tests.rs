@@ -6334,12 +6334,12 @@ async fn scene_crud_lifecycle() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["id"], scene_id);
     assert_eq!(json["data"]["kind"], "named");
-    assert!(
-        json["data"]["groups"]
-            .as_array()
-            .expect("groups should serialize as an array")
-            .is_empty()
-    );
+    // A created scene is born with a Default zone (§5.2 output roster).
+    let groups = json["data"]["groups"]
+        .as_array()
+        .expect("groups should serialize as an array");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["role"], "primary");
 
     // Delete scene
     let app = test_app_with_state(Arc::clone(&state));

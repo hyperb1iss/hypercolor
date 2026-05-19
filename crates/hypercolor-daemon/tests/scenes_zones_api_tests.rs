@@ -495,3 +495,36 @@ async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
     .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn created_scenes_are_born_with_a_default_zone() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scenes".into(),
+            serde_json::json!({ "name": "Studio Scene" }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let scene_id = body_json(response).await["data"]["id"]
+        .as_str()
+        .expect("scene id should be a string")
+        .to_owned();
+
+    // A fresh scene has a selectable Default zone, not an empty group set.
+    let response = send(
+        &app,
+        empty_request("GET", format!("/api/v1/scenes/{scene_id}/zones")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let zones = json["data"]["items"].as_array().expect("zones array");
+    assert_eq!(zones.len(), 1);
+    assert_eq!(zones[0]["role"], "primary");
+}

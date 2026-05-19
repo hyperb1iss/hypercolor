@@ -1707,7 +1707,12 @@ fn validate_control_binding_request(
     Ok(normalized)
 }
 
-async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
+/// Resolve the full device-output roster as a [`SpatialLayout`] — every
+/// discovered device output with default placement. This is the canonical
+/// source for a fresh `Primary` zone (§5.2): a new scene's Default zone,
+/// the lazily created `effects/apply` `Primary`, and `Primary` recovery
+/// all seed from it.
+pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
     let spatial = state.spatial_engine.read().await;
     spatial.layout().as_ref().clone()
 }
