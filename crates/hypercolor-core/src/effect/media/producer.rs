@@ -64,6 +64,14 @@ const MAX_LOTTIE_DECODED_BYTES: usize = 128 * 1024 * 1024;
 const VIDEO_MEDIA_ESTIMATED_COST_US: u64 = 20_000;
 #[cfg(feature = "media-video")]
 const STREAM_MEDIA_ESTIMATED_COST_US: u64 = 25_000;
+#[cfg(feature = "media-video")]
+const MAX_VIDEO_FRAME_COUNT: usize = 900;
+#[cfg(feature = "media-video")]
+const MAX_VIDEO_FRAME_WIDTH: usize = 1_920;
+#[cfg(feature = "media-video")]
+const MAX_VIDEO_FRAME_HEIGHT: usize = 1_080;
+#[cfg(feature = "media-video")]
+const MAX_VIDEO_DECODED_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum MediaProducerError {
@@ -815,12 +823,44 @@ fn pull_video_frames(
     sink: &gst_app::AppSink,
     frame_limit: Option<usize>,
 ) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
+    let frame_limit = frame_limit.unwrap_or(MAX_VIDEO_FRAME_COUNT);
+    let mut total_decoded_bytes = 0_usize;
     let mut frames = Vec::new();
     loop {
         if let Some(sample) = sink.try_pull_sample(GST_FRAME_TIMEOUT) {
-            frames.push(decoded_frame_from_sample(&sample)?);
-            if frame_limit.is_some_and(|limit| frames.len() >= limit) {
-                break;
+            let frame = decoded_frame_from_sample(&sample)?;
+            let frame_bytes = usize::try_from(frame.canvas.width())
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(frame.canvas.height())
+                        .ok()
+                        .map(|height| (width, height))
+                })
+                .and_then(|(width, height)| width.checked_mul(height))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| {
+                    MediaProducerError::VideoDecode(
+                        "decoded video size overflowed limits".to_owned(),
+                    )
+                })?;
+            total_decoded_bytes =
+                total_decoded_bytes
+                    .checked_add(frame_bytes)
+                    .ok_or_else(|| {
+                        MediaProducerError::VideoDecode(
+                            "decoded video size overflowed limits".to_owned(),
+                        )
+                    })?;
+            if total_decoded_bytes > MAX_VIDEO_DECODED_BYTES {
+                return Err(MediaProducerError::VideoDecode(
+                    "decoded video exceeds configured memory limits".to_owned(),
+                ));
+            }
+            frames.push(frame);
+            if frames.len() >= frame_limit {
+                return Err(MediaProducerError::VideoDecode(
+                    "decoded video exceeds configured frame limits".to_owned(),
+                ));
             }
             continue;
         }
@@ -1035,6 +1075,11 @@ fn canvas_from_rgba_sample(
         .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
     let height = usize::try_from(info.height())
         .map_err(|error| MediaProducerError::VideoDecode(error.to_string()))?;
+    if width > MAX_VIDEO_FRAME_WIDTH || height > MAX_VIDEO_FRAME_HEIGHT {
+        return Err(MediaProducerError::VideoDecode(
+            "decoded video frame dimensions exceed configured limits".to_owned(),
+        ));
+    }
     let stride =
         info.stride().first().copied().ok_or_else(|| {
             MediaProducerError::VideoDecode("decoded sample has no stride".into())
