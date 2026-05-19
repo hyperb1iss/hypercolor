@@ -46,8 +46,9 @@ pub use servo::{
 };
 #[cfg(feature = "servo-gpu-import")]
 pub use servo::{
-    install_servo_gpu_import_device, servo_gpu_import_device, servo_gpu_import_mode,
-    servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
+    install_servo_gpu_import_device, servo_gpu_import_auto_backoff_remaining,
+    servo_gpu_import_device, servo_gpu_import_mode, servo_gpu_import_note_failure,
+    servo_gpu_import_note_success, servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
 };
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;

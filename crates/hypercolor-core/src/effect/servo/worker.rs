@@ -2018,13 +2018,19 @@ fn render_servo_framebuffer(
         match import_servo_framebuffer_into_wgpu(runtime, session_id, size.width, size.height) {
             Ok(frame) => {
                 record_imported_gpu_frame(&frame);
+                super::servo_gpu_import_note_success();
                 runtime.session(session_id)?.rendering_context.present();
                 return Ok(EffectRenderOutput::Gpu(frame));
             }
             Err(error) => {
-                record_servo_gpu_import_failure(classify_servo_gpu_import_error(&error), false);
+                let reason = classify_servo_gpu_import_error(&error);
+                record_servo_gpu_import_failure(reason, false);
+                let cooldown_ms =
+                    super::servo_gpu_import_note_failure().map(duration_millis_u64);
                 warn!(
                     %error,
+                    reason = reason.as_str(),
+                    cooldown_ms,
                     "Servo GPU framebuffer import failed; refusing CPU readback fallback"
                 );
                 return Err(error)
@@ -2093,6 +2099,11 @@ fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame)
 #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
 fn record_imported_gpu_frame(frame: &crate::effect::traits::ImportedEffectFrame) {
     record_servo_gpu_import_frame(frame.timings.wrap_us, 0, frame.timings.total_us);
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(feature = "servo-gpu-import")]

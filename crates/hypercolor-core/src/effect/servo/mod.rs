@@ -33,8 +33,9 @@ mod worker_client;
 pub use delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 #[cfg(feature = "servo-gpu-import")]
 pub use gpu_import::{
-    install_servo_gpu_import_device, servo_gpu_import_device, servo_gpu_import_mode,
-    servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
+    install_servo_gpu_import_device, servo_gpu_import_auto_backoff_remaining,
+    servo_gpu_import_device, servo_gpu_import_mode, servo_gpu_import_note_failure,
+    servo_gpu_import_note_success, servo_gpu_import_should_attempt, set_servo_gpu_import_mode,
 };
 pub use memory::{
     ServoMemoryReport, ServoMemoryReportKind, ServoMemoryReportSnapshot, ServoMemoryReportTotals,
