@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+const BYTES_PER_PIXEL: u32 = 4;
+
 /// Result type for macOS GPU interop operations.
 pub type Result<T> = std::result::Result<T, MacosGpuInteropError>;
 
@@ -64,7 +66,11 @@ pub struct MacosIosurfaceImportDescriptor {
 impl MacosIosurfaceImportDescriptor {
     /// Creates a validated import descriptor.
     pub const fn new(width: u32, height: u32, format: ImportedFrameFormat) -> Result<Self> {
-        if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+        if width == 0
+            || height == 0
+            || width > i32::MAX as u32 / BYTES_PER_PIXEL
+            || height > i32::MAX as u32
+        {
             Err(MacosGpuInteropError::InvalidDimensions { width, height })
         } else {
             Ok(Self {
