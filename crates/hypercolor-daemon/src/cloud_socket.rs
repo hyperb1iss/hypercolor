@@ -43,6 +43,7 @@ pub enum CloudSocketError {
 }
 
 const MISSED_HEARTBEAT_LIMIT: u8 = 3;
+const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3_600);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CloudReconnectPolicy {
@@ -270,8 +271,14 @@ async fn run_session_until_close(
     runtime: Arc<RwLock<CloudConnectionRuntime>>,
 ) {
     let mut heartbeat = HeartbeatState::new(session.welcome());
-    let mut heartbeat_tick =
-        tokio::time::interval_at(Instant::now() + heartbeat.interval, heartbeat.interval);
+    let Some(first_heartbeat_deadline) = Instant::now().checked_add(heartbeat.interval) else {
+        runtime
+            .write()
+            .await
+            .mark_backoff("cloud heartbeat interval overflow");
+        return;
+    };
+    let mut heartbeat_tick = tokio::time::interval_at(first_heartbeat_deadline, heartbeat.interval);
     heartbeat_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut socket = session.into_socket();
     loop {
@@ -416,8 +423,10 @@ struct HeartbeatState {
 
 impl HeartbeatState {
     fn new(welcome: &WelcomeFrame) -> Self {
+        let interval =
+            Duration::from_secs(welcome.heartbeat_interval_s.max(1)).min(MAX_HEARTBEAT_INTERVAL);
         Self {
-            interval: Duration::from_secs(welcome.heartbeat_interval_s.max(1)),
+            interval,
             awaiting_pong: false,
             missed_pongs: 0,
         }
