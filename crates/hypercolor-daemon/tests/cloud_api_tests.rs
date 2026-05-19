@@ -365,6 +365,24 @@ async fn cloud_connection_prepare_rejects_disabled_cloud_without_keyring() {
 }
 
 #[tokio::test]
+async fn cloud_identity_bootstrap_rejects_disabled_cloud_without_keyring() {
+    let app = api::build_router(Arc::new(AppState::new()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/cloud/identity")
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn cloud_connection_connect_rejects_disabled_cloud_without_keyring() {
     let app = api::build_router(Arc::new(AppState::new()), None);
 
