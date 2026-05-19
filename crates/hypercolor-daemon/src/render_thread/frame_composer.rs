@@ -815,7 +815,12 @@ fn preview_surface_request(
         any_full_resolution |= screen_canvas_demand.any_full_resolution;
     }
 
-    if any_full_resolution || max_width == 0 || max_height == 0 {
+    if any_full_resolution
+        || canvas_width == 0
+        || canvas_height == 0
+        || max_width == 0
+        || max_height == 0
+    {
         return Some(PreviewSurfaceRequest {
             width: canvas_width,
             height: canvas_height,
@@ -1008,6 +1013,72 @@ mod tests {
             Some(PreviewSurfaceRequest {
                 width: 640,
                 height: 360,
+            })
+        );
+    }
+
+    #[test]
+    fn preview_surface_request_handles_zero_canvas_dimensions_without_panicking() {
+        // A tracked demand with non-zero dimensions would otherwise reach
+        // `max_width.clamp(1, canvas_width)`, which panics when the canvas
+        // dimension is 0 because `clamp` requires `min <= max`.
+        assert_eq!(
+            preview_surface_request(
+                0,
+                480,
+                true,
+                false,
+                true,
+                false,
+                0,
+                0,
+                PreviewDemandSummary::default(),
+                1,
+                1,
+                PreviewDemandSummary {
+                    subscribers: 1,
+                    max_fps: 20,
+                    max_width: 320,
+                    max_height: 240,
+                    ..PreviewDemandSummary::default()
+                },
+                0,
+                0,
+                PreviewDemandSummary::default(),
+            ),
+            Some(PreviewSurfaceRequest {
+                width: 0,
+                height: 480,
+            })
+        );
+
+        assert_eq!(
+            preview_surface_request(
+                640,
+                0,
+                true,
+                false,
+                true,
+                false,
+                0,
+                0,
+                PreviewDemandSummary::default(),
+                1,
+                1,
+                PreviewDemandSummary {
+                    subscribers: 1,
+                    max_fps: 20,
+                    max_width: 320,
+                    max_height: 240,
+                    ..PreviewDemandSummary::default()
+                },
+                0,
+                0,
+                PreviewDemandSummary::default(),
+            ),
+            Some(PreviewSurfaceRequest {
+                width: 640,
+                height: 0,
             })
         );
     }
