@@ -1,22 +1,28 @@
 //! Native media-player effect.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
 };
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
 use hypercolor_types::viewport::FitMode;
+use tokio::sync::RwLock;
 
 use super::common::{
     asset_control, builtin_effect_id, color_control, dropdown_control, slider_control,
 };
+use crate::asset::AssetLibrary;
 use crate::effect::media::MediaProducer;
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 pub struct MediaPlayerRenderer {
     asset: String,
+    asset_library: Option<Arc<RwLock<AssetLibrary>>>,
+    asset_dirty: bool,
     producer: Option<MediaProducer>,
     playback: MediaPlayback,
     fit_mode: FitMode,
@@ -26,11 +32,16 @@ pub struct MediaPlayerRenderer {
     hue_shift: f32,
 }
 
+/// The asset library was momentarily write-locked during resolution.
+struct LockContended;
+
 impl MediaPlayerRenderer {
     #[must_use]
     pub fn new() -> Self {
         Self {
             asset: String::new(),
+            asset_library: None,
+            asset_dirty: false,
             producer: None,
             playback: MediaPlayback::default(),
             fit_mode: FitMode::Cover,
@@ -46,7 +57,41 @@ impl MediaPlayerRenderer {
             return;
         }
         value.clone_into(&mut self.asset);
-        self.producer = media_producer_from_control_value(value);
+        self.producer = None;
+        self.asset_dirty = true;
+    }
+
+    /// Resolve the untrusted `asset` control value as a content-addressed
+    /// asset id. Resolving through the library instead of as a filesystem
+    /// path keeps a control value from reading arbitrary local files.
+    ///
+    /// `Err(LockContended)` means the library was momentarily write-locked, so
+    /// the caller retries on a later frame; every other outcome is final.
+    fn resolve_producer(&self) -> Result<Option<MediaProducer>, LockContended> {
+        let Ok(asset_id) = self.asset.trim().parse::<AssetId>() else {
+            return Ok(None);
+        };
+        let Some(library) = self.asset_library.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(library) = library.try_read() else {
+            return Err(LockContended);
+        };
+        let Some(record) = library.get(asset_id).cloned() else {
+            return Ok(None);
+        };
+        let Ok(object_path) = library.object_path_for_hash(&record.hash_sha256) else {
+            return Ok(None);
+        };
+        let stream_url_policy = library.stream_url_policy().clone();
+        // Release the library lock before the potentially slow decode.
+        drop(library);
+        Ok(MediaProducer::from_path_with_stream_policy(
+            &object_path,
+            &record.mime_type,
+            &stream_url_policy,
+        )
+        .ok())
     }
 }
 
@@ -63,6 +108,12 @@ impl EffectRenderer for MediaPlayerRenderer {
 
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
+        if self.asset_dirty
+            && let Ok(producer) = self.resolve_producer()
+        {
+            self.producer = producer;
+            self.asset_dirty = false;
+        }
         let Some(producer) = &self.producer else {
             canvas.clear();
             return Ok(());
@@ -131,27 +182,14 @@ impl EffectRenderer for MediaPlayerRenderer {
         }
     }
 
+    fn bind_asset_library(&mut self, library: Arc<RwLock<AssetLibrary>>) {
+        self.asset_library = Some(library);
+        if !self.asset.is_empty() {
+            self.asset_dirty = true;
+        }
+    }
+
     fn destroy(&mut self) {}
-}
-
-fn media_producer_from_control_value(value: &str) -> Option<MediaProducer> {
-    let path = Path::new(value.trim());
-    if !path.exists() {
-        return None;
-    }
-    MediaProducer::from_path(path, mime_type_for_path(path)?).ok()
-}
-
-fn mime_type_for_path(path: &Path) -> Option<&'static str> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    match extension.as_str() {
-        "gif" => Some("image/gif"),
-        "apng" => Some("image/apng"),
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
 }
 
 fn loop_mode_from_control(value: &str) -> LoopMode {
