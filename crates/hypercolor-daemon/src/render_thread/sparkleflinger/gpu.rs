@@ -3158,12 +3158,20 @@ fn try_read_back_texture_into_surface(
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission_index),
-            timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
-        })
-        .context("GPU readback map poll failed")?;
+    match device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission_index),
+        timeout: Some(GPU_READBACK_WAIT_TIMEOUT),
+    }) {
+        Ok(_) => {}
+        Err(wgpu::PollError::Timeout) => {
+            buffer.unmap();
+            return Ok(None);
+        }
+        Err(error) => {
+            buffer.unmap();
+            return Err(error).context("GPU readback map poll failed");
+        }
+    }
     match receiver.try_recv() {
         Ok(Ok(())) => {}
         Ok(Err(error)) => return Err(error).context("GPU readback buffer mapping failed"),
