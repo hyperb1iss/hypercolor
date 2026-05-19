@@ -1117,6 +1117,7 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
 
     let relay_handle = tokio::spawn(relay_display_preview(
+        Arc::clone(&state),
         Arc::clone(&display_frames),
         json_tx,
         binary_tx,
@@ -1153,6 +1154,39 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
         .expect("display preview relay should emit after the stream reopens")
         .expect("display preview relay should deliver the reopened stream frame");
     assert_eq!(display_preview_payload_frame_number(&second), 2);
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn relay_display_preview_does_not_subscribe_unknown_device() {
+    let state = Arc::new(AppState::new());
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let unknown_device_id = DeviceId::new();
+    let mut subscriptions = SubscriptionState::default();
+    subscriptions.channels.insert(WsChannel::DisplayPreview);
+    subscriptions.config.display_preview.device_id = Some(unknown_device_id.to_string());
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
+
+    let relay_handle = tokio::spawn(relay_display_preview(
+        Arc::clone(&state),
+        Arc::clone(&display_frames),
+        json_tx,
+        binary_tx,
+        subscriptions_rx,
+    ));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let metrics = display_frames.read().await.metrics_snapshot();
+    assert_eq!(metrics.preview_subscribers, 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), binary_rx.recv())
+            .await
+            .is_err()
+    );
 
     relay_handle.abort();
     let _ = relay_handle.await;

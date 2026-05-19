@@ -122,6 +122,7 @@ async fn handle_socket(
         subscriptions_rx.clone(),
     ));
     let display_preview_relay_handle = tokio::spawn(relay_display_preview(
+        Arc::clone(&state),
         Arc::clone(&state.display_frames),
         json_tx.clone(),
         binary_tx.clone(),
