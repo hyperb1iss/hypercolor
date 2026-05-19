@@ -8,6 +8,7 @@
 mod composition_panel;
 mod device_card;
 mod device_grouping;
+mod scene_selector;
 mod stage;
 mod surface;
 mod zone_assignment;
@@ -22,12 +23,13 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::components::layout_builder::LayoutEditorProvider;
-use crate::components::page_header::{PageAccent, PageHeader};
+use crate::components::page_header::{HeaderToolbar, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
 use composition_panel::CompositionPanel;
+use scene_selector::SceneSelector;
 use stage::Stage;
 use surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use zone_tree::ZoneTree;
@@ -68,8 +70,7 @@ pub fn StudioPage() -> impl IntoView {
         let _ = scene_tick.get();
         async move { api::fetch_active_scene().await }
     });
-    let active_scene =
-        Signal::derive(move || scene_resource.get().and_then(Result::ok).flatten());
+    let active_scene = Signal::derive(move || scene_resource.get().and_then(Result::ok).flatten());
 
     let selected_surface_id = RwSignal::new(None::<String>);
 
@@ -110,9 +111,7 @@ pub fn StudioPage() -> impl IntoView {
             match (scene, group_id) {
                 // The Unassigned entry is not a surface — it has no layer
                 // stack, so it never hits the per-group layer endpoint.
-                (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => {
-                    Ok(empty_layer_stack())
-                }
+                (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
                 (Some(scene), Some(group_id)) => api::list_layers(&scene.id, &group_id).await,
                 _ => Ok(empty_layer_stack()),
             }
@@ -202,7 +201,11 @@ pub fn StudioPage() -> impl IntoView {
                 title="Studio"
                 tagline="Compose scenes across zones"
                 accent=PageAccent::Coral
-            />
+            >
+                <HeaderToolbar slot>
+                    <SceneSelector />
+                </HeaderToolbar>
+            </PageHeader>
             // Narrow-viewport drawer toggle; the tree sits beside the Stage
             // on `lg` and up, so this strip is hidden there.
             <div class="flex shrink-0 items-center border-b border-edge-subtle/70 bg-surface-raised/40 px-3 py-2 lg:hidden">

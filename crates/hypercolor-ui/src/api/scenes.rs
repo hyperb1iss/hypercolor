@@ -1,10 +1,4 @@
 //! Scene API client — `/api/v1/scenes/*` routes.
-//!
-//! The scene-CRUD calls (`list_scenes`, `create_scene`, `rename_scene`,
-//! `delete_scene`, `activate_scene`) are consumed by the Studio scene
-//! selector landing in Wave B2; `dead_code` is allowed module-wide while
-//! the selector is wired, mirroring [`super::zones`].
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
