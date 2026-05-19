@@ -578,7 +578,7 @@ impl BrokerState {
                 }
                 BrokerSmBusBatchOperation::Delay { duration_ms } => {
                     validate_batch_delay_ms(*duration_ms)?;
-                    thread::sleep(Duration::from_millis(u64::from(*duration_ms)));
+                    thread::sleep(Duration::from_millis(*duration_ms));
                 }
             }
         }
@@ -900,8 +900,8 @@ mod tests {
 
     use super::{
         BrokerBusInfo, BrokerSmBusBatchOperation, BrokerSmBusDirection, BrokerSmBusTransaction,
-        MAX_BATCH_DELAY_MS, PawnIoError,
-        SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBusInfo,
+        MAX_BATCH_DELAY_MS, PawnIoError, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
+        SmBusTransaction, WindowsSmBusBusInfo,
     };
 
     #[test]
