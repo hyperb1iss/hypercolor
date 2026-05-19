@@ -2,13 +2,15 @@
 //!
 //! Each physical device under a zone renders as a card carrying its
 //! brand identity: a duotone accent strip, the vendor mark, the LED
-//! count, and a component breakdown for a multi-segment controller.
-//! The card body selects the parent zone; trailing actions identify the
-//! hardware and remove it from the zone.
+//! count, and a per-channel breakdown with live component data. The
+//! card body selects the parent zone; trailing actions hide every
+//! output, identify the hardware, and remove it from the zone.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
+
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::zones::ZoneOutcome;
 use crate::api::{self, DeviceSummary, ZoneTopologySummary};
@@ -18,15 +20,38 @@ use crate::components::device_card::{
     driver_identifier_label, topology_shape_svg,
 };
 use crate::icons::*;
+use crate::layout_utils;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
-use super::StudioContext;
 use super::device_grouping::ZoneDeviceRow;
 use super::surface::UNASSIGNED_SURFACE_ID;
+use super::{StudioContext, hidden_outputs_storage_key};
 
 /// Components a card lists before the rest collapse into a "+N" tail.
 const MAX_COMPONENTS: usize = 5;
+
+/// One row in the per-channel breakdown beneath the card body.
+///
+/// Captures the channel's identity — slot id, zone name, and display
+/// name — so the component-binding match helper can surface live
+/// attachment data against the channel's aliases, plus the output id
+/// when the channel has an output in this zone so the row can be
+/// hidden individually.
+struct ComponentRow {
+    /// User-facing channel label, identical to the row's display name.
+    name: String,
+    shape_svg: &'static str,
+    led_count: usize,
+    /// `Output.id` (`DeviceZone.id`) when this channel has an output
+    /// in the current zone — `None` for the Unassigned bucket or a
+    /// channel with no placed output, in which case the row offers no
+    /// hide toggle.
+    output_id: Option<String>,
+    slot_id: String,
+    zone_name: Option<String>,
+    display_name: String,
+}
 
 /// One physical device under a zone. The card body selects the parent zone
 /// (or the Unassigned entry) named by `select`; trailing actions identify
@@ -70,7 +95,7 @@ pub fn StudioDeviceCard(
                         {leds}
                     </span>
                 </button>
-                {card_actions(studio, select, row_device_id, None)}
+                {card_actions(studio, select, row_device_id, None, Vec::new(), None)}
             </div>
         }
         .into_any();
@@ -108,21 +133,82 @@ pub fn StudioDeviceCard(
         None => led_label(row.led_count),
     };
 
+    // Snapshot the current zone's layout once — used both to resolve
+    // each channel's output id and to gather the bulk-hide id set.
+    // The Unassigned bucket has no layout (its devices are by
+    // definition placed in no zone), so the snapshot is `None` there.
+    let in_zone = select != UNASSIGNED_SURFACE_ID;
+    let layout_snapshot: Option<SpatialLayout> = if in_zone {
+        studio.active_scene.with_untracked(|scene| {
+            scene.as_ref().and_then(|scene| {
+                scene
+                    .groups
+                    .iter()
+                    .find(|group| group.id.to_string() == select)
+                    .map(|group| group.layout.clone())
+            })
+        })
+    } else {
+        None
+    };
+    let scene_key: Option<String> = in_zone
+        .then(|| {
+            studio.active_scene.with_untracked(|scene| {
+                scene
+                    .as_ref()
+                    .map(|scene| hidden_outputs_storage_key(&scene.id, &select))
+            })
+        })
+        .flatten();
+    let device_output_ids: Vec<String> = layout_snapshot
+        .as_ref()
+        .map(|layout| {
+            layout
+                .zones
+                .iter()
+                .filter(|output| output.device_id == device.layout_device_id)
+                .map(|output| output.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
     let total_components = device.zones.len();
-    let component_rows = device
+    let component_rows: Vec<ComponentRow> = device
         .zones
         .iter()
         .take(MAX_COMPONENTS)
-        .map(|zone| {
-            (
-                channel_names::effective_channel_name(&device.id, &zone.id, &zone.name),
-                topology_shape_svg(&zone.topology),
-                zone.led_count,
-            )
+        .map(|channel| {
+            let display_name =
+                channel_names::effective_channel_name(&device.id, &channel.id, &channel.name);
+            let output_id = layout_snapshot.as_ref().and_then(|layout| {
+                layout_utils::representative_zone_id_for_device_slot(
+                    layout,
+                    &device.layout_device_id,
+                    Some(channel.name.as_str()),
+                )
+            });
+            ComponentRow {
+                name: display_name.clone(),
+                shape_svg: topology_shape_svg(&channel.topology),
+                led_count: channel.led_count,
+                output_id,
+                slot_id: channel.id.clone(),
+                zone_name: Some(channel.name.clone()),
+                display_name,
+            }
         })
-        .collect::<Vec<(String, &'static str, usize)>>();
+        .collect();
     let remaining = total_components.saturating_sub(MAX_COMPONENTS);
     let show_components = total_components > 1;
+
+    // Live component bindings for this device — fetched once per card
+    // mount, shared via the Studio context cache so each row reads it
+    // reactively without re-fetching.
+    let physical_id_for_fetch = device.id.clone();
+    Effect::new(move |_| {
+        fetch_attachments_if_needed(studio, &physical_id_for_fetch);
+    });
+    let physical_id_for_rows = device.id.clone();
 
     // The duotone radial hero glow and ambient inner/outer glow that
     // give the card its brand identity — a flat linear wash reads as
@@ -202,32 +288,30 @@ pub fn StudioDeviceCard(
                         </div>
                     </div>
                 </button>
-                {card_actions(studio, select, row_device_id, Some(physical_id))}
+                {card_actions(
+                    studio,
+                    select,
+                    row_device_id,
+                    Some(physical_id),
+                    device_output_ids,
+                    scene_key.clone(),
+                )}
             </div>
             {show_components
                 .then(move || {
+                    let scene_key = scene_key.clone();
                     view! {
                         <div class="space-y-0.5 border-t px-1.5 py-1.5" style=list_style>
                             {component_rows
                                 .into_iter()
-                                .map(|(name, shape, count)| {
-                                    view! {
-                                        <div class="flex items-center gap-2 px-1 py-1">
-                                            <div
-                                                class="h-3 w-3 shrink-0"
-                                                style=shape_style.clone()
-                                                inner_html=format!(
-                                                    r#"<svg viewBox="0 0 16 16" width="12" height="12">{shape}</svg>"#,
-                                                )
-                                            />
-                                            <span class="min-w-0 flex-1 truncate text-[10px] text-fg-tertiary">
-                                                {name}
-                                            </span>
-                                            <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/55">
-                                                {count}
-                                            </span>
-                                        </div>
-                                    }
+                                .map(|row| {
+                                    component_row_view(
+                                        studio,
+                                        scene_key.clone(),
+                                        physical_id_for_rows.clone(),
+                                        row,
+                                        shape_style.clone(),
+                                    )
                                 })
                                 .collect_view()}
                             {(remaining > 0)
@@ -246,19 +330,84 @@ pub fn StudioDeviceCard(
     .into_any()
 }
 
-/// The identify and remove cluster on the trailing edge of a card.
-/// Identify flashes the hardware and is offered whenever the device is
-/// online (`physical_id` is `Some`); remove appears only inside a real
-/// zone, since the Unassigned entry has nothing to remove from.
+/// The hide-all, identify, and remove cluster on the trailing edge of
+/// a card. Hide-all toggles every output of this device in the current
+/// zone in unison; identify flashes the hardware and is offered
+/// whenever the device is online (`physical_id` is `Some`); remove
+/// appears only inside a real zone, since the Unassigned entry has
+/// nothing to remove from.
 fn card_actions(
     studio: StudioContext,
     select: String,
     device_id: String,
     physical_id: Option<String>,
+    output_ids: Vec<String>,
+    scene_key: Option<String>,
 ) -> impl IntoView {
     let in_zone = select != UNASSIGNED_SURFACE_ID;
+    // Hide-all is only meaningful when the card sits in a real zone
+    // (so it has a scene_key) and the device actually owns outputs
+    // there (otherwise there is nothing to toggle).
+    let hide_all_pair: Option<(String, Vec<String>)> = scene_key
+        .filter(|_| !output_ids.is_empty())
+        .map(|key| (key, output_ids));
     view! {
         <div class="flex shrink-0 items-center gap-0.5 self-center pr-1.5">
+            {hide_all_pair
+                .map(|(key, ids)| {
+                    let probe_key = key.clone();
+                    let probe_ids = ids.clone();
+                    let all_hidden = Signal::derive(move || {
+                        studio.hidden_outputs.with(|map| {
+                            map.get(&probe_key).is_some_and(|hidden| {
+                                probe_ids.iter().all(|id| hidden.contains(id))
+                            })
+                        })
+                    });
+                    let toggle_key = key;
+                    let toggle_ids = ids;
+                    view! {
+                        <button
+                            type="button"
+                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
+                            title=move || {
+                                if all_hidden.get() {
+                                    "Show every output for this device"
+                                } else {
+                                    "Hide every output for this device"
+                                }
+                            }
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                let currently_all = all_hidden.get();
+                                let key = toggle_key.clone();
+                                let ids = toggle_ids.clone();
+                                studio
+                                    .hidden_outputs
+                                    .update(|map| {
+                                        let entry = map.entry(key).or_default();
+                                        for id in ids {
+                                            if currently_all {
+                                                entry.remove(&id);
+                                            } else {
+                                                entry.insert(id);
+                                            }
+                                        }
+                                    });
+                            }
+                        >
+                            {move || {
+                                if all_hidden.get() {
+                                    view! { <Icon icon=LuEyeOff width="12px" height="12px" /> }
+                                        .into_any()
+                                } else {
+                                    view! { <Icon icon=LuEye width="12px" height="12px" /> }
+                                        .into_any()
+                                }
+                            }}
+                        </button>
+                    }
+                })}
             {physical_id
                 .map(|id| {
                     view! {
@@ -290,6 +439,200 @@ fn card_actions(
                 })}
         </div>
     }
+}
+
+/// Render one per-channel row beneath the card body.
+///
+/// Each row shows the channel's topology shape and name, a live
+/// component badge listing what is bound to this channel, the channel's
+/// LED count, and a per-output hide toggle when the channel has an
+/// output in the current zone. Hidden state is per-(scene, zone) client
+/// UI state, not the daemon's `layout_auto_exclusions`.
+fn component_row_view(
+    studio: StudioContext,
+    scene_key: Option<String>,
+    physical_device_id: String,
+    row: ComponentRow,
+    shape_style: String,
+) -> impl IntoView {
+    let ComponentRow {
+        name,
+        shape_svg,
+        led_count,
+        output_id,
+        slot_id,
+        zone_name,
+        display_name,
+    } = row;
+
+    // Bindings that target THIS channel, filtered through the alias
+    // helper the palette card uses so slot id, zone name, and display
+    // name are all accepted as matches.
+    let binding_device = physical_device_id;
+    let binding_slot_id = slot_id;
+    let binding_zone_name = zone_name;
+    let binding_display = display_name;
+    let bindings = Signal::derive(move || {
+        studio.attachment_cache.with(|cache| {
+            cache
+                .get(&binding_device)
+                .map(|all| {
+                    all.iter()
+                        .filter(|binding| {
+                            layout_utils::attachment_binding_matches_slot_alias(
+                                &binding.slot_id,
+                                Some(&binding_slot_id),
+                                binding_zone_name.as_deref(),
+                                &binding_display,
+                            )
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    });
+
+    // The eye toggle only renders when both the scene_key and the
+    // output id are known — i.e. the row sits in a real zone and the
+    // channel has a placed output to hide.
+    let hide_pair: Option<(String, String)> = match (&scene_key, &output_id) {
+        (Some(key), Some(id)) => Some((key.clone(), id.clone())),
+        _ => None,
+    };
+    let row_probe_pair = hide_pair.clone();
+    let is_hidden = Signal::derive(move || {
+        let Some((key, id)) = row_probe_pair.as_ref() else {
+            return false;
+        };
+        studio
+            .hidden_outputs
+            .with(|map| map.get(key).is_some_and(|hidden| hidden.contains(id)))
+    });
+
+    view! {
+        <div class="flex items-center gap-2 px-1 py-1">
+            <div
+                class="h-3 w-3 shrink-0"
+                style=shape_style
+                inner_html=format!(
+                    r#"<svg viewBox="0 0 16 16" width="12" height="12">{shape_svg}</svg>"#,
+                )
+            />
+            <div class="min-w-0 flex-1">
+                <div class="truncate text-[10px] text-fg-tertiary">{name}</div>
+                {move || {
+                    let bindings = bindings.get();
+                    if bindings.is_empty() {
+                        return None;
+                    }
+                    let total: u32 = bindings.iter().map(|b| b.instances.max(1)).sum();
+                    let label = if total == 1 {
+                        bindings[0]
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| bindings[0].template_name.clone())
+                    } else {
+                        format!("{total} components")
+                    };
+                    let title = bindings
+                        .iter()
+                        .map(|b| {
+                            let name = b
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| b.template_name.clone());
+                            if b.instances > 1 {
+                                format!(
+                                    "{name} \u{d7}{} ({} LEDs)",
+                                    b.instances, b.effective_led_count,
+                                )
+                            } else {
+                                format!("{name} ({} LEDs)", b.effective_led_count)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Some(
+                        view! {
+                            <span
+                                class="mt-0.5 inline-flex max-w-[140px] items-center gap-1 truncate rounded px-1 py-0.5 font-mono text-[8px]"
+                                style="color: rgb(128, 255, 234); background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                title=title
+                            >
+                                <Icon icon=LuCable width="8px" height="8px" />
+                                <span class="truncate">{label}</span>
+                            </span>
+                        },
+                    )
+                }}
+            </div>
+            <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/55">
+                {led_count}
+            </span>
+            {hide_pair
+                .map(|(key, id)| {
+                    view! {
+                        <button
+                            type="button"
+                            class="btn-press flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-tertiary/50 transition-colors hover:text-fg-secondary"
+                            title=move || {
+                                if is_hidden.get() { "Show output" } else { "Hide output" }
+                            }
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                let key = key.clone();
+                                let id = id.clone();
+                                studio
+                                    .hidden_outputs
+                                    .update(|map| {
+                                        let entry = map.entry(key).or_default();
+                                        if !entry.remove(&id) {
+                                            entry.insert(id);
+                                        }
+                                    });
+                            }
+                        >
+                            {move || {
+                                if is_hidden.get() {
+                                    view! { <Icon icon=LuEyeOff width="10px" height="10px" /> }
+                                        .into_any()
+                                } else {
+                                    view! { <Icon icon=LuEye width="10px" height="10px" /> }
+                                        .into_any()
+                                }
+                            }}
+                        </button>
+                    }
+                })}
+        </div>
+    }
+}
+
+/// Lazily populate the Studio-wide attachment cache for one device.
+///
+/// Cards trigger this once on mount. The check on the cache lets the
+/// same device's card unmount and remount (zone collapsed and reopened)
+/// without re-fetching, and lets every card across the tree share one
+/// cache entry per physical device.
+fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) {
+    if physical_device_id.is_empty() {
+        return;
+    }
+    if studio
+        .attachment_cache
+        .with_untracked(|cache| cache.contains_key(physical_device_id))
+    {
+        return;
+    }
+    let id = physical_device_id.to_owned();
+    spawn_local(async move {
+        if let Ok(profile) = api::fetch_device_attachments(&id).await {
+            studio.attachment_cache.update(|cache| {
+                cache.insert(id, profile.bindings);
+            });
+        }
+    });
 }
 
 /// Flash a device's LEDs so the user can locate it physically.

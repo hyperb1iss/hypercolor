@@ -16,11 +16,14 @@ mod zone_assignment;
 mod zone_controls;
 mod zone_tree;
 
+use std::collections::{HashMap, HashSet};
+
 use hypercolor_types::scene::RenderGroupRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
+use crate::api::AttachmentBindingSummary;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
@@ -35,6 +38,27 @@ use zone_tree::ZoneTree;
 
 const TREE_WIDTH_KEY: &str = "hc-studio-tree-width";
 const TREE_WIDTH_RANGE: (f64, f64) = (240.0, 460.0);
+/// localStorage key for the per-(scene, zone) hidden-outputs map.
+const HIDDEN_OUTPUTS_KEY: &str = "hc-studio-hidden-outputs";
+
+/// Build the storage-side key used to address the hidden-outputs entry
+/// for one (scene, zone) pair. Lives at the module root so the device
+/// card and any future zone-scoped UI agree on the format.
+pub fn hidden_outputs_storage_key(scene_id: &str, zone_id: &str) -> String {
+    format!("{scene_id}::{zone_id}")
+}
+
+fn load_hidden_outputs() -> HashMap<String, HashSet<String>> {
+    storage::get(HIDDEN_OUTPUTS_KEY)
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
+    if let Ok(json) = serde_json::to_string(map) {
+        storage::set(HIDDEN_OUTPUTS_KEY, &json);
+    }
+}
 
 /// An empty layer stack at version 0 — the resource value for a selection
 /// that has no per-group layer endpoint (none selected, or the synthetic
@@ -58,6 +82,15 @@ pub struct StudioContext {
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
     pub composition_open: RwSignal<bool>,
+    /// Per-(scene, zone) sets of `Output` ids the user has hidden from
+    /// the zone's device card. Keys are built by
+    /// [`hidden_outputs_storage_key`]. Client UI state only; never
+    /// mirrored to the daemon's `layout_auto_exclusions` (Plan 55 §8).
+    pub hidden_outputs: RwSignal<HashMap<String, HashSet<String>>>,
+    /// Cache of component (attachment) bindings per physical device id.
+    /// Each device card lazily fills its own entry; channel rows read it
+    /// to surface live binding labels without re-fetching per render.
+    pub attachment_cache: RwSignal<HashMap<String, Vec<AttachmentBindingSummary>>>,
 }
 
 #[component]
@@ -193,11 +226,24 @@ pub fn StudioPage() -> impl IntoView {
 
     let composition_open = RwSignal::new(false);
 
+    // Hidden-output state is the palette card's `hidden_zones` model
+    // re-scoped per zone, persisted across sessions so a deliberately
+    // hidden output stays hidden between visits.
+    let hidden_outputs = RwSignal::new(load_hidden_outputs());
+    Effect::new(move |_| {
+        let snapshot = hidden_outputs.get();
+        save_hidden_outputs(&snapshot);
+    });
+
+    let attachment_cache = RwSignal::new(HashMap::<String, Vec<AttachmentBindingSummary>>::new());
+
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
         refresh_scene,
         composition_open,
+        hidden_outputs,
+        attachment_cache,
     });
 
     view! {
