@@ -175,7 +175,12 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(CloudStatus::from_config(&cloud_config))
 }
 
-pub async fn ensure_identity() -> Response {
+pub async fn ensure_identity(State(state): State<Arc<AppState>>) -> Response {
+    let cloud_config = cloud_config(&state);
+    if !cloud_config.enabled {
+        return ApiError::conflict("cloud identity bootstrap is disabled");
+    }
+
     match KeyringSecretStore::new_native().and_then(|store| load_or_create_identity(&store)) {
         Ok(identity) => ApiResponse::ok(CloudIdentityStatus {
             daemon_id: identity.daemon_id().hyphenated().to_string(),
