@@ -299,7 +299,7 @@ fn render_device_card(state: PaletteState, idx: usize, dev: api::DeviceSummary) 
                             view! {
                                 <>
                                     <span class="opacity-40">"·"</span>
-                                    <span>{zone_count} " zones"</span>
+                                    <span>{zone_count} " outputs"</span>
                                 </>
                             }
                         })}
@@ -417,7 +417,7 @@ fn render_multizone_header_actions(
                         } else {
                             "color: var(--color-text-tertiary); opacity: 0.5"
                         }
-                        title=if all_hidden { "Show all zones" } else { "Hide all zones" }
+                        title=if all_hidden { "Show all outputs" } else { "Hide all outputs" }
                         on:click=move |ev: web_sys::MouseEvent| {
                             ev.stop_propagation();
                             state.set_master_hidden_snapshot.set(None);
@@ -456,7 +456,7 @@ fn render_multizone_header_actions(
                             class="w-6 h-6 flex items-center justify-center rounded-md
                                    transition-all shrink-0 btn-press"
                             style="color: rgba(255, 99, 99, 0.4)"
-                            title="Remove all zones"
+                            title="Remove all outputs"
                             on:click=move |ev| {
                                 ev.stop_propagation();
                                 layout_utils::remove_all_device_zones(
@@ -482,7 +482,7 @@ fn render_multizone_header_actions(
                                 actions.toggle_all_rgb,
                                 actions.toggle_all_rgb,
                             )
-                            title="Add all zones"
+                            title="Add all outputs"
                             on:click=move |ev| {
                                 ev.stop_propagation();
                                 layout_utils::add_all_device_zones(
@@ -951,7 +951,7 @@ fn render_zone_rows(
                                         } else {
                                             "color: var(--color-text-tertiary); opacity: 0.5"
                                         }
-                                        title=if is_zone_hidden { "Show zone" } else { "Hide zone" }
+                                        title=if is_zone_hidden { "Show output" } else { "Hide output" }
                                         on:click=move |ev: web_sys::MouseEvent| {
                                             ev.stop_propagation();
                                             state.set_master_hidden_snapshot.set(None);
@@ -984,7 +984,7 @@ fn render_zone_rows(
                                             class="w-6 h-6 flex items-center justify-center rounded-md
                                                    transition-all shrink-0 btn-press"
                                             style="color: rgba(255, 99, 99, 0.4)"
-                                            title="Remove zone"
+                                            title="Remove output"
                                             on:click=move |ev| {
                                                 ev.stop_propagation();
                                                 layout_utils::remove_device_zone(
@@ -1008,7 +1008,7 @@ fn render_zone_rows(
                                             style=format!(
                                                 "background: rgba({zone_rgb3}, 0.08); border-color: rgba({zone_rgb3}, 0.2); color: rgb({zone_rgb3})"
                                             )
-                                            title="Add zone"
+                                            title="Add output"
                                             on:click=move |ev| {
                                                 ev.stop_propagation();
                                                 let cache_key = (did.clone(), zone_entry.as_ref().map(|z| z.name.clone()));

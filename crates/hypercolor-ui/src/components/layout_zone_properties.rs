@@ -254,7 +254,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         class="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-mono tabular-nums"
                                         style="color: rgba(225, 53, 255, 0.8); background: rgba(225, 53, 255, 0.08)"
                                     >
-                                        {format!("{count} zones")}
+                                        {format!("{count} outputs")}
                                     </span>
                                     <span class="text-[10px] text-fg-tertiary/40 font-mono">{depth_label}</span>
                                 </div>
@@ -554,7 +554,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     } else {
                                         "background: rgba(255, 255, 255, 0.02); opacity: 0.35; pointer-events: none"
                                     }
-                                    title=move || if dist_enabled { "" } else { "Distribute needs 3+ zones" }
+                                    title=move || if dist_enabled { "" } else { "Distribute needs 3+ outputs" }
                                 >
                                     <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Dist"</span>
                                     {group_op_button(LuAlignHorizontalDistributeCenter, "Distribute horizontally (even gaps)", move || {
@@ -655,7 +655,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     return view! {
                         <div class="flex items-center justify-center h-full gap-2.5">
                             <Icon icon=LuMousePointerClick width="18px" height="18px" style="color: rgba(139, 133, 160, 0.12)" />
-                            <div class="text-xs text-fg-tertiary/60">"Click a zone on the canvas to edit its properties"</div>
+                            <div class="text-xs text-fg-tertiary/60">"Click an output on the canvas to edit its properties"</div>
                         </div>
                     }.into_any();
                 };
@@ -910,11 +910,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     <button
                                         class="shrink-0 p-1 rounded-md text-fg-tertiary/30 hover:text-accent hover:bg-accent/8
                                                transition-colors btn-press"
-                                        title="Identify zone"
+                                        title="Identify output"
                                         on:click=move |_| match target.clone() {
                                             crate::layout_utils::ZoneIdentifyTarget::Device { device_id, zone_id } => {
                                                 spawn_identify(
-                                                    "zone",
+                                                    "output",
                                                     async move { crate::api::identify_zone(&device_id, &zone_id).await },
                                                 );
                                             }
@@ -945,7 +945,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 <button
                                     class="shrink-0 p-1 rounded-md text-fg-tertiary/30 hover:text-accent hover:bg-accent/8
                                            transition-colors btn-press"
-                                    title="Reset zone to defaults"
+                                    title="Reset output to defaults"
                                     on:click=move |_| {
                                         let zid = zid_reset_defaults.clone();
                                         let did = reset_device_id.clone();
@@ -1004,7 +1004,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 <button
                                     class="shrink-0 p-1 rounded-md text-status-error/30 hover:text-status-error hover:bg-status-error/8
                                            transition-colors btn-press"
-                                    title="Remove zone from layout"
+                                    title="Remove output from layout"
                                     on:click=move |_| {
                                         let zid = zid_remove.clone();
                                         set_layout.update(|l| {

@@ -476,9 +476,9 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         let mut opts = vec![(String::new(), "Select layout…".to_string())];
         opts.extend(layouts.into_iter().map(|l| {
             let label = if l.is_active {
-                format!("{} ({} zones) *", l.name, l.zone_count)
+                format!("{} ({} outputs) *", l.name, l.zone_count)
             } else {
-                format!("{} ({} zones)", l.name, l.zone_count)
+                format!("{} ({} outputs)", l.name, l.zone_count)
             };
             (l.id, label)
         }));
