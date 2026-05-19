@@ -184,6 +184,11 @@ pub async fn create_layer(
         Err(message) => return ApiError::bad_request(message),
     };
     let layer = body.into_layer(SceneLayerId::new());
+    if let Err(response) =
+        validate_livestream_layer_insert(&state, &scene_id_raw, layer.source.media_asset_id()).await
+    {
+        return response;
+    }
     let (scene_id, group) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
@@ -221,6 +226,11 @@ pub async fn broadcast_media_layer(
         if !library.contains(body.asset_id) {
             return ApiError::not_found(format!("Asset not found: {}", body.asset_id));
         }
+    }
+    if let Err(response) =
+        validate_livestream_layer_insert(&state, &scene_id_raw, Some(body.asset_id)).await
+    {
+        return response;
     }
     let (scene_id, groups) = {
         let mut manager = state.scene_manager.write().await;
@@ -268,6 +278,17 @@ pub async fn update_layer(
         Ok(version) => version,
         Err(message) => return ApiError::bad_request(message),
     };
+    if let Err(response) = validate_livestream_layer_update(
+        &state,
+        &scene_id_raw,
+        group_id,
+        layer_id,
+        body.source.media_asset_id(),
+    )
+    .await
+    {
+        return response;
+    }
     let (scene_id, group) = {
         let mut manager = state.scene_manager.write().await;
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
@@ -680,6 +701,91 @@ fn layer_mutation_error(error: LayerMutationError) -> Response {
     }
 }
 
+async fn validate_livestream_layer_insert(
+    state: &Arc<AppState>,
+    scene_id_raw: &str,
+    asset_id: Option<AssetId>,
+) -> Result<(), Response> {
+    let Some(asset_id) = asset_id else {
+        return Ok(());
+    };
+    validate_livestream_admission(state, scene_id_raw, Some((None, asset_id))).await
+}
+
+async fn validate_livestream_layer_update(
+    state: &Arc<AppState>,
+    scene_id_raw: &str,
+    group_id: RenderGroupId,
+    layer_id: SceneLayerId,
+    next_asset_id: Option<AssetId>,
+) -> Result<(), Response> {
+    validate_livestream_admission(
+        state,
+        scene_id_raw,
+        next_asset_id.map(|id| (Some((group_id, layer_id)), id)),
+    )
+    .await
+}
+
+async fn validate_livestream_admission(
+    state: &Arc<AppState>,
+    scene_id_raw: &str,
+    pending_asset: Option<(Option<(RenderGroupId, SceneLayerId)>, AssetId)>,
+) -> Result<(), Response> {
+    let asset_mime_types = scenes::asset_mime_types(state.as_ref()).await;
+    let media_config = scenes::current_media_config(state.as_ref());
+    let manager = state.scene_manager.read().await;
+    let Some(scene_id) = scenes::resolve_scene_id(&manager, scene_id_raw) else {
+        return Ok(());
+    };
+    let Some(scene) = manager.get(&scene_id) else {
+        return Ok(());
+    };
+    if manager.active_scene_id().copied() != Some(scene_id) {
+        return Ok(());
+    }
+    let mut candidate = scene.clone();
+    if let Some((replacement, asset_id)) = pending_asset {
+        if let Some((group_id, layer_id)) = replacement {
+            if let Some(layer) = candidate
+                .groups
+                .iter_mut()
+                .find(|group| group.id == group_id)
+                .and_then(|group| group.layers.iter_mut().find(|layer| layer.id == layer_id))
+            {
+                layer.source = LayerSource::Media {
+                    asset_id,
+                    playback: MediaPlayback::default(),
+                };
+            }
+        } else if let Some(group) = candidate.groups.first_mut() {
+            group.layers.push(media_layer_for_validation(asset_id));
+        }
+    }
+    let counts = scenes::scene_media_admission_counts(&candidate, &asset_mime_types);
+    if let Some(response) = scenes::validate_scene_media_admission(&counts, &media_config) {
+        return Err(response);
+    }
+    Ok(())
+}
+
+fn media_layer_for_validation(asset_id: AssetId) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::Media {
+            asset_id,
+            playback: MediaPlayback::default(),
+        },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
+}
+
 fn layers_version_mismatch_response(current: u64) -> Response {
     let body = serde_json::json!({
         "error": "layers_version mismatch",
@@ -701,6 +807,19 @@ fn attach_layers_version_headers(mut response: Response, version: u64) -> Respon
 
 fn default_layer_opacity() -> f32 {
     1.0
+}
+
+trait LayerSourceExt {
+    fn media_asset_id(&self) -> Option<AssetId>;
+}
+
+impl LayerSourceExt for LayerSource {
+    fn media_asset_id(&self) -> Option<AssetId> {
+        match self {
+            LayerSource::Media { asset_id, .. } => Some(*asset_id),
+            _ => None,
+        }
+    }
 }
 
 fn default_true() -> bool {
