@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -39,11 +40,38 @@ const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     auth_context: Option<Extension<RequestAuthContext>>,
 ) -> Response {
     let auth_context =
         auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
+
+    if auth_context.security_enabled() && !is_allowed_ws_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     upgrade_handler(ws, move |socket| handle_socket(socket, state, auth_context))
+}
+
+pub(super) fn is_allowed_ws_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+
+    matches!(
+        origin,
+        "http://127.0.0.1"
+            | "http://localhost"
+            | "https://127.0.0.1"
+            | "https://localhost"
+    ) || origin.starts_with("http://127.0.0.1:")
+        || origin.starts_with("http://localhost:")
+        || origin.starts_with("https://127.0.0.1:")
+        || origin.starts_with("https://localhost:")
 }
 
 /// Process a single WebSocket connection.

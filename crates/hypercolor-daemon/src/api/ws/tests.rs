@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
+use axum::http::{HeaderMap, header};
 use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 
@@ -49,6 +50,7 @@ use super::relays::{
     relay_device_metrics, relay_display_preview, relay_frames, relay_metrics, relay_screen_canvas,
     relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
 };
+use super::session::is_allowed_ws_origin;
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -1284,6 +1286,32 @@ fn event_message_parts_serializes_device_origin() {
     assert_eq!(event_data["origin"]["transport"], "usb");
     assert_eq!(event_data["origin"]["protocol_id"], "fixture/protocol");
     assert!(event_data.get("backend_id").is_none());
+}
+
+#[test]
+fn ws_origin_filter_allows_missing_origin() {
+    let headers = HeaderMap::new();
+    assert!(is_allowed_ws_origin(&headers));
+}
+
+#[test]
+fn ws_origin_filter_allows_loopback_origins() {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ORIGIN, "http://127.0.0.1:9430".parse().expect("valid origin"));
+    assert!(is_allowed_ws_origin(&headers));
+
+    headers.insert(header::ORIGIN, "https://localhost".parse().expect("valid origin"));
+    assert!(is_allowed_ws_origin(&headers));
+}
+
+#[test]
+fn ws_origin_filter_rejects_non_loopback_origins() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ORIGIN,
+        "https://malicious.example".parse().expect("valid origin"),
+    );
+    assert!(!is_allowed_ws_origin(&headers));
 }
 
 #[test]
