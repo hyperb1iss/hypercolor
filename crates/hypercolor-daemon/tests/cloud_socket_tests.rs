@@ -451,10 +451,10 @@ fn cloud_reconnect_state_uses_exponential_backoff_with_clamped_jitter() {
     );
     assert_eq!(delays[5].base_delay, std::time::Duration::from_secs(32));
     assert_eq!(delays[5].retry_delay, std::time::Duration::from_secs(40));
-    assert_eq!(delays[6].base_delay, std::time::Duration::from_secs(60));
+    assert_eq!(delays[6].base_delay, std::time::Duration::from_mins(1));
     assert_eq!(delays[6].retry_delay, std::time::Duration::from_secs(45));
-    assert_eq!(delays[7].base_delay, std::time::Duration::from_secs(60));
-    assert_eq!(delays[7].retry_delay, std::time::Duration::from_secs(60));
+    assert_eq!(delays[7].base_delay, std::time::Duration::from_mins(1));
+    assert_eq!(delays[7].retry_delay, std::time::Duration::from_mins(1));
     assert_eq!(state.next_attempt(), 8);
 }
 

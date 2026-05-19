@@ -70,7 +70,7 @@ async fn cloud_status_reports_compiled_config_without_keyring_access() {
 #[tokio::test]
 async fn cloud_login_start_stores_session_without_returning_device_code() {
     let (auth_base_url, shutdown_tx, task) = spawn_auth_server().await;
-    let app = api::build_router(cloud_test_state(&auth_base_url), None);
+    let app = api::build_router(cloud_test_state_with_cloud(&auth_base_url, true), None);
 
     let response = app
         .oneshot(
@@ -147,7 +147,7 @@ async fn cloud_login_start_rejects_when_pending_session_limit_reached() {
 #[tokio::test]
 async fn cloud_login_poll_keeps_pending_session_retryable() {
     let (auth_base_url, shutdown_tx, task) = spawn_auth_server().await;
-    let app = api::build_router(cloud_test_state(&auth_base_url), None);
+    let app = api::build_router(cloud_test_state_with_cloud(&auth_base_url, true), None);
 
     let start = app
         .clone()
@@ -977,10 +977,6 @@ impl CloudSessionStatusFixture {
             credential_storage: "memory".into(),
         }
     }
-}
-
-fn cloud_test_state(auth_base_url: &str) -> Arc<AppState> {
-    cloud_test_state_with_cloud(auth_base_url, false)
 }
 
 fn cloud_test_state_with_cloud(auth_base_url: &str, enabled: bool) -> Arc<AppState> {
