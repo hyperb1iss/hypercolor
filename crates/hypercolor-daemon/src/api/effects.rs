@@ -29,7 +29,7 @@ use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, FrameData, HypercolorEvent,
     RenderGroupChangeKind,
 };
-use hypercolor_types::scene::RenderGroup;
+use hypercolor_types::scene::{RenderGroup, RenderGroupId};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -67,6 +67,12 @@ pub struct ApplyEffectRequest {
     /// already carry the preset's values, possibly with user tweaks).
     #[serde(default)]
     pub preset_id: Option<String>,
+    /// Optional target zone (render-group id). Omitted applies the effect
+    /// to the scene's Primary zone — the legacy behavior. A non-Primary
+    /// zone id renders the effect into that zone instead, leaving its
+    /// layout and device assignment untouched.
+    #[serde(default)]
+    pub render_group: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -806,35 +812,73 @@ pub async fn apply_effect(
         .map(|(_, effect)| effect_ref(&effect));
     let layout = resolve_full_scope_layout(state.as_ref()).await;
 
-    let (scene_id, group, change_kind) = {
+    // Resolve the optional target zone. An unparseable id is a client
+    // error; a parsed id is matched against the active scene below.
+    let target_group = match body.as_ref().and_then(|body| body.render_group.as_deref()) {
+        None => None,
+        Some(raw) => match raw.parse::<uuid::Uuid>() {
+            Ok(uuid) => Some(RenderGroupId(uuid)),
+            Err(_) => return ApiError::bad_request(format!("Invalid render_group id: {raw}")),
+        },
+    };
+
+    let (scene_id, group, change_kind, named_target) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = match active_scene_id_for_runtime_mutation(&scene_manager) {
             Ok(scene_id) => scene_id,
             Err(error) => return error.api_response("applying an effect"),
         };
-        let change_kind = if scene_manager
+
+        // A render_group naming the Primary zone — or no render_group at
+        // all — takes the legacy upsert path; a named non-Primary zone is
+        // effect-set in place, keeping its own layout.
+        let primary_id = scene_manager
             .active_scene()
             .and_then(|scene| scene.primary_group())
-            .is_some()
-        {
-            RenderGroupChangeKind::Updated
+            .map(|group| group.id);
+        let named_target = target_group.filter(|id| Some(*id) != primary_id);
+
+        if let Some(group_id) = named_target {
+            let group = match scene_manager.apply_effect_to_group(
+                group_id,
+                &metadata,
+                normalized_controls,
+                resolved_preset.as_ref().map(|preset| preset.id),
+            ) {
+                Ok(group) => group.clone(),
+                Err(error) => {
+                    return ApiError::validation(format!(
+                        "Failed to apply effect to zone: {error}"
+                    ));
+                }
+            };
+            (
+                scene_id,
+                group,
+                RenderGroupChangeKind::Updated,
+                named_target,
+            )
         } else {
-            RenderGroupChangeKind::Created
-        };
-        let group = match scene_manager.upsert_primary_group(
-            &metadata,
-            normalized_controls,
-            resolved_preset.as_ref().map(|preset| preset.id),
-            layout,
-        ) {
-            Ok(group) => group.clone(),
-            Err(error) => {
-                return ApiError::internal(format!(
-                    "Failed to update active scene primary group: {error}"
-                ));
-            }
-        };
-        (scene_id, group, change_kind)
+            let change_kind = if primary_id.is_some() {
+                RenderGroupChangeKind::Updated
+            } else {
+                RenderGroupChangeKind::Created
+            };
+            let group = match scene_manager.upsert_primary_group(
+                &metadata,
+                normalized_controls,
+                resolved_preset.as_ref().map(|preset| preset.id),
+                layout,
+            ) {
+                Ok(group) => group.clone(),
+                Err(error) => {
+                    return ApiError::internal(format!(
+                        "Failed to update active scene primary group: {error}"
+                    ));
+                }
+            };
+            (scene_id, group, change_kind, named_target)
+        }
     };
     log_effect_apply_completion(
         previous_effect.as_ref().map(|effect| effect.name.as_str()),
@@ -849,7 +893,13 @@ pub async fn apply_effect(
         transition: None,
     });
     publish_render_group_changed(state.as_ref(), scene_id, &group, change_kind);
-    let applied_layout = apply_associated_layout(state.as_ref(), &metadata.id.to_string()).await;
+    // A named zone keeps its own layout; only a Primary apply adopts the
+    // effect's associated layout.
+    let applied_layout = if named_target.is_some() {
+        None
+    } else {
+        apply_associated_layout(state.as_ref(), &metadata.id.to_string()).await
+    };
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(ApplyEffectResponse {

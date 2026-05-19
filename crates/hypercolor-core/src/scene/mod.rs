@@ -1491,6 +1491,54 @@ impl SceneManager {
             .and_then(|active| active.groups.iter().find(|group| group.id == group_id))
     }
 
+    /// Apply an effect to a named (non-Primary) render group — the
+    /// zone-targeted counterpart of [`Self::upsert_primary_group`]. Sets
+    /// the group's effect, controls, and preset; the group's layout,
+    /// role, and device assignment are left untouched. The group must
+    /// already exist — an effect apply never creates a zone.
+    pub fn apply_effect_to_group(
+        &mut self,
+        group_id: RenderGroupId,
+        effect: &EffectMetadata,
+        controls: HashMap<String, ControlValue>,
+        active_preset_id: Option<PresetId>,
+    ) -> Result<&RenderGroup> {
+        let scene = self
+            .active_scene_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
+        let group = scene
+            .groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("render group {group_id:?} is not in the active scene")
+            })?;
+        if group.role == RenderGroupRole::Display {
+            anyhow::bail!("render group {group_id:?} is a display face, not an LED zone");
+        }
+        let effect_changed = group.effect_id != Some(effect.id);
+        let control_bindings = if effect_changed {
+            HashMap::new()
+        } else {
+            group.control_bindings.clone()
+        };
+        replace_legacy_effect_layer_stack(
+            group,
+            effect.id,
+            controls,
+            control_bindings,
+            active_preset_id,
+        );
+        group.enabled = true;
+        // An effect swap is the TOCTOU trigger for an open controls
+        // modal, so the version advances — mirrors upsert_primary_group.
+        group.controls_version = group.controls_version.saturating_add(1);
+        self.refresh_active_render_groups();
+        self.active_scene()
+            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
+            .ok_or_else(|| anyhow::anyhow!("render group vanished after effect apply"))
+    }
+
     pub fn clear_group_effect(&mut self, group_id: RenderGroupId) -> Option<&RenderGroup> {
         let scene = self.active_scene_mut()?;
         let group = scene.groups.iter_mut().find(|group| group.id == group_id)?;

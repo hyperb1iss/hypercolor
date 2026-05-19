@@ -4276,6 +4276,63 @@ async fn apply_effect_upserts_primary_group() {
 }
 
 #[tokio::test]
+async fn apply_effect_targets_a_named_zone_via_render_group() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+
+    // The default scene is born with a Primary zone; add a Custom zone to
+    // target, and remember the Primary's effect so the apply can be shown
+    // to leave it alone.
+    let (custom_id, primary_effect_before) = {
+        let mut manager = state.scene_manager.write().await;
+        let custom_id = manager
+            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created");
+        let primary_effect = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .and_then(|group| group.effect_id);
+        (custom_id, primary_effect)
+    };
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "render_group": custom_id.to_string(),
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let scene = manager.active_scene().expect("a scene should be active");
+    let custom = scene
+        .groups
+        .iter()
+        .find(|group| group.id == custom_id)
+        .expect("the targeted zone should still exist");
+    assert!(
+        custom.effect_id.is_some(),
+        "the effect should land in the targeted zone"
+    );
+    assert_eq!(
+        scene.primary_group().and_then(|group| group.effect_id),
+        primary_effect_before,
+        "a named-zone apply must leave the Primary zone untouched",
+    );
+}
+
+#[tokio::test]
 async fn get_active_effect_returns_primary_group_info() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;

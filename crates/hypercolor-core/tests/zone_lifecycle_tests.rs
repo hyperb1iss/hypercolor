@@ -194,6 +194,66 @@ fn metadata_patch_can_promote_primary_atomically() {
 }
 
 #[test]
+fn apply_effect_to_group_targets_a_named_zone_and_keeps_its_layout() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_group(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("primary-zone"),
+        )
+        .expect("primary should be created");
+    let custom_id = manager
+        .create_render_group(&scene_id, "Ambient".to_owned(), None, (320, 200))
+        .expect("custom zone should be created");
+    let custom_layout = manager
+        .active_scene()
+        .and_then(|scene| scene.groups.iter().find(|group| group.id == custom_id))
+        .map(|group| group.layout.clone())
+        .expect("custom zone should exist");
+
+    let aurora = sample_effect("Aurora");
+    let updated = manager
+        .apply_effect_to_group(custom_id, &aurora, HashMap::new(), None)
+        .expect("effect should apply to the named zone");
+    assert_eq!(updated.id, custom_id);
+    assert_eq!(updated.effect_id, Some(aurora.id));
+    // A named-zone apply never reshapes the zone — role and layout hold.
+    assert_eq!(updated.role, RenderGroupRole::Custom);
+    assert_eq!(updated.layout, custom_layout);
+
+    // The Primary zone keeps whatever effect it had.
+    let primary_effect = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .and_then(|group| group.effect_id);
+    assert_ne!(primary_effect, Some(aurora.id));
+}
+
+#[test]
+fn apply_effect_to_group_rejects_an_unknown_zone() {
+    let mut manager = SceneManager::with_default();
+    manager
+        .upsert_primary_group(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("primary-zone"),
+        )
+        .expect("primary should be created");
+
+    let result = manager.apply_effect_to_group(
+        RenderGroupId::new(),
+        &sample_effect("Aurora"),
+        HashMap::new(),
+        None,
+    );
+    assert!(result.is_err(), "an unknown zone id must be rejected");
+}
+
+#[test]
 fn assignment_moves_zones_and_resets_cross_zone_placement() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
