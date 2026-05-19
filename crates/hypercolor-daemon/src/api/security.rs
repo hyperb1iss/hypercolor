@@ -518,7 +518,19 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    if !state.security_enabled() || request_is_loopback(&request) {
+    if !state.security_enabled() {
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::unsecured());
+        return next.run(request).await;
+    }
+
+    if request_is_loopback(&request) {
+        if is_mutating_request(request.method()) && is_cross_site_request(&request) {
+            return ApiError::forbidden(
+                "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
+            );
+        }
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
@@ -605,6 +617,22 @@ fn required_tier_for_method(method: &Method) -> AccessTier {
     } else {
         AccessTier::Control
     }
+}
+
+fn is_mutating_request(method: &Method) -> bool {
+    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+/// Returns `true` only when the browser explicitly marks the request as
+/// cross-site. Same-origin/same-site requests (the bundled web UI) and
+/// non-browser clients (CLI, SDK) omit or set a non-`cross-site` value, so
+/// this blocks drive-by CSRF without rejecting legitimate local clients.
+fn is_cross_site_request(request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|site| site == "cross-site")
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
@@ -1010,6 +1038,48 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn loopback_cross_site_mutating_requests_are_rejected() {
+        let app = secured_test_router();
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/scenes")
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn loopback_same_site_mutating_requests_are_allowed() {
+        let app = secured_test_router();
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/scenes")
+                    .header("sec-fetch-site", "same-origin")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
