@@ -17,7 +17,7 @@ use gloo_net::http::{Request, RequestBuilder};
 use serde::{Deserialize, Serialize};
 
 use hypercolor_types::scene::{RenderGroup, UnassignedBehavior};
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 use super::{ApiEnvelope, client};
 
@@ -78,17 +78,22 @@ pub struct UpdateZoneRequest {
     pub make_primary: Option<bool>,
 }
 
+/// One device-output assignment in an [`assign_devices`] request.
+/// Mirrors the daemon's untagged enum: `Existing { id }` references an
+/// output already in the scene (the daemon moves it); `New(DeviceZone)`
+/// carries a brand-new output the daemon will place for the first time.
+/// Untagged + struct variant makes wire order matter, so `New` is
+/// declared first; the daemon expects the same order on its decoder.
 #[derive(Debug, Clone, Serialize)]
-struct AssignDevicesRequest {
-    device_zones: Vec<DeviceZoneRef>,
+#[serde(untagged)]
+pub enum DeviceZoneAssignment {
+    New(Box<DeviceZone>),
+    Existing { id: String },
 }
 
-/// A reference to an already-existing `DeviceZone` being reassigned. The
-/// daemon's untagged `DeviceZoneAssignment` accepts this `{ "id": ... }`
-/// shape for existing outputs; the UI never mints brand-new device zones.
 #[derive(Debug, Clone, Serialize)]
-struct DeviceZoneRef {
-    id: String,
+struct AssignDevicesRequest {
+    device_zones: Vec<DeviceZoneAssignment>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,19 +176,19 @@ pub async fn delete_zone(
     .map(|outcome| outcome.map(|_: serde_json::Value| ()))
 }
 
-/// Reassign existing device outputs into `zone_id`. Returns the new
-/// `groups_revision` so a follow-up mutation can chain without a refetch.
+/// Reassign device outputs into `zone_id`. Existing outputs are
+/// referenced by id and moved between zones; brand-new ones carry a
+/// full `DeviceZone` so an unplaced device can be placed for the first
+/// time. Returns the new `groups_revision` so a follow-up mutation can
+/// chain without a refetch.
 pub async fn assign_devices(
     scene_id: &str,
     zone_id: &str,
-    device_zone_ids: &[String],
+    assignments: Vec<DeviceZoneAssignment>,
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<u64>, String> {
     let body = serde_json::to_string(&AssignDevicesRequest {
-        device_zones: device_zone_ids
-            .iter()
-            .map(|id| DeviceZoneRef { id: id.clone() })
-            .collect(),
+        device_zones: assignments,
     })
     .map_err(|error| error.to_string())?;
     send_zone_mutation(

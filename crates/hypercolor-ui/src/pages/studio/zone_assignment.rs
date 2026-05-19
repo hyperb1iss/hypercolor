@@ -87,8 +87,13 @@ pub fn ZoneAssignment() -> impl IntoView {
     let selected_count = Memo::new(move |_| selected.get().len());
 
     let assign_to = Callback::new(move |zone_id: String| {
-        let outputs = selected.get_untracked().into_iter().collect::<Vec<_>>();
-        if outputs.is_empty() {
+        let assignments = selected
+            .get_untracked()
+            .into_iter()
+            .map(|id| api::zones::DeviceZoneAssignment::Existing { id })
+            .collect::<Vec<_>>();
+        let count = assignments.len();
+        if count == 0 {
             return;
         }
         let Some(scene) = studio.active_scene.get_untracked() else {
@@ -99,13 +104,13 @@ pub fn ZoneAssignment() -> impl IntoView {
             match api::zones::assign_devices(
                 &scene.id,
                 &zone_id,
-                &outputs,
+                assignments,
                 Some(scene.groups_revision),
             )
             .await
             {
                 Ok(ZoneOutcome::Applied(_)) => {
-                    toasts::toast_success(&format!("Assigned {} output(s)", outputs.len()));
+                    toasts::toast_success(&format!("Assigned {count} output(s)"));
                     selected.set(HashSet::new());
                     studio.refresh_scene.run(());
                 }

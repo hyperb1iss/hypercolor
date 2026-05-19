@@ -24,6 +24,7 @@ use super::device_grouping::{
     DeviceMeta, ZoneDeviceRow, device_rows_for_zone, unassigned_device_rows,
 };
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::zone_add_device::ZoneAddDevice;
 use super::zone_controls::{NewZoneControl, ZoneControls};
 
 /// Collapsed zone ids, persisted per browser. Empty (the default) leaves
@@ -362,7 +363,7 @@ fn ZoneNode(
                 {if devices.is_empty() {
                     view! {
                         <div class="px-2 py-1.5 text-[10px] text-fg-tertiary/50">
-                            "No devices — assign hardware in the Layout view"
+                            "No devices yet"
                         </div>
                     }
                         .into_any()
@@ -381,6 +382,7 @@ fn ZoneNode(
                         .collect_view()
                         .into_any()
                 }}
+                <ZoneAddDevice zone_id=zone_id.clone() />
             </div>
         </div>
     }
