@@ -102,10 +102,8 @@ async fn cloud_login_start_stores_session_without_returning_device_code() {
 
 #[tokio::test]
 async fn cloud_login_start_rejects_when_cloud_disabled() {
-    let app = api::build_router(
-        cloud_test_state_with_cloud("https://example.com", false),
-        None,
-    );
+    let (state, _data_dir) = login_test_state(false);
+    let app = api::build_router(state, None);
 
     let response = app
         .oneshot(
@@ -123,7 +121,7 @@ async fn cloud_login_start_rejects_when_cloud_disabled() {
 
 #[tokio::test]
 async fn cloud_login_start_rejects_when_pending_session_limit_reached() {
-    let state = cloud_test_state_with_cloud("https://example.com", true);
+    let (state, _data_dir) = login_test_state(true);
     for _ in 0..128 {
         state.cloud_login_sessions.lock().await.insert(
             uuid::Uuid::new_v4(),
@@ -965,6 +963,24 @@ fn cloud_test_state_with_cloud(auth_base_url: &str, enabled: bool) -> Arc<AppSta
     let mut state = AppState::new();
     state.config_manager = Some(Arc::new(manager));
     Arc::new(state)
+}
+
+/// Build a fully isolated daemon state for cloud-login tests.
+///
+/// The asset library data dir is an explicit per-test temp dir rather than
+/// the process-global override, so parallel tests never race opening the
+/// shared asset index.
+fn login_test_state(cloud_enabled: bool) -> (Arc<AppState>, TempDir) {
+    let tempdir = TempDir::new().expect("temp dir should be created");
+    let manager = ConfigManager::new(tempdir.path().join("config.toml"))
+        .expect("config manager should initialize");
+    let mut config = HypercolorConfig::default();
+    config.cloud.enabled = cloud_enabled;
+    manager.update(config);
+
+    let mut state = AppState::new_with_data_dir(tempdir.path().join("data"));
+    state.config_manager = Some(Arc::new(manager));
+    (Arc::new(state), tempdir)
 }
 
 fn prepare_input(
