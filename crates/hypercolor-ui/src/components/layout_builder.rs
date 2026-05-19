@@ -276,6 +276,11 @@ pub(crate) struct LayoutEditorContext {
     /// Used by the canvas during drag to keep the LED preview live without
     /// committing intermediate state to the layout signal.
     pub push_preview: Callback<SpatialLayout>,
+    /// Layout device ids belonging to the focused zone — the canvas
+    /// highlights those outputs and dims the rest. Empty means no focus
+    /// (the `/layout` page, or a Screen / Unassigned selection in Studio):
+    /// the whole room renders evenly.
+    pub focused_device_ids: Signal<std::collections::HashSet<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -331,7 +336,14 @@ pub(crate) struct LayoutEditorState {
 /// [`LayoutEditorState`] to its children. Mount this once above any
 /// header + [`LayoutWorkspace`] pair that should share one editor.
 #[component]
-pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
+pub(crate) fn LayoutEditorProvider(
+    /// Layout device ids belonging to the focused zone. Defaults to empty
+    /// (no focus); the Studio Stage passes the selected zone's devices so
+    /// the canvas can highlight them and dim the rest.
+    #[prop(optional)]
+    focused_device_ids: Signal<std::collections::HashSet<String>>,
+    children: Children,
+) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
     // Load any UI state persisted from a previous visit so the page
@@ -412,6 +424,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         removed_zone_cache: removed_zone_cache.into(),
         set_removed_zone_cache,
         push_preview,
+        focused_device_ids,
     });
 
     let attachment_profiles = LocalResource::new(move || {

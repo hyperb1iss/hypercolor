@@ -41,6 +41,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     let compound_depth = editor.compound_depth;
     let keep_aspect_ratio = editor.keep_aspect_ratio;
     let hidden_zones = editor.hidden_zones;
+    let focused_device_ids = editor.focused_device_ids;
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_compound_depth = editor.set_compound_depth;
     let set_layout = editor.set_layout;
@@ -430,6 +431,23 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 Signal::derive(move || hidden_zones.get().contains(&zid))
                             };
 
+                            // A non-focused output — its device is not in the
+                            // focused zone — dims so the focused zone reads
+                            // clearly. Empty focus dims nothing.
+                            let is_dimmed = {
+                                let zid = zid.clone();
+                                Signal::derive(move || {
+                                    focused_device_ids.with(|focused| {
+                                        !focused.is_empty()
+                                            && zones_by_id.with(|map| {
+                                                map.get(&zid).is_some_and(|zone| {
+                                                    !focused.contains(&zone.device_id)
+                                                })
+                                            })
+                                    })
+                                })
+                            };
+
                             let is_interacting = {
                                 let zid = zid.clone();
                                 Signal::derive(move || interacting_zone_id.with(|active| {
@@ -443,14 +461,17 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     class=move || if is_interacting.get() {
                                         "absolute rounded-md cursor-move group"
                                     } else {
-                                        "absolute rounded-md cursor-move group transition-[border-color,box-shadow,background,opacity] duration-300"
+                                        "absolute rounded-md cursor-move group transition-[border-color,box-shadow,background,opacity,filter] duration-300"
                                     }
                                     style=move || {
                                         let Some(zd) = zone_style.get() else {
                                             return "display: none".to_string();
                                         };
-                                        let selected = is_selected.get();
                                         let hidden = is_hidden.get();
+                                        let dimmed = is_dimmed.get();
+                                        // Focus precedence: a non-focused output dims and
+                                        // forfeits its selected styling (hidden wins over both).
+                                        let selected = is_selected.get() && !dimmed;
                                         let border = if selected {
                                             format!("border: 2px solid rgba({}, 0.85)", zd.primary_rgb)
                                         } else {
@@ -480,6 +501,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let z = if selected { elevated_z_index } else { base_z_index };
                                         let visibility = if hidden {
                                             "opacity: 0.08; pointer-events: none; filter: grayscale(1)"
+                                        } else if dimmed {
+                                            "opacity: 0.32; filter: saturate(0.55)"
                                         } else {
                                             "opacity: 1"
                                         };
