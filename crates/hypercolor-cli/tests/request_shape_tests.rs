@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::http::Uri;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
@@ -306,12 +307,22 @@ async fn cloud_connection_prepare_posts_daemon_prepare_endpoint() -> Result<()> 
 #[tokio::test]
 async fn cloud_connection_connect_posts_daemon_connect_endpoint() -> Result<()> {
     let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let captured_header: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let router = Router::new()
         .route(
             "/api/v1/cloud/connection/connect",
             post(
-                |State(captured_uri): State<SharedUri>, uri: Uri| async move {
+                |State((captured_uri, captured_header)): State<(
+                    SharedUri,
+                    Arc<Mutex<Option<String>>>,
+                )>,
+                 uri: Uri,
+                 headers: HeaderMap| async move {
                     *captured_uri.lock().await = Some(uri.to_string());
+                    *captured_header.lock().await = headers
+                        .get("x-hypercolor-connect-intent")
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToOwned::to_owned);
                     Json(serde_json::json!({
                         "data": {
                             "state": "ready",
@@ -333,7 +344,7 @@ async fn cloud_connection_connect_posts_daemon_connect_endpoint() -> Result<()> 
                 },
             ),
         )
-        .with_state(Arc::clone(&captured_uri));
+        .with_state((Arc::clone(&captured_uri), Arc::clone(&captured_header)));
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
     let output = run_hyper_output(port, &["cloud", "connection", "--connect"]).await?;
@@ -358,6 +369,7 @@ async fn cloud_connection_connect_posts_daemon_connect_endpoint() -> Result<()> 
         captured_uri.lock().await.as_deref(),
         Some("/api/v1/cloud/connection/connect")
     );
+    assert_eq!(captured_header.lock().await.as_deref(), Some("manual"));
 
     Ok(())
 }

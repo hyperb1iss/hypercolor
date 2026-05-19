@@ -8,6 +8,9 @@ use clap::{Args, Subcommand};
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, extract_str};
 
+const CONNECT_INTENT_HEADER: &str = "x-hypercolor-connect-intent";
+const CONNECT_INTENT_VALUE: &str = "manual";
+
 #[derive(Debug, Args)]
 pub struct CloudArgs {
     #[command(subcommand)]
@@ -131,7 +134,11 @@ async fn execute_connection(
 
     let response = if args.connect {
         client
-            .post("/cloud/connection/connect", &serde_json::json!({}))
+            .post_with_headers(
+                "/cloud/connection/connect",
+                &serde_json::json!({}),
+                &[(CONNECT_INTENT_HEADER, CONNECT_INTENT_VALUE)],
+            )
             .await?
     } else if args.disconnect {
         client

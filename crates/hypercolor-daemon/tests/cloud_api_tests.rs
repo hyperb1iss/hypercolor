@@ -438,7 +438,30 @@ async fn cloud_identity_bootstrap_rejects_disabled_cloud_without_keyring() {
 
 #[tokio::test]
 async fn cloud_connection_connect_rejects_disabled_cloud_without_keyring() {
-    let app = api::build_router(Arc::new(AppState::new()), None);
+    let tempdir = TempDir::new().expect("temp data dir should be created");
+    let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
+    let app = api::build_router(state, None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/cloud/connection/connect")
+                .header("x-hypercolor-connect-intent", "manual")
+                .body(Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn cloud_connection_connect_rejects_missing_intent_header() {
+    let tempdir = TempDir::new().expect("temp data dir should be created");
+    let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
+    let app = api::build_router(state, None);
 
     let response = app
         .oneshot(
@@ -451,7 +474,7 @@ async fn cloud_connection_connect_rejects_disabled_cloud_without_keyring() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

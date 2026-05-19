@@ -73,6 +73,29 @@ impl DaemonClient {
         parse_api_response(response).await
     }
 
+    /// Send a POST request with a JSON body, extra headers, and parse the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable, the body cannot be
+    /// serialized, or the daemon returns a non-success status code.
+    pub async fn post_with_headers(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+        headers: &[(&str, &str)],
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let request = headers.iter().fold(
+            self.with_auth(self.http.post(&url)),
+            |request, (name, value)| request.header(*name, *value),
+        );
+        let response = request.json(body).send().await.with_context(|| {
+            format!("Failed to connect to daemon at {url}. Is the daemon running?")
+        })?;
+        parse_api_response(response).await
+    }
+
     /// Send a PUT request with a JSON body and parse the response.
     ///
     /// # Errors
