@@ -72,9 +72,7 @@ pub fn EffectControlsSection(
         let layer_id = layer_id.clone();
         use_debounce_fn(
             move || {
-                let batch = pending
-                    .try_update_value(std::mem::take)
-                    .unwrap_or_default();
+                let batch = pending.try_update_value(std::mem::take).unwrap_or_default();
                 if batch.is_empty() {
                     return;
                 }

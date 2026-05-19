@@ -143,7 +143,10 @@ fn unassigned_rows_exclude_placed_and_ledless_devices() {
 
 #[test]
 fn unassigned_rows_empty_when_every_device_is_placed() {
-    let groups = vec![group_with(vec![output("a", None, 10), output("b", None, 10)])];
+    let groups = vec![group_with(vec![
+        output("a", None, 10),
+        output("b", None, 10),
+    ])];
     let devices = vec![meta("a", "A", 10), meta("b", "B", 10)];
     assert!(unassigned_device_rows(&groups, &devices).is_empty());
 }

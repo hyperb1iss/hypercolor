@@ -31,8 +31,7 @@ use super::preview::{
     clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
     request_preview_subscription, request_screen_preview_subscription,
     request_web_viewport_preview_subscription, send_canvas_unsubscribe,
-    send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
-    should_stream_preview,
+    send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use crate::api::DeviceMetricsSnapshot;
 use crate::api::client;

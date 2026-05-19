@@ -71,7 +71,10 @@ pub fn device_rows_for_zone(outputs: &[DeviceZone], devices: &[DeviceMeta]) -> V
 /// Every registry device that has LEDs and whose id is the `device_id`
 /// of no placed `DeviceZone` anywhere in the scene.
 #[must_use]
-pub fn unassigned_device_rows(groups: &[RenderGroup], devices: &[DeviceMeta]) -> Vec<ZoneDeviceRow> {
+pub fn unassigned_device_rows(
+    groups: &[RenderGroup],
+    devices: &[DeviceMeta],
+) -> Vec<ZoneDeviceRow> {
     let placed: HashSet<&str> = groups
         .iter()
         .flat_map(|group| group.layout.zones.iter())

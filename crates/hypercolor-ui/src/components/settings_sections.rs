@@ -426,9 +426,8 @@ pub fn NetworkSection(
             cfg.network.allow_unauthenticated_remote_access
         })
     });
-    let allowed_clients = Signal::derive(move || {
-        read_config(config, |cfg| cfg.network.allowed_clients.join(", "))
-    });
+    let allowed_clients =
+        Signal::derive(move || read_config(config, |cfg| cfg.network.allowed_clients.join(", ")));
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
     let mcp_enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
     let access_mode_options = Signal::stored(vec![

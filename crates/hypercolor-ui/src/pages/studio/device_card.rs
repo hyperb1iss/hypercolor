@@ -241,10 +241,13 @@ fn group_digits(value: u64) -> String {
 /// daemon tags with a `Display` topology hint — `None` for an ordinary
 /// LED device, whose zones are strips, rings, and matrices.
 fn display_resolution(device: &DeviceSummary) -> Option<(u32, u32)> {
-    device.zones.iter().find_map(|zone| match zone.topology_hint {
-        Some(ZoneTopologySummary::Display { width, height, .. }) => Some((width, height)),
-        _ => None,
-    })
+    device
+        .zones
+        .iter()
+        .find_map(|zone| match zone.topology_hint {
+            Some(ZoneTopologySummary::Display { width, height, .. }) => Some((width, height)),
+            _ => None,
+        })
 }
 
 /// "1 LED" / "1,406 LEDs".

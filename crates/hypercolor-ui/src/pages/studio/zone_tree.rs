@@ -20,7 +20,9 @@ use crate::ws::messages::group_has_degraded_layer;
 
 use super::StudioContext;
 use super::device_card::StudioDeviceCard;
-use super::device_grouping::{DeviceMeta, ZoneDeviceRow, device_rows_for_zone, unassigned_device_rows};
+use super::device_grouping::{
+    DeviceMeta, ZoneDeviceRow, device_rows_for_zone, unassigned_device_rows,
+};
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use super::zone_controls::{NewZoneControl, ZoneControls};
 
@@ -148,11 +150,7 @@ pub fn ZoneTree() -> impl IntoView {
 
     let collapsed = RwSignal::new(load_collapsed());
     Effect::new(move |_| {
-        let joined = collapsed
-            .get()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(",");
+        let joined = collapsed.get().into_iter().collect::<Vec<_>>().join(",");
         storage::set(COLLAPSED_KEY, &joined);
     });
 
@@ -252,9 +250,8 @@ fn ZoneNode(
         let (Some(ws), Some(scene)) = (ws, studio.active_scene.get()) else {
             return false;
         };
-        ws.layer_health.with(|map| {
-            group_has_degraded_layer(map, &scene.id, &health_group, &health_layer_ids)
-        })
+        ws.layer_health
+            .with(|map| group_has_degraded_layer(map, &scene.id, &health_group, &health_layer_ids))
     });
 
     let controls_open = RwSignal::new(false);

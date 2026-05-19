@@ -208,10 +208,8 @@ async fn send_layer_mutation(
 
     match response.status() {
         200..=299 => {
-            let envelope: ApiEnvelope<LayerStackResponse> = response
-                .json()
-                .await
-                .map_err(|error| error.to_string())?;
+            let envelope: ApiEnvelope<LayerStackResponse> =
+                response.json().await.map_err(|error| error.to_string())?;
             Ok(LayerStackOutcome::Applied(envelope.data))
         }
         412 => {

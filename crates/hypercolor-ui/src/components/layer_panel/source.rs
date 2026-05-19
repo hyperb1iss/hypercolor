@@ -85,8 +85,12 @@ pub fn available_add_layer_scopes(groups: &[RenderGroup]) -> Vec<AddLayerScope> 
     if groups.len() < 2 {
         return Vec::new();
     }
-    let has_lights = groups.iter().any(|group| group.role != RenderGroupRole::Display);
-    let has_screens = groups.iter().any(|group| group.role == RenderGroupRole::Display);
+    let has_lights = groups
+        .iter()
+        .any(|group| group.role != RenderGroupRole::Display);
+    let has_screens = groups
+        .iter()
+        .any(|group| group.role == RenderGroupRole::Display);
     let mut scopes = vec![AddLayerScope::ThisSurface];
     if has_lights {
         scopes.push(AddLayerScope::AllLights);

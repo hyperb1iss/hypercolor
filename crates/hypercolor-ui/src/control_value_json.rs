@@ -44,9 +44,7 @@ pub fn json_to_control_value(
         if is_dropdown {
             return Some(ControlValue::Enum(text.to_owned()));
         }
-        if is_color_picker
-            && let Some(color) = hex_to_color_value(text)
-        {
+        if is_color_picker && let Some(color) = hex_to_color_value(text) {
             return Some(color);
         }
         return Some(ControlValue::Text(text.to_owned()));

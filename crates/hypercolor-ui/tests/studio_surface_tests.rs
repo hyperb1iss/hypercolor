@@ -32,7 +32,11 @@ fn sample_layout() -> SpatialLayout {
     }
 }
 
-fn group(name: &str, role: RenderGroupRole, display_target: Option<DisplayFaceTarget>) -> RenderGroup {
+fn group(
+    name: &str,
+    role: RenderGroupRole,
+    display_target: Option<DisplayFaceTarget>,
+) -> RenderGroup {
     RenderGroup {
         id: RenderGroupId::new(),
         name: name.to_owned(),
@@ -81,11 +85,8 @@ fn multiple_led_groups_keep_their_authored_names() {
 fn display_group_becomes_a_screen_carrying_its_device_id() {
     let device_id = DeviceId::new();
     let target = DisplayFaceTarget::new(device_id);
-    let surfaces = surfaces_from_groups(&[group(
-        "Corsair LCD",
-        RenderGroupRole::Display,
-        Some(target),
-    )]);
+    let surfaces =
+        surfaces_from_groups(&[group("Corsair LCD", RenderGroupRole::Display, Some(target))]);
 
     assert_eq!(surfaces.len(), 1);
     let surface = &surfaces[0];
@@ -140,8 +141,14 @@ fn led_and_display_groups_split_into_lights_and_screens() {
         ),
     ]);
 
-    let lights = surfaces.iter().filter(|s| s.kind == SurfaceKind::Light).count();
-    let screens = surfaces.iter().filter(|s| s.kind == SurfaceKind::Screen).count();
+    let lights = surfaces
+        .iter()
+        .filter(|s| s.kind == SurfaceKind::Light)
+        .count();
+    let screens = surfaces
+        .iter()
+        .filter(|s| s.kind == SurfaceKind::Screen)
+        .count();
     assert_eq!((lights, screens), (1, 1));
     // The lone LED zone keeps its authored name; the screen is separate.
     assert_eq!(surfaces[0].name, "Zone A");

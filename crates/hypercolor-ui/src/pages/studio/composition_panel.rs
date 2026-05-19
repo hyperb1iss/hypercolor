@@ -32,9 +32,8 @@ pub fn CompositionPanel(
     let studio = expect_context::<StudioContext>();
     let open = studio.composition_open;
     // The synthetic Unassigned entry has no layer stack (§9.4).
-    let is_unassigned = Signal::derive(move || {
-        selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID)
-    });
+    let is_unassigned =
+        Signal::derive(move || selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
 
     // Escape closes the panel while it is open.
     let _keydown = window_event_listener(ev::keydown, move |event| {

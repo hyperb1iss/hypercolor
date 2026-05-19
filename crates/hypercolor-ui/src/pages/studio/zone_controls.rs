@@ -306,7 +306,11 @@ fn commit_zone_enabled(studio: StudioContext, zone_id: &str, enabled: bool) {
         studio,
         zone_id,
         request,
-        if enabled { "Zone enabled" } else { "Zone disabled" },
+        if enabled {
+            "Zone enabled"
+        } else {
+            "Zone disabled"
+        },
     );
 }
 

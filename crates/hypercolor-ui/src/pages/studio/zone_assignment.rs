@@ -279,8 +279,7 @@ fn ZoneOutputSection(zone: ZoneOutputs, selected: RwSignal<HashSet<String>>) -> 
 fn OutputChip(output: DeviceZone, selected: RwSignal<HashSet<String>>) -> impl IntoView {
     let output_id = output.id.clone();
     let toggle_id = output.id.clone();
-    let is_selected =
-        Signal::derive(move || selected.with(|set| set.contains(output_id.as_str())));
+    let is_selected = Signal::derive(move || selected.with(|set| set.contains(output_id.as_str())));
     // A multi-channel device names its segment; a single-zone device just
     // its own name. Both stay user-facing — never a raw id (§4).
     let label = match &output.zone_name {

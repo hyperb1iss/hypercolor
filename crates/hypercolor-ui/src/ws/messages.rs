@@ -500,7 +500,10 @@ pub(crate) fn group_has_degraded_layer(
     current_layer_ids: &[String],
 ) -> bool {
     layer_health.iter().any(|(key, health)| {
-        if !matches!(health, LayerHealth::Failed { .. } | LayerHealth::AssetMissing) {
+        if !matches!(
+            health,
+            LayerHealth::Failed { .. } | LayerHealth::AssetMissing
+        ) {
             return false;
         }
         let mut parts = key.splitn(3, '/');

@@ -89,10 +89,7 @@ fn AssetCard(
 /// Empty-state placeholder for the media grid — shown by callers when the
 /// filtered asset list is empty.
 #[component]
-pub fn MediaGridEmpty(
-    #[prop(into)] title: String,
-    #[prop(into)] detail: String,
-) -> impl IntoView {
+pub fn MediaGridEmpty(#[prop(into)] title: String, #[prop(into)] detail: String) -> impl IntoView {
     view! {
         <div class="flex flex-col items-center justify-center py-20 text-center">
             <Icon icon=LuFolder width="36px" height="36px" style="color: rgba(139, 133, 160, 0.35)" />
