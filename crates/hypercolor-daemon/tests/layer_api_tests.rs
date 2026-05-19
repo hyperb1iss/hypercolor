@@ -659,6 +659,42 @@ async fn scene_wide_media_broadcast_creates_layers_per_group() {
 }
 
 #[tokio::test]
+async fn scene_wide_media_broadcast_rejects_missing_group() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let effect = insert_effect(&state, "broadcast-missing-group").await;
+    let asset_id = insert_lottie_asset(&state).await;
+    let (scene_id, primary_id, _display_id) = install_scene_with_two_groups(&state, effect.id).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
+
+    let missing_group_id = RenderGroupId::new();
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            uri,
+            serde_json::json!({
+                "asset_id": asset_id,
+                "targets": [
+                    { "group_id": primary_id },
+                    { "group_id": missing_group_id }
+                ]
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("Render group not found")
+    );
+}
+
+#[tokio::test]
 async fn layer_reorder_rejects_bad_membership_and_returns_next_version() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "pulse").await;
