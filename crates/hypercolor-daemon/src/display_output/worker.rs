@@ -119,7 +119,7 @@ impl DisplayDeviceWriter {
 #[derive(Clone)]
 enum PendingDisplayFrame {
     Fresh(DisplayWorkerFrameSet),
-    StaticHold,
+    StaticHold { retry: bool },
     RetryAfterFailure(DisplayWorkerFrameSet),
 }
 
@@ -132,18 +132,42 @@ impl PendingDisplayFrame {
         Self::RetryAfterFailure(frames)
     }
 
+    const fn static_hold() -> Self {
+        Self::StaticHold { retry: false }
+    }
+
+    const fn retry_cached_payload() -> Self {
+        Self::StaticHold { retry: true }
+    }
+
+    fn from_changed_frames(
+        frames: Option<DisplayWorkerFrameSet>,
+        retry_pending: bool,
+    ) -> Option<Self> {
+        frames.map(|frames| {
+            if retry_pending {
+                Self::retry(frames)
+            } else {
+                Self::fresh(frames)
+            }
+        })
+    }
+
     const fn force_send(&self) -> bool {
         !matches!(self, Self::Fresh(_))
     }
 
     const fn is_retry(&self) -> bool {
-        matches!(self, Self::RetryAfterFailure(_))
+        matches!(
+            self,
+            Self::RetryAfterFailure(_) | Self::StaticHold { retry: true }
+        )
     }
 
     fn into_frames(self) -> Option<DisplayWorkerFrameSet> {
         match self {
             Self::Fresh(frames) | Self::RetryAfterFailure(frames) => Some(frames),
-            Self::StaticHold => None,
+            Self::StaticHold { .. } => None,
         }
     }
 }
@@ -497,7 +521,7 @@ async fn run_display_worker(
                     }
                         () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_deadline)) => {
                         if should_refresh_static_hold(&power_state) && last_delivered_payload.is_some() {
-                            pending = Some(PendingDisplayFrame::StaticHold);
+                            pending = Some(PendingDisplayFrame::static_hold());
                         }
                     }
                 }
@@ -532,7 +556,11 @@ async fn run_display_worker(
                     if changed.is_err() {
                         break;
                     }
-                    pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                    let retry_pending = pending.as_ref().is_some_and(PendingDisplayFrame::is_retry);
+                    pending = PendingDisplayFrame::from_changed_frames(
+                        rx.borrow_and_update().clone(),
+                        retry_pending,
+                    );
                     continue;
                 }
                 () = tokio::time::sleep_until(tokio::time::Instant::from_std(retry_deadline)) => {}
@@ -546,7 +574,11 @@ async fn run_display_worker(
                         if changed.is_err() {
                             break 'worker;
                         }
-                        pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
+                        let retry_pending = pending.as_ref().is_some_and(PendingDisplayFrame::is_retry);
+                        pending = PendingDisplayFrame::from_changed_frames(
+                            rx.borrow_and_update().clone(),
+                            retry_pending,
+                        );
                         retry_after = None;
                         if pending.is_none() {
                             continue 'worker;
@@ -580,13 +612,21 @@ async fn run_display_worker(
                     )
                     .await;
                 }
-                record_display_write_attempt(&display_frames, false).await;
+                record_display_write_attempt(&display_frames, retry_attempt).await;
                 let write_result = writer
                     .write_display_payload_owned(device_id, Arc::clone(payload))
                     .await;
                 if let Err(error) = write_result {
                     record_display_write_failure(&display_frames).await;
                     maybe_warn_display_error(&mut last_warned_at, &target, &error);
+                    schedule_cached_display_retry(
+                        &mut pending,
+                        &mut retry_after,
+                        &mut next_send_at,
+                        send_interval,
+                        static_hold_refresh_interval,
+                    );
+                    continue;
                 } else {
                     record_display_write_success(&display_frames).await;
                     delivered_frame_number = delivered_frame_number.saturating_add(1);
@@ -847,6 +887,37 @@ fn schedule_display_retry(
     static_hold_refresh_interval: Duration,
     frames: DisplayWorkerFrameSet,
 ) {
+    schedule_retry_deadline(
+        retry_after,
+        next_send_at,
+        send_interval,
+        static_hold_refresh_interval,
+    );
+    *pending = Some(PendingDisplayFrame::retry(frames));
+}
+
+fn schedule_cached_display_retry(
+    pending: &mut Option<PendingDisplayFrame>,
+    retry_after: &mut Option<Instant>,
+    next_send_at: &mut Instant,
+    send_interval: Option<Duration>,
+    static_hold_refresh_interval: Duration,
+) {
+    schedule_retry_deadline(
+        retry_after,
+        next_send_at,
+        send_interval,
+        static_hold_refresh_interval,
+    );
+    *pending = Some(PendingDisplayFrame::retry_cached_payload());
+}
+
+fn schedule_retry_deadline(
+    retry_after: &mut Option<Instant>,
+    next_send_at: &mut Instant,
+    send_interval: Option<Duration>,
+    static_hold_refresh_interval: Duration,
+) {
     let now = Instant::now();
     let interval = send_interval.unwrap_or(static_hold_refresh_interval);
     let retry_deadline = now.checked_add(interval).unwrap_or(now);
@@ -856,7 +927,6 @@ fn schedule_display_retry(
     } else {
         *retry_after = Some(retry_deadline);
     }
-    *pending = Some(PendingDisplayFrame::retry(frames));
 }
 
 async fn record_display_write_attempt(

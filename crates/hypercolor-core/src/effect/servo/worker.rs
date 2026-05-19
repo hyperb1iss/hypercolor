@@ -2648,6 +2648,50 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_bounds_heavy_session_churn_to_one_slot() {
+        let mut scheduler = ServoWorkerScheduler::default();
+        let display_session = ServoSessionId(1);
+        let led_session = ServoSessionId(2);
+        let (display, display_rx) = queued_render_command(display_session, "display-face-0()");
+        let (led, led_rx) = queued_render_command(led_session, "led-html()");
+        let mut superseded_receivers = vec![display_rx];
+        let mut latest_display_rx = None;
+
+        scheduler.push(display);
+        scheduler.push(led);
+        for frame in 1..=64 {
+            if let Some(rx) = latest_display_rx.take() {
+                superseded_receivers.push(rx);
+            }
+            let script = format!("display-face-{frame}()");
+            let (display, display_rx) = queued_render_command(display_session, &script);
+            scheduler.push(display);
+            latest_display_rx = Some(display_rx);
+        }
+
+        for rx in superseded_receivers {
+            let superseded = rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("superseded display render should receive a response");
+            assert!(superseded.is_err());
+        }
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected latest display render");
+        };
+        assert_eq!(render.session_id, display_session);
+        assert_eq!(render.scripts, vec!["display-face-64()"]);
+
+        let Some(ScheduledServoWork::Render(render)) = scheduler.next() else {
+            panic!("expected led render after display slot");
+        };
+        assert_eq!(render.session_id, led_session);
+        assert_eq!(render.scripts, vec!["led-html()"]);
+        assert!(matches!(led_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(scheduler.next().is_none());
+    }
+
+    #[test]
     fn scheduler_preserves_lifecycle_command_order() {
         let mut scheduler = ServoWorkerScheduler::default();
         let (create_tx, _create_rx) = mpsc::sync_channel(1);

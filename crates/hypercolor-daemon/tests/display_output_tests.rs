@@ -3567,6 +3567,98 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
 }
 
 #[tokio::test]
+async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+    let sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
+    let fallback_write_count = Arc::new(AtomicUsize::new(0));
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(MultiDisplaySinkBackend::new(
+        HashMap::from([(device_id, Arc::clone(&sink))]),
+        Arc::clone(&fallback_write_count),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend device should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info_with_max_fps(
+            device_id, true, 320, 200, false, 10,
+        ))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let (_power_tx, power_state) = watch::channel(OutputPowerState {
+        sleeping: true,
+        ..OutputPowerState::default()
+    });
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state,
+        static_hold_refresh_interval: Duration::from_millis(20),
+        display_frames: Arc::clone(&display_frames),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
+    wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+
+    sink.failures_remaining.store(1, Ordering::SeqCst);
+    wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    event_bus
+        .scene_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
+
+    let metrics = tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
+        loop {
+            let metrics = display_frames.read().await.metrics_snapshot();
+            if metrics.retry_attempts_total >= 1 && metrics.write_successes_total >= 2 {
+                return metrics;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("unchanged display retry should be recorded in metrics");
+    assert_eq!(metrics.write_failures_total, 1);
+    assert_eq!(metrics.retry_attempts_total, 1);
+    assert_eq!(fallback_write_count.load(Ordering::SeqCst), 0);
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_skips_unchanged_frames() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
