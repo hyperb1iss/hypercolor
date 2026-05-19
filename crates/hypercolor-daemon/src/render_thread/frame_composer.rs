@@ -815,7 +815,12 @@ fn preview_surface_request(
         any_full_resolution |= screen_canvas_demand.any_full_resolution;
     }
 
-    if any_full_resolution || max_width == 0 || max_height == 0 {
+    if any_full_resolution
+        || canvas_width == 0
+        || canvas_height == 0
+        || max_width == 0
+        || max_height == 0
+    {
         return Some(PreviewSurfaceRequest {
             width: canvas_width,
             height: canvas_height,
@@ -1008,6 +1013,35 @@ mod tests {
             Some(PreviewSurfaceRequest {
                 width: 640,
                 height: 360,
+            })
+        );
+    }
+
+    #[test]
+    fn preview_surface_request_handles_zero_canvas_dimensions_without_panicking() {
+        assert_eq!(
+            preview_surface_request(
+                0,
+                480,
+                true,
+                false,
+                true,
+                false,
+                0,
+                1,
+                1,
+                PreviewDemandSummary {
+                    max_width: 320,
+                    max_height: 240,
+                    any_full_resolution: false,
+                },
+                0,
+                0,
+                PreviewDemandSummary::default(),
+            ),
+            Some(PreviewSurfaceRequest {
+                width: 0,
+                height: 480,
             })
         );
     }
