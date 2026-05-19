@@ -48,6 +48,7 @@ use super::relays::{
     relay_device_metrics, relay_display_preview, relay_frames, relay_metrics, relay_screen_canvas,
     relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
 };
+use super::session::is_allowed_ws_origin;
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -1544,6 +1545,27 @@ fn normalize_command_path_adds_api_prefix() {
 fn normalize_command_path_rejects_relative_paths() {
     let error = normalize_command_path("status").expect_err("relative path must fail");
     assert_eq!(error.code, "invalid_request");
+}
+
+#[test]
+fn ws_origin_guard_allows_missing_or_loopback_origins() {
+    assert!(is_allowed_ws_origin(None));
+    assert!(is_allowed_ws_origin(Some(
+        &axum::http::HeaderValue::from_static("http://localhost:9430"),
+    )));
+    assert!(is_allowed_ws_origin(Some(
+        &axum::http::HeaderValue::from_static("https://127.0.0.1:9430"),
+    )));
+}
+
+#[test]
+fn ws_origin_guard_rejects_non_loopback_origins() {
+    assert!(!is_allowed_ws_origin(Some(
+        &axum::http::HeaderValue::from_static("https://evil.example"),
+    )));
+    assert!(!is_allowed_ws_origin(Some(
+        &axum::http::HeaderValue::from_static("file://localhost/tmp"),
+    )));
 }
 
 #[tokio::test]

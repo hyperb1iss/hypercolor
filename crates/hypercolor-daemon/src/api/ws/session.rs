@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use axum::extract::{Extension, State, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -38,12 +39,42 @@ const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
     auth_context: Option<Extension<RequestAuthContext>>,
 ) -> Response {
+    if !is_allowed_ws_origin(headers.get(header::ORIGIN)) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let auth_context =
         auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
     upgrade_handler(ws, move |socket| handle_socket(socket, state, auth_context))
+}
+
+pub(super) fn is_allowed_ws_origin(origin: Option<&HeaderValue>) -> bool {
+    let Some(origin) = origin else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(scheme) = uri.scheme_str() else {
+        return false;
+    };
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Process a single WebSocket connection.
