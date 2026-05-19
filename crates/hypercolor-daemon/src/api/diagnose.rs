@@ -194,15 +194,20 @@ fn render_frame_liveness_status(
     )
 }
 
-/// `GET /api/v1/diagnose/memory` — Capture Servo memory profiler output.
+/// `POST /api/v1/diagnose/memory` — Capture Servo memory profiler output.
 pub async fn memory_diagnostics() -> Response {
     #[cfg(feature = "servo")]
     {
-        match hypercolor_core::effect::servo_memory_report_snapshot() {
-            Ok(snapshot) => ApiResponse::ok(snapshot),
-            Err(error) => {
+        match tokio::task::spawn_blocking(hypercolor_core::effect::servo_memory_report_snapshot)
+            .await
+        {
+            Ok(Ok(snapshot)) => ApiResponse::ok(snapshot),
+            Ok(Err(error)) => {
                 ApiError::internal(format!("Failed to collect Servo memory report: {error}"))
             }
+            Err(error) => ApiError::internal(format!(
+                "Servo memory diagnostics worker task failed: {error}"
+            )),
         }
     }
 
