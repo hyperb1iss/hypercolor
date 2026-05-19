@@ -1142,7 +1142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_allowlist_ignores_forwarded_headers_for_loopback_peers() {
+    async fn network_allowlist_uses_peer_ip_not_forwarded_header() {
         let app = allowlist_test_router(vec!["203.0.113.5".to_owned()]);
         let response = app
             .oneshot(with_connect_info(
@@ -1151,7 +1151,7 @@ mod tests {
                     .header("x-forwarded-for", "203.0.113.5")
                     .body(Body::empty())
                     .expect("failed to build request"),
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 99)),
                 1042,
             ))
             .await
@@ -1159,7 +1159,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let json = response_json(response).await;
-        assert_eq!(json["error"]["details"]["client_ip"], "127.0.0.1");
+        assert_eq!(json["error"]["details"]["client_ip"], "203.0.113.99");
     }
 
     #[tokio::test]
