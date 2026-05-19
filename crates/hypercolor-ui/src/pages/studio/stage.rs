@@ -74,7 +74,6 @@ fn SurfaceStage() -> impl IntoView {
             .find(|surface| surface.id == id)
     });
 
-    let surface_name = Memo::new(move |_| selected_surface.get().map(|surface| surface.name));
     let is_screen =
         Memo::new(move |_| selected_surface.get().map(|s| s.kind) == Some(SurfaceKind::Screen));
     let multi_zone = Memo::new(move |_| {
@@ -98,9 +97,9 @@ fn SurfaceStage() -> impl IntoView {
 
     // The toggle latches the last requested view; `resolved_view` applies
     // the §6.3 rule that a Screen has no Layout view and the §9.5 rule
-    // that the All-zones view needs a genuinely multi-zone scene. The
-    // requested view lives on [`StudioContext`] so the workspace can
-    // collapse the Layers rail while Layout owns the Stage.
+    // that the All-zones view needs a genuinely multi-zone scene. It
+    // lives on [`StudioContext`] so the choice survives the Stage
+    // remounting when the selection moves on or off the Unassigned entry.
     let requested_view = studio.stage_view;
     let resolved_view = Memo::new(move |_| {
         resolve_stage_view(requested_view.get(), is_screen.get(), multi_zone.get())
@@ -207,20 +206,7 @@ fn SurfaceStage() -> impl IntoView {
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
             <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/60 px-5 py-3">
-                {move || {
-                    if is_screen.get() {
-                        view! {
-                            <span class="text-sm font-semibold text-fg-primary">
-                                {move || {
-                                    surface_name.get().unwrap_or_else(|| "No surface".to_owned())
-                                }}
-                            </span>
-                        }
-                            .into_any()
-                    } else {
-                        view! { <NowPlayingChip surface=selected_surface /> }.into_any()
-                    }
-                }}
+                <NowPlayingChip surface=selected_surface />
                 {move || {
                     if is_screen.get() {
                         view! {
@@ -410,9 +396,11 @@ fn StageTab(
     }
 }
 
-/// The Stage header's now-playing chip. Names the selected zone's top
-/// layer and, on click, toggles the composition slide-over — the only
-/// way layer editing is summoned in the two-column workspace.
+/// The Stage header's now-playing chip. Names the selected surface's
+/// top layer and, on click, toggles the composition slide-over — the
+/// only way layer editing is summoned in the two-column workspace.
+/// Rendered for every surface, Light and Screen alike: both carry a
+/// layer stack, so both need the composition trigger.
 #[component]
 fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
@@ -433,7 +421,7 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
                 icon=LuLayers
                 width="13px"
                 height="13px"
-                style="color: rgba(128, 255, 234, 0.75)"
+                style="color: rgba(225, 53, 255, 0.75)"
             />
             <span class="max-w-[200px] truncate text-[12px] font-medium text-fg-secondary group-hover:text-fg-primary">
                 {label}

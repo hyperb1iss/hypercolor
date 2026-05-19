@@ -55,7 +55,7 @@ pub fn LayerPanel(
     selected_group_id: ReadSignal<Option<String>>,
     set_selected_group_id: WriteSignal<Option<String>>,
     /// Surface name supplied by a host that owns surface selection
-    /// elsewhere (Studio's surface rail). When present the panel shows it
+    /// elsewhere (the Studio zone tree). When present the panel shows it
     /// in the header and drops its own redundant group selector.
     #[prop(optional, into)]
     surface_label: MaybeProp<String>,
