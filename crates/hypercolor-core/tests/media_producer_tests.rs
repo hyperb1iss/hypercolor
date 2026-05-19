@@ -119,9 +119,41 @@ fn oversized_lottie_bytes() -> &'static [u8] {
         "fr": 30,
         "ip": 0,
         "op": 2,
-        "w": 4096,
-        "h": 4096,
+        "w": 16384,
+        "h": 16384,
         "nm": "hypercolor-oversized",
+        "ddd": 0,
+        "assets": [],
+        "layers": []
+    }"#
+}
+
+#[cfg(feature = "media-lottie")]
+fn too_many_frames_lottie_bytes() -> &'static [u8] {
+    br#"{
+        "v": "5.7.6",
+        "fr": 30,
+        "ip": 0,
+        "op": 601,
+        "w": 100,
+        "h": 100,
+        "nm": "hypercolor-too-many-frames",
+        "ddd": 0,
+        "assets": [],
+        "layers": []
+    }"#
+}
+
+#[cfg(feature = "media-lottie")]
+fn budget_exceeded_lottie_bytes() -> &'static [u8] {
+    br#"{
+        "v": "5.7.6",
+        "fr": 30,
+        "ip": 0,
+        "op": 33,
+        "w": 1024,
+        "h": 1024,
+        "nm": "hypercolor-budget-exceeded",
         "ddd": 0,
         "assets": [],
         "layers": []
@@ -331,12 +363,43 @@ fn lottie_frames_decode_when_feature_is_enabled() {
 
 #[cfg(feature = "media-lottie")]
 #[test]
-fn oversized_lottie_frames_are_rejected() {
+fn oversized_lottie_dimensions_are_rejected() {
     let error = MediaProducer::from_bytes(oversized_lottie_bytes(), "application/json")
         .expect_err("oversized Lottie should be rejected");
     assert!(
-        error.to_string().contains("invalid dimensions"),
-        "unexpected error: {error}"
+        matches!(
+            error,
+            hypercolor_core::effect::media::MediaProducerError::InvalidLottieSize { .. }
+        ),
+        "expected InvalidLottieSize, got {error:?}"
+    );
+}
+
+#[cfg(feature = "media-lottie")]
+#[test]
+fn lottie_frame_count_over_budget_is_rejected() {
+    let error = MediaProducer::from_bytes(too_many_frames_lottie_bytes(), "application/json")
+        .expect_err("Lottie with too many frames should be rejected");
+    assert!(
+        matches!(
+            error,
+            hypercolor_core::effect::media::MediaProducerError::LottieFrameCountExceeded { .. }
+        ),
+        "expected LottieFrameCountExceeded, got {error:?}"
+    );
+}
+
+#[cfg(feature = "media-lottie")]
+#[test]
+fn lottie_decoded_budget_exceeded_is_rejected() {
+    let error = MediaProducer::from_bytes(budget_exceeded_lottie_bytes(), "application/json")
+        .expect_err("Lottie exceeding the decode budget should be rejected");
+    assert!(
+        matches!(
+            error,
+            hypercolor_core::effect::media::MediaProducerError::LottieDecodedBudgetExceeded { .. }
+        ),
+        "expected LottieDecodedBudgetExceeded, got {error:?}"
     );
 }
 

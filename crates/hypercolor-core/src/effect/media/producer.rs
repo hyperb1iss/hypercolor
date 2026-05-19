@@ -55,7 +55,7 @@ const MAX_ANIMATION_DIMENSION: u32 = 8_192;
 #[cfg(feature = "media-lottie")]
 const LOTTIE_MEDIA_ESTIMATED_COST_US: u64 = 8_000;
 #[cfg(feature = "media-lottie")]
-const MAX_LOTTIE_DIMENSION: usize = 2_048;
+const MAX_LOTTIE_DIMENSION: usize = 8_192;
 #[cfg(feature = "media-lottie")]
 const MAX_LOTTIE_FRAME_COUNT: usize = 600;
 #[cfg(feature = "media-lottie")]
@@ -404,8 +404,9 @@ impl MediaProducer {
             return Err(MediaProducerError::LottieContainsNul);
         }
 
+        let cache_key = lottie_cache_key(bytes);
         let mut animation =
-            rlottie::Animation::from_data(bytes.to_vec(), DEFAULT_LOTTIE_CACHE_KEY, Path::new("."))
+            rlottie::Animation::from_data(bytes.to_vec(), cache_key.as_str(), Path::new("."))
                 .ok_or(MediaProducerError::LottieDecode)?;
         let size = animation.size();
         validate_lottie_size(size)?;
@@ -621,6 +622,16 @@ where
 fn canvas_from_rgba_image(image: image::RgbaImage) -> Canvas {
     let (width, height) = image.dimensions();
     Canvas::from_vec(image.into_raw(), width, height)
+}
+
+/// rlottie caches parsed animations by this key, so it must be derived from
+/// the content — a fixed key makes every distinct inline Lottie collide.
+#[cfg(feature = "media-lottie")]
+fn lottie_cache_key(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{DEFAULT_LOTTIE_CACHE_KEY}-{:016x}", hasher.finish())
 }
 
 #[cfg(feature = "media-lottie")]
