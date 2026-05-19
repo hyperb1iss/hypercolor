@@ -5,8 +5,8 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
 use hypercolor_types::layer::{
     AudioBand, BindingMap, BindingSource, LayerAdjust, LayerBinding, LayerBlendMode,
-    LayerParameter, LayerSource, LayerTransform, LoopMode, MediaPlayback, SceneLayer, SceneLayerId,
-    TimeWave, WebViewportRender,
+    LayerParameter, LayerSource, LayerTransform, LoopMode, MAX_LAYER_BINDINGS, MediaPlayback,
+    SceneLayer, SceneLayerId, TimeWave, WebViewportRender,
 };
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
@@ -171,6 +171,41 @@ fn layer_validation_rejects_non_finite_values_and_empty_binding_ranges() {
         errors
             .iter()
             .any(|error| error.contains("source range must not be empty"))
+    );
+}
+
+#[test]
+fn layer_validation_rejects_too_many_bindings() {
+    let layer = SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::ColorFill {
+            rgba: [1.0, 1.0, 1.0, 1.0],
+        },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: (0..=MAX_LAYER_BINDINGS)
+            .map(|_| LayerBinding {
+                target: LayerParameter::Opacity,
+                source: BindingSource::AudioBand {
+                    band: AudioBand::Bass,
+                },
+                map: BindingMap::linear(0.0..=1.0, 0.0..=1.0),
+            })
+            .collect(),
+        enabled: true,
+    };
+
+    let errors = layer
+        .validate()
+        .expect_err("layer with too many bindings should fail");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("bindings must contain at most"))
     );
 }
 

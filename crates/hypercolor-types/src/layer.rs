@@ -16,6 +16,9 @@ use crate::scene::DisplayFaceBlendMode;
 use crate::spatial::NormalizedPosition;
 use crate::viewport::{FitMode, ViewportRect};
 
+/// Maximum bindings allowed per layer to cap per-frame runtime evaluation cost.
+pub const MAX_LAYER_BINDINGS: usize = 64;
+
 /// Stable identifier for a layer within a render group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SceneLayerId(pub Uuid);
@@ -149,6 +152,11 @@ impl SceneLayer {
         self.source.validate(&mut errors);
         self.transform.validate(&mut errors);
         self.adjust.validate(&mut errors);
+        if self.bindings.len() > MAX_LAYER_BINDINGS {
+            errors.push(format!(
+                "bindings must contain at most {MAX_LAYER_BINDINGS} entries"
+            ));
+        }
         for binding in &self.bindings {
             binding.validate(&mut errors);
         }
