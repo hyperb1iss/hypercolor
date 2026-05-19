@@ -1389,6 +1389,10 @@ fn compose_authoritative_scene_canvas(
             continue;
         };
 
+        if copy_full_scene_identity_projection(scene_canvas, source, projection) {
+            continue;
+        }
+
         for zone_projection in &projection.zones {
             for sample in &zone_projection.samples {
                 scene_canvas.set_pixel(
@@ -1405,6 +1409,64 @@ fn compose_authoritative_scene_canvas(
             }
         }
     }
+}
+
+fn copy_full_scene_identity_projection(
+    scene_canvas: &mut Canvas,
+    source: &Canvas,
+    projection: &CachedGroupProjection,
+) -> bool {
+    if scene_canvas.width() != source.width()
+        || scene_canvas.height() != source.height()
+        || !full_scene_identity_projection(source, projection)
+    {
+        return false;
+    }
+
+    scene_canvas
+        .as_rgba_bytes_mut()
+        .copy_from_slice(source.as_rgba_bytes());
+    true
+}
+
+fn full_scene_identity_projection(source: &Canvas, projection: &CachedGroupProjection) -> bool {
+    if projection.scene_width != source.width()
+        || projection.scene_height != source.height()
+        || projection.layout.canvas_width != source.width()
+        || projection.layout.canvas_height != source.height()
+    {
+        return false;
+    }
+
+    let [zone_projection] = projection.zones.as_slice() else {
+        return false;
+    };
+    if zone_projection.sampling_mode != SamplingMode::Nearest {
+        return false;
+    }
+    if !zone_is_full_scene_identity(&zone_projection.zone) {
+        return false;
+    }
+    let expected_samples = u64::from(projection.scene_width) * u64::from(projection.scene_height);
+    u64::try_from(zone_projection.samples.len()).is_ok_and(|sample_count| {
+        sample_count == expected_samples
+            && zone_projection
+                .samples
+                .iter()
+                .enumerate()
+                .all(|(index, sample)| {
+                    let index = u32::try_from(index).unwrap_or(u32::MAX);
+                    sample.x == index % projection.scene_width
+                        && sample.y == index / projection.scene_width
+                })
+    })
+}
+
+fn zone_is_full_scene_identity(zone: &DeviceZone) -> bool {
+    zone.position == NormalizedPosition::new(0.5, 0.5)
+        && zone.size == NormalizedPosition::new(1.0, 1.0)
+        && (zone.scale - 1.0).abs() <= f32::EPSILON
+        && zone.rotation.abs() <= f32::EPSILON
 }
 
 fn build_group_projection(
@@ -2955,6 +3017,82 @@ mod tests {
             8,
             8,
             8,
+        );
+
+        assert_eq!(fast.as_rgba_bytes(), general.as_rgba_bytes());
+    }
+
+    #[test]
+    fn full_scene_identity_fast_path_matches_projected_path() {
+        let mut zone = point_zone("zone_full_scene_identity");
+        zone.position = NormalizedPosition::new(0.5, 0.5);
+        zone.size = NormalizedPosition::new(1.0, 1.0);
+        zone.scale = 1.0;
+        zone.rotation = 0.0;
+        zone.sampling_mode = Some(SamplingMode::Nearest);
+        zone.edge_behavior = Some(EdgeBehavior::Clamp);
+        let group = RenderGroup {
+            id: RenderGroupId::new(),
+            name: "Identity".into(),
+            description: None,
+            effect_id: None,
+            controls: HashMap::new(),
+            control_bindings: HashMap::new(),
+            preset_id: None,
+            layers: Vec::new(),
+            layout: SpatialLayout {
+                id: "full-scene-identity".into(),
+                name: "Full Scene Identity".into(),
+                description: None,
+                canvas_width: 4,
+                canvas_height: 4,
+                zones: vec![zone.clone()],
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            },
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: None,
+            role: RenderGroupRole::Custom,
+            controls_version: 0,
+            layers_version: 0,
+        };
+        let projection = build_group_projection(&group, 4, 4);
+        let mut source = Canvas::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                source.set_pixel(
+                    x,
+                    y,
+                    Rgba::new((x * 40) as u8, (y * 50) as u8, ((x + y) * 30) as u8, 255),
+                );
+            }
+        }
+        let mut fast = Canvas::new(4, 4);
+        let mut general = Canvas::new(4, 4);
+
+        assert!(copy_full_scene_identity_projection(
+            &mut fast,
+            &source,
+            &projection
+        ));
+        blit_general_zone_projection(
+            &mut general,
+            &source,
+            &zone,
+            zone.sampling_mode
+                .as_ref()
+                .expect("sampling mode should be set"),
+            EdgeBehavior::Clamp,
+            0,
+            0,
+            4,
+            4,
+            4,
+            4,
         );
 
         assert_eq!(fast.as_rgba_bytes(), general.as_rgba_bytes());
