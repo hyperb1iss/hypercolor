@@ -41,6 +41,7 @@ const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(10);
 const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
+const MAX_BATCH_DELAY_MS: u64 = 1_000;
 const CLIENT_CONNECT_ATTEMPTS: usize = 20;
 const CLIENT_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(10);
 const DIRECT_ENV: &str = "HYPERCOLOR_PAWNIO_DIRECT";
@@ -576,6 +577,7 @@ impl BrokerState {
                     *transaction = BrokerSmBusTransaction::from(&transaction_value);
                 }
                 BrokerSmBusBatchOperation::Delay { duration_ms } => {
+                    validate_batch_delay_ms(*duration_ms)?;
                     thread::sleep(Duration::from_millis(u64::from(*duration_ms)));
                 }
             }
@@ -583,6 +585,16 @@ impl BrokerState {
 
         Ok(())
     }
+}
+
+fn validate_batch_delay_ms(duration_ms: u64) -> PawnIoResult<()> {
+    if duration_ms > MAX_BATCH_DELAY_MS {
+        return Err(PawnIoError::InvalidInput {
+            detail: format!("SMBus batch delay exceeds maximum of {MAX_BATCH_DELAY_MS} ms"),
+        });
+    }
+
+    Ok(())
 }
 
 fn lock_poisoned() -> PawnIoError {
@@ -888,6 +900,7 @@ mod tests {
 
     use super::{
         BrokerBusInfo, BrokerSmBusBatchOperation, BrokerSmBusDirection, BrokerSmBusTransaction,
+        MAX_BATCH_DELAY_MS, PawnIoError,
         SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBusInfo,
     };
 
@@ -957,5 +970,12 @@ mod tests {
             WindowsSmBusBusInfo::try_from(BrokerBusInfo::from(&info)).expect("dto should decode");
 
         assert_eq!(decoded, info);
+    }
+
+    #[test]
+    fn batch_delay_rejects_values_above_maximum() {
+        let error = super::validate_batch_delay_ms(MAX_BATCH_DELAY_MS + 1)
+            .expect_err("delay above max should be rejected");
+        assert!(matches!(error, PawnIoError::InvalidInput { .. }));
     }
 }
