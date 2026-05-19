@@ -609,6 +609,14 @@ impl SparkleFlinger {
         }
     }
 
+    pub(crate) fn supports_gpu_output_frames(&self) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { .. } => true,
+        }
+    }
+
     #[allow(
         dead_code,
         reason = "display-face composition keeps the reusable surface path beside the slice path"

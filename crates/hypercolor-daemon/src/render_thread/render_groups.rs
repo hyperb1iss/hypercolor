@@ -38,7 +38,7 @@ use super::sparkleflinger::{
     CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
 };
 use super::{micros_u32, usize_to_u32};
-use crate::performance::FullFrameCopyMetrics;
+use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics};
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -416,6 +416,9 @@ impl RenderGroupRuntime {
         let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
+        let project_scene_with_sparkleflinger = sparkleflinger.supports_gpu_output_frames()
+            && groups_support_projection_composition(groups, &self.scene_projection_cache);
+        let mut projected_scene_layers = Vec::new();
         for group in groups {
             if !group_is_active(group) {
                 continue;
@@ -457,7 +460,7 @@ impl RenderGroupRuntime {
             }
 
             let render_start = Instant::now();
-            let frame = self.render_group_frame(
+            let mut frame = self.render_group_frame(
                 group,
                 active_scene_id,
                 elapsed_ms,
@@ -468,9 +471,25 @@ impl RenderGroupRuntime {
                 screen,
                 sensors,
                 sparkleflinger,
-                true,
+                !project_scene_with_sparkleflinger,
                 false,
             )?;
+            if frame.is_none() && project_scene_with_sparkleflinger {
+                frame = self.render_group_frame(
+                    group,
+                    active_scene_id,
+                    elapsed_ms,
+                    registry,
+                    delta_secs,
+                    audio,
+                    interaction,
+                    screen,
+                    sensors,
+                    sparkleflinger,
+                    true,
+                    false,
+                )?;
+            }
             let Some(target) = self.target_canvases.get_mut(&group.id) else {
                 continue;
             };
@@ -478,6 +497,20 @@ impl RenderGroupRuntime {
                 target.clear();
                 continue;
             };
+            if project_scene_with_sparkleflinger
+                && let Some(projection) = self.scene_projection_cache.get(&group.id)
+                && let Some(layers) = projection_composition_layers_for_group(
+                    &frame,
+                    group,
+                    projection,
+                    self.scene_width,
+                    self.scene_height,
+                )
+            {
+                projected_scene_layers.extend(layers);
+                render_us = render_us.saturating_add(micros_u32(render_start.elapsed()));
+                continue;
+            }
             if !copy_producer_frame_to_canvas(frame, target, &mut producer_full_frame_copy) {
                 target.clear();
                 continue;
@@ -487,7 +520,12 @@ impl RenderGroupRuntime {
         zones.clear();
         let logical_layer_count = scene_logical_layer_count(groups);
         let scene_compose_start = Instant::now();
-        let scene_frame = self.compose_scene_frame(groups);
+        let scene_frame = if project_scene_with_sparkleflinger {
+            self.compose_projected_scene_frame(projected_scene_layers, sparkleflinger)
+                .unwrap_or_else(|| self.compose_scene_frame(groups))
+        } else {
+            self.compose_scene_frame(groups)
+        };
         let scene_compose_us = micros_u32(scene_compose_start.elapsed());
 
         let result = RenderGroupResult {
@@ -1114,7 +1152,7 @@ impl RenderGroupRuntime {
                 );
             }
         }
-        Ok(composed_frame_to_producer_frame(composed))
+        Ok(composed_frame_to_producer_frame(composed, sparkleflinger))
     }
 
     fn render_media_layer_frame(
@@ -1331,6 +1369,36 @@ impl RenderGroupRuntime {
         frame
     }
 
+    fn compose_projected_scene_frame(
+        &mut self,
+        layers: Vec<CompositionLayer>,
+        sparkleflinger: &mut SparkleFlinger,
+    ) -> Option<ProducerFrame> {
+        if layers.is_empty() {
+            return None;
+        }
+
+        let plan = CompositionPlan::with_layers(self.scene_width, self.scene_height, layers)
+            .with_cpu_replay_cacheable(false);
+        let composed = sparkleflinger.compose_for_outputs(plan.clone(), false, None);
+        if let Some(frame) = composed_frame_to_producer_frame(composed, sparkleflinger) {
+            record_producer_frame(&frame);
+            return Some(frame);
+        }
+
+        let composed = sparkleflinger.compose_for_outputs(
+            plan,
+            true,
+            Some(PreviewSurfaceRequest {
+                width: self.scene_width,
+                height: self.scene_height,
+            }),
+        );
+        let frame = composed_frame_to_producer_frame(composed, sparkleflinger)?;
+        record_producer_frame(&frame);
+        Some(frame)
+    }
+
     #[cfg(test)]
     fn compose_preview_grid_for_test(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
         let Some(mut lease) = self.scene_surface_pool.dequeue() else {
@@ -1411,6 +1479,48 @@ fn compose_authoritative_scene_canvas(
     }
 }
 
+fn groups_support_projection_composition(
+    groups: &[RenderGroup],
+    scene_projection_cache: &HashMap<RenderGroupId, CachedGroupProjection>,
+) -> bool {
+    let mut scene_group_count = 0_usize;
+    for group in groups
+        .iter()
+        .filter(|group| group_contributes_to_scene_canvas(group))
+    {
+        scene_group_count = scene_group_count.saturating_add(1);
+        let Some(projection) = scene_projection_cache.get(&group.id) else {
+            return false;
+        };
+        if !projection_supports_composition(projection) {
+            return false;
+        }
+    }
+    scene_group_count > 0
+}
+
+fn projection_supports_composition(projection: &CachedGroupProjection) -> bool {
+    full_scene_identity_projection_shape(projection)
+}
+
+fn projection_composition_layers_for_group(
+    frame: &ProducerFrame,
+    group: &RenderGroup,
+    projection: &CachedGroupProjection,
+    scene_width: u32,
+    scene_height: u32,
+) -> Option<Vec<CompositionLayer>> {
+    if projection.scene_width != scene_width
+        || projection.scene_height != scene_height
+        || projection.layout != group.layout
+        || !projection_supports_composition(projection)
+    {
+        return None;
+    }
+
+    Some(vec![CompositionLayer::replace_opaque(frame.clone())])
+}
+
 fn copy_full_scene_identity_projection(
     scene_canvas: &mut Canvas,
     source: &Canvas,
@@ -1438,6 +1548,16 @@ fn full_scene_identity_projection(source: &Canvas, projection: &CachedGroupProje
         return false;
     }
 
+    full_scene_identity_projection_shape(projection)
+}
+
+fn full_scene_identity_projection_shape(projection: &CachedGroupProjection) -> bool {
+    if projection.layout.canvas_width != projection.scene_width
+        || projection.layout.canvas_height != projection.scene_height
+    {
+        return false;
+    }
+
     let [zone_projection] = projection.zones.as_slice() else {
         return false;
     };
@@ -1448,18 +1568,7 @@ fn full_scene_identity_projection(source: &Canvas, projection: &CachedGroupProje
         return false;
     }
     let expected_samples = u64::from(projection.scene_width) * u64::from(projection.scene_height);
-    u64::try_from(zone_projection.samples.len()).is_ok_and(|sample_count| {
-        sample_count == expected_samples
-            && zone_projection
-                .samples
-                .iter()
-                .enumerate()
-                .all(|(index, sample)| {
-                    let index = u32::try_from(index).unwrap_or(u32::MAX);
-                    sample.x == index % projection.scene_width
-                        && sample.y == index / projection.scene_width
-                })
-    })
+    u64::try_from(zone_projection.samples.len()) == Ok(expected_samples)
 }
 
 fn zone_is_full_scene_identity(zone: &DeviceZone) -> bool {
@@ -1881,11 +1990,29 @@ fn media_mime_prefers_gpu_texture(mime_type: &str) -> bool {
     )
 }
 
-fn composed_frame_to_producer_frame(composed: ComposedFrameSet) -> Option<ProducerFrame> {
+fn composed_frame_to_producer_frame(
+    composed: ComposedFrameSet,
+    sparkleflinger: &mut SparkleFlinger,
+) -> Option<ProducerFrame> {
     composed
         .sampling_surface
         .map(ProducerFrame::Surface)
         .or_else(|| composed.sampling_canvas.map(ProducerFrame::Canvas))
+        .or_else(|| composed.preview_surface.map(ProducerFrame::Surface))
+        .or_else(|| {
+            #[cfg(feature = "wgpu")]
+            {
+                if composed.backend == CompositorBackendKind::Gpu && !composed.gpu_readback_failed {
+                    return sparkleflinger
+                        .current_output_frame()
+                        .ok()
+                        .flatten()
+                        .map(ProducerFrame::GpuTexture);
+                }
+            }
+
+            None
+        })
 }
 
 fn surface_backed_frame(
@@ -2137,6 +2264,20 @@ mod tests {
             controls_version: 0,
             layers_version: 0,
         }
+    }
+
+    fn patterned_source_canvas(width: u32, height: u32) -> Canvas {
+        let mut canvas = Canvas::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                canvas.set_pixel(
+                    x,
+                    y,
+                    Rgba::new((x * 40) as u8, (y * 50) as u8, ((x + y) * 30) as u8, 255),
+                );
+            }
+        }
+        canvas
     }
 
     fn sample_display_group(width: u32, height: u32) -> RenderGroup {
@@ -3096,6 +3237,169 @@ mod tests {
         );
 
         assert_eq!(fast.as_rgba_bytes(), general.as_rgba_bytes());
+    }
+
+    #[test]
+    fn projected_composition_layers_match_nearest_projection() {
+        let mut zone = point_zone("zone_projected_composition");
+        zone.position = NormalizedPosition::new(0.5, 0.5);
+        zone.size = NormalizedPosition::new(1.0, 1.0);
+        zone.rotation = 0.0;
+        zone.sampling_mode = Some(SamplingMode::Nearest);
+        zone.edge_behavior = Some(EdgeBehavior::Clamp);
+        let mut group = sample_group(4, 4);
+        group.layout.zones = vec![zone];
+        group.layout.default_sampling_mode = SamplingMode::Nearest;
+        group.layout.default_edge_behavior = EdgeBehavior::Clamp;
+        let projection = build_group_projection(&group, 4, 4);
+        let source = patterned_source_canvas(4, 4);
+        let layers = projection_composition_layers_for_group(
+            &ProducerFrame::Canvas(source.clone()),
+            &group,
+            &projection,
+            4,
+            4,
+        )
+        .expect("nearest clamp projection should use composition layers");
+        let mut projection_cache = HashMap::new();
+        projection_cache.insert(group.id, projection);
+        let mut target_canvases = HashMap::new();
+        target_canvases.insert(group.id, source.clone());
+        let mut projected = Canvas::new(4, 4);
+        compose_authoritative_scene_canvas(
+            &mut projected,
+            std::slice::from_ref(&group),
+            &target_canvases,
+            4,
+            4,
+            &projection_cache,
+        );
+        let mut sparkleflinger = SparkleFlinger::cpu();
+        let composed = sparkleflinger.compose_for_outputs(
+            CompositionPlan::with_layers(4, 4, layers).with_cpu_replay_cacheable(false),
+            true,
+            Some(PreviewSurfaceRequest {
+                width: 4,
+                height: 4,
+            }),
+        );
+        let actual = composed
+            .sampling_surface
+            .map(|surface| {
+                Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height())
+            })
+            .or(composed.sampling_canvas)
+            .expect("CPU composition should materialize a scene canvas");
+
+        assert_eq!(actual.as_rgba_bytes(), projected.as_rgba_bytes());
+    }
+
+    #[test]
+    fn projected_composition_rejects_bilinear_zones() {
+        let mut zone = point_zone("zone_bilinear_projection");
+        zone.sampling_mode = Some(SamplingMode::Bilinear);
+        let mut group = sample_group(4, 4);
+        group.layout.zones = vec![zone];
+        let projection = build_group_projection(&group, 4, 4);
+
+        assert!(
+            projection_composition_layers_for_group(
+                &ProducerFrame::Canvas(patterned_source_canvas(4, 4)),
+                &group,
+                &projection,
+                4,
+                4,
+            )
+            .is_none()
+        );
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_projected_composition_matches_nearest_projection() {
+        let mut sparkleflinger =
+            match SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu) {
+                Ok(sparkleflinger) => sparkleflinger,
+                Err(_) => return,
+            };
+        let mut zone = point_zone("zone_gpu_projection");
+        zone.position = NormalizedPosition::new(0.5, 0.5);
+        zone.size = NormalizedPosition::new(1.0, 1.0);
+        zone.rotation = 0.0;
+        zone.sampling_mode = Some(SamplingMode::Nearest);
+        zone.edge_behavior = Some(EdgeBehavior::Clamp);
+        let mut group = sample_group(4, 4);
+        group.layout.zones = vec![zone];
+        group.layout.default_sampling_mode = SamplingMode::Nearest;
+        group.layout.default_edge_behavior = EdgeBehavior::Clamp;
+        let projection = build_group_projection(&group, 4, 4);
+        let source = patterned_source_canvas(4, 4);
+        let Some(gpu_source) = sparkleflinger.upload_canvas_frame(&source) else {
+            return;
+        };
+        let layers = projection_composition_layers_for_group(
+            &ProducerFrame::GpuTexture(gpu_source),
+            &group,
+            &projection,
+            4,
+            4,
+        )
+        .expect("nearest clamp projection should use composition layers");
+        let mut projection_cache = HashMap::new();
+        projection_cache.insert(group.id, projection);
+        let mut target_canvases = HashMap::new();
+        target_canvases.insert(group.id, source);
+        let mut projected = Canvas::new(4, 4);
+        compose_authoritative_scene_canvas(
+            &mut projected,
+            std::slice::from_ref(&group),
+            &target_canvases,
+            4,
+            4,
+            &projection_cache,
+        );
+        let composed = sparkleflinger.compose_for_outputs(
+            CompositionPlan::with_layers(4, 4, layers).with_cpu_replay_cacheable(false),
+            true,
+            Some(PreviewSurfaceRequest {
+                width: 4,
+                height: 4,
+            }),
+        );
+        let actual = composed
+            .sampling_surface
+            .map(|surface| {
+                Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height())
+            })
+            .or(composed.sampling_canvas)
+            .expect("GPU composition should read back the projected canvas");
+
+        assert_eq!(actual.as_rgba_bytes(), projected.as_rgba_bytes());
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn gpu_projected_scene_frame_stays_gpu_resident() {
+        let mut sparkleflinger =
+            match SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu) {
+                Ok(sparkleflinger) => sparkleflinger,
+                Err(_) => return,
+            };
+        let Some(gpu_source) = sparkleflinger.upload_canvas_frame(&patterned_source_canvas(4, 4))
+        else {
+            return;
+        };
+        let mut runtime = RenderGroupRuntime::new(4, 4);
+        let frame = runtime
+            .compose_projected_scene_frame(
+                vec![CompositionLayer::replace_opaque(ProducerFrame::GpuTexture(
+                    gpu_source,
+                ))],
+                &mut sparkleflinger,
+            )
+            .expect("GPU projection should export the current output frame");
+
+        assert!(matches!(frame, ProducerFrame::GpuTexture(_)));
     }
 
     #[test]
