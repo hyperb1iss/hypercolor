@@ -674,6 +674,7 @@ pub(super) fn sync_preview_receiver(
 /// to the same requested device so normal display-worker rebuilds do not
 /// strand the client's subscription.
 pub(super) async fn relay_display_preview(
+    state: Arc<AppState>,
     display_frames: Arc<tokio::sync::RwLock<crate::display_frames::DisplayFrameRuntime>>,
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     binary_tx: tokio::sync::mpsc::Sender<Bytes>,
@@ -729,6 +730,22 @@ pub(super) async fn relay_display_preview(
                 active = None;
             }
             (_, Some((want_id, want_fps))) => {
+                let known_display_device =
+                    state
+                        .device_registry
+                        .get(&want_id)
+                        .await
+                        .is_some_and(|tracked| {
+                            crate::api::displays::display_surface_info(&tracked.info).is_some()
+                        });
+                if !known_display_device {
+                    active = None;
+                    if subscriptions.changed().await.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                    continue;
+                }
                 let rx = display_frames.write().await.subscribe(want_id);
                 // `watch::Sender::subscribe()` marks the new receiver as
                 // already-observed, so rx.changed() will not fire for the
