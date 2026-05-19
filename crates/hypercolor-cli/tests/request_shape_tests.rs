@@ -1456,3 +1456,64 @@ async fn capture_profile_apply(
 fn test_device_id() -> &'static str {
     "00000000-0000-0000-0000-000000000001"
 }
+
+#[tokio::test]
+async fn cloud_login_refuses_auto_open_for_non_http_uri() -> Result<()> {
+    let router = Router::new()
+        .route(
+            "/api/v1/cloud/login/start",
+            post(|| async {
+                Json(serde_json::json!({
+                    "data": {
+                        "login_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1",
+                        "user_code": "HC-1234",
+                        "verification_uri": "hypercolor-test://activate",
+                        "verification_uri_complete": null,
+                        "expires_in": 900,
+                        "interval": 1,
+                        "retry_after_ms": 1
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/cloud/login/{login_id}/poll",
+            post(|Path(login_id): Path<String>| async move {
+                Json(serde_json::json!({
+                    "data": {
+                        "login_id": login_id,
+                        "status": "authorized",
+                        "retry_after_ms": null,
+                        "refresh_token_stored": true,
+                        "daemon_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1",
+                        "identity_pubkey": "pubkey",
+                        "device_install_id": "018f4c36-4a44-7cc9-9f57-0d2e9224d2f2",
+                        "device_registered": true,
+                        "registration_token_issued": true,
+                        "error": null
+                    }
+                }))
+            }),
+        );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(port, &["cloud", "login", "--timeout-seconds", "2"]).await?;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "hyper CLI failed (status={}):\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            stderr
+        );
+    }
+
+    let stderr = String::from_utf8(output.stderr).context("stderr should be utf8")?;
+    assert!(stderr.contains("Refusing to auto-open non-HTTP(S) verification URL"));
+
+    Ok(())
+}
