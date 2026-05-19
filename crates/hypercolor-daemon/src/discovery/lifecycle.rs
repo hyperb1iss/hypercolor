@@ -665,6 +665,19 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                 lifecycle.on_connect_abandoned(device_id)
             }
         } else {
+            if let Err(error) =
+                refresh_connected_device_info(&runtime_for_task, &backend_id, device_id).await
+            {
+                let device_label = device_log_label(&runtime_for_task, device_id).await;
+                warn!(
+                    device = %device_label,
+                    device_id = %device_id,
+                    backend_id = %backend_id,
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "failed to refresh device metadata after reconnect"
+                );
+            }
             sync_logical_mappings_for_device(
                 &runtime_for_task,
                 device_id,

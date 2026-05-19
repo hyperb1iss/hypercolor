@@ -935,15 +935,7 @@ impl OutputQueue {
                         .write_colors_shared(Arc::clone(&frame.colors))
                         .await
                 } else {
-                    let Ok(mut backend) = backend.try_lock() else {
-                        pending = Some(frame);
-                        if let Some(interval) = send_interval {
-                            next_send_at = advance_deadline(next_send_at, interval, Instant::now());
-                        }
-                        tokio::task::yield_now().await;
-                        continue;
-                    };
-
+                    let mut backend = backend.lock().await;
                     backend
                         .write_colors_shared(&device_id, Arc::clone(&frame.colors))
                         .await

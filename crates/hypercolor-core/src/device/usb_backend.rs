@@ -119,6 +119,7 @@ struct UsbDevice {
     protocol: Arc<dyn Protocol>,
     transport_name: &'static str,
     target_fps: Option<u32>,
+    resolved_led_count: usize,
     frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
     display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
     command_tx: mpsc::UnboundedSender<UsbDeviceCommand>,
@@ -225,12 +226,11 @@ impl UsbDevice {
             return Ok(());
         };
 
-        let led_count = usize::try_from(self.info_template.total_led_count()).unwrap_or_default();
         let (response_tx, response_rx) = oneshot::channel();
         let command_sent = self
             .command_tx
             .send(UsbDeviceCommand::Shutdown {
-                led_count,
+                led_count: self.resolved_led_count,
                 response_tx,
             })
             .is_ok();
@@ -1820,6 +1820,8 @@ impl DeviceBackend for UsbBackend {
                 protocol,
                 transport_name,
                 target_fps,
+                resolved_led_count: usize::try_from(resolved_info.total_led_count())
+                    .unwrap_or_default(),
                 frame_tx,
                 display_tx,
                 command_tx,

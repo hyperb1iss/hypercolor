@@ -43,6 +43,79 @@ struct SlowRecordingBackend {
     write_times: Option<Arc<Mutex<Vec<Instant>>>>,
 }
 
+struct SharedSlowBackend {
+    device_ids: Vec<DeviceId>,
+    delay: Duration,
+    writes: Arc<Mutex<Vec<DeviceId>>>,
+    target_fps: u32,
+}
+
+impl SharedSlowBackend {
+    fn new(
+        device_ids: Vec<DeviceId>,
+        delay: Duration,
+        writes: Arc<Mutex<Vec<DeviceId>>>,
+        target_fps: u32,
+    ) -> Self {
+        Self {
+            device_ids,
+            delay,
+            writes,
+            target_fps,
+        }
+    }
+
+    fn contains(&self, id: &DeviceId) -> bool {
+        self.device_ids.iter().any(|candidate| candidate == id)
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for SharedSlowBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "shared_slow".to_owned(),
+            name: "Shared Slow Backend".to_owned(),
+            description: "Serializes writes across several devices".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if !self.contains(id) {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if !self.contains(id) {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if !self.contains(id) {
+            bail!("unexpected device id {id}");
+        }
+        if colors.is_empty() {
+            bail!("shared backend writes should carry LED colors");
+        }
+
+        tokio::time::sleep(self.delay).await;
+        self.writes.lock().await.push(*id);
+        Ok(())
+    }
+
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        self.contains(id).then_some(self.target_fps)
+    }
+}
+
 impl SlowRecordingBackend {
     fn new(
         expected_device_id: DeviceId,
@@ -3616,6 +3689,76 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     assert!(
         queue.avg_latency_ms >= queue.avg_write_ms,
         "total latency should include backend write time"
+    );
+}
+
+#[tokio::test]
+async fn shared_backend_output_queues_serialize_without_starving_peers() {
+    let left_id = DeviceId::new();
+    let right_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<DeviceId>::new()));
+
+    let backend = SharedSlowBackend::new(
+        vec![left_id, right_id],
+        Duration::from_millis(20),
+        Arc::clone(&writes),
+        60,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("shared_slow", left_id, "shared:left")
+        .await
+        .expect("left device should connect");
+    manager
+        .connect_device("shared_slow", right_id, "shared:right")
+        .await
+        .expect("right device should connect");
+
+    let layout = make_layout(vec![
+        make_zone("zone_left", "shared:left", 4),
+        make_zone("zone_right", "shared:right", 4),
+    ]);
+
+    let started = Instant::now();
+    let mut step = 1_u8;
+    while started.elapsed() < Duration::from_millis(180) {
+        let zone_colors = vec![
+            ZoneColors {
+                zone_id: "zone_left".into(),
+                colors: vec![[step, 0, 0]; 4],
+            },
+            ZoneColors {
+                zone_id: "zone_right".into(),
+                colors: vec![[0, step, 0]; 4],
+            },
+        ];
+        manager.write_frame(&zone_colors, &layout).await;
+        step = step.wrapping_add(1).max(1);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let writes = writes.lock().await.clone();
+            let left_writes = writes.iter().filter(|&&id| id == left_id).count();
+            let right_writes = writes.iter().filter(|&&id| id == right_id).count();
+            if left_writes >= 3 && right_writes >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both shared backend queues should keep making progress");
+
+    let snapshot = manager.debug_snapshot();
+    assert_eq!(snapshot.queue_count, 2);
+    assert!(
+        snapshot.queues.iter().all(|queue| queue.errors_total == 0),
+        "shared backend queues should serialize without write errors: {:?}",
+        snapshot.queues
     );
 }
 
