@@ -420,6 +420,78 @@ async fn status_advertises_multi_zone_backend_capabilities() {
     assert!(capabilities.contains(&"multi-zone-sampling"));
     assert!(capabilities.contains(&"zone-crud"));
     assert!(capabilities.contains(&"zone-device-assignment"));
+    assert!(capabilities.contains(&"zone-layout-edit"));
     assert!(capabilities.contains(&"zone-preview-frames"));
     assert!(capabilities.contains(&"scene-unassigned-behavior-write"));
+}
+
+#[tokio::test]
+async fn zone_layout_route_merges_placement_and_rejects_output_changes() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    seed_primary_group(&state, "primary-zone").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    // Resolve the primary zone id and the current groups_revision.
+    let response = send(
+        &app,
+        empty_request("GET", "/api/v1/scenes/default/zones".into()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let revision = json["data"]["groups_revision"]
+        .as_u64()
+        .expect("revision should be u64");
+    let zone_id = json["data"]["items"]
+        .as_array()
+        .expect("groups array")
+        .iter()
+        .find(|group| group["role"] == "primary")
+        .and_then(|group| group["id"].as_str())
+        .expect("primary zone id")
+        .to_owned();
+
+    // A placement merge: same output, new placement, attempted hardware
+    // rewrite. Placement applies; the device binding is preserved.
+    let mut layout = sample_layout("primary-zone");
+    layout.zones[0].display_order = 9;
+    layout.zones[0].device_id = "mock:HIJACKED".to_owned();
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "PUT",
+                format!("/api/v1/scenes/default/zones/{zone_id}/layout"),
+                serde_json::to_value(&layout).expect("layout should serialize"),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let output = &json["data"]["zone"]["layout"]["zones"][0];
+    assert_eq!(output["display_order"].as_i64(), Some(9));
+    assert_eq!(output["device_id"].as_str(), Some("mock:primary-zone"));
+    let next_revision = json["data"]["groups_revision"]
+        .as_u64()
+        .expect("revision should be u64");
+
+    // An added output is rejected with 422 — adds route through the
+    // device endpoints, not the layout endpoint.
+    let mut bad = sample_layout("primary-zone");
+    bad.zones.push(sample_zone("ghost-zone"));
+    let response = send(
+        &app,
+        if_match(
+            json_request(
+                "PUT",
+                format!("/api/v1/scenes/default/zones/{zone_id}/layout"),
+                serde_json::to_value(&bad).expect("layout should serialize"),
+            ),
+            next_revision,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }

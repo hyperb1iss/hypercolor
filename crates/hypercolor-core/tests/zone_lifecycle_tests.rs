@@ -464,3 +464,139 @@ fn layout_sync_preserves_primary_assignment_when_custom_zones_exist() {
     assert!(!changed);
     assert_eq!(after, before);
 }
+
+#[test]
+fn update_zone_layout_merges_placement_and_preserves_identity() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_group(
+            &sample_effect("Glow"),
+            HashMap::new(),
+            None,
+            sample_layout("out-1"),
+        )
+        .expect("primary should be created");
+    let zone_id = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .map(|group| group.id)
+        .expect("primary group should exist");
+    let revision_before = manager
+        .active_scene()
+        .expect("default scene should be active")
+        .groups_revision;
+
+    // A placement edit that also attempts to rewrite hardware identity.
+    let mut moved = sample_zone("out-1");
+    moved.position = NormalizedPosition::new(0.9, 0.95);
+    moved.display_order = 42;
+    moved.device_id = "mock:HIJACKED".to_owned();
+    moved.zone_name = Some("rewired".to_owned());
+    moved.topology = LedTopology::Strip {
+        count: 99,
+        direction: StripDirection::RightToLeft,
+    };
+    moved.led_mapping = Some(vec![9, 9, 9]);
+    let mut request = sample_layout("out-1");
+    request.id = "attacker-layout".to_owned();
+    request.zones = vec![moved];
+
+    let updated = manager
+        .update_zone_layout(&scene_id, zone_id, request)
+        .expect("placement merge should apply");
+    let output = &updated.layout.zones[0];
+
+    // Placement and visual fields are taken from the request.
+    assert_eq!(output.position, NormalizedPosition::new(0.9, 0.95));
+    assert_eq!(output.display_order, 42);
+    // Identity and hardware binding are preserved from the stored output.
+    assert_eq!(output.device_id, "mock:out-1");
+    assert_eq!(output.zone_name.as_deref(), Some("main"));
+    assert!(matches!(
+        output.topology,
+        LedTopology::Strip { count: 3, .. }
+    ));
+    assert_eq!(output.led_mapping, Some(vec![2, 1, 0]));
+    // The layout's own identity is preserved, not read from the request.
+    assert_eq!(updated.layout.id, "layout-out-1");
+    assert!(
+        manager
+            .active_scene()
+            .expect("default scene should be active")
+            .groups_revision
+            > revision_before
+    );
+}
+
+#[test]
+fn update_zone_layout_rejects_output_set_changes() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_group(
+            &sample_effect("Glow"),
+            HashMap::new(),
+            None,
+            sample_layout("out-1"),
+        )
+        .expect("primary should be created");
+    let zone_id = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .map(|group| group.id)
+        .expect("primary group should exist");
+
+    // Adding a foreign output is rejected.
+    let mut extra = sample_layout("out-1");
+    extra.zones.push(sample_zone("out-2"));
+    assert_eq!(
+        manager
+            .update_zone_layout(&scene_id, zone_id, extra)
+            .expect_err("an added output should be rejected"),
+        ZoneMutationError::LayoutOutputMismatch
+    );
+
+    // Dropping an owned output is rejected.
+    let mut empty = sample_layout("out-1");
+    empty.zones.clear();
+    assert_eq!(
+        manager
+            .update_zone_layout(&scene_id, zone_id, empty)
+            .expect_err("a dropped output should be rejected"),
+        ZoneMutationError::LayoutOutputMismatch
+    );
+}
+
+#[test]
+fn update_zone_layout_retunes_canvas_and_sampling_defaults() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_group(
+            &sample_effect("Glow"),
+            HashMap::new(),
+            None,
+            sample_layout("out-1"),
+        )
+        .expect("primary should be created");
+    let zone_id = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_group())
+        .map(|group| group.id)
+        .expect("primary group should exist");
+
+    let mut request = sample_layout("out-1");
+    request.canvas_width = 800;
+    request.canvas_height = 600;
+    request.default_sampling_mode = SamplingMode::Nearest;
+    request.default_edge_behavior = EdgeBehavior::Wrap;
+
+    let updated = manager
+        .update_zone_layout(&scene_id, zone_id, request)
+        .expect("canvas retune should apply");
+    assert_eq!(updated.layout.canvas_width, 800);
+    assert_eq!(updated.layout.canvas_height, 600);
+    assert_eq!(updated.layout.default_sampling_mode, SamplingMode::Nearest);
+    assert_eq!(updated.layout.default_edge_behavior, EdgeBehavior::Wrap);
+}

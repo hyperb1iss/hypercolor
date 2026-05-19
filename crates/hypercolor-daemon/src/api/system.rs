@@ -29,6 +29,7 @@ const MULTI_ZONE_CAPABILITIES: &[&str] = &[
     "multi-zone-sampling",
     "zone-crud",
     "zone-device-assignment",
+    "zone-layout-edit",
     "zone-preview-frames",
     "scene-unassigned-behavior-write",
 ];

@@ -90,6 +90,10 @@ pub enum ZoneMutationError {
     SnapshotLocked,
     /// The requested mutation is invalid for the group's role.
     InvalidRole { role: RenderGroupRole },
+    /// A placement update carried an output set that does not match the
+    /// zone's stored outputs. Adds and drops route through the device
+    /// assignment endpoints, not the layout endpoint.
+    LayoutOutputMismatch,
 }
 
 /// One precondition-checked layer insertion in a multi-group scene mutation.
@@ -838,6 +842,100 @@ impl SceneManager {
             self.invalidate_active_render_groups();
         }
         Ok(behavior)
+    }
+
+    /// Apply a placement-only update to a zone's [`SpatialLayout`].
+    ///
+    /// This is a placement *merge*, never a replace. The request may
+    /// move, resize, rotate, restyle, or reorder the outputs the zone
+    /// already owns and may retune the zone's canvas dimensions and
+    /// sampling defaults — but it can neither add nor drop an output nor
+    /// re-bind one to different hardware. Adds and drops route through
+    /// the device assignment endpoints (§8); topology and component
+    /// binding route through device and component config. A request
+    /// whose output-id set differs from the zone's stored set is
+    /// rejected with [`ZoneMutationError::LayoutOutputMismatch`].
+    pub fn update_zone_layout(
+        &mut self,
+        scene_id: &SceneId,
+        zone_id: RenderGroupId,
+        layout: SpatialLayout,
+    ) -> Result<RenderGroup, ZoneMutationError> {
+        let active_scene_id = self.active_scene_id().copied();
+        let scene = self
+            .scenes
+            .get_mut(scene_id)
+            .ok_or(ZoneMutationError::SceneMissing)?;
+        if scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
+        let index = scene
+            .groups
+            .iter()
+            .position(|group| group.id == zone_id)
+            .ok_or(ZoneMutationError::GroupMissing)?;
+
+        // The request must carry exactly the outputs the zone owns. Adds
+        // and drops are not placement edits — they route through the
+        // device endpoints, which keep scene-wide exclusivity intact.
+        let stored_ids = scene.groups[index]
+            .layout
+            .zones
+            .iter()
+            .map(|zone| zone.id.as_str())
+            .collect::<HashSet<_>>();
+        let request_ids = layout
+            .zones
+            .iter()
+            .map(|zone| zone.id.as_str())
+            .collect::<HashSet<_>>();
+        if request_ids.len() != layout.zones.len() || stored_ids != request_ids {
+            return Err(ZoneMutationError::LayoutOutputMismatch);
+        }
+
+        // Placement and visual fields come from the request, keyed by
+        // output id; identity and hardware-binding fields are preserved
+        // from the stored output so no request can re-bind hardware or
+        // rewrite LED topology.
+        let requested = layout
+            .zones
+            .into_iter()
+            .map(|zone| (zone.id.clone(), zone))
+            .collect::<HashMap<_, _>>();
+        let group = &mut scene.groups[index];
+        for stored in &mut group.layout.zones {
+            let Some(incoming) = requested.get(&stored.id).cloned() else {
+                continue;
+            };
+            stored.name = incoming.name;
+            stored.position = incoming.position;
+            stored.size = incoming.size;
+            stored.rotation = incoming.rotation;
+            stored.scale = incoming.scale;
+            stored.display_order = incoming.display_order;
+            stored.orientation = incoming.orientation;
+            stored.shape = incoming.shape;
+            stored.shape_preset = incoming.shape_preset;
+            stored.sampling_mode = incoming.sampling_mode;
+            stored.edge_behavior = incoming.edge_behavior;
+            stored.brightness = incoming.brightness;
+        }
+        // Canvas dimensions and sampling defaults are mutable; the
+        // layout's own identity (id, name, description, version, spaces)
+        // is preserved from the stored layout.
+        group.layout.canvas_width = layout.canvas_width;
+        group.layout.canvas_height = layout.canvas_height;
+        group.layout.default_sampling_mode = layout.default_sampling_mode;
+        group.layout.default_edge_behavior = layout.default_edge_behavior;
+
+        let updated = group.clone();
+        // Exclusivity holds by construction: the output-id set is
+        // unchanged and no other zone is touched.
+        bump_groups_revision(scene);
+        if active_scene_id == Some(*scene_id) {
+            self.refresh_active_render_groups();
+        }
+        Ok(updated)
     }
 
     pub fn patch_display_group_target(

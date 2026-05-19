@@ -14,7 +14,7 @@ use hypercolor_types::event::{HypercolorEvent, RenderGroupChangeKind, SceneSetti
 use hypercolor_types::scene::{
     RenderGroup, RenderGroupId, RenderGroupRole, SceneId, UnassignedBehavior,
 };
-use hypercolor_types::spatial::DeviceZone;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{
@@ -401,6 +401,51 @@ pub async fn unassign_device(
     zones_response(zones, groups_revision, StatusKind::Ok)
 }
 
+/// `PUT /api/v1/scenes/{id}/zones/{zone_id}/layout` — placement-only
+/// update of a zone's spatial layout. The body is a [`SpatialLayout`]; it
+/// may reposition the outputs the zone already owns and retune the canvas,
+/// but adds and drops route through the device endpoints (§5.1).
+pub async fn update_zone_layout(
+    State(state): State<Arc<AppState>>,
+    Path((scene_id_raw, zone_id_raw)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(layout): Json<SpatialLayout>,
+) -> Response {
+    let Ok(zone_id) = parse_zone_id(&zone_id_raw) else {
+        return ApiError::bad_request("zone_id must be a valid UUID");
+    };
+    let expected_revision = match parse_if_match_groups_revision(&headers) {
+        Ok(version) => version,
+        Err(message) => return ApiError::bad_request(message),
+    };
+
+    let (scene_id, zone, groups_revision) = {
+        let mut manager = state.scene_manager.write().await;
+        let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
+            return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
+        };
+        if let Some(response) = check_groups_revision(&manager, scene_id, expected_revision) {
+            return response;
+        }
+        let zone = match manager.update_zone_layout(&scene_id, zone_id, layout) {
+            Ok(zone) => zone,
+            Err(error) => return zone_mutation_error(error),
+        };
+        let groups_revision = manager
+            .get(&scene_id)
+            .map(|scene| scene.groups_revision)
+            .unwrap_or_default();
+        (scene_id, zone, groups_revision)
+    };
+
+    if let Err(response) =
+        finalize_zone_mutation(&state, scene_id, &zone, RenderGroupChangeKind::Updated).await
+    {
+        return response;
+    }
+    zone_response(zone, groups_revision, StatusKind::Ok)
+}
+
 pub async fn update_unassigned_behavior(
     State(state): State<Arc<AppState>>,
     Path(scene_id_raw): Path<String>,
@@ -580,6 +625,10 @@ fn zone_mutation_error(error: ZoneMutationError) -> Response {
         ZoneMutationError::InvalidRole { .. } => {
             ApiError::conflict("Zone role does not support this mutation")
         }
+        ZoneMutationError::LayoutOutputMismatch => ApiError::validation(
+            "Zone layout must carry exactly the zone's current outputs; \
+             add or remove outputs through the device endpoints",
+        ),
     }
 }
 

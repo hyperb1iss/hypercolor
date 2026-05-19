@@ -1211,6 +1211,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::delete(scenes_zones::unassign_device),
         )
         .route(
+            "/scenes/{id}/zones/{zone_id}/layout",
+            axum::routing::put(scenes_zones::update_zone_layout),
+        )
+        .route(
             "/scenes/{id}/unassigned-behavior",
             axum::routing::patch(scenes_zones::update_unassigned_behavior),
         )
