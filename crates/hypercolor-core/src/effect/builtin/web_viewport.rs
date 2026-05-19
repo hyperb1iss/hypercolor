@@ -382,17 +382,33 @@ fn validate_web_url(url: &str) -> anyhow::Result<()> {
         bail!("web viewport only allows http/https URLs");
     }
 
-    let Some(host) = parsed.host_str() else {
-        bail!("web viewport URL host is missing");
-    };
-    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".local") {
-        bail!("web viewport rejects local hostnames");
-    }
-
-    if let Ok(ip) = host.parse::<IpAddr>()
-        && is_private_or_loopback_ip(ip)
-    {
-        bail!("web viewport rejects loopback/private IP addresses");
+    // Match on the parsed `Host` enum rather than `host_str()`: the string
+    // form brackets IPv6 literals (`[::1]`), and that bracket text never
+    // parses as an `IpAddr`, so a bracketed loopback/ULA host would slip
+    // straight past the SSRF guard.
+    match parsed.host() {
+        None => bail!("web viewport URL host is missing"),
+        Some(url::Host::Domain(domain)) => {
+            // A trailing dot marks a fully-qualified name that resolves
+            // identically, so strip it before the localhost comparison —
+            // `localhost.` must not become a bypass.
+            let domain = domain.strip_suffix('.').unwrap_or(domain);
+            if domain.eq_ignore_ascii_case("localhost")
+                || domain.to_ascii_lowercase().ends_with(".local")
+            {
+                bail!("web viewport rejects local hostnames");
+            }
+        }
+        Some(url::Host::Ipv4(v4)) => {
+            if v4.is_unspecified() || is_private_or_loopback_ip(IpAddr::V4(v4)) {
+                bail!("web viewport rejects loopback/private IP addresses");
+            }
+        }
+        Some(url::Host::Ipv6(v6)) => {
+            if v6.is_unspecified() || is_private_or_loopback_ip(IpAddr::V6(v6)) {
+                bail!("web viewport rejects loopback/private IP addresses");
+            }
+        }
     }
 
     Ok(())
@@ -591,7 +607,7 @@ pub(super) fn metadata() -> EffectMetadata {
 mod tests {
     use super::{
         WebViewportRenderer, default_scheme_for_host_input, is_private_or_loopback_ip,
-        looks_like_host_input, normalize_web_url_input,
+        looks_like_host_input, normalize_web_url_input, validate_web_url,
     };
     use crate::effect::traits::EffectRenderer;
     use hypercolor_types::effect::ControlValue;
@@ -725,5 +741,51 @@ mod tests {
         assert!(!is_private_or_loopback_ip(IpAddr::V6(
             Ipv4Addr::new(8, 8, 8, 8).to_ipv6_mapped()
         )));
+    }
+
+    #[test]
+    fn validate_web_url_rejects_ssrf_targets() {
+        // Bracketed IPv6 literals are the regression that motivated routing
+        // through the parsed `Host` enum — `host_str()` would hand these to
+        // `IpAddr::parse` with brackets still attached and silently allow them.
+        for url in [
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[fc00::1]/",
+            "http://[fe80::1]/",
+            "http://[::]/",
+            "http://0.0.0.0:9420/",
+            "http://127.0.0.1/",
+            "http://127.1/dashboard",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://2130706433/",
+            "http://localhost/",
+            "http://localhost./",
+            "http://printer.local/",
+            "http://printer.local./",
+            "ftp://example.com/resource",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                validate_web_url(url).is_err(),
+                "expected SSRF guard to reject {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_web_url_allows_public_destinations() {
+        for url in [
+            "https://example.com/",
+            "https://example.com./path",
+            "http://8.8.8.8/",
+            "http://[2001:4860:4860::8888]/",
+        ] {
+            assert!(
+                validate_web_url(url).is_ok(),
+                "expected public destination {url} to be allowed"
+            );
+        }
     }
 }

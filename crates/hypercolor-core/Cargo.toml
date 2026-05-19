@@ -57,6 +57,7 @@ notify = { workspace = true }
 sysinfo = { workspace = true }
 mdns-sd = { workspace = true }
 reqwest = { workspace = true }
+url = "2.5.8"
 nusb = { workspace = true }
 realfft = { workspace = true }
 rustfft = { workspace = true }
