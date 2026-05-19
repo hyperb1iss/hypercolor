@@ -9,6 +9,7 @@ param(
     [string]$UiDir = "",
     [string]$PawnIoHome = "",
     [string]$PawnIoModuleDir = "",
+    [string]$InstallDir = "",
     [ValidateSet("Automatic", "Manual", "Disabled")]
     [string]$StartupType = "Automatic",
     [switch]$Reinstall,
@@ -65,6 +66,122 @@ function Resolve-HypercolorDaemon {
     }
 
     throw "Could not find hypercolor-daemon.exe. Build it first with `just build-preview -p hypercolor-daemon --bin hypercolor-daemon`, or pass -DaemonExe."
+}
+
+function Resolve-HypercolorInstallDir {
+    param([string]$ExplicitPath)
+
+    if ($ExplicitPath) {
+        return $ExplicitPath
+    }
+
+    return (Join-Path $env:ProgramFiles "Hypercolor")
+}
+
+function Test-IsPathUnder {
+    param(
+        [string]$Path,
+        [string]$Root
+    )
+
+    if (-not $Root) {
+        return $false
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    return $fullPath.Equals($fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -or $fullPath.StartsWith($fullRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-HypercolorInstallDirIsProtectedRoot {
+    param([string]$Path)
+
+    $programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+        Where-Object { $_ }
+
+    foreach ($root in $programRoots) {
+        if (Test-IsPathUnder $Path $root) {
+            return
+        }
+    }
+
+    throw "InstallDir '$Path' must be under ProgramFiles so the LocalSystem service executable is not installed below a user-writable parent directory."
+}
+
+function Invoke-CheckedProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+
+    & $FilePath @Arguments | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE while applying secure service executable ACLs."
+    }
+}
+
+function Protect-HypercolorInstallDir {
+    param([string]$Path)
+
+    Invoke-CheckedProcess "icacls.exe" @(
+        $Path,
+        "/inheritance:r",
+        "/grant:r",
+        "*S-1-5-18:(OI)(CI)(F)",
+        "*S-1-5-32-544:(OI)(CI)(F)",
+        "/remove:g",
+        "*S-1-1-0",
+        "*S-1-5-11",
+        "*S-1-5-32-545"
+    )
+}
+
+function Protect-HypercolorServiceExecutable {
+    param([string]$Path)
+
+    Invoke-CheckedProcess "icacls.exe" @(
+        $Path,
+        "/inheritance:r",
+        "/grant:r",
+        "*S-1-5-18:(F)",
+        "*S-1-5-32-544:(F)",
+        "/remove:g",
+        "*S-1-1-0",
+        "*S-1-5-11",
+        "*S-1-5-32-545"
+    )
+}
+
+function Install-HypercolorServiceExecutable {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationDir
+    )
+
+    if (-not $DestinationDir) {
+        throw "InstallDir must not be empty."
+    }
+
+    New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
+    $resolvedDestinationDir = (Resolve-Path -LiteralPath $DestinationDir -ErrorAction Stop).Path
+    Assert-HypercolorInstallDirIsProtectedRoot $resolvedDestinationDir
+    Protect-HypercolorInstallDir $resolvedDestinationDir
+
+    $destinationPath = Join-Path $resolvedDestinationDir "hypercolor-daemon.exe"
+    $resolvedSourcePath = (Resolve-Path -LiteralPath $SourcePath -ErrorAction Stop).Path
+    $sourceFullPath = [System.IO.Path]::GetFullPath($resolvedSourcePath)
+    $destinationFullPath = [System.IO.Path]::GetFullPath($destinationPath)
+
+    if (-not [System.String]::Equals($sourceFullPath, $destinationFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -LiteralPath $resolvedSourcePath -Destination $destinationPath -Force
+    }
+
+    Protect-HypercolorServiceExecutable $destinationPath
+    if (-not (Test-HypercolorDaemonSupportsService $destinationPath)) {
+        throw "Installed daemon '$destinationPath' does not support --windows-service."
+    }
+
+    return (Resolve-Path -LiteralPath $destinationPath -ErrorAction Stop).Path
 }
 
 function Resolve-PawnIoHome {
@@ -172,7 +289,8 @@ if (-not $AllowSystemDaemon) {
     throw "This service mode runs the full Hypercolor daemon as LocalSystem. It is intended only as a temporary Windows SMBus test path. Pass -AllowSystemDaemon to opt in, or keep using the foreground daemon while we split SMBus into a narrow hardware broker."
 }
 
-$daemonPath = Resolve-HypercolorDaemon $DaemonExe
+$daemonSourcePath = Resolve-HypercolorDaemon $DaemonExe
+$serviceInstallDir = Resolve-HypercolorInstallDir $InstallDir
 $resolvedPawnIoHome = Resolve-PawnIoHome $PawnIoHome
 $resolvedPawnIoModuleDir = Resolve-PawnIoModuleDir $PawnIoModuleDir
 
@@ -184,11 +302,9 @@ if ($UiDir) {
     $arguments += @("--ui-dir", (Resolve-Path -LiteralPath $UiDir).Path)
 }
 
-$quotedExe = '"' + $daemonPath + '"'
 $quotedArgs = ($arguments | ForEach-Object {
     if ($_ -match '\s') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
 }) -join " "
-$binaryPath = "$quotedExe $quotedArgs"
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
@@ -202,6 +318,10 @@ if ($existing) {
     sc.exe delete $ServiceName | Out-Null
     Start-Sleep -Milliseconds 500
 }
+
+$daemonPath = Install-HypercolorServiceExecutable $daemonSourcePath $serviceInstallDir
+$quotedExe = '"' + $daemonPath + '"'
+$binaryPath = "$quotedExe $quotedArgs"
 
 New-Service `
     -Name $ServiceName `
@@ -233,6 +353,7 @@ if ($serviceEnvironment.Count -gt 0) {
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/""/60000 | Out-Null
 
 Write-Host "Installed $ServiceName"
+Write-Host "  Source: $daemonSourcePath"
 Write-Host "  Binary: $daemonPath"
 Write-Host "  Args:   $quotedArgs"
 if ($resolvedPawnIoHome) {
