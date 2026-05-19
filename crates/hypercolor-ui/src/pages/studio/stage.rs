@@ -1,11 +1,15 @@
 //! The Studio Stage — the center workspace for the selected surface.
 //!
-//! The Stage has two views. **Output** is the live preview: a Light shows
-//! the composited LED canvas via `CanvasPreview`, a Screen shows that
-//! device's face via `DisplayPreviewSurface`. **Layout** embeds the
-//! spatial device-placement editor lifted from the retired `/layout`
-//! page. The Output/Layout toggle is hidden for Screens — a single LCD
-//! has no spatial placement. Wave 10 adds per-zone preview frames.
+//! For a Light the Stage *is* the spatial layout editor: the live
+//! effect renders under the device boxes, always on, with no view
+//! toggle. Its header carries the now-playing chip and the room
+//! (layout) controls — picker, rename, new, undo/redo, Revert/Save, and
+//! an action kebab — driven by the context-provided `LayoutEditorState`
+//! from a `LayoutEditorProvider` mounted on a Studio ancestor.
+//!
+//! A Screen shows that device's live face via `DisplayPreviewSurface`.
+//! The synthetic Unassigned entry (§9.4) is not a surface, so it shows
+//! the scene-level unassigned-lights policy instead.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -16,30 +20,30 @@ use hypercolor_types::scene::{RenderGroupId, UnassignedBehavior};
 use crate::api;
 use crate::api::zones::ZoneOutcome;
 use crate::app::{CapabilitiesContext, DisplaysContext, WsContext};
-use crate::components::canvas_preview::CanvasPreview;
+use crate::components::control_panel::ControlDropdownDismissHandlers;
 use crate::components::display_preview_surface::DisplayPreviewSurface;
-use crate::components::layout_builder::LayoutBuilder;
+use crate::components::layout_builder::{LayoutEditorState, LayoutWorkspace};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
-use crate::toasts;
 use crate::display_preview_state::use_display_preview_subscription;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
+use crate::toasts;
 use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
+use hypercolor_leptos_ext::events::Input;
 
 use super::StudioContext;
-use super::stage_view::{StageView, resolve_stage_view};
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
-use super::zone_controls::unassigned_behavior_label;
 use super::zone_assignment::ZoneAssignment;
+use super::zone_controls::unassigned_behavior_label;
 
-/// Preview FPS ceiling while the Layout editor is on the Stage, matching
-/// the retired `/layout` page so spatial editing stays smooth.
+/// Preview FPS ceiling for a Light Stage — the canvas is always live, so
+/// it reserves the same headroom the retired `/layout` page did.
 const LAYOUT_PREVIEW_FPS_CAP: u32 = 60;
 
 /// The center Stage. Dispatches on the current selection: a real surface
-/// renders its Output/Layout views, the synthetic Unassigned entry (§9.4)
+/// renders its editor or preview, the synthetic Unassigned entry (§9.4)
 /// renders the unassigned-lights panel instead.
 #[component]
 pub fn Stage() -> impl IntoView {
@@ -58,8 +62,8 @@ pub fn Stage() -> impl IntoView {
     }
 }
 
-/// The Stage for a real surface. Reads the selected surface from
-/// [`StudioContext`] and the live preview streams from [`WsContext`].
+/// The Stage for a real surface. A Light renders the always-on layout
+/// editor; a Screen renders its live face preview.
 #[component]
 fn SurfaceStage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
@@ -95,23 +99,13 @@ fn SurfaceStage() -> impl IntoView {
         })
     });
 
-    // The toggle latches the last requested view; `resolved_view` applies
-    // the §6.3 rule that a Screen has no Layout view and the §9.5 rule
-    // that the All-zones view needs a genuinely multi-zone scene. It
-    // lives on [`StudioContext`] so the choice survives the Stage
-    // remounting when the selection moves on or off the Unassigned entry.
-    let requested_view = studio.stage_view;
-    let resolved_view = Memo::new(move |_| {
-        resolve_stage_view(requested_view.get(), is_screen.get(), multi_zone.get())
-    });
-
-    // The Layout editor wants the same preview headroom the `/layout`
-    // page reserved; Output falls back to the shared default.
+    // A Light keeps the canvas live, so it reserves the same preview
+    // headroom the `/layout` page did; a Screen uses the shared default.
     Effect::new(move |_| {
-        let cap = if resolved_view.get() == StageView::Layout {
-            LAYOUT_PREVIEW_FPS_CAP
-        } else {
+        let cap = if is_screen.get() {
             crate::ws::DEFAULT_PREVIEW_FPS_CAP
+        } else {
+            LAYOUT_PREVIEW_FPS_CAP
         };
         ws.set_preview_cap.set(cap);
         ws.set_preview_width_cap.set(0);
@@ -168,39 +162,13 @@ fn SurfaceStage() -> impl IntoView {
         }
     });
 
-    // The LED Output frame: in a multi-zone scene the selected zone has
-    // its own composited preview (§9.5), keyed by zone id; until the first
-    // per-zone frame arrives — or in a single-zone scene where the zone
-    // canvas *is* the whole canvas — it falls back to the composited
-    // scene canvas.
-    let led_output_frame = Signal::derive(move || {
-        if let Some(surface) = selected_surface.get()
-            && surface.kind == SurfaceKind::Light
-            && let Some(frame) = ws
-                .zone_preview_frames
-                .with(|frames| frames.get(&surface.id).cloned())
-        {
-            return Some(frame);
-        }
-        ws.canvas_frame.get()
-    });
-
     // The display-preview stream carries no FPS, so the Screen caption is
-    // resolution only; the LED canvas reports both.
+    // resolution only.
     let caption = Memo::new(move |_| {
-        if is_screen.get() {
-            selected_display
-                .get()
-                .map(|display| format!("{}×{}", display.width, display.height))
-                .unwrap_or_else(|| "—".to_owned())
-        } else {
-            let resolution = ws
-                .canvas_frame
-                .get()
-                .map(|frame| format!("{}×{}", frame.width, frame.height))
-                .unwrap_or_else(|| "—".to_owned());
-            format!("{resolution} · {:.0} fps", ws.preview_fps.get())
-        }
+        selected_display
+            .get()
+            .map(|display| format!("{}×{}", display.width, display.height))
+            .unwrap_or_else(|| "—".to_owned())
     });
 
     view! {
@@ -240,37 +208,14 @@ fn SurfaceStage() -> impl IntoView {
                         }
                             .into_any()
                     } else {
-                        view! {
-                            <StageViewToggle
-                                requested=requested_view
-                                multi_zone=multi_zone.get()
-                            />
-                        }
-                            .into_any()
+                        view! { <StageLayoutBar /> }.into_any()
                     }
                 }}
             </div>
 
-            {move || match resolved_view.get() {
-                StageView::AllZones => view! { <AllZonesStage /> }.into_any(),
-                StageView::Layout => {
-                    // In a multi-zone scene the Layout view doubles as the
-                    // §9.3 device-output assignment surface: the spatial
-                    // canvas above, the zone-assignment panel docked below.
-                    view! {
-                        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                            // Must be a flex column: LayoutBuilder's root is a
-                            // flex-1 child and has no h-full, so a plain block
-                            // here collapses the canvas to zero height.
-                            <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                                <LayoutBuilder compact=true />
-                            </div>
-                            {multi_zone.get().then(|| view! { <ZoneAssignment /> })}
-                        </div>
-                    }
-                        .into_any()
-                }
-                StageView::Output => {
+            {move || {
+                if is_screen.get() {
+                    // Screen surface — the live device face.
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                             {move || {
@@ -279,64 +224,45 @@ fn SurfaceStage() -> impl IntoView {
                             <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
                                 <div class="flex max-w-full flex-col items-center gap-3">
                                     {move || {
-                                        if is_screen.get() {
-                                            let Some(display) = selected_display.get() else {
-                                                return view! {
-                                                    <div class="flex h-64 w-64 items-center justify-center rounded-xl border border-dashed border-edge-subtle/45 text-[11px] text-fg-tertiary/55">
-                                                        "Preparing screen preview…"
-                                                    </div>
-                                                }
-                                                    .into_any();
-                                            };
-                                            let aspect = format!(
-                                                "{} / {}",
-                                                display.width.max(1),
-                                                display.height.max(1),
-                                            );
-                                            let shape = if display.circular {
-                                                "rounded-full"
-                                            } else {
-                                                "rounded-xl"
-                                            };
-                                            let container_class = format!(
-                                                "w-full max-w-[520px] overflow-hidden border \
-                                                 border-edge-subtle/70 bg-black edge-glow-accent \
-                                                 {shape}",
-                                            );
-                                            view! {
-                                                <DisplayPreviewSurface
-                                                    frame=screen_frame
-                                                    fallback_src=api::display_preview_url(
-                                                        &display.id,
-                                                        None,
-                                                    )
-                                                    aspect_ratio=aspect
-                                                    aria_label=format!(
-                                                        "Studio stage preview of {}",
-                                                        display.name,
-                                                    )
-                                                    container_class=container_class
-                                                />
-                                            }
-                                                .into_any()
-                                        } else {
-                                            view! {
-                                                <div
-                                                    class="overflow-hidden rounded-xl border border-edge-subtle/70 bg-black/45"
-                                                    style="box-shadow: 0 0 44px rgba(225, 53, 255, 0.09)"
-                                                >
-                                                    <CanvasPreview
-                                                        frame=led_output_frame
-                                                        fps=ws.preview_fps
-                                                        fps_target=ws.preview_target_fps
-                                                        max_width="min(640px, 100%)".to_string()
-                                                        aria_label="Studio stage live output"
-                                                            .to_string()
-                                                    />
+                                        let Some(display) = selected_display.get() else {
+                                            return view! {
+                                                <div class="flex h-64 w-64 items-center justify-center rounded-xl border border-dashed border-edge-subtle/45 text-[11px] text-fg-tertiary/55">
+                                                    "Preparing screen preview…"
                                                 </div>
                                             }
-                                                .into_any()
+                                                .into_any();
+                                        };
+                                        let aspect = format!(
+                                            "{} / {}",
+                                            display.width.max(1),
+                                            display.height.max(1),
+                                        );
+                                        let shape = if display.circular {
+                                            "rounded-full"
+                                        } else {
+                                            "rounded-xl"
+                                        };
+                                        let container_class = format!(
+                                            "w-full max-w-[520px] overflow-hidden border \
+                                             border-edge-subtle/70 bg-black edge-glow-accent \
+                                             {shape}",
+                                        );
+                                        view! {
+                                            <DisplayPreviewSurface
+                                                frame=screen_frame
+                                                fallback_src=api::display_preview_url(
+                                                    &display.id,
+                                                    None,
+                                                )
+                                                aspect_ratio=aspect
+                                                aria_label=format!(
+                                                    "Studio stage preview of {}",
+                                                    display.name,
+                                                )
+                                                container_class=container_class
+                                            />
                                         }
+                                            .into_any()
                                     }}
                                     <div class="font-mono text-[11px] tabular-nums text-fg-tertiary/70">
                                         {move || caption.get()}
@@ -346,53 +272,279 @@ fn SurfaceStage() -> impl IntoView {
                         </div>
                     }
                         .into_any()
+                } else {
+                    // Light surface — the always-on spatial layout editor.
+                    // In a multi-zone scene the zone-assignment panel docks
+                    // below it (§9.3).
+                    view! {
+                        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                            {move || {
+                                surface_degraded.get().then(|| view! { <DegradedBanner /> })
+                            }}
+                            // Must be a flex column: LayoutWorkspace's body is
+                            // a flex-1 child with no h-full, so a plain block
+                            // here collapses the canvas to zero height.
+                            <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                                <LayoutWorkspace compact=true />
+                            </div>
+                            {move || multi_zone.get().then(|| view! { <ZoneAssignment /> })}
+                        </div>
+                    }
+                        .into_any()
                 }
             }}
         </div>
     }
 }
 
-/// The Output/Layout segmented toggle in the Stage header. Shown only for
-/// Light surfaces; a Screen has no Layout view. The All-zones tab appears
-/// only while the scene is genuinely multi-zone (§9.5).
+/// The room (layout) controls for a Light Stage's header — the saved-room
+/// picker, rename, new, undo / redo, Revert / Save, and the action kebab,
+/// laid out as a plain bar. Reads the lifted [`LayoutEditorState`]; the
+/// `/layout` page wraps the same state in a `PageHeader` instead.
 #[component]
-fn StageViewToggle(requested: RwSignal<StageView>, multi_zone: bool) -> impl IntoView {
-    view! {
-        <div class="flex items-center gap-0.5 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 p-0.5">
-            <StageTab label="Preview" value=StageView::Output requested=requested />
-            <StageTab label="Layout" value=StageView::Layout requested=requested />
-            {multi_zone
-                .then(|| {
-                    view! {
-                        <StageTab
-                            label="All zones"
-                            value=StageView::AllZones
-                            requested=requested
-                        />
-                    }
-                })}
-        </div>
-    }
-}
+fn StageLayoutBar() -> impl IntoView {
+    let state = expect_context::<LayoutEditorState>();
+    let layout = state.layout;
+    let is_dirty = state.is_dirty;
+    let can_undo = state.can_undo;
+    let can_redo = state.can_redo;
+    let renaming = state.renaming;
+    let creating = state.creating;
+    let menu_open = state.menu_open;
+    let is_active = state.is_active;
 
-#[component]
-fn StageTab(
-    label: &'static str,
-    value: StageView,
-    requested: RwSignal<StageView>,
-) -> impl IntoView {
-    let selected = move || requested.get() == value;
     view! {
-        <button
-            type="button"
-            class="rounded-md px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide transition-colors"
-            class=("bg-accent/12", selected)
-            class=("text-fg-primary", selected)
-            class=("text-fg-tertiary/65", move || !selected())
-            on:click=move |_| requested.set(value)
-        >
-            {label}
-        </button>
+        <div class="flex items-center gap-1.5">
+            // Room picker, or the inline rename input.
+            {move || if renaming.get() {
+                view! {
+                    <input
+                        type="text"
+                        class="w-44 rounded-lg border border-edge-subtle bg-surface-sunken px-2.5 py-1 text-[12px] text-fg-primary placeholder-fg-tertiary focus:border-accent-muted focus:outline-none"
+                        prop:value=move || state.rename_value.get()
+                        autofocus=true
+                        on:input=move |ev| {
+                            if let Some(value) = Input::from_event(ev).value_string() {
+                                state.set_rename_value.set(value);
+                            }
+                        }
+                        on:blur=move |_| state.commit_rename.run(())
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            if ev.key() == "Enter" {
+                                state.commit_rename.run(());
+                            } else if ev.key() == "Escape" {
+                                state.set_renaming.set(false);
+                            }
+                        }
+                    />
+                }.into_any()
+            } else {
+                view! {
+                    <div class="flex items-center gap-1">
+                        <div class="min-w-[140px]">
+                            <SilkSelect
+                                value=state.layout_value
+                                options=state.layout_options
+                                on_change=Callback::new(move |val: String| {
+                                    if val.is_empty() {
+                                        state.set_selected_layout_id.set(None);
+                                    } else {
+                                        state.set_selected_layout_id.set(Some(val));
+                                    }
+                                })
+                                placeholder="Room"
+                                class="border border-edge-subtle bg-surface-sunken px-2.5 py-1 text-[12px] text-fg-primary"
+                            />
+                        </div>
+                        <Show when=move || layout.with(Option::is_some)>
+                            <button
+                                type="button"
+                                class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary"
+                                title="Rename room"
+                                on:click=move |_| {
+                                    if let Some(current) = layout.get_untracked() {
+                                        state.set_rename_value.set(current.name.clone());
+                                        state.set_renaming.set(true);
+                                    }
+                                }
+                            >
+                                <Icon icon=LuPencil width="13px" height="13px" />
+                            </button>
+                        </Show>
+                    </div>
+                }.into_any()
+            }}
+
+            // New room, or the inline create input.
+            {move || if creating.get() {
+                view! {
+                    <input
+                        type="text"
+                        placeholder="Room name"
+                        class="w-32 rounded-lg border border-edge-subtle bg-surface-sunken px-2.5 py-1 text-[12px] text-fg-primary placeholder-fg-tertiary focus:border-accent-muted focus:outline-none"
+                        prop:value=move || state.new_layout_name.get()
+                        on:input=move |ev| {
+                            if let Some(value) = Input::from_event(ev).value_string() {
+                                state.set_new_layout_name.set(value);
+                            }
+                        }
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            if ev.key() == "Enter" {
+                                state.create.run(());
+                            } else if ev.key() == "Escape" {
+                                state.set_creating.set(false);
+                            }
+                        }
+                    />
+                }.into_any()
+            } else {
+                view! {
+                    <button
+                        type="button"
+                        class="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary"
+                        title="New room"
+                        on:click=move |_| state.set_creating.set(true)
+                    >
+                        <Icon icon=LuPlus width="12px" height="12px" />
+                        "New"
+                    </button>
+                }.into_any()
+            }}
+
+            <div class="mx-0.5 h-5 w-px bg-edge-subtle/40" />
+
+            <button
+                type="button"
+                class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary disabled:pointer-events-none disabled:opacity-30"
+                title="Undo (Ctrl+Z)"
+                on:click=move |_| state.write.undo()
+                disabled=move || !can_undo.get()
+            >
+                <Icon icon=LuUndo2 width="14px" height="14px" />
+            </button>
+            <button
+                type="button"
+                class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary disabled:pointer-events-none disabled:opacity-30"
+                title="Redo (Ctrl+Shift+Z)"
+                on:click=move |_| state.write.redo()
+                disabled=move || !can_redo.get()
+            >
+                <Icon icon=LuRedo2 width="14px" height="14px" />
+            </button>
+
+            // Revert / Save — Save doubles as the dirty indicator.
+            {move || layout.get().map(|_| {
+                let dirty = is_dirty.get();
+                let save_style = if dirty {
+                    "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); box-shadow: 0 0 12px rgba(80, 250, 123, 0.16)"
+                } else {
+                    "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                };
+                let revert_style = if dirty {
+                    "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
+                } else {
+                    "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                };
+                view! {
+                    <button
+                        type="button"
+                        class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
+                        style=revert_style
+                        on:click=move |_| state.revert.run(())
+                        disabled=move || !is_dirty.get()
+                    >
+                        <Icon icon=LuUndo2 width="12px" height="12px" />
+                        "Revert"
+                    </button>
+                    <button
+                        type="button"
+                        class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
+                        style=save_style
+                        on:click=move |_| state.save.run(())
+                        disabled=move || !is_dirty.get()
+                    >
+                        <Icon icon=LuSave width="12px" height="12px" />
+                        "Save"
+                    </button>
+                }
+            })}
+
+            // Overflow menu — per-room actions.
+            {move || layout.get().map(|_| view! {
+                <div class="relative stage-layout-menu">
+                    <button
+                        type="button"
+                        class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary"
+                        title="Room actions"
+                        on:click=move |_| state.set_menu_open.update(|v| *v = !*v)
+                    >
+                        <Icon icon=LuEllipsis width="14px" height="14px" />
+                    </button>
+                    <Show when=move || menu_open.get()>
+                        <ControlDropdownDismissHandlers
+                            class_name="stage-layout-menu".to_string()
+                            is_open=menu_open
+                            set_open=state.set_menu_open
+                        />
+                        <div
+                            class="absolute right-0 top-full z-[100] mt-1 w-44 overflow-hidden rounded-lg border border-edge-subtle bg-surface-overlay/98 backdrop-blur-xl dropdown-glow animate-enter-down"
+                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Escape" {
+                                    state.set_menu_open.set(false);
+                                }
+                            }
+                        >
+                            <Show when=move || is_active.get()>
+                                <div class="flex w-full items-center gap-2 px-3 py-2 text-xs text-fg-tertiary">
+                                    <Icon icon=LuCheck width="12px" height="12px"
+                                          style="color: rgb(80, 250, 123); flex-shrink: 0" />
+                                    <span>"Active"</span>
+                                </div>
+                            </Show>
+                            <Show when=move || !is_active.get() && !is_dirty.get()>
+                                <button
+                                    type="button"
+                                    class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary hover:text-fg-primary"
+                                    on:click=move |_| {
+                                        state.apply.run(());
+                                        state.set_menu_open.set(false);
+                                    }
+                                >
+                                    <Icon icon=LuCheck width="12px" height="12px"
+                                          style="color: rgb(128, 255, 234); flex-shrink: 0" />
+                                    <span>"Apply"</span>
+                                </button>
+                            </Show>
+                            <button
+                                type="button"
+                                class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary hover:text-fg-primary"
+                                on:click=move |_| {
+                                    state.duplicate.run(());
+                                    state.set_menu_open.set(false);
+                                }
+                            >
+                                <Icon icon=LuCopy width="12px" height="12px"
+                                      style="color: rgba(128, 255, 234, 0.7); flex-shrink: 0" />
+                                <span>"Duplicate"</span>
+                            </button>
+                            <div class="mx-2 my-1 h-px bg-edge-subtle/40" />
+                            <button
+                                type="button"
+                                class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-status-error/70 hover:text-status-error"
+                                on:click=move |_| {
+                                    state.delete.run(());
+                                    state.set_menu_open.set(false);
+                                }
+                            >
+                                <Icon icon=LuTrash2 width="12px" height="12px"
+                                      style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0" />
+                                <span>"Delete"</span>
+                            </button>
+                        </div>
+                    </Show>
+                </div>
+            })}
+        </div>
     }
 }
 
@@ -436,8 +588,8 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
     }
 }
 
-/// The §6.7 degraded indicator for the Stage Output view, shown when the
-/// selected surface has a failed or asset-missing layer. The layer rail's
+/// The §6.7 degraded indicator for the Stage, shown when the selected
+/// surface has a failed or asset-missing layer. The layer rail's
 /// per-layer health pill (Wave 6) names the offending layer; this banner
 /// is the surface-level alarm so trouble is visible without scanning rows.
 #[component]
@@ -589,7 +741,7 @@ fn UnassignedStage() -> impl IntoView {
                         </div>
                     </div>
                     <div class="mt-3 text-[12px] leading-5 text-fg-tertiary/65">
-                        "Assign these outputs to a zone in a zone's Stage Layout view."
+                        "Assign these outputs to a zone with the zone-assignment panel below the canvas."
                     </div>
                 </div>
             </div>
@@ -617,106 +769,5 @@ fn parse_unassigned_behavior(value: &str) -> Option<UnassignedBehavior> {
             .strip_prefix("fallback:")
             .and_then(|raw| raw.parse::<uuid::Uuid>().ok())
             .map(|uuid| UnassignedBehavior::Fallback(RenderGroupId(uuid))),
-    }
-}
-
-/// The §9.5 "All zones" Stage mode — a tiled, scene-wide glance with one
-/// preview tile per LED zone, each labelled with the zone name and its
-/// top layer. Clicking a tile selects that zone and returns to the
-/// per-zone Output view.
-#[component]
-fn AllZonesStage() -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let ws = expect_context::<WsContext>();
-    let zones = Memo::new(move |_| {
-        studio
-            .active_scene
-            .get()
-            .map(|scene| {
-                surfaces_from_groups(&scene.groups)
-                    .into_iter()
-                    .filter(|surface| surface.kind == SurfaceKind::Light)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    });
-    view! {
-        <div class="flex h-full flex-col bg-surface-sunken/20">
-            <div class="flex items-center gap-2 border-b border-edge-subtle/60 px-5 py-3">
-                <span class="text-sm font-semibold text-fg-primary">"All zones"</span>
-            </div>
-            <div class="scrollbar-none flex-1 overflow-y-auto p-5">
-                <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
-                    {move || {
-                        zones
-                            .get()
-                            .into_iter()
-                            .map(|zone| {
-                                let select_id = zone.id.clone();
-                                let frame_id = zone.id.clone();
-                                let frame = Signal::derive(move || {
-                                    ws.zone_preview_frames
-                                        .with(|frames| frames.get(&frame_id).cloned())
-                                });
-                                let top_layer = zone
-                                    .top_layer
-                                    .clone()
-                                    .unwrap_or_else(|| "No layers".to_owned());
-                                let dimmed = !zone.enabled;
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="card-hover flex flex-col gap-2 rounded-xl border border-edge-subtle/70 bg-surface-overlay/40 p-3 text-left"
-                                        class=("opacity-55", move || dimmed)
-                                        on:click=move |_| {
-                                            studio
-                                                .selected_surface_id
-                                                .set(Some(select_id.clone()));
-                                        }
-                                    >
-                                        <div
-                                            class="overflow-hidden rounded-lg border border-edge-subtle/70 bg-black/45"
-                                            style="box-shadow: 0 0 28px rgba(225, 53, 255, 0.07)"
-                                        >
-                                            {move || {
-                                                if frame.get().is_some() {
-                                                    view! {
-                                                        <CanvasPreview
-                                                            frame=frame
-                                                            fps=Signal::derive(|| 0.0_f32)
-                                                            fps_target=Signal::derive(|| 0_u32)
-                                                            max_width="100%".to_string()
-                                                            aria_label="Zone preview tile"
-                                                                .to_string()
-                                                            register_main_preview_consumer=false
-                                                        />
-                                                    }
-                                                        .into_any()
-                                                } else {
-                                                    view! {
-                                                        <div class="flex h-28 items-center justify-center text-[11px] text-fg-tertiary/55">
-                                                            "Preview unavailable"
-                                                        </div>
-                                                    }
-                                                        .into_any()
-                                                }
-                                            }}
-                                        </div>
-                                        <div class="min-w-0">
-                                            <div class="truncate text-sm font-medium text-fg-primary">
-                                                {zone.name.clone()}
-                                            </div>
-                                            <div class="truncate text-[11px] text-fg-tertiary/70">
-                                                {top_layer}
-                                            </div>
-                                        </div>
-                                    </button>
-                                }
-                            })
-                            .collect_view()
-                    }}
-                </div>
-            </div>
-        </div>
     }
 }

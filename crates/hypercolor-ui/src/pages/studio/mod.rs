@@ -9,7 +9,6 @@ mod composition_panel;
 mod device_card;
 mod device_grouping;
 mod stage;
-mod stage_view;
 mod surface;
 mod zone_assignment;
 mod zone_controls;
@@ -21,13 +20,13 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{CapabilitiesContext, WsContext};
+use crate::components::layout_builder::LayoutEditorProvider;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
 use composition_panel::CompositionPanel;
 use stage::Stage;
-use stage_view::StageView;
 use surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
 use zone_tree::ZoneTree;
 
@@ -53,8 +52,6 @@ pub struct StudioContext {
     /// Re-fetch the active scene. Zone mutations call this so the tree and
     /// Stage pick up the new group set and `groups_revision`.
     pub refresh_scene: Callback<()>,
-    /// The Stage's requested view (Preview / Layout / All-zones).
-    pub stage_view: RwSignal<StageView>,
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
     pub composition_open: RwSignal<bool>,
@@ -176,14 +173,12 @@ pub fn StudioPage() -> impl IntoView {
     });
     on_cleanup(move || ws.set_zone_preview_active.set(false));
 
-    let stage_view = RwSignal::new(StageView::default());
     let composition_open = RwSignal::new(false);
 
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
         refresh_scene,
-        stage_view,
         composition_open,
     });
 
@@ -224,7 +219,9 @@ pub fn StudioPage() -> impl IntoView {
                     />
                 </div>
                 <div class="relative min-w-0 flex-1">
-                    <Stage />
+                    <LayoutEditorProvider>
+                        <Stage />
+                    </LayoutEditorProvider>
                     <CompositionPanel
                         active_scene=active_scene
                         selected_group_id=selected_surface_id.read_only()
