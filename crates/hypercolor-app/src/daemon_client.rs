@@ -3,14 +3,14 @@
 //! Manages the connection to Hypercolor daemons, including mDNS discovery,
 //! server switching, REST bootstrap, and WebSocket subscriptions.
 
-use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use hypercolor_core::config::paths;
 use hypercolor_core::device::discover_servers;
-use hypercolor_types::server::ServerIdentity;
+use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
@@ -33,8 +33,9 @@ pub struct DaemonClient {
     base_url: String,
     ws_url: String,
     active_server_id: Option<String>,
+    active_api_key: Option<String>,
     known_servers: Vec<ServerEntry>,
-    stored_api_keys: HashMap<String, String>,
+    stored_api_keys: Vec<StoredServerApiKey>,
     tx: mpsc::Sender<DaemonMessage>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TrayCommand>,
     http: reqwest::Client,
@@ -54,6 +55,7 @@ impl DaemonClient {
             base_url: build_base_url(DEFAULT_HOST, DEFAULT_PORT),
             ws_url: build_ws_url(DEFAULT_HOST, DEFAULT_PORT, None),
             active_server_id: None,
+            active_api_key: None,
             known_servers: Vec::new(),
             stored_api_keys: load_server_api_keys(),
             tx,
@@ -91,10 +93,20 @@ impl DaemonClient {
     /// Attempt to connect to the daemon and watch for events.
     async fn connect_and_watch(&mut self) -> anyhow::Result<bool> {
         let state = self.fetch_initial_state().await?;
-        self.active_server_id = state
-            .server_identity
-            .as_ref()
-            .map(|server| server.instance_id.clone());
+        if let (Some(expected_id), Some(server)) = (&self.active_server_id, &state.server_identity)
+            && expected_id != &server.instance_id
+        {
+            anyhow::bail!(
+                "discovered server identity changed from {expected_id} to {}",
+                server.instance_id
+            );
+        }
+        if self.active_server_id.is_none() {
+            self.active_server_id = state
+                .server_identity
+                .as_ref()
+                .map(|server| server.instance_id.clone());
+        }
         let _ = self.tx.send(DaemonMessage::Connected(state));
 
         let (ws_stream, _) = connect_async(&self.ws_url).await?;
@@ -418,11 +430,12 @@ impl DaemonClient {
             Ok(servers) => {
                 self.known_servers = servers
                     .into_iter()
-                    .map(|server| ServerEntry {
-                        has_api_key: self
-                            .stored_api_keys
-                            .contains_key(&server.identity.instance_id),
-                        server,
+                    .map(|server| {
+                        let has_api_key = self.api_key_for_server(&server).is_some();
+                        ServerEntry {
+                            server,
+                            has_api_key,
+                        }
                     })
                     .collect();
 
@@ -464,12 +477,9 @@ impl DaemonClient {
         };
 
         let host = entry.server.host.to_string();
-        let api_key = self
-            .stored_api_keys
-            .get(&entry.server.identity.instance_id)
-            .map(String::as_str);
+        let api_key = self.api_key_for_server(&entry.server).map(str::to_owned);
         let next_base = build_base_url(&host, entry.server.port);
-        let next_ws = build_ws_url(&host, entry.server.port, api_key);
+        let next_ws = build_ws_url(&host, entry.server.port, api_key.as_deref());
         let changed = self.base_url != next_base
             || self.ws_url != next_ws
             || self.active_server_id.as_deref() != Some(entry.server.identity.instance_id.as_str());
@@ -477,17 +487,20 @@ impl DaemonClient {
         self.base_url = next_base;
         self.ws_url = next_ws;
         self.active_server_id = Some(entry.server.identity.instance_id.clone());
+        self.active_api_key = api_key;
         changed
     }
 
     fn auth_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(active_id) = &self.active_server_id
-            && let Some(api_key) = self.stored_api_keys.get(active_id)
-        {
+        if let Some(api_key) = &self.active_api_key {
             return request.bearer_auth(api_key);
         }
 
         request
+    }
+
+    fn api_key_for_server(&self, server: &DiscoveredServer) -> Option<&str> {
+        api_key_for_server(&self.stored_api_keys, server)
     }
 
     async fn send_command(
@@ -524,33 +537,76 @@ struct StoredServersFile {
 struct StoredServerConfig {
     instance_id: String,
     api_key: String,
+    host: Option<IpAddr>,
+    port: Option<u16>,
 }
 
-fn load_server_api_keys() -> HashMap<String, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredServerApiKey {
+    pub instance_id: String,
+    pub host: IpAddr,
+    pub port: u16,
+    pub api_key: String,
+}
+
+impl StoredServerApiKey {
+    fn from_config(config: StoredServerConfig) -> Option<Self> {
+        let instance_id = config.instance_id.trim();
+        let api_key = config.api_key.trim();
+        let (Some(host), Some(port)) = (config.host, config.port) else {
+            warn!(
+                instance_id,
+                "Ignoring servers.toml entry without a host/port binding; re-authenticate this daemon"
+            );
+            return None;
+        };
+
+        if instance_id.is_empty() || api_key.is_empty() {
+            None
+        } else {
+            Some(Self {
+                instance_id: instance_id.to_owned(),
+                host,
+                port,
+                api_key: api_key.to_owned(),
+            })
+        }
+    }
+
+    fn matches_server(&self, server: &DiscoveredServer) -> bool {
+        self.instance_id == server.identity.instance_id
+            && self.host == server.host
+            && self.port == server.port
+    }
+}
+
+fn load_server_api_keys() -> Vec<StoredServerApiKey> {
     let path = paths::config_dir().join("servers.toml");
     let Ok(contents) = std::fs::read_to_string(&path) else {
-        return HashMap::new();
+        return Vec::new();
     };
 
     match toml::from_str::<StoredServersFile>(&contents) {
         Ok(file) => file
             .servers
             .into_iter()
-            .filter_map(|entry| {
-                let instance_id = entry.instance_id.trim();
-                let api_key = entry.api_key.trim();
-                if instance_id.is_empty() || api_key.is_empty() {
-                    None
-                } else {
-                    Some((instance_id.to_owned(), api_key.to_owned()))
-                }
-            })
+            .filter_map(StoredServerApiKey::from_config)
             .collect(),
         Err(error) => {
             debug!(path = %path.display(), %error, "Failed to parse tray server config");
-            HashMap::new()
+            Vec::new()
         }
     }
+}
+
+pub fn api_key_for_server<'a>(
+    stored_api_keys: &'a [StoredServerApiKey],
+    server: &DiscoveredServer,
+) -> Option<&'a str> {
+    stored_api_keys
+        .iter()
+        .rfind(|credential| credential.matches_server(server))
+        .map(|credential| credential.api_key.as_str())
 }
 
 fn build_base_url(host: &str, port: u16) -> String {
