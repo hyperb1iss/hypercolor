@@ -66,7 +66,9 @@ function Resolve-PawnIoHome {
     param([string]$ExplicitPath)
 
     if ($ExplicitPath) {
-        return (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
+        $resolved = (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
+        Assert-ServicePawnIoPath $resolved
+        return $resolved
     }
 
     $programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
@@ -82,11 +84,16 @@ function Resolve-PawnIoHome {
     return ""
 }
 
-function Assert-ServicePawnIoModuleDir {
+function Assert-ServicePawnIoPath {
     param([string]$Path)
 
     $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
-    $userWritableRoots = @($env:LOCALAPPDATA, $env:APPDATA, $env:USERPROFILE) |
+    $userWritableRoots = @(
+        $env:LOCALAPPDATA,
+        $env:APPDATA,
+        $env:USERPROFILE,
+        (Join-Path $env:SystemDrive 'Users')
+    ) |
         Where-Object { $_ } |
         ForEach-Object { (Resolve-Path -LiteralPath $_ -ErrorAction SilentlyContinue).Path } |
         Where-Object { $_ }
@@ -94,7 +101,7 @@ function Assert-ServicePawnIoModuleDir {
     foreach ($root in $userWritableRoots) {
         if ($resolved.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
             $resolved.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "PawnIO module directory '$resolved' is under a per-user profile path. Windows services run elevated, so install PawnIO modules under the administrator-owned PawnIO install directory instead."
+            throw "PawnIO service path '$resolved' is under a per-user profile directory ('$root'). Windows services run elevated, so PawnIO install and module directories must be administrator-owned (for example under %ProgramFiles%)."
         }
     }
 }
@@ -104,7 +111,7 @@ function Resolve-PawnIoModuleDir {
 
     if ($ExplicitPath) {
         $resolved = (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
-        Assert-ServicePawnIoModuleDir $resolved
+        Assert-ServicePawnIoPath $resolved
         return $resolved
     }
 
@@ -119,7 +126,7 @@ function Resolve-PawnIoModuleDir {
         foreach ($module in @("SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin")) {
             if (Test-Path -LiteralPath (Join-Path $candidate $module)) {
                 $resolved = (Resolve-Path -LiteralPath $candidate).Path
-                Assert-ServicePawnIoModuleDir $resolved
+                Assert-ServicePawnIoPath $resolved
                 return $resolved
             }
         }
