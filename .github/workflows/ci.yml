@@ -362,7 +362,7 @@ jobs:
           path: effects/hypercolor
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
           tool: cargo-nextest
 
@@ -460,7 +460,7 @@ jobs:
           cache-on-failure: "false"
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
           tool: cargo-nextest
 
@@ -696,9 +696,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: cargo test
       - name: Install Trunk
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
-          tool: trunk
+          tool: trunk@0.21.14
       - run: env -u NO_COLOR trunk build --release
 
   # ── End-to-End (Playwright) ──────────────────────────────────
@@ -764,14 +764,14 @@ jobs:
           cache-on-failure: "false"
 
       - name: Install just
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
           tool: just
 
       - name: Install Trunk
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
-          tool: trunk
+          tool: trunk@0.21.14
 
       - name: Install SDK dependencies
         working-directory: sdk
@@ -942,9 +942,9 @@ jobs:
           key: web-assets
 
       - name: Install Trunk
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
-          tool: trunk
+          tool: trunk@0.21.14
 
       - name: Build UI
         working-directory: crates/hypercolor-ui
