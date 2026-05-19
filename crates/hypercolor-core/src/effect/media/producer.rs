@@ -49,6 +49,9 @@ const LIVE_STREAM_RECONNECT_BACKOFF_MS: [u64; 5] = [1_000, 2_000, 5_000, 10_000,
 const STREAM_URL_MIME: &str = "application/vnd.hypercolor.stream-url";
 const STATIC_MEDIA_ESTIMATED_COST_US: u64 = 0;
 const ANIMATED_MEDIA_ESTIMATED_COST_US: u64 = 400;
+const MAX_ANIMATION_FRAMES: usize = 2_048;
+const MAX_ANIMATION_DECODED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ANIMATION_DIMENSION: u32 = 8_192;
 #[cfg(feature = "media-lottie")]
 const LOTTIE_MEDIA_ESTIMATED_COST_US: u64 = 8_000;
 #[cfg(feature = "media-video")]
@@ -70,6 +73,8 @@ pub enum MediaProducerError {
     EmptySequence,
     #[error("unsupported media type: {0}")]
     UnsupportedMime(String),
+    #[error("decoded animation exceeds safety limits")]
+    AnimationTooLarge,
     #[cfg(feature = "media-lottie")]
     #[error("failed to decode Lottie animation")]
     LottieDecode,
@@ -554,22 +559,50 @@ impl Drop for LiveStreamInner {
     }
 }
 
-fn decode_gif_frames(bytes: &[u8]) -> Result<Vec<Frame>, ImageError> {
+fn decode_gif_frames(bytes: &[u8]) -> Result<Vec<Frame>, MediaProducerError> {
     let reader = BufReader::new(Cursor::new(bytes));
     let decoder = GifDecoder::new(reader)?;
-    decoder.into_frames().collect_frames()
+    collect_limited_frames(decoder.into_frames())
 }
 
-fn decode_apng_frames(bytes: &[u8]) -> Result<Vec<Frame>, ImageError> {
+fn decode_apng_frames(bytes: &[u8]) -> Result<Vec<Frame>, MediaProducerError> {
     let reader = BufReader::new(Cursor::new(bytes));
     let decoder = PngDecoder::new(reader)?;
-    decoder.apng()?.into_frames().collect_frames()
+    collect_limited_frames(decoder.apng()?.into_frames())
 }
 
-fn decode_webp_frames(bytes: &[u8]) -> Result<Vec<Frame>, ImageError> {
+fn decode_webp_frames(bytes: &[u8]) -> Result<Vec<Frame>, MediaProducerError> {
     let reader = BufReader::new(Cursor::new(bytes));
     let decoder = WebPDecoder::new(reader)?;
-    decoder.into_frames().collect_frames()
+    collect_limited_frames(decoder.into_frames())
+}
+
+fn collect_limited_frames<I>(frames: I) -> Result<Vec<Frame>, MediaProducerError>
+where
+    I: IntoIterator<Item = Result<Frame, ImageError>>,
+{
+    let mut decoded = Vec::new();
+    let mut total_bytes = 0_u64;
+
+    for frame_result in frames {
+        let frame = frame_result?;
+        let buffer = frame.buffer();
+        if buffer.width() > MAX_ANIMATION_DIMENSION || buffer.height() > MAX_ANIMATION_DIMENSION {
+            return Err(MediaProducerError::AnimationTooLarge);
+        }
+
+        let frame_bytes = u64::from(buffer.width())
+            .saturating_mul(u64::from(buffer.height()))
+            .saturating_mul(4);
+        total_bytes = total_bytes.saturating_add(frame_bytes);
+        if total_bytes > MAX_ANIMATION_DECODED_BYTES || decoded.len() >= MAX_ANIMATION_FRAMES {
+            return Err(MediaProducerError::AnimationTooLarge);
+        }
+
+        decoded.push(frame);
+    }
+
+    Ok(decoded)
 }
 
 fn canvas_from_rgba_image(image: image::RgbaImage) -> Canvas {

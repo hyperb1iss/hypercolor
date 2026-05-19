@@ -35,6 +35,20 @@ fn animated_gif_bytes() -> Vec<u8> {
     bytes
 }
 
+fn oversized_animated_gif_bytes(frame_count: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder =
+            Encoder::new(&mut bytes, 1, 1, &[]).expect("test GIF encoder should initialize");
+        encoder
+            .set_repeat(Repeat::Infinite)
+            .expect("test GIF repeat should set");
+        for _ in 0..frame_count {
+            write_gif_frame(&mut encoder, [255, 0, 0, 255]);
+        }
+    }
+    bytes
+}
 fn write_gif_frame(encoder: &mut Encoder<&mut Vec<u8>>, rgba: [u8; 4]) {
     let mut pixels = rgba.to_vec();
     let mut frame = Frame::from_rgba_speed(1, 1, &mut pixels, 10);
@@ -197,6 +211,19 @@ fn animated_webp_loop_timing_is_deterministic() {
     );
 }
 
+#[test]
+fn animated_media_decode_rejects_excessive_frame_count() {
+    let bytes = oversized_animated_gif_bytes(2_049);
+    let error = MediaProducer::from_bytes(&bytes, "image/gif")
+        .expect_err("oversized GIF should be rejected");
+    assert!(
+        matches!(
+            error,
+            hypercolor_core::effect::media::MediaProducerError::AnimationTooLarge
+        ),
+        "expected AnimationTooLarge, got {error:?}"
+    );
+}
 #[test]
 fn gif_loop_timing_is_deterministic() {
     let bytes = animated_gif_bytes();
