@@ -115,6 +115,23 @@ fn render_group_requires_full_composition(
     led_sampling_strategy.requires_full_composition(transition_active)
 }
 
+fn producer_frame_requires_composition_for_preview(
+    frame: &ProducerFrame,
+    preview_requested: bool,
+) -> bool {
+    preview_requested && producer_frame_is_gpu_resident(frame)
+}
+
+fn producer_frame_is_gpu_resident(frame: &ProducerFrame) -> bool {
+    match frame {
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => true,
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => true,
+        ProducerFrame::Canvas(_) | ProducerFrame::Surface(_) => false,
+    }
+}
+
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
         self.compose_render_group_frame_set(Instant::now()).await
@@ -284,7 +301,11 @@ impl ComposeContext<'_> {
                 let requires_full_composition = render_group_requires_full_composition(
                     compiled_plan.metadata.transition_active,
                     &render_group_result.led_sampling_strategy,
-                );
+                )
+                    || producer_frame_requires_composition_for_preview(
+                        &scene_frame,
+                        preview_request.is_some(),
+                    );
                 let requires_cpu_sampling_canvas = render_group_result
                     .led_sampling_strategy
                     .sparkleflinger_engine()
@@ -863,12 +884,13 @@ fn scene_canvas_forces_full_surface(
 mod tests {
     use super::{
         PreviewSurfaceRequest, effective_render_group_layer_count, preview_surface_request,
-        render_group_requires_full_composition, requires_cpu_sampling_canvas,
-        requires_published_surface,
+        producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
+        requires_cpu_sampling_canvas, requires_published_surface,
     };
     use std::sync::Arc;
 
     use hypercolor_core::spatial::SpatialEngine;
+    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
         StripDirection,
@@ -876,6 +898,7 @@ mod tests {
 
     use crate::preview_runtime::PreviewDemandSummary;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
+    use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::sparkleflinger::SparkleFlinger;
     use hypercolor_types::config::RenderAccelerationMode;
 
@@ -973,6 +996,21 @@ mod tests {
         }));
         assert!(!render_group_requires_full_composition(false, &strategy));
         assert!(render_group_requires_full_composition(true, &strategy));
+    }
+
+    #[test]
+    fn cpu_producer_preview_does_not_force_full_composition() {
+        let canvas = Canvas::new(4, 4);
+        let surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
+
+        assert!(!producer_frame_requires_composition_for_preview(
+            &ProducerFrame::Canvas(canvas),
+            true,
+        ));
+        assert!(!producer_frame_requires_composition_for_preview(
+            &ProducerFrame::Surface(surface),
+            true,
+        ));
     }
 
     #[test]

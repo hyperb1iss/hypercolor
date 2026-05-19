@@ -37,7 +37,7 @@ use hypercolor_types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
     ZoneLayoutHint,
 };
-use hypercolor_types::effect::{EffectId, EffectSource};
+use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::{RenderGroup, RenderGroupId, RenderGroupRole, SceneId};
 use hypercolor_types::spatial::{

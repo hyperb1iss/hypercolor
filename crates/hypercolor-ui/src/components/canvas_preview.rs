@@ -51,6 +51,10 @@ fn should_publish_preview_telemetry(
         && now_ms - last_published_at_ms.unwrap_or_default() >= PREVIEW_TELEMETRY_INTERVAL_MS
 }
 
+fn has_preview_extent(frame: &CanvasFrame) -> bool {
+    frame.width > 0 && frame.height > 0
+}
+
 enum PresenterState {
     Uninitialized {
         webgl_unavailable_streak: u8,
@@ -358,7 +362,7 @@ pub fn CanvasPreview(
         let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
         let schedule_present = Rc::clone(&schedule_present);
         move |_| {
-            let next_frame = frame.get();
+            let next_frame = frame.get().filter(has_preview_extent);
             let has_next_frame = next_frame.is_some();
             let received_at_ms = has_next_frame.then(now_ms);
             *latest_frame.borrow_mut() = next_frame;

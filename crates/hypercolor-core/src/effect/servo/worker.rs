@@ -2024,16 +2024,30 @@ fn render_servo_framebuffer(
             }
             Err(error) => {
                 let reason = classify_servo_gpu_import_error(&error);
-                record_servo_gpu_import_failure(reason, false);
+                let allow_cpu_fallback = matches!(
+                    super::servo_gpu_import_mode(),
+                    hypercolor_types::config::ServoGpuImportMode::Auto
+                );
+                record_servo_gpu_import_failure(reason, allow_cpu_fallback);
                 let cooldown_ms = super::servo_gpu_import_note_failure().map(duration_millis_u64);
+                runtime.clear_gpu_importer(session_id);
+                if !allow_cpu_fallback {
+                    warn!(
+                        %error,
+                        reason = reason.as_str(),
+                        cooldown_ms,
+                        "Servo GPU framebuffer import failed; refusing CPU readback fallback"
+                    );
+                    return Err(error).context(
+                        "Servo GPU framebuffer import failed without CPU readback fallback",
+                    );
+                }
                 warn!(
                     %error,
                     reason = reason.as_str(),
                     cooldown_ms,
-                    "Servo GPU framebuffer import failed; refusing CPU readback fallback"
+                    "Servo GPU framebuffer import failed; falling back to CPU readback"
                 );
-                return Err(error)
-                    .context("Servo GPU framebuffer import failed without CPU readback fallback");
             }
         }
     }
