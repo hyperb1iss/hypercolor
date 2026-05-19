@@ -95,7 +95,10 @@ pub enum MediaProducerError {
     LottieFrameCountExceeded { frame_count: usize, max: usize },
     #[cfg(feature = "media-lottie")]
     #[error("Lottie animation decoded size {decoded_bytes} bytes exceeds max {max_bytes} bytes")]
-    LottieDecodedBudgetExceeded { decoded_bytes: usize, max_bytes: usize },
+    LottieDecodedBudgetExceeded {
+        decoded_bytes: usize,
+        max_bytes: usize,
+    },
     #[cfg(feature = "media-video")]
     #[error("failed to decode video: {0}")]
     VideoDecode(String),

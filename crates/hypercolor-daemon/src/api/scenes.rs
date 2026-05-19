@@ -470,7 +470,10 @@ pub(crate) fn scene_media_admission_violation_details(
     }
 
     Some(MediaAdmissionViolationDetails {
-        message: format!("Scene exceeds media producer caps: {}", violations.join(", ")),
+        message: format!(
+            "Scene exceeds media producer caps: {}",
+            violations.join(", ")
+        ),
         caps: serde_json::json!({
             "video": video_cap,
             "livestream": livestream_cap,

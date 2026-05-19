@@ -237,15 +237,11 @@ pub async fn broadcast_media_layer(
         let Some(scene_id) = scenes::resolve_scene_id(&manager, &scene_id_raw) else {
             return ApiError::not_found(format!("Scene not found: {scene_id_raw}"));
         };
-        if let Some(group_id) = body
-            .targets
-            .iter()
-            .find_map(|target| {
-                find_group(&manager, scene_id, target.group_id)
-                    .is_none()
-                    .then_some(target.group_id)
-            })
-        {
+        if let Some(group_id) = body.targets.iter().find_map(|target| {
+            find_group(&manager, scene_id, target.group_id)
+                .is_none()
+                .then_some(target.group_id)
+        }) {
             return ApiError::not_found(format!("Render group not found: {group_id}"));
         }
         let inserts = body.into_layer_inserts();

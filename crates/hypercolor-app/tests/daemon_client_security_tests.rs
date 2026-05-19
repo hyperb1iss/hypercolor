@@ -55,7 +55,9 @@ fn stored_daemon_api_key_is_not_selected_for_spoofed_port() {
 
 #[test]
 fn stored_daemon_api_key_prefers_the_most_recent_duplicate() {
-    let host = "192.0.2.10".parse::<IpAddr>().expect("test host should parse");
+    let host = "192.0.2.10"
+        .parse::<IpAddr>()
+        .expect("test host should parse");
     let credentials = [
         StoredServerApiKey {
             instance_id: "daemon-a".to_owned(),

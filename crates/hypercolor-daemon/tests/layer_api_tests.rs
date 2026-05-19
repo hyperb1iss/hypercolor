@@ -411,18 +411,10 @@ async fn activate_scene_rejects_video_media_cap() {
 #[tokio::test]
 async fn activate_scene_rejects_livestream_media_cap() {
     let (state, _tmp) = isolated_state_with_tempdir();
-    let asset_a = insert_stream_asset(
-        &state,
-        "camera-a.stream",
-        "https://media-a.example.test/live.m3u8",
-    )
-    .await;
-    let asset_b = insert_stream_asset(
-        &state,
-        "camera-b.stream",
-        "https://media-b.example.test/live.m3u8",
-    )
-    .await;
+    let asset_a =
+        insert_stream_asset(&state, "camera-a.stream", "https://1.1.1.1/live-a.m3u8").await;
+    let asset_b =
+        insert_stream_asset(&state, "camera-b.stream", "https://8.8.8.8/live-b.m3u8").await;
     let scene_id =
         install_media_scene(&state, vec![media_layer(asset_a), media_layer(asset_b)]).await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -453,18 +445,10 @@ async fn activate_scene_rejects_livestream_media_cap() {
 async fn active_scene_broadcast_enforces_livestream_cap() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "stream-admission").await;
-    let first_stream = insert_stream_asset(
-        &state,
-        "camera-a.stream",
-        "https://media-a.example.test/live.m3u8",
-    )
-    .await;
-    let second_stream = insert_stream_asset(
-        &state,
-        "camera-b.stream",
-        "https://media-b.example.test/live.m3u8",
-    )
-    .await;
+    let first_stream =
+        insert_stream_asset(&state, "camera-a.stream", "https://1.1.1.1/live-a.m3u8").await;
+    let second_stream =
+        insert_stream_asset(&state, "camera-b.stream", "https://8.8.8.8/live-b.m3u8").await;
     let (scene_id, group_id) =
         install_scene(&state, effect.id, vec![media_layer(first_stream)]).await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -496,18 +480,10 @@ async fn active_scene_broadcast_enforces_livestream_cap() {
 async fn inactive_scene_broadcast_skips_livestream_cap() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "stream-admission-inactive").await;
-    let first_stream = insert_stream_asset(
-        &state,
-        "camera-a.stream",
-        "https://media-a.example.test/live.m3u8",
-    )
-    .await;
-    let second_stream = insert_stream_asset(
-        &state,
-        "camera-b.stream",
-        "https://media-b.example.test/live.m3u8",
-    )
-    .await;
+    let first_stream =
+        insert_stream_asset(&state, "camera-a.stream", "https://1.1.1.1/live-a.m3u8").await;
+    let second_stream =
+        insert_stream_asset(&state, "camera-b.stream", "https://8.8.8.8/live-b.m3u8").await;
     let (target_scene, group_id) =
         install_scene(&state, effect.id, vec![media_layer(first_stream)]).await;
     // Installing a second scene activates it, leaving target_scene inactive.
@@ -535,12 +511,8 @@ async fn activate_scene_downshifts_when_media_cost_exceeds_soft_cap() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let asset_a = insert_mp4_asset(&state, "a.mp4", 1).await;
     let asset_b = insert_mp4_asset(&state, "b.mp4", 2).await;
-    let stream_asset = insert_stream_asset(
-        &state,
-        "camera.stream",
-        "https://media.example.test/live.m3u8",
-    )
-    .await;
+    let stream_asset =
+        insert_stream_asset(&state, "camera.stream", "https://1.1.1.1/live.m3u8").await;
     let scene_id = install_media_scene(
         &state,
         vec![
@@ -744,7 +716,8 @@ async fn scene_wide_media_broadcast_rejects_missing_group() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let effect = insert_effect(&state, "broadcast-missing-group").await;
     let asset_id = insert_lottie_asset(&state).await;
-    let (scene_id, primary_id, _display_id) = install_scene_with_two_groups(&state, effect.id).await;
+    let (scene_id, primary_id, _display_id) =
+        install_scene_with_two_groups(&state, effect.id).await;
     let app = test_app_with_state(Arc::clone(&state));
     let uri = format!("/api/v1/scenes/{scene_id}/layers/broadcast-media");
 

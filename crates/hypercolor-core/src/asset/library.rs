@@ -133,7 +133,10 @@ impl StreamIpRule {
             let prefix = prefix.parse::<u8>().ok()?;
             return cidr_prefix_valid(network, prefix).then_some(Self::Cidr { network, prefix });
         }
-        raw.parse::<IpAddr>().ok().map(canonical_ip).map(Self::Exact)
+        raw.parse::<IpAddr>()
+            .ok()
+            .map(canonical_ip)
+            .map(Self::Exact)
     }
 
     fn matches(self, ip: IpAddr) -> bool {
