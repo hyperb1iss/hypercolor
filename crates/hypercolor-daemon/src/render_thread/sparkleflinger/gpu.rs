@@ -452,7 +452,21 @@ impl GpuSparkleFlinger {
         }))
     }
 
-    pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> GpuTextureFrame {
+    pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> Option<GpuTextureFrame> {
+        let max_texture_dimension = self.probe.max_texture_dimension_2d;
+        if canvas.width() == 0
+            || canvas.height() == 0
+            || canvas.width() > max_texture_dimension
+            || canvas.height() > max_texture_dimension
+        {
+            tracing::warn!(
+                width = canvas.width(),
+                height = canvas.height(),
+                max_texture_dimension,
+                "skipping GPU canvas upload for media frame with unsupported dimensions"
+            );
+            return None;
+        }
         let texture = GpuCompositorTexture::new(
             &self.device,
             canvas.width(),
@@ -467,13 +481,13 @@ impl GpuSparkleFlinger {
             canvas.as_rgba_bytes(),
         );
         self.producer_texture_generation = self.producer_texture_generation.saturating_add(1);
-        GpuTextureFrame {
+        Some(GpuTextureFrame {
             width: canvas.width(),
             height: canvas.height(),
             storage_id: self.producer_texture_generation,
             texture: texture.texture,
             view: texture.view,
-        }
+        })
     }
 
     pub(crate) fn read_back_frame_for_cpu_fallback(

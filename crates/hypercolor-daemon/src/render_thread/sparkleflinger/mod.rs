@@ -876,7 +876,7 @@ impl SparkleFlinger {
     pub(crate) fn upload_canvas_frame(&mut self, canvas: &Canvas) -> Option<GpuTextureFrame> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => None,
-            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.upload_canvas_frame(canvas)),
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.upload_canvas_frame(canvas),
         }
     }
 
