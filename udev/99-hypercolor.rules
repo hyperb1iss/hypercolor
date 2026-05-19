@@ -61,6 +61,10 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d1", ATTR{idPro
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d1", ATTR{idProduct}=="1619", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d1", ATTR{idProduct}=="1620", MODE="0660", GROUP="users", TAG+="uaccess"
 
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1f01", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1f11", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d2", ATTR{idProduct}=="1f01", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d2", ATTR{idProduct}=="1f11", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1612", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1613", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d2", ATTRS{idProduct}=="1615", MODE="0660", GROUP="users", TAG+="uaccess"

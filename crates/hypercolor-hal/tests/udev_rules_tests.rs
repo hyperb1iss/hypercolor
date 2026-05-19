@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::registry::TransportType;
@@ -15,7 +15,7 @@ enum RequiredSubsystem {
 }
 
 impl RequiredSubsystem {
-    fn rule_line(self, vendor_id: u16) -> String {
+    fn vendor_rule_line(self, vendor_id: u16) -> String {
         match self {
             Self::Hidraw => {
                 format!(
@@ -36,49 +36,88 @@ impl RequiredSubsystem {
             ),
         }
     }
+
+    fn product_rule_line(self, vendor_id: u16, product_id: u16) -> Option<String> {
+        match self {
+            Self::Hidraw => Some(format!(
+                "SUBSYSTEM==\"hidraw\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", ATTRS{{idProduct}}==\"{product_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+            )),
+            Self::I2cDev => None,
+            Self::Tty => Some(format!(
+                "SUBSYSTEM==\"tty\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", ATTRS{{idProduct}}==\"{product_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+            )),
+            Self::Usb => Some(format!(
+                "SUBSYSTEM==\"usb\", ENV{{DEVTYPE}}==\"usb_device\", ATTR{{idVendor}}==\"{vendor_id:04x}\", ATTR{{idProduct}}==\"{product_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+            )),
+        }
+    }
 }
 
 #[test]
 fn udev_rules_cover_each_supported_vendor_transport_family() {
-    let mut required_rules: BTreeMap<u16, BTreeSet<RequiredSubsystem>> = BTreeMap::new();
+    let mut required_rules: BTreeSet<(u16, u16, RequiredSubsystem)> = BTreeSet::new();
 
     for descriptor in ProtocolDatabase::all() {
-        let required = required_rules.entry(descriptor.vendor_id).or_default();
         match descriptor.transport {
             TransportType::UsbHidApi { .. } | TransportType::UsbHidRaw { .. } => {
-                required.insert(RequiredSubsystem::Hidraw);
-                required.insert(RequiredSubsystem::Usb);
+                required_rules.insert((
+                    descriptor.vendor_id,
+                    descriptor.product_id,
+                    RequiredSubsystem::Hidraw,
+                ));
+                required_rules.insert((
+                    descriptor.vendor_id,
+                    descriptor.product_id,
+                    RequiredSubsystem::Usb,
+                ));
             }
             TransportType::UsbSerial { .. } => {
-                required.insert(RequiredSubsystem::Tty);
+                required_rules.insert((
+                    descriptor.vendor_id,
+                    descriptor.product_id,
+                    RequiredSubsystem::Tty,
+                ));
             }
             TransportType::I2cSmBus { .. } => {
-                required.insert(RequiredSubsystem::I2cDev);
+                required_rules.insert((
+                    descriptor.vendor_id,
+                    descriptor.product_id,
+                    RequiredSubsystem::I2cDev,
+                ));
             }
             TransportType::UsbControl { .. }
             | TransportType::UsbHid { .. }
             | TransportType::UsbBulk { .. }
             | TransportType::UsbMidi { .. }
             | TransportType::UsbVendor => {
-                required.insert(RequiredSubsystem::Usb);
+                required_rules.insert((
+                    descriptor.vendor_id,
+                    descriptor.product_id,
+                    RequiredSubsystem::Usb,
+                ));
             }
         }
     }
 
-    for (vendor_id, subsystems) in required_rules {
-        for subsystem in subsystems {
-            let expected_rule = subsystem.rule_line(vendor_id);
-            assert!(
-                UDEV_RULES.contains(&expected_rule),
-                "missing vendor-wide udev rule for vendor {vendor_id:04x} subsystem {subsystem:?}: {expected_rule}"
-            );
-        }
+    for (vendor_id, product_id, subsystem) in required_rules {
+        let vendor_rule = subsystem.vendor_rule_line(vendor_id);
+        let product_rule = subsystem.product_rule_line(vendor_id, product_id);
+        let has_product_rule = product_rule
+            .as_ref()
+            .is_some_and(|rule| UDEV_RULES.contains(rule));
+        assert!(
+            UDEV_RULES.contains(&vendor_rule) || has_product_rule,
+            "missing udev rule for vendor {vendor_id:04x} product {product_id:04x} subsystem {subsystem:?}: expected {vendor_rule}{}",
+            product_rule
+                .as_ref()
+                .map_or_else(String::new, |rule| format!(" or {rule}"))
+        );
     }
 }
 
 #[test]
 fn udev_rules_grant_generic_i2c_device_access() {
-    let rule = RequiredSubsystem::I2cDev.rule_line(0);
+    let rule = RequiredSubsystem::I2cDev.vendor_rule_line(0);
     assert!(
         UDEV_RULES.contains(&rule),
         "missing generic i2c-dev access rule: {rule}"
