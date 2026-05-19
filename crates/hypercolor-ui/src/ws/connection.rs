@@ -24,7 +24,7 @@ use web_sys::MessageEvent;
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, PerformanceMetrics, PreviewFrameChannel, SceneEventHint,
-    decode_preview_frame, decode_zone_preview_frame, handle_json_message,
+    decode_preview_frame, handle_json_message,
 };
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, PreviewSubscriptionRequest, clear_preview_subscription,
@@ -32,9 +32,8 @@ use super::preview::{
     request_preview_subscription, request_screen_preview_subscription,
     request_web_viewport_preview_subscription, send_canvas_unsubscribe,
     send_screen_canvas_unsubscribe, send_web_viewport_canvas_unsubscribe,
-    send_zone_preview_subscribe, send_zone_preview_unsubscribe, should_stream_preview,
+    should_stream_preview,
 };
-use hypercolor_leptos_ext::ws::ZONE_PREVIEW_FRAME_TAG;
 use crate::api::DeviceMetricsSnapshot;
 use crate::api::client;
 
@@ -92,13 +91,6 @@ pub struct WsManager {
     /// channel to that device, or `None` to unsubscribe. The subscription
     /// effect inside `WsManager` sends the actual WS messages.
     pub set_display_preview_device: WriteSignal<Option<String>>,
-    /// Latest per-zone composited preview frames, keyed by the zone's
-    /// hyphenated UUID. Populated only while `set_zone_preview_active`
-    /// is `true`.
-    pub zone_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
-    /// Set to `true` to subscribe the `zone_preview` channel, `false` to
-    /// unsubscribe and drop the cached per-zone frames.
-    pub set_zone_preview_active: WriteSignal<bool>,
 }
 
 impl WsManager {
@@ -109,12 +101,6 @@ impl WsManager {
             signal(None::<CanvasFrame>);
         let (display_preview_frame, set_display_preview_frame) = signal(None::<CanvasFrame>);
         let (display_preview_device, set_display_preview_device) = signal(None::<String>);
-        // Per-zone composited previews (Spec 65 §9.5), keyed by the zone's
-        // hyphenated UUID. Populated only while a view (the multi-zone
-        // Studio Stage) sets `zone_preview_active`.
-        let (zone_preview_frames, set_zone_preview_frames) =
-            signal(HashMap::<String, CanvasFrame>::new());
-        let (zone_preview_active, set_zone_preview_active) = signal(false);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
@@ -258,17 +244,6 @@ impl WsManager {
             let on_message = move |event: MessageEvent| {
                 // Binary frame (ArrayBuffer)
                 if let Some(buffer) = message_array_buffer(&event) {
-                    // Zone-preview frames carry a distinct tag and a wider
-                    // header, so they are dispatched before the shared
-                    // channel decoder, which would reject the format.
-                    if js_sys::Uint8Array::new(&buffer).get_index(0) == ZONE_PREVIEW_FRAME_TAG {
-                        if let Some((zone_id, frame)) = decode_zone_preview_frame(buffer) {
-                            set_zone_preview_frames.update(|frames| {
-                                frames.insert(zone_id, frame);
-                            });
-                        }
-                        return;
-                    }
                     if let Some((channel, frame)) = decode_preview_frame(buffer) {
                         match channel {
                             PreviewFrameChannel::Canvas => {
@@ -541,30 +516,6 @@ impl WsManager {
             }
         });
 
-        // Zone-preview subscription effect (Spec 65 §9.5). Mirrors the
-        // display-preview effect: the multi-zone Studio Stage flips
-        // `zone_preview_active`, and the `zone_preview` channel follows.
-        // The frame map is cleared on unsubscribe so a stale per-zone
-        // tile cannot linger after the Stage leaves multi-zone.
-        Effect::new(move |_| {
-            let state = connection_state.get();
-            let active = zone_preview_active.get();
-            let is_visible = page_visible.get();
-            let window_visible = app_window_visible.get();
-            if state != ConnectionState::Connected {
-                return;
-            }
-            let Some(ws) = ws_handle.get_value() else {
-                return;
-            };
-            if active && window_visible && is_visible {
-                send_zone_preview_subscribe(&ws);
-            } else {
-                send_zone_preview_unsubscribe(&ws);
-                set_zone_preview_frames.update(HashMap::clear);
-            }
-        });
-
         // Visibility change listener
         if let Some(document) = browser_document() {
             visibility_change_callback.update_value(|handle| {
@@ -630,8 +581,6 @@ impl WsManager {
             set_screen_preview_consumers,
             set_web_viewport_preview_consumers,
             set_display_preview_device,
-            zone_preview_frames,
-            set_zone_preview_active,
         }
     }
 }

@@ -25,7 +25,7 @@ pub struct SystemStatus {
     /// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio
     /// affordances gate on the presence of their backing capability —
     /// `zone-crud`, `multi-zone-sampling`, `zone-device-assignment`,
-    /// `zone-preview-frames`, `scene-unassigned-behavior-write`.
+    /// `scene-unassigned-behavior-write`.
     #[serde(default)]
     pub capabilities: Vec<String>,
 }

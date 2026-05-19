@@ -247,29 +247,6 @@ pub(super) fn decode_preview_frame(
     Some((frame.channel, frame))
 }
 
-/// Decode a `zone_preview` binary frame (tag `0x08`) into its zone id and a
-/// `CanvasFrame`. The zone-preview wire format carries a wider header
-/// (scene + zone ids) than the channel frames; the decoded surface is
-/// otherwise an ordinary RGBA canvas, so it is re-presented as a
-/// `Canvas`-channel `CanvasFrame` the `CanvasPreview` component can render
-/// unchanged. The zone id is the hyphenated UUID matching `RenderGroupId`.
-pub(super) fn decode_zone_preview_frame(
-    buffer: js_sys::ArrayBuffer,
-) -> Option<(String, CanvasFrame)> {
-    let zone = hypercolor_leptos_ext::ws::ZonePreviewFrameView::decode_array_buffer(&buffer).ok()?;
-    let zone_id = uuid::Uuid::from_bytes(zone.zone_id).to_string();
-    let frame = CanvasFrame {
-        channel: PreviewFrameChannel::Canvas,
-        frame_number: zone.frame_number,
-        timestamp_ms: zone.timestamp_ms,
-        width: zone.width,
-        height: zone.height,
-        format: zone.format,
-        payload: zone.payload,
-    };
-    Some((zone_id, frame))
-}
-
 // ── JSON Message Handler ────────────────────────────────────────────────────
 
 /// Handle incoming JSON events from the daemon.

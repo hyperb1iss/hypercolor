@@ -1,4 +1,4 @@
-//! Device-output assignment for the multi-zone Layout view (Spec 65 §9.3).
+//! Device-output assignment for a multi-zone Studio scene (Spec 65 §9.3).
 //!
 //! The unit of assignment is a `DeviceZone` — one device output or
 //! addressable segment, never a whole physical device. The panel lists
@@ -48,12 +48,13 @@ fn zone_display_name(group: &RenderGroup) -> String {
     }
 }
 
-/// The §9.3 device-output assignment panel, docked in the Studio Layout
-/// view while the scene is multi-zone.
+/// The §9.3 device-output assignment panel: a collapsible strip docked
+/// below the Studio Stage canvas while the scene is multi-zone.
 #[component]
 pub fn ZoneAssignment() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let selected = RwSignal::new(HashSet::<String>::new());
+    let collapsed = RwSignal::new(false);
 
     let zones = Memo::new(move |_| {
         let Some(scene) = studio.active_scene.get() else {
@@ -116,39 +117,73 @@ pub fn ZoneAssignment() -> impl IntoView {
             }
         });
     });
+    let on_clear = Callback::new(move |()| selected.set(HashSet::new()));
 
     view! {
         <div class="border-t border-edge-subtle/70 bg-surface-raised/40">
             <div class="flex items-center justify-between gap-3 px-4 py-2.5">
-                <span class=label_class(LabelSize::Small, LabelTone::Strong)>
-                    "Zone assignment"
-                </span>
-                <ZoneAssignmentToolbar
-                    selected_count=selected_count
-                    zone_options=zone_options
-                    assign_to=assign_to
-                    on_clear=Callback::new(move |()| selected.set(HashSet::new()))
-                />
-            </div>
-            <div class="scrollbar-none max-h-52 overflow-y-auto px-4 pb-3">
-                {move || {
-                    let zones = zones.get();
-                    if zones.is_empty() {
+                <button
+                    type="button"
+                    class="-mx-1 flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:bg-surface-hover/30"
+                    on:click=move |_| collapsed.update(|value| *value = !*value)
+                >
+                    {move || {
+                        let icon = if collapsed.get() {
+                            LuChevronRight
+                        } else {
+                            LuChevronDown
+                        };
                         view! {
-                            <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
-                                "No zones in this scene"
-                            </div>
+                            <Icon
+                                icon=icon
+                                width="13px"
+                                height="13px"
+                                style="color: rgba(139, 133, 160, 0.6)"
+                            />
                         }
-                            .into_any()
-                    } else {
-                        zones
-                            .into_iter()
-                            .map(|zone| view! { <ZoneOutputSection zone=zone selected=selected /> })
-                            .collect_view()
-                            .into_any()
-                    }
-                }}
+                    }}
+                    <span class=label_class(LabelSize::Small, LabelTone::Strong)>
+                        "Zone assignment"
+                    </span>
+                    <Show when=move || collapsed.get()>
+                        <span class="text-[10px] text-fg-tertiary/55">
+                            {move || {
+                                let count = zones.get().len();
+                                format!("{count} zone{}", if count == 1 { "" } else { "s" })
+                            }}
+                        </span>
+                    </Show>
+                </button>
+                <Show when=move || !collapsed.get()>
+                    <ZoneAssignmentToolbar
+                        selected_count=selected_count
+                        zone_options=zone_options
+                        assign_to=assign_to
+                        on_clear=on_clear
+                    />
+                </Show>
             </div>
+            <Show when=move || !collapsed.get()>
+                <div class="scrollbar-none max-h-52 overflow-y-auto px-4 pb-3">
+                    {move || {
+                        let zones = zones.get();
+                        if zones.is_empty() {
+                            view! {
+                                <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
+                                    "No zones in this scene"
+                                </div>
+                            }
+                                .into_any()
+                        } else {
+                            zones
+                                .into_iter()
+                                .map(|zone| view! { <ZoneOutputSection zone=zone selected=selected /> })
+                                .collect_view()
+                                .into_any()
+                        }
+                    }}
+                </div>
+            </Show>
         </div>
     }
 }
