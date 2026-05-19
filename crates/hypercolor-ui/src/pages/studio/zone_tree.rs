@@ -166,7 +166,6 @@ pub fn ZoneTree() -> impl IntoView {
                     </div>
                     {move || {
                         let rows = zone_rows.get();
-                        let multi = multi_zone.get();
                         if rows.is_empty() {
                             view! {
                                 <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
@@ -181,7 +180,6 @@ pub fn ZoneTree() -> impl IntoView {
                                         <ZoneNode
                                             surface=surface
                                             devices=devices
-                                            multi_zone=multi
                                             collapsed=collapsed
                                         />
                                     }
@@ -222,13 +220,15 @@ pub fn ZoneTree() -> impl IntoView {
     }
 }
 
-/// One light zone: a selectable header over its nested device list, with
-/// the per-zone controls folded behind a kebab on multi-zone scenes.
+/// One light zone: a selectable header over its nested device list,
+/// with the per-zone controls folded behind a kebab. The kebab is
+/// always present so a single-zone scene still has a route to rename
+/// or recolor its Default zone; make-default and delete remain gated
+/// inside [`ZoneControls`] by [`Surface::is_deletable_zone`].
 #[component]
 fn ZoneNode(
     surface: Surface,
     devices: Vec<(ZoneDeviceRow, Option<DeviceSummary>)>,
-    multi_zone: bool,
     collapsed: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
@@ -340,22 +340,18 @@ fn ZoneNode(
                         </span>
                     </Show>
                 </button>
-                {multi_zone.then(|| view! {
-                    <button
-                        type="button"
-                        class="flex h-9 w-7 shrink-0 items-center justify-center text-fg-tertiary transition-colors hover:text-fg-primary"
-                        title="Zone settings"
-                        on:click=move |_| controls_open.update(|open| *open = !*open)
-                    >
-                        <Icon icon=LuEllipsis width="14px" height="14px" />
-                    </button>
-                })}
+                <button
+                    type="button"
+                    class="flex h-9 w-7 shrink-0 items-center justify-center text-fg-secondary/70 transition-colors hover:text-fg-primary"
+                    title="Zone settings — rename, color, enable"
+                    on:click=move |_| controls_open.update(|open| *open = !*open)
+                >
+                    <Icon icon=LuEllipsis width="14px" height="14px" />
+                </button>
             </div>
-            {multi_zone.then(|| view! {
-                <div class=("hidden", move || !controls_open.get())>
-                    <ZoneControls surface=controls_surface />
-                </div>
-            })}
+            <div class=("hidden", move || !controls_open.get())>
+                <ZoneControls surface=controls_surface />
+            </div>
             <div
                 class="space-y-1.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-2"
                 class=("hidden", move || !is_open.get())

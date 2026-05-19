@@ -213,10 +213,17 @@ pub fn NewZoneControl() -> impl IntoView {
                 }
                     .into_any()
             } else {
+                // Cyan tint, matching the zone tile lightbulb so the
+                // affordance reads as a real "add zone" action rather
+                // than a secondary device-row picker. Inline style
+                // because the semantic accent tokens bake in their own
+                // alpha; layering Tailwind's `/N` modifier on top
+                // washes the color out below readability.
                 view! {
                     <button
                         type="button"
-                        class="chip-interactive flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-edge-subtle/55 px-3 py-2 text-[11px] font-medium text-fg-tertiary hover:border-accent-muted hover:text-fg-secondary"
+                        class="chip-interactive flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed px-3 py-2 text-[11px] font-medium transition-colors"
+                        style="background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.32); color: rgb(128, 255, 234)"
                         on:click=move |_| creating.set(true)
                     >
                         <Icon icon=LuPlus width="12px" height="12px" />
