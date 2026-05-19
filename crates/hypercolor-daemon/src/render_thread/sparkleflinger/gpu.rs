@@ -1547,16 +1547,15 @@ impl GpuSparkleFlinger {
         let Some(current_output) = self.current_output else {
             anyhow::bail!("GPU readback requested without a composed output surface");
         };
-        if let Some(request) = preview_surface_request
-            && !preview_request_matches_plan(Some(request), width, height)
-        {
+        if let Some(request) = preview_surface_request {
+            let cache_as_full_size = preview_request_matches_plan(Some(request), width, height);
             return self.stage_preview_surface_readback(
                 current_output,
                 width,
                 height,
                 readback_key,
                 request,
-                preview_request_matches_plan(Some(request), width, height),
+                cache_as_full_size,
                 encoder,
             );
         }
@@ -4350,7 +4349,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_full_size_preview_does_not_force_readback() {
+    fn gpu_full_size_preview_stages_publication_without_sampling_canvas() {
         let mut compositor = match GpuSparkleFlinger::new() {
             Ok(compositor) => compositor,
             Err(_) => return,
@@ -4380,10 +4379,16 @@ mod tests {
         assert!(composed.sampling_canvas.is_none());
         assert!(composed.sampling_surface.is_none());
         assert!(composed.preview_surface.is_none());
-        assert!(compositor.preview_surfaces.is_none());
-        assert!(compositor.pending_preview_readback.is_none());
+        assert!(compositor.preview_surfaces.is_some());
+        assert!(compositor.pending_preview_readback.is_some());
         assert!(compositor.pending_output_submission.is_some());
         assert!(compositor.cached_readback_surface.is_none());
+        assert!(compositor.cached_preview_surfaces.is_empty());
+
+        let preview_surface = resolve_preview_surface_blocking(&mut compositor);
+        assert_eq!(preview_surface.width(), 4);
+        assert_eq!(preview_surface.height(), 4);
+        assert!(compositor.cached_readback_surface.is_some());
         assert!(compositor.cached_preview_surfaces.is_empty());
     }
 
