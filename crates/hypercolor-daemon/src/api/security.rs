@@ -518,7 +518,7 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    if !state.security_enabled() || request_is_loopback(&request) {
+    if !state.security_enabled() {
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
@@ -719,10 +719,6 @@ fn allows_query_token(request: &Request<Body>) -> bool {
 
 fn client_identity(request: &Request<Body>) -> String {
     client_ip(request).map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
-}
-
-fn request_is_loopback(request: &Request<Body>) -> bool {
-    client_ip(request).is_some_and(|ip| ip.is_loopback())
 }
 
 fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
@@ -967,7 +963,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_clients_do_not_need_api_key() {
+    async fn loopback_clients_still_require_api_key_when_security_enabled() {
         let app = secured_test_router();
         let response = app
             .oneshot(with_connect_info(
@@ -981,8 +977,9 @@ mod tests {
             .await
             .expect("request failed");
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().get("x-ratelimit-limit").is_none());
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "unauthorized");
     }
 
     #[tokio::test]
