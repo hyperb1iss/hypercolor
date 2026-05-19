@@ -50,11 +50,18 @@ pub struct UpdateUnassignedBehaviorRequest {
     pub unassigned_behavior: UnassignedBehavior,
 }
 
+/// Untagged: serde tries variants in declaration order and the first
+/// match wins. `Existing { id }` ignores unknown fields by default, so
+/// it would silently swallow any object that has an `id`, including a
+/// full `DeviceZone`. `New(DeviceZone)` is declared FIRST so a brand-new
+/// output (which has every required `DeviceZone` field) matches it;
+/// a bare `{ "id": "..." }` lacks those fields, `New` fails, and the
+/// parser falls through to `Existing`. Do not reorder.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum DeviceZoneAssignment {
-    Existing { id: String },
     New(DeviceZone),
+    Existing { id: String },
 }
 
 #[derive(Debug, Serialize, ToSchema)]
