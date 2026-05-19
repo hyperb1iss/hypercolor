@@ -549,8 +549,19 @@ pub async fn logout(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+const MAX_PENDING_CLOUD_LOGIN_SESSIONS: usize = 128;
+
 pub async fn start_login(State(state): State<Arc<AppState>>) -> Response {
+    let cloud_config = cloud_config(&state);
+    if !cloud_config.enabled {
+        return ApiError::conflict("cloud login is disabled");
+    }
+
     prune_expired_login_sessions(&state).await;
+
+    if state.cloud_login_sessions.lock().await.len() >= MAX_PENDING_CLOUD_LOGIN_SESSIONS {
+        return ApiError::rate_limited("too many pending cloud login sessions");
+    }
 
     let client = match cloud_client(&state) {
         Ok(client) => client,
