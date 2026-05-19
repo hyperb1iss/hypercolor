@@ -1020,6 +1020,22 @@ async fn render_thread_exits_when_loop_not_started() {
     rt.shutdown().await.expect("shutdown should succeed");
 }
 
+#[tokio::test]
+async fn render_thread_try_spawn_returns_runtime_builder_errors() {
+    let state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let Err(error) = RenderThread::try_spawn_with_runtime_builder(state, || {
+        Err(anyhow::anyhow!("injected render runtime failure"))
+    }) else {
+        panic!("runtime builder failure should be returned");
+    };
+    assert!(format!("{error:#}").contains("injected render runtime failure"));
+}
+
 #[cfg(not(feature = "wgpu"))]
 #[tokio::test]
 async fn render_thread_try_spawn_rejects_explicit_gpu_without_feature() {

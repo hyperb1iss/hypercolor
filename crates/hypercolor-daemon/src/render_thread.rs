@@ -265,18 +265,28 @@ impl RenderThread {
     }
 
     pub fn try_spawn(state: RenderThreadState) -> Result<Self> {
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        Self::try_spawn_with_runtime_builder(state, build_render_runtime)
+    }
+
+    #[doc(hidden)]
+    pub fn try_spawn_with_runtime_builder<F>(
+        state: RenderThreadState,
+        build_runtime: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
+    {
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<()>>(1);
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(RENDER_RUNTIME_WORKERS)
-                    .max_blocking_threads(RENDER_RUNTIME_MAX_BLOCKING_THREADS)
-                    .thread_keep_alive(RENDER_RUNTIME_THREAD_KEEP_ALIVE)
-                    .thread_name("hypercolor-render-rt")
-                    .enable_all()
-                    .build()
-                    .expect("render thread runtime should initialize");
+                let runtime = match build_runtime() {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
                 let pipeline =
                     runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(&state));
                 match pipeline {
@@ -289,10 +299,14 @@ impl RenderThread {
                     }
                 }
             })
-            .expect("render thread should spawn");
-        ready_rx
+            .context("failed to spawn render thread")?;
+        let ready = ready_rx
             .recv()
-            .context("render thread exited before startup completed")??;
+            .context("render thread exited before startup completed")?;
+        if let Err(error) = ready {
+            let _ = join_handle.join();
+            return Err(error);
+        }
         info!("render thread spawned");
         Ok(Self {
             join_handle: Some(join_handle),
@@ -319,6 +333,17 @@ impl RenderThread {
         }
         Ok(())
     }
+}
+
+fn build_render_runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(RENDER_RUNTIME_WORKERS)
+        .max_blocking_threads(RENDER_RUNTIME_MAX_BLOCKING_THREADS)
+        .thread_keep_alive(RENDER_RUNTIME_THREAD_KEEP_ALIVE)
+        .thread_name("hypercolor-render-rt")
+        .enable_all()
+        .build()
+        .context("failed to initialize render thread runtime")
 }
 
 // ── Pipeline ────────────────────────────────────────────────────────────────
