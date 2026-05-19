@@ -64,6 +64,8 @@ const MAX_LOTTIE_DECODED_BYTES: usize = 128 * 1024 * 1024;
 const VIDEO_MEDIA_ESTIMATED_COST_US: u64 = 20_000;
 #[cfg(feature = "media-video")]
 const STREAM_MEDIA_ESTIMATED_COST_US: u64 = 25_000;
+#[cfg(feature = "media-video")]
+const MAX_VIDEO_DECODED_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum MediaProducerError {
@@ -815,10 +817,39 @@ fn pull_video_frames(
     sink: &gst_app::AppSink,
     frame_limit: Option<usize>,
 ) -> Result<Vec<DecodedMediaFrame>, MediaProducerError> {
+    let mut total_decoded_bytes = 0_usize;
     let mut frames = Vec::new();
     loop {
         if let Some(sample) = sink.try_pull_sample(GST_FRAME_TIMEOUT) {
-            frames.push(decoded_frame_from_sample(&sample)?);
+            let frame = decoded_frame_from_sample(&sample)?;
+            let frame_bytes = usize::try_from(frame.canvas.width())
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(frame.canvas.height())
+                        .ok()
+                        .map(|height| (width, height))
+                })
+                .and_then(|(width, height)| width.checked_mul(height))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| {
+                    MediaProducerError::VideoDecode(
+                        "decoded video size overflowed limits".to_owned(),
+                    )
+                })?;
+            total_decoded_bytes =
+                total_decoded_bytes
+                    .checked_add(frame_bytes)
+                    .ok_or_else(|| {
+                        MediaProducerError::VideoDecode(
+                            "decoded video size overflowed limits".to_owned(),
+                        )
+                    })?;
+            if total_decoded_bytes > MAX_VIDEO_DECODED_BYTES {
+                return Err(MediaProducerError::VideoDecode(
+                    "decoded video exceeds configured memory limits".to_owned(),
+                ));
+            }
+            frames.push(frame);
             if frame_limit.is_some_and(|limit| frames.len() >= limit) {
                 break;
             }
