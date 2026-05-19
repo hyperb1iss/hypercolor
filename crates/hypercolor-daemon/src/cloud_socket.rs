@@ -278,8 +278,7 @@ async fn run_session_until_close(
             .mark_backoff("cloud heartbeat interval overflow");
         return;
     };
-    let mut heartbeat_tick =
-        tokio::time::interval_at(first_heartbeat_deadline, heartbeat.interval);
+    let mut heartbeat_tick = tokio::time::interval_at(first_heartbeat_deadline, heartbeat.interval);
     heartbeat_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut socket = session.into_socket();
     loop {
@@ -424,8 +423,8 @@ struct HeartbeatState {
 
 impl HeartbeatState {
     fn new(welcome: &WelcomeFrame) -> Self {
-        let interval = Duration::from_secs(welcome.heartbeat_interval_s.max(1))
-            .min(MAX_HEARTBEAT_INTERVAL);
+        let interval =
+            Duration::from_secs(welcome.heartbeat_interval_s.max(1)).min(MAX_HEARTBEAT_INTERVAL);
         Self {
             interval,
             awaiting_pong: false,
