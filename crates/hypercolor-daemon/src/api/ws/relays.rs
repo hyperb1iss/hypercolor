@@ -1173,6 +1173,11 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: performance_snapshot.pacing.gpu_sample_cpu_fallback,
                 cpu_sampling_late_readback: performance_snapshot.pacing.cpu_sampling_late_readback,
+                led_sampling_readback: performance_snapshot.pacing.led_sampling_readback,
+                preview_surface: performance_snapshot.pacing.preview_surface,
+                scene_canvas_forced_surface: performance_snapshot
+                    .pacing
+                    .scene_canvas_forced_surface,
                 gpu_readback_failed_frames: performance_snapshot.pacing.gpu_readback_failed_frames,
                 output_error_frames: performance_snapshot.pacing.output_error_frames,
                 full_frame_copy_frames: performance_snapshot.pacing.full_frame_copy_frames,
@@ -1256,6 +1261,9 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_wait_blocked: latest_frame.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: latest_frame.gpu_sample_cpu_fallback,
                 cpu_sampling_late_readback: latest_frame.cpu_sampling_late_readback,
+                led_sampling_readback: latest_frame.led_sampling_readback,
+                preview_surface: latest_frame.preview_surface,
+                scene_canvas_forced_surface: latest_frame.scene_canvas_forced_surface,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,
                 gpu_readback_failed: latest_frame.gpu_readback_failed,
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
@@ -1334,6 +1342,16 @@ pub(super) async fn build_metrics_message(
             copies: MetricsCopies {
                 full_frame_count: latest_frame.full_frame_copy_count,
                 full_frame_kb: round_2(bytes_to_kib(latest_frame.full_frame_copy_bytes)),
+                producer_full_frame_count: latest_frame.producer_full_frame_copy.count,
+                producer_full_frame_kb: round_2(bytes_to_kib(
+                    latest_frame.producer_full_frame_copy.bytes,
+                )),
+                producer_reason: latest_frame.producer_full_frame_copy.reason,
+                publication_full_frame_count: latest_frame.publication_full_frame_copy.count,
+                publication_full_frame_kb: round_2(bytes_to_kib(
+                    latest_frame.publication_full_frame_copy.bytes,
+                )),
+                publication_reason: latest_frame.publication_full_frame_copy.reason,
             },
             memory: MetricsMemory {
                 daemon_rss_mb: round_1(daemon_rss_mb),

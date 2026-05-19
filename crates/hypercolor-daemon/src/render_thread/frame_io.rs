@@ -7,14 +7,15 @@ use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, Spe
 use hypercolor_types::scene::RenderGroupId;
 use tokio::sync::watch;
 
+use crate::performance::FullFrameCopyMetrics;
+
 use super::pipeline_runtime::PublicationCadenceState;
 use super::render_groups::GroupCanvasFrame;
 use super::{RenderThreadState, micros_u32, usize_to_u32};
 
 pub(crate) struct PublishFrameStats {
     pub(crate) elapsed_us: u32,
-    pub(crate) full_frame_copy_count: u32,
-    pub(crate) full_frame_copy_bytes: u32,
+    pub(crate) publication_full_frame_copy: FullFrameCopyMetrics,
     pub(crate) frame_data_us: u32,
     pub(crate) group_canvas_us: u32,
     pub(crate) preview_us: u32,
@@ -129,8 +130,7 @@ pub(crate) fn publish_frame_updates(
         publication_cadence.should_publish_audio_level(elapsed_ms, event_subscribers > 0);
     let audio_signal = (spectrum_receivers > 0 || publish_audio_level)
         .then(|| AudioSignalSnapshot::from_audio(audio));
-    let mut full_frame_copy_count = 0_u32;
-    let mut full_frame_copy_bytes = 0_u32;
+    let mut publication_full_frame_copy = FullFrameCopyMetrics::default();
     let frame_data_start = Instant::now();
     update_published_frame(
         state.event_bus.frame_sender(),
@@ -252,8 +252,7 @@ pub(crate) fn publish_frame_updates(
                 let (frame, copied) =
                     CanvasFrame::from_owned_canvas_with_copy_info(canvas, frame_number, elapsed_ms);
                 if copied {
-                    full_frame_copy_count = full_frame_copy_count.saturating_add(1);
-                    full_frame_copy_bytes = full_frame_copy_bytes.saturating_add(canvas_rgba_len);
+                    publication_full_frame_copy.record(canvas_rgba_len, "owned_canvas_publication");
                 }
                 frame
             } else {
@@ -349,8 +348,7 @@ pub(crate) fn publish_frame_updates(
     let events_us = micros_u32(events_start.elapsed());
     PublishFrameStats {
         elapsed_us: micros_u32(publish_start.elapsed()),
-        full_frame_copy_count,
-        full_frame_copy_bytes,
+        publication_full_frame_copy,
         frame_data_us,
         group_canvas_us,
         preview_us,
@@ -783,8 +781,8 @@ mod tests {
             },
         );
 
-        assert_eq!(stats.full_frame_copy_count, 0);
-        assert_eq!(stats.full_frame_copy_bytes, 0);
+        assert_eq!(stats.publication_full_frame_copy.count, 0);
+        assert_eq!(stats.publication_full_frame_copy.bytes, 0);
         assert!(
             canvas_rx
                 .has_changed()

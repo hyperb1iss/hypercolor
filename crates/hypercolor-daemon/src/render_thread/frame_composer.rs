@@ -21,6 +21,7 @@ use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest};
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{CompositionLayer, CompositionPlan, DisplayFinalizeParams};
 use super::{RenderThreadState, micros_between, micros_u32};
+use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::PreviewDemandSummary;
 
 #[allow(
@@ -31,6 +32,7 @@ pub(crate) struct RenderStageStats {
     pub(crate) composed_frame: ComposedFrameSet,
     pub(crate) preview_requested: bool,
     pub(crate) web_viewport_preview: Option<PublishedSurface>,
+    pub(crate) producer_full_frame_copy: FullFrameCopyMetrics,
     pub(crate) group_canvases: Vec<(RenderGroupId, GroupCanvasFrame)>,
     pub(crate) active_group_canvas_ids: Vec<RenderGroupId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
@@ -49,6 +51,8 @@ pub(crate) struct RenderStageStats {
     pub(crate) effect_retained: bool,
     pub(crate) screen_retained: bool,
     pub(crate) composition_bypassed: bool,
+    pub(crate) preview_surface_pressure: bool,
+    pub(crate) scene_canvas_forced_surface: bool,
 }
 
 pub(crate) struct ComposeRequest<'a> {
@@ -207,6 +211,8 @@ impl ComposeContext<'_> {
         );
         let producer_retained = producer_state.is_some_and(ProducerFrameState::is_retained);
         let preview_request = self.preview_surface_request();
+        let preview_surface_pressure = self.preview_surface_pressure();
+        let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
         let composed = self.compose.sparkleflinger.compose_for_outputs(
             compiled_plan.plan.with_cpu_replay_cacheable(
                 producer_retained && !compiled_plan.metadata.transition_active,
@@ -223,6 +229,7 @@ impl ComposeContext<'_> {
             composed_frame: composed,
             preview_requested: preview_request.is_some(),
             web_viewport_preview: None,
+            producer_full_frame_copy: FullFrameCopyMetrics::default(),
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
@@ -243,6 +250,8 @@ impl ComposeContext<'_> {
             effect_retained: false,
             screen_retained: self.scene_snapshot.effect_demand.screen_capture_active
                 && producer_retained,
+            preview_surface_pressure,
+            scene_canvas_forced_surface,
         }
     }
 
@@ -268,6 +277,8 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let preview_request = self.preview_surface_request();
+                let preview_surface_pressure = self.preview_surface_pressure();
+                let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
                 let requires_full_composition = render_group_requires_full_composition(
                     compiled_plan.metadata.transition_active,
                     &render_group_result.led_sampling_strategy,
@@ -310,6 +321,7 @@ impl ComposeContext<'_> {
                     composed_frame: composed,
                     preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
+                    producer_full_frame_copy: render_group_result.producer_full_frame_copy,
                     group_canvases,
                     active_group_canvas_ids: render_group_result.active_group_canvas_ids,
                     led_sampling_strategy: render_group_result.led_sampling_strategy,
@@ -331,6 +343,8 @@ impl ComposeContext<'_> {
                     effect_retained,
                     screen_retained: false,
                     composition_bypassed,
+                    preview_surface_pressure,
+                    scene_canvas_forced_surface,
                 }
             }
             Err(error) => {
@@ -355,6 +369,8 @@ impl ComposeContext<'_> {
                     true,
                 );
                 let preview_request = self.preview_surface_request();
+                let preview_surface_pressure = self.preview_surface_pressure();
+                let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
                 let composed = self.compose.sparkleflinger.compose_for_outputs(
                     compiled_plan.plan.with_cpu_replay_cacheable(false),
                     self.requires_cpu_sampling_canvas(),
@@ -369,6 +385,7 @@ impl ComposeContext<'_> {
                     composed_frame: composed,
                     preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
+                    producer_full_frame_copy: FullFrameCopyMetrics::default(),
                     group_canvases: Vec::new(),
                     active_group_canvas_ids: Vec::new(),
                     led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
@@ -389,6 +406,8 @@ impl ComposeContext<'_> {
                     effect_retained: false,
                     screen_retained: false,
                     composition_bypassed,
+                    preview_surface_pressure,
+                    scene_canvas_forced_surface,
                 }
             }
         }
@@ -452,6 +471,17 @@ impl ComposeContext<'_> {
             self.state.preview_runtime.screen_canvas_receiver_count(),
             self.state.preview_runtime.screen_canvas_demand(),
         )
+    }
+
+    fn preview_surface_pressure(&self) -> bool {
+        self.publish_canvas_preview
+            || (self.publish_screen_canvas_preview
+                && !self.scene_snapshot.effect_demand.effect_running
+                && self.scene_snapshot.effect_demand.screen_capture_active)
+    }
+
+    fn scene_canvas_forced_surface(&self) -> bool {
+        self.state.scene_canvas_receiver_count() > 0
     }
 
     fn materialize_group_canvases(

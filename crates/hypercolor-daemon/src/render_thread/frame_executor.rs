@@ -366,6 +366,7 @@ pub(crate) async fn execute_frame(
         scene_snapshot: &scene_snapshot,
         render_surfaces: &render_surfaces,
         publish_stats: &publish_stats,
+        producer_full_frame_copy: render_stage.producer_full_frame_copy,
         input_us,
         producer_us: render_stage.producer_us,
         producer_render_us: render_stage.producer_render_us,
@@ -402,6 +403,8 @@ pub(crate) async fn execute_frame(
         effect_retained: render_stage.effect_retained,
         screen_retained: render_stage.screen_retained,
         composition_bypassed: render_stage.composition_bypassed,
+        preview_surface_pressure: render_stage.preview_surface_pressure,
+        scene_canvas_forced_surface: render_stage.scene_canvas_forced_surface,
         scene_snapshot_done_us,
         input_done_us,
         sample_done_us,
@@ -506,6 +509,7 @@ mod tests {
             composed_frame,
             preview_requested,
             web_viewport_preview: None,
+            producer_full_frame_copy: crate::performance::FullFrameCopyMetrics::default(),
             group_canvases: Vec::new(),
             active_group_canvas_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(
@@ -526,6 +530,8 @@ mod tests {
             effect_retained: false,
             screen_retained: false,
             composition_bypassed: false,
+            preview_surface_pressure: false,
+            scene_canvas_forced_surface: false,
         }
     }
 

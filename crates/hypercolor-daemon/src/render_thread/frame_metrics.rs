@@ -2,7 +2,9 @@ use super::frame_io::PublishFrameStats;
 use super::frame_policy::FrameAdmissionSample;
 use super::pipeline_runtime::RenderSurfaceSnapshot;
 use super::scene_snapshot::FrameSceneSnapshot;
-use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
+use crate::performance::{
+    CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActiveFrameSummary {
@@ -14,6 +16,7 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) scene_snapshot: &'a FrameSceneSnapshot,
     pub(crate) render_surfaces: &'a RenderSurfaceSnapshot,
     pub(crate) publish_stats: &'a PublishFrameStats,
+    pub(crate) producer_full_frame_copy: FullFrameCopyMetrics,
     pub(crate) input_us: u32,
     pub(crate) producer_us: u32,
     pub(crate) producer_render_us: u32,
@@ -50,6 +53,8 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) effect_retained: bool,
     pub(crate) screen_retained: bool,
     pub(crate) composition_bypassed: bool,
+    pub(crate) preview_surface_pressure: bool,
+    pub(crate) scene_canvas_forced_surface: bool,
     pub(crate) scene_snapshot_done_us: u32,
     pub(crate) input_done_us: u32,
     pub(crate) sample_done_us: u32,
@@ -77,6 +82,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         scene_snapshot,
         render_surfaces,
         publish_stats,
+        producer_full_frame_copy,
         input_us,
         producer_us,
         producer_render_us,
@@ -113,12 +119,22 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         effect_retained,
         screen_retained,
         composition_bypassed,
+        preview_surface_pressure,
+        scene_canvas_forced_surface,
         scene_snapshot_done_us,
         input_done_us,
         sample_done_us,
         output_done_us,
         publish_done_us,
     } = input;
+    let publication_full_frame_copy = publish_stats.publication_full_frame_copy;
+    let full_frame_copy_count = producer_full_frame_copy
+        .count
+        .saturating_add(publication_full_frame_copy.count);
+    let full_frame_copy_bytes = producer_full_frame_copy
+        .bytes
+        .saturating_add(publication_full_frame_copy.bytes);
+
     LatestFrameMetrics {
         timestamp_ms: scene_snapshot.elapsed_ms,
         input_us,
@@ -176,8 +192,13 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         direct_pool_shared_published_slots: render_surfaces.direct_pool_shared_published_slots,
         direct_pool_max_ref_count: render_surfaces.direct_pool_max_ref_count,
         canvas_receiver_count: render_surfaces.canvas_receivers,
-        full_frame_copy_count: publish_stats.full_frame_copy_count,
-        full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
+        producer_full_frame_copy,
+        publication_full_frame_copy,
+        full_frame_copy_count,
+        full_frame_copy_bytes,
+        scene_canvas_forced_surface,
+        preview_surface: preview_surface_pressure,
+        led_sampling_readback: cpu_sampling_late_readback,
         output_errors,
         timeline: build_frame_timeline(
             scene_snapshot,
@@ -274,8 +295,13 @@ pub(crate) fn build_throttle_frame_metrics(
         direct_pool_shared_published_slots: render_surfaces.direct_pool_shared_published_slots,
         direct_pool_max_ref_count: render_surfaces.direct_pool_max_ref_count,
         canvas_receiver_count: render_surfaces.canvas_receivers,
-        full_frame_copy_count: publish_stats.full_frame_copy_count,
-        full_frame_copy_bytes: publish_stats.full_frame_copy_bytes,
+        producer_full_frame_copy: FullFrameCopyMetrics::default(),
+        publication_full_frame_copy: publish_stats.publication_full_frame_copy,
+        full_frame_copy_count: publish_stats.publication_full_frame_copy.count,
+        full_frame_copy_bytes: publish_stats.publication_full_frame_copy.bytes,
+        scene_canvas_forced_surface: false,
+        preview_surface: false,
+        led_sampling_readback: false,
         output_errors,
         timeline: build_frame_timeline(
             scene_snapshot,
@@ -344,7 +370,7 @@ mod tests {
         ActiveFrameMetricsInput, PublishFrameStats, RenderSurfaceSnapshot,
         ThrottleFrameMetricsInput, build_throttle_frame_metrics, summarize_active_frame,
     };
-    use crate::performance::CompositorBackendKind;
+    use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics};
     use crate::render_thread::scene_dependency::SceneDependencyKey;
     use crate::render_thread::scene_snapshot::{
         EffectDemand, FrameSceneSnapshot, SceneRuntimeSnapshot, SceneTransitionSnapshot,
@@ -417,8 +443,11 @@ mod tests {
     fn publish_stats() -> PublishFrameStats {
         PublishFrameStats {
             elapsed_us: 310,
-            full_frame_copy_count: 2,
-            full_frame_copy_bytes: 8_192,
+            publication_full_frame_copy: FullFrameCopyMetrics {
+                count: 2,
+                bytes: 8_192,
+                reason: Some("publication_test"),
+            },
             frame_data_us: 50,
             group_canvas_us: 60,
             preview_us: 70,
@@ -432,6 +461,11 @@ mod tests {
             scene_snapshot: &scene_snapshot(),
             render_surfaces: &render_surfaces(),
             publish_stats: &publish_stats(),
+            producer_full_frame_copy: FullFrameCopyMetrics {
+                count: 1,
+                bytes: 4_096,
+                reason: Some("producer_test"),
+            },
             input_us: 120,
             producer_us: 220,
             producer_render_us: 140,
@@ -468,6 +502,8 @@ mod tests {
             effect_retained: true,
             screen_retained: false,
             composition_bypassed: false,
+            preview_surface_pressure: true,
+            scene_canvas_forced_surface: true,
             scene_snapshot_done_us: 30,
             input_done_us: 60,
             sample_done_us: 500,
@@ -476,7 +512,13 @@ mod tests {
         });
 
         assert_eq!(summary.metrics.publish_us, 310);
-        assert_eq!(summary.metrics.full_frame_copy_count, 2);
+        assert_eq!(summary.metrics.producer_full_frame_copy.count, 1);
+        assert_eq!(summary.metrics.publication_full_frame_copy.count, 2);
+        assert_eq!(summary.metrics.full_frame_copy_count, 3);
+        assert_eq!(summary.metrics.full_frame_copy_bytes, 12_288);
+        assert!(summary.metrics.preview_surface);
+        assert!(summary.metrics.scene_canvas_forced_surface);
+        assert!(summary.metrics.led_sampling_readback);
         assert_eq!(summary.metrics.output_errors, 3);
         assert_eq!(summary.admission.total_us, summary.metrics.total_us);
         assert_eq!(summary.admission.producer_us, summary.metrics.producer_us);

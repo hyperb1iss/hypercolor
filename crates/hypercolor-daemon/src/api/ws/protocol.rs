@@ -814,6 +814,9 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_wait_blocked: u32,
     pub(super) gpu_sample_cpu_fallback: u32,
     pub(super) cpu_sampling_late_readback: u32,
+    pub(super) led_sampling_readback: u32,
+    pub(super) preview_surface: u32,
+    pub(super) scene_canvas_forced_surface: u32,
     pub(super) gpu_readback_failed_frames: u32,
     pub(super) output_error_frames: u32,
     pub(super) full_frame_copy_frames: u32,
@@ -886,6 +889,9 @@ pub(super) struct MetricsTimeline {
     pub(super) gpu_sample_wait_blocked: bool,
     pub(super) gpu_sample_cpu_fallback: bool,
     pub(super) cpu_sampling_late_readback: bool,
+    pub(super) led_sampling_readback: bool,
+    pub(super) preview_surface: bool,
+    pub(super) scene_canvas_forced_surface: bool,
     pub(super) cpu_readback_skipped: bool,
     pub(super) gpu_readback_failed: bool,
     pub(super) budget_ms: f64,
@@ -912,6 +918,12 @@ pub(super) struct MetricsTimeline {
 pub(super) struct MetricsCopies {
     pub(super) full_frame_count: u32,
     pub(super) full_frame_kb: f64,
+    pub(super) producer_full_frame_count: u32,
+    pub(super) producer_full_frame_kb: f64,
+    pub(super) producer_reason: Option<&'static str>,
+    pub(super) publication_full_frame_count: u32,
+    pub(super) publication_full_frame_kb: f64,
+    pub(super) publication_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

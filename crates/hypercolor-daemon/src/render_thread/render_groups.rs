@@ -31,13 +31,14 @@ use hypercolor_types::spatial::{
 use super::binding_eval::evaluate_layer_runtime;
 use super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::layer_runtime::LayerRuntimeRegistry;
-use super::micros_u32;
 use super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::scene_dependency::SceneDependencyKey;
 use super::sparkleflinger::{
     ComposedFrameSet, CompositionAdjust, CompositionLayer, CompositionMode, CompositionPlan,
     CompositionTransform, PreviewSurfaceRequest, SparkleFlinger,
 };
+use super::{micros_u32, usize_to_u32};
+use crate::performance::FullFrameCopyMetrics;
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -85,6 +86,7 @@ pub(crate) struct RenderGroupResult {
     pub group_canvases: Vec<(RenderGroupId, PendingGroupCanvasFrame)>,
     pub active_group_canvas_ids: Vec<RenderGroupId>,
     pub led_sampling_strategy: LedSamplingStrategy,
+    pub producer_full_frame_copy: FullFrameCopyMetrics,
     pub render_us: u32,
     pub sample_us: u32,
     pub scene_compose_us: u32,
@@ -349,6 +351,7 @@ impl RenderGroupRuntime {
             led_sampling_strategy: LedSamplingStrategy::from_retained(
                 &retained.led_sampling_strategy,
             ),
+            producer_full_frame_copy: FullFrameCopyMetrics::default(),
             render_us: 0,
             sample_us: 0,
             scene_compose_us: 0,
@@ -410,6 +413,7 @@ impl RenderGroupRuntime {
         }
 
         let mut render_us = 0_u32;
+        let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
         let mut group_canvases = Vec::new();
         let mut active_group_canvas_ids = Vec::new();
         for group in groups {
@@ -440,6 +444,7 @@ impl RenderGroupRuntime {
                     screen,
                     sensors,
                     sparkleflinger,
+                    &mut producer_full_frame_copy,
                 )?
                 else {
                     continue;
@@ -473,7 +478,7 @@ impl RenderGroupRuntime {
                 target.clear();
                 continue;
             };
-            if !copy_producer_frame_to_canvas(frame, target) {
+            if !copy_producer_frame_to_canvas(frame, target, &mut producer_full_frame_copy) {
                 target.clear();
                 continue;
             }
@@ -494,6 +499,7 @@ impl RenderGroupRuntime {
             } else {
                 LedSamplingStrategy::SparkleFlinger(self.combined_led_spatial_engine.clone())
             },
+            producer_full_frame_copy,
             render_us,
             sample_us: 0,
             scene_compose_us,
@@ -649,6 +655,7 @@ impl RenderGroupRuntime {
             return Ok(None);
         };
 
+        let mut producer_full_frame_copy = FullFrameCopyMetrics::default();
         let render_start = Instant::now();
         let scene_frame = if let Some(frame) = self.render_passthrough_effect_layer_frame(
             scene_group,
@@ -681,7 +688,9 @@ impl RenderGroupRuntime {
             };
             frame
         };
-        let Some(scene_frame) = self.surface_backed_scene_frame(scene_frame) else {
+        let Some(scene_frame) =
+            self.surface_backed_scene_frame(scene_frame, &mut producer_full_frame_copy)
+        else {
             return Ok(None);
         };
         record_producer_frame(&scene_frame);
@@ -724,6 +733,7 @@ impl RenderGroupRuntime {
                 screen,
                 sensors,
                 sparkleflinger,
+                &mut producer_full_frame_copy,
             )?
             else {
                 continue;
@@ -740,6 +750,7 @@ impl RenderGroupRuntime {
             group_canvases,
             active_group_canvas_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
+            producer_full_frame_copy,
             render_us,
             sample_us,
             scene_compose_us: 0,
@@ -859,6 +870,7 @@ impl RenderGroupRuntime {
         screen: Option<&ScreenData>,
         sensors: &SystemSnapshot,
         sparkleflinger: &mut SparkleFlinger,
+        full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> Result<Option<PendingGroupCanvasFrame>> {
         let display_target = group
             .display_target
@@ -896,7 +908,7 @@ impl RenderGroupRuntime {
             };
             frame
         };
-        let Some(frame) = self.surface_backed_direct_frame(group.id, frame) else {
+        let Some(frame) = self.surface_backed_direct_frame(group.id, frame, full_frame_copy) else {
             return Ok(None);
         };
         record_producer_frame(&frame);
@@ -1271,17 +1283,22 @@ impl RenderGroupRuntime {
         }
     }
 
-    fn surface_backed_scene_frame(&mut self, frame: ProducerFrame) -> Option<ProducerFrame> {
-        surface_backed_frame(&mut self.scene_surface_pool, frame)
+    fn surface_backed_scene_frame(
+        &mut self,
+        frame: ProducerFrame,
+        full_frame_copy: &mut FullFrameCopyMetrics,
+    ) -> Option<ProducerFrame> {
+        surface_backed_frame(&mut self.scene_surface_pool, frame, full_frame_copy)
     }
 
     fn surface_backed_direct_frame(
         &mut self,
         group_id: RenderGroupId,
         frame: ProducerFrame,
+        full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> Option<ProducerFrame> {
         let surface_pool = self.direct_surface_pools.get_mut(&group_id)?;
-        surface_backed_frame(surface_pool, frame)
+        surface_backed_frame(surface_pool, frame, full_frame_copy)
     }
 
     fn compose_scene_frame(&mut self, groups: &[RenderGroup]) -> ProducerFrame {
@@ -1812,6 +1829,7 @@ fn composed_frame_to_producer_frame(composed: ComposedFrameSet) -> Option<Produc
 fn surface_backed_frame(
     surface_pool: &mut RenderSurfacePool,
     frame: ProducerFrame,
+    full_frame_copy: &mut FullFrameCopyMetrics,
 ) -> Option<ProducerFrame> {
     match frame {
         ProducerFrame::Canvas(canvas) => {
@@ -1821,6 +1839,10 @@ fn surface_backed_frame(
         }
         ProducerFrame::Surface(surface) if surface.generation() == 0 => {
             let mut lease = surface_pool.dequeue()?;
+            full_frame_copy.record(
+                usize_to_u32(surface.rgba_bytes().len()),
+                "generation_zero_surface_pool_materialization",
+            );
             *lease.canvas_mut() =
                 Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
             Some(ProducerFrame::Surface(
@@ -1831,13 +1853,21 @@ fn surface_backed_frame(
     }
 }
 
-fn copy_producer_frame_to_canvas(frame: ProducerFrame, target: &mut Canvas) -> bool {
+fn copy_producer_frame_to_canvas(
+    frame: ProducerFrame,
+    target: &mut Canvas,
+    full_frame_copy: &mut FullFrameCopyMetrics,
+) -> bool {
     match frame {
         ProducerFrame::Canvas(canvas) => {
             *target = canvas;
             true
         }
         ProducerFrame::Surface(surface) => {
+            full_frame_copy.record(
+                usize_to_u32(surface.rgba_bytes().len()),
+                "surface_to_group_canvas_materialization",
+            );
             *target = Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
             true
         }
@@ -1991,6 +2021,28 @@ mod tests {
         ));
         assert!(!media_mime_prefers_gpu_texture("image/png"));
         assert!(!media_mime_prefers_gpu_texture("application/json"));
+    }
+
+    #[test]
+    fn generation_zero_surface_materialization_records_full_frame_copy() {
+        let mut pool = RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(2, 2), 1);
+        let surface = PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 7, 42);
+        let mut full_frame_copy = FullFrameCopyMetrics::default();
+
+        let backed = surface_backed_frame(
+            &mut pool,
+            ProducerFrame::Surface(surface),
+            &mut full_frame_copy,
+        )
+        .expect("surface should be materialized into the pool");
+
+        assert!(matches!(backed, ProducerFrame::Surface(_)));
+        assert_eq!(full_frame_copy.count, 1);
+        assert_eq!(full_frame_copy.bytes, 16);
+        assert_eq!(
+            full_frame_copy.reason,
+            Some("generation_zero_surface_pool_materialization")
+        );
     }
 
     fn sample_group(width: u32, height: u32) -> RenderGroup {

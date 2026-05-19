@@ -36,6 +36,21 @@ impl CompositorBackendKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FullFrameCopyMetrics {
+    pub(crate) count: u32,
+    pub(crate) bytes: u32,
+    pub(crate) reason: Option<&'static str>,
+}
+
+impl FullFrameCopyMetrics {
+    pub(crate) fn record(&mut self, bytes: u32, reason: &'static str) {
+        self.count = self.count.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.reason = Some(reason);
+    }
+}
+
 /// Absolute checkpoints for the latest completed frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FrameTimeline {
@@ -123,8 +138,13 @@ pub(crate) struct LatestFrameMetrics {
     pub direct_pool_shared_published_slots: u32,
     pub direct_pool_max_ref_count: u32,
     pub canvas_receiver_count: u32,
+    pub producer_full_frame_copy: FullFrameCopyMetrics,
+    pub publication_full_frame_copy: FullFrameCopyMetrics,
     pub full_frame_copy_count: u32,
     pub full_frame_copy_bytes: u32,
+    pub scene_canvas_forced_surface: bool,
+    pub preview_surface: bool,
+    pub led_sampling_readback: bool,
     pub output_errors: u32,
     pub timeline: FrameTimeline,
 }
@@ -170,6 +190,9 @@ pub(crate) struct PacingSummary {
     pub gpu_sample_wait_blocked: u32,
     pub gpu_sample_cpu_fallback: u32,
     pub cpu_sampling_late_readback: u32,
+    pub led_sampling_readback: u32,
+    pub preview_surface: u32,
+    pub scene_canvas_forced_surface: u32,
     pub gpu_readback_failed_frames: u32,
     pub output_error_frames: u32,
     pub full_frame_copy_frames: u32,
@@ -232,6 +255,9 @@ impl PerformanceTracker {
             gpu_sample_wait_blocked: metrics.gpu_sample_wait_blocked,
             gpu_sample_cpu_fallback: metrics.gpu_sample_cpu_fallback,
             cpu_sampling_late_readback: metrics.cpu_sampling_late_readback,
+            led_sampling_readback: metrics.led_sampling_readback,
+            preview_surface: metrics.preview_surface,
+            scene_canvas_forced_surface: metrics.scene_canvas_forced_surface,
             gpu_readback_failed: metrics.gpu_readback_failed,
             output_error: metrics.output_errors > 0,
             full_frame_copy: metrics.full_frame_copy_count > 0,
@@ -333,6 +359,9 @@ struct FramePacingSample {
     gpu_sample_wait_blocked: bool,
     gpu_sample_cpu_fallback: bool,
     cpu_sampling_late_readback: bool,
+    led_sampling_readback: bool,
+    preview_surface: bool,
+    scene_canvas_forced_surface: bool,
     gpu_readback_failed: bool,
     output_error: bool,
     full_frame_copy: bool,
@@ -463,6 +492,27 @@ fn summarize_pacing(
             pacing_history
                 .iter()
                 .filter(|sample| sample.cpu_sampling_late_readback)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        led_sampling_readback: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.led_sampling_readback)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        preview_surface: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.preview_surface)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        scene_canvas_forced_surface: u32::try_from(
+            pacing_history
+                .iter()
+                .filter(|sample| sample.scene_canvas_forced_surface)
                 .count(),
         )
         .unwrap_or(u32::MAX),

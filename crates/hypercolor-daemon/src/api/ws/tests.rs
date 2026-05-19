@@ -52,7 +52,9 @@ use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
-use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
+use crate::performance::{
+    CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
+};
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
@@ -289,6 +291,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
             gpu_sample_wait_blocked: true,
             gpu_sample_cpu_fallback: true,
             cpu_sampling_late_readback: true,
+            led_sampling_readback: true,
+            preview_surface: true,
+            scene_canvas_forced_surface: true,
             cpu_readback_skipped: true,
             gpu_readback_failed: true,
             compositor_backend: CompositorBackendKind::Gpu,
@@ -313,7 +318,17 @@ async fn metrics_message_includes_latest_frame_timeline() {
             direct_pool_shared_published_slots: 4,
             direct_pool_max_ref_count: 2,
             canvas_receiver_count: 2,
-            full_frame_copy_count: 1,
+            producer_full_frame_copy: FullFrameCopyMetrics {
+                count: 1,
+                bytes: 512,
+                reason: Some("producer_test"),
+            },
+            publication_full_frame_copy: FullFrameCopyMetrics {
+                count: 1,
+                bytes: 1_536,
+                reason: Some("publication_test"),
+            },
+            full_frame_copy_count: 2,
             full_frame_copy_bytes: 2_048,
             output_errors: 1,
             timeline: FrameTimeline {
@@ -355,6 +370,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_sample_wait_blocked"], true);
     assert_eq!(json["timeline"]["gpu_sample_cpu_fallback"], true);
     assert_eq!(json["timeline"]["cpu_sampling_late_readback"], true);
+    assert_eq!(json["timeline"]["led_sampling_readback"], true);
+    assert_eq!(json["timeline"]["preview_surface"], true);
+    assert_eq!(json["timeline"]["scene_canvas_forced_surface"], true);
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
     assert_eq!(json["timeline"]["gpu_readback_failed"], true);
     assert_eq!(json["timeline"]["budget_ms"], 16.67);
@@ -371,6 +389,9 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["pacing"]["gpu_sample_cpu_fallback"], 1);
     assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 1);
+    assert_eq!(json["pacing"]["led_sampling_readback"], 1);
+    assert_eq!(json["pacing"]["preview_surface"], 1);
+    assert_eq!(json["pacing"]["scene_canvas_forced_surface"], 1);
     assert_eq!(json["pacing"]["gpu_readback_failed_frames"], 1);
     assert_eq!(json["pacing"]["output_error_frames"], 1);
     assert_eq!(json["pacing"]["full_frame_copy_frames"], 1);
@@ -388,6 +409,14 @@ async fn metrics_message_includes_latest_frame_timeline() {
         4
     );
     assert_eq!(json["render_surfaces"]["direct_pool_max_ref_count"], 2);
+    assert_eq!(json["copies"]["full_frame_count"], 2);
+    assert_eq!(json["copies"]["full_frame_kb"], 2.0);
+    assert_eq!(json["copies"]["producer_full_frame_count"], 1);
+    assert_eq!(json["copies"]["producer_full_frame_kb"], 0.5);
+    assert_eq!(json["copies"]["producer_reason"], "producer_test");
+    assert_eq!(json["copies"]["publication_full_frame_count"], 1);
+    assert_eq!(json["copies"]["publication_full_frame_kb"], 1.5);
+    assert_eq!(json["copies"]["publication_reason"], "publication_test");
     assert_eq!(json["effect_health"]["errors_total"], 2);
     assert_eq!(json["effect_health"]["fallbacks_applied_total"], 1);
     assert_eq!(

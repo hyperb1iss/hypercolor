@@ -98,6 +98,9 @@ pub struct LatestFrameStatus {
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
     pub cpu_sampling_late_readback: bool,
+    pub led_sampling_readback: bool,
+    pub preview_surface: bool,
+    pub scene_canvas_forced_surface: bool,
     pub cpu_readback_skipped: bool,
     pub gpu_readback_failed: bool,
     pub total_ms: f64,
@@ -124,6 +127,12 @@ pub struct LatestFrameStatus {
     pub render_group_count: u32,
     pub full_frame_copy_count: u32,
     pub full_frame_copy_kb: f64,
+    pub producer_full_frame_copy_count: u32,
+    pub producer_full_frame_copy_kb: f64,
+    pub producer_full_frame_copy_reason: Option<String>,
+    pub publication_full_frame_copy_count: u32,
+    pub publication_full_frame_copy_kb: f64,
+    pub publication_full_frame_copy_reason: Option<String>,
     pub output_errors: u32,
     pub render_surfaces: RenderSurfaceStatus,
 }
@@ -772,6 +781,9 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
         gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
         cpu_sampling_late_readback: frame.cpu_sampling_late_readback,
+        led_sampling_readback: frame.led_sampling_readback,
+        preview_surface: frame.preview_surface,
+        scene_canvas_forced_surface: frame.scene_canvas_forced_surface,
         cpu_readback_skipped: frame.cpu_readback_skipped,
         gpu_readback_failed: frame.gpu_readback_failed,
         total_ms: round_2(us_to_ms(frame.total_us)),
@@ -797,6 +809,17 @@ fn latest_frame_status(frame: LatestFrameMetrics, render_elapsed_ms: f64) -> Lat
         render_group_count: frame.render_group_count,
         full_frame_copy_count: frame.full_frame_copy_count,
         full_frame_copy_kb: round_2(bytes_to_kib(frame.full_frame_copy_bytes)),
+        producer_full_frame_copy_count: frame.producer_full_frame_copy.count,
+        producer_full_frame_copy_kb: round_2(bytes_to_kib(frame.producer_full_frame_copy.bytes)),
+        producer_full_frame_copy_reason: frame.producer_full_frame_copy.reason.map(str::to_owned),
+        publication_full_frame_copy_count: frame.publication_full_frame_copy.count,
+        publication_full_frame_copy_kb: round_2(bytes_to_kib(
+            frame.publication_full_frame_copy.bytes,
+        )),
+        publication_full_frame_copy_reason: frame
+            .publication_full_frame_copy
+            .reason
+            .map(str::to_owned),
         output_errors: frame.output_errors,
         render_surfaces: RenderSurfaceStatus {
             slot_count: frame.render_surface_slot_count,
@@ -867,7 +890,9 @@ fn round_2(value: f64) -> f64 {
 mod tests {
     use super::{get_sensor, get_sensors, get_status, us_to_ms_f64};
     use crate::api::AppState;
-    use crate::performance::{CompositorBackendKind, FrameTimeline, LatestFrameMetrics};
+    use crate::performance::{
+        CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
+    };
     use crate::preview_runtime::{PreviewPixelFormat, PreviewStreamDemand};
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
@@ -950,6 +975,9 @@ mod tests {
                 gpu_sample_wait_blocked: true,
                 gpu_sample_cpu_fallback: true,
                 cpu_sampling_late_readback: true,
+                led_sampling_readback: true,
+                preview_surface: true,
+                scene_canvas_forced_surface: true,
                 cpu_readback_skipped: true,
                 gpu_readback_failed: true,
                 compositor_backend: CompositorBackendKind::GpuFallback,
@@ -974,7 +1002,17 @@ mod tests {
                 direct_pool_shared_published_slots: 0,
                 direct_pool_max_ref_count: 0,
                 canvas_receiver_count: 2,
-                full_frame_copy_count: 1,
+                producer_full_frame_copy: FullFrameCopyMetrics {
+                    count: 1,
+                    bytes: 128_000,
+                    reason: Some("producer_test"),
+                },
+                publication_full_frame_copy: FullFrameCopyMetrics {
+                    count: 1,
+                    bytes: 128_000,
+                    reason: Some("publication_test"),
+                },
+                full_frame_copy_count: 2,
                 full_frame_copy_bytes: 256_000,
                 output_errors: 0,
                 timeline: FrameTimeline {
@@ -1037,6 +1075,12 @@ mod tests {
             json["data"]["latest_frame"]["cpu_sampling_late_readback"],
             true
         );
+        assert_eq!(json["data"]["latest_frame"]["led_sampling_readback"], true);
+        assert_eq!(json["data"]["latest_frame"]["preview_surface"], true);
+        assert_eq!(
+            json["data"]["latest_frame"]["scene_canvas_forced_surface"],
+            true
+        );
         assert_eq!(json["data"]["latest_frame"]["jitter_ms"], 0.03);
         assert_eq!(json["data"]["latest_frame"]["input_sampling_ms"], 0.1);
         assert_eq!(json["data"]["latest_frame"]["producer_ms"], 0.5);
@@ -1072,8 +1116,32 @@ mod tests {
             json["data"]["latest_frame"]["render_surfaces"]["canvas_receivers"],
             2
         );
-        assert_eq!(json["data"]["latest_frame"]["full_frame_copy_count"], 1);
+        assert_eq!(json["data"]["latest_frame"]["full_frame_copy_count"], 2);
         assert_eq!(json["data"]["latest_frame"]["full_frame_copy_kb"], 250.0);
+        assert_eq!(
+            json["data"]["latest_frame"]["producer_full_frame_copy_count"],
+            1
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["producer_full_frame_copy_kb"],
+            125.0
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["producer_full_frame_copy_reason"],
+            "producer_test"
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["publication_full_frame_copy_count"],
+            1
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["publication_full_frame_copy_kb"],
+            125.0
+        );
+        assert_eq!(
+            json["data"]["latest_frame"]["publication_full_frame_copy_reason"],
+            "publication_test"
+        );
         assert_eq!(json["data"]["latest_frame"]["output_errors"], 0);
         assert_eq!(json["data"]["effect_health"]["errors_total"], 1);
         assert_eq!(json["data"]["effect_health"]["fallbacks_applied_total"], 1);

@@ -522,7 +522,16 @@ function analyze(config: Config, samples: MetricSample[], backpressure: Backpres
         retryDelta: delta(first.data, last.data, ["display_output", "retry_attempts_total"]),
         outputErrorFrames: delta(first.data, last.data, ["pacing", "output_error_frames"]),
         maxFullFrameCopyFrames: maxAt(observed, ["pacing", "full_frame_copy_frames"]),
+        maxProducerFullFrameCopyCount: maxAt(observed, ["copies", "producer_full_frame_count"]),
+        maxProducerFullFrameCopyKb: round(maxAt(observed, ["copies", "producer_full_frame_kb"])),
+        latestProducerFullFrameCopyReason: stringAt(last.data, ["copies", "producer_reason"]),
+        maxPublicationFullFrameCopyCount: maxAt(observed, ["copies", "publication_full_frame_count"]),
+        maxPublicationFullFrameCopyKb: round(maxAt(observed, ["copies", "publication_full_frame_kb"])),
+        latestPublicationFullFrameCopyReason: stringAt(last.data, ["copies", "publication_reason"]),
         maxFrameCopyCount: maxAt(observed, ["copies", "full_frame_count"]),
+        maxLedSamplingReadbackFrames: maxAt(observed, ["pacing", "led_sampling_readback"]),
+        maxPreviewSurfaceFrames: maxAt(observed, ["pacing", "preview_surface"]),
+        maxSceneCanvasForcedSurfaceFrames: maxAt(observed, ["pacing", "scene_canvas_forced_surface"]),
         poolSaturationDelta,
         effectFallbackDelta: delta(first.data, last.data, ["effect_health", "fallbacks_applied_total"]),
         producerGpuReadbackFailureDelta: delta(first.data, last.data, [
@@ -662,6 +671,16 @@ function printReport(report: Report): void {
         const actual = check.ok ? `${check.actual}` : `${palette.coral}${check.actual}${palette.reset}`
         console.log(`${marker} ${check.name}: ${actual} / ${check.limit}`)
     }
+    const summary = report.summary
+    console.log("")
+    console.log(
+        `${palette.cyan}copy pressure${palette.reset} producer=${summary.maxProducerFullFrameCopyCount} ` +
+            `publication=${summary.maxPublicationFullFrameCopyCount} total=${summary.maxFrameCopyCount}`,
+    )
+    console.log(
+        `${palette.cyan}surface pressure${palette.reset} preview=${summary.maxPreviewSurfaceFrames} ` +
+            `scene_canvas=${summary.maxSceneCanvasForcedSurfaceFrames} led_readback=${summary.maxLedSamplingReadbackFrames}`,
+    )
 }
 
 async function main(): Promise<void> {
