@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use super::{ToolDefinition, ToolError, default_output_schema, find_effect_metadata};
 use crate::api::effects::{
     StopActiveEffectError, active_primary_effect, apply_associated_layout, effect_ref,
-    normalize_control_payload, stop_active_effect_and_quiesce_output, wake_output_for_effect_start,
+    normalize_control_payload, resolve_full_scope_layout, stop_active_effect_and_quiesce_output,
+    wake_output_for_effect_start,
 };
 use crate::api::{AppState, publish_render_group_changed, save_runtime_session_snapshot};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
@@ -323,10 +324,7 @@ pub(super) async fn handle_set_effect_with_state(
     let previous_effect = active_primary_effect(state)
         .await
         .map(|(_, effect)| effect_ref(&effect));
-    let full_scope_layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
+    let full_scope_layout = resolve_full_scope_layout(state).await;
     let (scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
@@ -577,10 +575,7 @@ pub(super) async fn handle_set_color_with_state(
     if let Some(brightness) = brightness {
         controls.insert("brightness".to_owned(), ControlValue::Float(brightness));
     }
-    let full_scope_layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
+    let full_scope_layout = resolve_full_scope_layout(state).await;
     let (scene_id, group, change_kind) = {
         let mut scene_manager = state.scene_manager.write().await;
         let scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)

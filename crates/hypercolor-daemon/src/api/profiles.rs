@@ -314,10 +314,7 @@ pub(crate) async fn apply_profile_snapshot(
     let prepared_displays = prepare_profile_displays(state, &profile.displays)
         .await
         .map_err(ProfileApplyError::Internal)?;
-    let current_layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
-    };
+    let current_layout = crate::api::effects::resolve_full_scope_layout(state).await;
 
     if let Some(prepared_primary) = prepared_primary {
         let (controls, rejected_controls) = crate::api::effects::normalize_control_values(
