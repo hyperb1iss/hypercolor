@@ -244,6 +244,16 @@ async fn cloud_entitlement_cache_round_trips_and_deletes_token() {
     assert_eq!(cached.jwt, "header.payload.signature");
     assert_eq!(loaded.claims.tier, "free");
     assert!(!loaded.is_stale_at_unix(1_999_999_999));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)
+            .expect("cached entitlement metadata should load")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
     assert!(
         cloud_entitlements::delete_cached_entitlement(&path)
             .await
