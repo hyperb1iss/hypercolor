@@ -245,7 +245,7 @@ impl NetworkAccessPolicy {
             return None;
         }
 
-        let Some(client_ip) = peer_ip(request) else {
+        let Some(client_ip) = client_ip(request) else {
             return Some(ApiError::forbidden(
                 "Client IP is required by network.allowed_clients",
             ));
@@ -750,7 +750,7 @@ fn client_identity(request: &Request<Body>) -> String {
 }
 
 fn request_is_loopback(request: &Request<Body>) -> bool {
-    peer_ip(request).is_some_and(|ip| ip.is_loopback())
+    client_ip(request).is_some_and(|ip| ip.is_loopback())
 }
 
 fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
@@ -765,10 +765,6 @@ fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     }
 
     None
-}
-
-fn peer_ip(request: &Request<Body>) -> Option<IpAddr> {
-    peer_socket_addr(request).map(|socket_addr| socket_addr.ip())
 }
 
 fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
@@ -1022,6 +1018,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loopback_proxy_with_forwarded_remote_ip_requires_authentication() {
+        let app = secured_test_router();
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/scenes")
+                    .header("x-forwarded-for", "203.0.113.77")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn forwarded_loopback_header_does_not_bypass_remote_auth() {
         let app = secured_test_router();
         let response = app
@@ -1212,7 +1228,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn network_allowlist_uses_peer_ip_not_forwarded_header() {
+    async fn network_allowlist_uses_derived_client_ip_not_forwarded_header_from_remote_peers() {
         let app = allowlist_test_router(vec!["203.0.113.5".to_owned()]);
         let response = app
             .oneshot(with_connect_info(
