@@ -54,12 +54,12 @@ fn group(name: &str, role: RenderGroupRole, display_target: Option<DisplayFaceTa
 }
 
 #[test]
-fn single_primary_led_group_reads_as_all_lights() {
+fn a_named_primary_group_shows_its_authored_name() {
     let surfaces = surfaces_from_groups(&[group("Zone A", RenderGroupRole::Primary, None)]);
 
     assert_eq!(surfaces.len(), 1);
     let surface = &surfaces[0];
-    assert_eq!(surface.name, "All Lights");
+    assert_eq!(surface.name, "Zone A");
     assert_eq!(surface.kind, SurfaceKind::Light);
     assert_eq!(surface.display_device_id, None);
 }
@@ -71,8 +71,7 @@ fn multiple_led_groups_keep_their_authored_names() {
         group("Shelf Zone", RenderGroupRole::Custom, None),
     ]);
 
-    // A second LED zone retires the "All Lights" relabel; both keep their
-    // authored names, in scene order.
+    // Every LED zone keeps its authored name, in scene order.
     let names: Vec<&str> = surfaces.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["Desk Zone", "Shelf Zone"]);
     assert!(surfaces.iter().all(|s| s.kind == SurfaceKind::Light));
@@ -144,9 +143,8 @@ fn led_and_display_groups_split_into_lights_and_screens() {
     let lights = surfaces.iter().filter(|s| s.kind == SurfaceKind::Light).count();
     let screens = surfaces.iter().filter(|s| s.kind == SurfaceKind::Screen).count();
     assert_eq!((lights, screens), (1, 1));
-    // A screen alongside an LED zone still leaves a lone LED group, so the
-    // §9.2 "All Lights" relabel holds.
-    assert_eq!(surfaces[0].name, "All Lights");
+    // The lone LED zone keeps its authored name; the screen is separate.
+    assert_eq!(surfaces[0].name, "Zone A");
 }
 
 #[test]
@@ -160,17 +158,17 @@ fn a_renamed_primary_zone_shows_its_typed_name_when_multi_zone() {
 }
 
 #[test]
-fn an_unnamed_primary_zone_reads_as_default_zone_when_multi_zone() {
+fn an_unnamed_primary_zone_reads_as_default_zone() {
     // The daemon seeds the Default zone as "Primary"; until renamed, the
-    // multi-zone rail shows "Default zone" rather than leaking that label.
+    // rail shows "Default zone" rather than leaking that internal label.
     let surfaces = surfaces_from_groups(&[
         group("Primary", RenderGroupRole::Primary, None),
         group("Case Fans", RenderGroupRole::Custom, None),
     ]);
     assert_eq!(surfaces[0].name, "Default zone");
-    // With one zone the same group still reads as "All Lights".
+    // The relabel holds at every scale — a solo unnamed zone reads the same.
     let solo = surfaces_from_groups(&[group("Primary", RenderGroupRole::Primary, None)]);
-    assert_eq!(solo[0].name, "All Lights");
+    assert_eq!(solo[0].name, "Default zone");
 }
 
 #[test]

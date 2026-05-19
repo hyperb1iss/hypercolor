@@ -1,6 +1,6 @@
 //! `/studio` — the unified surface-centric composition workspace (Spec 65).
 //!
-//! Two columns: the Zones & Devices tree on the left and the center Stage.
+//! Two columns: the zone tree on the left and the center Stage.
 //! Selecting a zone drives the Stage preview. The composition panel —
 //! effect and layer editing — slides in over the Stage on demand rather
 //! than occupying a permanent rail.
@@ -22,6 +22,7 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::components::layout_builder::LayoutEditorProvider;
+use crate::components::page_header::{PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
@@ -137,7 +138,7 @@ pub fn StudioPage() -> impl IntoView {
             .map(|surface| surface.name)
     });
 
-    // The Zones & Devices column width persists per browser; the Stage
+    // The zone-tree column width persists per browser; the Stage
     // takes the space that is left.
     let tree_width = RwSignal::new(storage::get_clamped(
         TREE_WIDTH_KEY,
@@ -196,6 +197,12 @@ pub fn StudioPage() -> impl IntoView {
 
     view! {
         <div class="flex h-full flex-col overflow-hidden">
+            <PageHeader
+                icon=LuLayoutTemplate
+                title="Studio"
+                tagline="Compose scenes across zones"
+                accent=PageAccent::Coral
+            />
             // Narrow-viewport drawer toggle; the tree sits beside the Stage
             // on `lg` and up, so this strip is hidden there.
             <div class="flex shrink-0 items-center border-b border-edge-subtle/70 bg-surface-raised/40 px-3 py-2 lg:hidden">
@@ -205,7 +212,7 @@ pub fn StudioPage() -> impl IntoView {
                     on:click=move |_| tree_drawer.set(true)
                 >
                     <Icon icon=LuLightbulb width="13px" height="13px" />
-                    "Zones & Devices"
+                    "Zones"
                 </button>
             </div>
 

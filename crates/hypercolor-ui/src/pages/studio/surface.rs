@@ -1,8 +1,8 @@
 //! The §8 surface model — the UI presentation of one render group.
 //!
-//! A *surface* is a name, a Stage, and a layer stack. Lights, Screens, and
-//! "All Lights" are the same shape, so multi-zone (Wave 9) is more rows in
-//! the rail, never a rebuilt editor. Kept leptos-free for `#[path]` tests.
+//! A *surface* is a name, a Stage, and a layer stack. Lights and Screens
+//! are the same shape, so a multi-zone scene is more rows in the rail,
+//! never a rebuilt editor. Kept leptos-free for `#[path]` tests.
 
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{RenderGroup, RenderGroupRole};
@@ -57,9 +57,9 @@ impl Surface {
     }
 }
 
-/// Count of LED-role render groups in a scene. While this is one, the sole
-/// zone reads as "All Lights"; once it exceeds one, multi-zone naming and
-/// the Default-zone relabel take over (§9.2).
+/// Count of LED-role render groups in a scene. A scene is multi-zone when
+/// this exceeds one — the trigger for the per-zone controls and the
+/// zone-assignment panel.
 #[must_use]
 pub fn led_zone_count(groups: &[RenderGroup]) -> usize {
     groups
@@ -73,7 +73,6 @@ pub fn led_zone_count(groups: &[RenderGroup]) -> usize {
 /// Screens.
 #[must_use]
 pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
-    let led_count = led_zone_count(groups);
     groups
         .iter()
         .map(|group| {
@@ -84,7 +83,7 @@ pub fn surfaces_from_groups(groups: &[RenderGroup]) -> Vec<Surface> {
             };
             Surface {
                 id: group.id.to_string(),
-                name: surface_name(group, kind, led_count),
+                name: surface_name(group, kind),
                 kind,
                 enabled: group.enabled,
                 role: group.role,
@@ -130,16 +129,13 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
     }
 }
 
-/// Display name for a surface. While a single LED group owns every output
-/// it reads as **"All Lights"** (§9.2); the moment a second LED zone
-/// exists the §9.2 Default-zone relabel takes over — the `Primary` group
-/// shows the user's typed name, or **"Default zone"** if still unnamed.
-fn surface_name(group: &RenderGroup, kind: SurfaceKind, led_count: usize) -> String {
+/// Display name for a surface. A non-`Primary` group shows its stored
+/// name. The `Primary` group is the Default zone (§3): it shows the
+/// user's typed name, or **"Default zone"** while still unnamed. There is
+/// no "All Lights" — the default zone is a zone at every scale.
+fn surface_name(group: &RenderGroup, kind: SurfaceKind) -> String {
     if kind != SurfaceKind::Light || group.role != RenderGroupRole::Primary {
         return group.name.clone();
-    }
-    if led_count <= 1 {
-        return "All Lights".to_owned();
     }
     if is_blank_default_name(&group.name) {
         "Default zone".to_owned()
@@ -150,8 +146,8 @@ fn surface_name(group: &RenderGroup, kind: SurfaceKind, led_count: usize) -> Str
 
 /// Whether the `Primary` group still carries its un-customized name. The
 /// daemon seeds the Default zone as "Primary"; until the user renames it,
-/// the multi-zone rail shows the friendlier "Default zone" instead of
-/// leaking that internal label (§4 hard rule).
+/// the rail shows the friendlier "Default zone" instead of leaking that
+/// internal label.
 fn is_blank_default_name(name: &str) -> bool {
     let trimmed = name.trim();
     trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary")

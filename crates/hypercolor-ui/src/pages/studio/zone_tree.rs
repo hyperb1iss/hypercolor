@@ -1,4 +1,4 @@
-//! The Zones & Devices tree — the Studio workspace's left column.
+//! The zone tree — the Studio workspace's left column.
 //!
 //! One column that answers "what hardware do I have and how is it
 //! grouped": every zone, with its devices nested beneath it, an
@@ -158,16 +158,11 @@ pub fn ZoneTree() -> impl IntoView {
 
     view! {
         <div class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40">
-            <div class="border-b border-edge-subtle/60 px-4 py-3">
-                <span class=label_class(LabelSize::Section, LabelTone::Strong)>
-                    "Zones & Devices"
-                </span>
-            </div>
             <div class="scrollbar-none flex-1 space-y-4 overflow-y-auto px-3 py-3">
                 <div class="space-y-1.5">
                     <div class="px-1">
                         <span class=label_class(LabelSize::Small, LabelTone::Default)>
-                            "Lights"
+                            "Zones"
                         </span>
                     </div>
                     {move || {
@@ -176,7 +171,7 @@ pub fn ZoneTree() -> impl IntoView {
                         if rows.is_empty() {
                             view! {
                                 <div class="rounded-lg border border-dashed border-edge-subtle/45 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
-                                    "No lights in this scene"
+                                    "No zones"
                                 </div>
                             }
                                 .into_any()
