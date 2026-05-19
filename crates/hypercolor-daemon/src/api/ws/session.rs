@@ -68,7 +68,7 @@ fn ws_origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     state
         .config_manager
         .as_ref()
-        .map(|config| config.get().web.cors_origins)
+        .map(|config| config.get().web.cors_origins.clone())
         .unwrap_or_default()
         .into_iter()
         .any(|allowed| header_value_eq_origin(origin, &allowed))
@@ -94,42 +94,16 @@ fn is_loopback_origin(origin: &HeaderValue) -> bool {
     let Some(host) = uri.host() else {
         return false;
     };
+    // `Uri::host()` keeps the brackets on IPv6 literals (`[::1]`), which
+    // `IpAddr` will not parse — strip them before classifying the address.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
     host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
-}
-
-#[cfg(test)]
-mod origin_tests {
-    use super::{header_value_eq_origin, is_loopback_origin};
-    use axum::http::HeaderValue;
-
-    #[test]
-    fn loopback_origin_is_allowed() {
-        assert!(is_loopback_origin(&HeaderValue::from_static(
-            "http://localhost:9430"
-        )));
-        assert!(is_loopback_origin(&HeaderValue::from_static(
-            "https://127.0.0.1:9430"
-        )));
-        assert!(is_loopback_origin(&HeaderValue::from_static(
-            "http://[::1]:9430"
-        )));
-    }
-
-    #[test]
-    fn non_loopback_origin_is_rejected() {
-        assert!(!is_loopback_origin(&HeaderValue::from_static(
-            "https://evil.example"
-        )));
-    }
-
-    #[test]
-    fn origin_comparison_is_case_insensitive() {
-        let origin = HeaderValue::from_static("https://studio.example");
-        assert!(header_value_eq_origin(&origin, "HTTPS://STUDIO.EXAMPLE"));
-    }
 }
 
 /// Process a single WebSocket connection.
@@ -464,4 +438,61 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
         debug!("WebSocket send error: {e}");
         e
     })
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::{header_value_eq_origin, is_loopback_origin, ws_origin_allowed};
+    use crate::api::AppState;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    #[test]
+    fn loopback_origin_is_allowed() {
+        assert!(is_loopback_origin(&HeaderValue::from_static(
+            "http://localhost:9430"
+        )));
+        assert!(is_loopback_origin(&HeaderValue::from_static(
+            "https://127.0.0.1:9430"
+        )));
+        assert!(is_loopback_origin(&HeaderValue::from_static(
+            "http://[::1]:9430"
+        )));
+    }
+
+    #[test]
+    fn non_loopback_origin_is_rejected() {
+        assert!(!is_loopback_origin(&HeaderValue::from_static(
+            "https://evil.example"
+        )));
+    }
+
+    #[test]
+    fn origin_comparison_is_case_insensitive() {
+        let origin = HeaderValue::from_static("https://studio.example");
+        assert!(header_value_eq_origin(&origin, "HTTPS://STUDIO.EXAMPLE"));
+    }
+
+    #[test]
+    fn unsecured_daemon_rejects_non_loopback_browser_origins() {
+        let state = AppState::new();
+
+        // No Origin header: native and CLI clients are always allowed.
+        assert!(ws_origin_allowed(&state, &HeaderMap::new()));
+
+        let mut loopback = HeaderMap::new();
+        loopback.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://localhost:9430"),
+        );
+        assert!(ws_origin_allowed(&state, &loopback));
+
+        // A non-loopback browser origin is rejected on the default
+        // unsecured daemon, where no cors_origins allowlist applies.
+        let mut remote = HeaderMap::new();
+        remote.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        assert!(!ws_origin_allowed(&state, &remote));
+    }
 }
