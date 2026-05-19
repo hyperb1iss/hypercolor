@@ -17,6 +17,7 @@ use gloo_net::http::{Request, RequestBuilder};
 use serde::{Deserialize, Serialize};
 
 use hypercolor_types::scene::{RenderGroup, UnassignedBehavior};
+use hypercolor_types::spatial::SpatialLayout;
 
 use super::{ApiEnvelope, client};
 
@@ -137,6 +138,25 @@ pub async fn update_zone(
     .map(|outcome| outcome.map(|value: ZoneResponse| value.zone))
 }
 
+/// Apply a placement-only update to a zone's spatial layout (§5.1). The
+/// daemon rejects an output-set change with 422; only the placement,
+/// ordering, and canvas of the outputs the zone already owns may change.
+pub async fn update_zone_layout(
+    scene_id: &str,
+    zone_id: &str,
+    layout: &SpatialLayout,
+    expected_revision: Option<u64>,
+) -> Result<ZoneOutcome<RenderGroup>, String> {
+    let body = serde_json::to_string(layout).map_err(|error| error.to_string())?;
+    send_zone_mutation(
+        Request::put(&format!("/api/v1/scenes/{scene_id}/zones/{zone_id}/layout")),
+        Some(body),
+        expected_revision,
+    )
+    .await
+    .map(|outcome| outcome.map(|value: ZoneResponse| value.zone))
+}
+
 pub async fn delete_zone(
     scene_id: &str,
     zone_id: &str,
@@ -202,9 +222,7 @@ pub async fn update_unassigned_behavior(
     })
     .map_err(|error| error.to_string())?;
     send_zone_mutation(
-        Request::patch(&format!(
-            "/api/v1/scenes/{scene_id}/unassigned-behavior"
-        )),
+        Request::patch(&format!("/api/v1/scenes/{scene_id}/unassigned-behavior")),
         Some(body),
         expected_revision,
     )
