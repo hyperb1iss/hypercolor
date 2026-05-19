@@ -312,7 +312,10 @@ async fn cloud_connection_connect_posts_daemon_connect_endpoint() -> Result<()> 
         .route(
             "/api/v1/cloud/connection/connect",
             post(
-                |State((captured_uri, captured_header)): State<(SharedUri, Arc<Mutex<Option<String>>>)>,
+                |State((captured_uri, captured_header)): State<(
+                    SharedUri,
+                    Arc<Mutex<Option<String>>>,
+                )>,
                  uri: Uri,
                  headers: HeaderMap| async move {
                     *captured_uri.lock().await = Some(uri.to_string());

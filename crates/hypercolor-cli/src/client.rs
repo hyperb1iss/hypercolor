@@ -86,11 +86,10 @@ impl DaemonClient {
         headers: &[(&str, &str)],
     ) -> Result<serde_json::Value> {
         let url = format!("{}/api/v1{path}", self.base_url);
-        let request = headers
-            .iter()
-            .fold(self.with_auth(self.http.post(&url)), |request, (name, value)| {
-                request.header(*name, *value)
-            });
+        let request = headers.iter().fold(
+            self.with_auth(self.http.post(&url)),
+            |request, (name, value)| request.header(*name, *value),
+        );
         let response = request.json(body).send().await.with_context(|| {
             format!("Failed to connect to daemon at {url}. Is the daemon running?")
         })?;
