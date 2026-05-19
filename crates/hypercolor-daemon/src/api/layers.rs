@@ -29,8 +29,6 @@ use crate::api::{
     scenes,
 };
 
-const MAX_BROADCAST_MEDIA_TARGETS: usize = 64;
-
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateLayerRequest {
     pub name: Option<String>,
@@ -217,11 +215,6 @@ pub async fn broadcast_media_layer(
 ) -> Response {
     if body.targets.is_empty() {
         return ApiError::bad_request("targets must include at least one render group");
-    }
-    if body.targets.len() > MAX_BROADCAST_MEDIA_TARGETS {
-        return ApiError::bad_request(format!(
-            "targets cannot exceed {MAX_BROADCAST_MEDIA_TARGETS} render groups"
-        ));
     }
     {
         let library = state.asset_library.read().await;
