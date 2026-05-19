@@ -15,14 +15,12 @@ mod zone_assignment;
 mod zone_controls;
 mod zone_tree;
 
-use std::collections::HashSet;
-
 use hypercolor_types::scene::RenderGroupRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api;
-use crate::components::layout_builder::LayoutEditorProvider;
+use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
@@ -162,31 +160,6 @@ pub fn StudioPage() -> impl IntoView {
 
     let composition_open = RwSignal::new(false);
 
-    // The selected zone's device ids — the Stage canvas highlights these
-    // outputs and dims the rest. A Screen or the Unassigned entry carries
-    // no focus, so the whole room renders evenly.
-    let focused_device_ids = Signal::derive(move || {
-        let (Some(scene), Some(id)) = (active_scene.get(), selected_surface_id.get()) else {
-            return HashSet::new();
-        };
-        if id == UNASSIGNED_SURFACE_ID {
-            return HashSet::new();
-        }
-        scene
-            .groups
-            .iter()
-            .find(|group| group.id.to_string() == id && group.role != RenderGroupRole::Display)
-            .map(|group| {
-                group
-                    .layout
-                    .zones
-                    .iter()
-                    .map(|zone| zone.device_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    });
-
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
@@ -241,9 +214,13 @@ pub fn StudioPage() -> impl IntoView {
                     />
                 </div>
                 <div class="relative min-w-0 flex-1">
-                    <LayoutEditorProvider focused_device_ids=focused_device_ids>
+                    <ZoneLayoutProvider
+                        active_scene=active_scene
+                        selected_zone_id=selected_surface_id
+                        refresh_scene=refresh_scene
+                    >
                         <Stage />
-                    </LayoutEditorProvider>
+                    </ZoneLayoutProvider>
                     <CompositionPanel
                         active_scene=active_scene
                         selected_group_id=selected_surface_id.read_only()

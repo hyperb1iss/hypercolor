@@ -34,6 +34,7 @@ use crate::layout_page_state::{LayoutPageState, PerLayoutState};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
+use hypercolor_types::scene::RenderGroupRole;
 use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 // Panel size defaults and constraints
@@ -276,11 +277,10 @@ pub(crate) struct LayoutEditorContext {
     /// Used by the canvas during drag to keep the LED preview live without
     /// committing intermediate state to the layout signal.
     pub push_preview: Callback<SpatialLayout>,
-    /// Layout device ids belonging to the focused zone — the canvas
-    /// highlights those outputs and dims the rest. Empty means no focus
-    /// (the `/layout` page, or a Screen / Unassigned selection in Studio):
-    /// the whole room renders evenly.
-    pub focused_device_ids: Signal<std::collections::HashSet<String>>,
+    /// Whether the editor history has an undoable / redoable step — lets a
+    /// host header drive its undo / redo buttons off this same context.
+    pub can_undo: Signal<bool>,
+    pub can_redo: Signal<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -336,14 +336,7 @@ pub(crate) struct LayoutEditorState {
 /// [`LayoutEditorState`] to its children. Mount this once above any
 /// header + [`LayoutWorkspace`] pair that should share one editor.
 #[component]
-pub(crate) fn LayoutEditorProvider(
-    /// Layout device ids belonging to the focused zone. Defaults to empty
-    /// (no focus); the Studio Stage passes the selected zone's devices so
-    /// the canvas can highlight them and dim the rest.
-    #[prop(optional)]
-    focused_device_ids: Signal<std::collections::HashSet<String>>,
-    children: Children,
-) -> impl IntoView {
+pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
     // Load any UI state persisted from a previous visit so the page
@@ -393,6 +386,8 @@ pub(crate) fn LayoutEditorProvider(
     let compound_depth_signal = Signal::derive(move || compound_depth.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
+    let can_undo = Signal::derive(move || history.get().can_undo());
+    let can_redo = Signal::derive(move || history.get().can_redo());
 
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
@@ -424,7 +419,8 @@ pub(crate) fn LayoutEditorProvider(
         removed_zone_cache: removed_zone_cache.into(),
         set_removed_zone_cache,
         push_preview,
-        focused_device_ids,
+        can_undo,
+        can_redo,
     });
 
     let attachment_profiles = LocalResource::new(move || {
@@ -474,8 +470,6 @@ pub(crate) fn LayoutEditorProvider(
             .get()
             .is_some_and(|entry| entry.is_active)
     });
-    let can_undo = Signal::derive(move || history.get().can_undo());
-    let can_redo = Signal::derive(move || history.get().can_redo());
     // Tracked dirty flag — flipped explicitly on commits; saved/revert clear it.
     // Subscribers (Save/Revert buttons) only re-fire on toggle, never on drag ticks.
     let is_dirty = Signal::derive(move || dirty.get());
@@ -1266,14 +1260,13 @@ pub(crate) fn LayoutWorkspace(
     let editor = expect_context::<LayoutEditorContext>();
     let has_layout = Signal::derive(move || editor.layout.with(Option::is_some));
 
-    // Undo/redo shortcuts live in the workspace, not the provider: the
+    // Undo/redo shortcuts live in the workspace, not the provider: a
     // provider also wraps Studio's Screen and Unassigned Stages, where no
     // layout editor is shown. Keying them here scopes them to a visible
     // canvas.
-    let state = expect_context::<LayoutEditorState>();
-    let can_undo = state.can_undo;
-    let can_redo = state.can_redo;
-    let write = state.write;
+    let can_undo = editor.can_undo;
+    let can_redo = editor.can_redo;
+    let write = editor.set_layout;
     let _history_shortcuts =
         window_event_listener(ev::keydown, move |ev: web_sys::KeyboardEvent| {
             if keyboard_target_is_text_input(ev.target()) {
@@ -1469,4 +1462,250 @@ pub fn LayoutBuilder(
             </div>
         </LayoutEditorProvider>
     }
+}
+
+/// The Studio Stage's zone-canvas actions — Save and Revert plus the
+/// dirty and has-layout flags. Provided by [`ZoneLayoutProvider`]; the
+/// Stage header consumes it. Undo / redo and the editor write handle come
+/// from [`LayoutEditorContext`].
+#[derive(Clone, Copy)]
+pub(crate) struct ZoneCanvasActions {
+    /// Persist the selected zone's layout through the per-zone API.
+    pub save: Callback<()>,
+    /// Restore the canvas to the last saved state.
+    pub revert: Callback<()>,
+    pub is_dirty: Signal<bool>,
+    /// Whether an editable zone layout is loaded. The header hides its
+    /// actions when nothing is selected.
+    pub has_layout: Signal<bool>,
+}
+
+/// Sets up the editor signals, history, and live-preview wiring for the
+/// Studio Stage, scoped to the **selected zone's** own `SpatialLayout`.
+///
+/// Where [`LayoutEditorProvider`] edits the standalone layouts library,
+/// this provider loads the selected zone's `RenderGroup.layout` and
+/// persists it through the per-zone layout API (`PUT
+/// .../zones/{id}/layout` — a placement merge, plan 55 §5.1). Switching
+/// zones switches the canvas. Mount it once above the Stage; it provides
+/// [`LayoutEditorContext`], [`LayoutZoneDisplayContext`], and
+/// [`ZoneCanvasActions`].
+#[component]
+pub(crate) fn ZoneLayoutProvider(
+    /// The active scene — the source of the zone set and the
+    /// `groups_revision` carried as each save's `If-Match` precondition.
+    #[prop(into)]
+    active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    /// The selected zone's id (a `RenderGroup` id). `None`, an unknown
+    /// id, or a Display zone leaves the canvas empty.
+    #[prop(into)]
+    selected_zone_id: Signal<Option<String>>,
+    /// Re-fetch the active scene after a save so the tree and Stage pick
+    /// up the new `groups_revision`.
+    refresh_scene: Callback<()>,
+    children: Children,
+) -> impl IntoView {
+    let devices_ctx = expect_context::<DevicesContext>();
+
+    let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
+    let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
+    let (selected_zone_ids, set_selected_zone_ids) =
+        signal(std::collections::HashSet::<String>::new());
+    let (compound_depth, set_compound_depth) =
+        signal(crate::compound_selection::CompoundDepth::Root);
+    let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(false);
+    let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
+    let (removed_zone_cache, set_removed_zone_cache) =
+        signal(crate::layout_utils::ZoneCache::new());
+    let (dirty, set_is_dirty) = signal(false);
+    let history = RwSignal::new(LayoutHistoryState::default());
+
+    let set_layout = LayoutWriteHandle {
+        layout,
+        set_layout: set_layout_signal,
+        selected_zone_ids,
+        set_selected_zone_ids,
+        compound_depth,
+        set_compound_depth,
+        removed_zone_cache,
+        set_removed_zone_cache,
+        history,
+        set_dirty: set_is_dirty,
+    };
+
+    let layout_signal = Signal::derive(move || layout.get());
+    let can_undo = Signal::derive(move || history.get().can_undo());
+    let can_redo = Signal::derive(move || history.get().can_redo());
+    let is_dirty = Signal::derive(move || dirty.get());
+
+    // The live drag preview is wired to the WS zone-preview channel in a
+    // later wave (plan 55 §5.1) — it cannot reuse the global library
+    // preview path. Until then the canvas previews locally only.
+    let push_preview = Callback::new(|_snapshot: SpatialLayout| {});
+
+    provide_context(LayoutEditorContext {
+        layout: layout_signal,
+        selected_zone_ids: Signal::derive(move || selected_zone_ids.get()),
+        hidden_zones: Signal::derive(move || hidden_zones.get()),
+        keep_aspect_ratio: Signal::derive(move || keep_aspect_ratio.get()),
+        set_layout,
+        set_selected_zone_ids,
+        set_is_dirty,
+        set_hidden_zones,
+        set_keep_aspect_ratio,
+        compound_depth: Signal::derive(move || compound_depth.get()),
+        set_compound_depth,
+        removed_zone_cache: removed_zone_cache.into(),
+        set_removed_zone_cache,
+        push_preview,
+        can_undo,
+        can_redo,
+    });
+
+    let attachment_profiles = LocalResource::new(move || {
+        let current_layout = layout.get();
+        let devices = devices_ctx
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+
+        async move {
+            let mut device_ids = std::collections::HashMap::<String, String>::new();
+            if let Some(current_layout) = current_layout {
+                for zone in current_layout.zones {
+                    if zone.attachment.is_none() {
+                        continue;
+                    }
+                    if let Some(device) = devices
+                        .iter()
+                        .find(|device| device.layout_device_id == zone.device_id)
+                    {
+                        device_ids.insert(zone.device_id, device.id.clone());
+                    }
+                }
+            }
+
+            let mut profiles = std::collections::HashMap::new();
+            for (layout_device_id, device_id) in device_ids {
+                if let Ok(profile) = api::fetch_device_attachments(&device_id).await {
+                    profiles.insert(layout_device_id, profile);
+                }
+            }
+            profiles
+        }
+    });
+    provide_context(LayoutZoneDisplayContext {
+        attachment_profiles,
+    });
+
+    // Reload the canvas when the zone changes, or when the selected
+    // zone's OUTPUT SET changes (a device assigned / removed elsewhere).
+    // A placement-only change — including this canvas's own saved edits —
+    // leaves the signature unchanged, so an unrelated scene refetch never
+    // clobbers in-flight canvas edits.
+    let zone_signature = Memo::new(move |_| {
+        let zone_id = selected_zone_id.get()?;
+        active_scene.with(|scene| {
+            let group = scene
+                .as_ref()?
+                .groups
+                .iter()
+                .find(|group| group.id.to_string() == zone_id)?;
+            if group.role == RenderGroupRole::Display {
+                return None;
+            }
+            let mut output_ids: Vec<String> = group
+                .layout
+                .zones
+                .iter()
+                .map(|output| output.id.clone())
+                .collect();
+            output_ids.sort();
+            Some((zone_id, output_ids))
+        })
+    });
+
+    Effect::new(move |_| {
+        set_layout.reset_history();
+        set_selected_zone_ids.set(std::collections::HashSet::new());
+        set_hidden_zones.set(std::collections::HashSet::new());
+        set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
+
+        let Some((zone_id, _)) = zone_signature.get() else {
+            set_layout.set(None);
+            set_saved_layout.set(None);
+            return;
+        };
+        let loaded = active_scene.with_untracked(|scene| {
+            scene.as_ref().and_then(|scene| {
+                scene
+                    .groups
+                    .iter()
+                    .find(|group| group.id.to_string() == zone_id)
+                    .map(|group| group.layout.clone())
+            })
+        });
+        match loaded {
+            Some(layout) => {
+                let layout = layout_geometry::normalize_layout_for_editor(layout);
+                set_saved_layout.set(Some(layout.clone()));
+                set_layout.set(Some(layout));
+            }
+            None => {
+                set_layout.set(None);
+                set_saved_layout.set(None);
+            }
+        }
+    });
+
+    let save = Callback::new(move |()| {
+        let Some(current) = layout.get_untracked() else {
+            return;
+        };
+        let Some(zone_id) = selected_zone_id.get_untracked() else {
+            return;
+        };
+        let Some((scene_id, revision)) = active_scene
+            .get_untracked()
+            .map(|scene| (scene.id, scene.groups_revision))
+        else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            match api::zones::update_zone_layout(&scene_id, &zone_id, &current, Some(revision))
+                .await
+            {
+                Ok(api::zones::ZoneOutcome::Applied(_)) => {
+                    set_saved_layout.set(Some(current));
+                    set_layout.mark_clean();
+                    toasts::toast_success("Zone layout saved");
+                    refresh_scene.run(());
+                }
+                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                    toasts::toast_error("Scene changed elsewhere — reloaded, try again");
+                    refresh_scene.run(());
+                }
+                Err(error) => toasts::toast_error(&format!("Save failed: {error}")),
+            }
+        });
+    });
+
+    let revert = Callback::new(move |()| {
+        let Some(saved) = saved_layout.get_untracked() else {
+            return;
+        };
+        set_layout.replace_zones_with_history(saved.zones.clone());
+        set_layout.mark_clean();
+        toasts::toast_info("Zone layout reverted");
+    });
+
+    provide_context(ZoneCanvasActions {
+        save,
+        revert,
+        is_dirty,
+        has_layout: Signal::derive(move || layout.with(Option::is_some)),
+    });
+
+    children()
 }

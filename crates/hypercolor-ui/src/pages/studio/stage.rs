@@ -2,10 +2,10 @@
 //!
 //! For a Light the Stage *is* the spatial layout editor: the live
 //! effect renders under the device boxes, always on, with no view
-//! toggle. Its header carries the now-playing chip and the room
-//! (layout) controls — picker, rename, new, undo/redo, Revert/Save, and
-//! an action kebab — driven by the context-provided `LayoutEditorState`
-//! from a `LayoutEditorProvider` mounted on a Studio ancestor.
+//! toggle. Its header carries the now-playing chip and the zone-canvas
+//! controls — undo / redo and Revert / Save — driven by the
+//! context-provided `LayoutEditorContext` and `ZoneCanvasActions` from a
+//! `ZoneLayoutProvider` mounted on a Studio ancestor.
 //!
 //! A Screen shows that device's live face via `DisplayPreviewSurface`.
 //! The synthetic Unassigned entry (§9.4) is not a surface, so it shows
@@ -20,9 +20,8 @@ use hypercolor_types::scene::{RenderGroupId, UnassignedBehavior};
 use crate::api;
 use crate::api::zones::ZoneOutcome;
 use crate::app::{CapabilitiesContext, DisplaysContext, WsContext};
-use crate::components::control_panel::ControlDropdownDismissHandlers;
 use crate::components::display_preview_surface::DisplayPreviewSurface;
-use crate::components::layout_builder::{LayoutEditorState, LayoutWorkspace};
+use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::display_preview_state::use_display_preview_subscription;
@@ -31,7 +30,6 @@ use crate::icons::*;
 use crate::toasts;
 use crate::ws::CanvasFrame;
 use crate::ws::messages::group_has_degraded_layer;
-use hypercolor_leptos_ext::events::Input;
 
 use super::StudioContext;
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
@@ -94,9 +92,8 @@ fn SurfaceStage() -> impl IntoView {
         else {
             return false;
         };
-        ws.layer_health.with(|map| {
-            group_has_degraded_layer(map, &scene.id, &surface.id, &surface.layer_ids)
-        })
+        ws.layer_health
+            .with(|map| group_has_degraded_layer(map, &scene.id, &surface.id, &surface.layer_ids))
     });
 
     // A Light keeps the canvas live, so it reserves the same preview
@@ -208,7 +205,7 @@ fn SurfaceStage() -> impl IntoView {
                         }
                             .into_any()
                     } else {
-                        view! { <StageLayoutBar /> }.into_any()
+                        view! { <ZoneCanvasBar /> }.into_any()
                     }
                 }}
             </div>
@@ -297,254 +294,85 @@ fn SurfaceStage() -> impl IntoView {
     }
 }
 
-/// The room (layout) controls for a Light Stage's header — the saved-room
-/// picker, rename, new, undo / redo, Revert / Save, and the action kebab,
-/// laid out as a plain bar. Reads the lifted [`LayoutEditorState`]; the
-/// `/layout` page wraps the same state in a `PageHeader` instead.
+/// The Light Stage header's zone-canvas controls — undo / redo and
+/// Revert / Save for the selected zone's layout. Save doubles as the
+/// dirty indicator. Reads the [`LayoutEditorContext`] and
+/// [`ZoneCanvasActions`] a `ZoneLayoutProvider` mounts on a Studio
+/// ancestor.
 #[component]
-fn StageLayoutBar() -> impl IntoView {
-    let state = expect_context::<LayoutEditorState>();
-    let layout = state.layout;
-    let is_dirty = state.is_dirty;
-    let can_undo = state.can_undo;
-    let can_redo = state.can_redo;
-    let renaming = state.renaming;
-    let creating = state.creating;
-    let menu_open = state.menu_open;
-    let is_active = state.is_active;
+fn ZoneCanvasBar() -> impl IntoView {
+    let editor = expect_context::<LayoutEditorContext>();
+    let actions = expect_context::<ZoneCanvasActions>();
+    let write = editor.set_layout;
+    let can_undo = editor.can_undo;
+    let can_redo = editor.can_redo;
+    let is_dirty = actions.is_dirty;
+    let has_layout = actions.has_layout;
+    let save = actions.save;
+    let revert = actions.revert;
 
     view! {
-        <div class="flex items-center gap-1.5">
-            // Room picker, or the inline rename input.
-            {move || if renaming.get() {
-                view! {
-                    <input
-                        type="text"
-                        class="w-44 rounded-lg border border-edge-subtle bg-surface-sunken px-2.5 py-1 text-[12px] text-fg-primary placeholder-fg-tertiary focus:border-accent-muted focus:outline-none"
-                        prop:value=move || state.rename_value.get()
-                        autofocus=true
-                        on:input=move |ev| {
-                            if let Some(value) = Input::from_event(ev).value_string() {
-                                state.set_rename_value.set(value);
-                            }
-                        }
-                        on:blur=move |_| state.commit_rename.run(())
-                        on:keydown=move |ev: web_sys::KeyboardEvent| {
-                            if ev.key() == "Enter" {
-                                state.commit_rename.run(());
-                            } else if ev.key() == "Escape" {
-                                state.set_renaming.set(false);
-                            }
-                        }
-                    />
-                }.into_any()
-            } else {
-                view! {
-                    <div class="flex items-center gap-1">
-                        <div class="min-w-[140px]">
-                            <SilkSelect
-                                value=state.layout_value
-                                options=state.layout_options
-                                on_change=Callback::new(move |val: String| {
-                                    if val.is_empty() {
-                                        state.set_selected_layout_id.set(None);
-                                    } else {
-                                        state.set_selected_layout_id.set(Some(val));
-                                    }
-                                })
-                                placeholder="Room"
-                                class="border border-edge-subtle bg-surface-sunken px-2.5 py-1 text-[12px] text-fg-primary"
-                            />
-                        </div>
-                        <Show when=move || layout.with(Option::is_some)>
-                            <button
-                                type="button"
-                                class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary"
-                                title="Rename room"
-                                on:click=move |_| {
-                                    if let Some(current) = layout.get_untracked() {
-                                        state.set_rename_value.set(current.name.clone());
-                                        state.set_renaming.set(true);
-                                    }
-                                }
-                            >
-                                <Icon icon=LuPencil width="13px" height="13px" />
-                            </button>
-                        </Show>
-                    </div>
-                }.into_any()
-            }}
+        <Show when=move || has_layout.get()>
+            <div class="flex items-center gap-1.5">
+                <button
+                    type="button"
+                    class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary disabled:pointer-events-none disabled:opacity-30"
+                    title="Undo (Ctrl+Z)"
+                    on:click=move |_| write.undo()
+                    disabled=move || !can_undo.get()
+                >
+                    <Icon icon=LuUndo2 width="14px" height="14px" />
+                </button>
+                <button
+                    type="button"
+                    class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary disabled:pointer-events-none disabled:opacity-30"
+                    title="Redo (Ctrl+Shift+Z)"
+                    on:click=move |_| write.redo()
+                    disabled=move || !can_redo.get()
+                >
+                    <Icon icon=LuRedo2 width="14px" height="14px" />
+                </button>
 
-            // New room, or the inline create input.
-            {move || if creating.get() {
-                view! {
-                    <input
-                        type="text"
-                        placeholder="Room name"
-                        class="w-32 rounded-lg border border-edge-subtle bg-surface-sunken px-2.5 py-1 text-[12px] text-fg-primary placeholder-fg-tertiary focus:border-accent-muted focus:outline-none"
-                        prop:value=move || state.new_layout_name.get()
-                        on:input=move |ev| {
-                            if let Some(value) = Input::from_event(ev).value_string() {
-                                state.set_new_layout_name.set(value);
-                            }
-                        }
-                        on:keydown=move |ev: web_sys::KeyboardEvent| {
-                            if ev.key() == "Enter" {
-                                state.create.run(());
-                            } else if ev.key() == "Escape" {
-                                state.set_creating.set(false);
-                            }
-                        }
-                    />
-                }.into_any()
-            } else {
-                view! {
-                    <button
-                        type="button"
-                        class="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary"
-                        title="New room"
-                        on:click=move |_| state.set_creating.set(true)
-                    >
-                        <Icon icon=LuPlus width="12px" height="12px" />
-                        "New"
-                    </button>
-                }.into_any()
-            }}
+                <div class="mx-0.5 h-5 w-px bg-edge-subtle/40" />
 
-            <div class="mx-0.5 h-5 w-px bg-edge-subtle/40" />
-
-            <button
-                type="button"
-                class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary disabled:pointer-events-none disabled:opacity-30"
-                title="Undo (Ctrl+Z)"
-                on:click=move |_| state.write.undo()
-                disabled=move || !can_undo.get()
-            >
-                <Icon icon=LuUndo2 width="14px" height="14px" />
-            </button>
-            <button
-                type="button"
-                class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary disabled:pointer-events-none disabled:opacity-30"
-                title="Redo (Ctrl+Shift+Z)"
-                on:click=move |_| state.write.redo()
-                disabled=move || !can_redo.get()
-            >
-                <Icon icon=LuRedo2 width="14px" height="14px" />
-            </button>
-
-            // Revert / Save — Save doubles as the dirty indicator.
-            {move || layout.get().map(|_| {
-                let dirty = is_dirty.get();
-                let save_style = if dirty {
-                    "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); box-shadow: 0 0 12px rgba(80, 250, 123, 0.16)"
-                } else {
-                    "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                };
-                let revert_style = if dirty {
-                    "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
-                } else {
-                    "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                };
-                view! {
-                    <button
-                        type="button"
-                        class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
-                        style=revert_style
-                        on:click=move |_| state.revert.run(())
-                        disabled=move || !is_dirty.get()
-                    >
-                        <Icon icon=LuUndo2 width="12px" height="12px" />
-                        "Revert"
-                    </button>
-                    <button
-                        type="button"
-                        class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
-                        style=save_style
-                        on:click=move |_| state.save.run(())
-                        disabled=move || !is_dirty.get()
-                    >
-                        <Icon icon=LuSave width="12px" height="12px" />
-                        "Save"
-                    </button>
-                }
-            })}
-
-            // Overflow menu — per-room actions.
-            {move || layout.get().map(|_| view! {
-                <div class="relative stage-layout-menu">
-                    <button
-                        type="button"
-                        class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-fg-primary"
-                        title="Room actions"
-                        on:click=move |_| state.set_menu_open.update(|v| *v = !*v)
-                    >
-                        <Icon icon=LuEllipsis width="14px" height="14px" />
-                    </button>
-                    <Show when=move || menu_open.get()>
-                        <ControlDropdownDismissHandlers
-                            class_name="stage-layout-menu".to_string()
-                            is_open=menu_open
-                            set_open=state.set_menu_open
-                        />
-                        <div
-                            class="absolute right-0 top-full z-[100] mt-1 w-44 overflow-hidden rounded-lg border border-edge-subtle bg-surface-overlay/98 backdrop-blur-xl dropdown-glow animate-enter-down"
-                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                if ev.key() == "Escape" {
-                                    state.set_menu_open.set(false);
-                                }
-                            }
+                // Revert / Save — Save doubles as the dirty indicator.
+                {move || {
+                    let dirty = is_dirty.get();
+                    let save_style = if dirty {
+                        "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); box-shadow: 0 0 12px rgba(80, 250, 123, 0.16)"
+                    } else {
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                    };
+                    let revert_style = if dirty {
+                        "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
+                    } else {
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                    };
+                    view! {
+                        <button
+                            type="button"
+                            class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
+                            style=revert_style
+                            on:click=move |_| revert.run(())
+                            disabled=move || !is_dirty.get()
                         >
-                            <Show when=move || is_active.get()>
-                                <div class="flex w-full items-center gap-2 px-3 py-2 text-xs text-fg-tertiary">
-                                    <Icon icon=LuCheck width="12px" height="12px"
-                                          style="color: rgb(80, 250, 123); flex-shrink: 0" />
-                                    <span>"Active"</span>
-                                </div>
-                            </Show>
-                            <Show when=move || !is_active.get() && !is_dirty.get()>
-                                <button
-                                    type="button"
-                                    class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary hover:text-fg-primary"
-                                    on:click=move |_| {
-                                        state.apply.run(());
-                                        state.set_menu_open.set(false);
-                                    }
-                                >
-                                    <Icon icon=LuCheck width="12px" height="12px"
-                                          style="color: rgb(128, 255, 234); flex-shrink: 0" />
-                                    <span>"Apply"</span>
-                                </button>
-                            </Show>
-                            <button
-                                type="button"
-                                class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary hover:text-fg-primary"
-                                on:click=move |_| {
-                                    state.duplicate.run(());
-                                    state.set_menu_open.set(false);
-                                }
-                            >
-                                <Icon icon=LuCopy width="12px" height="12px"
-                                      style="color: rgba(128, 255, 234, 0.7); flex-shrink: 0" />
-                                <span>"Duplicate"</span>
-                            </button>
-                            <div class="mx-2 my-1 h-px bg-edge-subtle/40" />
-                            <button
-                                type="button"
-                                class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-status-error/70 hover:text-status-error"
-                                on:click=move |_| {
-                                    state.delete.run(());
-                                    state.set_menu_open.set(false);
-                                }
-                            >
-                                <Icon icon=LuTrash2 width="12px" height="12px"
-                                      style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0" />
-                                <span>"Delete"</span>
-                            </button>
-                        </div>
-                    </Show>
-                </div>
-            })}
-        </div>
+                            <Icon icon=LuUndo2 width="12px" height="12px" />
+                            "Revert"
+                        </button>
+                        <button
+                            type="button"
+                            class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
+                            style=save_style
+                            on:click=move |_| save.run(())
+                            disabled=move || !is_dirty.get()
+                        >
+                            <Icon icon=LuSave width="12px" height="12px" />
+                            "Save"
+                        </button>
+                    }
+                }}
+            </div>
+        </Show>
     }
 }
 
