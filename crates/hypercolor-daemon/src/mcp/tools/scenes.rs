@@ -7,6 +7,10 @@ use crate::api::{
     AppState, publish_active_scene_changed, save_runtime_session_snapshot,
     save_scene_store_snapshot,
 };
+use crate::api::scenes::{
+    asset_mime_types, current_media_config, scene_media_admission_counts,
+    scene_media_admission_violation_details,
+};
 use hypercolor_core::scene::make_scene;
 use hypercolor_types::event::SceneChangeReason;
 use hypercolor_types::scene::TransitionSpec;
@@ -219,6 +223,8 @@ pub(super) async fn handle_activate_scene_with_state(
         .get("transition_ms")
         .and_then(Value::as_u64)
         .unwrap_or(1000);
+    let asset_mime_types = asset_mime_types(state).await;
+    let media_config = current_media_config(state);
 
     let mut scene_manager = state.scene_manager.write().await;
     let previous_active_scene = scene_manager.active_scene_id().copied();
@@ -237,6 +243,19 @@ pub(super) async fn handle_activate_scene_with_state(
             "message": format!("No scene matching '{name}' found. Use list_scenes to browse available scenes.")
         }));
     };
+    let media_admission = scene_media_admission_counts(&scene, &asset_mime_types);
+    if let Some(details) = scene_media_admission_violation_details(&media_admission, &media_config)
+    {
+        return Ok(json!({
+            "activated": false,
+            "message": details.message,
+            "details": {
+                "caps": details.caps,
+                "counts": details.counts,
+                "layers": details.layers,
+            }
+        }));
+    }
 
     let transition_override = Some(TransitionSpec {
         duration_ms: transition_ms,
