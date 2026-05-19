@@ -171,12 +171,14 @@ pub async fn delete_zone(
     .map(|outcome| outcome.map(|_: serde_json::Value| ()))
 }
 
+/// Reassign existing device outputs into `zone_id`. Returns the new
+/// `groups_revision` so a follow-up mutation can chain without a refetch.
 pub async fn assign_devices(
     scene_id: &str,
     zone_id: &str,
     device_zone_ids: &[String],
     expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<()>, String> {
+) -> Result<ZoneOutcome<u64>, String> {
     let body = serde_json::to_string(&AssignDevicesRequest {
         device_zones: device_zone_ids
             .iter()
@@ -192,15 +194,17 @@ pub async fn assign_devices(
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|_: ZoneListResponse| ()))
+    .map(|outcome| outcome.map(|response: ZoneListResponse| response.groups_revision))
 }
 
+/// Remove one device output from `zone_id`. Returns the new
+/// `groups_revision` so sequential removals can chain without a refetch.
 pub async fn unassign_device(
     scene_id: &str,
     zone_id: &str,
     device_zone_id: &str,
     expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<()>, String> {
+) -> Result<ZoneOutcome<u64>, String> {
     send_zone_mutation(
         Request::delete(&format!(
             "/api/v1/scenes/{scene_id}/zones/{zone_id}/devices/{device_zone_id}"
@@ -209,7 +213,7 @@ pub async fn unassign_device(
         expected_revision,
     )
     .await
-    .map(|outcome| outcome.map(|_: ZoneListResponse| ()))
+    .map(|outcome| outcome.map(|response: ZoneListResponse| response.groups_revision))
 }
 
 pub async fn update_unassigned_behavior(

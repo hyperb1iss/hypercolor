@@ -104,7 +104,7 @@ pub fn ZoneAssignment() -> impl IntoView {
             )
             .await
             {
-                Ok(ZoneOutcome::Applied(())) => {
+                Ok(ZoneOutcome::Applied(_)) => {
                     toasts::toast_success(&format!("Assigned {} output(s)", outputs.len()));
                     selected.set(HashSet::new());
                     studio.refresh_scene.run(());
