@@ -499,31 +499,6 @@ pub(crate) fn LayoutEditorProvider(
     });
     let layout_value = Signal::derive(move || selected_layout_id.get().unwrap_or_default());
 
-    let _history_shortcuts =
-        window_event_listener(ev::keydown, move |ev: web_sys::KeyboardEvent| {
-            if keyboard_target_is_text_input(ev.target()) {
-                return;
-            }
-            if ev.alt_key() || !(ev.ctrl_key() || ev.meta_key()) {
-                return;
-            }
-            match ev.key().as_str() {
-                "z" | "Z" if ev.shift_key() && can_redo.get_untracked() => {
-                    ev.prevent_default();
-                    set_layout.redo();
-                }
-                "z" | "Z" if can_undo.get_untracked() => {
-                    ev.prevent_default();
-                    set_layout.undo();
-                }
-                "y" | "Y" if can_redo.get_untracked() => {
-                    ev.prevent_default();
-                    set_layout.redo();
-                }
-                _ => {}
-            }
-        });
-
     // Auto-select the active layout (or first available, or create a default) on mount
     Effect::new(move |_| {
         if initialized.get() {
@@ -1290,6 +1265,39 @@ pub(crate) fn LayoutWorkspace(
 ) -> impl IntoView {
     let editor = expect_context::<LayoutEditorContext>();
     let has_layout = Signal::derive(move || editor.layout.with(Option::is_some));
+
+    // Undo/redo shortcuts live in the workspace, not the provider: the
+    // provider also wraps Studio's Screen and Unassigned Stages, where no
+    // layout editor is shown. Keying them here scopes them to a visible
+    // canvas.
+    let state = expect_context::<LayoutEditorState>();
+    let can_undo = state.can_undo;
+    let can_redo = state.can_redo;
+    let write = state.write;
+    let _history_shortcuts =
+        window_event_listener(ev::keydown, move |ev: web_sys::KeyboardEvent| {
+            if keyboard_target_is_text_input(ev.target()) {
+                return;
+            }
+            if ev.alt_key() || !(ev.ctrl_key() || ev.meta_key()) {
+                return;
+            }
+            match ev.key().as_str() {
+                "z" | "Z" if ev.shift_key() && can_redo.get_untracked() => {
+                    ev.prevent_default();
+                    write.redo();
+                }
+                "z" | "Z" if can_undo.get_untracked() => {
+                    ev.prevent_default();
+                    write.undo();
+                }
+                "y" | "Y" if can_redo.get_untracked() => {
+                    ev.prevent_default();
+                    write.redo();
+                }
+                _ => {}
+            }
+        });
 
     // --- Resizable panel state ---
     let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
