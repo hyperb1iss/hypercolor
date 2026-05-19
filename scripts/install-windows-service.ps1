@@ -86,17 +86,33 @@ function Resolve-PawnIoHome {
     return ""
 }
 
+function Assert-ServicePawnIoModuleDir {
+    param([string]$Path)
+
+    $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    $userWritableRoots = @($env:LOCALAPPDATA, $env:APPDATA, $env:USERPROFILE) |
+        Where-Object { $_ } |
+        ForEach-Object { (Resolve-Path -LiteralPath $_ -ErrorAction SilentlyContinue).Path } |
+        Where-Object { $_ }
+
+    foreach ($root in $userWritableRoots) {
+        if ($resolved.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $resolved.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "PawnIO module directory '$resolved' is under a per-user profile path. Windows services run elevated, so install PawnIO modules under the administrator-owned PawnIO install directory instead."
+        }
+    }
+}
+
 function Resolve-PawnIoModuleDir {
     param([string]$ExplicitPath)
 
     if ($ExplicitPath) {
-        return (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
+        $resolved = (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
+        Assert-ServicePawnIoModuleDir $resolved
+        return $resolved
     }
 
     $candidates = @()
-    if ($env:LOCALAPPDATA) {
-        $candidates += (Join-Path $env:LOCALAPPDATA "hypercolor\pawnio\modules")
-    }
     $pawnIoHomePath = Resolve-PawnIoHome $PawnIoHome
     if ($pawnIoHomePath) {
         $candidates += (Join-Path $pawnIoHomePath "modules")
@@ -105,7 +121,9 @@ function Resolve-PawnIoModuleDir {
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath (Join-Path $candidate "SmbusI801.bin")) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+            $resolved = (Resolve-Path -LiteralPath $candidate).Path
+            Assert-ServicePawnIoModuleDir $resolved
+            return $resolved
         }
     }
 
