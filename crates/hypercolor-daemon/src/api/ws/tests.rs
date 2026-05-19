@@ -2,6 +2,7 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use axum::body::Bytes;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::extract::ws::Utf8Bytes;
 use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
@@ -2548,4 +2549,27 @@ fn screen_canvas_binary_encoder_uses_distinct_header() {
         encode_canvas_binary_with_header(&frame, CanvasFormat::Rgb, WS_SCREEN_CANVAS_HEADER);
     assert_eq!(encoded[0], WS_SCREEN_CANVAS_HEADER);
     assert_eq!(&encoded[14..17], &[90, 80, 70]);
+}
+
+#[test]
+fn websocket_origin_guard_allows_loopback_and_non_browser_clients() {
+    let mut loopback = HeaderMap::new();
+    loopback.insert(
+        "origin",
+        HeaderValue::from_static("http://localhost:9430"),
+    );
+    assert!(super::session::is_origin_allowed(&loopback));
+
+    let mut loopback_v4 = HeaderMap::new();
+    loopback_v4.insert("origin", HeaderValue::from_static("http://127.0.0.1:9430"));
+    assert!(super::session::is_origin_allowed(&loopback_v4));
+
+    assert!(super::session::is_origin_allowed(&HeaderMap::new()));
+}
+
+#[test]
+fn websocket_origin_guard_rejects_non_loopback_origin() {
+    let mut headers = HeaderMap::new();
+    headers.insert("origin", HeaderValue::from_static("https://evil.example"));
+    assert!(!super::session::is_origin_allowed(&headers));
 }
