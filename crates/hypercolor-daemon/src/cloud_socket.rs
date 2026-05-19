@@ -43,7 +43,7 @@ pub enum CloudSocketError {
 }
 
 const MISSED_HEARTBEAT_LIMIT: u8 = 3;
-const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3_600);
+const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_hours(1);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CloudReconnectPolicy {
@@ -57,7 +57,7 @@ impl Default for CloudReconnectPolicy {
     fn default() -> Self {
         Self {
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             backoff_factor: 2.0,
             jitter: 0.25,
         }
