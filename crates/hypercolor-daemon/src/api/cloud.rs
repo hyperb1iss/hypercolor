@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use hypercolor_cloud_client::api as cloud_api;
 use hypercolor_cloud_client::daemon_link::{IdentityNonce, UpgradeNonce};
@@ -29,6 +30,9 @@ use crate::cloud_entitlements::{
     unix_now_seconds,
 };
 use crate::cloud_socket::{CloudSocketHelloInput, CloudSocketStartError};
+
+const CONNECT_INTENT_HEADER: &str = "x-hypercolor-connect-intent";
+const CONNECT_INTENT_VALUE: &str = "manual";
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CloudStatus {
@@ -250,7 +254,13 @@ pub async fn prepare_connection(State(state): State<Arc<AppState>>) -> Response 
     }
 }
 
-pub async fn connect_connection(State(state): State<Arc<AppState>>) -> Response {
+pub async fn connect_connection(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !connect_intent_header_valid(&headers) {
+        return ApiError::bad_request("missing required connect intent header");
+    }
     let cloud_config = cloud_config(&state);
     if !cloud_config.enabled {
         return ApiError::conflict("cloud connection is disabled");
@@ -278,6 +288,13 @@ pub async fn connect_connection(State(state): State<Arc<AppState>>) -> Response 
         Ok(status) => ApiResponse::ok(status),
         Err(error) => connect_error_response(error),
     }
+}
+
+fn connect_intent_header_valid(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONNECT_INTENT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == CONNECT_INTENT_VALUE)
 }
 
 pub async fn disconnect_connection(State(state): State<Arc<AppState>>) -> Response {
