@@ -59,8 +59,31 @@ pub async fn store_entitlement_response(
         tokio::fs::create_dir_all(parent).await?;
     }
     let bytes = serde_json::to_vec_pretty(&entitlement)?;
-    tokio::fs::write(path, bytes).await?;
+    write_entitlement_cache(path, bytes).await?;
     Ok(entitlement)
+}
+
+#[cfg(unix)]
+async fn write_entitlement_cache(path: &Path, bytes: Vec<u8>) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        std::io::Write::write_all(&mut file, &bytes)
+    })
+    .await
+    .map_err(|error| std::io::Error::other(error.to_string()))?
+}
+
+#[cfg(not(unix))]
+async fn write_entitlement_cache(path: &Path, bytes: Vec<u8>) -> std::io::Result<()> {
+    tokio::fs::write(path, bytes).await
 }
 
 pub async fn load_cached_entitlement(
