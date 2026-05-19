@@ -1,0 +1,29 @@
+schema_version = 1
+id = "fixture-strip-24"
+name = "Fixture 24-LED strip"
+category = "strip"
+origin = "built_in"
+description = "Wire-compat strip template"
+vendor = "fixtureco"
+tags = [
+    "strip",
+    "fixture",
+]
+physical_size_mm = [
+    300.0,
+    24.0,
+]
+
+[default_size]
+width = 0.4000000059604645
+height = 0.10000000149011612
+
+[topology]
+type = "strip"
+count = 24
+direction = "left_to_right"
+
+[[compatible_slots]]
+controller_ids = ["lianli"]
+models = ["strimer-plus-24pin"]
+slots = ["atx"]

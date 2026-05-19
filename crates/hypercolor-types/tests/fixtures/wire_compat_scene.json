@@ -1,0 +1,127 @@
+{
+  "id": "01931234-5678-7abc-9def-0123456789ab",
+  "name": "Wire compat scene",
+  "description": "Locks the wire format Plan 55 P3 must preserve",
+  "scope": "Full",
+  "zone_assignments": [],
+  "groups": [
+    {
+      "id": "01931234-5678-7def-9abc-0123456789cd",
+      "name": "Default zone",
+      "description": "Fixture render group",
+      "effect_id": "01931234-5678-7111-9222-0123456789ef",
+      "controls": {},
+      "preset_id": null,
+      "layers": [
+        {
+          "id": "01931234-5678-7333-9444-0123456789aa",
+          "source": {
+            "type": "effect",
+            "effect_id": "01931234-5678-7111-9222-0123456789ef",
+            "controls": {}
+          },
+          "blend": "replace",
+          "opacity": 1.0,
+          "transform": {
+            "anchor": {
+              "x": 0.5,
+              "y": 0.5
+            },
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "rotation": 0.0,
+            "fit": "cover"
+          },
+          "adjust": {
+            "brightness": 1.0,
+            "saturation": 1.0,
+            "hue_shift": 0.0,
+            "tint": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "tint_strength": 0.0,
+            "contrast": 0.0
+          },
+          "enabled": true
+        }
+      ],
+      "layout": {
+        "id": "layout-fixture",
+        "name": "Fixture layout",
+        "description": "Wire-compat layout snapshot",
+        "canvas_width": 640,
+        "canvas_height": 480,
+        "zones": [
+          {
+            "id": "output-strip-1",
+            "name": "Front strip",
+            "device_id": "usb:controller-1",
+            "zone_name": "channel-a",
+            "position": {
+              "x": 0.25,
+              "y": 0.5
+            },
+            "size": {
+              "x": 0.4,
+              "y": 0.1
+            },
+            "rotation": 0.0,
+            "scale": 1.0,
+            "display_order": 0,
+            "orientation": null,
+            "topology": {
+              "type": "strip",
+              "count": 24,
+              "direction": "left_to_right"
+            },
+            "sampling_mode": {
+              "type": "bilinear"
+            },
+            "edge_behavior": "clamp",
+            "shape": {
+              "shape_type": "rectangle"
+            },
+            "shape_preset": "strip-24",
+            "attachment": {
+              "template_id": "lianli-strimer-24pin",
+              "slot_id": "atx",
+              "instance": 0,
+              "led_start": 0,
+              "led_count": 24,
+              "led_mapping": null
+            },
+            "brightness": 0.8
+          }
+        ],
+        "default_sampling_mode": {
+          "type": "bilinear"
+        },
+        "default_edge_behavior": "clamp",
+        "spaces": null,
+        "version": 1
+      },
+      "brightness": 1.0,
+      "enabled": true,
+      "color": "#80ffea",
+      "role": "primary",
+      "controls_version": 0,
+      "layers_version": 0
+    }
+  ],
+  "groups_revision": 7,
+  "transition": {
+    "duration_ms": 750,
+    "easing": "EaseInOut",
+    "color_interpolation": "Oklab"
+  },
+  "priority": 50,
+  "enabled": true,
+  "metadata": {},
+  "kind": "named",
+  "mutation_mode": "live"
+}
