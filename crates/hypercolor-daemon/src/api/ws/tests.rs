@@ -48,6 +48,7 @@ use super::relays::{
     relay_device_metrics, relay_display_preview, relay_frames, relay_metrics, relay_screen_canvas,
     relay_spectrum, relay_web_viewport_canvas, sync_preview_receiver, try_enqueue_json,
 };
+use super::session::is_allowed_ws_origin;
 use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -160,6 +161,33 @@ fn secured_state() -> Arc<AppState> {
     state.security_state =
         SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
     Arc::new(state)
+}
+
+#[test]
+fn ws_origin_validation_allows_loopback_and_missing_origin() {
+    assert!(is_allowed_ws_origin(None));
+    assert!(is_allowed_ws_origin(Some(&http::HeaderValue::from_static(
+        "http://localhost:9430",
+    ))));
+    assert!(is_allowed_ws_origin(Some(&http::HeaderValue::from_static(
+        "https://127.0.0.1:9420",
+    ))));
+    assert!(is_allowed_ws_origin(Some(&http::HeaderValue::from_static(
+        "http://[::1]:9420",
+    ))));
+}
+
+#[test]
+fn ws_origin_validation_rejects_non_loopback_origins() {
+    assert!(!is_allowed_ws_origin(Some(&http::HeaderValue::from_static(
+        "https://evil.example",
+    ))));
+    assert!(!is_allowed_ws_origin(Some(&http::HeaderValue::from_static(
+        "null",
+    ))));
+    assert!(!is_allowed_ws_origin(Some(&http::HeaderValue::from_static(
+        "not a uri",
+    ))));
 }
 
 fn reset_ws_payload_caches() {
