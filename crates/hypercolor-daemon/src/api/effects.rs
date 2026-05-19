@@ -1996,7 +1996,7 @@ async fn next_uploaded_html_field(
     })? {
         let file_name = field.file_name().map(ToOwned::to_owned);
         let field_name = field.name().map(ToOwned::to_owned);
-        if file_name.is_none() && field_name.as_deref() != Some("file") {
+        if field_name.as_deref() != Some("file") || file_name.is_none() {
             continue;
         }
 

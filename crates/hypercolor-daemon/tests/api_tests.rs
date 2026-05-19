@@ -714,6 +714,23 @@ fn multipart_upload_request(file_name: &str, html: &str) -> Request<Body> {
         .expect("failed to build multipart request")
 }
 
+fn multipart_upload_request_without_filename(html: &str) -> Request<Body> {
+    let boundary = "hypercolor-upload-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"\r\nContent-Type: text/html\r\n\r\n{html}\r\n--{boundary}--\r\n"
+    );
+
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/effects/install")
+        .header(
+            http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .expect("failed to build multipart request")
+}
+
 // ── Health / Status ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1757,6 +1774,25 @@ async fn install_effect_upload_writes_file_and_registers_effect() {
             .any(|(_, entry)| entry.metadata.name == "Aurora"
                 && entry.source_path
                     == fs::canonicalize(&installed_path).expect("canonical path should resolve"))
+    );
+}
+
+#[tokio::test]
+async fn install_effect_upload_requires_browser_file_part() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(state);
+    let html = r#"<!DOCTYPE html><html><head><title>Aurora</title></head><body><canvas id="exCanvas"></canvas><script>1</script></body></html>"#;
+
+    let response = app
+        .oneshot(multipart_upload_request_without_filename(html))
+        .await
+        .expect("failed to execute upload request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["error"]["message"],
+        "Missing multipart file field named \"file\"."
     );
 }
 
