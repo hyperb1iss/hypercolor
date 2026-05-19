@@ -1336,7 +1336,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
         .route(
             "/diagnose/memory",
-            axum::routing::get(diagnose::memory_diagnostics),
+            axum::routing::post(diagnose::memory_diagnostics),
         )
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));

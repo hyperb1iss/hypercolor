@@ -784,6 +784,6 @@ Reset a configuration value to its default.
 Run system diagnostics. Checks device connectivity, audio capture status, effect engine health, and configuration validity.
 {% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/diagnose/memory") %}
+{% api_endpoint(method="POST", path="/api/v1/diagnose/memory") %}
 Get a memory diagnostics snapshot — daemon RSS, Servo renderer RSS, canvas buffer size, and allocation counters. Useful when diagnosing slow memory growth.
 {% end %}
