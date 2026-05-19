@@ -120,7 +120,7 @@ impl DaemonClient {
             .send(Message::Text(subscribe_msg.to_string().into()))
             .await?;
 
-        info!("Connected to daemon WebSocket at {}", self.ws_url);
+        info!("Connected to daemon WebSocket");
 
         loop {
             tokio::select! {
