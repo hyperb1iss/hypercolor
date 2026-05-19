@@ -115,7 +115,7 @@ fn tauri_config_declares_installer_targets() {
 }
 
 #[test]
-fn tauri_config_prefers_current_user_nsis_installs() {
+fn tauri_config_uses_per_machine_nsis_installs() {
     let config = tauri_config();
     let install_mode = config
         .get("bundle")
@@ -124,7 +124,7 @@ fn tauri_config_prefers_current_user_nsis_installs() {
         .and_then(|nsis| nsis.get("installMode"))
         .and_then(serde_json::Value::as_str);
 
-    assert_eq!(install_mode, Some("currentUser"));
+    assert_eq!(install_mode, Some("perMachine"));
 }
 
 #[test]

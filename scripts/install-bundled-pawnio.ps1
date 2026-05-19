@@ -7,6 +7,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$PawnIoSetupSha256 = "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032"
+$PawnIoModulesZipSha256 = "1149B87F4DC757E72654D5A402863251815EBFC8AD4E3BB030DBCFFB3DE74153"
+$RequiredModules = @(
+    "SmbusI801.bin",
+    "SmbusPIIX4.bin",
+    "SmbusNCT6793.bin"
+)
+
 if (-not $AssetRoot) {
     $AssetRoot = Join-Path $PSScriptRoot "pawnio"
 }
@@ -74,38 +82,41 @@ function Assert-FileHash {
 }
 
 function Assert-BundledPawnIoPayload {
-    $manifestPath = Join-Path $AssetRoot "manifest.json"
-    if (-not (Test-Path -LiteralPath $manifestPath)) {
-        return
-    }
+    Assert-FileHash (Join-Path $AssetRoot "PawnIO_setup.exe") $PawnIoSetupSha256
+    Assert-FileHash (Join-Path $AssetRoot "PawnIO.Modules.zip") $PawnIoModulesZipSha256
+}
 
-    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    if ($manifest.pawnio_setup.sha256) {
-        Assert-FileHash (Join-Path $AssetRoot "PawnIO_setup.exe") $manifest.pawnio_setup.sha256
-    }
+function Expand-VerifiedBundledModules {
+    $archive = Join-Path $AssetRoot "PawnIO.Modules.zip"
+    $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) "hypercolor-pawnio-$([System.Guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+    Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot -Force
 
-    foreach ($module in @($manifest.pawnio_modules.modules)) {
-        if ($module.name -and $module.sha256) {
-            Assert-FileHash (Join-Path (Join-Path $AssetRoot "modules") $module.name) $module.sha256
+    foreach ($module in $RequiredModules) {
+        $source = Get-ChildItem -Path $extractRoot -Recurse -File -Filter $module |
+            Select-Object -First 1
+        if ($null -eq $source) {
+            throw "Bundled PawnIO module was not found in verified archive: $module"
         }
     }
+
+    return $extractRoot
 }
 
 function Copy-BundledModules {
-    param([string]$Destination)
-
-    $sourceDir = Join-Path $AssetRoot "modules"
-    if (-not (Test-Path -LiteralPath $sourceDir)) {
-        throw "Bundled PawnIO module directory was not found: $sourceDir"
-    }
+    param(
+        [string]$SourceRoot,
+        [string]$Destination
+    )
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-    foreach ($module in @("SmbusI801.bin", "SmbusPIIX4.bin", "SmbusNCT6793.bin")) {
-        $source = Join-Path $sourceDir $module
-        if (-not (Test-Path -LiteralPath $source)) {
-            throw "Bundled PawnIO module was not found: $source"
+    foreach ($module in $RequiredModules) {
+        $source = Get-ChildItem -Path $SourceRoot -Recurse -File -Filter $module |
+            Select-Object -First 1
+        if ($null -eq $source) {
+            throw "Bundled PawnIO module was not found in verified archive: $module"
         }
-        Copy-Item -LiteralPath $source -Destination (Join-Path $Destination $module) -Force
+        Copy-Item -LiteralPath $source.FullName -Destination (Join-Path $Destination $module) -Force
     }
 }
 
@@ -167,11 +178,18 @@ if (-not $pawnIoHome -or $Force) {
     $pawnIoHome = Resolve-PawnIoHome
 }
 
-Copy-BundledModules $ModuleDestination
+$moduleExtractRoot = Expand-VerifiedBundledModules
+try {
+    Copy-BundledModules $moduleExtractRoot $ModuleDestination
 
-if ($pawnIoHome) {
-    $sharedModuleDir = Join-Path $pawnIoHome "modules"
-    Copy-BundledModules $sharedModuleDir
+    if ($pawnIoHome) {
+        $sharedModuleDir = Join-Path $pawnIoHome "modules"
+        Copy-BundledModules $moduleExtractRoot $sharedModuleDir
+    }
+} finally {
+    if (Test-Path -LiteralPath $moduleExtractRoot) {
+        Remove-Item -LiteralPath $moduleExtractRoot -Recurse -Force
+    }
 }
 
 Write-Host "PawnIO hardware access is ready"
